@@ -36,6 +36,7 @@ from openral_core import (
     GRIPPER_CONVENTION_RANGES,
     BoxShape,
     CapsuleShape,
+    ForceObserverSpec,
     JointType,
     LinkCollisionGeometry,
     RobotDescription,
@@ -120,6 +121,10 @@ class EnvelopeIntersection:
             (``EndEffectorSpec.resolved_command_range()``), in that end
             effector's convention.
         gripper_command_max: Per-entry upper bound; parallel to the above.
+        joint_external_torque_max: Per-joint ceiling (N·m) on the kernel's
+            external-torque estimate, in the same joint order as
+            ``joint_position_min``; ``0.0`` = that joint is not monitored, and
+            an all-zero (or empty) tuple turns the #373 collision tier off.
     """
 
     robot_name: str
@@ -146,6 +151,7 @@ class EnvelopeIntersection:
     gripper_ee_names: tuple[str, ...] = ()
     gripper_command_min: tuple[float, ...] = ()
     gripper_command_max: tuple[float, ...] = ()
+    joint_external_torque_max: tuple[float, ...] = ()
 
 
 def _extract_gripper_channels(
@@ -341,6 +347,14 @@ def _validate_envelope_tightens(
                 _resolve_optional_bound(getattr(ceiling, field)),
                 label=label,
             )
+    if "max_external_joint_torque_nm" in explicit_fields:
+        for joint, value in candidate.max_external_joint_torque_nm.items():
+            limit = ceiling.max_external_joint_torque_nm.get(joint)
+            if limit is not None and value > limit:
+                raise ROSConfigError(
+                    f"{label} envelope raises max_external_joint_torque_nm[{joint!r}] to "
+                    f"{value!r} above the ceiling {limit!r}; loosening rejected."
+                )
     if (
         "deadman_required" in explicit_fields
         and ceiling.deadman_required
@@ -366,7 +380,20 @@ def merge_deploy_envelope(
     deploy_set = frozenset(deploy.model_fields_set)
     _validate_envelope_tightens(robot_env, deploy, deploy_set, label="deploy")
     updates = {field: getattr(deploy, field) for field in deploy_set}
+    if "max_external_joint_torque_nm" in deploy_set:
+        # Per-joint, so a plain replace would DROP the robot's other joints: union instead.
+        updates["max_external_joint_torque_nm"] = _union_min(
+            robot_env.max_external_joint_torque_nm, deploy.max_external_joint_torque_nm
+        )
     return robot_env.model_copy(update=updates)
+
+
+def _union_min(a: Mapping[str, float], b: Mapping[str, float]) -> dict[str, float]:
+    """Per-key ceiling union: every joint either side bounds, at the tighter value."""
+    out = dict(a)
+    for joint, value in b.items():
+        out[joint] = min(value, out.get(joint, value))
+    return out
 
 
 def _intersect_workspace_boxes(
@@ -511,6 +538,24 @@ def compute_intersection(
 
     gripper_names, gripper_min, gripper_max = _extract_gripper_channels(robot, gripper_convention)
 
+    ext_torque = dict(merged_env.max_external_joint_torque_nm)
+    if skill_env is not None and "max_external_joint_torque_nm" in skill_set:
+        ext_torque = _union_min(ext_torque, skill_env.max_external_joint_torque_nm)
+    actuated = [j.name for j in robot.joints if j.joint_type.value in _ACTUATED_JOINT_TYPES]
+    if unknown := sorted(set(ext_torque) - set(actuated)):
+        raise ROSConfigError(
+            f"max_external_joint_torque_nm names {unknown}, which are not actuated joints of "
+            f"{robot.name!r}."
+        )
+    if ext_torque and robot.force_observer is None:
+        raise ROSConfigError(
+            f"max_external_joint_torque_nm is set but {robot.name!r} declares no "
+            "force_observer model, so nothing would estimate the torque it bounds."
+        )
+    ext_torque_max = (
+        tuple(float(ext_torque.get(name, 0.0)) for name in actuated) if ext_torque else ()
+    )
+
     return EnvelopeIntersection(
         robot_name=robot.name,
         rskill_id=skill.name if skill is not None else "",
@@ -536,6 +581,7 @@ def compute_intersection(
         gripper_ee_names=gripper_names,
         gripper_command_min=gripper_min,
         gripper_command_max=gripper_max,
+        joint_external_torque_max=ext_torque_max,
     )
 
 
@@ -611,6 +657,10 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
         params["gripper_ee_names"] = list(envelope.gripper_ee_names)
         params["gripper_command_min"] = [float(v) for v in envelope.gripper_command_min]
         params["gripper_command_max"] = [float(v) for v in envelope.gripper_command_max]
+    # Omitted when no joint is monitored (ros2 cannot type an empty array; the
+    # kernel defaults it empty = tier off).
+    if any(v > 0.0 for v in envelope.joint_external_torque_max):
+        params["joint_external_torque_max"] = [float(v) for v in envelope.joint_external_torque_max]
     if envelope.workspace_box_min_xyz is not None:
         params["workspace_box_min_xyz"] = [float(v) for v in envelope.workspace_box_min_xyz]
     if envelope.workspace_box_max_xyz is not None:
@@ -1001,7 +1051,60 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
             params["collision_hull_vertices"] = hull_vertices
     if allowed_pairs:
         params["collision_allowed_pairs"] = allowed_pairs
+    if robot.force_observer is not None:
+        params.update(_force_observer_params(robot, robot.force_observer, ordered, edge_of_child))
     return params
+
+
+def _force_observer_params(
+    robot: RobotDescription,
+    spec: ForceObserverSpec,
+    ordered: list[str],
+    edge_of_child: Mapping[str, _Edge],
+) -> dict[str, object]:
+    """The #373 observer model as kernel params, parallel to the collision links.
+
+    Link ``i``'s joint terms describe the joint INTO link ``i``; a fixed or mimic
+    edge, or a link the model does not list, gets zeros (massless / frictionless).
+    """
+    inertial = {x.link: x for x in spec.links}
+    friction = {x.joint: x for x in spec.joints}
+    mass: list[float] = []
+    com: list[float] = []
+    inertia: list[float] = []
+    armature: list[float] = []
+    viscous: list[float] = []
+    coulomb: list[float] = []
+    offset: list[float] = []
+    for name in ordered:
+        body = inertial.get(name)
+        mass.append(float(body.mass_kg) if body else 0.0)
+        com.extend(float(v) for v in (body.com_xyz_m if body else (0.0, 0.0, 0.0)))
+        inertia.extend(float(v) for v in (body.inertia_kgm2 if body else (0.0,) * 6))
+        edge = edge_of_child.get(name)
+        joint = (
+            friction.get(robot.joints[edge.dof_index].name)
+            if edge is not None and edge.mimic is None and edge.dof_index >= 0
+            else None
+        )
+        armature.append(float(joint.armature_kgm2) if joint else 0.0)
+        viscous.append(float(joint.viscous_nm_s_per_rad) if joint else 0.0)
+        coulomb.append(float(joint.coulomb_nm) if joint else 0.0)
+        offset.append(float(joint.offset_nm) if joint else 0.0)
+    return {
+        "force_observer_enabled": True,
+        "force_observer_gain_per_s": float(spec.gain_per_s),
+        "force_observer_coulomb_velocity_rad_s": float(spec.coulomb_velocity_rad_s),
+        "force_observer_limit_margin_rad": float(spec.limit_margin_rad),
+        "force_observer_gravity": [float(v) for v in spec.gravity_xyz_m_s2],
+        "force_observer_link_mass": mass,
+        "force_observer_link_com": com,
+        "force_observer_link_inertia": inertia,
+        "force_observer_joint_armature": armature,
+        "force_observer_joint_viscous": viscous,
+        "force_observer_joint_coulomb": coulomb,
+        "force_observer_joint_offset": offset,
+    }
 
 
 def merge_extra_allowed_pairs(

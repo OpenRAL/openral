@@ -20,6 +20,8 @@ what each concluded and what is still open, in
 | pub | `/openral/failure/safety` | `openral_msgs/FailureTrigger` | RELIABLE, VOLATILE, KL=50 |
 | pub | `/openral/safety_status` | `openral_msgs/SafetyStatus` | RELIABLE, **TRANSIENT_LOCAL**, KL=1 |
 | pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray`, 1 Hz | default |
+| sub | `/joint_states` | `sensor_msgs/JointState` | BEST_EFFORT, VOLATILE, KL=1 |
+| pub | `/openral/safety/external_torque` | `sensor_msgs/JointState` (`effort` = the #373 estimate, N·m), 50 Hz, only with `force_observer_enabled` | BEST_EFFORT, VOLATILE, KL=5 |
 | srv | `/openral/estop_reset` | `std_srvs/Trigger` | — |
 
 `/openral/candidate_action` and `/openral/safe_action` deliberately deviate
@@ -1522,6 +1524,21 @@ are still checked against those cells; only the payload box is not.
 `AnUntrackedPinchHoldsCellBelowItsBindFloorStillStops` and
 `ThePinchOwnExemptionNeedsThePayloadOwnExemption` in `test_lifecycle_kernel.cpp`.
 
+
+## External joint-torque observer (issue #373) — collision tier
+
+`force_observer.{hpp,cpp}`: a generalized-momentum observer over the collision
+model's kinematic tree, fed by `/joint_states` position, velocity and effort,
+estimates the external torque on every joint. Over a per-joint ceiling
+(`joint_external_torque_max`, from `SafetyEnvelope.max_external_joint_torque_nm`)
+the kernel latches with `FailureTrigger(KIND_FORCE)` /
+`ForceEvidence{unit:"Nm"}` and fires `/openral/estop`. It only adds stops: a
+stale or missing input, or a monitored joint inside its limit margin, resets
+the estimate and stops nothing. The model rides the collision params
+(`force_observer_*`, from `RobotDescription.force_observer`); a ceiling with no
+model fails configure. No shipped manifest or scene sets a ceiling yet; the
+real OpenArm publishes the estimate for disclosure only. Design, validity gate,
+evidence and what is owed: [`external-torque-observer.md`](../../docs/reference/external-torque-observer.md).
 
 ## The contact-force gate (ADR-0100, survey Path C)
 

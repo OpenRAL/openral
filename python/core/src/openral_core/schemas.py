@@ -1556,7 +1556,8 @@ class SafetyEnvelope(BaseModel):
     """Safety constraints handed to the C++ safety kernel.
 
     Not every field is enforced yet. Several are **declared, not yet enforced
-    by the kernel**: ``max_force_n`` (issue #373), ``max_ee_accel_m_s2`` and
+    by the kernel**: ``max_force_n`` (the enforced contact bound is per joint,
+    ``max_external_joint_torque_nm``, issue #373), ``max_ee_accel_m_s2`` and
     ``deadman_required`` are passed to the kernel as ROS parameters but no check
     consults them, and ``no_go_zones``, ``e_stop_topic``, ``e_stop_qos``,
     ``cycle_time_violation_threshold_ms``
@@ -1578,9 +1579,10 @@ class SafetyEnvelope(BaseModel):
             parameter, but no check compares an acceleration against it.
         max_joint_speed_factor: Fraction of joint velocity_limit allowed.
         max_force_n: Declared maximum contact force in Newtons. **Not
-            enforced yet**: it is validated here and passed to the C++
-            safety kernel as a parameter, but no check compares any
-            measured or estimated force against it (issue #373).
+            enforced**: it is validated here and passed to the C++ safety
+            kernel as a parameter, but no check compares a force against it.
+            The enforced contact bound is per joint,
+            ``max_external_joint_torque_nm`` (issue #373).
         max_torque_nm: Maximum joint torque in Nm. The kernel caps
             JOINT_TORQUE chunks at ``min(joint.torque_limit, this)``.
         deadman_required: Whether a deadman switch is required.
@@ -1660,6 +1662,16 @@ class SafetyEnvelope(BaseModel):
             Must come from a measurement on the deploy host
             (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;
             a real robot must declare it.
+        max_external_joint_torque_nm: Per-joint ceiling (N·m, ``JointSpec.name``
+            → value) on the external torque the kernel's momentum observer
+            estimates (issue #373 collision tier): over it, the kernel latches
+            an E-stop with ``KIND_FORCE``. A joint not listed is not monitored;
+            empty (the default) turns the tier off. Requires
+            ``RobotDescription.force_observer``. A deploy scene or rSkill may
+            add joints or lower values, never raise or drop one. Per joint, not
+            a hand force: near a singularity ``pinv(Jᵀ)`` turns the OpenArm's
+            no-contact residual into 45-100 N (#373 step-2), so a hand-force
+            bound cannot be judged there.
     """
 
     workspace_box_min_xyz: tuple[float, float, float] | None = None
@@ -1690,6 +1702,9 @@ class SafetyEnvelope(BaseModel):
     starting_pose_max_joint_speed_m_s: float | None = Field(default=None, gt=0.0)
     starting_pose_tolerance_m: float | None = Field(default=None, gt=0.0)
     joint_state_staleness_limit_s: float | None = Field(default=None, gt=0.0)
+    max_external_joint_torque_nm: dict[
+        str, Annotated[float, Field(gt=0.0, allow_inf_nan=False)]
+    ] = Field(default_factory=dict)
 
 
 # ─── VLA observation / action specs ────────────────────────────────────────────
@@ -2710,6 +2725,127 @@ class MimicJoint(BaseModel):
         return self.multiplier * leader_value + self.offset
 
 
+_Finite = Annotated[float, Field(allow_inf_nan=False)]
+_NonNegative = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
+
+
+class LinkInertial(BaseModel):
+    """Rigid-body inertial of one kinematic-tree link, in that link's frame.
+
+    Feeds the safety kernel's external-torque observer (issue #373). The frame
+    is the manifest's own link frame — the one ``joints`` /
+    ``fixed_attachments`` / ``mimic_joints`` pose — so a source body whose
+    frame differs is re-expressed by the lowering
+    (``openral_safety.dynamics_lowering``), never copied raw. Bodies of the
+    source model that no manifest link names (a welded camera mount) are
+    folded into the link they hang from.
+
+    Attributes:
+        link: Manifest link name (a ``joints`` / ``fixed_attachments`` /
+            ``mimic_joints`` endpoint).
+        mass_kg: Mass (kg).
+        com_xyz_m: Centre of mass in the link frame (m).
+        inertia_kgm2: Inertia tensor about the COM in link-frame axes,
+            ``(ixx, iyy, izz, ixy, ixz, iyz)`` (kg·m²).
+
+    Example:
+        >>> LinkInertial(
+        ...     link="upper",
+        ...     mass_kg=1.3,
+        ...     com_xyz_m=(0.2, 0.0, 0.0),
+        ...     inertia_kgm2=(0.01, 0.011, 0.01, 0.0, 0.0, 0.0),
+        ... ).mass_kg
+        1.3
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    link: str
+    mass_kg: _NonNegative
+    com_xyz_m: tuple[_Finite, _Finite, _Finite] = (0.0, 0.0, 0.0)
+    inertia_kgm2: tuple[_NonNegative, _NonNegative, _NonNegative, _Finite, _Finite, _Finite] = (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+
+
+class JointFriction(BaseModel):
+    """Rotor + friction model of one joint, for the external-torque observer.
+
+    The observer subtracts ``offset_nm + coulomb_nm·tanh(q̇/v_c) + viscous·q̇``
+    from the measured effort and adds ``armature`` to the joint-space inertia.
+    Anything left over reads as external torque, so an unmodelled term here is
+    a false contact (issue #373 step-2: stiction alone is ±0.6-0.8 N·m at the
+    OpenArm's J4).
+
+    Attributes:
+        joint: ``JointSpec.name``.
+        armature_kgm2: Reflected rotor inertia (kg·m², or kg for a prismatic joint).
+        viscous_nm_s_per_rad: Viscous friction coefficient.
+        coulomb_nm: Coulomb friction magnitude.
+        offset_nm: Constant bias of the effort reading.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    joint: str
+    armature_kgm2: _NonNegative = 0.0
+    viscous_nm_s_per_rad: _NonNegative = 0.0
+    coulomb_nm: _NonNegative = 0.0
+    offset_nm: _Finite = 0.0
+
+
+class ForceObserverSpec(BaseModel):
+    """Dynamics model for the safety kernel's external joint-torque observer (#373).
+
+    A generalized-momentum observer over the collision tree estimates the
+    external torque on every joint from measured position, velocity and
+    effort. The kernel stops the arm when a joint's estimate exceeds its
+    ``SafetyEnvelope.max_external_joint_torque_nm`` ceiling (the collision
+    tier). The model alone enforces nothing: a robot with this block and no
+    ceiling runs the observer for disclosure only
+    (``/openral/safety/external_torque``).
+
+    Attributes:
+        source: Provenance of the numbers (the lowering command and source
+            model), for review.
+        gravity_xyz_m_s2: Gravity in the kinematic root frame.
+        gain_per_s: Observer bandwidth K (1/s): the estimate's time constant
+            is 1/K.
+        coulomb_velocity_rad_s: Velocity scale of the Coulomb ``tanh``.
+        limit_margin_rad: A monitored joint this close to a position limit
+            invalidates the estimate (a hard stop pushes back like a contact).
+        links: One inertial per kinematic-tree link; a link not listed is
+            massless.
+        joints: Per-joint friction; a joint not listed has none.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: str
+    gravity_xyz_m_s2: tuple[_Finite, _Finite, _Finite] = (0.0, 0.0, -9.81)
+    gain_per_s: float = Field(default=50.0, gt=0.0, allow_inf_nan=False)
+    coulomb_velocity_rad_s: float = Field(default=0.05, gt=0.0, allow_inf_nan=False)
+    limit_margin_rad: _NonNegative = 0.02
+    links: list[LinkInertial] = Field(min_length=1)
+    joints: list[JointFriction] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> Self:
+        for label, names in (
+            ("links", [x.link for x in self.links]),
+            ("joints", [x.joint for x in self.joints]),
+        ):
+            dupes = sorted({n for n in names if names.count(n) > 1})
+            if dupes:
+                raise ValueError(f"force_observer.{label} names {dupes} more than once")
+        return self
+
+
 class HalParameters(BaseModel):
     """Per-robot HAL construction defaults declared in the manifest.
 
@@ -2848,6 +2984,8 @@ class RobotDescription(BaseModel):
             kernel. Empty by default.
         allowed_collision_pairs: Link-name pairs excluded from self-collision (from the SRDF
             ``disable_collisions`` block on real robots).
+        force_observer: Optional dynamics model for the kernel's external joint-torque
+            observer (issue #373); see ``ForceObserverSpec``.
         compute_edge: Compute spec for the on-robot accelerator; falls back to ``compute_local``
             when ``None``.
         compute_local: Compute spec for the attached workstation / laptop.
@@ -2931,6 +3069,9 @@ class RobotDescription(BaseModel):
     # follower finger. Moving, but no command channel, so not a ``JointSpec``.
     # See ``MimicJoint``.
     mimic_joints: list[MimicJoint] = Field(default_factory=list)
+    # Issue #373: inertials + friction for the kernel's external-torque
+    # observer, lowered from the robot's MJCF. See ``ForceObserverSpec``.
+    force_observer: ForceObserverSpec | None = None
     # Dashboard overlay — optional base footprint as a list of
     # base-frame ``(x, y)`` vertices in metres (CCW by convention). Used to
     # draw the robot's true outline on the SLAM occupancy grid; ``None``
@@ -2954,7 +3095,8 @@ class RobotDescription(BaseModel):
     #: that carry a schema default. A real robot must declare every one of them
     #: itself: a schema default is a number nobody measured on that rig, and it
     #: would otherwise reach the kernel silently (issue #303 follow-up).
-    #: Declared is not enforced: ``max_force_n`` (issue #373),
+    #: Declared is not enforced: ``max_force_n`` (issue #373 enforces a per-joint
+    #: ``max_external_joint_torque_nm`` instead),
     #: ``max_ee_accel_m_s2`` and ``deadman_required`` are required here as
     #: declarations, but no kernel check consults them (see `SafetyEnvelope`).
     REAL_HARDWARE_SAFETY_FIELDS: ClassVar[tuple[str, ...]] = (
@@ -3293,6 +3435,42 @@ class RobotDescription(BaseModel):
             out.append(wrist)
             wrist = joint_parent[wrist]
         return tuple(out)
+
+    @model_validator(mode="after")
+    def _validate_force_observer(self) -> RobotDescription:
+        """The observer's links and joints, and every torque ceiling, name real ones.
+
+        A ceiling on a joint nothing estimates would be a declared bound that
+        is silently not enforced, so it is refused here, before the kernel.
+        """
+        joint_names = {j.name for j in self.joints}
+        ceilings = set(self.safety.max_external_joint_torque_nm)
+        if unknown := sorted(ceilings - joint_names):
+            raise ValueError(f"safety.max_external_joint_torque_nm names unknown joints {unknown}")
+        if self.force_observer is None:
+            if ceilings:
+                raise ValueError(
+                    "safety.max_external_joint_torque_nm needs force_observer: no model, "
+                    "nothing estimates the torque it bounds"
+                )
+            return self
+        if not self.collision_geometry:
+            raise ValueError(
+                "force_observer needs collision_geometry: the kernel builds the observer's "
+                "kinematic tree from the collision lowering"
+            )
+        tree_links = (
+            {j.parent_link for j in self.joints}
+            | {j.child_link for j in self.joints}
+            | {a.parent_link for a in self.fixed_attachments}
+            | {a.child_link for a in self.fixed_attachments}
+            | {m.child_link for m in self.mimic_joints}
+        )
+        if unknown := sorted({x.link for x in self.force_observer.links} - tree_links):
+            raise ValueError(f"force_observer.links names links outside the tree: {unknown}")
+        if unknown := sorted({x.joint for x in self.force_observer.joints} - joint_names):
+            raise ValueError(f"force_observer.joints names unknown joints {unknown}")
+        return self
 
     @model_validator(mode="after")
     def _validate_base_joints_against_joints(self) -> RobotDescription:
@@ -12974,14 +13152,17 @@ class ForceEvidence(_FailureEvidenceBase):
     Attributes:
         kind: Discriminator (always ``"force"``).
         joint_or_ee: Name of the joint or end-effector that tripped the limit.
-        measured_n: Measured force in newtons.
-        limit_n: Configured ceiling in newtons.
+        measured_n: Measured (or estimated) value, in ``unit``.
+        limit_n: Configured ceiling, in ``unit``.
+        unit: ``"N"`` for a force, ``"Nm"`` for a joint torque — the safety
+            kernel's external-torque observer reports per-joint N·m (#373).
     """
 
     kind: Literal["force"] = "force"
     joint_or_ee: str
     measured_n: float
     limit_n: float = Field(gt=0)
+    unit: Literal["N", "Nm"] = "N"
 
 
 class WorkspaceEvidence(_FailureEvidenceBase):

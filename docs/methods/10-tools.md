@@ -873,6 +873,11 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
 
 Backs `safety.joint_state_staleness_limit_s` in a real manifest — the age past which `read_state` (and the runner's waits) refuse to answer. The number must come from a measurement on the deploy host, not a schema default. Thor 2026-09-23 (Fast-DDS): idle gap p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under GIL starvation latency max 43 ms, no gap above 33 ms → `robots/openarm/robot.yaml` declares 0.1 s (three control periods). The other real manifests are unmeasured and marked provisional (Franka / Sawyer 0.2 s, the real HALs' former constructor default).
 
+### `tools/lower_force_observer.py`
+_Prints a robot's `force_observer:` manifest block lowered from its MJCF (`openral_safety.dynamics_lowering`), for the kernel's external-torque observer (#373). `uv run python tools/lower_force_observer.py robots/openarm/robot.yaml`; `tests/sim/safety/test_force_observer_lowering.py` fails on drift._
+
+- `main(argv=None) -> int` (L39) — CLI: lower one manifest and print the block (numeric lists inline).
+
 ### `tools/force_layer_feasibility.py`
 _Force/contact layer (#373) feasibility tools on the MuJoCo OpenArm v2 right arm, fed only what `/joint_states.effort` carries (`joint_actuator_effort`). Analysis only — not on any control path. `uv run python tools/force_layer_feasibility.py probe --force-n 10` / `load-cell --xy 0.40 -0.20`._
 

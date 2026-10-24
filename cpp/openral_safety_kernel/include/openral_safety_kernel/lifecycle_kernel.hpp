@@ -8,6 +8,7 @@
 
 #include "openral_safety_kernel/collision.hpp"
 #include "openral_safety_kernel/envelope.hpp"
+#include "openral_safety_kernel/force_observer.hpp"
 #include "openral_safety_kernel/otel.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
@@ -146,6 +147,22 @@ private:
   // Load the self-collision model from ROS parameters (configure
   // time; allocation OK). Returns false with `error` set on a malformed model.
   bool load_collision_model(std::string& error);
+
+  // Issue #373 — load the external-torque observer's dynamics model and the
+  // per-joint `joint_external_torque_max` ceilings (configure time; allocation
+  // OK). Needs the collision model, whose kinematic tree it shares. Returns
+  // false with `error` set on a malformed model, or on a ceiling with no model
+  // to enforce it.
+  bool load_force_observer(std::string& error);
+
+  // One observer sample from the message `on_joint_state` just folded in
+  // (`sample_ns` is its header stamp, or the receive time when unstamped).
+  // Resets the estimate when any input is stale or a monitored joint is
+  // inside its limit margin; trips the collision tier otherwise.
+  void run_force_observer(std::int64_t sample_ns);
+
+  // Latch + FailureTrigger(KIND_FORCE) + E-stop for monitored dof `dof`.
+  void trip_force_limit(std::size_t dof, double residual_nm, double limit_nm);
 
   // Publish a FailureTrigger(KIND_COLLISION) carrying CollisionEvidence.
   // `collision_kind` is "self" or "world"; `link_a`/`link_b` name the colliding
@@ -813,10 +830,31 @@ private:
   std::vector<std::uint8_t> dq_meas_seen_;
   std::vector<std::int64_t> dq_meas_stamp_ns_;
   std::vector<std::int64_t> q_meas_src_ns_;  ///< per-dof header stamp of q_meas_ (0 = none)
-  std::vector<int> collision_fk_dofs_;       ///< dof indices FK actually consumes
-  std::vector<int> collision_base_dofs_;     ///< mobile-base dofs zeroed for base-relative FK
-  std::vector<double> q_check_;              ///< velocity-integration accumulator (no alloc)
-  std::vector<double> q_fk_;                 ///< per-config FK input (base zeroed; no alloc)
+  // Issue #373 external-torque observer (collision tier). Off unless the launch
+  // emits `force_observer_enabled` with a model; ceilings are per dof, 0 =
+  // that joint is not monitored. All buffers sized at configure.
+  bool force_observer_enabled_{false};
+  ForceObserverModel force_model_;
+  ForceObserverState force_state_;
+  std::vector<double> joint_external_torque_max_;  ///< per dof (N·m); 0 = unmonitored
+  double force_limit_margin_rad_{0.0};
+  /// Measured effort per dof, and when the last finite reading landed (ns).
+  std::vector<double> tau_meas_;
+  std::vector<std::int64_t> tau_meas_stamp_ns_;
+  /// The reported joint velocity, uncapped: the #349 corroboration clamp on
+  /// `dq_meas_` would put quantisation spikes into the observer's momentum.
+  std::vector<double> dq_raw_;
+  std::int64_t force_last_sample_ns_{0};
+  bool force_estimate_valid_{false};
+  double force_peak_ratio_{0.0};  ///< max |r|/ceiling since the last diagnostics tick
+  std::int64_t force_last_publish_ns_{0};
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr
+      external_torque_pub_;
+  sensor_msgs::msg::JointState external_torque_msg_;
+  std::vector<int> collision_fk_dofs_;    ///< dof indices FK actually consumes
+  std::vector<int> collision_base_dofs_;  ///< mobile-base dofs zeroed for base-relative FK
+  std::vector<double> q_check_;           ///< velocity-integration accumulator (no alloc)
+  std::vector<double> q_fk_;              ///< per-config FK input (base zeroed; no alloc)
   // ADR-0102 slot rows (a JOINT_POSITION chunk whose joint_names leave an FK
   // dof uncommanded): those joints are checked at their measured pose, and
   // again at the target an accepted slot of the SAME tick committed for them.

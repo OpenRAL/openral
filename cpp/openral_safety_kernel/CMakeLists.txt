@@ -71,6 +71,7 @@ add_library(${PROJECT_NAME}
   src/envelope.cpp
   src/validator.cpp
   src/collision.cpp
+  src/force_observer.cpp
   src/lifecycle_kernel.cpp
   src/otel.cpp
 )
@@ -161,6 +162,13 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_collision test/test_collision.cpp)
   target_link_libraries(test_collision ${PROJECT_NAME})
+
+  ament_add_gtest(test_force_observer test/test_force_observer.cpp)
+  target_link_libraries(test_force_observer ${PROJECT_NAME})
+
+  # Node-level #373 cases: real lifecycle kernel + /joint_states, ~3 s.
+  ament_add_gtest(test_force_observer_kernel test/test_force_observer_kernel.cpp TIMEOUT 120)
+  target_link_libraries(test_force_observer_kernel ${PROJECT_NAME})
 
   ament_add_gtest(test_no_alloc test/test_no_alloc.cpp)
   target_link_libraries(test_no_alloc ${PROJECT_NAME})

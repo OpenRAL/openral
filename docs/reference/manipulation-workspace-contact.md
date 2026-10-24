@@ -201,9 +201,10 @@ through it.
 ## 5. What is given up (hazard-log input)
 
 - A person's hand inside the declared tote or shelf slot, touched by the robot's hand at or below
-  `v_contact`, is not stopped by the geometric check. Mitigations to evaluate: the speed bound; a
-  force/current contact layer (`~/workspace/openral-349-notes/contact-layer-and-unknown-space.md`);
-  operator presence rules on the real cell.
+  `v_contact`, is not stopped by the geometric check. Mitigations to evaluate: the speed bound; the
+  force/current collision tier ([`external-torque-observer.md`](external-torque-observer.md), #373 —
+  a per-joint external-torque ceiling that stops the arm whatever the geometry says, with no
+  real-hardware ceiling set yet); operator presence rules on the real cell.
 - Unknown space inside the workspace is treated as free, as everywhere today (record as an
   explicit assumption).
 
@@ -409,7 +410,14 @@ refusing those rows was right, latching on them was not needed while the arm sto
 `safety.workspace_brake ... reason=command_refused refused=<pair>`.
 
 **Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
-Cartesian control modes, the force/current contact layer.
+Cartesian control modes, a force-bounded contact tier.
+
+**Force/current layer (#373):** the collision tier is implemented
+([`external-torque-observer.md`](external-torque-observer.md)): a per-joint external-torque
+ceiling the kernel enforces on every `/joint_states` sample, independent of this rule — a
+tolerated workspace contact that loads a joint past its ceiling still stops. It only adds stops.
+A contact tier (tolerating contact under a measured force) is not built: the real OpenArm's
+effort is the PD law plus stiction and cannot resolve it (that page, §3).
 
 ### 6.x Issue #418 K7 narrowing, and the scenes that keep this rule alone
 
@@ -456,6 +464,9 @@ and a hazard-log row owed.
    is. A commanded jump is bounded by the lead bound, not the speed bound; the lead
    bound limits push force only as far as the arm is joint-PD controlled (a torque/impedance
    controller with other gains, or a gravity-loaded joint, changes the force per metre of lead).
+   With a `max_external_joint_torque_nm` ceiling set (#373), the measured joint torque bounds it
+   too; no real-hardware ceiling is set until the load-cell go/no-go
+   ([`external-torque-observer.md`](external-torque-observer.md) §6).
 4. Unknown space inside the workspace reads as free, as everywhere today (explicit assumption).
 5. Both hands share one max-speed test and one mask: the idle hand entering the declared box while
    slow is exempt too.

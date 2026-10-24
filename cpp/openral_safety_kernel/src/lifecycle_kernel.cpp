@@ -406,6 +406,32 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
                                                     std::vector<std::string>{});
 
+  // Issue #373 — external joint-torque observer (collision tier). Off unless
+  // the launch emits a model (openral_safety.envelope_loader
+  // .collision_params_from_description, from RobotDescription.force_observer).
+  // Per-link arrays are parallel to `collision_parent`; the joint arrays
+  // describe the joint INTO that link. `joint_external_torque_max` is the
+  // envelope's per-dof ceiling (N·m, 0 = not monitored).
+  this->declare_parameter<bool>("force_observer_enabled", false);
+  this->declare_parameter<double>("force_observer_gain_per_s", 50.0);
+  this->declare_parameter<double>("force_observer_coulomb_velocity_rad_s", 0.05);
+  this->declare_parameter<double>("force_observer_limit_margin_rad", 0.02);
+  this->declare_parameter<std::vector<double>>("force_observer_gravity",
+                                               std::vector<double>{0.0, 0.0, -9.81});
+  this->declare_parameter<std::vector<double>>("force_observer_link_mass", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("force_observer_link_com", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("force_observer_link_inertia",
+                                               std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("force_observer_joint_armature",
+                                               std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("force_observer_joint_viscous",
+                                               std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("force_observer_joint_coulomb",
+                                               std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("force_observer_joint_offset",
+                                               std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("joint_external_torque_max", std::vector<double>{});
+
   // Voxel phase — dense occupancy-grid world check (octomap path).
   this->declare_parameter<bool>("world_voxel_enabled", false);
   this->declare_parameter<double>("world_voxel_margin_m", 0.0);
@@ -657,6 +683,11 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   std::string coll_err;
   if (!load_collision_model(coll_err)) {
     RCLCPP_ERROR(this->get_logger(), "self-collision model load failed: %s", coll_err.c_str());
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
+  if (!load_force_observer(coll_err)) {
+    RCLCPP_ERROR(this->get_logger(), "force observer load failed: %s", coll_err.c_str());
     envelope_loaded_ = false;
     return CallbackReturn::FAILURE;
   }
@@ -1230,7 +1261,8 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
 
   // Subscribe /joint_states only when a geometric check is enabled
   // and the joint-name map is plumbed (otherwise there is nothing to seed).
-  if ((self_collision_enabled_ || world_voxel_enabled_ || attached_collision_enabled_) &&
+  if ((self_collision_enabled_ || world_voxel_enabled_ || attached_collision_enabled_ ||
+       force_observer_enabled_) &&
       !collision_joint_names_.empty()) {
     rclcpp::QoS js_qos(rclcpp::KeepLast(1));
     js_qos.best_effort();
@@ -1266,6 +1298,16 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     attachment_ack_qos.transient_local();
     attachment_applied_pub_ = this->create_publisher<std_msgs::msg::UInt64>(
         "/openral/attachment_state_applied", attachment_ack_qos);
+  }
+
+  if (force_observer_enabled_) {
+    // Disclosure, not a gate: the estimate the collision tier judges, for
+    // calibration (#373 load-cell go/no-go) and incident review. Sensor QoS.
+    rclcpp::QoS ext_qos(rclcpp::KeepLast(5));
+    ext_qos.best_effort();
+    ext_qos.durability_volatile();
+    external_torque_pub_ = this->create_publisher<sensor_msgs::msg::JointState>(
+        "/openral/safety/external_torque", ext_qos);
   }
 
   estop_reset_srv_ = this->create_service<std_srvs::srv::Trigger>(
@@ -1326,6 +1368,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   voxel_sub_.reset();
   world_state_sub_.reset();
   joint_state_sub_.reset();
+  external_torque_pub_.reset();
   q_meas_received_ = false;
   safe_pub_.reset();
   estop_pub_.reset();
@@ -2850,6 +2893,14 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
         v = std::clamp(v, -rate, rate);
       }
       q_meas_src_ns_[d] = src_ns > 0 ? src_ns : 0;
+      if (force_observer_enabled_) {
+        // `effort=[]` means "not measured" (#388), never a row of zeros.
+        dq_raw_[d] = has_v ? msg->velocity[i] : 0.0;
+        if (i < msg->effort.size() && std::isfinite(msg->effort[i])) {
+          tau_meas_[d] = msg->effort[i];
+          tau_meas_stamp_ns_[d] = now_ns;
+        }
+      }
       q_meas_[d] = msg->position[i];
       q_meas_seen_[d] = true;
       dq_meas_[d] = v;
@@ -2859,6 +2910,9 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
   }
   q_meas_received_ = true;
   q_meas_stamp_ = this->now();
+  if (force_observer_enabled_) {
+    run_force_observer(src_ns > 0 ? src_ns : now_ns);
+  }
 }
 
 bool SafetyKernelLifecycleNode::measured_velocity_fresh(std::int64_t now_ns) const noexcept {
@@ -2890,6 +2944,245 @@ bool SafetyKernelLifecycleNode::measured_state_fresh() const noexcept {
     }
   }
   return true;
+}
+
+bool SafetyKernelLifecycleNode::load_force_observer(std::string& error) {
+  // Reset to the disabled state so a re-configure can never leak a stale model.
+  force_observer_enabled_ = false;
+  force_model_ = ForceObserverModel{};
+  force_state_ = ForceObserverState{};
+  force_estimate_valid_ = false;
+  force_last_sample_ns_ = 0;
+  force_peak_ratio_ = 0.0;
+  const std::size_t ndof = envelope_.n_dof;
+  joint_external_torque_max_ = this->get_parameter("joint_external_torque_max").as_double_array();
+  if (!joint_external_torque_max_.empty() && joint_external_torque_max_.size() != ndof) {
+    error = "joint_external_torque_max has " + std::to_string(joint_external_torque_max_.size()) +
+            " entries for n_dof=" + std::to_string(ndof);
+    return false;
+  }
+  std::size_t n_monitored = 0;
+  for (const double v : joint_external_torque_max_) {
+    if (!std::isfinite(v) || v < 0.0) {
+      error = "joint_external_torque_max entries must be finite and >= 0 (0 = not monitored)";
+      return false;
+    }
+    n_monitored += v > 0.0 ? 1 : 0;
+  }
+  joint_external_torque_max_.resize(ndof, 0.0);
+  if (!this->get_parameter("force_observer_enabled").as_bool()) {
+    if (n_monitored > 0) {
+      // A declared ceiling that nothing enforces is the failure mode this
+      // layer exists to remove (CLAUDE.md §1.4): refuse it.
+      error = "joint_external_torque_max sets a ceiling but force_observer_enabled is false, "
+              "so nothing would enforce it";
+      return false;
+    }
+    return true;
+  }
+  if (!self_collision_enabled_ || collision_model_.n_links == 0) {
+    error = "force_observer_enabled needs the self-collision kinematic tree "
+            "(self_collision_enabled with a model)";
+    return false;
+  }
+  if (!this->get_parameter("collision_base_dofs").as_integer_array().empty()) {
+    error = "force_observer_enabled with collision_base_dofs: the observer models a fixed "
+            "root, so a mobile base's own dynamics would read as external torque";
+    return false;
+  }
+  const auto names = this->get_parameter("collision_joint_names").as_string_array();
+  if (names.size() < ndof) {
+    error = "force_observer_enabled needs collision_joint_names for every dof";
+    return false;
+  }
+  const std::size_t n = collision_model_.n_links;
+  const auto mass = this->get_parameter("force_observer_link_mass").as_double_array();
+  const auto com = this->get_parameter("force_observer_link_com").as_double_array();
+  const auto inertia = this->get_parameter("force_observer_link_inertia").as_double_array();
+  const auto armature = this->get_parameter("force_observer_joint_armature").as_double_array();
+  const auto viscous = this->get_parameter("force_observer_joint_viscous").as_double_array();
+  const auto coulomb = this->get_parameter("force_observer_joint_coulomb").as_double_array();
+  const auto offset = this->get_parameter("force_observer_joint_offset").as_double_array();
+  const auto gravity = this->get_parameter("force_observer_gravity").as_double_array();
+  if (mass.size() != n || com.size() != 3 * n || inertia.size() != 6 * n || armature.size() != n ||
+      viscous.size() != n || coulomb.size() != n || offset.size() != n || gravity.size() != 3) {
+    error = "force_observer link/joint arrays must be parallel to the " + std::to_string(n) +
+            " collision links (mass n, com 3n, inertia 6n, joint terms n) and gravity 3";
+    return false;
+  }
+  const auto all_finite = [](const std::vector<double>& v) {
+    return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });
+  };
+  if (!all_finite(mass) || !all_finite(com) || !all_finite(inertia) || !all_finite(armature) ||
+      !all_finite(viscous) || !all_finite(coulomb) || !all_finite(offset) || !all_finite(gravity)) {
+    error = "force_observer model has a non-finite entry";
+    return false;
+  }
+  force_model_.links.assign(n, LinkInertial{});
+  force_model_.joints.assign(n, JointFrictionModel{});
+  for (std::size_t i = 0; i < n; ++i) {
+    // Inertia arrives as (ixx, iyy, izz, ixy, ixz, iyz) about the COM.
+    const double* t = &inertia[6 * i];
+    if (mass[i] < 0.0 || t[0] < 0.0 || t[1] < 0.0 || t[2] < 0.0 || armature[i] < 0.0 ||
+        viscous[i] < 0.0 || coulomb[i] < 0.0) {
+      error = "force_observer link " + std::to_string(i) +
+              " has a negative mass, principal inertia, armature, viscous or Coulomb term";
+      return false;
+    }
+    LinkInertial& body = force_model_.links[i];
+    body.mass = mass[i];
+    body.com = Vec3{com[3 * i], com[3 * i + 1], com[3 * i + 2]};
+    const double tensor[9] = {t[0], t[3], t[4], t[3], t[1], t[5], t[4], t[5], t[2]};
+    std::copy(std::begin(tensor), std::end(tensor), std::begin(body.inertia));
+    force_model_.joints[i] = JointFrictionModel{armature[i], viscous[i], coulomb[i], offset[i]};
+  }
+  force_model_.gravity = Vec3{gravity[0], gravity[1], gravity[2]};
+  force_model_.gain_per_s = this->get_parameter("force_observer_gain_per_s").as_double();
+  force_model_.coulomb_velocity_rad_s =
+      this->get_parameter("force_observer_coulomb_velocity_rad_s").as_double();
+  force_limit_margin_rad_ = this->get_parameter("force_observer_limit_margin_rad").as_double();
+  if (!(std::isfinite(force_model_.gain_per_s) && force_model_.gain_per_s > 0.0) ||
+      !(std::isfinite(force_model_.coulomb_velocity_rad_s) &&
+        force_model_.coulomb_velocity_rad_s > 0.0) ||
+      !(std::isfinite(force_limit_margin_rad_) && force_limit_margin_rad_ >= 0.0)) {
+    error = "force_observer_gain_per_s and force_observer_coulomb_velocity_rad_s must be > 0, "
+            "force_observer_limit_margin_rad >= 0";
+    return false;
+  }
+  init_force_observer(collision_model_, ndof, force_state_);
+  for (std::size_t d = 0; d < ndof; ++d) {
+    if (joint_external_torque_max_[d] > 0.0 && force_state_.dof_link[d] < 0) {
+      error = "joint_external_torque_max monitors dof " + std::to_string(d) + " (" + names[d] +
+              "), which no joint of the kinematic tree drives";
+      return false;
+    }
+  }
+  tau_meas_.assign(ndof, 0.0);
+  tau_meas_stamp_ns_.assign(ndof, 0);
+  dq_raw_.assign(ndof, 0.0);
+  external_torque_msg_ = sensor_msgs::msg::JointState{};
+  external_torque_msg_.name.assign(names.begin(),
+                                   names.begin() + static_cast<std::ptrdiff_t>(ndof));
+  external_torque_msg_.effort.assign(ndof, 0.0);
+  force_observer_enabled_ = true;
+  RCLCPP_WARN(this->get_logger(),
+              "safety.force_observer armed (#373, Safety-WG review pending): %zu of %zu dofs "
+              "monitored, K=%g/s, limit margin %g rad. Collision tier only: an invalid "
+              "estimate stops nothing and relaxes nothing",
+              n_monitored, ndof, force_model_.gain_per_s, force_limit_margin_rad_);
+  return true;
+}
+
+void SafetyKernelLifecycleNode::run_force_observer(std::int64_t sample_ns) {
+  const std::size_t ndof = envelope_.n_dof;
+  const std::int64_t now_ns = this->now().nanoseconds();
+  const double deadline_ns = collision_state_deadline_s_ * 1e9;
+  const auto stale = [&](std::int64_t stamp_ns) {
+    const std::int64_t age_ns = now_ns - stamp_ns;
+    return stamp_ns == 0 || age_ns < 0 || static_cast<double>(age_ns) > deadline_ns;
+  };
+  // Validity gate. The dynamics couple every column the tree moves, so each
+  // needs a fresh position and velocity; a monitored column also needs a fresh
+  // effort and must sit outside its limit margin (a hard stop pushes back like
+  // an external torque). Anything else resets the estimate: an invalid
+  // estimate never trips and never tolerates anything — the geometric checks
+  // carry on exactly as without this layer.
+  bool valid = true;
+  for (const int d : collision_fk_dofs_) {
+    const auto i = static_cast<std::size_t>(d);
+    if (!q_meas_seen_[i] || dq_meas_seen_[i] == 0 || stale(dq_meas_stamp_ns_[i])) {
+      valid = false;
+    }
+  }
+  for (std::size_t d = 0; d < ndof && valid; ++d) {
+    if (joint_external_torque_max_[d] <= 0.0) {
+      continue;
+    }
+    const bool near_limit =
+        d < envelope_.joint_position_min.size() && d < envelope_.joint_position_max.size() &&
+        (q_meas_[d] < envelope_.joint_position_min[d] + force_limit_margin_rad_ ||
+         q_meas_[d] > envelope_.joint_position_max[d] - force_limit_margin_rad_);
+    if (stale(tau_meas_stamp_ns_[d]) || near_limit) {
+      valid = false;
+    }
+  }
+  if (!valid) {
+    reset_force_observer(force_state_);
+    force_last_sample_ns_ = 0;
+    force_estimate_valid_ = false;
+    return;
+  }
+  double dt_s = collision_state_deadline_s_;  // seed sample: any positive value
+  if (force_last_sample_ns_ != 0) {
+    if (sample_ns <= force_last_sample_ns_) {
+      return;  // a repeated or reordered stamp carries no new interval
+    }
+    dt_s = static_cast<double>(sample_ns - force_last_sample_ns_) * 1e-9;
+    if (dt_s > collision_state_deadline_s_) {
+      reset_force_observer(force_state_);  // a gap: Ṁ and ṗ over it mean nothing
+    }
+  }
+  force_last_sample_ns_ = sample_ns;
+  if (!force_observer_update(collision_model_, force_model_, q_meas_.data(), dq_raw_.data(),
+                             tau_meas_.data(), dt_s, force_state_)) {
+    force_last_sample_ns_ = 0;
+    force_estimate_valid_ = false;
+    return;
+  }
+  force_estimate_valid_ = true;
+  const bool can_trip = !fault_latch_ && estop_pub_ != nullptr && estop_pub_->is_activated();
+  for (std::size_t d = 0; d < ndof; ++d) {
+    const double limit = joint_external_torque_max_[d];
+    if (limit <= 0.0) {
+      continue;
+    }
+    const double residual = force_state_.residual[d];
+    force_peak_ratio_ = std::max(force_peak_ratio_, std::abs(residual) / limit);
+    if (can_trip && std::abs(residual) > limit) {
+      trip_force_limit(d, residual, limit);
+      break;
+    }
+  }
+  constexpr std::int64_t kExternalTorquePublishPeriodNs = 20'000'000;  // 50 Hz
+  if (external_torque_pub_ != nullptr && external_torque_pub_->is_activated() &&
+      now_ns - force_last_publish_ns_ >= kExternalTorquePublishPeriodNs) {
+    force_last_publish_ns_ = now_ns;
+    external_torque_msg_.header.stamp =
+        rclcpp::Time(sample_ns, this->get_clock()->get_clock_type());
+    std::copy(force_state_.residual.begin(), force_state_.residual.end(),
+              external_torque_msg_.effort.begin());
+    external_torque_pub_->publish(external_torque_msg_);
+  }
+}
+
+void SafetyKernelLifecycleNode::trip_force_limit(std::size_t dof, double residual_nm,
+                                                 double limit_nm) {
+  const std::string& joint = external_torque_msg_.name[dof];
+  last_drop_reason_ = "force";
+  fault_latch_ = true;
+  last_estop_at_ = std::chrono::steady_clock::now();
+  clear_workspace_commands();
+
+  openral_msgs::msg::FailureTrigger trigger;
+  trigger.header.stamp = this->now();
+  trigger.kind = openral_msgs::msg::FailureTrigger::KIND_FORCE;
+  trigger.severity = openral_msgs::msg::FailureTrigger::SEVERITY_ABORT;
+  trigger.rskill_id = envelope_.rskill_id;
+  // Shape matches openral_core.ForceEvidence; a joint torque, hence unit "Nm".
+  std::ostringstream oss;
+  oss << std::setprecision(std::numeric_limits<double>::max_digits10);
+  oss << R"({"kind":"force","joint_or_ee":")" << json_escape(joint) << R"(","measured_n":)"
+      << residual_nm << R"(,"limit_n":)" << limit_nm << R"(,"unit":"Nm"})";
+  trigger.evidence_json = oss.str();
+  failure_pub_->publish(trigger);
+  set_safety_status(true, openral_msgs::msg::SafetyStatus::KIND_FORCE,
+                    "external joint torque over joint_external_torque_max", envelope_.rskill_id,
+                    kNoCorrelationId);
+  std_msgs::msg::Empty estop_msg;
+  estop_pub_->publish(estop_msg);
+  RCLCPP_ERROR(this->get_logger(),
+               "safety.force_limit joint=%s external_torque_nm=%g limit_nm=%g rskill_id=%s",
+               joint.c_str(), residual_nm, limit_nm, envelope_.rskill_id.c_str());
 }
 
 void SafetyKernelLifecycleNode::on_external_estop(const std_msgs::msg::Empty::SharedPtr /*msg*/) {
@@ -2933,6 +3226,11 @@ void SafetyKernelLifecycleNode::on_estop_reset(
   fault_latch_ = false;
   last_drop_reason_.clear();
   clear_workspace_commands();
+  // #373: start the external-torque estimate from scratch. A contact that is
+  // still there ramps back up within a few observer time constants and trips
+  // again; the residual that latched is not carried across the reset.
+  reset_force_observer(force_state_);
+  force_last_sample_ns_ = 0;
   // ADR-0096 clear transition — the durable value must follow recovery, or a
   // late-joining consumer would read a cleared kernel as still latched.
   set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE,
@@ -2992,6 +3290,11 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
     grasp_region_state = grasp_region_refusal_reason_ + ":" + grasp_region_refusal_target_;
   }
   add_kv("grasp_region", grasp_region_state);
+  if (force_observer_enabled_) {
+    add_kv("force_observer", force_estimate_valid_ ? "valid" : "invalid");
+    add_kv("force_peak_ratio", std::to_string(force_peak_ratio_));
+    force_peak_ratio_ = 0.0;
+  }
   arr.status.push_back(status);
   diagnostics_pub_->publish(arr);
   // ADR-0096 / HZ-0096-1 mitigation 2 — refresh the latched status at the

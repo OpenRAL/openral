@@ -611,6 +611,77 @@
       "title": "FixedAttachment",
       "type": "object"
     },
+    "ForceObserverSpec": {
+      "additionalProperties": false,
+      "description": "Dynamics model for the safety kernel's external joint-torque observer (#373).\n\nA generalized-momentum observer over the collision tree estimates the\nexternal torque on every joint from measured position, velocity and\neffort. The kernel stops the arm when a joint's estimate exceeds its\n``SafetyEnvelope.max_external_joint_torque_nm`` ceiling (the collision\ntier). The model alone enforces nothing: a robot with this block and no\nceiling runs the observer for disclosure only\n(``/openral/safety/external_torque``).\n\nAttributes:\n    source: Provenance of the numbers (the lowering command and source\n        model), for review.\n    gravity_xyz_m_s2: Gravity in the kinematic root frame.\n    gain_per_s: Observer bandwidth K (1/s): the estimate's time constant\n        is 1/K.\n    coulomb_velocity_rad_s: Velocity scale of the Coulomb ``tanh``.\n    limit_margin_rad: A monitored joint this close to a position limit\n        invalidates the estimate (a hard stop pushes back like a contact).\n    links: One inertial per kinematic-tree link; a link not listed is\n        massless.\n    joints: Per-joint friction; a joint not listed has none.",
+      "properties": {
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "gravity_xyz_m_s2": {
+          "default": [
+            0.0,
+            0.0,
+            -9.81
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Gravity Xyz M S2",
+          "type": "array"
+        },
+        "gain_per_s": {
+          "default": 50.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Gain Per S",
+          "type": "number"
+        },
+        "coulomb_velocity_rad_s": {
+          "default": 0.05,
+          "exclusiveMinimum": 0.0,
+          "title": "Coulomb Velocity Rad S",
+          "type": "number"
+        },
+        "limit_margin_rad": {
+          "default": 0.02,
+          "minimum": 0.0,
+          "title": "Limit Margin Rad",
+          "type": "number"
+        },
+        "links": {
+          "items": {
+            "$ref": "#/$defs/LinkInertial"
+          },
+          "minItems": 1,
+          "title": "Links",
+          "type": "array"
+        },
+        "joints": {
+          "items": {
+            "$ref": "#/$defs/JointFriction"
+          },
+          "title": "Joints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source",
+        "links"
+      ],
+      "title": "ForceObserverSpec",
+      "type": "object"
+    },
     "GripperClosureCalibration": {
       "additionalProperties": false,
       "description": "How a ``role: gripper`` joint's *position* reads \"closed on an object\".\n\nThe position-stall grasp trigger (``openral_hal._grasp_trigger``) needs no effort\nchannel: a jaw commanded toward closed that settles short of the command by more than\nits empty-close error is stalled on something. These are the numbers that turn that into\nthresholds, in the joint's own position units: robot-type constants of the gripper\nmechanism, declared in the robot manifest and derived from teleop data; not per cell\n(CLAUDE.md \u00a71.2: cited measurements, never a library default).\n\nAttributes:\n    closed_position: The commanded position of a fully closed jaw. Must be an end of the\n        joint's ``position_limits``: \"closer to closed\" is read as the distance to it.\n    closed_rest_offset: How far from ``closed_position`` the jaw rests when it closes on\n        nothing (mechanical stop, servo deadband). Measured from teleop data.\n    stall_gap: How much further from closed than the command (beyond\n        ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.\n        Also (halved) the hysteresis for slip / release / re-seat, and the close-command\n        band when ``close_band`` is unset.\n    settle_tolerance: Largest position span over the trigger's settle window for the jaw\n        to count as stationary. A few position-encoder LSBs.\n    close_band: How far from ``closed_position`` a command may be and still count as a\n        close command, the band ATTACH reads. ``None`` (the default) is ``stall_gap``,\n        the behaviour before this field existed. A gripper whose policy grasps with a\n        partly open command (the SO-101's SmolVLA holds an orange commanded at ~0.20 of\n        its travel) needs a wider band than its stall threshold.\n\nExample:\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0,\n    ...     closed_rest_offset=0.0086,\n    ...     stall_gap=0.08,\n    ...     settle_tolerance=0.001,\n    ... ).stall_gap\n    0.08\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0, stall_gap=0.02, settle_tolerance=0.01, close_band=0.25\n    ... ).command_band\n    0.25\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0, stall_gap=0.08, settle_tolerance=0.001\n    ... ).command_band\n    0.08",
@@ -809,6 +880,44 @@
         "cy"
       ],
       "title": "IntrinsicsPinhole",
+      "type": "object"
+    },
+    "JointFriction": {
+      "additionalProperties": false,
+      "description": "Rotor + friction model of one joint, for the external-torque observer.\n\nThe observer subtracts ``offset_nm + coulomb_nm\u00b7tanh(q\u0307/v_c) + viscous\u00b7q\u0307``\nfrom the measured effort and adds ``armature`` to the joint-space inertia.\nAnything left over reads as external torque, so an unmodelled term here is\na false contact (issue #373 step-2: stiction alone is \u00b10.6-0.8 N\u00b7m at the\nOpenArm's J4).\n\nAttributes:\n    joint: ``JointSpec.name``.\n    armature_kgm2: Reflected rotor inertia (kg\u00b7m\u00b2, or kg for a prismatic joint).\n    viscous_nm_s_per_rad: Viscous friction coefficient.\n    coulomb_nm: Coulomb friction magnitude.\n    offset_nm: Constant bias of the effort reading.",
+      "properties": {
+        "joint": {
+          "title": "Joint",
+          "type": "string"
+        },
+        "armature_kgm2": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Armature Kgm2",
+          "type": "number"
+        },
+        "viscous_nm_s_per_rad": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Viscous Nm S Per Rad",
+          "type": "number"
+        },
+        "coulomb_nm": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Coulomb Nm",
+          "type": "number"
+        },
+        "offset_nm": {
+          "default": 0.0,
+          "title": "Offset Nm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "joint"
+      ],
+      "title": "JointFriction",
       "type": "object"
     },
     "JointSpec": {
@@ -1146,6 +1255,86 @@
       "title": "LinkCollisionGeometry",
       "type": "object"
     },
+    "LinkInertial": {
+      "additionalProperties": false,
+      "description": "Rigid-body inertial of one kinematic-tree link, in that link's frame.\n\nFeeds the safety kernel's external-torque observer (issue #373). The frame\nis the manifest's own link frame \u2014 the one ``joints`` /\n``fixed_attachments`` / ``mimic_joints`` pose \u2014 so a source body whose\nframe differs is re-expressed by the lowering\n(``openral_safety.dynamics_lowering``), never copied raw. Bodies of the\nsource model that no manifest link names (a welded camera mount) are\nfolded into the link they hang from.\n\nAttributes:\n    link: Manifest link name (a ``joints`` / ``fixed_attachments`` /\n        ``mimic_joints`` endpoint).\n    mass_kg: Mass (kg).\n    com_xyz_m: Centre of mass in the link frame (m).\n    inertia_kgm2: Inertia tensor about the COM in link-frame axes,\n        ``(ixx, iyy, izz, ixy, ixz, iyz)`` (kg\u00b7m\u00b2).\n\nExample:\n    >>> LinkInertial(\n    ...     link=\"upper\",\n    ...     mass_kg=1.3,\n    ...     com_xyz_m=(0.2, 0.0, 0.0),\n    ...     inertia_kgm2=(0.01, 0.011, 0.01, 0.0, 0.0, 0.0),\n    ... ).mass_kg\n    1.3",
+      "properties": {
+        "link": {
+          "title": "Link",
+          "type": "string"
+        },
+        "mass_kg": {
+          "minimum": 0.0,
+          "title": "Mass Kg",
+          "type": "number"
+        },
+        "com_xyz_m": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Com Xyz M",
+          "type": "array"
+        },
+        "inertia_kgm2": {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 6,
+          "minItems": 6,
+          "prefixItems": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Inertia Kgm2",
+          "type": "array"
+        }
+      },
+      "required": [
+        "link",
+        "mass_kg"
+      ],
+      "title": "LinkInertial",
+      "type": "object"
+    },
     "MimicJoint": {
       "additionalProperties": false,
       "description": "A link posed by another joint's value: ``q = multiplier * q[mimics] + offset``.\n\nThe URDF ``<mimic>`` / MuJoCo joint-equality relation, for a link that\nmoves but has **no command channel of its own** \u2014 the OpenArm's second\n(follower) finger, driven through the first by the gripper's linkage.\n``RobotDescription.joints`` is consumed unfiltered as the action width,\nthe sim ``qpos`` map and the runner's permutation, so a follower cannot be\na ``JointSpec``; and a ``FixedAttachment`` cannot move. This is the third\nedge kind of the collision tree, and nothing else: no limits, no sensor,\nno DoF, invisible to every ``joints`` consumer. The safety kernel poses\n``child_link`` rigidly at the mimicked value every check\n(``JointKind::kMimicRevolute`` / ``kMimicPrismatic``), so the follower\nfinger is checked at the opening the gripper is commanded to, like every\nother link, instead of swept over its whole stroke\n(``docs/reference/finger-mimic-geometry.md``).\n\nEvery geometric value comes from the robot's real URDF/MJCF (``openral\ncollision lower`` re-injects ``origin_*`` / ``axis_xyz`` from the MJCF and\nrefuses a ``multiplier`` / ``offset`` the MJCF equality disagrees with).\nNever hand-estimate one.\n\nAttributes:\n    name: Joint name, matching the source URDF ``<joint>`` where one exists.\n    parent_link: The link this joint hangs from.\n    child_link: The link it poses. Defined by no other edge.\n    mimics: The ``JointSpec`` (by ``name``) whose value drives this one.\n    multiplier: ``q = multiplier * q[mimics] + offset``; finite, non-zero.\n    offset: Same relation; finite, in the joint's own unit.\n    joint_type: ``revolute`` (or ``continuous``) or ``prismatic``.\n    axis_xyz: This joint's own axis in its frame (the source model's, not\n        the leader's: the OpenArm follower's axis is the leader's negated\n        in the URDF, the same with ``multiplier = -1``; the MJCF spells it\n        as the same axis with ``multiplier = 1``).\n    origin_xyz: Translation (metres) of the joint frame in ``parent_link``.\n    origin_rpy: Orientation ``(roll, pitch, yaw)``, radians, same frame.\n    sim_joint_name: The MJCF joint this is, when the twin spells it\n        differently (the OpenArm's ``openarm_left_finger_joint2``).\n\nExample:\n    >>> m = MimicJoint(\n    ...     name=\"openarm_left_finger_joint2\",\n    ...     parent_link=\"openarm_left_link7\",\n    ...     child_link=\"openarm_left_finger_follower\",\n    ...     mimics=\"left_gripper\",\n    ...     multiplier=1.0,\n    ...     axis_xyz=(1.0, 0.0, 0.0),\n    ...     origin_xyz=(-0.00143, 0.018, -0.068),\n    ... )\n    >>> m.value_at(0.5)\n    0.5",
@@ -1421,7 +1610,7 @@
       "type": "object"
     },
     "SafetyEnvelope": {
-      "description": "Safety constraints handed to the C++ safety kernel.\n\nNot every field is enforced yet. Several are **declared, not yet enforced\nby the kernel**: ``max_force_n`` (issue #373), ``max_ee_accel_m_s2`` and\n``deadman_required`` are passed to the kernel as ROS parameters but no check\nconsults them, and ``no_go_zones``, ``e_stop_topic``, ``e_stop_qos``,\n``cycle_time_violation_threshold_ms``\nand ``human_in_loop_required`` are not read by any runtime component.\nEach attribute below says which case it is in.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m). The\n        kernel checks it only against CARTESIAN_POSE chunk positions.\n    workspace_box_max_xyz: Upper corner of allowed workspace (m). Same\n        scope as ``workspace_box_min_xyz``.\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n        **Declared, not yet enforced**: not passed to the kernel and\n        not read by any runtime component.\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also the C++ safety kernel's CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter, but no check compares an acceleration against it.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Declared maximum contact force in Newtons. **Not\n        enforced yet**: it is validated here and passed to the C++\n        safety kernel as a parameter, but no check compares any\n        measured or estimated force against it (issue #373).\n    max_torque_nm: Maximum joint torque in Nm. The kernel caps\n        JOINT_TORQUE chunks at ``min(joint.torque_limit, this)``.\n    deadman_required: Whether a deadman switch is required.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter but never consulted. The deploy launch starts the\n        deadman watchdog unconditionally, whatever this says.\n    e_stop_topic: ROS 2 topic for E-stop commands. **Declared, not\n        read**: the kernel latches on its hardcoded ``/openral/estop``\n        topic.\n    e_stop_qos: QoS profile for E-stop topic. **Declared, not read.**\n    contact_force_threshold_n: Robot ceiling on the additive place-force\n        refusal: the kernel uses the smaller of this and the live place\n        declaration's positive threshold. Requires a fresh calibrated\n        payload-to-target witness; not a general contact monitor or a\n        permission to make contact.\n    cycle_time_violation_threshold_ms: Control cycle time violation\n        threshold. **Declared, not read** by any runtime component.\n    human_in_loop_required: rSkill names requiring human supervision.\n        **Declared, not read** by any runtime component.\n    max_cartesian_step_m: Per-control-mode bound the C++ safety\n        kernel enforces \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean, after\n        ``cartesian_delta_scale``). ``None`` means \"no per-mode\n        check declared, skip\". It is a norm, so a controller with a\n        per-axis output limit ``a`` needs at least ``a\u00b7\u221a3`` here or\n        in-distribution diagonal moves E-stop.\n    max_cartesian_step_rad: Per-control-mode kernel bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it. Must be\n        finite and > 0 (``inf`` would disable the kernel bound).\n    max_base_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Approach speed (rad/s) of every\n        non-prismatic joint on the skill runner's ramp from the live pose to\n        a skill's ``starting_pose``. Declared per robot, never derived: a\n        rated ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). The runner caps each\n        joint at ``min(this, joint.velocity_limit)``. ``None`` = undeclared;\n        a real robot with a non-prismatic joint must declare it.\n    starting_pose_tolerance_rad: Per-joint distance (rad) within which a\n        non-prismatic joint counts as at its starting pose, both for the\n        ramp and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot with a non-prismatic joint must declare it.\n    starting_pose_max_joint_speed_m_s: The same approach speed for\n        **prismatic** joints, in m/s (a gripper's 0.041 m stroke is not\n        comparable to a radian). Also capped by ``joint.velocity_limit``.\n        A real robot with a prismatic joint must declare it.\n    starting_pose_tolerance_m: The per-joint arrival tolerance for\n        prismatic joints, in m. A real robot with a prismatic joint must\n        declare it.\n    joint_state_staleness_limit_s: Age (s) past which a joint-state\n        reading is refused as stale \u2014 by the real HAL's ``read_state``\n        (``ROSPerceptionStale``) and by the skill runner's blocking waits.\n        The one place a rig declares it: ``build_hal`` threads it into the\n        HAL and ``deploy_e2e.launch.py`` into the runner in real mode.\n        Must come from a measurement on the deploy host\n        (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;\n        a real robot must declare it.",
+      "description": "Safety constraints handed to the C++ safety kernel.\n\nNot every field is enforced yet. Several are **declared, not yet enforced\nby the kernel**: ``max_force_n`` (the enforced contact bound is per joint,\n``max_external_joint_torque_nm``, issue #373), ``max_ee_accel_m_s2`` and\n``deadman_required`` are passed to the kernel as ROS parameters but no check\nconsults them, and ``no_go_zones``, ``e_stop_topic``, ``e_stop_qos``,\n``cycle_time_violation_threshold_ms``\nand ``human_in_loop_required`` are not read by any runtime component.\nEach attribute below says which case it is in.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m). The\n        kernel checks it only against CARTESIAN_POSE chunk positions.\n    workspace_box_max_xyz: Upper corner of allowed workspace (m). Same\n        scope as ``workspace_box_min_xyz``.\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n        **Declared, not yet enforced**: not passed to the kernel and\n        not read by any runtime component.\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also the C++ safety kernel's CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter, but no check compares an acceleration against it.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Declared maximum contact force in Newtons. **Not\n        enforced**: it is validated here and passed to the C++ safety\n        kernel as a parameter, but no check compares a force against it.\n        The enforced contact bound is per joint,\n        ``max_external_joint_torque_nm`` (issue #373).\n    max_torque_nm: Maximum joint torque in Nm. The kernel caps\n        JOINT_TORQUE chunks at ``min(joint.torque_limit, this)``.\n    deadman_required: Whether a deadman switch is required.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter but never consulted. The deploy launch starts the\n        deadman watchdog unconditionally, whatever this says.\n    e_stop_topic: ROS 2 topic for E-stop commands. **Declared, not\n        read**: the kernel latches on its hardcoded ``/openral/estop``\n        topic.\n    e_stop_qos: QoS profile for E-stop topic. **Declared, not read.**\n    contact_force_threshold_n: Robot ceiling on the additive place-force\n        refusal: the kernel uses the smaller of this and the live place\n        declaration's positive threshold. Requires a fresh calibrated\n        payload-to-target witness; not a general contact monitor or a\n        permission to make contact.\n    cycle_time_violation_threshold_ms: Control cycle time violation\n        threshold. **Declared, not read** by any runtime component.\n    human_in_loop_required: rSkill names requiring human supervision.\n        **Declared, not read** by any runtime component.\n    max_cartesian_step_m: Per-control-mode bound the C++ safety\n        kernel enforces \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean, after\n        ``cartesian_delta_scale``). ``None`` means \"no per-mode\n        check declared, skip\". It is a norm, so a controller with a\n        per-axis output limit ``a`` needs at least ``a\u00b7\u221a3`` here or\n        in-distribution diagonal moves E-stop.\n    max_cartesian_step_rad: Per-control-mode kernel bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it. Must be\n        finite and > 0 (``inf`` would disable the kernel bound).\n    max_base_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Approach speed (rad/s) of every\n        non-prismatic joint on the skill runner's ramp from the live pose to\n        a skill's ``starting_pose``. Declared per robot, never derived: a\n        rated ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). The runner caps each\n        joint at ``min(this, joint.velocity_limit)``. ``None`` = undeclared;\n        a real robot with a non-prismatic joint must declare it.\n    starting_pose_tolerance_rad: Per-joint distance (rad) within which a\n        non-prismatic joint counts as at its starting pose, both for the\n        ramp and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot with a non-prismatic joint must declare it.\n    starting_pose_max_joint_speed_m_s: The same approach speed for\n        **prismatic** joints, in m/s (a gripper's 0.041 m stroke is not\n        comparable to a radian). Also capped by ``joint.velocity_limit``.\n        A real robot with a prismatic joint must declare it.\n    starting_pose_tolerance_m: The per-joint arrival tolerance for\n        prismatic joints, in m. A real robot with a prismatic joint must\n        declare it.\n    joint_state_staleness_limit_s: Age (s) past which a joint-state\n        reading is refused as stale \u2014 by the real HAL's ``read_state``\n        (``ROSPerceptionStale``) and by the skill runner's blocking waits.\n        The one place a rig declares it: ``build_hal`` threads it into the\n        HAL and ``deploy_e2e.launch.py`` into the runner in real mode.\n        Must come from a measurement on the deploy host\n        (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;\n        a real robot must declare it.\n    max_external_joint_torque_nm: Per-joint ceiling (N\u00b7m, ``JointSpec.name``\n        \u2192 value) on the external torque the kernel's momentum observer\n        estimates (issue #373 collision tier): over it, the kernel latches\n        an E-stop with ``KIND_FORCE``. A joint not listed is not monitored;\n        empty (the default) turns the tier off. Requires\n        ``RobotDescription.force_observer``. A deploy scene or rSkill may\n        add joints or lower values, never raise or drop one. Per joint, not\n        a hand force: near a singularity ``pinv(J\u1d40)`` turns the OpenArm's\n        no-contact residual into 45-100 N (#373 step-2), so a hand-force\n        bound cannot be judged there.",
       "properties": {
         "workspace_box_min_xyz": {
           "anyOf": [
@@ -1670,6 +1859,14 @@
           ],
           "default": null,
           "title": "Joint State Staleness Limit S"
+        },
+        "max_external_joint_torque_nm": {
+          "additionalProperties": {
+            "exclusiveMinimum": 0.0,
+            "type": "number"
+          },
+          "title": "Max External Joint Torque Nm",
+          "type": "object"
         }
       },
       "title": "SafetyEnvelope",
@@ -2559,7 +2756,7 @@
       "type": "object"
     }
   },
-  "description": "Top-level robot manifest \u2014 one per robot, published to HuggingFace Hub.\n\nAttributes:\n    name: Robot name, e.g. \"so100_follower\".\n    embodiment_kind: Top-level kinematic class.\n    assets: Unified URDF / MJCF / SRDF reference block\n        (``openral_core.assets.resolve_asset`` grammar). Empty by default.\n    base_frame: Base link tf2 frame name.\n    odom_frame: Odometry tf2 frame name.\n    map_frame: Map tf2 frame name.\n    joints: List of joint specifications.\n    end_effectors: List of end-effector specifications.\n    sensors: List of individual sensor specs.\n    sensor_bundles: List of multi-modal sensor bundles.\n    capabilities: Capability flags for skill matching.\n    safety: Safety envelope constraints.\n    ros2_namespace: ROS 2 namespace prefix.\n    middleware: ROS 2 middleware selection.\n    onboard_compute: Onboard compute descriptors.\n    sdk_kind: Whether the SDK is open or closed.\n    hal: Simulation + real-hardware HAL import strings (``deploy sim`` uses ``hal.sim``,\n        ``deploy run`` uses ``hal.real``).\n    observation_spec: VLA observation configuration.\n    action_spec: VLA action configuration.\n    sim: Optional MuJoCo wiring for ``openral_hal.MujocoArmHAL``; lets the HAL build\n        entirely from the manifest.\n    scene_defaults: Optional per-robot scene rendering defaults (``TopCameraDefaults``).\n    base_joints: Optional ordered ``[forward, side, yaw]`` ``JointSpec.name`` refs for a\n        planar mobile base; ``None`` for fixed-base manipulators.\n    collision_geometry: Per-link convex collision primitives (capsules / spheres) for the safety\n        kernel. Empty by default.\n    allowed_collision_pairs: Link-name pairs excluded from self-collision (from the SRDF\n        ``disable_collisions`` block on real robots).\n    compute_edge: Compute spec for the on-robot accelerator; falls back to ``compute_local``\n        when ``None``.\n    compute_local: Compute spec for the attached workstation / laptop.\n    compute_cloud: Optional remote compute endpoint (SSH or HTTPS).\n    schema_version: On-disk schema version; only ``\"0.2\"`` loads. Any other\n        version (including ``\"0.1\"``) is refused with a ``ROSConfigError``.\n\nExample:\n    >>> desc = RobotDescription(\n    ...     name=\"smoke_robot\",\n    ...     embodiment_kind=EmbodimentKind.MANIPULATOR,\n    ...     joints=[\n    ...         JointSpec(\n    ...             name=\"j1\",\n    ...             joint_type=JointType.REVOLUTE,\n    ...             parent_link=\"base_link\",\n    ...             child_link=\"link_1\",\n    ...         )\n    ...     ],\n    ...     capabilities=RobotCapabilities(\n    ...         supported_control_modes=[ControlMode.JOINT_POSITION],\n    ...         embodiment_tags=[\"smoke\"],\n    ...     ),\n    ...     safety=SafetyEnvelope(),\n    ... )\n    >>> assert desc.name == \"smoke_robot\"",
+  "description": "Top-level robot manifest \u2014 one per robot, published to HuggingFace Hub.\n\nAttributes:\n    name: Robot name, e.g. \"so100_follower\".\n    embodiment_kind: Top-level kinematic class.\n    assets: Unified URDF / MJCF / SRDF reference block\n        (``openral_core.assets.resolve_asset`` grammar). Empty by default.\n    base_frame: Base link tf2 frame name.\n    odom_frame: Odometry tf2 frame name.\n    map_frame: Map tf2 frame name.\n    joints: List of joint specifications.\n    end_effectors: List of end-effector specifications.\n    sensors: List of individual sensor specs.\n    sensor_bundles: List of multi-modal sensor bundles.\n    capabilities: Capability flags for skill matching.\n    safety: Safety envelope constraints.\n    ros2_namespace: ROS 2 namespace prefix.\n    middleware: ROS 2 middleware selection.\n    onboard_compute: Onboard compute descriptors.\n    sdk_kind: Whether the SDK is open or closed.\n    hal: Simulation + real-hardware HAL import strings (``deploy sim`` uses ``hal.sim``,\n        ``deploy run`` uses ``hal.real``).\n    observation_spec: VLA observation configuration.\n    action_spec: VLA action configuration.\n    sim: Optional MuJoCo wiring for ``openral_hal.MujocoArmHAL``; lets the HAL build\n        entirely from the manifest.\n    scene_defaults: Optional per-robot scene rendering defaults (``TopCameraDefaults``).\n    base_joints: Optional ordered ``[forward, side, yaw]`` ``JointSpec.name`` refs for a\n        planar mobile base; ``None`` for fixed-base manipulators.\n    collision_geometry: Per-link convex collision primitives (capsules / spheres) for the safety\n        kernel. Empty by default.\n    allowed_collision_pairs: Link-name pairs excluded from self-collision (from the SRDF\n        ``disable_collisions`` block on real robots).\n    force_observer: Optional dynamics model for the kernel's external joint-torque\n        observer (issue #373); see ``ForceObserverSpec``.\n    compute_edge: Compute spec for the on-robot accelerator; falls back to ``compute_local``\n        when ``None``.\n    compute_local: Compute spec for the attached workstation / laptop.\n    compute_cloud: Optional remote compute endpoint (SSH or HTTPS).\n    schema_version: On-disk schema version; only ``\"0.2\"`` loads. Any other\n        version (including ``\"0.1\"``) is refused with a ``ROSConfigError``.\n\nExample:\n    >>> desc = RobotDescription(\n    ...     name=\"smoke_robot\",\n    ...     embodiment_kind=EmbodimentKind.MANIPULATOR,\n    ...     joints=[\n    ...         JointSpec(\n    ...             name=\"j1\",\n    ...             joint_type=JointType.REVOLUTE,\n    ...             parent_link=\"base_link\",\n    ...             child_link=\"link_1\",\n    ...         )\n    ...     ],\n    ...     capabilities=RobotCapabilities(\n    ...         supported_control_modes=[ControlMode.JOINT_POSITION],\n    ...         embodiment_tags=[\"smoke\"],\n    ...     ),\n    ...     safety=SafetyEnvelope(),\n    ... )\n    >>> assert desc.name == \"smoke_robot\"",
   "properties": {
     "name": {
       "title": "Name",
@@ -2780,6 +2977,17 @@
       },
       "title": "Mimic Joints",
       "type": "array"
+    },
+    "force_observer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ForceObserverSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "footprint_polygon": {
       "anyOf": [
