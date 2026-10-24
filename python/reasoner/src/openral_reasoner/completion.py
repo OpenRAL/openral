@@ -395,11 +395,13 @@ class CompletionTrigger:
         return reason
 
 
-def tiled_jpeg(images: list[tuple[bytes, int, int, str]]) -> bytes:
+def tiled_jpeg(images: list[tuple[bytes, int, int, str]], *, flip_180: bool = False) -> bytes:
     """Raw camera images ``(data, height, width, encoding)`` side by side as one JPEG.
 
     Each is scaled to the first one's height, left to right in order: one image a
-    single-image VLM call (``describe_image``) can judge every view from.
+    single-image VLM call (``describe_image``) can judge every view from. ``flip_180``
+    rotates every view upright first (``image_msg_to_jpeg``: LIBERO/MuJoCo publish
+    bottom-up, the host's ``OPENRAL_DASHBOARD_FLIP_180``).
 
     Example:
         >>> import io
@@ -413,7 +415,9 @@ def tiled_jpeg(images: list[tuple[bytes, int, int, str]]) -> bytes:
 
     tiles = [
         Image.open(
-            io.BytesIO(image_msg_to_jpeg(data=data, height=h, width=w, encoding=enc))
+            io.BytesIO(
+                image_msg_to_jpeg(data=data, height=h, width=w, encoding=enc, flip_180=flip_180)
+            )
         ).convert("RGB")
         for data, h, w, enc in images
     ]

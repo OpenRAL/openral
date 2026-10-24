@@ -16,6 +16,9 @@ non-improving observations. A **success** fires the first time
 ``score >= threshold`` per streak, waking the reasoner as soon as an attempt is
 likely done rather than waiting for a subsequent stall.
 
+A ``critic_id`` ending in ``#success`` (the reward monitor's success head, the
+completion check's trigger) is not watched: it is flat near 0 until the task is done.
+
 One watchdog per ``critic_id``: several reward models share
 ``/openral/failure/critic`` and each fires independently, no producer-side
 config needed to onboard a new model.
@@ -93,6 +96,11 @@ class CriticProducerNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node
 
     def _on_score(self, msg: Any) -> None:
         """Route one CriticScore through the group; publish on a stall or success."""
+        if str(msg.critic_id).endswith("#success"):
+            # The reward monitor's success head: the completion check's trigger, not a
+            # progress signal. Flat near 0 for most of a goal, it would "stall" and cancel
+            # a skill whose progress head is still climbing (#421 review).
+            return
         evidence = self._group.observe(
             critic_id=msg.critic_id,
             score=float(msg.score),

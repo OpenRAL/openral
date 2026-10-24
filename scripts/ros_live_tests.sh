@@ -34,6 +34,10 @@ TARGETS=(
     tests/integration/test_reasoner_palette_primes_vram_gate.py
     tests/integration/test_reasoner_palette_preserves_detector_coverage.py
     tests/integration/test_critic_producer_node.py
+    # The scene-VLM node ends the sidecar its warm-up spawned (fake sidecar, no GPU).
+    tests/integration/test_scene_vlm_node_teardown_live.py
+    # A completion check that raises does not end the check worker thread.
+    tests/integration/test_completion_check_worker_live.py
     # Declaration-scoped place-approach allowance against the real
     # safety_kernel_node; needs the colcon kernel binary + openral_msgs
     # overlay, which only this image has.

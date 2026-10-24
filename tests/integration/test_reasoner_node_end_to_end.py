@@ -151,6 +151,47 @@ def test_startup_prompt_waits_for_the_reasoner_not_any_subscriber() -> None:
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_discovered_but_unmatched_reasoner_does_not_release_the_startup_prompt() -> None:
+    """Graph discovery is not the publisher's match (#421 review): a sample published
+    in between is dropped under VOLATILE. A reasoner subscription that can never match
+    (it asks TRANSIENT_LOCAL of a VOLATILE publisher) is in the graph but not matched."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_msgs.msg import PromptStamped
+    from openral_prompt_router import PromptRouterNode
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    rclpy.init()
+    try:
+        router = PromptRouterNode()
+        router.trigger_configure()
+        reasoner = rclpy.create_node("openral_reasoner")
+        unmatchable = QoSProfile(
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        reasoner.create_subscription(PromptStamped, "/openral/prompt", lambda _m: None, unmatchable)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not router.get_subscriptions_info_by_topic(
+            "/openral/prompt"
+        ):
+            time.sleep(0.05)
+        time.sleep(0.5)
+        discovered = [
+            i.node_name for i in router.get_subscriptions_info_by_topic("/openral/prompt")
+        ]
+        released = router._reasoner_subscribed()
+        for node in (reasoner, router):
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert discovered == ["openral_reasoner"]
+    assert not released
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_reasoner_node_emits_prompt_on_canned_response() -> None:
     """Reasoner with FakeToolUseClient → EmitPromptTool → /openral/prompt."""
     rclpy = pytest.importorskip("rclpy")

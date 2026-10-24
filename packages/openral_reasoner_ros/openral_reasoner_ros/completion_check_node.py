@@ -46,6 +46,8 @@ Parameters:
     query_timeout_s (float): wall seconds per service call. Default 90.0 (the scene VLM
         thinks before it answers: ~29 s a question on a GB10).
     judge (str): ``scene_vlm`` (default) or ``reasoner``.
+    flip_180 (bool): rotate the ``reasoner`` judge's frames 180 deg (LIBERO/MuJoCo publish
+        bottom-up; the launch mirrors ``OPENRAL_DASHBOARD_FLIP_180``). Default False.
 """
 
 from __future__ import annotations
@@ -87,6 +89,7 @@ class CompletionCheckNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Nod
         self.declare_parameter("settle_s", 0.5)
         self.declare_parameter("query_timeout_s", 90.0)
         self.declare_parameter("judge", "scene_vlm")
+        self.declare_parameter("flip_180", False)
         gp = self.get_parameter
         self._trigger = CompletionTrigger(
             success_threshold=gp("success_threshold").get_parameter_value().double_value,
@@ -97,6 +100,7 @@ class CompletionCheckNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Nod
         self._settle_s = gp("settle_s").get_parameter_value().double_value
         self._timeout_s = gp("query_timeout_s").get_parameter_value().double_value
         self._judge = gp("judge").get_parameter_value().string_value
+        self._flip_180 = gp("flip_180").get_parameter_value().bool_value
         if self._judge not in ("scene_vlm", "reasoner"):
             from openral_core.exceptions import ROSConfigError
 
@@ -233,6 +237,10 @@ class CompletionCheckNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Nod
             reason, task = self._jobs.get()
             try:
                 self._check(reason, task)
+            except Exception as exc:  # reason: one failed check must not end the worker
+                # A failed service future re-raises in _call; uncaught, it ended the thread
+                # and every later trigger was dropped silently (#421 review).
+                self.get_logger().error(f"completion_check {reason}: check failed: {exc!r}")
             finally:
                 self._busy.clear()
 
@@ -278,7 +286,10 @@ class CompletionCheckNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Nod
             f"right: {', '.join(self._cameras)}. " + _question(task)
         )
         try:
-            jpeg = tiled_jpeg([(bytes(f.data), f.height, f.width, f.encoding) for f in frames])
+            jpeg = tiled_jpeg(
+                [(bytes(f.data), f.height, f.width, f.encoding) for f in frames],
+                flip_180=self._flip_180,
+            )
             answers.append(self._llm.describe_image(image_jpeg=jpeg, question=question))
         except Exception as exc:  # reason: provider / transport failures resume the task
             self.get_logger().warning(f"completion_check: reasoner judge failed: {exc}")

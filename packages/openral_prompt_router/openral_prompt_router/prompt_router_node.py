@@ -237,11 +237,20 @@ class PromptRouterNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy un
         )
 
     def _reasoner_subscribed(self) -> bool:
-        """Whether the reasoner's own ``/openral/prompt`` subscription has been discovered."""
+        """Whether the reasoner's ``/openral/prompt`` subscription is discovered AND matched.
+
+        The graph (node names) and this publisher's endpoint matching are discovered
+        separately; a sample published between the two is dropped under VOLATILE. The
+        publisher only exposes a matched COUNT, so every discovered subscription must be
+        matched, the reasoner's among them (#421 review). A subscriber with incompatible
+        QoS never matches: the wait then ends on its timeout, with the warning.
+        """
+        if self._pub is None:
+            return False
+        subs = self.get_subscriptions_info_by_topic("/openral/prompt")
         return any(
-            info.node_name == _REASONER_NODE_NAME
-            for info in self.get_subscriptions_info_by_topic("/openral/prompt")
-        )
+            info.node_name == _REASONER_NODE_NAME for info in subs
+        ) and self._pub.get_subscription_count() >= len(subs)
 
     # ── public helpers for tests ───────────────────────────────────────────
 
