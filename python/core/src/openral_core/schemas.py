@@ -3963,7 +3963,8 @@ class ObjectQuery(BaseModel):
         hand: Gripper joint name, a hint for the policy/reasoner only.
         seed: Optional search hint (sim-derived or scene graph) in the grid frame or a
             fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.
-        min_instances: CONFIRMED instances that make the query ``RESOLVED``.
+        min_instances: CONFIRMED instances that make the query ``RESOLVED``; at most
+            ``TrackedObjectSet.MAX_OBJECTS``, the most the tracker can hold.
         synonyms: Other names for the same class, sent with ``label`` to an
             open-vocabulary locator as one class list (``"box, carton"``); empty = the
             label alone. Additive (#418), never geometry.
@@ -3990,6 +3991,13 @@ class ObjectQuery(BaseModel):
             raise ValueError("ObjectQuery.seed.geometry must be empty; a seed is a search hint.")
         if self.count == "one" and self.min_instances != 1:
             raise ValueError("ObjectQuery with count='one' resolves on exactly one instance.")
+        if self.min_instances > TrackedObjectSet.MAX_OBJECTS:
+            # More CONFIRMED instances than the tracker can hold never resolves; the
+            # goal would end EXHAUSTED and read as "object not found".
+            raise ValueError(
+                f"ObjectQuery.min_instances {self.min_instances} exceeds the tracker's "
+                f"{TrackedObjectSet.MAX_OBJECTS}-object capacity; it could never resolve."
+            )
         return self
 
     @classmethod

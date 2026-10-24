@@ -470,3 +470,10 @@ def test_world_state_relay_round_trips_with_and_without_a_tracker() -> None:
         }
     )
     _round_trip(WorldState.model_validate(with_set.model_dump()))
+
+
+def test_a_query_needing_more_instances_than_the_tracker_holds_is_refused() -> None:
+    cap = TrackedObjectSet.MAX_OBJECTS
+    ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET, min_instances=cap)
+    with pytest.raises(ValidationError, match="capacity"):
+        ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET, min_instances=cap + 1)
