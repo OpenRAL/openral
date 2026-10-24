@@ -140,6 +140,9 @@ ament_export_targets(export_${PROJECT_NAME})
 ament_export_dependencies(
   rclcpp rclcpp_lifecycle lifecycle_msgs std_msgs std_srvs
   diagnostic_msgs openral_msgs opentelemetry-cpp pluginlib
+  # opentelemetry-cpp's exported proto target links protobuf::libprotobuf, which its config
+  # does not find: a downstream find_package(openral_safety_kernel) needs Protobuf found first.
+  Protobuf
 )
 
 # ── Tests ────────────────────────────────────────────────────────────────────

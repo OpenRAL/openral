@@ -826,8 +826,8 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
   return lower > fallback ? lower : fallback;
 }
 
-double hull_hull_distance(const TightPose& a, const TightPose& b, double margin, double fallback,
-                          bool* depth_is_box_bound) noexcept {
+double hull_hull_distance(const TightPose& a, const TightPose& b, double /*margin*/,
+                          double fallback, bool* depth_is_box_bound) noexcept {
   if (depth_is_box_bound != nullptr) {
     *depth_is_box_bound = false;
   }
