@@ -171,6 +171,44 @@ def test_tracking_without_a_locator_or_seed_refuses_to_configure() -> None:
 def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
         _argv(_PICK_ORANGE, "sim", {"grounding_wait_s": None})
+    with pytest.raises(ROSConfigError, match="grounding_wait_s"):
+        _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow", "grounding_wait_s": None})
+
+
+def test_a_shadow_override_does_not_inherit_the_scenes_grounding_required() -> None:
+    """Shadow changes no decision: the scene's committed `grounding_required: true` (for `on`)
+    must not make the runner refuse goals under `--runtime object_tracking=shadow`."""
+    scene = DeployScene.from_yaml(str(_PICK_ORANGE))
+    assert scene.runtime is not None and scene.runtime.grounding_required is True
+    argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})
+    assert "object_tracking:=shadow" in argv
+    assert "grounding_required:=false" in argv
+    # The scene's own posture and a bind override keep it.
+    assert "grounding_required:=true" in _argv(_PICK_ORANGE, "sim", {})
+    assert "grounding_required:=true" in _argv(_PICK_ORANGE, "sim", {"object_tracking": "bind"})
+
+
+@pytest.mark.parametrize(
+    "path",
+    [_PICK_ORANGE, _REPO / "scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml"],
+)
+def test_the_isaac_twins_commit_a_locator_for_their_unseeded_target(path: Path) -> None:
+    """Their header command runs as written: the TARGET query has no seed, so without a
+    committed locator `deploy sim` refuses to configure."""
+    task = {
+        _PICK_ORANGE: "Grab orange and place into plate",
+    }.get(path, "pick up the banana and place it in the bowl")
+    argv = resolve_launch_invocation(
+        config=path,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_mode="sim",
+        initial_task_prompt=task,
+    ).argv_template
+    assert any(a.startswith("object_queries_json:=") for a in argv)
+    (locators,) = [a for a in argv if a.startswith("object_detector_locators:=")]
+    assert locators.endswith("rskills/omdet-turbo-locator/rskill.yaml")
 
 
 @pytest.mark.parametrize("mode", ["bind", "on"])

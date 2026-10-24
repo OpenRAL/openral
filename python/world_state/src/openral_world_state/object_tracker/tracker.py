@@ -887,7 +887,7 @@ class ObjectTracker:
             fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
         floor = support_z + grid.resolution
         if oid is None:
-            track = self._mint_track(req, fit, support_z, floor, cells, frame, grid)
+            track = self._mint_track(req, fit, cells, frame, grid, support_z=support_z, floor=floor)
             if track is None:
                 return None
         else:
@@ -896,10 +896,20 @@ class ObjectTracker:
             if old.status is TrackStatus.BOUND:
                 return self._measure_bound(old, fit, frame)
             moved = self._moved(old, fit, grid)
-            if self._refit_refused(old, fit, cells, centroid, support_z, grid, hands, frame, moved):
+            if self._refuse_refit(old, fit, cells, centroid, support_z, grid, hands, frame, moved):
                 return None
             track, fit = self._refit_track(
-                old, kind, req.camera, fit, cells, support_z, floor, frame, grid, hands, moved
+                old,
+                kind,
+                req.camera,
+                fit,
+                cells,
+                frame,
+                grid,
+                hands,
+                moved,
+                support_z=support_z,
+                floor=floor,
             )
         self._commit_fit(track, fit, cells, centroid, grid, grid_stamp_ns, hands, frame)
         return None
@@ -942,11 +952,12 @@ class ObjectTracker:
         self,
         req: TrackerRequest,
         fit: ContainingFit,
-        support_z: float,
-        floor: float,
         cells: frozenset[Cell],
         frame: CameraFrame,
         grid: VoxelLattice,
+        *,
+        support_z: float,
+        floor: float,
     ) -> TrackedObject | None:
         """A new track for an unassociated fit of a standing query; ``None`` without one."""
         q = self.queries.get(*req.query_key) if req.query_key else None
@@ -1032,7 +1043,7 @@ class ObjectTracker:
             )
         return moved
 
-    def _refit_refused(
+    def _refuse_refit(
         self,
         old: TrackedObject,
         fit: ContainingFit,
@@ -1044,7 +1055,11 @@ class ObjectTracker:
         frame: CameraFrame,
         moved: bool,
     ) -> bool:
-        """Whether an unbound track keeps its geometry against this refit (each gate logs)."""
+        """Keep an unbound track's geometry against this refit; whether it was refused.
+
+        Not a pure check: a refused refit still refreshes the track's evidence (and a
+        provisional one re-dates it in the store). Each gate logs.
+        """
         oid = old.object_id
         if old.status is TrackStatus.OCCLUDED and not moved:
             self._refresh_evidence(oid, cells)
@@ -1103,12 +1118,13 @@ class ObjectTracker:
         camera: str,
         fit: ContainingFit,
         cells: frozenset[Cell],
-        support_z: float,
-        floor: float,
         frame: CameraFrame,
         grid: VoxelLattice,
         hands: Sequence[PlaceRegion],
         moved: bool,
+        *,
+        support_z: float,
+        floor: float,
     ) -> tuple[TrackedObject, ContainingFit]:
         """``old`` refitted (views combined, a touched box kept), stored; and the fit used."""
         oid = old.object_id

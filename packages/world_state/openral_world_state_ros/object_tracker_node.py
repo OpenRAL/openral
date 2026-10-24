@@ -554,6 +554,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._pub_attach: Any = None
             self._segment: Any = None
             self._locate: Any = None
+            # The one service call in flight: (client, future), see `_drop_abandoned`.
+            self._pending_call: tuple[Any, Any] | None = None
             self._tf_buffer: Any = None
             self._tf_listener: Any = None
             self._aliases: dict[str, str] = {}
@@ -783,6 +785,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             for pub in (self._pub_tracked, self._pub_attach):
                 if pub is not None:
                     self.destroy_publisher(pub)
+            self._drop_abandoned()
             for cli in (self._segment, self._locate):
                 if cli is not None:
                     self.destroy_client(cli)
@@ -1015,6 +1018,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             optical_frame: str,
             stamp_msg: Any,
         ) -> None:
+            self._drop_abandoned()
             if frame.stamp_ns <= 0 and req.service in _STAMP_MISSING:
                 self._refuse_request(
                     req, frame, optical_frame, stamp_msg, _STAMP_MISSING[req.service]
@@ -1035,6 +1039,23 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self._issue_locate(req, frame, optical_frame, stamp_msg)
             else:
                 self._issue_segment(req, frame, optical_frame, stamp_msg)
+
+        def _drop_abandoned(self) -> None:
+            """Forget the previous service call if it never answered.
+
+            The scheduler keeps one request in flight and issues the next only once that
+            slot is free: answered (its future done) or abandoned past
+            ``segment_budget_wall_s``. An abandoned call's future still sits in its client's
+            pending table, holding its done callback and the ``CameraFrame`` it closes over,
+            and a late reply would feed a request the scheduler already dropped; removing it
+            frees both. Called before every issue and at cleanup.
+            """
+            pending, self._pending_call = self._pending_call, None
+            if pending is None or pending[1].done():
+                return
+            client, future = pending
+            client.remove_pending_request(future)
+            slog.warning("object_tracker.request_abandoned_dropped")
 
         def _refuse_request(
             self,
@@ -1070,6 +1091,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())
             lreq.min_score = float(req.min_score)
             future = self._locate.call_async(lreq)
+            self._pending_call = (self._locate, future)
 
             def done_locate(f: Any) -> None:
                 try:
@@ -1155,6 +1177,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 sreq.box_xyxy = [float(v) for v in req.box_xyxy]
             try:
                 future = self._segment.call_async(sreq)
+                self._pending_call = (self._segment, future)
             except Exception as exc:
                 self._refuse_request(
                     req,

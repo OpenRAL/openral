@@ -245,6 +245,9 @@ class _GripperLeg:
             re-measured region or a later pick's (its own ``approach:<link>:<n>``
             identity) may be taken.
         pending: Whether this leg is holding the ack barrier.
+        tracker_baseline: #418 ``bind`` / ``on``: the tracker's newest attachment revision
+            when this leg's ATTACH began holding the barrier (``None``: none seen yet); a
+            revision above it releases the hold.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
         release: The payload this leg released and still publishes, frozen in
@@ -290,6 +293,7 @@ class _GripperLeg:
     close_region: tuple[tuple[Any, ...], Any] | None = None
     close_jaw_q: float | None = None
     close_still_ticks: int = 0
+    tracker_baseline: int | None = None
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -1166,9 +1170,11 @@ class VisionAttachmentConfig:
         publish_attachment_state: Publish ``/openral/attachment_state``. ``False`` when
             the #418 object tracker owns that topic (``object_tracking: bind | on``): the
             bridge is then only the grasp trigger feeding ``/openral/grasp_events`` (what
-            the tracker binds from). No ``SegmentInView`` call, no ack barrier, no grasp- or
-            place-target leg, no depth / voxel subscription and no heartbeat — everything
-            those produce would only feed the topic it no longer publishes.
+            the tracker binds from). No ``SegmentInView`` call, no grasp- or place-target
+            leg, no depth / voxel subscription and no heartbeat — everything those produce
+            would only feed the topic it no longer publishes. The ack barrier stays: an
+            ATTACH holds the action ack until the tracker's next ``attachment_state``
+            revision, at most ``deadline_s``.
     """
 
     camera: str = ""
@@ -1489,6 +1495,10 @@ class VisionAttachmentBridge:
         self._kept_clouds: deque[tuple[int, str, Any]] = deque(maxlen=8)
         self._kept_cloud_sub: Any = None
         self._grasp_event_pub: Any = None
+        # #418 bind / on: the tracker's /openral/attachment_state, read only for the ack
+        # barrier (the newest revision seen, None before the first).
+        self._tracker_state_sub: Any = None
+        self._tracker_revision: int | None = None
         self._camera_info_sub: Any = None
         self._logged_depth_frame = False
         self._client: Any = None
@@ -1567,10 +1577,23 @@ class VisionAttachmentBridge:
             ),
         )
         if not self._config.publish_attachment_state:
+            # The ack barrier still holds an ATTACH until the tracker's next revision (its
+            # binding of this hold) is on the latched topic the kernel reads.
+            self._tracker_state_sub = self._node.create_subscription(
+                AttachmentState,
+                "/openral/attachment_state",
+                self._on_tracker_attachment_state,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                    depth=1,
+                ),
+            )
             self._node.get_logger().info(
                 f"vision attachment bridge: grasp trigger only for {list(self.gripper_joint_names)}"
                 f" -> {_GRASP_EVENTS_TOPIC} (the #418 object tracker owns "
-                "/openral/attachment_state and segments on its own)"
+                "/openral/attachment_state and segments on its own; an ATTACH holds the "
+                f"action ack until its next revision, at most {self._config.deadline_s:.3f}s)"
             )
             return
         self._tf_buffer = tf2_ros.Buffer()
@@ -1601,10 +1624,9 @@ class VisionAttachmentBridge:
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
-        if self._config.publish_attachment_state:  # else the #418 tracker owns the topic
-            self._attachment_pub = self._node.create_publisher(
-                AttachmentState, "/openral/attachment_state", state_qos
-            )
+        self._attachment_pub = self._node.create_publisher(
+            AttachmentState, "/openral/attachment_state", state_qos
+        )
         self._client = self._node.create_client(SegmentInView, self._config.service_name)
         # The bridge is rebuilt on every HAL activate, and the aggregator rejects
         # a revision that moves backwards, so a counter restarting at 0 would
@@ -1656,18 +1678,17 @@ class VisionAttachmentBridge:
             self._heartbeat_timer.cancel()
             self._node.destroy_timer(self._heartbeat_timer)
             self._heartbeat_timer = None
-        if self._depth_sub is not None:
-            self._node.destroy_subscription(self._depth_sub)
-            self._depth_sub = None
-        if self._voxel_sub is not None:
-            self._node.destroy_subscription(self._voxel_sub)
-            self._voxel_sub = None
-        if self._camera_info_sub is not None:
-            self._node.destroy_subscription(self._camera_info_sub)
-            self._camera_info_sub = None
-        if self._kept_cloud_sub is not None:
-            self._node.destroy_subscription(self._kept_cloud_sub)
-            self._kept_cloud_sub = None
+        for sub in (
+            self._depth_sub,
+            self._voxel_sub,
+            self._camera_info_sub,
+            self._kept_cloud_sub,
+            self._tracker_state_sub,
+        ):
+            if sub is not None:
+                self._node.destroy_subscription(sub)
+        self._depth_sub = self._voxel_sub = self._camera_info_sub = None
+        self._kept_cloud_sub = self._tracker_state_sub = None
         if self._grasp_event_pub is not None:
             self._node.destroy_publisher(self._grasp_event_pub)
             self._grasp_event_pub = None
@@ -1697,6 +1718,55 @@ class VisionAttachmentBridge:
         exposes, so the node's deferred-ack path treats both identically.
         """
         return not any(leg.pending for leg in self._legs)
+
+    def _hold_for_tracker(self, leg: _GripperLeg, event: GraspEvent) -> None:
+        """#418 ``bind`` / ``on``: hold an ATTACH's ack until the tracker's next revision.
+
+        The tracker binds the hold from the grasp event and publishes the bound payload on
+        ``/openral/attachment_state`` under a new revision; acking the tick before that
+        revision is on the topic would let motion resume with the kernel still checking the
+        pre-grasp set. Bounded exactly as a segmentation is: past ``deadline_s`` the barrier
+        releases with a warning (the kernel keeps whatever the tracker published). A DETACH
+        or a newer event supersedes the wait.
+        """
+        self._supersede(leg)  # the generation the deadline below carries
+        if event is not GraspEvent.ATTACH:
+            if leg.pending:
+                self._release_barrier(leg)
+            return
+        leg.pending = True
+        leg.tracker_baseline = self._tracker_revision
+        generation = leg.generation
+        leg.deadline_timer = self._node.create_timer(
+            self._config.deadline_s, lambda: self._on_tracker_deadline(leg, generation)
+        )
+        self._node.get_logger().info(
+            f"grasp trigger {leg.joint_name}: ATTACH — holding the action ack for the "
+            f"tracker's attachment revision (newer than {leg.tracker_baseline})"
+        )
+
+    @_locked
+    def _on_tracker_deadline(self, leg: _GripperLeg, generation: int) -> None:
+        """Release a tracker wait that overran ``deadline_s``, visibly."""
+        if generation != leg.generation or not leg.pending:
+            return
+        self._cancel_deadline(leg)
+        self._node.get_logger().warning(
+            f"grasp trigger {leg.joint_name}: no tracker attachment revision newer than "
+            f"{leg.tracker_baseline} within {self._config.deadline_s:.3f}s; releasing the "
+            "action ack on the set the kernel already has"
+        )
+        self._release_barrier(leg)
+
+    @_locked
+    def _on_tracker_attachment_state(self, msg: Any) -> None:
+        """Note the tracker's revision; release every ATTACH waiting for a newer one."""
+        revision = int(msg.revision)
+        self._tracker_revision = revision
+        for leg in self._legs:
+            if leg.pending and (leg.tracker_baseline is None or revision > leg.tracker_baseline):
+                self._cancel_deadline(leg)
+                self._release_barrier(leg)
 
     def tf_frame(self, link: str) -> str:
         """The tf2 frame a manifest link is looked up as (``tf_frames``, else itself).
@@ -1751,7 +1821,9 @@ class VisionAttachmentBridge:
                 continue
             self._publish_grasp_event(leg, event, int(state.stamp_ns), held_at)
             if not self._config.publish_attachment_state:
-                continue  # #418 bind/on: the tracker binds from the event; nothing to hold
+                # #418 bind/on: the tracker binds from the event; the ack waits for it.
+                self._hold_for_tracker(leg, event)
+                continue
             if self._supersede(leg):
                 self._node.get_logger().warning(
                     f"grasp trigger {leg.joint_name}: {event.value.upper()} superseded the "

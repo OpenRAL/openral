@@ -188,7 +188,7 @@ target track. The completion check asks its judge only while it is true.
 | Mode | What leaves the node |
 | --- | --- |
 | `shadow` | `/openral/tracked_objects` and the logged predicted bindings (`object_tracker.bound`). The aggregator relays the set on `world_state_fast` and the kernel ingests it (K1, refusals logged), with no decision change: no `TRACKED_OBJECT` binding exists and K2 / K5 are off. Allowed on `deploy run`. |
-| `bind` | Also `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations relayed **without** a region. The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`) and runs only its grasp trigger (`/openral/grasp_events`): no segmentation, no ack barrier, no grasp/place-target leg. Sim-only until Safety-WG review. |
+| `bind` | Also `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations relayed **without** a region. The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`) and runs only its grasp trigger (`/openral/grasp_events`): no segmentation, no grasp/place-target leg; an ATTACH holds the action ack until this node's next attachment revision (at most the leg's `deadline_s`). The octomap bridge clears a `TRACKED_OBJECT` binding's cells by identity (in `on` too); a `PINCH_FALLBACK` hold stays mapped. Sim-only until Safety-WG review. |
 | `on` | As `bind`; the kernel additionally keys grasp exemptions on tracked ids (K2). Sim-only. |
 
 | Parameter | Default | Meaning |

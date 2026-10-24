@@ -4302,13 +4302,15 @@ class GraspDeclaration(BaseModel):
             it from a named ``GraspTargetRef`` (the generic path); unlike
             ``region`` a direct-dispatch scene may also supply it; dispatch passes
             it through unchanged. ``None`` = no search, so the producer never
-            measures a region. **Pending deprecation (issue #418):** setting it
-            emits a ``PendingDeprecationWarning``. ``target_queries`` grounded by
-            the Layer-2 tracker replace it, but it stays the only input of the
-            HAL grasp-target leg while ``DeployRuntime.object_tracking`` is
-            ``off`` (the default, and the only posture ``deploy run`` allows on
-            real hardware). It is removed only after #418 phase 5, with an
-            on-disk ``schema_version`` bump and a migrator.
+            measures a region. **Pending deprecation (issue #418):** a scene
+            setting it gets a ``FutureWarning`` from ``DeployScene.from_yaml``
+            (OpenRAL's own producers set it on every goal and do not warn).
+            ``target_queries`` grounded by the Layer-2 tracker replace it, but it
+            stays the only input of the HAL grasp-target leg while
+            ``DeployRuntime.object_tracking`` is ``off`` or ``shadow`` (the two
+            postures ``deploy run`` allows), and, unless sim ground truth, it
+            seeds the tracker's TARGET query. It is removed only after #418
+            phase 5, with an on-disk ``schema_version`` bump and a migrator.
         workspace_box: Optional manipulation workspace (issue #349,
             ``docs/reference/manipulation-workspace-contact.md``) in the voxel
             grid's base frame, or a fixed tf2 frame like ``search_box`` (the
@@ -4398,15 +4400,6 @@ class GraspDeclaration(BaseModel):
             raise ValueError(
                 "GraspDeclaration.search_box.geometry must be empty; a search box is only "
                 "the oriented box the target producer looks for a seed in."
-            )
-        if self.search_box is not None:
-            warnings.warn(
-                "GraspDeclaration.search_box is pending deprecation (issue #418): the "
-                "Layer-2 object tracker grounds target_queries instead. It still seeds the "
-                "HAL grasp-target leg while DeployRuntime.object_tracking is off, and is "
-                "removed only after #418 phase 5 with a schema migrator.",
-                PendingDeprecationWarning,
-                stacklevel=2,
             )
         self._check_workspace_boxes()
         if self.region is not None:
@@ -11177,10 +11170,11 @@ class VisionAttachmentRuntime(BaseModel):
     the grasped payload on ``/openral/attachment_state``.
 
     **Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload
-    check on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The
-    octomap bridge clears a published payload from the map and the robot self-filter removes it
-    from the cloud regardless of the kernel flag, so a leg without the kernel check would make
-    the payload invisible to every collision check.
+    check on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone: the
+    payload is checked as attached geometry only by the kernel. The leg's payload is
+    geometry-only, so the octomap bridge never clears it from the map (it clears only a #418
+    ``tracked_object`` binding, by identity) and it stays a mapped obstacle the kernel may stop
+    on (fail closed).
 
     Default off. Turning it on for a real cell is a Safety-WG decision (hazard log): the
     grasp trigger is the gripper's *position* stalling short of a close command (the OpenArm
@@ -12357,8 +12351,28 @@ class DeployScene(BaseModel):
 
         Inherited by ``SimScene`` and ``BenchmarkScene``, which
         validate against their own (stricter) schemas via ``cls``.
+
+        A scene whose ``grasp_declaration`` sets ``search_box`` gets a ``FutureWarning``
+        (pending deprecation, issue #418). It is raised here, at the user-facing load, and
+        not by ``GraspDeclaration``'s validator: OpenRAL's own producers (the reasoner's
+        grounding, ``from_idl`` decodes, the HAL leg's re-validation) build declarations
+        with a box on every goal, and a warning escalated to an error there would escape
+        their ``except ValueError`` handling.
         """
-        return _load_yaml_model(cls, path)
+        scene = _load_yaml_model(cls, path)
+        if scene.grasp_declaration is not None and scene.grasp_declaration.search_box is not None:
+            # FutureWarning, as `image_flip_180`'s: scene authors are end users, and Python
+            # hides (Pending)DeprecationWarning outside __main__. stacklevel=2 names the caller.
+            warnings.warn(
+                f"{path}: grasp_declaration.search_box is pending deprecation (issue #418): "
+                "the Layer-2 object tracker grounds target_queries instead. It still seeds the "
+                "HAL grasp-target leg (object_tracking off or shadow, so `deploy run` too) and, "
+                "unless it is sim ground truth, the tracker's TARGET query (shadow, bind, on). "
+                "It is removed only after #418 phase 5, with a schema migrator.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        return scene
 
 
 class SimScene(DeployScene):

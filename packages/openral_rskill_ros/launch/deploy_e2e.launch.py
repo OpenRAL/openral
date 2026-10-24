@@ -2697,10 +2697,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         requested=explained_requested,
     ):
         kernel_params["workspace_explained_cells_enabled"] = True
-        if static_geometry_file:
-            kernel_params["static_points_file"] = _static_points_file(
-                static_geometry_file, _octomap_resolution(hal_mode), kernel_cells=True
-            )
+    # The declared static cells also keep the kernel's payload ownership honest: "a declared
+    # static collider's cell is never the payload". Without them a shelf cell inside the held
+    # box was tolerated as payload with K7 off (Spark R374, `payload_own_armed static_cells=0`).
+    # Only ever removes tolerance, so it follows any consumer, not K7 alone.
+    if static_geometry_file and (
+        kernel_params.get("workspace_explained_cells_enabled")
+        or kernel_params["payload_own_cells_enabled"]
+        or kernel_params["pinch_payload_own_cells_enabled"]
+    ):
+        kernel_params["static_points_file"] = _static_points_file(
+            static_geometry_file, _octomap_resolution(hal_mode), kernel_cells=True
+        )
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
         assert coverage is not None  # reason: computed whenever enable_octomap
         kernel_params = {
@@ -3088,7 +3096,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # After the params file: in bind/on the tracker owns /openral/attachment_state
             # (two publishers on that latched topic would interleave revisions), so the HAL's
             # vision bridge runs only its grasp trigger (/openral/grasp_events): no legs, no
-            # segmentation, no ack barrier.
+            # segmentation; an ATTACH holds the ack until the tracker's next revision.
             *(
                 [{"vision_attachment_publish_attachment_state": False}]
                 if object_tracking in ("bind", "on")
@@ -3238,15 +3246,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
                 > 0.0,
                 # Place mirror (§2.3): a goal-scope place declaration per goal, only when
-                # a producer measures its region — the HAL's place-target leg, or under
-                # `object_tracking: on` the #418 tracker (`TrackerSession.place_region`,
-                # the HAL leg then off). Neither declares on its own (no goal, no allowance).
-                "place_approach_enabled": object_tracking == "on"
-                or (
-                    vision_attachment_enabled
-                    and hal_file_params.get("vision_attachment_enabled") is True
-                    and hal_file_params.get("vision_attachment_place_target_enabled") is True
-                ),
+                # the HAL's place-target leg runs — it attaches its measured region to
+                # that declaration and never declares on its own (no goal, no allowance).
+                # Under `object_tracking: bind | on` that leg is not built, so nothing
+                # measures the region: no declaration. A tracker-measured place allowance
+                # (`TrackerSession.place_region`) awaits Safety-WG review (#418).
+                "place_approach_enabled": object_tracking not in ("bind", "on")
+                and vision_attachment_enabled
+                and hal_file_params.get("vision_attachment_enabled") is True
+                and hal_file_params.get("vision_attachment_place_target_enabled") is True,
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
@@ -4251,6 +4259,22 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # (/openral/perception/segment_in_view). It projects through the driver's live
         # CameraInfo (camera_infos), never the manifest's nominal intrinsics.
         va_camera = LaunchConfiguration("vision_attachment_camera").perform(context)
+        # Each tracked depth camera's registered RGB stream (the #418 tracker's cameras).
+        seg_cameras = {c: camera_topic(c, CameraTopicKind.IMAGE) for c in tracked_cameras}
+        seg_infos = {c: camera_topic(c, CameraTopicKind.CAMERA_INFO) for c in tracked_cameras}
+        # In bind / on the HAL bridge runs only its grasp trigger and never calls the
+        # segmenter, so caching its camera there would decode frames nothing reads.
+        if object_tracking not in ("bind", "on"):
+            seg_cameras = {
+                va_camera: LaunchConfiguration("vision_attachment_rgb_topic").perform(context),
+                **{c: t for c, t in seg_cameras.items() if c != va_camera},
+            }
+            seg_infos = {
+                va_camera: LaunchConfiguration("vision_attachment_rgb_camera_info_topic").perform(
+                    context
+                ),
+                **{c: t for c, t in seg_infos.items() if c != va_camera},
+            }
         segmenter = LifecycleNode(
             package="openral_perception_ros",
             executable="segmenter_node.py",
@@ -4262,28 +4286,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "manifest_path": LaunchConfiguration(
                         "vision_attachment_segmenter_manifest"
                     ).perform(context),
-                    "cameras": [
-                        f"{va_camera}="
-                        + LaunchConfiguration("vision_attachment_rgb_topic").perform(context),
-                        # The tracker's cameras: each depth camera's registered RGB stream.
-                        *(
-                            f"{c}={camera_topic(c, CameraTopicKind.IMAGE)}"
-                            for c in tracked_cameras
-                            if c != va_camera
-                        ),
-                    ],
-                    "camera_infos": [
-                        f"{va_camera}="
-                        + LaunchConfiguration("vision_attachment_rgb_camera_info_topic").perform(
-                            context
-                        ),
-                        *(
-                            f"{c}={camera_topic(c, CameraTopicKind.CAMERA_INFO)}"
-                            for c in tracked_cameras
-                            if c != va_camera
-                        ),
-                    ],
-                    "primary_camera": va_camera,
+                    "cameras": [f"{c}={t}" for c, t in seg_cameras.items()],
+                    "camera_infos": [f"{c}={t}" for c, t in seg_infos.items()],
+                    "primary_camera": next(iter(seg_cameras)),
                     "device": LaunchConfiguration("vision_attachment_segmenter_device").perform(
                         context
                     ),

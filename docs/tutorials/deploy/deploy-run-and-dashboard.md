@@ -517,7 +517,7 @@ shelf](images/collision-view-carry.webp)
    grasp region (`evidence_kind: grasp_target_region`). From now on the kernel checks it
    against the world and the robot as part of the hand. Its cells are **not** removed from
    the voxel map: the octomap bridge clears a held payload only for a `tracked_object`
-   attachment from the #418 object tracker (`runtime.object_tracking: on`, sim-only), so with
+   attachment from the #418 object tracker (`runtime.object_tracking: bind` or `on`, sim-only), so with
    tracking `off` or `shadow` the carton stays a mapped obstacle and the kernel may stop the
    arm on what it holds. That is the decided fail-closed posture
    ([octomap bridge README](https://github.com/OpenRAL/openral/blob/master/packages/openral_octomap_bridge/README.md#attached-objects-and-world-occupancy)).
@@ -584,9 +584,11 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   `grounding_required: true` and `grounding_wait_s` 8 s / 15 s, the values of their
   successful Spark runs, so `--runtime object_tracking=off` is how to run them without
   the tracker. In `bind` / `on` the HAL's vision attachment bridge runs only its grasp
-  trigger (`/openral/grasp_events`, what the tracker binds from): no segmentation, no ack
-  barrier, no grasp- or place-target leg. In `on` the runner also arms its goal-scope
-  place declaration, whose region the tracker measures.
+  trigger (`/openral/grasp_events`, what the tracker binds from): no segmentation and no
+  grasp- or place-target leg, and so no goal-scope place declaration either (a
+  tracker-measured place allowance awaits Safety-WG review). An ATTACH still holds the
+  action ack until the tracker's next `/openral/attachment_state` revision, at most the
+  leg's `deadline_s`.
   `on` also makes the tracked objects the safety kernel's grasp-exemption source
   (`tracked_grasp_exemption_enabled`, issue #418 K2): a finger is exempt only against
   the cells of the one nearest eligible tracked target per hand, cover-checked on the

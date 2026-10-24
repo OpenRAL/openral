@@ -1902,11 +1902,20 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # The launch adds the tracked cameras' robot masks and gates the HAL bridge's
     # attachment_state publisher in bind/on.
     if rt is not None and rt.object_tracking != "off":
+        # `shadow` changes no decision, so it never refuses a goal: a scene's committed
+        # `grounding_required` (the Isaac twins commit `true` for `on`) is not inherited by
+        # a `--runtime object_tracking=shadow` override.
+        grounding_required = rt.grounding_required and rt.object_tracking != "shadow"
+        if rt.grounding_required and not grounding_required:
+            _console.print(
+                "[yellow]object tracking: grounding_required ignored under shadow "
+                "(shadow refuses no goal)[/yellow]"
+            )
         argv_template.extend(
             [
                 f"object_tracking:={rt.object_tracking}",
                 f"grounding_wait_s:={rt.grounding_wait_s}",
-                f"grounding_required:={str(rt.grounding_required).lower()}",
+                f"grounding_required:={str(grounding_required).lower()}",
             ]
         )
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,

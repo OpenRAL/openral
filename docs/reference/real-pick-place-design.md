@@ -144,11 +144,13 @@ using SAM 2.1 to see the object.
    shows: fingers vs the shelf at the 20 mm link margin; the released object reappearing inside
    the finger margin on retreat (worse on real: DETACH fires when the jaws open, before the
    fingers move); ~1 cm joint play against zero-clearance place geometry.
-7. **Already true on real, and dangerous once anything publishes attachments:** the octomap
+7. **Was true on real, and dangerous once anything published attachments:** the octomap
    bridge's payload clearing (`attached_clear_enabled` default true) and the self-filter both
-   consume `/openral/world_state_fast` regardless of the kernel flag. A vision leg turned on
-   without the kernel's attached check would clear the payload from the map while nothing checks
-   it — an invisible payload.
+   consume `/openral/world_state_fast` regardless of the kernel flag, so a vision leg turned on
+   without the kernel's attached check would have cleared the payload from the map while
+   nothing checked it — an invisible payload. Since #418 the bridge clears only a
+   `tracked_object` binding, by identity (`clear_by_identity`, `object_tracking: bind | on`,
+   sim-only); the vision leg's geometry-only payload stays mapped (fail closed).
 
 ## 2. The design (proposal)
 

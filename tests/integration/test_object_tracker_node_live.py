@@ -145,3 +145,40 @@ def test_service_answers_are_fed_on_the_process_timer_never_from_their_callback(
             assert wait(lambda: not node._answers, 2.0)  # the process timer drained it
         finally:
             node.destroy_node()
+
+
+def test_an_abandoned_service_call_is_removed_from_its_client_at_the_next_issue() -> None:
+    """Review finding (#421): the scheduler abandons a request past
+    ``segment_budget_wall_s`` and issues the next, but the abandoned call's future stayed in
+    its client's pending table, holding its done callback and the ``CameraFrame`` it closes
+    over, and a late reply would feed a request already dropped. The next issue removes it
+    (here a call to a service nobody serves, so it can never answer)."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    import numpy as np
+    from openral_core import IntrinsicsPinhole
+    from openral_msgs.srv import SegmentInView
+    from openral_world_state.object_tracker import CameraFrame
+    from openral_world_state.object_tracker.scheduler import TrackerRequest
+
+    with tracker_rig() as rig:
+        node = rig.tracker("bind")
+        try:
+            client = node.create_client(SegmentInView, "/openral/test/never_served")
+            future = client.call_async(SegmentInView.Request())
+            assert future in client._pending_requests.values()
+            node._pending_call = (client, future)
+            k = IntrinsicsPinhole(fx=1.0, fy=1.0, cx=0.0, cy=0.0, width=2, height=2)
+            frame = CameraFrame("cam", 0, np.zeros((2, 2)), k, None, None)
+            # A stamp-less frame is refused before any call: only the drop runs.
+            node._issue(
+                TrackerRequest("segment_in_view", "cam", 0, 5, 0, "orange", request_id=7),
+                frame,
+                "cam_optical",
+                None,
+            )
+            assert future not in client._pending_requests.values()
+            assert not future.done() and node._pending_call is None
+            node.destroy_client(client)
+        finally:
+            node.destroy_node()

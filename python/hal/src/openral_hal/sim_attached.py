@@ -905,8 +905,8 @@ class SimAttachedHAL:
         Sim evidence uses ``evidence_ref="mujoco_body:<body-name>"``. Every
         descendant body is masked too, so multipart payloads cannot leak into
         depth/OctoMap through child geoms. A backend without MuJoCo handles (Isaac)
-        records the set and masks nothing: the octomap bridge clears the payload by
-        its pose, as on real hardware.
+        records the set and masks nothing, as on real hardware: only a tracker-bound
+        payload is cleared from the map (by identity), a geometry-only one stays.
 
         Args:
             objects: Complete current attachment set.
@@ -925,7 +925,7 @@ class SimAttachedHAL:
             # payload stays in the simulated depth exactly as it stays in a real
             # camera's — the real-hardware path. The octomap bridge clears its cells
             # only for a tracker-bound attachment (``OctomapVoxelBridge::clear_by_identity``,
-            # ``object_tracking: on``); a geometry-only one stays occupied and the kernel
+            # ``object_tracking: bind | on``); a geometry-only one stays occupied and the kernel
             # may stop on it: never looser than masking.
             self._attached_objects = by_id
             self._attached_body_ids = frozenset()

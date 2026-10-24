@@ -1,6 +1,6 @@
 """Pre-grasp target producer leg — measures the grasp declaration's region on real hardware.
 
-The ROS wiring around ``_grasp_target`` (real pick-and-place design
+The ROS wiring around ``openral_core.perception_geometry`` (real pick-and-place design
 ``docs/reference/real-pick-place-design.md`` §2.2), owned by
 ``VisionAttachmentBridge`` so ``/openral/attachment_state`` keeps one authority
 (§2.4). Default off (``VisionAttachmentConfig.grasp_target_enabled``).

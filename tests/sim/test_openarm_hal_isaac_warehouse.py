@@ -376,8 +376,9 @@ def test_each_image_carries_the_sim_time_it_shows(env: Any) -> None:
 def test_an_attachment_is_recorded_without_body_masking_on_isaac(env: Any) -> None:
     """Regression (#349): after a kernel-accepted ATTACH the Isaac HAL raised
     ("attachment body masking requires MuJoCo handles"), the attachment barrier never
-    released and every later action was held. Isaac records the set and masks nothing;
-    the octomap bridge clears the payload by its pose, as on real hardware."""
+    released and every later action was held. Isaac records the set and masks nothing,
+    as on real hardware: the octomap bridge clears only a tracker-bound payload, by
+    identity; this geometry-only one stays mapped."""
     from openral_core import (
         AttachedCollisionObject,
         AttachedCollisionPrimitive,
