@@ -94,7 +94,8 @@ def joint_motion(joint: JointSpec | MimicJoint, q: float) -> NDArray[np.float64]
     """Child-in-parent motion of one joint at position ``q`` (applied after its origin).
 
     Raises:
-        ROSConfigError: The joint is neither revolute, continuous nor prismatic.
+        ROSConfigError: The joint is neither revolute, continuous nor prismatic, or its
+            ``axis_xyz`` is zero or non-finite (it would pose the link as NaN).
 
     Example:
         >>> from openral_core import RobotDescription
@@ -104,7 +105,12 @@ def joint_motion(joint: JointSpec | MimicJoint, q: float) -> NDArray[np.float64]
         -1.0
     """
     axis = np.asarray(joint.axis_xyz, dtype=np.float64)
-    axis = axis / np.linalg.norm(axis)
+    norm = float(np.linalg.norm(axis))
+    if not np.isfinite(norm) or norm == 0.0:
+        raise ROSConfigError(
+            f"joint {joint.name!r} has a zero or non-finite axis_xyz {joint.axis_xyz}."
+        )
+    axis = axis / norm
     t = np.eye(4, dtype=np.float64)
     if joint.joint_type in (JointType.REVOLUTE, JointType.CONTINUOUS):
         k = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
