@@ -560,3 +560,18 @@ class TestClockInjection:
 
         assert stamps == sorted(stamps)
         assert stamps[-1] - stamps[0] == pytest.approx(29 * step_ns)
+
+
+def test_switching_the_tracked_clock_drops_a_set_aged_on_the_old_one() -> None:
+    """A set received on the wall clock has no age on the ROS clock (#425 review): kept, its
+    wall arrival minus a smaller sim time is a negative age and the set never goes stale."""
+    from openral_core.schemas import TrackedObjectSet
+
+    wall, ros = [10_000_000_000], [0]
+    agg = WorldStateAggregator(
+        RobotDescription.from_yaml("robots/franka_panda/robot.yaml"), clock_fn=lambda: wall[0]
+    )
+    agg.update_tracked_objects(TrackedObjectSet(frame_id="panda_link0", stamp_ns=0, revision=0))
+    agg.use_tracked_clock(lambda: ros[0])
+    ros[0] = 5_000_000_000  # 5 s of sim time, no new set
+    assert agg.snapshot().tracked_objects is None
