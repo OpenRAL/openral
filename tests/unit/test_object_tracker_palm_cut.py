@@ -26,9 +26,10 @@ from openral_core.kinematics import bounding_half_extents
 from openral_core.schemas import DOP_AXES, TightCollisionGeometry
 from openral_world_state.object_tracker.binding import _UNIT, _frame, _palm_clipped, _prim, _t
 from openral_world_state.object_tracker.pinch import PinchVolume
-from scipy.spatial import ConvexHull, QhullError
 
 from tests.unit._object_tracker_fixtures import ROBOTS, arm_at_hold
+
+pytest.importorskip("scipy", reason="scipy.spatial.ConvexHull checks hull containment")
 
 EPS = 1e-7
 _DOP = np.asarray(DOP_AXES, dtype=np.float64)
@@ -125,6 +126,8 @@ def test_the_exact_cut_keeps_the_hand_side_solid_and_is_never_looser(
     ), "in the new DOP"
     verts = np.asarray(tg.hull_vertices_m, dtype=np.float64)
     if len(verts) >= 4:
+        from scipy.spatial import ConvexHull, QhullError
+
         try:
             eq = ConvexHull(verts).equations
         except QhullError:
