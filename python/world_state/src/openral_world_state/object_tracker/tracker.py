@@ -328,6 +328,8 @@ class ObjectTracker:
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
+        # Per track: the grid stamp its last `map_disagrees` counted (one count per grid).
+        self._disagree_ns: dict[str, int] = {}
         # What each track fills in the map (``box_cells``) at its last plain pass: a contact
         # re-anchor's reference while the hand hides or pushes the object.
         self._map_cells: dict[str, int] = {}
@@ -483,10 +485,20 @@ class ObjectTracker:
                         reason=unavailable_reason,
                     ),
                 )
+        live = {t.object_id for t in tracks}
+        # Track ids are never reused: drop per-track state for every row the store lost
+        # (aged out, displaced by a mint, retired by the session's release).
+        for per_track in (
+            self._views, self._cells, self._centroid, self._disagree, self._disagree_ns,
+            self._map_cells, self._served, self._clear_size, self._low_score,
+            self._low_score_run,
+        ):  # fmt: skip
+            for oid in [k for k in per_track if k not in live]:
+                del per_track[oid]
         if self.surface_models is not None:
-            self.surface_models.retain({t.object_id for t in tracks})
+            self.surface_models.retain(live)
         if self.catalog_declarations is not None:
-            self.catalog_declarations.retain({t.object_id for t in tracks})
+            self.catalog_declarations.retain(live)
         issued = self._sched.next(
             self._candidates(frame, grid, hand_spaces) if usable else [], wall_s=wall_s
         )
@@ -1186,6 +1198,7 @@ class ObjectTracker:
         self._cells[track.object_id] = cells
         self._centroid[track.object_id] = (centroid[0], centroid[1], centroid[2])
         self._disagree.pop(track.object_id, None)
+        self._disagree_ns.pop(track.object_id, None)
         self._confirm(track, grid, grid_stamp_ns, hands, frame)
         self._observe_catalog(track, fit, frame)
         self._observe_surface(track, fit, frame)
@@ -1366,6 +1379,7 @@ class ObjectTracker:
             return  # no evidence either way: held, never re-stamped
         if not v.kind:
             self._disagree.pop(t.object_id, None)
+            self._disagree_ns.pop(t.object_id, None)
             if status is TrackStatus.SPLIT:
                 return  # ineligible until a camera re-fit
             update = {
@@ -1392,7 +1406,11 @@ class ObjectTracker:
         elif v.kind == "map_split":
             update = {"status": TrackStatus.SPLIT}
         elif v.kind == "map_disagrees":
-            n = self._disagree.get(t.object_id, 0) + 1
+            # `_commit_fit` and the per-grid pass can both confirm on one stamp: count it once.
+            n = self._disagree.get(t.object_id, 0)
+            if self._disagree_ns.get(t.object_id) != stamp_ns:
+                n += 1
+                self._disagree_ns[t.object_id] = stamp_ns
             self._disagree[t.object_id] = n
             if n >= self.params.disagree_grids:
                 update = {"status": TrackStatus.LOST}

@@ -525,3 +525,31 @@ def test_a_body_inside_another_confirmed_track_is_not_a_split() -> None:
     can = next(o for o in out.tracked.objects if o.object_id != other.object_id)
     assert can.status is TrackStatus.CONFIRMED
     assert can.last_confirmed_stamp_ns == 100_000_000
+
+
+def test_one_refuting_grid_counts_once_however_often_it_is_confirmed_on() -> None:
+    """``disagree_grids`` counts distinct grids (#425 review): an accepted fit and the
+    per-grid pass both confirm on one stamp, and the same empty grid must not count twice."""
+    tr, _ = _confirmed_tracker(_CAN)
+    track = tr.store.all()[0]
+    empty = grid_from_depth(render([], _RIG)[0], _RIG)
+    for _ in range(tr.params.disagree_grids):
+        tr._confirm(tr.store.all()[0], empty, 100_000_000, ())
+    now = tr.store.get(track.object_id)
+    assert now is not None and now.status is TrackStatus.CONFIRMED
+    for k in range(2, tr.params.disagree_grids + 1):
+        tr._confirm(tr.store.all()[0], empty, k * 100_000_000, ())
+    now = tr.store.get(track.object_id)
+    assert now is not None and now.status is TrackStatus.LOST
+
+
+def test_per_track_state_leaves_with_the_track() -> None:
+    """Track ids are never reused (#425 review): a row the store drops takes its per-track
+    state with it at the next frame."""
+    tr, wall = _confirmed_tracker(_CAN)
+    oid = tr.store.all()[0].object_id
+    assert oid in tr._cells
+    tr.store.drop(oid)
+    step(tr, _RIG, [], stamp_ns=100_000_000, wall_s=wall + 1)
+    for per_track in (tr._views, tr._cells, tr._centroid, tr._disagree, tr._served):
+        assert oid not in per_track
