@@ -18,21 +18,21 @@ import numpy as np
 import pytest
 import yaml
 from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, RobotDescription
-from openral_hal._grasp_target import (
-    VoxelLattice,
-    _components,
-    _ijk,
-    cell_closed_region,
-    region_covers_occupied,
-    target_region_from_masks,
-)
-from openral_hal._object_primitives import (
+from openral_core.object_primitives import (
     PrimitiveFit,
     PrimitiveTracker,
     instance_prompt,
     map_confirms,
     nearest_primitive,
     point_box_gap_m,
+)
+from openral_core.perception_geometry import (
+    VoxelLattice,
+    _components,
+    _ijk,
+    cell_closed_region,
+    region_covers_occupied,
+    target_region_from_masks,
 )
 
 from tests.unit._head_camera_render import Box, head_camera, render
@@ -280,3 +280,23 @@ def test_the_tracker_keeps_identities_across_fits_and_drops_stale_and_cleared() 
     assert tracker.primitives == []
     with pytest.raises(ValueError, match="max_misses"):
         PrimitiveTracker(max_misses=0)
+
+
+def test_a_support_marked_in_two_layers_is_not_a_raised_top() -> None:
+    """A counter top on a layer boundary fills its upper layer in places: one cell up is not
+    "more than one cell above", so no prompt lands on it (PickOrange, 2026-10-17); a body
+    two cells tall still is."""
+    occ = np.zeros(6 * 6 * 4, dtype=np.uint8)
+    occ[:36] = 1  # k=0: the counter
+    occ[36 + 1 : 36 + 4] = 1  # k=1 in three places: its upper layer where the octree caught it
+    g = VoxelLattice("b", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (6, 6, 4), occ)
+    col = PlaceRegion(
+        frame_id="b",
+        half_extents=(0.3, 0.3, 0.2),
+        pose=Pose6D(xyz=(0.3, 0.3, 0.2), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
+    )
+    assert instance_prompt(g, col, [], near_xy=(0.1, 0.1)) is None
+    occ[[36 + 4 + 6 * 4, 72 + 4 + 6 * 4]] = 1  # a two-cell post at i=j=4
+    g = VoxelLattice("b", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (6, 6, 4), occ)
+    hit = instance_prompt(g, col, [], near_xy=(0.1, 0.1))
+    assert hit is not None and hit[1] == (4, 4, 2)

@@ -59,6 +59,7 @@ from openral_hal._slot_group import (
     compose_slot_group_action,
     slot_group_targets,
 )
+from openral_hal.depth_cloud import cloud_from_depth_frame
 
 # Module logger — falls through to stderr via the rclpy logging bridge in a
 # ROS node, else plain stdlib logging.
@@ -456,6 +457,12 @@ class SimAttachedHAL:
     """
 
     description: RobotDescription
+    # Frames on demand (``set_frame_period_s``): sim period between rendered steps and
+    # the sim time of the last one; ``None`` = render every step. Immutable defaults.
+    _frame_period_ns: int | None = None
+    _last_frame_sim_ns: int | None = None
+    # ``release_env`` ran (the kept-alive sidecar was handed over).
+    _env_released: bool = False
 
     def __init__(
         self,
@@ -535,6 +542,9 @@ class SimAttachedHAL:
         # Newest registered colour + depth frames (``read_depth_frames``): a backend
         # ships them on some steps only, so they outlive the step that carried them.
         self._last_depth_frames: dict[str, dict[str, Any]] = {}
+        # name -> (the depth frame it came from, its base-frame cloud, the cloud's colours):
+        # each frame is deprojected once, however often its cloud is read.
+        self._depth_cloud_cache: dict[str, tuple[Any, NDArray[np.float32], Any]] = {}
         self._body_twist_dt_s: float = body_twist_dt_s
         # Sim seconds one env.step advances, when the backend declares it
         # (``env.sim_dt_per_tick_s``, the Isaac sidecar); checked against the
@@ -786,6 +796,21 @@ class SimAttachedHAL:
                 self._emit_placement_grade_final()
         self._connected = False
 
+    def release_env(self) -> None:
+        """Hand a ``keep_alive`` backend's sidecar over to the next launch (process teardown).
+
+        Called once by the lifecycle node as its process exits, never on a cleanup that a
+        configure may follow. Only a backend the scene opted in (``backend_options.keep_alive``)
+        is closed: its ``close`` detaches the sidecar from this process's exit reaper, so the
+        next deploy sim of the same scene adopts it instead of booting Kit again. Any other
+        env is left to its owner, as before. Idempotent.
+        """
+        env = self._env
+        if getattr(env, "keep_alive", False) is not True or self._env_released:
+            return
+        self._env_released = True
+        env.close()
+
     def read_state(self) -> JointState:
         """Read live joint state from the env's MJCF qpos via the description.
 
@@ -880,8 +905,8 @@ class SimAttachedHAL:
         Sim evidence uses ``evidence_ref="mujoco_body:<body-name>"``. Every
         descendant body is masked too, so multipart payloads cannot leak into
         depth/OctoMap through child geoms. A backend without MuJoCo handles (Isaac)
-        records the set and masks nothing: the octomap bridge clears the payload by
-        its pose, as on real hardware.
+        records the set and masks nothing, as on real hardware: only a tracker-bound
+        payload is cleared from the map (by identity), a geometry-only one stays.
 
         Args:
             objects: Complete current attachment set.
@@ -898,10 +923,10 @@ class SimAttachedHAL:
             # No MuJoCo model to mask payload bodies in (Isaac and other sidecar
             # backends): the attachment is recorded and nothing is masked, so the
             # payload stays in the simulated depth exactly as it stays in a real
-            # camera's, and the octomap bridge clears its cells from every grid by its
-            # pose (``clear_attached_payload_cells``) — the real-hardware path. If that
-            # clearing failed, the payload's cells would stay occupied and the kernel
-            # would stop on them: never looser than masking.
+            # camera's — the real-hardware path. The octomap bridge clears its cells
+            # only for a tracker-bound attachment (``OctomapVoxelBridge::clear_by_identity``,
+            # ``object_tracking: bind | on``); a geometry-only one stays occupied and the kernel
+            # may stop on it: never looser than masking.
             self._attached_objects = by_id
             self._attached_body_ids = frozenset()
             return
@@ -1293,10 +1318,13 @@ class SimAttachedHAL:
         Raises:
             ROSRuntimeError: when ``env.step`` raises.
         """
+        rendered = self._request_frames()
         try:
             step_result = self._env.step(env_action)
         except Exception as exc:
             raise ROSRuntimeError(f"SimAttachedHAL.{source}: env.step failed: {exc}") from exc
+        if rendered:
+            self._last_frame_sim_ns = self._rollout_sim_time_ns()
         # ``StepResult.observation`` carries the rendered camera frames
         # (see ``openral_sim.rollout.StepResult``). Cache so the
         # lifecycle node's camera publisher can serve them without
@@ -1309,6 +1337,62 @@ class SimAttachedHAL:
         for observer in self._post_step_observers:
             observer()
         return True
+
+    def set_frame_period_s(self, period_s: float | None) -> None:
+        """Render camera frames only every ``period_s`` of sim time (``None``: every step).
+
+        For a backend that renders on demand (``env.set_frames_next_step``, Isaac):
+        the sensor bridge passes its fastest camera/depth publish period, so the scene
+        renders ``"fresh"`` frames (showing that step's state) once per publish
+        instead of a lagging frame every control tick. Other backends ignore it.
+
+        Example:
+            >>> SimAttachedHAL.set_frame_period_s.__name__
+            'set_frame_period_s'
+        """
+        self._frame_period_ns = None if period_s is None else int(period_s * 1e9)
+
+    def refresh_frames(self) -> bool:
+        """Render the current state's frames now, without stepping the simulation.
+
+        For a backend that renders on demand (``env.refresh_frames``, Isaac): a
+        waiter that holds the runner (the attachment perception barrier) gets a
+        fresh frame instead of waiting for the next stepped one. Returns ``False``
+        (nothing done) for a backend without it.
+
+        Example:
+            >>> SimAttachedHAL.refresh_frames.__name__
+            'refresh_frames'
+        """
+        refresh = getattr(self._env, "refresh_frames", None)
+        if not callable(refresh):
+            return False
+        obs = refresh()
+        if isinstance(obs, dict):
+            self._last_obs = dict(obs)
+            self._keep_depth_frames(self._last_obs)
+            self._last_frame_sim_ns = self._rollout_sim_time_ns()
+        return True
+
+    def _request_frames(self) -> bool:
+        """Pick the next step's frame mode on an on-demand backend; ``True`` if it renders."""
+        set_frames = getattr(self._env, "set_frames_next_step", None)
+        if not callable(set_frames) or self._frame_period_ns is None:
+            return True
+        now = self._rollout_sim_time_ns()
+        dt_ns = int((self._sim_dt_per_tick_s or 0.0) * 1e9)
+        last = self._last_frame_sim_ns
+        # Due when a period has passed by the end of this step (half a tick early so a
+        # period that is a whole number of ticks does not slip one), or the sim clock
+        # went back (an episode reset).
+        due = (
+            now is None
+            or last is None
+            or now < last
+            or now + dt_ns - last >= self._frame_period_ns - dt_ns // 2
+        )
+        set_frames("fresh" if due else "none")
+        return due
 
     def _cache_step_result(self, step_result: object) -> None:
         """Cache one backend transition without evaluating or resetting it."""
@@ -2234,28 +2318,42 @@ class SimAttachedHAL:
         return {str(k): self._sim_time_offset_ns + int(v) for k, v in times.items()}
 
     def read_depth_clouds(self) -> dict[str, NDArray[np.float32]]:
-        """Return per-depth-sensor point clouds ``{name: (N, 3) base_link}``.
+        """Return per-depth-sensor point clouds ``{name: (N, 3) base_frame}``.
 
-        A non-MuJoCo backend that renders depth (the Isaac manifest scene)
-        surfaces clouds already deprojected to ``base_link`` under the
-        ``"depth_points"`` obs slot — Isaac's ``Camera.get_pointcloud`` owns the
-        camera convention, so the HAL never re-derives geometry. ``SimSensorBridge``
-        publishes them as ``PointCloud2`` for octomap. Empty when the backend
-        renders no depth (MuJoCo backends use the ray-cast path instead). Never
-        raises.
+        Derived from the newest registered RGB-D frame of each depth camera
+        (``read_depth_frames``: metric depth, its K and the optical pose in the base
+        frame, as a non-MuJoCo backend such as the Isaac scene ships them) by
+        ``depth_cloud.cloud_from_depth_frame``, kept within the sensor's
+        ``range_max_m`` in the base plane. Each frame is deprojected once and its
+        cloud returned as the same array until a newer frame arrives:
+        ``SimSensorBridge`` publishes each cloud once, by identity.
+        ``read_depth_cloud_colours`` has the matching per-point colours. Empty when
+        the backend renders no depth (MuJoCo backends ray-cast instead). Never raises.
         """
-        if self._last_obs is None:
-            return {}
-        clouds = self._last_obs.get("depth_points")
-        if not isinstance(clouds, dict):
-            return {}
         out: dict[str, NDArray[np.float32]] = {}
-        for k, v in clouds.items():
-            arr = np.asarray(v, dtype=np.float32)
-            # The backend's own (N, 3) array, not a fresh view of it: SimSensorBridge
-            # publishes each cloud once, by identity.
-            out[str(k)] = arr if arr.shape[1:] == (3,) else arr.reshape(-1, 3)
+        for name, frame in self._last_depth_frames.items():
+            cached = self._depth_cloud_cache.get(name)
+            if cached is None or cached[0] is not frame:
+                spec = next((s for s in self.description.sensors if s.name == name), None)
+                pts, colours = cloud_from_depth_frame(
+                    frame["depth"],
+                    frame["rgb"],
+                    frame["k"],
+                    frame["optical_in_base"],
+                    max_planar_range_m=getattr(spec, "range_max_m", None) or None,
+                )
+                cached = (frame, pts, colours)
+                self._depth_cloud_cache[name] = cached
+            out[name] = cached[1]
         return out
+
+    def read_depth_cloud_colours(self) -> dict[str, NDArray[np.uint8]]:
+        """Per-point RGB of the clouds ``read_depth_clouds`` last returned, by sensor.
+
+        Each colour is the pixel its point was back-projected from. A sensor whose
+        frame carries no matching colour raster is absent. Never raises.
+        """
+        return {name: c for name, (_f, _p, c) in self._depth_cloud_cache.items() if c is not None}
 
     def read_depth_frames(self) -> dict[str, dict[str, Any]]:
         """Return the newest registered colour + depth frame per depth sensor.

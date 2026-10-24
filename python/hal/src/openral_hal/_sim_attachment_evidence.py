@@ -251,7 +251,7 @@ def lift_region_off_support(
     """Raise a resting target's body-frame box so its lowest point is one voxel up.
 
     The sim mirror of the real producer's HZ-0115-6 rule
-    (``_grasp_target.target_region_from_mask``): a grasp region's lower face sits
+    (``openral_core.perception_geometry.target_region_from_mask``): a grasp region's lower face sits
     at ``support_z + resolution``, so every cell holding the support surface (centres
     up to half a voxel above the plane) stays outside the region and the kernel still
     stops the fingers at the table under the target. In sim the support plane is the
@@ -260,7 +260,7 @@ def lift_region_off_support(
     The box keeps its body-frame orientation: the face shrunk is the one on the body
     axis closest to the base ``+z``, by ``resolution / |cos|`` of that axis' tilt, which
     raises the lowest corner by exactly ``resolution`` (and is the real rule verbatim
-    for an upright target). Kept local rather than shared with ``_grasp_target`` because
+    for an upright target). Kept local rather than shared with ``perception_geometry`` because
     the real producer fits a gravity-aligned box from a cloud, not a body-frame one.
 
     Args:

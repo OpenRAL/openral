@@ -2,7 +2,7 @@
   "$defs": {
     "AttachedCollisionPrimitive": {
       "additionalProperties": false,
-      "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True",
+      "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n    geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``\n        (the tracked or single provisional object's own fitted geometry), ``grown`` (cells\n        observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of\n        candidates that may not be the held object; the default, and what a reader treats an\n        unknown code as). Only measured and grown primitives can explain the payload's own\n        cells to the kernel (``payload_own_cells_enabled``, sim only).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True\n    >>> p.geometry_source\n    'fallback'",
       "properties": {
         "shape": {
           "discriminator": {
@@ -39,6 +39,16 @@
             }
           ],
           "default": null
+        },
+        "geometry_source": {
+          "default": "fallback",
+          "enum": [
+            "fallback",
+            "measured",
+            "grown"
+          ],
+          "title": "Geometry Source",
+          "type": "string"
         }
       },
       "required": [
@@ -112,6 +122,83 @@
       ],
       "title": "CapsuleShape",
       "type": "object"
+    },
+    "ObjectQuery": {
+      "additionalProperties": false,
+      "description": "A class of objects a prompt names; never geometry the kernel uses (issue #418).\n\nRides ``GraspDeclaration.target_queries`` / ``PlaceDeclaration.destination_query``\ninto the Layer-2 object tracker, which keeps it as a standing query for the life of\nthe goal and grounds every instance of the class.\n\nAttributes:\n    label: Open-vocabulary label, e.g. ``\"orange\"``.\n    count: ``\"one\"`` still tracks every match (the policy chooses); ``\"all\"`` names\n        the whole class.\n    role: What the objects are to the task.\n    hand: Gripper joint name, a hint for the policy/reasoner only.\n    seed: Optional search hint (sim-derived or scene graph) in the grid frame or a\n        fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.\n    min_instances: CONFIRMED instances that make the query ``RESOLVED``.\n    synonyms: Other names for the same class, sent with ``label`` to an\n        open-vocabulary locator as one class list (``\"box, carton\"``); empty = the\n        label alone. Additive (#418), never geometry.\n\nExample:\n    >>> query = ObjectQuery(label=\"orange\", count=\"all\", role=ObjectRole.TARGET)\n    >>> query.min_instances\n    1",
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "count": {
+          "enum": [
+            "one",
+            "all"
+          ],
+          "title": "Count",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ObjectRole"
+        },
+        "hand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hand"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "min_instances": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Instances",
+          "type": "integer"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Synonyms",
+          "type": "array"
+        }
+      },
+      "required": [
+        "label",
+        "count",
+        "role"
+      ],
+      "title": "ObjectQuery",
+      "type": "object"
+    },
+    "ObjectRole": {
+      "description": "What a prompt-named object is to the task (issue #418).\n\n``CONTEXT`` covers neighbours and supports: tracked, never a target.",
+      "enum": [
+        "target",
+        "destination",
+        "context"
+      ],
+      "title": "ObjectRole",
+      "type": "string"
     },
     "PlaceRegion": {
       "additionalProperties": false,
@@ -306,7 +393,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nDrafted amendment (ADR-0097, default off): the real place producer\n(``openral_hal._place_target_leg``) measures the surface directly under the\ncarried payload and attaches it as the region of dispatch's goal-scope\ndeclaration (``target_id=\"surface\"``, the runner's ``place_approach_enabled``);\nit never declares on its own, and the region dies with the declaration, the\npayload and the region's age bound.\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. Never read from the\n        robot-wide ``SafetyEnvelope.contact_force_threshold_n``.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n    search_box: Optional gravity-aligned box (in the voxel grid's base\n        frame) naming the surface a place may use: a hint only. The real\n        place producer measures the support directly under the carried\n        payload with or without it; when set, it refuses a measured patch\n        whose centre lies outside the box. The reasoner grounds it from an\n        optional ``PlaceTargetRef`` (a lifted detection or a recalled memory\n        node, padded); dispatch passes it through unchanged. It never arms\n        anything \u2014 the allowance is always the producer-measured ``region``.\n        ``geometry`` must be empty.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
+  "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nDrafted amendment (ADR-0097, default off): the real place producer\n(``openral_hal._place_target_leg``) measures the surface directly under the\ncarried payload and attaches it as the region of dispatch's goal-scope\ndeclaration (``target_id=\"surface\"``, the runner's ``place_approach_enabled``);\nit never declares on its own, and the region dies with the declaration, the\npayload and the region's age bound.\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. The kernel caps a positive\n        bound at ``SafetyEnvelope.contact_force_threshold_n``; a task\n        can lower the robot ceiling, never raise it.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n    search_box: Optional gravity-aligned box (in the voxel grid's base\n        frame) naming the surface a place may use: a hint only. The real\n        place producer measures the support directly under the carried\n        payload with or without it; when set, it refuses a measured patch\n        whose centre lies outside the box. The reasoner grounds it from an\n        optional ``PlaceTargetRef`` (a lifted detection or a recalled memory\n        node, padded); dispatch passes it through unchanged. It never arms\n        anything \u2014 the allowance is always the producer-measured ``region``.\n        ``geometry`` must be empty.\n    destination_query: Optional class the destination belongs to (a plate, a\n        bowl; issue #418), with role ``DESTINATION``. The tracker grounds it; it\n        arms nothing. A shelf slot stays a ``search_box``.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
   "properties": {
     "target_id": {
       "default": "",
@@ -326,6 +413,12 @@
     "trace_id": {
       "default": "",
       "title": "Trace Id",
+      "type": "string"
+    },
+    "invocation_id": {
+      "default": "",
+      "pattern": "^(?:[0-9a-f]{32})?$",
+      "title": "Invocation Id",
       "type": "string"
     },
     "timeout_s": {
@@ -363,6 +456,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/PlaceRegion"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "destination_query": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ObjectQuery"
         },
         {
           "type": "null"

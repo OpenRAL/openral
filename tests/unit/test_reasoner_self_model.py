@@ -51,3 +51,13 @@ def test_context_renderer_includes_robot_section_when_supplied() -> None:
     without = ContextRenderer().render(world_state=None)
     assert "## ROBOT" not in without
     assert without.startswith("## WORLD_STATE")
+
+
+def test_self_model_keeps_openarm_link_and_joint_names() -> None:
+    """Failure link IDs can be resolved using the actual robot manifest."""
+    text = render_robot_self_model(_robot("openarm"))
+    assert (
+        "joint: left_joint7 (sim=openarm_left_joint7); "
+        "links: openarm_left_link6 -> openarm_left_link7"
+    ) in text
+    assert "links: openarm_left_link7 -> openarm_left_finger_pair" in text

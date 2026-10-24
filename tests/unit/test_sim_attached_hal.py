@@ -1575,6 +1575,34 @@ def test_reset_episode_resets_the_live_env_with_the_next_seed_each_time() -> Non
     assert env.reset_calls[-1] == 7
 
 
+def test_release_env_closes_only_a_keep_alive_backend_once() -> None:
+    """A scene that opted into `keep_alive` hands its sidecar to the next launch at process
+    teardown (the env's `close` detaches it); any other env is left to its owner."""
+
+    class _KeptEnv(FakeSimEnv):
+        keep_alive = True
+        closes = 0
+
+        def close(self) -> None:
+            type(self).closes += 1
+
+    kept = SimAttachedHAL(_KeptEnv(action_dim=11), _two_dof_description())
+    kept.connect()
+    kept.disconnect()
+    assert _KeptEnv.closes == 0  # a cleanup that a configure may follow keeps the env
+    kept.release_env()
+    kept.release_env()
+    assert _KeptEnv.closes == 1
+
+    plain = FakeSimEnv(action_dim=11)
+    plain_closes: list[int] = []
+    plain.close = lambda: plain_closes.append(1)  # type: ignore[method-assign]  # reason: count calls
+    hal = SimAttachedHAL(plain, _two_dof_description())
+    hal.connect()
+    hal.release_env()
+    assert plain_closes == []
+
+
 def test_reset_episode_without_a_base_seed_counts_from_zero() -> None:
     env = FakeSimEnv(action_dim=11)
     hal = SimAttachedHAL(env, _two_dof_description())

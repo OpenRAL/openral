@@ -629,7 +629,7 @@ def test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed(
     non-exempt (the closure never grows down)."""
     import numpy as np
     from openral_core import GraspDeclaration as _Declaration
-    from openral_hal._grasp_target import VoxelLattice, cell_closed_region
+    from openral_core.perception_geometry import VoxelLattice, cell_closed_region
 
     lattice = VoxelLattice(
         _FRAME,
@@ -771,7 +771,7 @@ def _t_base_from_link_at_q0(link: str) -> Any:
     identity, so the chain is its origins (the kernel's own FK at ``_Q``).
     """
     import numpy as np
-    from openral_hal.vision_attachment_bridge import _xyz_rpy_matrix
+    from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 
     description = _description()
     up = {j.child_link: (j.parent_link, j.origin_xyz, j.origin_rpy) for j in description.joints}
@@ -1134,7 +1134,7 @@ def _kernel_box(
     handover on). ``dz`` raises the held region with the world.
     """
     import numpy as np
-    from openral_hal._grasp_target import VoxelLattice, lowered_to_support
+    from openral_core.perception_geometry import VoxelLattice, lowered_to_support
     from openral_hal._grasp_target_leg import _kernel_closure
 
     lattice = VoxelLattice(

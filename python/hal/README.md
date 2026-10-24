@@ -248,3 +248,10 @@ parameters and topic names.
   `SafetyEnvelope`: the typed contract this package consumes and emits.
 - CLAUDE.md §3 (architecture) and §5 (the `ROSError` hierarchy HAL
   adapters raise from).
+
+
+Isaac RGB-D images and clouds retain their capture stamps. Their dynamic optical
+TF describes the current measured backend state and uses that state's simulation
+time, even when the node's `/clock` callback trails it. The bridge publishes TF
+before the raster; consumers still require transforms at the exact capture time.
+Current camera poses are never restamped as older captured images.

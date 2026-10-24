@@ -45,6 +45,11 @@ _KERNEL_PREDICTIVE_EVIDENCE = (
     Path(__file__).parent / "fixtures" / "kernel_predictive_collision_evidence.json"
 )
 
+#: A real attached-payload collision carrying bounded producer provenance.
+_KERNEL_ATTACHED_EVIDENCE = (
+    Path(__file__).parent / "fixtures" / "kernel_attached_collision_evidence.json"
+)
+
 
 # ── CollisionShape discriminated union ────────────────────────────────────────
 
@@ -204,6 +209,12 @@ def test_kernel_predictive_evidence_carries_the_configuration_it_adjudicated() -
     assert decoded.horizon_step == 5
     assert not decoded.is_reactive
     assert decoded.joint_positions_rad == [0.29982877677088093, 1.2524345104800854]
+    assert decoded.joint_names == ["j0", "j1"]
+    assert decoded.sweep_min_distance_m == decoded.min_distance_m
+    assert decoded.workspace_denial_reason == "not_applicable_or_exempt"
+    assert decoded.workspace_contact_active is False
+    assert decoded.grasp_exemption_active is False
+    assert decoded.depth_is_box_bound is False
     # Not the measured seed the chunk started from — that config passed.
     assert decoded.joint_positions_rad[1] != 1.57079632679
     # Comparing parsed payload to parsed model would be a tautology (same
@@ -214,6 +225,47 @@ def test_kernel_predictive_evidence_carries_the_configuration_it_adjudicated() -
             f"{value!r} survives a 6-significant-digit round trip, so this "
             "fixture cannot distinguish max_digits10 from the old default"
         )
+
+
+def test_collision_evidence_accepts_bounded_kernel_diagnostics_and_old_records() -> None:
+    """The additional kernel fields stay optional and preserve their exact semantics."""
+    # Older records remain decodable with optional diagnostics absent.
+    old: FailureEvidence = TypeAdapter(FailureEvidence).validate_json(
+        _KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
+    )
+    assert isinstance(old, CollisionEvidence)
+    assert old.depth_is_box_bound is None
+    assert old.payload_evidence_kind is None
+
+    attached: FailureEvidence = TypeAdapter(FailureEvidence).validate_json(
+        _KERNEL_ATTACHED_EVIDENCE.read_text(encoding="utf-8").strip()
+    )
+    assert isinstance(attached, CollisionEvidence)
+    assert attached.payload_evidence_kind == "pinch_fallback"
+    assert attached.payload_evidence_ref == "ambiguous:trk3,trk4"
+    assert attached.joint_names == ["j0"]
+    assert attached.depth_is_box_bound is False
+
+    for invalid in (
+        {"joint_names": ["j0"]},
+        {"payload_evidence_kind": "pinch_fallback"},
+        {"payload_evidence_ref": "missing-kind"},
+        {"workspace_denial_reason": "guessed_reason"},
+    ):
+        fields = {
+            "collision_kind": "world",
+            "link_a": "hand",
+            "link_b_or_object": "voxel_0",
+            "horizon_step": -1,
+            "min_distance_m": -0.01,
+            "joint_positions_rad": [0.0, 1.0],
+        }
+        fields.update(invalid)
+        try:
+            CollisionEvidence(**fields)
+        except ValidationError:
+            continue
+        raise AssertionError(f"invalid collision diagnostics must fail validation: {invalid}")
 
 
 def test_collision_evidence_rejects_below_reactive_sentinel() -> None:

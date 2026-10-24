@@ -133,6 +133,45 @@ __all__ = [
 ]
 
 
+def grid_settles_attachment(
+    *,
+    source_stamp_ns: int,
+    transparent_depth_ns: int,
+    grid_attachment_revision: int,
+    required_revision: int,
+) -> bool:
+    """Does a world-voxel grid end an attachment's perception barrier?
+
+    It must be later than the transparent depth frame the barrier counted AND carry that
+    attachment's clearing: the octomap bridge stamps every grid with the attachment revision it
+    had applied (``OccupancyVoxels.attachment_revision``, 0 = it certified nothing). A fresh
+    grid the bridge built before it consumed the revision still holds the payload's own cells
+    (#418 r7po_on1: the kernel stopped on the held orange 167 ms before the clear landed).
+    Ordering only: no kernel check is skipped or relaxed.
+
+    Example:
+        >>> grid_settles_attachment(
+        ...     source_stamp_ns=11,
+        ...     transparent_depth_ns=10,
+        ...     grid_attachment_revision=7,
+        ...     required_revision=7,
+        ... )
+        True
+        >>> grid_settles_attachment(
+        ...     source_stamp_ns=11,
+        ...     transparent_depth_ns=10,
+        ...     grid_attachment_revision=6,
+        ...     required_revision=7,
+        ... )
+        False
+    """
+    return source_stamp_ns > transparent_depth_ns and grid_attachment_revision >= required_revision
+
+
+#: Wall seconds the barrier's voxel wait may last before it says so (it still never releases early).
+BARRIER_VOXEL_WARN_S = 5.0
+
+
 def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[float]:
     """Return an ``n_beams``-long list with every beam clamped to ``max_range_m``.
 
@@ -234,8 +273,23 @@ def _rgb8_image(rgb: Any, *, frame_id: str, stamp: Any) -> Any:
     return msg
 
 
-def frame_stamp_ns(node_now_ns: int, frame_time_ns: int | None, sim_now_ns: int | None) -> int:
-    """Stamp for a sim sensor frame: the node's now minus the frame's age on the sim clock.
+def frame_stamp_ns(
+    node_now_ns: int,
+    frame_time_ns: int | None,
+    sim_now_ns: int | None,
+    *,
+    on_sim_clock: bool = False,
+) -> int:
+    """Stamp for a sim sensor frame: the sim time it shows.
+
+    On the sim clock itself (``on_sim_clock``: the node's ROS time is driven by
+    ``/clock``, which the HAL publishes from this same sim) the stamp IS
+    ``frame_time_ns``. Otherwise it is the node's now minus the frame's age on the sim
+    clock, as below. The age form alone was early on the sim clock: the node's clock
+    follows ``/clock`` one publish behind the HAL's newest ``sim_now_ns``, so a frame read
+    right after a step was stamped one or more control periods before the time it shows
+    (issue #418 run sf_dr2: robot returns matched the joint state 67-400 ms after the
+    cloud stamp), and the robot self-filter posed the arm too early.
 
     A renderer can deliver a frame steps after the physics state it shows (Isaac's
     RTX pipeline: 4 steps, 133 ms at 30 Hz), and the HAL reports the sim time each
@@ -251,12 +305,19 @@ def frame_stamp_ns(node_now_ns: int, frame_time_ns: int | None, sim_now_ns: int 
         9867000000
         >>> frame_stamp_ns(10_000_000_000, None, 2_133_000_000)
         10000000000
+        >>> frame_stamp_ns(2_066_000_000, 2_000_000_000, 2_133_000_000, on_sim_clock=True)
+        2000000000
     """
     if frame_time_ns is None or sim_now_ns is None:
         return node_now_ns
     from openral_hal.lifecycle import joint_state_republish_stamp_ns
 
-    return joint_state_republish_stamp_ns(node_now_ns, frame_time_ns, wall_now_ns=sim_now_ns)
+    return joint_state_republish_stamp_ns(
+        node_now_ns,
+        frame_time_ns,
+        wall_now_ns=sim_now_ns,
+        sim_time_ns=frame_time_ns if on_sim_clock else None,
+    )
 
 
 def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
@@ -2817,6 +2878,12 @@ class SimSensorBridge:
         self._attachment_depth_frames_remaining: int = 0
         self._attachment_voxel_updates_remaining: int = 0
         self._attachment_expect_voxel_update: bool = False
+        # The attachment revision the armed barrier waits for a cleared grid for, and the
+        # one-shot wall-clock note if that wait runs long (log only: never a release).
+        self._attachment_barrier_revision: int = 0
+        self._barrier_voxel_timer: Any = None
+        # Wall/sim clocks when the barrier opened, for the per-grasp wait log.
+        self._barrier_t0: tuple[float, int] | None = None
         self._attachment_transparent_depth_stamp_ns: int | None = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
@@ -2881,6 +2948,10 @@ class SimSensorBridge:
 
     def setup(self) -> None:
         """Activate every stream the manifest + HAL support. Idempotent-safe per activate."""
+        # An on-demand renderer (Isaac) only needs frames as often as they are published.
+        set_frame_period = getattr(self._hal, "set_frame_period_s", None)
+        if callable(set_frame_period):
+            set_frame_period(1.0 / max(self._camera_rate_hz, self._depth_rate_hz, 1.0))
         self._setup_cameras()
         self._setup_idle_stepper()
         self._setup_cinecam()
@@ -3169,8 +3240,13 @@ class SimSensorBridge:
         return (times if isinstance(times, dict) else {}), sim_now_ns
 
     def _frame_stamp(self, now: Any, frame_time_ns: int | None, sim_now_ns: int | None) -> Any:
-        """``frame_stamp_ns`` as a header stamp in ``now``'s clock."""
-        ns = frame_stamp_ns(now.nanoseconds, frame_time_ns, sim_now_ns)
+        """``frame_stamp_ns`` as a header stamp in ``now``'s clock.
+
+        The node's clock is the sim clock when its ROS time is active (``use_sim_time``,
+        ``/clock`` published by this HAL node from the same sim the frame times are on).
+        """
+        on_sim_clock = bool(getattr(self._node.get_clock(), "ros_time_is_active", False))
+        ns = frame_stamp_ns(now.nanoseconds, frame_time_ns, sim_now_ns, on_sim_clock=on_sim_clock)
         return type(now)(nanoseconds=ns, clock_type=now.clock_type).to_msg()
 
     def _rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:
@@ -3952,6 +4028,8 @@ class SimSensorBridge:
             self._attachment_applied_revision = revision
             self._attachment_pending = None
             if masks_new_geometry:
+                self._attachment_barrier_revision = revision
+                self._barrier_t0 = (time.monotonic(), int(self._node.get_clock().now().nanoseconds))
                 self._freeze_preattach_occupancy(revision)
                 self._attachment_depth_frames_remaining = 1 if self._depth_pubs else 0
                 self._attachment_expect_voxel_update = (
@@ -3963,6 +4041,14 @@ class SimSensorBridge:
                 )
                 if self._attachment_depth_frames_remaining == 0:
                     self._notify_attachment_perception_ready()
+                else:
+                    # The barrier holds the runner, so the sim does not step and its
+                    # clock (which paces the depth timer) stands still: a backend that
+                    # renders on demand renders the frame now and it is published now,
+                    # or none goes out until the idle stepper's hold (2 s) runs out.
+                    refresh = getattr(self._hal, "refresh_frames", None)
+                    if callable(refresh) and refresh():
+                        self._publish_depth_clouds()
             elif self.attachment_action_ack_ready():
                 self._node.get_logger().info(
                     f"attachment revision {revision} masks no new geometry; "
@@ -4098,7 +4184,9 @@ class SimSensorBridge:
         if declaration is None:
             return
         msg.grasp_declaration_valid = True
-        declaration.fill_idl(msg.grasp_declaration)
+        from openral_msgs.msg import ObjectQuery  # reason: ROS import at call time
+
+        declaration.fill_idl(msg.grasp_declaration, query_factory=ObjectQuery)
 
     def _setup_depth(self) -> None:
         """Create a PointCloud2 publisher + timer per depth SensorSpec.
@@ -4545,6 +4633,14 @@ class SimSensorBridge:
 
     def _notify_attachment_perception_ready(self) -> None:
         """Release a deferred action acknowledgement after map-clearing frames."""
+        t0, self._barrier_t0 = self._barrier_t0, None
+        if t0 is not None:
+            self._node.get_logger().info(
+                "attachment perception barrier released: revision "
+                f"{self._attachment_barrier_revision} waited "
+                f"{time.monotonic() - t0[0]:.2f} s wall / "
+                f"{(int(self._node.get_clock().now().nanoseconds) - t0[1]) * 1e-9:.2f} s sim"
+            )
         callback = self._on_attachment_perception_ready
         if callable(callback):
             callback()
@@ -4562,8 +4658,43 @@ class SimSensorBridge:
             self._attachment_transparent_depth_stamp_ns = stamp_ns
             if self._attachment_expect_voxel_update:
                 self._attachment_voxel_updates_remaining = 1
+                self._arm_barrier_voxel_warning(stamp_ns)
             else:
                 self._notify_attachment_perception_ready()
+
+    def _arm_barrier_voxel_warning(self, transparent_stamp_ns: int) -> None:
+        """Say so (WARN, once) if no cleared grid settles the barrier within a wall bound.
+
+        The wait itself is unchanged and never ends early; the runner's own action-applied
+        deadline is the timeout path. The note carries the stamps a replay needs.
+        """
+        import threading
+
+        self._cancel_barrier_voxel_warning()
+        revision = self._attachment_barrier_revision
+
+        def _warn() -> None:
+            if self._attachment_voxel_updates_remaining <= 0:
+                return
+            last = self._voxel_grid_history[-1] if self._voxel_grid_history else {}
+            self._node.get_logger().warning(
+                f"attachment perception barrier: no world_voxels grid carries revision "
+                f"{revision} after the transparent depth stamp {transparent_stamp_ns} ns for "
+                f"{BARRIER_VOXEL_WARN_S:.0f} s (newest grid: source_stamp="
+                f"{last.get('stamp_ns')} ns, "
+                f"attachment_revision={last.get('attachment_revision')});"
+                " still holding the runner (its action-applied deadline is the timeout)"
+            )
+
+        timer = threading.Timer(BARRIER_VOXEL_WARN_S, _warn)
+        timer.daemon = True
+        self._barrier_voxel_timer = timer
+        timer.start()
+
+    def _cancel_barrier_voxel_warning(self) -> None:
+        timer, self._barrier_voxel_timer = self._barrier_voxel_timer, None
+        if timer is not None:
+            timer.cancel()
 
     def _on_attachment_world_voxels(self, msg: object) -> None:
         """Wait for post-depth OctoMap rasterizations before releasing motion.
@@ -4598,14 +4729,27 @@ class SimSensorBridge:
         self._last_voxel_occupancy = msg.occupancy  # type: ignore[attr-defined]  # reason: ROS subscription type
         header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
         source_stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
-        self._voxel_grid_history.append({**self._last_voxel_grid, "stamp_ns": source_stamp_ns})
+        grid_revision = int(msg.attachment_revision)  # type: ignore[attr-defined]  # reason: ROS msg
+        self._voxel_grid_history.append(
+            {
+                **self._last_voxel_grid,
+                "stamp_ns": source_stamp_ns,
+                "attachment_revision": grid_revision,
+            }
+        )
         if self._attachment_voxel_updates_remaining <= 0:
             return
         transparent_stamp_ns = self._attachment_transparent_depth_stamp_ns
-        if transparent_stamp_ns is None or source_stamp_ns <= transparent_stamp_ns:
+        if transparent_stamp_ns is None or not grid_settles_attachment(
+            source_stamp_ns=source_stamp_ns,
+            transparent_depth_ns=transparent_stamp_ns,
+            grid_attachment_revision=grid_revision,
+            required_revision=self._attachment_barrier_revision,
+        ):
             return
         self._attachment_voxel_updates_remaining -= 1
         if self._attachment_voxel_updates_remaining == 0:
+            self._cancel_barrier_voxel_warning()
             self._attachment_expect_voxel_update = False
             self._attachment_transparent_depth_stamp_ns = None
             self._notify_attachment_perception_ready()
@@ -5225,14 +5369,17 @@ class SimSensorBridge:
         return self._depth_self_bodies | attached_ids
 
     def _publish_depth_clouds_from_obs(self) -> None:
-        """Publish the HAL's ready ``base_link`` clouds, and its registered RGB-D frames.
+        """Publish the HAL's ready clouds in each camera's optical frame, and its RGB-D frames.
 
-        Non-MuJoCo path: the backend (Isaac scene) already deprojected each depth
-        camera to a ``(N, 3)`` cloud in ``base_link`` (Isaac owns the camera
-        convention), surfaced via ``hal.read_depth_clouds()``. We just wrap each in
-        a ``PointCloud2`` stamped ``base_link`` — no ray-cast, no per-camera optical
-        TF (``base_link`` is already on /tf via /odom). octomap lifts it into the
-        world map exactly as it does the MuJoCo clouds. A backend that also renders
+        Non-MuJoCo path: the HAL derives each depth camera's ``(N, 3)`` ``base_link``
+        cloud from the backend's registered RGB-D frame, coloured per pixel
+        (``hal.read_depth_clouds()`` / ``read_depth_cloud_colours()``). Each is expressed
+        back in the camera's optical frame (by the frame's own ``optical_in_base``) and
+        stamped there, as the MuJoCo clouds are: ``octomap_server`` casts every ray from
+        the origin of the cloud's ``frame_id``, so a ``base_link`` cloud cast them from the
+        robot base, cleared cells the camera never looked through and never cleared the ones
+        it did (issue #418, Spark R27/R32/R33: a pushed banana's old cells, seen through,
+        stayed mapped and split its track). A backend that also renders
         the camera's metric depth with its colour (``hal.read_depth_frames()``) gets
         those published as the camera's depth and colour streams
         (``_publish_depth_frame``).
@@ -5244,13 +5391,28 @@ class SimSensorBridge:
         frame_times, sim_now_ns = self._frame_times()
         read_frames = getattr(self._hal, "read_depth_frames", None)
         frames = read_frames() if callable(read_frames) else {}
+        read_colours = getattr(self._hal, "read_depth_cloud_colours", None)
+        colours = read_colours() if callable(read_colours) and clouds else {}
         if clouds:
-            from openral_hal.depth_cloud import colours_from_frame, pointcloud2_from_points_xyz
+            import numpy as np
 
-            base_frame_id = getattr(self._description, "base_frame", "base_link")
+            from openral_hal.depth_cloud import depth_optical_frame_id, pointcloud2_from_points_xyz
+
+            specs_by_name = {s.name: s for s in self._description.sensors}
             for name, pub in self._depth_pubs.items():
                 pts = clouds.get(name)
                 if pts is None or pts.size == 0:
+                    continue
+                frame = frames.get(name)
+                if frame is None or name not in specs_by_name:
+                    # No camera pose: a base-frame cloud would cast octomap's rays from
+                    # the robot base. Publish nothing rather than a wrong map.
+                    if name not in self._depth_disabled:
+                        self._depth_disabled.add(name)
+                        self._node.get_logger().warning(
+                            f"depth camera {name!r}: a cloud with no registered frame "
+                            "(no optical pose); not publishing it to octomap."
+                        )
                     continue
                 # Each backend cloud once (by identity; the reference held here keeps
                 # the id from being reused): a timer faster than the backend's frames
@@ -5259,19 +5421,22 @@ class SimSensorBridge:
                     continue
                 self._depth_clouds_published[name] = pts
                 stamp = self._frame_stamp(now, frame_times.get(name), sim_now_ns)
-                # Coloured from the same camera's newest registered RGB, for viewers: the
-                # robot self filter strips it from octomap's input and publishes it,
-                # robot removed, on /openral/world_cloud/self_filtered_rgb.
-                frame = frames.get(name)
-                rgb = (
-                    colours_from_frame(pts, frame["rgb"], frame["k"], frame["optical_in_base"])
-                    if frame is not None
-                    and frame["rgb"].ndim == 3  # noqa: PLR2004  # reason: (H, W, C) colour only
-                    and frame["rgb"].shape[:2] == frame["depth"].shape[:2]
-                    else None
+                # Each point coloured from the pixel it came from, for viewers: the robot
+                # self filter strips it from octomap's input and publishes it, robot
+                # removed, on /openral/world_cloud/self_filtered_rgb.
+                rgb = colours.get(name)
+                if rgb is not None and len(rgb) != len(pts):
+                    rgb = None
+                optical_in_base = np.asarray(frame["optical_in_base"], dtype=np.float64)
+                optical_in_base = optical_in_base.reshape(4, 4)
+                pts_optical = (np.asarray(pts, dtype=np.float64) - optical_in_base[:3, 3]) @ (
+                    optical_in_base[:3, :3]
                 )
                 cloud = pointcloud2_from_points_xyz(
-                    pts, frame_id=base_frame_id, stamp=stamp, rgb=rgb
+                    pts_optical.astype(np.float32),
+                    frame_id=depth_optical_frame_id(specs_by_name[name]),
+                    stamp=stamp,
+                    rgb=rgb,
                 )
                 pub.publish(cloud)
                 if self._attachment_depth_frames_remaining > 0:
@@ -5295,7 +5460,7 @@ class SimSensorBridge:
                 spec,
                 frame,
                 self._frame_stamp(now, frame_times.get(name), sim_now_ns),
-                tf_stamp=now.to_msg(),
+                tf_stamp=self._frame_stamp(now, sim_now_ns, sim_now_ns),
             )
 
     def _colour_publishers(self, name: str) -> tuple[Any, Any]:
@@ -5338,7 +5503,7 @@ class SimSensorBridge:
         attachment leg (segmenter + HAL bridge) consumes. A frame whose colour does
         not match its depth raster publishes the depth only, warned once.
 
-        ``stamp`` is the time the frame shows; ``tf_stamp`` (the node's now) stamps
+        ``stamp`` is the time the frame shows; ``tf_stamp`` (the backend state time) stamps
         the optical TF, which the backend measured at the current step, so the TF
         history stays true and a lookup at ``stamp`` finds the pose of that time.
         ``tf_stamp=None`` publishes no TF (a static manifest mount carries it). An
@@ -5363,20 +5528,6 @@ class SimSensorBridge:
         info = camera_info_from_intrinsics(
             width=w, height=h, fx=fx, fy=fy, cx=cx, cy=cy, frame_id=optical, stamp=stamp
         )
-        self._depth_image_pubs[name].publish(
-            depth_image_from_grid(depth, frame_id=optical, stamp=stamp)
-        )
-        self._depth_info_pubs[name].publish(info)
-        if rgb.shape == (h, w, _RGB_CHANNELS):
-            image_pub, info_pub = self._colour_publishers(name)
-            image_pub.publish(_rgb8_image(rgb, frame_id=optical, stamp=stamp))
-            info_pub.publish(info)
-        elif rgb.size and name not in self._depth_colour_mismatch_warned:
-            self._depth_colour_mismatch_warned.add(name)
-            self._node.get_logger().warning(
-                f"depth camera {name!r}: colour {rgb.shape} does not match its depth raster "
-                f"{(h, w)}; publishing depth only"
-            )
         if self._tf_broadcaster is not None and tf_stamp is not None:
             qw, qx, qy, qz = rotation_to_quat_wxyz(optical_in_base[:3, :3])
             tf = TransformStamped()
@@ -5391,6 +5542,21 @@ class SimSensorBridge:
             tf.transform.rotation.z = float(qz)
             tf.transform.rotation.w = float(qw)
             self._tf_broadcaster.sendTransform(tf)
+
+        self._depth_image_pubs[name].publish(
+            depth_image_from_grid(depth, frame_id=optical, stamp=stamp)
+        )
+        self._depth_info_pubs[name].publish(info)
+        if rgb.shape == (h, w, _RGB_CHANNELS):
+            image_pub, info_pub = self._colour_publishers(name)
+            image_pub.publish(_rgb8_image(rgb, frame_id=optical, stamp=stamp))
+            info_pub.publish(info)
+        elif rgb.size and name not in self._depth_colour_mismatch_warned:
+            self._depth_colour_mismatch_warned.add(name)
+            self._node.get_logger().warning(
+                f"depth camera {name!r}: colour {rgb.shape} does not match its depth raster "
+                f"{(h, w)}; publishing depth only"
+            )
 
     # -- Viewer --
     def _setup_viewer(self) -> None:

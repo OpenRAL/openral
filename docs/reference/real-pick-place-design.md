@@ -144,11 +144,13 @@ using SAM 2.1 to see the object.
    shows: fingers vs the shelf at the 20 mm link margin; the released object reappearing inside
    the finger margin on retreat (worse on real: DETACH fires when the jaws open, before the
    fingers move); ~1 cm joint play against zero-clearance place geometry.
-7. **Already true on real, and dangerous once anything publishes attachments:** the octomap
+7. **Was true on real, and dangerous once anything published attachments:** the octomap
    bridge's payload clearing (`attached_clear_enabled` default true) and the self-filter both
-   consume `/openral/world_state_fast` regardless of the kernel flag. A vision leg turned on
-   without the kernel's attached check would clear the payload from the map while nothing checks
-   it — an invisible payload.
+   consume `/openral/world_state_fast` regardless of the kernel flag, so a vision leg turned on
+   without the kernel's attached check would have cleared the payload from the map while
+   nothing checked it — an invisible payload. Since #418 the bridge clears only a
+   `tracked_object` binding, by identity (`clear_by_identity`, `object_tracking: bind | on`,
+   sim-only); the vision leg's geometry-only payload stays mapped (fail closed).
 
 ## 2. The design (proposal)
 
@@ -456,7 +458,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   ZED left image as SAM 2.1's positive point → mask (eroded 2-3 px) → masked ZED depth → base-frame
   cloud → robust PCA OBB (reuse `_pca_basis` / `clustered_obb_primitives`), extruded down to the
   support plane, padded by ≥ √3·10 mm plus extrinsic error. Cross-check: the OBB must contain enough
-  occupied cells or it is refused. *Pure-geometry core landed:* `openral_hal._grasp_target` (seed,
+  occupied cells or it is refused. *Pure-geometry core landed:* `openral_core.perception_geometry` (was `openral_hal._grasp_target`; seed,
   prompt projection, region, map cross-check, tracking gate; tests in
   `tests/unit/test_grasp_target.py`). *ROS wiring landed, default off:*
   `openral_hal._grasp_target_leg`, owned by `VisionAttachmentBridge`
@@ -687,7 +689,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   segmenter on the raised top surfaces the map holds around each free hand, fits each mask
   exactly as above, keeps a box only when the voxel map confirms it (it holds the box, and the
   box holds one body — never grown from the map, so two masks separate cartons the map merges)
-  and tracks it (`openral_hal._object_primitives`). On the arming tick the region is the
+  and tracks it (`openral_core.object_primitives`). On the arming tick the region is the
   tracked instance nearest the armed hand (or the lone one in a reasoner's search box), gated
   as any re-fit, with no segmenter call; while the hand occludes it the map holds it. Design,
   residuals and the drafted ADR-0116 amendment:

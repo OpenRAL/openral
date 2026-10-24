@@ -201,7 +201,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True",
+  "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n    geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``\n        (the tracked or single provisional object's own fitted geometry), ``grown`` (cells\n        observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of\n        candidates that may not be the held object; the default, and what a reader treats an\n        unknown code as). Only measured and grown primitives can explain the payload's own\n        cells to the kernel (``payload_own_cells_enabled``, sim only).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True\n    >>> p.geometry_source\n    'fallback'",
   "properties": {
     "shape": {
       "discriminator": {
@@ -238,6 +238,16 @@
         }
       ],
       "default": null
+    },
+    "geometry_source": {
+      "default": "fallback",
+      "enum": [
+        "fallback",
+        "measured",
+        "grown"
+      ],
+      "title": "Geometry Source",
+      "type": "string"
     }
   },
   "required": [

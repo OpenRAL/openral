@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "Externally established error bound for attributed object surface measurements.\n\nThe bound must cover depth, extrinsics and point attribution/outliers. Declaring\nit is not calibration proof; the referenced calibration must exist independently.\nNo defaults establish a physical bound, sensor support or freshness policy.",
+  "properties": {
+    "point_error_bound_m": {
+      "minimum": 0.0,
+      "title": "Point Error Bound M",
+      "type": "number"
+    },
+    "calibration_reference": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Calibration Reference",
+      "type": "string"
+    },
+    "sensor_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Sensor Ids",
+      "type": "array"
+    },
+    "max_age_s": {
+      "exclusiveMinimum": 0.0,
+      "title": "Max Age S",
+      "type": "number"
+    }
+  },
+  "required": [
+    "point_error_bound_m",
+    "calibration_reference",
+    "sensor_ids",
+    "max_age_s"
+  ],
+  "title": "CatalogMeasurementCalibration",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "description": "One refused observation attempt behind an object-query failure.\n\nAttributes:\n    camera: Camera that produced the observation.\n    stamp_ns: Source-clock stamp of the observation.\n    reason: Bounded tracker refusal code.",
+  "properties": {
+    "camera": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Camera",
+      "type": "string"
+    },
+    "stamp_ns": {
+      "minimum": 0,
+      "title": "Stamp Ns",
+      "type": "integer"
+    },
+    "reason": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "camera",
+    "stamp_ns",
+    "reason"
+  ],
+  "title": "ObjectQueryObservation",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

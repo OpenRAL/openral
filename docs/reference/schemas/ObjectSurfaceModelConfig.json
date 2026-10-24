@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "SurfaceFreeSpaceCalibration": {
+      "additionalProperties": false,
+      "description": "External sensor/pose error bounds required to retire observed surface cells.\n\nThe reference identifies independently established calibration evidence; this\nconfiguration does not establish that evidence or authorize world-map clearing.",
+      "properties": {
+        "calibration_ref": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Calibration Ref",
+          "type": "string"
+        },
+        "sensor_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Sensor Ids",
+          "type": "array"
+        },
+        "depth_error_m": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Error M",
+          "type": "number"
+        },
+        "pose_error_m": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Pose Error M",
+          "type": "number"
+        },
+        "pixel_error": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Pixel Error",
+          "type": "integer"
+        },
+        "max_age_s": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 600.0,
+          "title": "Max Age S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "calibration_ref",
+        "sensor_ids",
+        "depth_error_m",
+        "pose_error_m",
+        "pixel_error",
+        "max_age_s"
+      ],
+      "title": "SurfaceFreeSpaceCalibration",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Resource and convergence bounds for observation-only object surface registration.",
+  "properties": {
+    "voxel_m": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 0.1,
+      "title": "Voxel M",
+      "type": "number"
+    },
+    "max_points": {
+      "maximum": 8192,
+      "minimum": 4,
+      "title": "Max Points",
+      "type": "integer"
+    },
+    "max_voxels": {
+      "maximum": 8192,
+      "minimum": 4,
+      "title": "Max Voxels",
+      "type": "integer"
+    },
+    "max_iterations": {
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Max Iterations",
+      "type": "integer"
+    },
+    "max_correspondence_m": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 1.0,
+      "title": "Max Correspondence M",
+      "type": "number"
+    },
+    "max_rmse_m": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 1.0,
+      "title": "Max Rmse M",
+      "type": "number"
+    },
+    "min_overlap": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 1.0,
+      "title": "Min Overlap",
+      "type": "number"
+    },
+    "free_space_calibration": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SurfaceFreeSpaceCalibration"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "voxel_m",
+    "max_points",
+    "max_voxels",
+    "max_iterations",
+    "max_correspondence_m",
+    "max_rmse_m",
+    "min_overlap"
+  ],
+  "title": "ObjectSurfaceModelConfig",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

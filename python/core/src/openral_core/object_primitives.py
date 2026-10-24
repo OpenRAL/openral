@@ -15,9 +15,12 @@ originates a box.
 
 Pure numpy, no ROS, no clock. ``PrimitiveTracker`` keeps identities across fits and drops
 what goes stale or what the map contradicts; ``nearest_primitive`` picks the instance a
-hand approaches, refusing a tie. The leg (``_grasp_target_leg``, ``premeasure=True``) runs
-the chosen box through its existing gates before ``accept``; the kernel contract is
-unchanged (no region, no exemption).
+hand approaches, refusing a tie. The leg (``openral_hal._grasp_target_leg``,
+``premeasure=True``) runs the chosen box through its existing gates before ``accept``; the
+kernel contract is unchanged (no region, no exemption).
+
+Lives in ``openral_core`` (moved from ``openral_hal._object_primitives``, issue #418) so
+the Layer-2 tracker and the HAL legs import it downward.
 
 Every threshold is a *calibration point* (CLAUDE.md §1.2).
 """
@@ -29,10 +32,10 @@ from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+
 from openral_core import PlaceRegion
 from openral_core.geometry import homogeneous_from_quat_xyz
-
-from openral_hal._grasp_target import (
+from openral_core.perception_geometry import (
     VoxelLattice,
     _check_frame,
     _components,
@@ -102,6 +105,8 @@ def map_confirms(
     min_cover: float,
     pad_m: float = 0.0,
     own: Sequence[PlaceRegion] = (),
+    static: Collection[tuple[int, int, int]] = (),
+    min_split_cells: int = 1,
 ) -> tuple[str, str]:
     """Whether the voxel map confirms a camera instance box: ``("", "")``, or ``(kind, why)``.
 
@@ -128,6 +133,14 @@ def map_confirms(
             second body confined to that band is a sliver, not a split.
         own: Boxes the robot itself fills (its hands, padded), in the grid frame: a
             second body wholly inside them is the robot's own and does not split it.
+        static: Lattice cells of declared static geometry (padded as the caller likes): a
+            body whose every cell is one of them is the declared wall or floor the camera
+            saw, not a foreign object, and is not counted. The cover gate and the fit read
+            every cell regardless; only a component wholly inside ``static`` is excused.
+        min_split_cells: The fewest cells a second body needs to split the box. ``1`` (any
+            body) is the fail-closed default; the object tracker passes more, since a curved
+            or hand-occluded object leaves 1-2 cell fragments of itself apart from its main
+            body (Isaac R28/R31: a banana's own tip went SPLIT mid-grasp).
 
     Raises:
         ROSConfigError: On a frame mismatch or a tilted region.
@@ -157,6 +170,8 @@ def map_confirms(
         'map_split'
         >>> map_confirms(g, wide, support_z=0.0, min_cover=0.5, pad_m=0.06)  # only in the pad
         ('', '')
+        >>> map_confirms(g, box(0.4, 0.3), support_z=0.0, min_cover=0.5, min_split_cells=5)
+        ('', '')
     """
     count, covered = region_covers_occupied(grid, region, min_fraction=min_cover)
     if not covered:
@@ -165,6 +180,10 @@ def map_confirms(
     centers = occupied_centers_in_box(grid, closed)
     above = centers[centers[:, 2] > support_z + grid.resolution]
     comps = sorted(_components(_ijk(grid, above)), key=len, reverse=True)
+    if static:
+        static_set = static if isinstance(static, (set, frozenset)) else set(static)
+        keys = _ijk(grid, above)
+        comps = [c for c in comps if not all(tuple(keys[i]) in static_set for i in c)]
     hx, hy, hz = region.half_extents
     x, y, z = region.pose.xyz
     inner = region.model_copy(
@@ -176,7 +195,8 @@ def map_confirms(
     deep = [
         c
         for c in comps[1:]
-        if _in_region(above[c], inner).any()
+        if len(c) >= min_split_cells
+        and _in_region(above[c], inner).any()
         and not np.any([_in_region(above[c], b) for b in own], axis=0).all()
     ]
     if deep:
@@ -236,7 +256,10 @@ def instance_prompt(
     occupied = {(i, j, k) for i, j, k in ijk.tolist()}
     top = np.array([(i, j, k + 1) not in occupied for i, j, k in ijk.tolist()], dtype=bool)
     tops, top_ijk = centers[top], ijk[top]
-    raised = tops[:, 2] > float(tops[:, 2].min()) + grid.resolution
+    # "More than one cell above" on a lattice is "two or more cells": half a cell of margin
+    # keeps a support the octree marks in two layers in places (a counter top on a layer
+    # boundary) from reading as raised wherever its upper layer shows (float equality).
+    raised = tops[:, 2] > float(tops[:, 2].min()) + 1.5 * grid.resolution
     tops, top_ijk = tops[raised], top_ijk[raised]
     free = np.array([(i, j, k) not in skip for i, j, k in top_ijk.tolist()], dtype=bool)
     for region in covered:

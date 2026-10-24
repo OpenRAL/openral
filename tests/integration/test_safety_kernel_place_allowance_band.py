@@ -809,7 +809,7 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
     import rclpy
     from openral_core import GraspDeclaration, PlaceRegion, Pose6D
     from openral_core.geometry import yaw_to_quat_xyzw
-    from openral_hal._grasp_target import VoxelLattice
+    from openral_core.perception_geometry import VoxelLattice
     from openral_hal._grasp_target_leg import _kernel_closure
     from openral_hal.vision_attachment_bridge import region_attachment
     from openral_msgs.msg import (

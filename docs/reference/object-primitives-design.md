@@ -2,7 +2,8 @@
 
 Status: **design + prototype (default off), pending Safety-WG review**, 2026-10-05. Issue #349.
 Developed on `feat/object-primitives-349`; landed on `master` with #289. The prototype is §4:
-`openral_hal._object_primitives` + `GraspTargetLeg(premeasure=True)`, behind
+`openral_core.object_primitives` (moved from `openral_hal._object_primitives`, #418) +
+`GraspTargetLeg(premeasure=True)`, behind
 `vision_attachment.grasp_target_premeasure`. Everything in §3 that is not in §4 is design.
 
 Revision 2 (2026-10-05): **camera first, map confirms.** Revision 1 of this note made the voxel
@@ -240,7 +241,7 @@ posture (not yet assigned an id); until then it inherits the parameter's default
 
 | piece | layer | status |
 |---|---|---|
-| `_object_primitives` (prompt, confirmation, tracker), leg wiring | 0 HAL (`openral_hal`, beside `_grasp_target`; the bridge owns the segmenter client) | prototype |
+| `openral_core.object_primitives` (prompt, confirmation, tracker), leg wiring | core helpers (moved from `openral_hal._object_primitives`, #418, beside `openral_core.perception_geometry`); leg wiring 0 HAL (the bridge owns the segmenter client) | prototype |
 | `vision_attachment.grasp_target_premeasure` | core schema + HAL param + deploy-sim mapping | prototype |
 | publishing the store (`/openral/object_primitives`, an `ObjectPrimitiveSet` IDL) | 2 World State | design |
 | label → instance id grounding, `GraspTargetRef.object_id = prim:<id>` | 4 Reasoner (`openral_reasoner.grounding`) | design |
@@ -287,9 +288,9 @@ is untouched. Draft text for the private management log (`OpenRAL/management`, `
 
 ## 4. Prototype (this branch)
 
-- `python/hal/src/openral_hal/_object_primitives.py`: `instance_prompt`, `map_confirms`,
+- `python/core/src/openral_core/object_primitives.py` (was `openral_hal._object_primitives`): `instance_prompt`, `map_confirms`,
   `nearest_primitive`, `point_box_gap_m`, `PrimitiveTracker` (`update`, `prune`), `PrimitiveFit`,
-  `ObjectPrimitive`. Pure numpy; reuses `_grasp_target`'s lattice, components, cover and tracking.
+  `ObjectPrimitive`. Pure numpy; reuses `perception_geometry`'s lattice, components, cover and tracking.
 - `GraspTargetLeg(premeasure=True)`: `_premeasure` (prune, one prompt, `_request` with no
   declaration), `_on_instance_reply` (`_fit` → `map_confirms` → tracker), `_tick_instances` (the
   armed region from the instances, `_gate_instance` → `_gate_refit(complete=False)`; once held,

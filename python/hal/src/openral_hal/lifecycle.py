@@ -65,7 +65,7 @@ import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from time import monotonic, perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from openral_hal.mobile_base_bridge import describes_mobile_base
 
@@ -96,26 +96,57 @@ __all__ = [
 # clock domain (a sim HAL stamping sim-elapsed time, a HAL with a hardware epoch);
 # its age cannot be carried over, so the republish keeps the node's own now.
 _MAX_CARRIED_SAMPLE_AGE_NS = 5_000_000_000
+_SELF_FILTER_PERIOD_HANDOFF_TIMEOUT_ATTEMPTS = 50  # 10 s at the 0.2 s retry interval
+
+
+class _ParameterSetResult(Protocol):
+    successful: bool
+    reason: str
+
+
+class _AtomicParameterUpdateResponse(Protocol):
+    result: _ParameterSetResult
+
+
+class _AtomicParameterUpdateFuture(Protocol):
+    def result(self) -> _AtomicParameterUpdateResponse: ...
+
+    def add_done_callback(
+        self, callback: Callable[[_AtomicParameterUpdateFuture], None]
+    ) -> None: ...
 
 
 def joint_state_republish_stamp_ns(
-    node_now_ns: int, sample_stamp_ns: int, *, wall_now_ns: int | None = None
+    node_now_ns: int,
+    sample_stamp_ns: int,
+    *,
+    wall_now_ns: int | None = None,
+    sim_time_ns: int | None = None,
 ) -> int:
-    """Stamp for the HAL's ``~/joint_states`` republish: node now minus the sample's age.
+    """Stamp for the HAL's ``~/joint_states`` republish: the time the sample shows.
 
-    A HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) on every HAL (a
-    sim-attached HAL stamps its post-step read too), while the node's clock may be sim
-    time, so the absolute stamp cannot be copied. The grasp trigger alone reads sim
-    snapshots on the sim clock instead (``grasp_trigger_state``). The
-    sample's AGE can: consumers that pair joint states with other sensors by stamp (the
-    robot self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale,
-    instead of as fresh at every republish. An age that is negative or implausibly large
+    A sample on the node's own sim clock (``sim_time_ns``: the post-step frame's sim
+    time, when this node publishes ``/clock`` from those same frames) is stamped with
+    that sim time, exactly. Its wall-clock age must not be used there: a sim slower than
+    real time republishes one frame several times, and subtracting each republish's
+    growing WALL age from the SIM clock labelled one pose with stamps reaching back
+    seconds (issue #418 run sf_dr2, Isaac at ~0.13x real time: 0.07-2.0 s early, 689 of
+    1639 samples out of order). The robot self-filter, which poses the arm at a cloud's
+    stamp from these samples, then posed it at another instant and kept its returns.
+
+    Otherwise a HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) while the
+    node's clock may differ, so the absolute stamp cannot be copied; the sample's AGE
+    can: consumers that pair joint states with other sensors by stamp (the robot
+    self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale, instead
+    of as fresh at every republish. An age that is negative or implausibly large
     (another clock domain) falls back to ``node_now_ns``, the previous behaviour.
 
     Args:
         node_now_ns: The node clock's now, in nanoseconds.
         sample_stamp_ns: The HAL's ``JointState.stamp_ns``.
         wall_now_ns: Wall-clock now; ``time.time_ns()`` when omitted.
+        sim_time_ns: The sample's sim time when the node's clock IS that sim clock,
+            else ``None``.
 
     Returns:
         The stamp to publish, in the node's clock domain.
@@ -125,9 +156,13 @@ def joint_state_republish_stamp_ns(
         9999999900
         >>> joint_state_republish_stamp_ns(10_000_000_000, 0, wall_now_ns=1_000)
         10000000000
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 900, sim_time_ns=9_800_000_000)
+        9800000000
     """
     import time
 
+    if sim_time_ns is not None and sim_time_ns > 0:
+        return int(sim_time_ns)
     wall = time.time_ns() if wall_now_ns is None else wall_now_ns
     age = wall - int(sample_stamp_ns)
     if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
@@ -744,6 +779,7 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("tracking_fault_tolerance_m", 0.01)
             self._tracking: Any = None
             self._tracking_estop_pub: Any = None
+            self._init_self_filter_period_handoff()
             self.get_logger().info(f"{node_name} HAL node initialised.")
 
         # ── Subclass hooks ────────────────────────────────────────────────
@@ -826,6 +862,115 @@ if _ROS2_AVAILABLE:
             """
             return TransitionCallbackReturn.SUCCESS
 
+        def _init_self_filter_period_handoff(self) -> None:
+            # Isaac self-filter cadence handoff. The filter starts fail-closed
+            # and accepts the connected HAL's actual simulation timestep over
+            # the standard SetParametersAtomically service.
+            self.declare_parameter("self_filter_period_target", "")
+            self._self_filter_period_client: Any = None
+            self._self_filter_period_timer: Any = None
+            self._self_filter_period_future: _AtomicParameterUpdateFuture | None = None
+            self._self_filter_period_s: float | None = None
+            self._self_filter_period_attempts = 0
+
+        def _begin_self_filter_period_handoff(self) -> None:
+            """Send the actual sim tick to the specifically named self-filter.
+
+            The caller opts in only for an Isaac camera path whose filter must
+            run. Missing clock metadata, a non-simulation clock, a rejected
+            update, or an unavailable service leaves that filter fail-closed.
+            """
+            target = self.get_parameter("self_filter_period_target").value
+            if not target:
+                return
+            assert self._hal is not None
+            authority_fn = getattr(self._hal, "clock_authority", None)
+            authority = authority_fn() if callable(authority_fn) else None
+            origin = getattr(getattr(authority, "origin", None), "value", None)
+            period_s = getattr(authority, "timestep_s", None)
+            if (
+                origin != "simulation"
+                or not isinstance(period_s, int | float)
+                or isinstance(period_s, bool)
+                or not math.isfinite(period_s)
+                or not 0.0 < period_s <= 1.0
+            ):
+                self.get_logger().error(
+                    "self-filter period handoff requires a simulation ClockAuthority with "
+                    "a finite timestep in (0, 1] s; filter will continue dropping clouds"
+                )
+                return
+            from rcl_interfaces.srv import SetParametersAtomically
+
+            self._self_filter_period_s = float(period_s)
+            self._self_filter_period_client = self.create_client(
+                SetParametersAtomically, f"/{target}/set_parameters_atomically"
+            )
+            self._self_filter_period_attempts = 0
+            self._self_filter_period_timer = self.create_timer(
+                0.2, self._try_self_filter_period_handoff
+            )
+
+        def _try_self_filter_period_handoff(self) -> None:
+            if self._self_filter_period_future is not None:
+                return
+            client = self._self_filter_period_client
+            if client is None:
+                return
+            self._self_filter_period_attempts += 1
+            if not client.service_is_ready():
+                if (
+                    self._self_filter_period_attempts
+                    >= _SELF_FILTER_PERIOD_HANDOFF_TIMEOUT_ATTEMPTS
+                ):
+                    self.get_logger().error(
+                        "self-filter period service unavailable after 10 s; filter remains "
+                        "fail-closed"
+                    )
+                    self._stop_self_filter_period_handoff(destroy_client=False)
+                return
+            from rcl_interfaces.srv import SetParametersAtomically
+            from rclpy.parameter import Parameter
+
+            request = SetParametersAtomically.Request()
+            assert self._self_filter_period_s is not None
+            request.parameters = [
+                Parameter(
+                    "joint_state_period_s", value=self._self_filter_period_s
+                ).to_parameter_msg()
+            ]
+            self._self_filter_period_future = client.call_async(request)
+            self._self_filter_period_future.add_done_callback(
+                self._finish_self_filter_period_handoff
+            )
+
+        def _finish_self_filter_period_handoff(self, future: _AtomicParameterUpdateFuture) -> None:
+            try:
+                response = future.result()
+                if not response.result.successful:
+                    raise RuntimeError(response.result.reason or "parameter update rejected")
+            except Exception as exc:  # reason: no invalid cadence may open the filter
+                self.get_logger().error(
+                    f"self-filter rejected actual simulation period: {exc}; filter remains "
+                    "fail-closed"
+                )
+            else:
+                self.get_logger().info(
+                    f"self-filter admitted actual simulation period "
+                    f"{self._self_filter_period_s:.12g} s"
+                )
+            self._stop_self_filter_period_handoff(destroy_client=False)
+
+        def _stop_self_filter_period_handoff(self, *, destroy_client: bool) -> None:
+            if self._self_filter_period_timer is not None:
+                self._self_filter_period_timer.cancel()
+                self.destroy_timer(self._self_filter_period_timer)
+                self._self_filter_period_timer = None
+            self._self_filter_period_future = None
+            if destroy_client and self._self_filter_period_client is not None:
+                self.destroy_client(self._self_filter_period_client)
+                self._self_filter_period_client = None
+
         def on_activate_post_subs(self) -> TransitionCallbackReturn:
             """Subclass extension point after the base wires the standard subs.
 
@@ -876,6 +1021,7 @@ if _ROS2_AVAILABLE:
             )
             self._heartbeat.create_publisher()
             self.get_logger().info("HAL connected.")
+            self._begin_self_filter_period_handoff()
             return self.on_configure_post_hal()
 
         def _open_urdf_joint_state_pub(self, msg_type: Any, qos: Any) -> None:  # noqa: ANN401  # reason: rclpy message/QoS types are untyped
@@ -1121,6 +1267,7 @@ if _ROS2_AVAILABLE:
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
             """Disconnect the HAL. Calls the pre-disconnect hook first."""
             self.on_cleanup_pre_disconnect()
+            self._stop_self_filter_period_handoff(destroy_client=True)
             if self._heartbeat is not None:
                 self._heartbeat.destroy()
                 self._heartbeat = None
@@ -1166,6 +1313,9 @@ if _ROS2_AVAILABLE:
                 return
             try:
                 hal.disconnect()
+                release_env = getattr(hal, "release_env", None)
+                if callable(release_env):
+                    release_env()
             except Exception as exc:  # reason: a teardown fault must not mask process exit
                 self.get_logger().error(f"HAL disconnect failed during shutdown: {exc}")
 
@@ -1347,8 +1497,15 @@ if _ROS2_AVAILABLE:
 
             msg = RosJointState()
             now = self.get_clock().now()
+            # This node's /clock is published from these same frames: on it, the
+            # frame's sim time is the stamp, never the republish's wall age.
+            own_sim_time = (
+                frame.sim_time_ns if frame is not None and self._clock_pub is not None else None
+            )
             msg.header.stamp = type(now)(
-                nanoseconds=joint_state_republish_stamp_ns(now.nanoseconds, state.stamp_ns),
+                nanoseconds=joint_state_republish_stamp_ns(
+                    now.nanoseconds, state.stamp_ns, sim_time_ns=own_sim_time
+                ),
                 clock_type=now.clock_type,
             ).to_msg()
             msg.name = list(state.name)
@@ -2141,6 +2298,9 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_place_target_freeze_s", 0.0),
                     ("vision_attachment_place_target_search_depth_m", 0.20),
                     ("vision_attachment_place_target_extrinsic_error_m", MAX_PLANAR_ERR_M),
+                    # False when the #418 object tracker owns /openral/attachment_state
+                    # (DeployRuntime.object_tracking bind | on): the bridge publishes nothing.
+                    ("vision_attachment_publish_attachment_state", True),
                 ],
             )
             self._bridge: Any = None
@@ -2813,6 +2973,9 @@ if _ROS2_AVAILABLE:
                     )
                     .get_parameter_value()
                     .double_value,
+                    publish_attachment_state=gp("vision_attachment_publish_attachment_state")
+                    .get_parameter_value()
+                    .bool_value,
                 ),
             )
             self._vision_attachment.setup()

@@ -28,13 +28,13 @@ from numpy.typing import NDArray
 from openral_core import AttachedCollisionObject, FixedAttachment, JointSpec, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 from openral_hal._vision_attachment_evidence import VisionAttachmentEvidenceProducer
 from openral_hal.vision_attachment_bridge import (
     ReleaseWindow,
     VisionAttachmentBridge,
     VisionAttachmentConfig,
     _release_base_link,
-    _xyz_rpy_matrix,
     box_gap_lower_bound_m,
     freeze_released_attachment,
 )

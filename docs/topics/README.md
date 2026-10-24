@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (50)
+## Topics (51)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -31,7 +31,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/octomap_point_cloud_centers` | `sensor_msgs/PointCloud2` | — | python/runner/src/openral_runner/world_cloud_bridge.py (WorldCloudBridge.__init__) |
 | `/odom` | `nav_msgs/Odometry` | python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) | — |
 | `/openral/action_applied` | `std_msgs/UInt64` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) |
-| `/openral/attachment_state` | `openral_msgs/AttachmentState` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `attachment_state_topic`]<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
+| `/openral/attachment_state` | `openral_msgs/AttachmentState` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `attachment_state_topic`]<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/attachment_state_applied` | `std_msgs/UInt64` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/candidate_action` | `openral_msgs/ActionChunk` | python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>python/runner/src/openral_runner/dataset_recorder_bridge.py (DatasetRecorderBridge.__init__) |
 | `/openral/critic/score` | `openral_msgs/CriticScore` | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__) [param `critic_score_topic`] | packages/openral_reasoner_ros/openral_reasoner_ros/critic_producer_node.py (CriticProducerNode.__init__) [param `score_topic`] |
@@ -41,6 +41,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/failure/rskill` | `openral_msgs/FailureTrigger` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) | — |
 | `/openral/failure/safety` | `openral_msgs/FailureTrigger` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/hardware_estop_node.py (HardwareEstopNode.on_configure) | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/grasp_declaration` | `openral_msgs/GraspDeclaration` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | python/hal/src/openral_hal/_grasp_target_leg.py (GraspTargetLeg.setup)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_grasp_declaration) |
+| `/openral/grasp_events` | `openral_msgs/GraspEvent` | python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) | — |
 | `/openral/human_estop` | `std_msgs/Empty` | — | packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure) |
 | `/openral/nav2/scan` | `sensor_msgs/LaserScan` | packages/openral_nav2_bringup/openral_nav2_bringup/payload_scan_filter_node.py (main.PayloadScanFilterNode.__init__) [param `output_topic`] | — |
 | `/openral/nvblox/depth_filtered/camera_info` | `sensor_msgs/CameraInfo` | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) [param `output_camera_info_topic`] | — |
@@ -97,13 +98,14 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/perception/query_task_progress` | `openral_msgs/QueryTaskProgress` | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_query_task_progress)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._maybe_verify_active_mission_task) |
 | `/openral/perception/segment_in_view` | `openral_msgs/SegmentInView` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) [param `segment_in_view_service`] | — |
 
-## Per-instance services (7)
+## Per-instance services (8)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
 | `/openral/{robot}/reset_episode` | `std_srvs/Trigger` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode._open_reset_episode_service) | — |
 | `/openral/{robot}/reset_to_pose` | `openral_msgs/ResetToPose` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode.on_configure_post_hal) | — |
 | `/{ns}/torque_enable` | `interbotix_xs_msgs/TorqueEnable` | — | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) |
+| `/{target}/set_parameters_atomically` | `rcl_interfaces/SetParametersAtomically` | — | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._begin_self_filter_period_handoff) |
 | `{lifecycle_node_name}/get_state` | `lifecycle_msgs/GetState` | — | tools/wait_for_action_and_signal_palette.py (_lifecycle_active) |
 | `{node}/change_state` | `lifecycle_msgs/ChangeState` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._change_state_async) |
 | `{self._controller_manager}/list_controllers` | `controller_manager_msgs/ListControllers` | — | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |

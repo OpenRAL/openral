@@ -101,7 +101,7 @@ def _hand_at_zero(description: Any) -> NDArray[np.float64]:
 
     The same FK the kernel runs at q = 0 (``origin · joint motion``, motion = identity).
     """
-    from openral_hal.vision_attachment_bridge import _xyz_rpy_matrix
+    from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 
     edges = {e.child_link: e for e in [*description.joints, *description.fixed_attachments]}
     t, link = np.eye(4), _HAND
