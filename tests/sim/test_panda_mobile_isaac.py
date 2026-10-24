@@ -83,17 +83,22 @@ def test_reset_obs_has_all_manifest_cameras(env: Any) -> None:
 
 
 def test_reset_obs_has_depth_cloud_in_front(env: Any) -> None:
-    # panda_mobile declares a depth sensor (front_depth) → an (N, 3) base_link
-    # cloud the bridge publishes as PointCloud2. Never fabricated for a robot
-    # without a depth SensorSpec. The forward-facing depth camera sees the ground
-    # ahead of the base, so the cloud sits in +x (in front) near z≈0 (ground).
+    # panda_mobile declares a depth sensor (front_depth) → a registered RGB-D frame,
+    # which the HAL deprojects into the (N, 3) base_link cloud the bridge publishes
+    # as PointCloud2. Never fabricated for a robot without a depth SensorSpec. The
+    # forward-facing depth camera sees the ground ahead of the base, so the cloud
+    # sits in +x (in front) near z≈0 (ground).
+    from openral_hal.depth_cloud import cloud_from_depth_frame
+
     obs = env.reset()
-    assert "depth_points" in obs
-    assert "front_depth" in obs["depth_points"]
-    cloud = np.asarray(obs["depth_points"]["front_depth"], dtype=float)
+    frame = obs["depth_frames"]["front_depth"]
+    cloud, _ = cloud_from_depth_frame(
+        frame["depth"], frame["rgb"], frame["k"], frame["optical_in_base"]
+    )
+    cloud = np.asarray(cloud, dtype=float)
     assert cloud.ndim == 2 and cloud.shape[1] == 3
     assert cloud.shape[0] > 100  # a real depth frame, not a stub
-    # Geometric sanity (Isaac's get_pointcloud, world→base_link): the bulk of the
+    # Geometric sanity (depth through Isaac's K and optical pose): the bulk of the
     # cloud is in front of the base and at/below the camera height.
     assert float(np.median(cloud[:, 0])) > 0.0  # +x, ahead of the base
     assert float(np.min(cloud[:, 2])) < 0.5  # reaches down toward the ground

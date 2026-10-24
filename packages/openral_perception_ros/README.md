@@ -92,6 +92,16 @@ import); add more with the repeatable `--object-detector-locator <manifest|alias
 Each locator is an independent lifecycle + VRAM peer (per the single-resident-skill VRAM eviction policy), so the reasoner
 can evict it before a co-resident VLA.
 
+The `LocateInView` service follows the source-frame and failure contracts in
+[`openral_msgs`](../msgs/README.md#services--srv): an empty `failure_reason` means the
+detector completed the query, even when it found no detections. `detector_inactive`,
+`no_frame`, `requested_frame_unavailable`, and bounded
+`detector_exception:<type>:<detail>` values mean the query did not establish visibility;
+clients must not treat those responses as an absence result. Zero `source_stamp_ns` asks
+for the latest frame for reasoner tools. Nonzero requests select only that exact image
+stamp from each camera's bounded 32-frame history; the response reports the actual source
+stamp, and an evicted/unseen stamp returns no detections with a typed failure.
+
 ## What's in here
 
 | Path | Role |
@@ -276,3 +286,7 @@ removes a published payload whatever the kernel flag.
   `openral_core.ObjectsMetadata` — the detector and metadata schema this
   node reuses.
 - CLAUDE.md §3 (layer discipline) and §2 (QoS).
+
+Deploy locator startup uses the bounded one-shot state-poll lifecycle helper,
+so a dropped configure response cannot silently leave grounding unavailable.
+The helper exits at ACTIVE; later reasoner deactivation still releases VRAM.

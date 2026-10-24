@@ -175,3 +175,73 @@ def test_e2e_query_coco_sample() -> None:
         assert "2" in answer or "two" in answer.lower()
     finally:
         vlm.close()
+
+
+def test_a_default_client_leaves_the_token_budget_to_the_sidecar() -> None:
+    """Spark R230 (2026-10-22): a 256 sent with every query overrode the sidecar's 1024.
+
+    Thinking is on, so a trace (~801 tokens) never closed in 256 and every answer failed.
+    A ZMQ reply socket at the process boundary records what the client sends.
+    """
+    msgpack = pytest.importorskip("msgpack")
+    zmq = pytest.importorskip("zmq")
+    import threading
+
+    from openral_runner.backends.gstreamer.qwen_scene_vlm import QwenSceneVlm
+
+    ctx = zmq.Context.instance()
+    rep = ctx.socket(zmq.REP)
+    port = rep.bind_to_random_port("tcp://127.0.0.1")
+    seen: list[dict[str, object]] = []
+
+    def serve() -> None:
+        while len(seen) < 4:  # a ping + a query per client
+            req = msgpack.unpackb(rep.recv(), raw=False)
+            seen.append(req)
+            reply = {"ok": True} if req.get("op") == "ping" else {"ok": True, "answer": "yes"}
+            rep.send(msgpack.packb(reply, use_bin_type=True))
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    try:
+        default = QwenSceneVlm(model_id="m", port=port, auto_spawn=False)
+        assert default.query(b"\x00" * 12, 2, 2, "done?") == "yes"
+        default.close()
+        explicit = QwenSceneVlm(model_id="m", port=port, auto_spawn=False, max_new_tokens=64)
+        explicit.query(b"\x00" * 12, 2, 2, "done?")
+        explicit.close()
+    finally:
+        worker.join(timeout=5)
+        rep.close(linger=0)
+    queries = [r for r in seen if r.get("op") == "query"]
+    assert "max_new_tokens" not in queries[0], "the sidecar's own budget applies"
+    assert queries[1]["max_new_tokens"] == 64
+
+
+def test_a_sidecar_that_never_boots_is_ended_with_the_failed_warm_up(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot timeout raised with the spawned child still running (#421 review): a
+    failed warm-up left a process holding the model's GPU memory behind."""
+    pytest.importorskip("msgpack")
+    pytest.importorskip("zmq")
+    import socket
+
+    from openral_runner.backends.gstreamer.qwen_scene_vlm import QwenSceneVlm
+
+    pid_file = tmp_path / "pid"
+    script = tmp_path / "silent_sidecar.py"  # the sidecar's argv, never answers a ping
+    script.write_text(
+        "import os, sys, time\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(120)\n"
+    )
+    monkeypatch.setenv("OPENRAL_QWEN_VLM_SIDECAR", str(script))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    vlm = QwenSceneVlm(model_id="m", port=port, boot_timeout_s=3.0)
+    with pytest.raises(ROSConfigError, match="not ready"):
+        vlm.warm_up()
+    pid = int(pid_file.read_text())
+    assert not pathlib.Path(f"/proc/{pid}").exists(), "the spawned sidecar outlived the failed boot"

@@ -10,6 +10,7 @@ install(
   PROGRAMS
     openral_reasoner_ros/reasoner_node.py
     openral_reasoner_ros/critic_producer_node.py
+    openral_reasoner_ros/completion_check_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

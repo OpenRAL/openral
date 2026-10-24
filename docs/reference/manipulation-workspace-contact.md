@@ -214,8 +214,8 @@ through it.
 |---|---|---|
 | schema | `GraspDeclaration.workspace_box` / `.workspace_region` (`openral_core`), `GraspDeclaration.msg` (`workspace_box_valid`, `workspace_box`, `workspace_region_valid`, `workspace_region`) | Backward-compatible addition, no `schema_version` bump. A scene may declare `workspace_box` (like `search_box`); `workspace_region` is producer-only: `_reject_scene_supplied_place_region` refuses it from a scene and the rSkill runner strips it from every goal. Caps `MAX_WORKSPACE_HALF_EXTENT_M` 0.50 m / `MAX_WORKSPACE_VOLUME_M3` 0.25 m³ (WG placeholders, mirrored by the kernel); `geometry` must be empty. |
 | producer | `GraspTargetLeg._confirm_workspace` / `published_workspace` (`openral_hal/_grasp_target_leg.py`) | Every leg tick: the live declaration's `workspace_box` is **confirmed** on a fresh grid (the region's freshness rules, `_fresh_grid`) when occupied cells centred in it cover ≥ `WORKSPACE_MIN_COVER` (10 %) of its footprint (`region_covers_occupied`), and published as `workspace_region` — the same box, never grown, stamped with the grid's `source_stamp` — on the attachment envelope the kernel already ingests (`fill`). Retracted at once when the map no longer holds it or is in another frame; on a stale/missing grid the last confirmation ages out `freeze_s` after its stamp. Independent of the target region. Each state change is logged once. |
-| hand links | `RobotDescription.hand_links()` | `grasp_contact_links()` (leaders + mimic followers), the link each gripper hangs off, and the wrist that link hangs off (never a root link). OpenArm: `openarm_{left,right}_finger_pair`, `_finger_follower`, `_link7`, `_link6`. The wrist joined after r23: 8/8 stops were link6 at the tote rim, PhysX ~10 mm clear, the 15 mm cells reading −4 mm; the forearm and everything behind it still always stop. |
-| runtime | `DeployRuntime.workspace_contact_enabled` / `workspace_contact_max_speed_mps` / `workspace_contact_max_lead_m` | Enabled requires `grasp_allowance_enabled`, a speed bound in (0, 1] m/s and a lead bound in (0, 0.10] m (no defaults). `openral deploy sim` forwards all three; **`openral deploy run` and `deploy_e2e` on a non-sim HAL refuse it** (`ROSConfigError`, sim-only until Safety-WG review). The launch passes the kernel `workspace_contact_links` = `hand_links()` and `workspace_contact_control_period_s` = 1 / `action_spec.control_freq_hz`. |
+| hand links | `RobotDescription.hand_links()` | `grasp_contact_links()` (leaders + mimic followers), the link each gripper hangs off, and the wrist that link hangs off (never a root link). OpenArm: `openarm_{left,right}_finger_pair`, `_finger_follower`, `_link7`, `_link6`. The wrist joined after r23: 8/8 stops were link6 at the tote rim, PhysX ~10 mm clear, the 15 mm cells reading −4 mm; the forearm and everything behind it still always stop. `hand_links(wrist_links=2)` (`DeployRuntime.workspace_contact_wrist_links: 2`, the DROID banana scene) adds the next actuated link up as a second wrist link for this rule only: DROID's `panda_link6`, the wrist housing (2026-10-21 decision; Isaac R50–R82 stopped on it commanded 1–2 cm into the table or bowl rim with no physical contact; capped at 2; Safety-WG review and hazard-log row owed). |
+| runtime | `DeployRuntime.workspace_contact_enabled` / `workspace_contact_max_speed_mps` / `workspace_contact_max_lead_m` | Enabled requires `grasp_allowance_enabled`, a speed bound in (0, 1] m/s and a lead bound in (0, 0.10] m (no defaults). `workspace_contact_wrist_links` (1–2, default 1) sets `hand_links(wrist_links=)`. `openral deploy sim` forwards all four; **`openral deploy run` and `deploy_e2e` on a non-sim HAL refuse it** (`ROSConfigError`, sim-only until Safety-WG review). The launch passes the kernel `workspace_contact_links` = `hand_links()` and `workspace_contact_control_period_s` = 1 / `action_spec.control_freq_hz`. |
 | kernel | `check_voxel_collision`, `workspace_contact_exempts`, `ingest_workspace_region`, `link_displacement_bound`, `link_geometry_reach`; `SafetyKernelLifecycleNode::ingest_workspace_contact` / `workspace_live` / `workspace_hand_speed` / `workspace_hand_lead` / `workspace_command_fresh` / `measured_velocity_fresh` | See the rule below. Params validated at configure (refuse otherwise); WARN when on. |
 
 **The trip rule as coded.** For a (link, occupied cell) pair at a checked row, after the ADR-0115
@@ -297,7 +297,10 @@ workspace in another frame, with geometry, a non-unit quaternion, over the caps,
 ago than `grasp_region_max_age_s` (also between messages); a world-state stream past its deadline; a
 stale or incomplete measured state; any control mode but JOINT_POSITION; a speed or lead above its
 bound or non-finite. A missing or stale measured velocity is not a refusal: the commanded speed
-governs alone. Arm links, cells outside the box, self-collision and the attached checks unchanged.
+governs alone. A reported joint velocity is capped at the rate its own measured position moved
+since that joint's previous stamped `JointState` (PhysX reported a wrist at its 10 rad/s limit
+while it sat 6 mrad from its command, a 1.88 m/s "hand"; Spark R262, 2026-10-22); unstamped,
+repeated or out-of-order messages keep the raw reading. Safety-WG review owed. Arm links, cells outside the box, self-collision and the attached checks unchanged.
 
 **Disclosure.** Tolerated pairs within the margin are counted per check
 (`CollisionHit::workspace_pairs`); `safety.workspace_contact link= cell= depth_mm= speed_mps=
@@ -415,6 +418,17 @@ ceiling the kernel enforces on every `/joint_states` sample, independent of this
 tolerated workspace contact that loads a joint past its ceiling still stops. It only adds stops.
 A contact tier (tolerating contact under a measured force) is not built: the real OpenArm's
 effort is the PD law plus stiction and cannot resolve it (that page, §3).
+
+### 6.x Issue #418 K7 narrowing, and the scenes that keep this rule alone
+
+With `object_tracking: on` the kernel narrows this rule to *explained* cells (#418 K7): a
+cell a tracked object's box, the declared static geometry or the measured support explains.
+`DeployRuntime.workspace_explained_cells: false` (default `true`) keeps this rule alone for a
+scene whose neighbours the depth cameras cannot track. Restock is one: the tote carton beside
+the target sits behind the left gripper in the one depth camera (head ZED), and the finger
+brushes its edge on nearly every grasp (Spark R264-R295, 2026-10-23; user decision the same
+day). The launch logs `workspace_explained_cells:=false: issue #418 K7 off`. Safety-WG review
+and a hazard-log row owed.
 
 ## 7. ADR draft — "Declaration-scoped manipulation-workspace contact for hand links"
 

@@ -35,6 +35,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -53,6 +54,9 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 _NDARRAY_SENTINEL = "__ndarray__"
+
+#: Environment marker of a sidecar spawned to outlive its client (``SidecarClient.keep_alive``).
+KEPT_ALIVE_ENV = "OPENRAL_SIDECAR_KEPT_ALIVE"
 
 # Sidecars spawn detached (own session) so a terminal Ctrl-C during the slow
 # boot can't kill them. The cost is that a HARD-killed ``openral`` (SIGTERM
@@ -221,6 +225,14 @@ class SidecarClient:
     # (e.g. two Isaac scenes that collided on one port). Keys absent from the ping
     # reply are skipped (back-compat with sidecars that don't report identity).
     expected_identity: dict[str, Any] | None = None
+    # When set, a spawned child writes its stdout/stderr to this file (appended)
+    # instead of inheriting ours: a sidecar meant to outlive this process (`detach`)
+    # must not hold our stdout open, or a pipeline reading it (`| tee`, CI) never ends.
+    log_path: Path | None = None
+    #: The sidecar is meant to outlive this client (``detach``); marks its environment so a
+    #: launch guard that reaps a dead deploy's descendants (``openral_cli._launch_guard``)
+    #: leaves it for the next run to adopt.
+    keep_alive: bool = False
     _ctx: Any = None
     _socket: Any = None
     _child: subprocess.Popen[bytes] | None = field(default=None)
@@ -268,7 +280,10 @@ class SidecarClient:
             child = self._child
             rc = child.poll() if child is not None else None
             self._terminate_child()
-            raise self._boot_failure_error(endpoint, rc)
+            err = self._boot_failure_error(endpoint, rc)
+            if self.log_path is not None:  # "the sidecar stdout above" is in this file
+                raise ROSConfigError(f"{err} Sidecar output: {self.log_path}") from err
+            raise err
         _log.info("sidecar_connected", sidecar=self.name, endpoint=endpoint, mode="auto-spawned")
 
     def _boot_failure_error(self, endpoint: str, returncode: int | None) -> ROSConfigError:
@@ -349,6 +364,24 @@ class SidecarClient:
                 self._socket.close()
             self._socket = None
         self._terminate_child()
+
+    def detach(self) -> int | None:
+        """Close the socket but leave the sidecar running for a later client to adopt.
+
+        The child we spawned (if any) leaves the process-exit reaper, so it outlives
+        this process. Returns its pid (``None`` when we adopted it or spawned none).
+        A later ``connect`` to the same port adopts it when its ping identity matches;
+        a ``close`` (or the sidecar ``close`` endpoint) ends it.
+        """
+        if self._socket is not None:
+            with contextlib.suppress(Exception):
+                self._socket.close()
+            self._socket = None
+        child, self._child = self._child, None
+        if child is None:
+            return None
+        _deregister_spawned_child(child)
+        return child.pid
 
     # ── internals ────────────────────────────────────────────────────────────
 
@@ -457,14 +490,25 @@ class SidecarClient:
         # would shadow the sidecar venv's own numpy with an ABI-incompatible build
         # → "No module named 'numpy._core._multiarray_umath'" at sidecar boot.
         child_env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
-        self._child = subprocess.Popen(
-            self.launch_argv,
-            stdout=None,
-            stderr=None,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            env=child_env,
-        )
+        if self.keep_alive:
+            child_env[KEPT_ALIVE_ENV] = "1"
+        out: Any = None
+        if self.log_path is not None:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            out = self.log_path.open("ab")
+            _log.info("sidecar_output_to_file", sidecar=self.name, path=str(self.log_path))
+        try:
+            self._child = subprocess.Popen(
+                self.launch_argv,
+                stdout=out,
+                stderr=subprocess.STDOUT if out is not None else None,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                env=child_env,
+            )
+        finally:
+            if out is not None:
+                out.close()  # the child holds its own copy of the descriptor
         # Reap this detached child if the owning process exits without calling
         # close() (crash / SIGTERM) — otherwise it leaks GPU memory + the port.
         _register_spawned_child(self._child)
@@ -532,20 +576,21 @@ class SidecarSimRollout:
     _last_image: NDArray[np.uint8] | None = None
     _action_dim: int | None = None
     _last_sim_time_ns: int | None = None
-    # Sim seconds per ``step`` as the sidecar's ping reports it (Isaac); ``None``
-    # when the protocol does not carry it.
+    # Sim seconds per ``step`` from ping (nominal initially) and, where reported,
+    # reset metadata (actual for Isaac); ``None`` when not carried.
     _sim_dt_per_tick_s: float | None = None
 
     def reset(self, seed: int | None = None) -> Observation:
         """Reset the sidecar env and return its first wrapped observation."""
         reply = self._client.call("reset", {"seed": seed})
+        self._after_reset_reply(reply)
         self._last_sim_time_ns = coerce_sim_time_ns(reply.get("sim_time_ns"))
         return self._wrap_obs(self._client.require(reply, "observation"))
 
     def step(self, action: NDArray[np.float32]) -> StepResult:
         """Apply one action over the wire and return the wrapped transition."""
         action_np = np.asarray(action, dtype=np.float32).reshape(-1)
-        reply = self._client.call("step", {"action": action_np})
+        reply = self._client.call("step", {"action": action_np, **self._step_options()})
         # Cache the sidecar's elapsed sim time so the
         # deploy-sim HAL can publish /clock. Optional in the wire protocol
         # (older sidecars omit it) → stays None, /clock off.
@@ -577,6 +622,13 @@ class SidecarSimRollout:
         with contextlib.suppress(Exception):
             self._client.call("close")
         self._client.close()
+
+    def _step_options(self) -> dict[str, Any]:
+        """Extra ``step`` request fields beside the action. Default: none."""
+        return {}
+
+    def _after_reset_reply(self, reply: dict[str, Any]) -> None:
+        """Update backend-specific reset metadata before the HAL validates it."""
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         """Unwrap the sidecar's raw ``observation`` dict — backend-specific."""

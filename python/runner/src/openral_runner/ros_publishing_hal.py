@@ -152,6 +152,11 @@ class ROSPublishingHAL:
             ``/openral/action_applied``, and the adapter reports only the
             apply-timeout (CLAUDE.md §1.4). Must be non-blocking — it is
             called while the adapter's applied-condition lock is held.
+        drop_reason_getter: Called with the monotonic time the apply-wait started; returns the
+            newest NON-latching kernel drop (``/openral/safety_status`` ``DROP_*``, e.g.
+            ``voxel_stale``) seen since then, or ``None``. A fail-closed drop is not a latch, so
+            the wait runs out its timeout; the reason is appended to the timeout error so the
+            goal's ``failure_reason`` names the typed cause. Non-blocking.
         action_applied_timeout_s: Maximum time to wait for the HAL's
             application acknowledgement for an active tick.
         joint_state_staleness_limit_s: Maximum age of the last received
@@ -173,6 +178,7 @@ class ROSPublishingHAL:
         candidate_action_topic: str = "/openral/candidate_action",
         action_applied_topic: str = "/openral/action_applied",
         safety_abort_getter: Callable[[], str | None] = lambda: None,
+        drop_reason_getter: Callable[[float], str | None] = lambda _since: None,
         action_applied_timeout_s: float = 5.0,
         joint_state_staleness_limit_s: float = 0.5,
     ) -> None:
@@ -193,6 +199,7 @@ class ROSPublishingHAL:
         self._candidate_action_topic = candidate_action_topic
         self._action_applied_topic = action_applied_topic
         self._safety_abort_getter = safety_abort_getter
+        self._drop_reason_getter = drop_reason_getter
         if action_applied_timeout_s <= 0.0:
             raise ROSConfigError("ROSPublishingHAL: action_applied_timeout_s must be positive")
         if joint_state_staleness_limit_s <= 0.0:
@@ -362,7 +369,8 @@ class ROSPublishingHAL:
             self._published_group_tick = None
             self._published_group_count = 0
         tick_label = "action group tick" if group_size > 1 else "action tick"
-        deadline = time.monotonic() + self._action_applied_timeout_s
+        wait_started = time.monotonic()
+        deadline = wait_started + self._action_applied_timeout_s
         with self._applied_condition:
             while self._last_applied_tick < tick:
                 safety_reason = self._safety_abort_getter()
@@ -379,9 +387,11 @@ class ROSPublishingHAL:
                     )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
+                    dropped = self._drop_reason_getter(wait_started)
                     raise ROSRuntimeError(
                         f"ROSPublishingHAL: {tick_label} {tick} was not applied within "
                         f"{self._action_applied_timeout_s:g} s"
+                        + (f" (kernel dropped it: {dropped})" if dropped else "")
                     )
                 self._applied_condition.wait(timeout=min(remaining, _SAFETY_ABORT_POLL_S))
 

@@ -152,6 +152,7 @@ def test_generated_failure_kind_constants() -> None:
         "FAILURE_PLANNING_ERROR": 6,
         "FAILURE_DEADLINE_MISSED": 7,
         "FAILURE_CANCELLED": 8,
+        "FAILURE_OBJECT_NOT_FOUND": 9,
         "FAILURE_UNKNOWN": 255,
     }
     actual = {name: int(getattr(result_cls, name)) for name in expected}
@@ -194,6 +195,7 @@ def test_failure_kind_for_exception_truth_table() -> None:
         (ROSConfigError("bad manifest"), r.FAILURE_CONFIG_ERROR),
         (ROSPerceptionStale("stale depth"), r.FAILURE_PERCEPTION_STALE),
         # Subclasses resolve to their parent's kind — most-specific-first ordering.
+        # (FAILURE_OBJECT_NOT_FOUND is only the #418 exhausted-search cancel cause.)
         (ROSObjectNotInMemory("no such node"), r.FAILURE_PERCEPTION_STALE),
         (ROSPlanningError("no plan"), r.FAILURE_PLANNING_ERROR),
         (ROSReasonerInvalidPlan("undecodable"), r.FAILURE_PLANNING_ERROR),

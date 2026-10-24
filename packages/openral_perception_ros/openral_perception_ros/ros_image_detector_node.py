@@ -36,7 +36,8 @@ viewpoint by camera id.
 ``/openral/perception/locate_in_view`` (``openral_msgs/srv/LocateInView``): a
 read-only "is object X visible in camera Y right now?" — a one-shot detection
 (``detect_with_query``, without disturbing the persistent query) on the
-requested camera's latest cached frame, driven by the reasoner's
+requested camera's latest cached frame by default, or an exact requested source
+stamp for tracker calls, driven by the reasoner's
 ``locate_in_view`` tool. The dynamic ``query_topic`` (std_msgs/String)
 retargets the persistent query via ``set_query``.
 
@@ -64,8 +65,12 @@ Parameters:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections import deque
+from collections.abc import Callable, Reversible, Sequence
 from typing import Any
+
+import numpy as np
 
 from openral_perception_ros.camera_topics import parse_camera_entries, resolve_camera_topics
 
@@ -88,6 +93,68 @@ _LOG_LEVEL_ALIASES = {
     "error": "ERROR",
     "fatal": "FATAL",
 }
+
+_LOCATE_FAILURE_REASON_MAX = 128
+_LOCATE_FRAME_HISTORY_SIZE = 32
+_CachedImageFrame = tuple[int, bytes, int, int]
+
+
+def image_source_stamp_ns(msg: Any) -> int:  # reason: sensor_msgs/Image boundary
+    """Convert an image header stamp to source nanoseconds.
+
+    Example:
+        >>> from sensor_msgs.msg import Image
+        >>> image = Image()
+        >>> image.header.stamp.sec, image.header.stamp.nanosec = 2, 3
+        >>> image_source_stamp_ns(image)
+        2000000003
+    """
+    stamp = msg.header.stamp
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def new_locate_frame_history() -> deque[_CachedImageFrame]:
+    """Create the bounded source-frame cache used by one camera."""
+    return deque(maxlen=_LOCATE_FRAME_HISTORY_SIZE)
+
+
+def select_locate_frame(
+    frames: Reversible[_CachedImageFrame], requested_stamp_ns: int
+) -> _CachedImageFrame | None:
+    """Return latest for zero, otherwise only the exact stamped image.
+
+    Example:
+        >>> frames = [(10, b"old", 1, 1), (20, b"new", 1, 1)]
+        >>> select_locate_frame(frames, 10)[1]
+        b'old'
+        >>> select_locate_frame(frames, 15) is None
+        True
+        >>> select_locate_frame(frames, 0)[1]
+        b'new'
+    """
+    if requested_stamp_ns < 0 or not frames:
+        return None
+    if requested_stamp_ns == 0:
+        return next(reversed(frames), None)
+    return next((frame for frame in reversed(frames) if frame[0] == requested_stamp_ns), None)
+
+
+def locate_frame_failure_reason(
+    frames: Reversible[_CachedImageFrame], requested_stamp_ns: int
+) -> str:
+    """Classify a missing selected image without reporting a successful miss."""
+    if requested_stamp_ns < 0:
+        return "invalid_source_stamp"
+    if requested_stamp_ns > 0 and frames:
+        return "requested_frame_unavailable"
+    return "no_frame"
+
+
+def _locate_exception_reason(exc: Exception) -> str:
+    """Return a short cause for a failed one-shot detector request."""
+    detail = " ".join(str(exc).split())
+    detail = "".join(char if char.isascii() and char.isprintable() else "?" for char in detail)
+    return f"detector_exception:{type(exc).__name__}:{detail}"[:_LOCATE_FAILURE_REASON_MAX]
 
 
 def normalize_log_level(value: str) -> str | None:
@@ -219,6 +286,65 @@ def stamp_camera_geometry(md: Any, geometry: tuple[str, Any] | None) -> Any:
     )
 
 
+def _takes_score_threshold(detector: Any) -> bool:
+    """Whether ``detector.detect_with_query`` accepts a per-call ``score_threshold``."""
+    import inspect
+
+    try:
+        return "score_threshold" in inspect.signature(detector.detect_with_query).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def crop_bgr(
+    bgr: bytes, width: int, height: int, roi_norm_xyxy: Sequence[float]
+) -> tuple[bytes, int, int, int, int] | None:
+    """``(bytes, w, h, x0, y0)`` of the packed BGR frame cropped to a normalised ROI.
+
+    ``roi_norm_xyxy`` is ``(x0, y0, x1, y1)`` in ``[0, 1]`` of the frame (clamped);
+    ``None`` = detect on the whole frame (no ROI, or one with no area). Issue #418: a
+    1920x1080 frame squashed to the detector's 640x640 left a restock carton ~40 px.
+
+    Example:
+        >>> crop_bgr(bytes(4 * 2 * 3), 4, 2, (0.5, 0.0, 1.0, 1.0))[1:]
+        (2, 2, 2, 0)
+    """
+    if len(roi_norm_xyxy) != 4:
+        return None
+    a, b, c, d = (min(max(float(v), 0.0), 1.0) for v in roi_norm_xyxy)
+    x0, y0 = int(a * width), int(b * height)
+    x1, y1 = math.ceil(c * width), math.ceil(d * height)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    img = np.frombuffer(bgr, dtype=np.uint8).reshape(height, width, 3)
+    return np.ascontiguousarray(img[y0:y1, x0:x1]).tobytes(), x1 - x0, y1 - y0, x0, y0
+
+
+def uncrop_metadata(md: Any, x0: int, y0: int, width: int, height: int) -> Any:
+    """``md`` (detected on a crop at ``(x0, y0)``) back in the full ``width x height`` frame.
+
+    Example:
+        >>> from openral_core import ObjectDetection2D, ObjectsMetadata
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="c",
+        ...     model_id="m",
+        ...     frame_width=10,
+        ...     frame_height=10,
+        ...     detections=[ObjectDetection2D(label="box", confidence=0.5, bbox_xyxy=(1, 2, 3, 4))],
+        ... )
+        >>> uncrop_metadata(md, 100, 50, 640, 480).detections[0].bbox_xyxy
+        (101, 52, 103, 54)
+    """
+    dets = [
+        d.model_copy(
+            update={"bbox_xyxy": (d.bbox_xyxy[0] + x0, d.bbox_xyxy[1] + y0,
+                                  d.bbox_xyxy[2] + x0, d.bbox_xyxy[3] + y0)}
+        )
+        for d in md.detections
+    ]  # fmt: skip
+    return md.model_copy(update={"detections": dets, "frame_width": width, "frame_height": height})
+
+
 def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the detector node, shut down cleanly."""
     import rclpy
@@ -274,8 +400,8 @@ def main(args: Any = None) -> None:
             self.declare_parameter("detector_id", "")
 
             self._last_pub_ns = 0
-            # Latest BGR frame per camera id, for the on-demand locate_in_view service.
-            self._frames: dict[str, tuple[bytes, int, int]] = {}
+            # Bounded stamped BGR history per camera for exact on-demand queries.
+            self._frames: dict[str, deque[_CachedImageFrame]] = {}
             # Built across lifecycle transitions. The detector model
             # is the only GPU-resident piece; it tracks active→inactive.
             self._detector: Any = None
@@ -576,7 +702,11 @@ def main(args: Any = None) -> None:
                     throttle_duration_sec=5.0,
                 )
                 return
-            self._frames[cid] = (bgr, w, h)
+            history = self._frames.get(cid)
+            if history is None:
+                history = new_locate_frame_history()
+                self._frames[cid] = history
+            history.append((image_source_stamp_ns(msg), bgr, w, h))
 
         def _on_query(self, msg: Any) -> None:
             """Retarget the continuous open-vocab leg from a std_msgs/String."""
@@ -630,10 +760,10 @@ def main(args: Any = None) -> None:
             now_ns = self.get_clock().now().nanoseconds
             if now_ns - self._last_pub_ns < self._min_period_ns:
                 return
-            frame = self._frames.get(self._primary_id)
+            frame = select_locate_frame(self._frames.get(self._primary_id, ()), 0)
             if frame is None:
                 return
-            bgr, w, h = frame
+            _, bgr, w, h = frame
             # Best-effort producer: one bad frame must not kill the leg — but it
             # must never fail SILENTLY. The real detector publishes nothing when it
             # sees nothing, so a swallowed detect() crash (e.g. a CUDA
@@ -673,6 +803,9 @@ def main(args: Any = None) -> None:
             query = request.query.strip()
             camera = request.camera.strip() or self._primary_id
             response.camera = camera
+            response.source_stamp_ns = 0
+            response.failure_reason = ""
+            requested_stamp_ns = int(getattr(request, "source_stamp_ns", 0))
             # Echo which locator answered (the request's selector, or
             # this node's own id when the caller left it empty).
             own_id = self.get_parameter("detector_id").get_parameter_value().string_value
@@ -680,26 +813,46 @@ def main(args: Any = None) -> None:
             if self._detector is None:  # inactive (VRAM released)
                 response.found = False
                 response.metadata_json = ""
+                response.failure_reason = "detector_inactive"
                 return response
-            frame = self._frames.get(camera)
+            history = self._frames.get(camera)
+            frame = select_locate_frame(history or (), requested_stamp_ns)
             if frame is None:
                 response.found = False
                 response.metadata_json = ""
+                response.failure_reason = locate_frame_failure_reason(
+                    history or (), requested_stamp_ns
+                )
                 self.get_logger().warning(
-                    f"locate_in_view: no frame for camera {camera!r} "
-                    f"(known: {sorted(self._frames)})"
+                    f"locate_in_view: source frame unavailable camera={camera!r} "
+                    f"requested_stamp_ns={requested_stamp_ns} (known: {sorted(self._frames)})"
                 )
                 return response
-            bgr, w, h = frame
+            source_stamp_ns, bgr, w, h = frame
+            response.source_stamp_ns = source_stamp_ns
+            # #418: the caller's region of interest (normalised), detected on that crop and
+            # answered in full-frame pixels; none (or empty) = the whole frame.
+            crop = crop_bgr(bgr, w, h, list(getattr(request, "roi_norm_xyxy", ()) or ()))
+            src, sw, sh, ox, oy = crop if crop is not None else (bgr, w, h, 0, 0)
             try:
+                floor = float(getattr(request, "min_score", 0.0) or 0.0)
                 if query and hasattr(self._detector, "detect_with_query"):
-                    md = self._detector.detect_with_query(bgr, w, h, self._sensor_id, query)
+                    md = (
+                        self._detector.detect_with_query(
+                            src, sw, sh, self._sensor_id, query, score_threshold=floor
+                        )
+                        if floor > 0.0 and _takes_score_threshold(self._detector)
+                        else self._detector.detect_with_query(src, sw, sh, self._sensor_id, query)
+                    )
                 else:
-                    md = self._detector.detect(bgr, w, h, self._sensor_id)
+                    md = self._detector.detect(src, sw, sh, self._sensor_id)
+                if md is not None and crop is not None:
+                    md = uncrop_metadata(md, ox, oy, w, h)
             except Exception as exc:  # best-effort; never crash the service
                 self.get_logger().warning(f"locate_in_view detect failed: {exc}")
                 response.found = False
                 response.metadata_json = ""
+                response.failure_reason = _locate_exception_reason(exc)
                 return response
             if md is None or not md.detections:
                 response.found = False
@@ -709,6 +862,7 @@ def main(args: Any = None) -> None:
                 response.metadata_json = self._stamp_camera(camera, md).model_dump_json()
             self.get_logger().info(
                 f"locate_in_view: query={query!r} camera={camera!r} found={response.found}"
+                f" crop={None if crop is None else (ox, oy, sw, sh)}"
             )
             return response
 

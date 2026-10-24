@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +186,33 @@ def test_a_scene_may_supply_a_search_box_which_only_seeds_perception() -> None:
     assert scene.grasp_declaration is not None
     assert scene.grasp_declaration.search_box is not None
     assert scene.grasp_declaration.region is None
+
+
+def test_a_scene_search_box_is_pending_deprecation() -> None:
+    """Issue #418: a scene's ``search_box`` still loads (the HAL leg's input) but warns, as a
+    ``FutureWarning`` (shown to end users) naming the scene file."""
+    scene_path = _REPO_ROOT / "scenes" / "deploy" / "isaac_leisaac_pick_orange.yaml"
+    with pytest.warns(FutureWarning, match=r"isaac_leisaac_pick_orange\.yaml: .*pending dep"):
+        scene = DeployScene.from_yaml(str(scene_path))
+    assert scene.grasp_declaration is not None
+    assert scene.grasp_declaration.search_box is not None
+
+
+def test_a_declaration_without_search_box_does_not_warn() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        assert _declaration().search_box is None
+
+
+def test_internal_declarations_with_a_search_box_never_warn() -> None:
+    """The reasoner's grounding, ``from_idl`` and the HAL leg's re-validation build a
+    declaration with a box on every goal: no warning there, so one escalated to an error
+    can never escape their ``except ValueError`` handling."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        decl = _declaration().model_copy(update={"search_box": _region()})
+        again = GraspDeclaration.model_validate(decl.model_dump())
+    assert again.search_box is not None
 
 
 def test_search_box_geometry_must_be_empty() -> None:

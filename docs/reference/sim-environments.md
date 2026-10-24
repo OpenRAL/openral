@@ -107,7 +107,10 @@ scene whose tick is anything else (`openral_core.check_time_base`, 1 %).
 
 Isaac camera images trail the physics by 2–4 steps (the RTX pipeline), so each
 observation carries `image_time_ns` and `deploy sim` stamps `/openral/cameras/*`
-with the time each image shows, not the publish time (issue #361).
+with the time each image shows, not the publish time (issue #361). Frames are
+rendered on demand (only when the policy infers, the 10 Hz video, or a camera
+publish is due), each such frame drained of that lag; see
+[frames on demand](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot).
 
 Every Isaac step also carries `info["robot_contacts"]` (that step's PhysX
 robot-vs-world contacts), and `openral sim run` folds them into each episode's

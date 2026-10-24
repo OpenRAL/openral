@@ -310,6 +310,26 @@ def test_reward_ends_the_episode_only_on_complete(scene_mod: Any) -> None:
     assert reward("in", False, {"in": 1.0, "fail": 0.0}, "in") == (1.0, True)  # a one-level rubric
 
 
+def test_a_reset_returns_the_scene_to_its_boot_rubric(scene_mod: Any) -> None:
+    """A kept-alive sidecar serves one episode after another: the rubric a goal's `set_task`
+    switched on must not outlive its episode (the next episode boots ungraded, like a fresh
+    sidecar). The real `_on_reset` / `set_task` on a scene built without Isaac."""
+    scene = object.__new__(scene_mod.IsaacManifestScene)
+    scene._objects = []  # no pose_noise object to redraw
+    scene._boot_placement_success = None
+    scene._placement_by_prompt = {"put it there": {"placements": [], "grades": _RUBRIC}}
+    scene._rest_s = {}
+    scene._last_pos = {}
+    scene._last_quat = {}
+    scene._activate_placement_success(None)
+    assert scene.set_task("put it there")["graded"] is True
+    scene._placement_grade = "complete"
+    scene._on_reset(np.random.default_rng(0))
+    assert scene._placement_success is None
+    assert scene._placement_grade == "fail"
+    assert scene.set_task("not graded")["graded"] is False
+
+
 # ── Schema fuzz: round-trip + JSON Schema for every placement model ──────────────────
 
 _coord = st.floats(min_value=-10.0, max_value=10.0, allow_nan=False, allow_infinity=False)
@@ -392,3 +412,44 @@ def test_placement_models_export_a_json_schema(model: type[Any]) -> None:
     schema = model.model_json_schema()
     assert schema["title"] == model.__name__
     assert set(model.model_fields) <= set(schema["properties"])
+
+
+def test_one_or_two_of_three_oranges_placed_is_the_some_placed_grade(scene_mod: Any) -> None:
+    """2026-10-23 request: PickOrange earns partial credit for one or two oranges on the
+    plate and its success grade only for all three; the worst placement alone said fail."""
+    scores = {"complete": 1.0, "fail": 0.0, "partial": 0.5}
+    some = {"name": "partial", "score": 0.5}
+    grade = scene_mod.episode_grade
+    assert grade(["fail", "fail", "fail"], scores, some) == "fail"
+    assert grade(["complete", "fail", "fail"], scores, some) == "partial"
+    assert grade(["complete", "complete", "fail"], scores, some) == "partial"
+    assert grade(["complete", "complete", "complete"], scores, some) == "complete"
+    assert grade(["complete", "fail"], scores, None) == "fail", "unset: the worst, as before"
+
+
+def test_the_pick_orange_scene_sends_its_some_placed_grade_to_the_sidecar() -> None:
+    from openral_core import TaskSpec
+
+    raw = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[2] / "scenes/deploy/isaac_leisaac_pick_orange.yaml"
+        ).read_text()
+    )
+    ps = IsaacPlacementSuccess.model_validate(raw["scene"]["backend_options"]["placement_success"])
+    assert ps.some_placed is not None and ps.some_placed.name == "partial"
+    deploy = TaskSpec(id="isaac_sim/_hal_deploy_noop", scene_id="isaac_sim")
+    spec = _placement_success_robot_spec(ps, deploy)["placement_success_by_prompt"]
+    assert spec["Grab orange and place into plate"]["some_placed"] == {
+        "name": "partial",
+        "score": 0.5,
+    }
+
+
+def test_some_placed_must_not_reuse_a_rubric_grade_name() -> None:
+    box = IsaacPlacementRegion(min_xyz=(0, 0, 0), max_xyz=(1, 1, 1))
+    with pytest.raises(ValidationError, match="episode grade of its own"):
+        IsaacPlacementSuccess(
+            regions={"a": box},
+            tasks={"t": [IsaacPlacement(object="o", target="a")]},
+            some_placed={"name": "complete", "score": 0.5},
+        )

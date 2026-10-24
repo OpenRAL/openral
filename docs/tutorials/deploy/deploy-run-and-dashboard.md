@@ -515,7 +515,12 @@ shelf](images/collision-view-carry.webp)
 
 1. **Orange box, payload** (detected): the held carton's collision box, taken from the measured
    grasp region (`evidence_kind: grasp_target_region`). From now on the kernel checks it
-   against the world and the robot as part of the hand.
+   against the world and the robot as part of the hand. Its cells are **not** removed from
+   the voxel map: the octomap bridge clears a held payload only for a `tracked_object`
+   attachment from the #418 object tracker (`runtime.object_tracking: bind` or `on`, sim-only), so with
+   tracking `off` or `shadow` the carton stays a mapped obstacle and the kernel may stop the
+   arm on what it holds. That is the decided fail-closed posture
+   ([octomap bridge README](https://github.com/OpenRAL/openral/blob/master/packages/openral_octomap_bridge/README.md#attached-objects-and-world-occupancy)).
 2. **Contact tolerated** (kernel log line `safety.workspace_contact`): a hand link or its
    payload touches an occupied cell inside the declared `workspace_box`, slower than
    `workspace_contact_max_speed_mps` and within `workspace_contact_max_lead_m`, so the kernel
@@ -566,6 +571,39 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   ```bash
   openral deploy run --config scenes/deploy/so100_pick_cube.yaml --hal port=/dev/ttyUSB1
   ```
+
+- `runtime.object_tracking` (issue #418): `deploy run` allows only `shadow` (the object
+  tracker publishes `/openral/tracked_objects`; the safety kernel ingests the set (K1, it
+  may log `safety.tracked_objects_rejected`) but no decision changes); `bind` / `on` are
+  sim-only until Safety-WG review and are refused. In `deploy sim` a scene's runtime
+  field can be overridden without editing it, e.g.
+  `openral deploy sim --config <scene> --runtime object_tracking=bind --runtime grounding_wait_s=8`.
+  The schema default is `off`; the two Isaac deploy scenes
+  (`scenes/deploy/isaac_leisaac_pick_orange.yaml`,
+  `scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`) commit `on` with
+  `grounding_required: true` and `grounding_wait_s` 8 s / 15 s, the values of their
+  successful Spark runs, so `--runtime object_tracking=off` is how to run them without
+  the tracker. In `bind` / `on` the HAL's vision attachment bridge runs only its grasp
+  trigger (`/openral/grasp_events`, what the tracker binds from): no segmentation and no
+  grasp- or place-target leg. `bind` therefore arms no goal-scope place declaration;
+  `on` arms one and the tracker measures its region (`TrackerSession.place_region`,
+  the destination track's containing box), over which the kernel applies its place
+  allowance -- a non-monotone, sim-only relaxation pending Safety-WG review and a
+  hazard-log row (Spark A/B R388 vs R389: only with it does the DROID banana reach the
+  bowl). An ATTACH still holds the
+  action ack until the tracker's next `/openral/attachment_state` revision, at most the
+  leg's `deadline_s`.
+  `on` also makes the tracked objects the safety kernel's grasp-exemption source
+  (`tracked_grasp_exemption_enabled`, issue #418 K2): a finger is exempt only against
+  the cells of the one nearest eligible tracked target per hand, cover-checked on the
+  kernel's own grid, instead of the HAL's measured region. It needs
+  `runtime.grasp_allowance_enabled: true`; the launch refuses `on` without it.
+  With `runtime.workspace_contact_enabled: true`, `on` also narrows workspace contact
+  to explained cells (`workspace_explained_cells_enabled`, issue #418 K7). A slow hand
+  in the workspace is then tolerated only against cells that one of these explains: an
+  eligible tracked object's box, the declared static geometry, or the measured support
+  beside such an object. Anything else in the workspace stops the hand, for example a
+  person's hand in the tote or a carton that grounding missed.
 
 - The C++ safety kernel sits between the policy and the motors: Python
   proposes, C++ disposes, and `ROSSafetyViolation` is never silently caught.

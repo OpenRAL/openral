@@ -47,7 +47,8 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
+import uuid
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -631,6 +632,157 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
     return "none"
 
 
+#: How far (m) a CONTEXT query's seed reaches past the target's seed box on every side: the
+#: neighbours the hand may brush on the way in. *Calibration point.*
+_CONTEXT_SEED_MARGIN_M = 0.15
+
+
+def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -> str:
+    """The prompt's standing ``ObjectQuery`` s as JSON, or ``""`` (issue #418).
+
+    Only with ``runtime.object_tracking`` on and an Isaac ``placement_success`` task for
+    ``prompt`` (verbatim): its objects and the destination object of each target region
+    (``openral_reasoner.grounding.placement_queries``). A prompt the scene does not grade
+    names nothing, and that is printed rather than guessed.
+
+    The scene's own ``grasp_declaration.search_box`` (a sim-derived or reasoner seed box
+    around one instance) becomes the ``seed`` of the TARGET query whose label its
+    ``target_id`` names (``obj:orange_1`` → ``orange``, or that placement's ``label``): the
+    tracker's map-seeded prompt inside it, so a class no open-vocabulary locator knows
+    still grounds. A seed is a search hint only, never kernel geometry. A box whose
+    ``evidence_ref`` is ``sim:`` (measured from the simulator's ground truth) never seeds:
+    a real deploy has no such box, so the tracker is validated without it (logged at INFO
+    as ``deploy.object_query_seed_dropped``).
+    """
+    runtime = deploy_scene.runtime if deploy_scene is not None else None
+    if deploy_scene is None or runtime is None or runtime.object_tracking == "off" or not prompt:
+        return ""
+    raw = deploy_scene.scene.backend_options.get("placement_success")
+    if raw is None:
+        return ""
+    from openral_core import ObjectQuery, ObjectRole
+    from openral_reasoner.grounding import placement_queries
+    from openral_sim.backends.isaac_sim import (  # reason: defer optional dep
+        IsaacPlacementSuccess,
+    )
+
+    success = IsaacPlacementSuccess.model_validate(raw)
+    placements = success.placements_for(prompt)
+    if not placements:
+        _console.print(
+            f"[yellow]object tracking: the scene grades no task {prompt!r}; no object "
+            "queries ride the declarations[/yellow]"
+        )
+        return ""
+    queries = placement_queries(placements)
+    decl = deploy_scene.grasp_declaration
+    if (
+        decl is not None
+        and decl.search_box is not None
+        and decl.search_box.evidence_ref.startswith("sim:")
+    ):
+        # A box measured from the simulator's ground truth is not a seed a real deploy
+        # has: the tracker must ground the object from its own sensing, so it is validated
+        # without one. The HAL still gets the declaration's search_box unchanged.
+        import structlog
+
+        structlog.get_logger(__name__).info(
+            "deploy.object_query_seed_dropped",
+            target_id=decl.target_id,
+            evidence_ref=decl.search_box.evidence_ref,
+            reason="sim ground truth is not a seed a real deploy has",
+        )
+        _console.print(
+            f"[yellow]object tracking: not seeding {decl.target_id} from "
+            f"{decl.search_box.evidence_ref!r} (sim ground truth)[/yellow]"
+        )
+    elif decl is not None and decl.search_box is not None:
+        # The declared object's placement names its label (its detector label, else its
+        # scene name), normalised as the queries' labels were.
+        obj = decl.target_id.split(":", 1)[-1]
+        named = [p.label or p.object for p in success.tasks.get(prompt, []) if p.object == obj]
+        seeded = placement_queries([(named[0] if named else obj, None)])[0].label
+        queries = tuple(
+            q.model_copy(update={"seed": decl.search_box})
+            if q.label == seeded and q.role is ObjectRole.TARGET and q.seed is None
+            else q
+            for q in queries
+        )
+    # The task's CONTEXT labels: neighbours the hand may brush (Spark R264/R265, 2026-10-22:
+    # the fingers met an untracked tote neighbour, cells nothing explained).
+    # Each waits for as many instances as the scene places objects named after it (the
+    # runner waits for CONTEXT queries too, never requires them).
+    context = dict.fromkeys(c for p in success.tasks.get(prompt, []) for c in p.context)
+    objects = deploy_scene.scene.backend_options.get("objects", [])
+    names = [
+        str(o.get("name", ""))
+        for o in (objects if isinstance(objects, list) else [])
+        if isinstance(o, dict)
+    ]
+    # Seeded beside the target (its seed grown by `_CONTEXT_SEED_MARGIN_M`): the tracker's
+    # map-seeded prompts land on the raised tops next to it first, not on the same class
+    # elsewhere (Spark R282/R283, 2026-10-23: "carton" found shelf cartons, never the tote
+    # neighbour the finger met). A sim ground-truth seed was dropped above; none here then.
+    target_seed = next(
+        (q.seed for q in queries if q.role is ObjectRole.TARGET and q.seed is not None), None
+    )
+    context_seed = (
+        target_seed.model_copy(
+            update={
+                "half_extents": tuple(h + _CONTEXT_SEED_MARGIN_M for h in target_seed.half_extents)
+            }
+        )
+        if target_seed is not None
+        else None
+    )
+    queries += tuple(
+        ObjectQuery(
+            label=c,
+            count="all",
+            role=ObjectRole.CONTEXT,
+            min_instances=max(1, sum(n.startswith(c.replace(" ", "_")) for n in names)),
+            seed=context_seed,
+        )
+        for c in context
+        if all(q.label != c for q in queries)
+    )
+    return json.dumps(
+        [q.model_dump(mode="json", exclude_none=True) for q in queries], separators=(",", ":")
+    )
+
+
+def _require_groundable_targets(queries_json: str, locators: Sequence[str]) -> None:
+    """Refuse a tracker that could never ground a TARGET query (issue #418).
+
+    The tracker grounds a query through an on-demand locator (``locate_in_view``) or
+    inside its seed box; a TARGET query with neither has nothing to find it with, and a
+    tracker that cannot ground must never run silently.
+
+    Raises:
+        ROSConfigError: Tracking names a TARGET query with no seed and no locator is
+            configured (``--object-detector-locator``).
+
+    Example:
+        >>> _require_groundable_targets('[{"label":"plate","role":"destination"}]', [])
+        >>> _require_groundable_targets('[{"label":"orange","role":"target"}]', ["x.yaml"])
+    """
+    if not queries_json or locators:
+        return
+    blind = [
+        q["label"]
+        for q in json.loads(queries_json)
+        if q.get("role") == "target" and q.get("seed") is None
+    ]
+    if blind:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"object tracking: TARGET quer{'y' if len(blind) == 1 else 'ies'} {blind} "
+            "have no seed and no locator is configured, so the tracker could never ground "
+            "them; pass --object-detector-locator (e.g. omdet-turbo-locator)."
+        )
+
+
 def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
     """Derive the deploy_e2e.launch.py bundle args from a deploy memory-bundle dir.
 
@@ -940,6 +1092,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_foxglove: bool = False,
     foxglove_port: int = 8765,
     initial_task_prompt: str | None = None,
+    runtime_overrides: dict[str, object] | None = None,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -980,6 +1133,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         )
 
     deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
+    if runtime_overrides:
+        deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")
@@ -1017,6 +1172,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     preload_rskill_id = ""
     preload_rskill_revision = ""
     preload_prompt = ""
+    reward_score_window_s: float | None = None
+    enable_completion_check = False
+    completion_check_judge = "scene_vlm"
     rt = deploy_scene.runtime if deploy_scene is not None else None
     if rt is not None:
         scene_dir = config.parent if config is not None else None
@@ -1052,6 +1210,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             enable_reward_monitor = rt.enable_reward_monitor
         reward_monitor_manifest = reward_monitor_manifest or _scene_path(rt.reward_monitor_manifest)
         reward_monitor_task = reward_monitor_task or rt.reward_monitor_task
+        reward_score_window_s = rt.reward_monitor_score_window_s
+        enable_completion_check = bool(rt.enable_completion_check)
+        completion_check_judge = rt.completion_check_judge or "scene_vlm"
         if enable_critic is None:
             enable_critic = rt.enable_critic
         if enable_scene_vlm is None:
@@ -1126,6 +1287,22 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     launched_scene = (
         DeployScene.from_yaml(str(deploy_config)) if deploy_config is not None else deploy_scene
     )
+    scene_yaml_path = deploy_config or config
+    declared_object_catalog_json = ""
+    if launched_scene is not None and launched_scene.object_catalog is not None:
+        if rt is None or rt.object_tracking == "off":
+            raise ROSConfigError(
+                "DeployScene.object_catalog requires DeployRuntime.object_tracking to be "
+                "enabled so its declarations reach the tracker"
+            )
+        if scene_yaml_path is None:
+            raise ROSConfigError("object_catalog needs a DeployScene YAML path")
+        from openral_core import load_usd_object_catalog
+
+        catalog = load_usd_object_catalog(launched_scene, scene_path=scene_yaml_path)
+        if catalog is None:  # pragma: no cover - guarded by object_catalog above
+            raise ROSConfigError("object_catalog was declared but no catalog was loaded")
+        declared_object_catalog_json = catalog.model_dump_json()
     # A robot sensor lives in its manifest only; refuse a scene that names one here,
     # before launch, so `deploy validate` sees it too (the launch's merge re-checks).
     if launched_scene is not None:
@@ -1507,6 +1684,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "runtime.workspace_contact_enabled is sim-only until Safety-WG review "
             "(docs/reference/manipulation-workspace-contact.md): deploy run refuses it."
         )
+    # The #418 tracker owning attachment_state (bind | on) is sim-only until Safety-WG
+    # review. Shadow may run: the kernel ingests its tracked_objects through K1 (via the
+    # aggregator's world_state_fast), but no TRACKED_OBJECT binding exists and K2 / K5 are
+    # off, so no kernel decision changes.
+    if hal_mode == "real" and rt is not None and rt.object_tracking in ("bind", "on"):
+        raise ROSConfigError(
+            f"runtime.object_tracking={rt.object_tracking!r} is sim-only until Safety-WG "
+            "review (issue #418): deploy run refuses it; 'shadow' is allowed."
+        )
     # The payload's octree clearing removes world occupancy: sim-only until Safety-WG review.
     if hal_mode == "real" and rt is not None and rt.payload_sweep_clear_enabled:
         raise ROSConfigError(
@@ -1603,6 +1789,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # Tier-C critic producer; emits FailureTrigger on
         # /openral/failure/critic when a reward model's score stalls.
         f"enable_critic:={'true' if enable_critic else 'false'}",
+        f"enable_completion_check:={'true' if enable_completion_check else 'false'}",
+        f"completion_check_judge:={completion_check_judge}",
         # scene VLM co-active with the VLA; the reasoner asks
         # /openral/perception/query_scene when scene_query_available.
         f"enable_scene_vlm:={'true' if enable_scene_vlm else 'false'}",
@@ -1656,6 +1844,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         effective_reward_task = _resolved_initial_prompt.strip()
     if effective_reward_task:
         argv_template.append(f"reward_monitor_task:={effective_reward_task}")
+    if enable_reward_monitor and reward_score_window_s is not None:
+        argv_template.append(f"reward_monitor_score_window_s:={reward_score_window_s}")
     # only forward the locator list when non-empty (ros2 launch rejects
     # an empty ``name:=`` value; the launch file defaults it to "").
     if resolved_object_detector_locators:
@@ -1701,12 +1891,34 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 "workspace_contact_enabled:=true",
                 f"workspace_contact_max_speed_mps:={rt.workspace_contact_max_speed_mps}",
                 f"workspace_contact_max_lead_m:={rt.workspace_contact_max_lead_m}",
+                f"workspace_contact_wrist_links:={rt.workspace_contact_wrist_links}",
+                f"workspace_explained_cells:={str(rt.workspace_explained_cells).lower()}",
             ]
         )
     # The payload's octree clearing: forwarded only when enabled (sim-only; refused above
     # on `deploy run`, and again by the launch on a non-sim HAL).
     if rt is not None and rt.payload_sweep_clear_enabled:
         argv_template.append("payload_sweep_clear_enabled:=true")
+    # The #418 object tracker: forwarded only when on, so the off path's argv is unchanged.
+    # The launch adds the tracked cameras' robot masks and gates the HAL bridge's
+    # attachment_state publisher in bind/on.
+    if rt is not None and rt.object_tracking != "off":
+        # `shadow` changes no decision, so it never refuses a goal: a scene's committed
+        # `grounding_required` (the Isaac twins commit `true` for `on`) is not inherited by
+        # a `--runtime object_tracking=shadow` override.
+        grounding_required = rt.grounding_required and rt.object_tracking != "shadow"
+        if rt.grounding_required and not grounding_required:
+            _console.print(
+                "[yellow]object tracking: grounding_required ignored under shadow "
+                "(shadow refuses no goal)[/yellow]"
+            )
+        argv_template.extend(
+            [
+                f"object_tracking:={rt.object_tracking}",
+                f"grounding_wait_s:={rt.grounding_wait_s}",
+                f"grounding_required:={str(grounding_required).lower()}",
+            ]
+        )
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,
     # else repo-relative, resolved absolute; a declared file that is missing is a config error
     # (never run without walls the scene declared).
@@ -1782,6 +1994,19 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if deploy_scene is not None and deploy_scene.grasp_declaration is not None:
         argv_template.append(
             f"grasp_declaration_json:={deploy_scene.grasp_declaration.model_dump_json()}"
+        )
+    # Issue #418: the object classes the prompt's graded task names, for the tracker. A
+    # direct-dispatch deploy (no reasoner, so no initial task) runs the cell's preload
+    # prompt; that is the prompt whose task is graded, so it names the queries.
+    queries_json = _object_queries_json(deploy_scene, _resolved_initial_prompt or preload_prompt)
+    _require_groundable_targets(queries_json, resolved_object_detector_locators)
+    if queries_json:
+        argv_template.append(f"object_queries_json:={queries_json}")
+    if declared_object_catalog_json:
+        argv_template.append(f"declared_object_catalog_json:={declared_object_catalog_json}")
+    if rt is not None and rt.object_surface_model is not None:
+        argv_template.append(
+            f"object_surface_model_json:={rt.object_surface_model.model_dump_json()}"
         )
 
     # The deploy memory bundle. ``--memory-dir`` (CLI) wins;
@@ -1961,6 +2186,7 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
         confine_sim_scope(env)
     venv_site = sysconfig.get_paths()["purelib"]
     env["OPENRAL_VENV_SITE"] = venv_site
+    env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{venv_site}{os.pathsep}{existing}" if existing else venv_site
     venv_bin = os.path.dirname(sys.executable)
@@ -2012,7 +2238,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
             _console.print(f"[red]config error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-        _reap_orphans_with_log()
+        _reap_orphans_with_log(invocation.hal_mode)
 
         _preflight_palette_deps(
             repo_root=repo_root,
@@ -2059,7 +2285,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         # passing ``run_preflight=False`` means it.
         if run_preflight:
             _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
-        return _run_launch(argv, venv_env)
+        return _run_launch(argv, venv_env, orphan_guard=invocation.hal_mode != "real")
     finally:
         with contextlib.suppress(OSError):
             Path(hal_params_tmp.name).unlink(missing_ok=True)
@@ -2081,6 +2307,40 @@ def _assert_graph_unoccupied_or_exit(env: dict[str, str], *, hal_mode: str) -> N
     except ROSConfigError as exc:
         _console.print(f"[red]refusing to launch:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+
+def _with_runtime_overrides(
+    deploy_scene: DeployScene | None, overrides: dict[str, object]
+) -> DeployScene:
+    """``deploy_scene`` with ``--runtime key=value`` applied to its ``runtime`` block.
+
+    The scene file is never edited; the merged block is re-validated whole, so an
+    override cannot produce a posture the schema refuses (e.g. ``object_tracking=shadow``
+    without ``grounding_wait_s``).
+
+    Raises:
+        ROSConfigError: No scene to override, or the merged runtime does not validate.
+
+    Example:
+        >>> from openral_core import DeployScene
+        >>> scene = DeployScene.from_yaml("scenes/deploy/isaac_leisaac_pick_orange.yaml")
+        >>> rt = _with_runtime_overrides(
+        ...     scene, {"object_tracking": "shadow", "grounding_wait_s": 8}
+        ... ).runtime
+        >>> rt.object_tracking, rt.grounding_wait_s
+        ('shadow', 8.0)
+    """
+    from openral_core import DeployRuntime
+    from pydantic import ValidationError
+
+    if deploy_scene is None:
+        raise ROSConfigError("--runtime needs a --config DeployScene to override.")
+    base = deploy_scene.runtime.model_dump() if deploy_scene.runtime is not None else {}
+    try:
+        runtime = DeployRuntime.model_validate({**base, **overrides})
+    except ValidationError as exc:
+        raise ROSConfigError(f"--runtime overrides do not validate: {exc}") from exc
+    return deploy_scene.model_copy(update={"runtime": runtime})
 
 
 def _parse_hal_overrides(raw: list[str] | None) -> dict[str, object]:
@@ -2126,7 +2386,7 @@ def _ros2_pkg_prefix(pkg: str) -> str | None:
     return out or None
 
 
-def _reap_orphans_with_log() -> None:
+def _reap_orphans_with_log(hal_mode: str = "sim") -> None:
     """Kill orphan openral-graph processes and log the count.
 
     Reap orphan graph processes from a prior crashed/Ctrl-C'd run.
@@ -2148,7 +2408,16 @@ def _reap_orphans_with_log() -> None:
         # scoped by ``ROS_DOMAIN_ID``.
         _console.print("[yellow]orphan reap skipped (OPENRAL_SKIP_ORPHAN_REAP=1)[/yellow]")
         return
-    killed = _kill_orphan_openral_graph_processes()
+    # Only what `_graph_identity` reads (domain + checkout): `_prepare_launch_env` also
+    # purges the DDS SHM and prints DDS_TRANSPORT_READY_MARKER, which must come once,
+    # after this reap (#421 review).
+    from openral_cli._dds_scope import confine_sim_scope  # reason: deferred, as above
+
+    env = os.environ.copy()
+    if hal_mode == "sim":
+        confine_sim_scope(env)
+    env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
+    killed = _kill_orphan_openral_graph_processes(env)
     if killed:
         _console.print(
             f"[yellow]reaped {killed} orphan openral-graph process(es) from a prior run[/yellow]"
@@ -2260,7 +2529,28 @@ def _cmdline_is_openral_graph_process(cmdline: str) -> bool:
     )
 
 
-def _kill_orphan_openral_graph_processes() -> int:
+#: Set on every launch env (``_prepare_launch_env``): the checkout a deploy graph runs from.
+#: The orphan sweep reaps only processes carrying this CLI's value (and its domain).
+GRAPH_ROOT_ENV: Final[str] = "OPENRAL_DEPLOY_GRAPH_ROOT"
+
+
+def _graph_identity(env: Mapping[str, str]) -> tuple[str, str]:
+    """``(ROS_DOMAIN_ID, checkout)`` a graph launched with ``env`` runs under."""
+    root = env.get(GRAPH_ROOT_ENV) or str(_repo_root_from(Path(__file__)))
+    return env.get("ROS_DOMAIN_ID") or "0", root
+
+
+def _proc_identity(entry: Path) -> tuple[str, str | None] | None:
+    """``(ROS_DOMAIN_ID, checkout tag)`` from ``/proc/<pid>/environ``; ``None`` if unreadable."""
+    try:
+        raw = (entry / "environ").read_bytes()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return None
+    env = dict(kv.split("=", 1) for kv in raw.decode(errors="replace").split("\x00") if "=" in kv)
+    return env.get("ROS_DOMAIN_ID") or "0", env.get(GRAPH_ROOT_ENV)
+
+
+def _kill_orphan_openral_graph_processes(env: Mapping[str, str] | None = None) -> int:
     """SIGKILL orphaned openral-graph processes from a prior ``openral deploy sim``.
 
     A graceful ``Ctrl-C`` doesn't always propagate through ``ros2
@@ -2278,7 +2568,11 @@ def _kill_orphan_openral_graph_processes() -> int:
       configure step hangs waiting for the robocasa loader.
 
     Match orphans by argv signature so we never reach into other
-    users' processes or unrelated python invocations. Best-effort:
+    users' processes or unrelated python invocations, and only on this graph's own
+    ``ROS_DOMAIN_ID`` and checkout (``GRAPH_ROOT_ENV``, read from each candidate's
+    ``/proc/<pid>/environ``; ``env`` is the launch env, default the CLI's own): another
+    session's graph on the same host, on another domain or from another worktree, is
+    never touched (#418 Spark, 2026-10-17). A process without the tag is not ours. Best-effort:
     SIGKILL failures (permission denied, race) are silently
     skipped. Returns the count of processes killed for logging.
     """
@@ -2289,6 +2583,7 @@ def _kill_orphan_openral_graph_processes() -> int:
         # FileNotFoundError crash inside _run_launch.
         return 0
     me = os.getuid()
+    identity = _graph_identity(os.environ if env is None else env)
     killed = 0
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
@@ -2315,6 +2610,8 @@ def _kill_orphan_openral_graph_processes() -> int:
             continue
         if not _cmdline_is_openral_graph_process(cmdline):
             continue
+        if _proc_identity(entry) != identity:
+            continue  # another graph's (domain or checkout), or untagged
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, signal.SIGKILL)
             killed += 1
@@ -2360,7 +2657,25 @@ def _spawn_launch(argv: list[str], env: dict[str, str]) -> subprocess.Popen[byte
     return subprocess.Popen(argv, env=env, start_new_session=True, preexec_fn=_default_sigint)  # noqa: PLW1509  # reason: only resets one signal disposition before exec; no locks, no imports
 
 
-def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) -> int:
+def _spawn_orphan_guard(launch_pid: int, launch_tag: str) -> subprocess.Popen[bytes]:
+    """Start ``_launch_guard.py`` watching this CLI over the launch ``launch_pid``.
+
+    Its own session, so a signal to the CLI's process group (``kill -INT -<pgid>``) does
+    not take it down with the CLI; it reaps the launch tree once the CLI is gone, and
+    every process carrying ``launch_tag`` in its environment (one reparented away).
+    """
+    return subprocess.Popen(
+        [sys.executable, str(Path(__file__).with_name("_launch_guard.py")), str(os.getpid()),
+         str(launch_pid), launch_tag],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+    )  # fmt: skip
+
+
+def _run_launch(
+    argv: list[str], env: dict[str, str], *, grace_s: float = 12.0, orphan_guard: bool = False
+) -> int:
     """Run ``ros2 launch`` in its own session, reaping the whole tree on exit.
 
     The legacy ``subprocess.run(argv)`` left the launch a sibling in the
@@ -2395,10 +2710,21 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
        launch exits, and stage 1+2 alone leak nodes. The signature sweep
        matches every graph process regardless of parentage.
 
+    4. ``orphan_guard``: a stdlib-only watcher (``_launch_guard.py``, own session)
+       snapshots the launch's descendants every 0.5 s and reaps them once this CLI is
+       gone, so a SIGKILLed or crashed CLI, whose ``finally`` never runs, leaves no
+       node or sim sidecar on the ROS domain (#418 r4dr_shadow2). Sim deploys only for
+       now: a real HAL's teardown on its CLI's death is a Safety-WG decision.
+
     Returns the launch process's exit code (0 if it exited via signal
     with no recorded returncode).
     """
+    launch_tag = uuid.uuid4().hex
+    if orphan_guard:
+        env = {**env, "OPENRAL_LAUNCH_TAG": launch_tag}  # _launch_guard.LAUNCH_TAG_ENV
     proc = _spawn_launch(argv, env)
+    if orphan_guard:
+        _spawn_orphan_guard(proc.pid, launch_tag)
 
     def _forward(_signum: int, _frame: object) -> None:
         with contextlib.suppress(ProcessLookupError, OSError):
@@ -2426,7 +2752,7 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
         # those harnesses reap by domain instead (``_reap_domain`` in
         # ``tools/_ceiling_probe.py``).
         if os.environ.get("OPENRAL_SKIP_ORPHAN_REAP") != "1":
-            _kill_orphan_openral_graph_processes()
+            _kill_orphan_openral_graph_processes(env)
     return proc.returncode if proc.returncode is not None else 0
 
 
@@ -3237,6 +3563,15 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "constructor via ``hal_transport_json``."
         ),
     ),
+    runtime: list[str] = typer.Option(  # reason: typer Option idiom
+        None,
+        "--runtime",
+        help=(
+            "Override a ``DeployRuntime`` field of the scene, ``key=value`` (repeatable, "
+            "JSON-parsed like ``--hal``), re-validated whole; the scene file is untouched. "
+            "E.g. ``--runtime object_tracking=shadow --runtime grounding_wait_s=8``."
+        ),
+    ),
     enable_slam: bool | None = typer.Option(
         None,
         "--enable-slam/--no-enable-slam",
@@ -3519,6 +3854,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         overrides = _parse_hal_overrides(hal)
         invocation = resolve_launch_invocation(
             config=config,
+            runtime_overrides=_parse_hal_overrides(runtime),
             robot_override=robot,
             dashboard_port=dashboard_port,
             reset_to_pose_service=reset_to_pose_service,
@@ -3745,7 +4081,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         # every node — and the static_transform_publisher /
         # robot_state_publisher / HAL it spawns — is reaped on shutdown
         # instead of orphaning onto ``/tf_static`` + the GPU.
-        returncode = _run_launch(argv, venv_env)
+        returncode = _run_launch(argv, venv_env, orphan_guard=invocation.hal_mode != "real")
         raise typer.Exit(code=returncode)
     finally:
         with contextlib.suppress(OSError):

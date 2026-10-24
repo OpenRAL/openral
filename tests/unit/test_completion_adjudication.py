@@ -28,6 +28,7 @@ from openral_reasoner.completion import (
     parse_yes_no,
     resolve_band_edges,
     resolve_patience_s,
+    tiled_jpeg,
 )
 
 # Optional ROS import — guarded so pure tests always run.
@@ -182,6 +183,24 @@ def test_image_msg_to_jpeg_flip_180_inverts_vertically() -> None:
     flipped = image_msg_to_jpeg(data=raw, height=h, width=w, encoding="rgb8", flip_180=True)
     assert _top_mean(plain) > 200.0, "unflipped: top half should stay bright"
     assert _top_mean(flipped) < 55.0, "flip_180: top half should become dark (was bottom)"
+
+
+def test_tiled_jpeg_flip_180_rotates_every_view() -> None:
+    """The reasoner judge's tiled views carry the host's 180 deg flip (#421 review): a
+    LIBERO/MuJoCo frame publishes bottom-up and was judged upside down."""
+    np = pytest.importorskip("numpy", reason="numpy not installed")
+    pil_image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    h, w = 16, 16
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[: h // 2] = 255  # bright top half
+    view = (img.tobytes(), h, w, "rgb8")
+
+    def _top_means(jpeg: bytes) -> list[float]:
+        arr = np.asarray(pil_image.open(io.BytesIO(jpeg)).convert("RGB"))
+        return [float(arr[: h // 2, x : x + w].mean()) for x in (0, w)]
+
+    assert all(m > 200.0 for m in _top_means(tiled_jpeg([view, view])))
+    assert all(m < 55.0 for m in _top_means(tiled_jpeg([view, view], flip_180=True)))
 
 
 @pytest.mark.parametrize(

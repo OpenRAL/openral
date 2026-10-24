@@ -7,11 +7,14 @@ Omniverse Kit headless, builds the robot-agnostic manifest scene
 (``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
 environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
-    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash"}
+    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash","launch_id"}
     reset->{"observation"}
-    step->{"observation","reward","terminated","truncated","info"}
+    step{action, frames?}->{"observation","reward","terminated","truncated","info","renders"}
+        frames: "render" (default) | "fresh" | "none" (no frame keys in the observation)
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     contacts->PhysX robot-vs-world contacts, last physics step (scene.contact_ground_truth)
+    link_poses{links}->{"sim_time_ns","dofs","links"}: every DOF's position + drive target,
+        the named links' base-frame poses as PhysX holds them (scene.link_poses)
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
 
 IMPORTANT: construct ``SimulationApp`` before any ``omni.*``/``isaaclab`` import
@@ -30,6 +33,7 @@ import io
 import os
 import re
 import sys
+import time
 import traceback
 from typing import Any
 
@@ -42,6 +46,39 @@ os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
 
 
 # ── msgpack ndarray codec (matches openral_sim.backends.isaac_sim) ────────────
+
+
+class _StepTiming:
+    """Mean per-step wall time (ms) by frame mode, printed every 100 steps of a mode
+    (``OPENRAL_SIDECAR_TIMING=1``): physics, catch-up renders, observation assembly,
+    reply packing, send, whole handler, reply size."""
+
+    def __init__(self) -> None:
+        self._sums: dict[str, dict[str, float]] = {}
+        self._n: dict[str, int] = {}
+        self.sized = False
+
+    def add(self, mode: str, parts: dict[str, float]) -> None:
+        sums = self._sums.setdefault(mode, {})
+        for k, v in parts.items():
+            sums[k] = sums.get(k, 0.0) + float(v)
+        self._n[mode] = self._n.get(mode, 0) + 1
+        if self._n[mode] % 100 == 0:
+            n = 100.0
+            line = " ".join(f"{k}={v / n:.1f}" for k, v in sums.items())
+            print(f"[sidecar_timing] frames={mode} n={self._n[mode]} mean_ms: {line}", flush=True)
+            sums.clear()
+
+
+def _nbytes_tree(obj: Any, prefix: str = "") -> dict[str, float]:
+    """MB of every ndarray in a reply, by key path (depth_frames/head_zed/rgb ...)."""
+    if isinstance(obj, np.ndarray):
+        return {prefix: obj.nbytes / 1e6}
+    out: dict[str, float] = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.update(_nbytes_tree(v, f"{prefix}/{k}"))
+    return out
 
 
 def _encode_ndarray(obj: Any) -> Any:
@@ -70,6 +107,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5757)
     p.add_argument("--headless", action="store_true")
+    p.add_argument(
+        "--launch-id",
+        default="",
+        help="opaque launch identity echoed by ping (openral_sim isaac_sim._launch_id)",
+    )
     p.add_argument(
         "--layout",
         default="manifest",
@@ -165,6 +207,36 @@ def _check_required_versions(requirements: list[str]) -> None:
         )
 
 
+def _zero_delay_experience(isaac_root: str | None) -> str | None:
+    """Isaac's zero-delay Kit experience file, when the install ships one.
+
+    It runs the RTX pipeline without the default frames in flight, so a camera frame
+    trails the physics by ~2 renders instead of ~4 (measured on Isaac 6.1): a
+    ``frames="fresh"`` step then needs about half the catch-up renders, which are
+    most of its cost in a deploy scene. ``None`` keeps Kit's default experience.
+
+    Example:
+        >>> _zero_delay_experience("/nonexistent") is None
+        True
+    """
+    candidates = []
+    if isaac_root:
+        candidates.append(os.path.join(isaac_root, "apps", "isaacsim.exp.base.zero_delay.kit"))
+    try:
+        import isaacsim  # pip install: the apps live beside the package
+
+        package_file = getattr(isaacsim, "__file__", None)  # None for a namespace package
+        if package_file:
+            candidates.append(
+                os.path.join(
+                    os.path.dirname(package_file), "apps", "isaacsim.exp.base.zero_delay.kit"
+                )
+            )
+    except ImportError:
+        pass
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     if args.site_dir:
@@ -185,7 +257,13 @@ def main(argv: list[str]) -> int:
     #    on a live SimulationApp.
     from isaacsim import SimulationApp
 
-    sim_app = SimulationApp({"headless": bool(args.headless)})
+    experience = _zero_delay_experience(isaac_root)
+    print(f"[isaac_sidecar] Kit experience: {experience or 'default'}", flush=True)
+    sim_app = (
+        SimulationApp({"headless": bool(args.headless)}, experience=experience)
+        if experience
+        else SimulationApp({"headless": bool(args.headless)})
+    )
     if args.headless:
         # Kit keeps rendering its 1280x720 editor viewport every frame even headless;
         # nothing reads it and it costs ~20 % of a scene step (26 -> 20.5 ms measured
@@ -233,6 +311,7 @@ def main(argv: list[str]) -> int:
             robot=args.robot,
             objects=args.objects_json or "",
             robot_spec_hash=hashlib.sha256(robot_spec_json.encode("utf-8")).hexdigest(),
+            launch_id=args.launch_id,
         )
     except BaseException:
         # Print before close(): Kit's fast shutdown ends the process inside
@@ -258,6 +337,7 @@ def _serve(
     robot: str,
     objects: str,
     robot_spec_hash: str,
+    launch_id: str = "",
 ) -> int:
     import msgpack
     import zmq
@@ -268,8 +348,10 @@ def _serve(
     print(f"[isaac_sidecar] serving on tcp://{host}:{port}", flush=True)
 
     running = True
+    timing = _StepTiming() if os.environ.get("OPENRAL_SIDECAR_TIMING") == "1" else None
     while running:
         raw = sock.recv()
+        t_req = time.perf_counter()
         req = msgpack.unpackb(raw, object_hook=_decode_ndarray, raw=False)
         endpoint = req.get("endpoint")
         data = req.get("data", {}) or {}
@@ -280,8 +362,8 @@ def _serve(
                 reply: dict[str, Any] = {
                     "ok": True,
                     "action_dim": scene.action_dim,
-                    # Sim seconds per step (physics dt x substeps = one control
-                    # period); the HAL refuses a mismatch with the manifest rate.
+                    # Configured nominal seconds per step; reset later replaces
+                    # this with the observed callback cadence before HAL checks it.
                     "sim_dt_per_tick_s": scene.sim_dt_per_tick_s,
                     "task": task,
                     "layout": layout,
@@ -290,6 +372,7 @@ def _serve(
                     "robot": robot,
                     "objects": objects,
                     "robot_spec_hash": robot_spec_hash,
+                    "launch_id": launch_id,
                 }
             elif endpoint == "reset":
                 # Carry sim time on reset too (≈0 after the
@@ -297,9 +380,17 @@ def _serve(
                 reply = {
                     "observation": scene.reset(seed=data.get("seed")),
                     "sim_time_ns": scene.sim_time_ns(),
+                    # Same clock as World.current_time stamps; ping remains the
+                    # configured nominal period used to build physics substeps.
+                    "sim_dt_per_tick_s": scene._observed_sim_dt_per_tick_s,
                 }
             elif endpoint == "step":
-                reply = scene.step(np.asarray(data["action"], dtype=np.float32))
+                reply = scene.step(
+                    np.asarray(data["action"], dtype=np.float32),
+                    frames=str(data.get("frames", "render")),
+                )
+            elif endpoint == "refresh_frames":
+                reply = {"observation": scene.refresh_frames()}
             elif endpoint == "render":
                 reply = {"frame": scene.render()}
             elif endpoint == "contacts":
@@ -308,6 +399,8 @@ def _serve(
                 reply = scene.static_collider_boxes()
             elif endpoint == "scene_ground_truth":
                 reply = scene.scene_ground_truth()
+            elif endpoint == "link_poses":
+                reply = scene.link_poses([str(n) for n in data.get("links", [])])
             elif endpoint == "set_task":
                 reply = scene.set_task(str(data.get("instruction", "")))
             elif endpoint == "set_object_position":
@@ -319,7 +412,36 @@ def _serve(
                 reply = {"error": f"unknown endpoint {endpoint!r}"}
         except Exception as exc:
             reply = {"error": f"{type(exc).__name__}: {exc}"}
-        sock.send(msgpack.packb(reply, default=_encode_ndarray, use_bin_type=True))
+        t_pack = time.perf_counter()
+        payload = msgpack.packb(reply, default=_encode_ndarray, use_bin_type=True)
+        t_sent = time.perf_counter()
+        sock.send(payload)
+        if (
+            timing is not None
+            and endpoint == "step"
+            and data.get("frames") == "fresh"
+            and not timing.sized
+        ):
+            timing.sized = True
+            sizes = _nbytes_tree(reply)
+            print(
+                "[sidecar_timing] reply MB by array: "
+                + ", ".join(
+                    f"{k}={v:.2f}" for k, v in sorted(sizes.items(), key=lambda kv: -kv[1])[:10]
+                ),
+                flush=True,
+            )
+        if timing is not None and endpoint == "step":
+            timing.add(
+                str(data.get("frames", "render")),
+                {
+                    **getattr(scene, "last_step_timing", {}),
+                    "pack": (t_sent - t_pack) * 1e3,
+                    "send": (time.perf_counter() - t_sent) * 1e3,
+                    "bytes": len(payload) / 1e6,
+                    "handler": (t_pack - t_req) * 1e3,
+                },
+            )
 
     sock.close(linger=0)
     ctx.term()

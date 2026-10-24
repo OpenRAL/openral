@@ -158,8 +158,10 @@ kernel can only stop that. So the payload appears in **exactly one** place on
 each side of the boundary, and the two sides are deliberately opposite:
 
 * **Kernel side** — the payload is *robot*: collision-active attached geometry
-  the kernel keeps checking, and `openral_octomap_bridge` clears its cells out
-  of the voxel grid so the robot is not stopped by itself.
+  the kernel keeps checking. `openral_octomap_bridge` clears its cells out of
+  the voxel grid only for a tracker-bound attachment (`object_tracking: on`,
+  sim-only); a geometry-only payload stays mapped and the kernel may stop the
+  arm on it (fail closed, see the octomap bridge README).
 * **Nav2 side** — the payload is *robot* only in that it is removed:
   `payload_scan_filter_node` drops its returns from the scan the costmaps and
   the collision monitor read, so a carried object never becomes an obstacle

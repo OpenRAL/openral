@@ -177,3 +177,46 @@ def test_stalled_critic_score_drives_tier_c_reasoner_preemption() -> None:
         "Tier-C critic→reasoner path is broken."
     )
     assert received_prompts[-1].text == "critic flagged a task stall; replanning"
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_flat_success_head_stream_never_fires_a_critic_fail() -> None:
+    """``<id>#success`` sits near 0 for most of a goal: watched, it "stalled" into a
+    critic FAIL that cancels a skill whose progress head is still climbing (#421 review)."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_msgs.msg import CriticScore, FailureTrigger
+    from openral_reasoner_ros import CriticProducerNode
+
+    rclpy.init()
+    received: list[FailureTrigger] = []
+    try:
+        producer = CriticProducerNode()
+        sub_node = rclpy.create_node("openral_test_subscriber_critic_success")
+        sub_node.create_subscription(FailureTrigger, "/openral/failure/critic", received.append, 50)
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(producer)
+        executor.add_node(sub_node)
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end and not sub_node.count_publishers("/openral/failure/critic"):
+            executor.spin_once(timeout_sec=0.05)
+        for critic_id in ("OpenRAL/rskill-robometer-4b#success", "OpenRAL/rskill-robometer-4b"):
+            for _ in range(10):  # twice the default stall_patience
+                score = CriticScore()
+                score.critic_id = score.header.frame_id = critic_id
+                score.score = 0.05
+                score.threshold = 0.8
+                producer._on_score(score)
+            end = time.monotonic() + 2.0
+            while time.monotonic() < end and not received:
+                executor.spin_once(timeout_sec=0.05)
+            if critic_id.endswith("#success"):
+                assert not received, "the success head stream fired a critic FAIL"
+        # The same flat series under the progress head's id still stalls (the control).
+        assert received and json.loads(received[-1].evidence_json)["critic_id"] == (
+            "OpenRAL/rskill-robometer-4b"
+        )
+        sub_node.destroy_node()
+        producer.destroy_node()
+    finally:
+        rclpy.shutdown()

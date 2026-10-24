@@ -391,6 +391,24 @@ def _maybe_cuda_graph(adapter: _PI05Adapter, spec_extra: dict[str, Any], *, trt:
     _log.info("pi05.cuda_graph_enabled", device=adapter.device)
 
 
+def _postprocessor_absolutizes(postprocessor: Any) -> bool:
+    """Whether the checkpoint's own postprocessor turns its deltas back into absolutes.
+
+    A lerobot ``absolute_actions_processor`` step (``AbsoluteActionsProcessorStep``,
+    enabled; ``use_relative_actions: true`` checkpoints such as the OpenArm restock
+    π0.5) already adds the state its paired ``relative_actions_processor`` cached, so
+    the adapter must not anchor the same deltas a second time.
+
+    Example:
+        >>> _postprocessor_absolutizes(None)
+        False
+    """
+    return any(
+        type(step).__name__ == "AbsoluteActionsProcessorStep" and bool(getattr(step, "enabled", 0))
+        for step in getattr(postprocessor, "steps", None) or ()
+    )
+
+
 def _delta_action_mask(manifest: Any) -> tuple[bool, ...] | None:
     """Per action channel, whether the checkpoint emits a delta from its observed state.
 
@@ -1021,7 +1039,12 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     if trt:
         _log.info("pi05.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
 
-    delta_mask = _delta_action_mask(manifest)
+    if _postprocessor_absolutizes(postprocessor):
+        # The checkpoint's own postprocessor makes its deltas absolute (explicit, §1.4).
+        _log.info("pi05.delta_actions_absolutized_by_postprocessor", repo_id=repo_id)
+        delta_mask = None
+    else:
+        delta_mask = _delta_action_mask(manifest)
     _refuse_rtc_with_deltas(delta_mask, spec.extra)
     ac = getattr(manifest, "action_contract", None)
     action_dim = ac.dim if ac is not None else None
