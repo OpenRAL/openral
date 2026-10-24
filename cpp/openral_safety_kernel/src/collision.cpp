@@ -87,7 +87,9 @@ bool solve6(double A[36], double b[6], double x[6]) noexcept {
   return true;
 }
 
-// out = lhs * rhs (compose: apply rhs first, then lhs).
+}  // namespace
+
+// out = lhs * rhs (compose: apply rhs first, then lhs). Exported (ADR-0121 providers).
 Transform compose(const Transform& lhs, const Transform& rhs) noexcept {
   Transform out;
   for (int row = 0; row < 3; ++row) {
@@ -102,6 +104,8 @@ Transform compose(const Transform& lhs, const Transform& rhs) noexcept {
   out.t = add(lhs.t, rotate(lhs.r, rhs.t));
   return out;
 }
+
+namespace {
 
 // Rodrigues rotation about a unit axis by `angle`, written row-major into `r`.
 void axis_angle(const Vec3& axis, double angle, double r[9]) noexcept {
@@ -1263,8 +1267,6 @@ Vec3 obb_extent(const Transform& box, const Vec3& he) noexcept {
               std::fabs(box.r[6]) * he.x + std::fabs(box.r[7]) * he.y + std::fabs(box.r[8]) * he.z};
 }
 
-namespace {
-
 // Exact point-in-OBB: express `p` in the box's own frame (Rᵀ·(p - origin))
 // and compare against the half-extents. A degenerate or non-finite box
 // contains nothing. Shared by the place allowance and the grasp exemption so
@@ -1281,6 +1283,8 @@ bool point_in_obb(const Transform& box, const Vec3& half, const Vec3& p) noexcep
   // `<=`, so a non-finite point is never inside (fails closed).
   return std::fabs(lx) <= half.x && std::fabs(ly) <= half.y && std::fabs(lz) <= half.z;
 }
+
+namespace {
 
 // Is `link` one the live grasp region may exempt at all? Evaluated once per
 // capsule/box, outside the cell loop, so a link outside the mask pays nothing.
@@ -1405,6 +1409,9 @@ bool provider_tolerates(CollisionHit& hit, const VoxelGrid& grid, const Collisio
   q.distance = d;
   q.row = gate.row;
   q.row_fk = &scratch;
+  q.hand_speed_mps = gate.hand_speed_mps;
+  q.hand_lead_m = gate.hand_lead_m;
+  q.hand_contact = gate.hand_contact;
   if (gate.provider->voxel_pair(q) != ProviderVerdict::kTolerate) {
     return false;
   }
@@ -1452,6 +1459,9 @@ void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double ma
     q.distance = d;
     q.row = gate->row;
     q.row_fk = &scratch;
+    q.hand_speed_mps = gate->hand_speed_mps;
+    q.hand_lead_m = gate->hand_lead_m;
+    q.hand_contact = gate->hand_contact;
     provider_exempt = gate->provider->self_pair(q) == ProviderVerdict::kTolerate;
     if (provider_exempt) {
       note_provider_pair(result, d, a, b);
@@ -2402,6 +2412,9 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 q.distance = d;
                 q.row = grid.provider_gate.row;
                 q.row_fk = &scratch;
+                q.hand_speed_mps = grid.provider_gate.hand_speed_mps;
+                q.hand_lead_m = grid.provider_gate.hand_lead_m;
+                q.hand_contact = grid.provider_gate.hand_contact;
                 if (grid.provider_gate.provider->payload_voxel_pair(q) ==
                     ProviderVerdict::kTolerate) {
                   tripped = false;
@@ -2965,6 +2978,9 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       q.distance = d;
       q.row = gate->row;
       q.row_fk = &scratch;
+      q.hand_speed_mps = gate->hand_speed_mps;
+      q.hand_lead_m = gate->hand_lead_m;
+      q.hand_contact = gate->hand_contact;
       provider_exempt = gate->provider->payload_self_pair(q) == ProviderVerdict::kTolerate;
       if (provider_exempt) {
         note_provider_pair(result, d, obj.attach_link, link);
@@ -3355,8 +3371,6 @@ bool tracked_cover_sufficient(std::size_t occupied, std::uint32_t visible) noexc
 
 // ── Issue #418 K7: explained cells for workspace contact ─────────────────────
 
-namespace {
-
 // Horizontal gap (m) from `p` to the box's footprint, in the box's own x / y
 // (the tracker's boxes are gravity-aligned, so those are horizontal). NaN for a
 // non-finite input, which never compares as within reach.
@@ -3389,6 +3403,8 @@ long grid_cell_of(const VoxelGrid& grid, const Transform& grid_from_base, const 
          static_cast<long>(grid.sx) *
              (static_cast<long>(fy) + static_cast<long>(grid.sy) * static_cast<long>(fz));
 }
+
+namespace {
 
 bool grid_lattice_sound(const VoxelGrid& grid) noexcept {
   return grid.sx > 0 && grid.sy > 0 && grid.sz > 0 && grid.resolution > 0.0 &&

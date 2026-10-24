@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include <rclcpp/logger.hpp>
@@ -130,6 +131,14 @@ struct CandidateView {
   DeclarationView declaration{};      ///< API v2
   std::int64_t region_max_age_ns{0};  ///< `grasp_region_max_age_s` (API v2)
   bool tracked_frame_ok{false};       ///< the tracked set and the grid share a frame (API v2)
+  bool tracked_stream_fresh{false};   ///< the kernel's verdict on the tracked set's stream (API v2)
+  std::uint64_t grid_seq{0};          ///< bumped on every grid the kernel ingests (API v2)
+  double workspace_period_s{0.0};     ///< the hand-speed measurement's control period (API v2)
+  /// The declared static colliders' cells on THIS grid (one byte per cell, non-zero = static),
+  /// `static_cells_n` = the grid's cell count; null when there are none or the lattice does not
+  /// match (API v2).
+  const std::uint8_t* static_cells{nullptr};
+  std::size_t static_cells_n{0};
 };
 
 /// One (robot link, occupied cell) pair the open kernel is about to trip on.
@@ -140,6 +149,11 @@ struct VoxelPairQuery {
   double distance{0.0};                     ///< surface distance the open check computed
   int row{0};                               ///< checked row of the chunk (0 = measured)
   const CollisionScratch* row_fk{nullptr};  ///< FK at that row
+  /// The kernel's own #349 measurement of the hand at this row (API v2; +inf = unknown). The lead
+  /// is raw, before any per-row allowance. `row` is the chunk step (-1 = the measured pass).
+  double hand_speed_mps{std::numeric_limits<double>::infinity()};
+  double hand_lead_m{std::numeric_limits<double>::infinity()};
+  bool hand_contact{false};  ///< the measured hand (or its payload) already touches
 };
 
 /// Two robot links of one self-collision pair about to trip (both in the mask).
@@ -149,6 +163,11 @@ struct SelfPairQuery {
   double distance{0.0};
   int row{0};
   const CollisionScratch* row_fk{nullptr};
+  /// The kernel's own #349 measurement of the hand at this row (API v2; +inf = unknown). The lead
+  /// is raw, before any per-row allowance. `row` is the chunk step (-1 = the measured pass).
+  double hand_speed_mps{std::numeric_limits<double>::infinity()};
+  double hand_lead_m{std::numeric_limits<double>::infinity()};
+  bool hand_contact{false};  ///< the measured hand (or its payload) already touches
 };
 
 /// A carried payload about to trip against an occupied cell (`payload_voxel_pair`) or against a
@@ -167,6 +186,11 @@ struct PayloadPairQuery {
   double distance{0.0};
   int row{0};
   const CollisionScratch* row_fk{nullptr};
+  /// The kernel's own #349 measurement of the hand at this row (API v2; +inf = unknown). The lead
+  /// is raw, before any per-row allowance. `row` is the chunk step (-1 = the measured pass).
+  double hand_speed_mps{std::numeric_limits<double>::infinity()};
+  double hand_lead_m{std::numeric_limits<double>::infinity()};
+  bool hand_contact{false};  ///< the measured hand (or its payload) already touches
 };
 
 /// The interface. Default implementations refuse everything, so a provider
@@ -187,6 +211,11 @@ public:
   virtual bool initialize(const CollisionModel& model,
                           rclcpp::node_interfaces::NodeParametersInterface::SharedPtr params,
                           const rclcpp::Logger& logger) = 0;
+
+  /// True: the provider REPLACES the open ADR-0115 grasp region as the grasp exemption source
+  /// (API v2), as in-tree K2 does today. The kernel then stops applying the region (it only
+  /// narrows the open kernel); read once at load and logged.
+  virtual bool replaces_grasp_region() const noexcept { return false; }
 
   /// Per candidate chunk, before any pair query. Preallocated state only.
   virtual void begin_candidate(const CandidateView& view) noexcept { (void)view; }

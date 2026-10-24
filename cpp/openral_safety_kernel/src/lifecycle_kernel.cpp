@@ -934,53 +934,11 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                     std::to_string(workspace_max_lead_m_));
     }
     const auto names = this->get_parameter("workspace_contact_links").as_string_array();
-    if (names.empty()) {
-      return refuse("workspace_contact_links is empty");
-    }
     std::string listed;
-    for (const auto& name : names) {
-      const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
-      const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
-      if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks ||
-          index >= collision_model_.n_links) {
-        return refuse("workspace_contact_links names '" + name +
-                      "', which is not a collision link of this model");
-      }
-      if (!workspace_links_[index]) {
-        workspace_links_.set(index);
-        workspace_link_index_.push_back(static_cast<int>(index));
-        listed += (listed.empty() ? "" : ",") + name;
-      }
+    const std::string why = configure_workspace_measurement(names, listed);
+    if (!why.empty()) {
+      return refuse(why);
     }
-    const std::size_t n_links = collision_model_.n_links;
-    workspace_link_reach_.assign(n_links, 0.0);
-    for (const int l : workspace_link_index_) {
-      workspace_link_reach_[static_cast<std::size_t>(l)] = link_geometry_reach(collision_model_, l);
-    }
-    workspace_prev_plain_.assign(n_links, Transform{});
-    workspace_prev_partner_.assign(n_links, Transform{});
-    workspace_creep_prev_.assign(n_links, Transform{});
-    workspace_meas_pose_.assign(n_links, Transform{});
-    workspace_last_warn_.assign(n_links, std::chrono::steady_clock::time_point{});
-    q_workspace_.assign(envelope_.n_dof, 0.0);
-    q_lead_.assign(envelope_.n_dof, 0.0);
-    workspace_jaw_cols_.clear();
-    // Resolved against the parameter: `collision_joint_names_` is read further down.
-    const auto joint_names = this->get_parameter("collision_joint_names").as_string_array();
-    const auto jaw_joints = this->get_parameter("workspace_contact_jaw_joints").as_string_array();
-    for (const auto& name : jaw_joints) {
-      const auto it = std::find(joint_names.begin(), joint_names.end(), name);
-      const auto d = static_cast<std::size_t>(it - joint_names.begin());
-      if (it == joint_names.end() || d >= envelope_.n_dof) {
-        return refuse("workspace_contact_jaw_joints names '" + name +
-                      "', which is not a joint of this model");
-      }
-      workspace_jaw_cols_.push_back(static_cast<int>(d));
-    }
-    workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
-    workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
-    workspace_cmd_set_.assign(envelope_.n_dof, 0);
-    workspace_command_holds_.assign(envelope_.n_dof, 0);
     clear_workspace_commands(ResetReason::kConfigure);
     RCLCPP_WARN(this->get_logger(),
                 "safety.workspace_contact enabled (issue #349 draft, Safety-WG review pending): "
@@ -1375,6 +1333,7 @@ SafetyKernelLifecycleNode::CallbackReturn
 SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
   diagnostics_timer_.reset();
   voxel_grid_.provider_gate = ProviderGate{};
+  provider_replaces_region_ = false;
   provider_.reset();
   provider_links_.clear();
   provider_status_ = "none";
@@ -1951,6 +1910,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       }
       voxel_grid_.grasp_region = grasp_live ? grasp_region_ : GraspTargetRegion{};
       const bool region_live = grasp_live;  // ADR-0115's verdict, before K2 re-sources it
+      if (provider_replaces_region_) {
+        // ADR-0121: the provider is the grasp exemption source; the open region exempts nothing.
+        voxel_grid_.grasp_region = GraspTargetRegion{};
+      }
       if (tracked_grasp_enabled_) {
         // #418 K2: the tracked table REPLACES the region as the exemption source
         // (the check reads only the table while it is valid, as it always is here).
@@ -2040,6 +2003,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         pview.measured = fk_meas ? &provider_meas_scratch_ : nullptr;
         pview.region_max_age_ns = static_cast<std::int64_t>(grasp_region_max_age_s_ * 1e9);
         pview.tracked_frame_ok = tracked_n_ > 0 && refresh_tracked_cover();
+        pview.tracked_stream_fresh = attached_received_ && tracked_stream_fresh();
+        pview.grid_seq = voxel_grid_seq_;
+        pview.workspace_period_s = workspace_control_period_s_;
+        const bool static_ok = static_cells_marked_ > 0 && !voxel_overflow_;
+        pview.static_cells = static_ok ? static_cells_.data() : nullptr;
+        pview.static_cells_n = static_ok ? static_cast<std::size_t>(voxel_grid_.sx) *
+                                               static_cast<std::size_t>(voxel_grid_.sy) *
+                                               static_cast<std::size_t>(voxel_grid_.sz)
+                                         : 0;
         DeclarationView& dv = pview.declaration;
         dv.live = region_live;
         dv.refused = grasp_declaration_refused_;
@@ -2053,7 +2025,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         dv.hands = provider_hands_valid_ ? &provider_hands_ : nullptr;
         provider_->begin_candidate(pview);
       }
-      const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
+      // ADR-0121: with a provider and the in-tree rule off, the kernel still MEASURES the hand
+      // (the measurement stays open) and hands the values to the provider's queries.
+      ws_provider_measure_ = provider_ != nullptr && !workspace_on && workspace_live() &&
+                             !workspace_link_index_.empty() && workspace_control_period_s_ > 0.0;
+      voxel_grid_.provider_gate.hand_speed_mps = std::numeric_limits<double>::infinity();
+      voxel_grid_.provider_gate.hand_lead_m = std::numeric_limits<double>::infinity();
+      voxel_grid_.provider_gate.hand_contact = false;
+      const bool workspace_speed_known =
+          (workspace_on || ws_provider_measure_) && is_position && measured_state_fresh();
       workspace_speed_measured_ = false;  // set below for a position chunk with dq_meas_
       ws_hand_contact_ = false;
       ws_speed_measured_row_ = false;
@@ -2152,7 +2132,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // else the measured state); nullptr = speed and lead unknown.
       const auto check_config = [&](const double* q, int step, double extra_margin = 0.0,
                                     std::vector<Transform>* workspace_prev = nullptr) -> bool {
-        if (voxel_grid_.workspace_region.valid) {
+        if (voxel_grid_.workspace_region.valid || ws_provider_measure_) {
           const bool known = workspace_prev != nullptr;
           // The lead at `q` with the jaws held at measured: the arm's push only.
           if (known) {
@@ -2178,10 +2158,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                  ? workspace_max_speed_mps_ * workspace_control_period_s_ *
                                        static_cast<double>(step)
                                  : 0.0;
+          const double raw_lead = !known               ? std::numeric_limits<double>::infinity()
+                                  : ws_speed_override_ ? 0.0
+                                                       : workspace_hand_lead();
           voxel_grid_.workspace_region.hand_lead_m =
-              !known               ? std::numeric_limits<double>::infinity()
-              : ws_speed_override_ ? 0.0
-                                   : std::max(0.0, workspace_hand_lead() - ws_lead_allow_m_);
+              std::isfinite(raw_lead) ? std::max(0.0, raw_lead - ws_lead_allow_m_) : raw_lead;
+          voxel_grid_.provider_gate.hand_lead_m = raw_lead;  // ADR-0121: before any allowance
           fk_config(q);
           // Row 0 with a fresh measured velocity: the measured speed only. Its
           // commanded step (from the previous command or the measured state) is the
@@ -2203,6 +2185,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             }
           }
           voxel_grid_.workspace_region.hand_speed_mps = speed;
+          voxel_grid_.provider_gate.hand_speed_mps = speed;
+          voxel_grid_.provider_gate.hand_contact = ws_hand_contact_;
         } else {
           fk_config(q);
         }
@@ -2374,6 +2358,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           if (world_voxel_enabled_) {
             voxel_grid_.workspace_region.hand_speed_mps = 0.0;
             voxel_grid_.workspace_region.hand_lead_m = 0.0;
+            // Contact is measured without the provider: it cannot hide a touch from its own
+            // allowance (ADR-0121).
+            ExemptionProvider* const saved_provider = voxel_grid_.provider_gate.provider;
+            voxel_grid_.provider_gate.provider = nullptr;
             const auto touch = check_voxel_collision(collision_model_, collision_scratch_,
                                                      voxel_grid_, world_voxel_margin_m_);
             ws_hand_contact_ = touch.hit || touch.workspace_pairs > 0;
@@ -2388,6 +2376,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               voxel_grid_.payload_own = saved_own;
               ws_hand_contact_ = ptouch.hit || ptouch.workspace_pairs > 0;
             }
+            voxel_grid_.provider_gate.provider = saved_provider;
           }
           if (measured_velocity_fresh(now_ns)) {
             workspace_snapshot(workspace_prev_plain_);
@@ -3580,8 +3569,65 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
   failure_pub_->publish(trigger);
 }
 
+std::string
+SafetyKernelLifecycleNode::configure_workspace_measurement(const std::vector<std::string>& names,
+                                                           std::string& listed) {
+  // The #349 hand speed / lead MEASUREMENT (links, reaches, jaw joints, command memory), shared by
+  // the in-tree rule and an ADR-0121 provider. The rule's own bounds are configured by its caller.
+  workspace_links_.reset();
+  workspace_link_index_.clear();
+  if (names.empty()) {
+    return "workspace_contact_links is empty";
+  }
+  for (const auto& name : names) {
+    const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
+    const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
+    if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks ||
+        index >= collision_model_.n_links) {
+      return "workspace_contact_links names '" + name +
+             "', which is not a collision link of this model";
+    }
+    if (!workspace_links_[index]) {
+      workspace_links_.set(index);
+      workspace_link_index_.push_back(static_cast<int>(index));
+      listed += (listed.empty() ? "" : ",") + name;
+    }
+  }
+  const std::size_t n_links = collision_model_.n_links;
+  workspace_link_reach_.assign(n_links, 0.0);
+  for (const int l : workspace_link_index_) {
+    workspace_link_reach_[static_cast<std::size_t>(l)] = link_geometry_reach(collision_model_, l);
+  }
+  workspace_prev_plain_.assign(n_links, Transform{});
+  workspace_prev_partner_.assign(n_links, Transform{});
+  workspace_creep_prev_.assign(n_links, Transform{});
+  workspace_meas_pose_.assign(n_links, Transform{});
+  workspace_last_warn_.assign(n_links, std::chrono::steady_clock::time_point{});
+  q_workspace_.assign(envelope_.n_dof, 0.0);
+  q_lead_.assign(envelope_.n_dof, 0.0);
+  workspace_jaw_cols_.clear();
+  // Resolved against the parameter: `collision_joint_names_` is read further down.
+  const auto joint_names = this->get_parameter("collision_joint_names").as_string_array();
+  const auto jaw_joints = this->get_parameter("workspace_contact_jaw_joints").as_string_array();
+  for (const auto& name : jaw_joints) {
+    const auto it = std::find(joint_names.begin(), joint_names.end(), name);
+    const auto d = static_cast<std::size_t>(it - joint_names.begin());
+    if (it == joint_names.end() || d >= envelope_.n_dof) {
+      return "workspace_contact_jaw_joints names '" + name +
+             "', which is not a joint of this model";
+    }
+    workspace_jaw_cols_.push_back(static_cast<int>(d));
+  }
+  workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
+  workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
+  workspace_cmd_set_.assign(envelope_.n_dof, 0);
+  workspace_command_holds_.assign(envelope_.n_dof, 0);
+  return {};
+}
+
 void SafetyKernelLifecycleNode::load_exemption_provider() {
   voxel_grid_.provider_gate = ProviderGate{};
+  provider_replaces_region_ = false;
   provider_.reset();
   provider_links_.clear();
   provider_pairs_total_ = 0;
@@ -3617,6 +3663,43 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
       return;
     }
     mask[static_cast<std::size_t>(it - collision_link_names_.begin())] = 1;
+  }
+  if (!workspace_contact_enabled_) {
+    // The provider's rules read the kernel's own hand speed / lead measurement (ADR-0121: the
+    // measurement stays open). Configured on the provider's mask when a control period is given;
+    // without one the queries quote the hand as unknown (+inf).
+    const double period = this->get_parameter("workspace_contact_control_period_s").as_double();
+    if (period != 0.0) {
+      if (!std::isfinite(period) || period < 0.0) {
+        refuse("workspace_contact_control_period_s must be finite and > 0 (or 0 = no hand "
+               "measurement), got " +
+               std::to_string(period));
+        return;
+      }
+      workspace_control_period_s_ = period;
+      std::string listed;
+      const std::string why = configure_workspace_measurement(links, listed);
+      if (!why.empty()) {
+        refuse(why);
+        return;
+      }
+      clear_workspace_commands(ResetReason::kConfigure);
+    }
+  }
+  if (static_points_.empty()) {
+    // The declared static colliders, for the provider's view (K7's static cells), when the
+    // in-tree K7 / OT-10 did not load them.
+    const std::string points_file = this->get_parameter("static_points_file").as_string();
+    if (!points_file.empty()) {
+      std::string error;
+      if (!load_static_points(points_file, static_points_, error)) {
+        refuse("static_points_file: " + error);
+        return;
+      }
+    }
+  }
+  if (!static_points_.empty() && static_cells_.size() != world_voxel_max_cells_) {
+    static_cells_.assign(world_voxel_max_cells_, 0);
   }
   try {
     if (provider_loader_ == nullptr) {
@@ -3657,10 +3740,12 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
       build_grasp_hands(collision_model_, grasp_allowlist_, provider_hands_, {});
   provider_meas_scratch_.link_world.assign(collision_model_.n_links, Transform{});
   provider_q_fk_.assign(q_fk_.size(), 0.0);
+  provider_replaces_region_ = provider_->replaces_grasp_region();
   provider_status_ = std::string("loaded: ") + provider_->name();
   RCLCPP_WARN(this->get_logger(),
-              "safety.exemption_provider loaded name=%s provider=%s links=%zu (ADR-0121, sim only)",
-              name.c_str(), provider_->name(), links.size());
+              "safety.exemption_provider loaded name=%s provider=%s links=%zu "
+              "replaces_grasp_region=%d (ADR-0121, sim only)",
+              name.c_str(), provider_->name(), links.size(), provider_replaces_region_ ? 1 : 0);
 }
 
 bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
@@ -4159,6 +4244,7 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   }
   tracked_cover_dirty_ = true;  // #418 K2: the cover check runs once per grid
   support_cells_dirty_ = true;  // #418 K7: so does the connected support layer
+  ++voxel_grid_seq_;            // ADR-0121: a provider caches per grid on this
   const std::size_t cells = static_cast<std::size_t>(msg->size_x) * msg->size_y * msg->size_z;
   // The grid's lattice is the source map's, so `orientation` is load-bearing
   // geometry, not metadata. An unset field is the all-zero quaternion, which is
@@ -4182,8 +4268,8 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_grid_.sx = static_cast<int>(msg->size_x);
   voxel_grid_.sy = static_cast<int>(msg->size_y);
   voxel_grid_.sz = static_cast<int>(msg->size_z);
-  if (workspace_explained_enabled_ || payload_own_enabled_) {
-    refresh_static_cells();  // #418 K7 / OT-10: once per change of the grid's lattice
+  if (workspace_explained_enabled_ || payload_own_enabled_ || provider_ != nullptr) {
+    refresh_static_cells();  // #418 K7 / OT-10 / ADR-0121: once per change of the grid's lattice
   }
   // A grid that re-frames invalidates any region declared against the old frame
   // — the allowance would otherwise apply to a volume in the wrong place.

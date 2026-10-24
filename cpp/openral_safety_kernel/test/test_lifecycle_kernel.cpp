@@ -8232,3 +8232,55 @@ TEST_F(LifecycleKernelTest, AnExemptionProviderSeesTheValidatedViewAndTheChunkOu
   EXPECT_GT(log.resets, resets_before);
   EXPECT_EQ(log.last_reset, static_cast<int>(osk::ResetReason::kExternalEstop));
 }
+
+TEST_F(LifecycleKernelTest, AnExemptionProviderGetsTheKernelsHandMeasurementWithTheRuleOff) {
+  // With the in-tree #349 rule OFF and a provider loaded, the kernel still ingests the workspace
+  // and measures the hand (the measurement stays open) and quotes it in every pair query. The
+  // Recorder refuses, so the finger on the cell stops exactly as with no provider.
+  osk_test::serve_test_providers();
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  auto params = with_param(workspace_params(false), "exemption_provider",
+                           rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_provider_measure", params);
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "the provider refuses: today's stop";
+  const auto& log = *osk_test_recorder();
+  EXPECT_TRUE(log.workspace) << "the kernel ingested the workspace for the provider";
+  EXPECT_GT(log.grid_seq, 0U);
+  EXPECT_DOUBLE_EQ(log.workspace_period_s, kWsPeriodS);
+  EXPECT_GE(log.voxel_asked, 1);
+  EXPECT_TRUE(std::isfinite(log.hand_speed_mps)) << "the kernel's measured / commanded speed";
+  EXPECT_TRUE(std::isfinite(log.hand_lead_m)) << "the kernel's raw lead";
+}
+
+TEST_F(LifecycleKernelTest, AProviderThatReplacesTheGraspRegionOnlyNarrowsTheOpenKernel) {
+  // ADR-0115 alone exempts the finger on its target cell. A provider that replaces the region as
+  // the exemption source and then refuses leaves that cell a stop: the open kernel narrowed.
+  osk_test::serve_test_providers();
+  {
+    GraspRig open_only("kernel_provider_region_open", grasp_params(true));
+    open_only.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = open_only.now_ns();
+    open_only.warm(&b, 0.0, 300);
+    ASSERT_TRUE(open_only.offer(&b, 0.0)) << "ADR-0115 exempts the target cell";
+  }
+  auto params = with_param(grasp_params(true), "hal_mode", rclcpp::ParameterValue("sim"));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("RecorderReplacing")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_provider_region_replaced", params);
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "the region no longer exempts; the provider refused";
+  EXPECT_TRUE(rig.node->fault_latched());
+}

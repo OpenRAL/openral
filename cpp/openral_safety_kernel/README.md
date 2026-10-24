@@ -1702,6 +1702,26 @@ verdicts. While a provider is loaded, the workspace declaration is ingested even
 in-tree #349 rule off. That rule and the in-tree contact hold still need
 `workspace_contact_enabled`.
 
+**The measurement stays open.** While a provider is loaded and the workspace is live, the
+kernel runs its own #349 hand measurement even with the in-tree rule off:
+- links are the provider's mask;
+- the period is `workspace_contact_control_period_s` (0 = no measurement);
+- jaw joints are `workspace_contact_jaw_joints`.
+
+Every pair query quotes the result: `hand_speed_mps`, the raw `hand_lead_m` before any
+allowance, `hand_contact`, and the row (step). The "is the hand already touching" check runs
+with the provider masked out. The view also carries:
+- `grid_seq` (bumped per ingested grid);
+- `workspace_period_s`;
+- `tracked_stream_fresh`;
+- the declared static colliders' cells on this grid.
+
+A provider whose `replaces_grasp_region()` is true becomes the grasp exemption source, as
+in-tree K2 is today. The open ADR-0115 region then exempts nothing, which only narrows the open
+kernel. `compose`, `inverse_rigid`, `apply`, `voxel_center`, `point_in_obb`, `footprint_gap` and
+`grid_cell_of` are exported from `collision.hpp`, so a provider's rules use the kernel's own
+arithmetic.
+
 `end_candidate` reports each accepted JOINT_POSITION chunk's last row, commanded joints and
 horizon. `on_reset(reason)` fires wherever the kernel forgets its command chain: configure,
 activate, cleanup, refusal, latch, external E-stop, reset, declaration change. Hooks are `noexcept` and must not allocate; `test_no_alloc`

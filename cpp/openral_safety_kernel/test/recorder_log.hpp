@@ -25,6 +25,14 @@ struct RecorderLog {
   int horizon{0};
   std::size_t n_dof{0};
   double q_last{0.0};
+  bool workspace{false};
+  unsigned long long grid_seq{0};
+  double workspace_period_s{0.0};
+  bool stream_fresh{false};
+  int voxel_asked{0};
+  double hand_speed_mps{0.0};
+  double hand_lead_m{0.0};
+  int row{0};
 };
 
 }  // namespace openral_safety_kernel_test

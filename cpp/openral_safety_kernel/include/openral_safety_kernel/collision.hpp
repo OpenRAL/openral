@@ -571,6 +571,26 @@ struct TrackedGraspTable;     // issue #418 K2, defined below
 struct WorkspaceExplanation;  // issue #418 K7, defined below
 struct PayloadOwnCells;       // issue #418 OT-10 amendment, defined below
 
+struct VoxelGrid;
+
+// Rigid-transform and grid helpers, exported for ADR-0121 exemption providers so a provider's rules
+// use the kernel's own arithmetic rather than a copy.
+
+/// out = lhs * rhs (apply rhs first, then lhs).
+Transform compose(const Transform& lhs, const Transform& rhs) noexcept;
+/// The inverse of a rigid transform.
+Transform inverse_rigid(const Transform& x) noexcept;
+/// `x` applied to the point `p`.
+Vec3 apply(const Transform& x, const Vec3& p) noexcept;
+/// Base-frame centre of cell (ix, iy, iz) of `grid`.
+Vec3 voxel_center(const VoxelGrid& grid, int ix, int iy, int iz) noexcept;
+/// Exact point-in-OBB; a degenerate or non-finite box contains nothing.
+bool point_in_obb(const Transform& box, const Vec3& half, const Vec3& p) noexcept;
+/// Horizontal gap (m) from `p` to a gravity-aligned box's footprint; NaN for a non-finite input.
+double footprint_gap(const Transform& box, const Vec3& half, const Vec3& p) noexcept;
+/// The cell of `grid` the base-frame point `p` falls in, or -1 outside / degenerate.
+long grid_cell_of(const VoxelGrid& grid, const Transform& grid_from_base, const Vec3& p) noexcept;
+
 class ExemptionProvider;  // exemption_provider.hpp (ADR-0121)
 
 /// ADR-0121: the loaded exemption provider and the kernel's own relaxable-link mask (per collision
@@ -582,6 +602,11 @@ struct ProviderGate {
   const std::uint8_t* links{nullptr};
   std::size_t links_n{0};
   int row{0};  ///< the checked row, quoted to the provider
+  /// The kernel's own #349 measurement for this row (API v2): +inf = unknown. The lead is raw,
+  /// before any per-row allowance; `hand_contact` = the measured hand already touches.
+  double hand_speed_mps{std::numeric_limits<double>::infinity()};
+  double hand_lead_m{std::numeric_limits<double>::infinity()};
+  bool hand_contact{false};
 };
 
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —

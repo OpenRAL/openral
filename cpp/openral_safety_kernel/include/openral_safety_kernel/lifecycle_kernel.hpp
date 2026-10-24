@@ -414,6 +414,9 @@ private:
   /// loader is declared before the instance so the instance is destroyed first.
   /// Loading never fails configure: any refusal leaves the kernel with no provider.
   void load_exemption_provider();
+  /// The #349 hand speed / lead measurement setup; "" on success, else why it is refused.
+  std::string configure_workspace_measurement(const std::vector<std::string>& names,
+                                              std::string& listed);
   std::unique_ptr<pluginlib::ClassLoader<ExemptionProvider>> provider_loader_;
   std::shared_ptr<ExemptionProvider> provider_;
   std::string provider_status_{"none"};
@@ -429,6 +432,9 @@ private:
   /// The workspace region is ingested for the in-tree #349 rule OR for a loaded provider; the
   /// in-tree rule still needs `workspace_contact_enabled_`.
   bool workspace_ingest_enabled_{false};
+  bool ws_provider_measure_{false};  ///< this candidate: measure the hand for the provider only
+  std::uint64_t voxel_grid_seq_{0};  ///< bumped on every grid ingest (provider view)
+  bool provider_replaces_region_{false};  ///< ExemptionProvider::replaces_grasp_region()
 
   // Voxel phase — dense occupancy grid (octomap path). `voxel_grid_`
   // is a view into the pre-sized `voxel_occupancy_` buffer.
