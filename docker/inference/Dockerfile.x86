@@ -131,6 +131,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-launch-testing-ros \
         ros-${ROS_DISTRO}-rosidl-default-generators \
         ros-${ROS_DISTRO}-rosidl-default-runtime \
+        # PCL registration + kdtree for openral_world_state's ICP refit (#426).
+        libpcl-dev \
         # Wrapped-ROS rSkills + lifecycle peers (moveit joints skill + demo).
         ros-${ROS_DISTRO}-moveit \
         ros-${ROS_DISTRO}-moveit-msgs \
@@ -394,6 +396,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-lifecycle-msgs \
         ros-${ROS_DISTRO}-launch-ros \
         ros-${ROS_DISTRO}-rosidl-default-runtime \
+        # Shared libs behind openral_world_state's _openral_pcl_registration (#426).
+        libpcl-registration1.14 \
+        libpcl-kdtree1.14 \
         # Wrapped-ROS rSkills + lifecycle-peer runtime deps.
         ros-${ROS_DISTRO}-moveit \
         ros-${ROS_DISTRO}-moveit-msgs \
