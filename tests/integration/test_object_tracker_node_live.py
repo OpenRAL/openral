@@ -2,14 +2,16 @@
 """Live-ROS: the #418 object-tracker node grounds, relays, binds and survives a restart.
 
 The rig (``_tracker_rig``): real rclpy, real ``openral_msgs`` on the wire, the real
-``object_tracker_node`` (mode ``bind``) and the real World State lifecycle node with a
+``object_tracker_node`` (mode ``tracking``) and the real World State lifecycle node with a
 real ``WorldStateAggregator``, fed the SO-101 PickOrange ``top_depth`` camera ray-cast
 with a ∅4.8 cm orange in the SO-101's pinch volume at a measured hold.
 
 Asserts: the set reaches CONFIRMED on ``/openral/tracked_objects`` with a revision seeded
 from wall time; ``world_state_fast`` carries it with ``tracked_objects_valid``; an ATTACH
 at the hold publishes ``/openral/attachment_state`` with a ``TRACKED_OBJECT`` binding of
-that id and the set shows it BOUND; with the tracker deactivated the relayed set goes
+that id and the set shows it BOUND; the grasp declaration carries the target's box as its
+region while the orange is grounded and unheld (``tracking``), none once it is held, and none
+ever under ``on``; with the tracker deactivated the relayed set goes
 invalid within the aggregator's staleness window; a fresh tracker node's first revision is
 above every revision before the restart (the kernel refuses a regressing one).
 
@@ -47,7 +49,7 @@ def test_tracker_node_grounds_relays_binds_and_never_regresses() -> None:
         first: Any = None
         try:
             activated_ns = time.time_ns()
-            first = rig.tracker("bind")
+            first = rig.tracker("tracking")
             stamp = rig.declare()
             tracked, attach, fast = rig.tracked, rig.attach, rig.fast
             assert rig.ground(), [[o.status for o in s.objects] for s in tracked[-3:]]
@@ -57,16 +59,23 @@ def test_tracker_node_grounds_relays_binds_and_never_regresses() -> None:
             assert wait(lambda: bool(fast) and fast[-1].tracked_objects_valid, 5.0)
             assert [o.object_id for o in fast[-1].tracked_objects.objects] == ["trk:1"]
 
-            # ATTACH at the measured hold: the tracker owns attachment_state in `bind`.
-            rig.publish_hold()
-            assert wait(lambda: bool(attach), 5.0)  # the empty, fresh set first
+            # The grounded, unheld orange's box is the grasp region (`tracking`).
+            def region_valid() -> bool:
+                rig.publish_hold()  # the heartbeat runs while joint states are fresh
+                return bool(attach) and attach[-1].grasp_declaration.region_valid
+
+            assert wait(region_valid, 5.0)
+            region = attach[-1].grasp_declaration.region
+            assert region.evidence_ref.startswith("tracked:trk:1|epoch=")
+            assert region.frame_id == tracked[-1].frame_id
+            # ATTACH at the measured hold: the tracker owns attachment_state.
             rig.attach_event()
             assert wait(lambda: bool(attach[-1].objects), 5.0)
             [held] = attach[-1].objects
             assert held.object_id == "trk:1" and held.evidence_kind == "tracked_object"
-            assert (
-                attach[-1].grasp_declaration_valid and not attach[-1].grasp_declaration.region_valid
-            )
+            # Held: the region rides on (the kernel latches it at handover, ADR-0115).
+            assert attach[-1].grasp_declaration_valid and attach[-1].grasp_declaration.region_valid
+            assert attach[-1].grasp_declaration.region.evidence_ref.startswith("tracked:trk:1|")
             assert wait(lambda: tracked[-1].objects[0].status == TrackStatus.BOUND.value, 5.0)
             last_revision = max(s.revision for s in tracked)
 
@@ -80,12 +89,35 @@ def test_tracker_node_grounds_relays_binds_and_never_regresses() -> None:
 
             # A restarted tracker never regresses the revision the kernel last accepted.
             n_before = len(tracked)
-            first = rig.tracker("bind")
+            first = rig.tracker("tracking")
             assert wait(lambda: len(tracked) > n_before, 5.0)
             assert tracked[n_before].revision > last_revision
         finally:
             if first is not None:
                 first.destroy_node()
+
+
+def test_on_publishes_no_grasp_region() -> None:
+    """``on``: the exemption provider keys on track ids; the declaration carries no region."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+
+    with tracker_rig() as rig:
+        node: Any = None
+        try:
+            node = rig.tracker("on")
+            rig.declare()
+            assert rig.ground()
+            attach = rig.attach
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                rig.publish_hold()
+                time.sleep(0.1)
+            assert attach and all(m.grasp_declaration_valid for m in attach[-5:])
+            assert not any(m.grasp_declaration.region_valid for m in attach)
+        finally:
+            if node is not None:
+                node.destroy_node()
 
 
 def test_tracker_fill_survives_frozen_sim_clock_without_refreshing_evidence() -> None:
@@ -95,7 +127,7 @@ def test_tracker_fill_survives_frozen_sim_clock_without_refreshing_evidence() ->
     from rosgraph_msgs.msg import Clock
 
     with tracker_rig() as rig:
-        node = rig.tracker("bind")
+        node = rig.tracker("tracking")
         try:
             rig.declare()
             assert rig.ground()
@@ -136,7 +168,7 @@ def test_service_answers_are_fed_on_the_process_timer_never_from_their_callback(
     from openral_world_state.object_tracker import CameraFrame, TrackerResult
 
     with tracker_rig() as rig:
-        node = rig.tracker("bind")
+        node = rig.tracker("tracking")
         try:
             k = IntrinsicsPinhole(fx=1.0, fy=1.0, cx=0.0, cy=0.0, width=2, height=2)
             frame = CameraFrame("cam", 1, np.zeros((2, 2)), k, None, None)
@@ -162,7 +194,7 @@ def test_an_abandoned_service_call_is_removed_from_its_client_at_the_next_issue(
     from openral_world_state.object_tracker.scheduler import TrackerRequest
 
     with tracker_rig() as rig:
-        node = rig.tracker("bind")
+        node = rig.tracker("tracking")
         try:
             client = node.create_client(SegmentInView, "/openral/test/never_served")
             future = client.call_async(SegmentInView.Request())
@@ -202,7 +234,7 @@ def test_cleanup_destroys_every_entity_configure_created() -> None:
     pytest.importorskip("openral_msgs")
 
     with tracker_rig() as rig:
-        node = rig.tracker("bind")
+        node = rig.tracker("tracking")
         try:
             configured = _entities(node)
             assert {"/openral/object_tracker/hands_clear", "/diagnostics"} <= set(configured[0])
@@ -237,7 +269,7 @@ def test_an_invalid_declaration_is_rejected_without_escaping_its_callback() -> N
     from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
 
     with tracker_rig() as rig:
-        node = rig.tracker("bind")
+        node = rig.tracker("tracking")
         try:
             node._on_grasp_declaration(GraspDeclarationMsg())
             node._on_place_declaration(PlaceDeclarationMsg())

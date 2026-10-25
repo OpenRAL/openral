@@ -925,7 +925,7 @@ class SimAttachedHAL:
             # payload stays in the simulated depth exactly as it stays in a real
             # camera's — the real-hardware path. The octomap bridge clears its cells
             # only for a tracker-bound attachment (``OctomapVoxelBridge::clear_by_identity``,
-            # ``object_tracking: bind | on``); a geometry-only one stays occupied and the kernel
+            # ``object_tracking: tracking | on``); a geometry-only one stays occupied and the kernel
             # may stop on it: never looser than masking.
             self._attached_objects = by_id
             self._attached_body_ids = frozenset()

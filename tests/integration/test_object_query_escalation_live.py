@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Live-ROS: an object query the tracker cannot resolve reaches the reasoner's ladder.
 
-Issue #418 Addendum G, end to end: real ``object_tracker_node`` (shadow) → real
+Issue #418 Addendum G, end to end: real ``object_tracker_node`` (tracking) → real
 ``FailureTrigger`` on ``/openral/failure/world_state`` → real ``ReasonerNode`` (real
 ``ReasonerCore`` behind it). The grasp declaration names a ``banana`` the SO-101
 PickOrange ``top`` camera never sees (the ray-cast scene holds one orange), with a short
@@ -237,7 +237,7 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
     tracker.set_parameters(
         [
             Parameter("robot_yaml", value=_ROBOT),
-            Parameter("mode", value="shadow"),
+            Parameter("mode", value="tracking"),
             Parameter("cameras", value=["top"]),
             Parameter("grounding_wait_s", value=5.0),
             Parameter("cell_m", value=float(grid.resolution)),
@@ -484,7 +484,7 @@ def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
         [
             Parameter("grasp_declaration_json", value=scene_decl.model_dump_json()),
             Parameter("joint_state_staleness_limit_s", value=0.5),
-            Parameter("object_tracking", value="shadow"),
+            Parameter("object_tracking", value="tracking"),
             Parameter("grounding_wait_s", value=0.2),
         ]
     )
@@ -501,14 +501,14 @@ def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
         [
             Parameter("robot_yaml", value=_ROBOT),
             Parameter("grasp_target_voxel_m", value=float(grid.resolution)),
-            Parameter("object_tracking", value="shadow"),
+            Parameter("object_tracking", value="tracking"),
         ]
     )
     tracker = make_object_tracker_node()
     tracker.set_parameters(
         [
             Parameter("robot_yaml", value=_ROBOT),
-            Parameter("mode", value="shadow"),
+            Parameter("mode", value="tracking"),
             Parameter("cameras", value=["top"]),
             Parameter("grounding_wait_s", value=5.0),
             Parameter("cell_m", value=float(grid.resolution)),

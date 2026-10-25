@@ -147,8 +147,7 @@ class _LateAttachChoice:
 class TrackingMode(StrEnum):
     """``DeployRuntime.object_tracking`` (``off`` never starts the node)."""
 
-    SHADOW = "shadow"
-    BIND = "bind"
+    TRACKING = "tracking"
     ON = "on"
 
 
@@ -204,13 +203,13 @@ class TrackerSession:
         derive_attach: The tracker reads a stalled jaw itself (``JawStallDetector``: commanded
             jaw vs the median measured jaw, the manifest's ``stall_gap``) and binds as an ATTACH
             does, so a hold the HAL's position-stall trigger misses (a chattering jaw, a command
-            past its band) is still bound. ``bind`` / ``on`` on a sim HAL only; the HAL trigger
+            past its band) is still bound. ``tracking`` / ``on`` on a sim HAL only; the HAL trigger
             and the legacy / real path are unchanged, and a real ATTACH for the same close is
             never doubled.
         wrist_links: How many links behind each carrier are the hand's wrist
             (``HandModel``), the kernel's ``DeployRuntime.workspace_contact_wrist_links``.
-        require_hands: Refuse a gripper the binder cannot model (``bind`` / ``on``); in
-            ``shadow`` such a hand is logged and skipped.
+        require_hands: Refuse a gripper the binder cannot model (the node sets it in every
+            mode); without it such a hand is logged and skipped.
 
     Raises:
         ROSConfigError: ``require_hands`` and a gripper joint cannot be modelled.
@@ -738,7 +737,7 @@ class TrackerSession:
 
         What the HAL producer confirms (``WORKSPACE_MIN_COVER`` of its footprint occupied
         on the newest grid, the same box re-stamped with the grid's ``source_stamp``),
-        here for ``bind`` / ``on``, where the producer stands down: without it the
+        here for ``tracking`` / ``on``, where the producer stands down: without it the
         kernel's workspace contact never applies. A box in another frame is not
         confirmed; the kernel ages the stamp out when grids stop.
         """
@@ -756,7 +755,7 @@ class TrackerSession:
 
         The HAL's place producer measures a flat support under the payload, which a bowl
         never is (``partial_support`` / ``no_surface``, no region armed in 9 of 9), and in
-        ``bind`` / ``on`` the tracker publishes the declaration. So it stands in as it does for
+        ``tracking`` / ``on`` the tracker publishes the declaration. So it stands in as it does for
         ``workspace_region``: the one CONFIRMED / OCCLUDED DESTINATION track labelled as the
         declaration's ``destination_query``, its containing box stamped with its last map
         confirmation (the kernel ages it out on ``place_region_max_age_s``). ``None`` without a held
@@ -779,6 +778,62 @@ class TrackerSession:
         if len(dest) != 1 or dest[0].box.frame_id != grid.frame_id:
             return None
         t = dest[0]
+        return t.box.model_copy(
+            update={
+                "stamp_ns": t.last_confirmed_stamp_ns,
+                "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}",
+            }
+        )
+
+    def grasp_region(self) -> PlaceRegion | None:
+        """The live grasp declaration's region as the tracker measures it, or ``None``.
+
+        ``tracking`` only (``on``'s exemption provider keys on track ids instead). The one
+        CONFIRMED / OCCLUDED / BOUND TARGET track keyed to the declaration (the scope
+        ``_rekey_live_tracks`` assigns, the runner's grounding count), its containing box in
+        the grid frame, stamped with its last map confirmation (the kernel ages it out on
+        ``grasp_region_max_age_s``). ``None`` — fail closed — without a declaration, a grid,
+        exactly one such track, or within ``GraspDeclaration``'s caps (the kernel's
+        ``kMaxGraspRegionHalfExtentM`` / ``kMaxGraspRegionVolumeM3``).
+
+        Several such tracks (a ``count="all"`` query, e.g. PickOrange's three oranges) are
+        narrowed to those whose box centre lies inside the declaration's ``search_box`` (same
+        frame only); exactly one must remain.
+
+        The region keeps being published through the hold, as a HAL-measured one is: the
+        kernel latches the box the first snapshot carrying the declared attachment brings,
+        ignores later moves of it, and retires the declaration for good once the payload's
+        measured origin leaves that box (``ingest_grasp_declaration``,
+        ``grasp_region_moved_after_handover``, ``handover_exit``), so a box riding the hand
+        cannot extend the exemption. Safety-WG review owed (ADR-0122).
+        """
+        decl, grid = self.grasp_declaration, self.grid
+        if decl is None or grid is None:
+            return None
+        key = declaration_key(decl.target_id, decl.stamp_ns)
+        targets = [
+            t
+            for t in self.tracker.store.all()
+            if t.role is ObjectRole.TARGET
+            and t.declaration_key == key
+            and t.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.BOUND)
+        ]
+        box = decl.search_box
+        if len(targets) > 1 and box is not None and box.frame_id == grid.frame_id:
+            inv = np.linalg.inv(homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw))
+            half = np.asarray(box.half_extents, dtype=np.float64)
+
+            def inside(c: Sequence[float]) -> bool:
+                local = inv @ np.array([c[0], c[1], c[2], 1.0])
+                return bool(np.all(np.abs(local[:3]) <= half))
+
+            targets = [t for t in targets if inside(t.box.pose.xyz)]
+        if len(targets) != 1 or targets[0].box.frame_id != grid.frame_id:
+            return None
+        t = targets[0]
+        cap = GraspDeclaration.MAX_HALF_EXTENT_M
+        if max(t.box.half_extents) > cap or t.box.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
+            return None
         return t.box.model_copy(
             update={
                 "stamp_ns": t.last_confirmed_stamp_ns,

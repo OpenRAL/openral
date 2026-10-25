@@ -8,7 +8,7 @@ owns the wire:
   ROBOT_MASK)``); ``/openral/world_voxels`` (grid + ``source_stamp``); ``/joint_states``;
   tf2 (``T_base<-cam`` at the depth stamp); the live ``/openral/grasp_declaration`` /
   ``/openral/place_declaration``; ``/openral/grasp_events`` (the HAL trigger's ATTACH /
-  REGRASP / DETACH); in bind / on, ``/openral/safe_action`` (the approved gripper command: the
+  REGRASP / DETACH); ``/openral/safe_action`` (the approved gripper command: the
   tracker derives its own stalled-jaw ATTACH from it, ``JawStallDetector``).
 * **Frames.** The last ``_DEPTH_KEPT`` depth frames wait (wall) at most ``_MASK_TF_WAIT_S``
   for the mask with their exact stamp and for tf at that stamp; the newest frame that has
@@ -23,27 +23,27 @@ owns the wire:
   echo that camera and match its exact depth stamp and optical frame before it is decoded.
   The answer is fed back with the frame it was issued on.
 * **Outputs.** ``/openral/tracked_objects`` (``TrackedObjectSet``; RELIABLE, VOLATILE,
-  KEEP_LAST 1) on every change and as a ``_HEARTBEAT_HZ`` heartbeat. In ``bind`` / ``on``
-  the node also owns ``/openral/attachment_state`` (RELIABLE, TRANSIENT_LOCAL, KEEP_LAST
-  1): every hand's binding plus the live declarations relayed **without** a target
-  region (dispatch never measures one; the HAL producer is gated off in these modes) but
-  with the grasp declaration's ``workspace_box`` as ``workspace_region`` while the
-  tracker's own grid confirms it (``TrackerSession.workspace_region``, the producer's
-  rule), heartbeated only while joint states are fresh. In
-  ``shadow`` nothing but ``tracked_objects`` and the logged predicted bindings leaves
-  the node.
+  KEEP_LAST 1) on every change and as a ``_HEARTBEAT_HZ`` heartbeat. The node also owns
+  ``/openral/attachment_state`` (RELIABLE, TRANSIENT_LOCAL, KEEP_LAST 1): every hand's
+  binding plus the live declarations (dispatch never measures a region; the HAL producers
+  are gated off) with the regions the tracker measures: the grasp declaration's
+  ``workspace_box`` as ``workspace_region`` while the tracker's own grid confirms it
+  (``TrackerSession.workspace_region``, the producer's rule), the place declaration's
+  ``region`` (``TrackerSession.place_region``) and, in ``tracking`` only, the grasp
+  declaration's ``region`` (``TrackerSession.grasp_region``; ``on``'s exemption provider
+  keys on track ids instead and gets none). Heartbeated only while joint states are fresh.
 * **Revisions** are seeded from wall time (ns) at every activate plus the store's own
   counter, so they never regress across a node restart or re-activation (the kernel
   refuses a regressing ``tracked_objects`` revision, and the aggregator a regressing
   attachment revision).
 
-``bind`` / ``on`` are sim-only until Safety-WG review: the node refuses them with
+``tracking`` / ``on`` are sim-only until Safety-WG review: the node refuses both with
 ``hal_mode:=real`` (the CLI and the launch refuse first).
 
 Usage::
 
     ros2 run openral_world_state object_tracker_node --ros-args \\
-        -p robot_yaml:=robots/so101_follower/robot.yaml -p mode:=shadow \\
+        -p robot_yaml:=robots/so101_follower/robot.yaml -p mode:=tracking \\
         -p cameras:="['top']" -p grounding_wait_s:=8.0 -p cell_m:=0.015
 """
 
@@ -555,7 +555,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         def __init__(self) -> None:
             super().__init__("openral_object_tracker")
             self.declare_parameter("robot_yaml", "")
-            self.declare_parameter("mode", "shadow")
+            self.declare_parameter("mode", "tracking")
             self.declare_parameter("hal_mode", "sim")
             self.declare_parameter("cameras", [""])
             self.declare_parameter("cell_m", 0.015)
@@ -584,7 +584,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._attempts: dict[tuple[str, str], int] = {}
             self.session: TrackerSession | None = None
             self.declared_object_catalog: USDObjectCatalog | None = None
-            self.mode = TrackingMode.SHADOW
+            self.mode = TrackingMode.TRACKING
             self._cams: dict[str, _Camera] = {}
             self._subs: list[Any] = []
             self._timers: list[Any] = []
@@ -650,10 +650,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             wait_s = float(self._p("grounding_wait_s"))
             if wait_s <= 0.0:
                 raise ROSConfigError("object tracker: grounding_wait_s must be set (> 0).")
-            if mode is not TrackingMode.SHADOW and str(self._p("hal_mode")) != "sim":
+            if str(self._p("hal_mode")) != "sim":
                 raise ROSConfigError(
                     f"object tracker: mode={mode.value!r} is sim-only until Safety-WG "
-                    "review; only 'shadow' runs on a real HAL."
+                    "review; a real deploy runs object_tracking=off."
                 )
             description = RobotDescription.from_yaml(str(self._p("robot_yaml")))
             self.session = TrackerSession(
@@ -663,10 +663,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 grounding_required=bool(self._p("grounding_required")),
                 release_dwell_s=float(self._p("release_dwell_s")),
                 released_clear_timeout_s=float(self._p("released_clear_timeout_s")),
-                require_hands=mode is not TrackingMode.SHADOW,
-                # The tracker reads a stalled jaw itself in bind/on (sim only, enforced
-                # above): the HAL trigger is unchanged and a real ATTACH is never doubled.
-                derive_attach=mode is not TrackingMode.SHADOW,
+                require_hands=True,
+                # The tracker reads a stalled jaw itself (sim only, enforced above): the HAL
+                # trigger is unchanged and a real ATTACH is never doubled.
+                derive_attach=True,
                 wrist_links=int(self._p("wrist_links")),
                 params=TrackerParams(
                     search_start_s=float(self._p("search_start_s")),
@@ -761,10 +761,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._pub_tracked = self.create_publisher(
                 TrackedObjectSetMsg, "/openral/tracked_objects", reliable_1
             )
-            if self.mode is not TrackingMode.SHADOW:
-                self._pub_attach = self.create_publisher(
-                    AttachmentStateMsg, "/openral/attachment_state", latched_1
-                )
+            self._pub_attach = self.create_publisher(
+                AttachmentStateMsg, "/openral/attachment_state", latched_1
+            )
             # Whether every hand is clear of every target (``hands_clear_of_targets``): the
             # completion check asks its judge only then (Spark banana R336/R338/R340).
             self._pub_clear = self.create_publisher(
@@ -1338,10 +1337,13 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 msg.objects.append(item)
             grasp, place = s.grasp_declaration, s.place_declaration
             msg.grasp_declaration_valid = grasp is not None
-            if grasp is not None:  # dispatch's own declaration: no region, nothing exempted
-                # The producer's workspace confirmation, redone on the tracker's grid.
+            if grasp is not None:
+                # The producer's workspace confirmation, redone on the tracker's grid; the
+                # target's box as the region in `tracking` only (`on`: none, nothing exempted
+                # by it; the exemption provider keys on track ids).
                 ws = s.workspace_region()
-                grasp.model_copy(update={"region": None, "workspace_region": ws}).fill_idl(
+                region = s.grasp_region() if self.mode is TrackingMode.TRACKING else None
+                grasp.model_copy(update={"region": region, "workspace_region": ws}).fill_idl(
                     msg.grasp_declaration, query_factory=ObjectQueryMsg
                 )
             msg.place_declaration_valid = place is not None

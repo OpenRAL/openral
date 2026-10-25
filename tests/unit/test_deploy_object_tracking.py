@@ -38,16 +38,16 @@ def _argv(
 
 
 def test_deploy_sim_forwards_the_runtime_override_and_leaves_off_unchanged() -> None:
-    # The scene commits the open posture (ADR-0121 step 3): `shadow`, R372's 8 s, nothing refused.
+    # The scene commits the open posture (ADR-0121 step 3): `tracking`, R372's 8 s, required.
     scene = _argv(_PICK_ORANGE, "sim", {})
-    assert "object_tracking:=shadow" in scene and "grounding_wait_s:=8.0" in scene
-    assert "grounding_required:=false" in scene
+    assert "object_tracking:=tracking" in scene and "grounding_wait_s:=8.0" in scene
+    assert "grounding_required:=true" in scene
     argv = _argv(
         _PICK_ORANGE,
         "sim",
-        {"object_tracking": "bind", "grounding_wait_s": 5, "grounding_required": False},
+        {"object_tracking": "tracking", "grounding_wait_s": 5, "grounding_required": False},
     )
-    assert "object_tracking:=bind" in argv and "grounding_wait_s:=5.0" in argv
+    assert "object_tracking:=tracking" in argv and "grounding_wait_s:=5.0" in argv
     assert "grounding_required:=false" in argv
     off = _argv(_PICK_ORANGE, "sim", {"object_tracking": "off"})
     assert not [a for a in off if a.startswith(("object_tracking:=", "grounding_"))]
@@ -61,7 +61,7 @@ def test_a_direct_dispatch_deploy_names_the_queries_from_its_preload_prompt() ->
         _PICK_ORANGE,
         "sim",
         {
-            "object_tracking": "shadow",
+            "object_tracking": "tracking",
             "grounding_wait_s": 8,
             "enable_reasoner": False,
             "preload_rskill_id": "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
@@ -89,7 +89,7 @@ def _tracking_pick_orange() -> DeployScene:
     scene = DeployScene.from_yaml(str(_PICK_ORANGE))
     assert scene.runtime is not None
     return scene.model_copy(
-        update={"runtime": scene.runtime.model_copy(update={"object_tracking": "shadow"})}
+        update={"runtime": scene.runtime.model_copy(update={"object_tracking": "tracking"})}
     )
 
 
@@ -104,7 +104,7 @@ def test_a_sim_ground_truth_search_box_never_seeds_the_tracker() -> None:
     assert decl is not None and decl.search_box is not None
     assert decl.search_box.evidence_ref.startswith("sim:")
     assert [q.get("seed") for q in _queries(scene)] == [None, None]
-    argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow", "grounding_wait_s": 8})
+    argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": "tracking", "grounding_wait_s": 8})
     (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("grasp_declaration_json:=")]
     assert '"evidence_ref":"sim:orange_1"' in raw
 
@@ -127,7 +127,7 @@ def test_tracking_without_a_locator_or_seed_refuses_to_configure() -> None:
     """PickOrange's orange query has no seed (its box is sim ground truth): without an
     on-demand locator the tracker could never ground it, so deploy sim refuses."""
     overrides = {
-        "object_tracking": "shadow",
+        "object_tracking": "tracking",
         "grounding_wait_s": 8,
         "enable_reasoner": False,
         "preload_rskill_id": "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
@@ -172,20 +172,30 @@ def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
         _argv(_PICK_ORANGE, "sim", {"grounding_wait_s": None})
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
-        _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow", "grounding_wait_s": None})
+        _argv(_PICK_ORANGE, "sim", {"object_tracking": "tracking", "grounding_wait_s": None})
 
 
-def test_shadow_never_forwards_grounding_required() -> None:
-    """Shadow changes no decision: a `grounding_required: true` must not make the runner refuse
-    goals under `object_tracking=shadow`; bind keeps it."""
+def test_tracking_forwards_grounding_required_as_committed() -> None:
+    """The tracker grounds the goal's queries in `tracking`, so the scene's
+    `grounding_required` reaches the runner unchanged (R372/R365 ran it true)."""
     scene = DeployScene.from_yaml(str(_PICK_ORANGE))
-    assert scene.runtime is not None and scene.runtime.object_tracking == "shadow"
-    assert scene.runtime.grounding_required is False, "the twin commits what shadow does"
-    argv = _argv(_PICK_ORANGE, "sim", {"grounding_required": True})
-    assert "object_tracking:=shadow" in argv
-    assert "grounding_required:=false" in argv
-    bind = _argv(_PICK_ORANGE, "sim", {"object_tracking": "bind", "grounding_required": True})
-    assert "grounding_required:=true" in bind
+    assert scene.runtime is not None and scene.runtime.object_tracking == "tracking"
+    assert scene.runtime.grounding_required is True
+    assert "grounding_required:=true" in _argv(_PICK_ORANGE, "sim", {})
+    off = _argv(_PICK_ORANGE, "sim", {"grounding_required": False})
+    assert "object_tracking:=tracking" in off and "grounding_required:=false" in off
+
+
+@pytest.mark.parametrize("old", ["shadow", "bind"])
+def test_the_removed_modes_load_as_tracking_with_a_future_warning(old: str) -> None:
+    from openral_core import DeployRuntime
+
+    with pytest.warns(FutureWarning, match=f"{old!r} is deprecated and maps to 'tracking'"):
+        rt = DeployRuntime(object_tracking=old, grounding_wait_s=8.0)
+    assert rt.object_tracking == "tracking"
+    with pytest.warns(FutureWarning):
+        argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": old})
+    assert "object_tracking:=tracking" in argv
 
 
 @pytest.mark.parametrize(
@@ -227,17 +237,18 @@ def test_the_isaac_twins_commit_a_locator_for_their_unseeded_target(path: Path) 
     assert locators.endswith("rskills/omdet-turbo-locator/rskill.yaml")
 
 
-@pytest.mark.parametrize("mode", ["bind", "on"])
-def test_deploy_run_refuses_bind_and_on(mode: str) -> None:
+@pytest.mark.parametrize("mode", ["tracking", "on", "shadow"])
+def test_deploy_run_refuses_every_tracking_mode(mode: str) -> None:
+    """`shadow` was the one real posture; it now maps to `tracking`, which is sim-only."""
     # `on` names a provider so the schema accepts it and the real-HAL refusal is what fires.
     provider = {"exemption_provider": "pro_pkg/ContactExemptions"} if mode == "on" else {}
     with pytest.raises(ROSConfigError, match="sim-only until Safety-WG"):
         _argv(_REAL, "real", {"object_tracking": mode, "grounding_wait_s": 5, **provider})
 
 
-def test_deploy_run_allows_shadow() -> None:
-    argv = _argv(_REAL, "real", {"object_tracking": "shadow", "grounding_wait_s": 5})
-    assert "object_tracking:=shadow" in argv
+def test_deploy_run_allows_off() -> None:
+    argv = _argv(_REAL, "real", {"object_tracking": "off"})
+    assert not [a for a in argv if a.startswith("object_tracking:=")]
 
 
 @pytest.fixture(scope="module")
@@ -271,7 +282,7 @@ _OK = {
 def test_the_launch_tracks_every_depth_camera_unless_named(object_tracking: object) -> None:
     f = object_tracking
     assert f("off", **_OK) == ("off", ())  # type: ignore[operator]
-    assert f("bind", **_OK) == ("bind", ("top_depth",))  # type: ignore[operator]
+    assert f("tracking", **_OK) == ("tracking", ("top_depth",))  # type: ignore[operator]
     on = {**_OK, "cameras": "a, b", "exemption_provider": "pro_pkg/ContactExemptions"}
     assert f("on", **on) == ("on", ("a", "b"))  # type: ignore[operator]
 
@@ -280,15 +291,18 @@ def test_the_launch_tracks_every_depth_camera_unless_named(object_tracking: obje
     ("mode", "change", "match"),
     [
         ("maybe", {}, "expected one of"),
-        ("bind", {"hal_mode": "real"}, "sim-only"),
+        ("tracking", {"hal_mode": "real"}, "sim-only"),
+        # The removed modes never reach the launch from a scene; a bare launch refuses them.
+        ("shadow", {}, "expected one of"),
+        ("bind", {}, "expected one of"),
         # ADR-0121 step 3: `on` keys a provider rule; without one it is refused.
         ("on", {}, "ADR-0121"),
-        ("shadow", {"grounding_wait_s": ""}, "grounding_wait_s"),
-        ("shadow", {"enable_octomap": False}, "octomap"),
-        ("shadow", {"vision_attachment_enabled": False}, "vision attachment"),
+        ("tracking", {"grounding_wait_s": ""}, "grounding_wait_s"),
+        ("tracking", {"enable_octomap": False}, "octomap"),
+        ("tracking", {"vision_attachment_enabled": False}, "vision attachment"),
         # #421 review: no self-filter, no robot masks: every frame ages, nothing is fitted.
-        ("shadow", {"self_filter_runs": False}, "self-filter"),
-        ("shadow", {"depth_cameras": []}, "no depth camera"),
+        ("tracking", {"self_filter_runs": False}, "self-filter"),
+        ("tracking", {"depth_cameras": []}, "no depth camera"),
     ],
 )
 def test_the_launch_refuses_an_incomplete_posture(
@@ -336,7 +350,7 @@ def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
     launch_module: object,
 ) -> None:
     f = launch_module._tracked_grasp_exemption  # type: ignore[attr-defined]
-    for mode in ("off", "shadow", "bind"):
+    for mode in ("off", "tracking"):
         assert f(mode, grasp_allowance_enabled=True) is False
         assert f(mode, grasp_allowance_enabled=False) is False
     assert f("on", grasp_allowance_enabled=True) is True
@@ -346,7 +360,7 @@ def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
 
 def test_only_on_with_k2_lets_a_bound_payloads_measured_cells_stand(launch_module: object) -> None:
     f = launch_module._payload_own_cells  # type: ignore[attr-defined]
-    for mode in ("off", "shadow", "bind"):
+    for mode in ("off", "tracking"):
         assert f(mode, tracked_grasp_exemption_enabled=True) is False
     assert f("on", tracked_grasp_exemption_enabled=True) is True
     assert f("on", tracked_grasp_exemption_enabled=False) is False
@@ -355,9 +369,9 @@ def test_only_on_with_k2_lets_a_bound_payloads_measured_cells_stand(launch_modul
 def test_only_on_with_workspace_contact_narrows_it_to_explained_cells(
     launch_module: object,
 ) -> None:
-    """K7 rides `on` and needs the workspace rule it narrows; never off/shadow/bind."""
+    """K7 rides `on` and needs the workspace rule it narrows; never off/tracking."""
     f = launch_module._workspace_explained_cells  # type: ignore[attr-defined]
-    for mode in ("off", "shadow", "bind"):
+    for mode in ("off", "tracking"):
         assert f(mode, workspace_contact_enabled=True) is False
     assert f("on", workspace_contact_enabled=True) is True
     assert f("on", workspace_contact_enabled=False) is False
@@ -367,17 +381,16 @@ def test_only_on_with_workspace_contact_narrows_it_to_explained_cells(
     ("robot", "jaws"),
     [("so101_follower", 1), ("droid_franka_robotiq", 1), ("openarm", 2)],
 )
-def test_bind_and_on_wire_the_kernels_jaw_open_release(
+def test_tracking_and_on_wire_the_kernels_jaw_open_release(
     launch_module: object, robot: str, jaws: int
 ) -> None:
-    """K5 runs in bind/on with the tracker's own gap and dwell; never in off/shadow."""
+    """K5 runs in tracking/on with the tracker's own gap and dwell; never in off."""
     from openral_core import RobotDescription
 
     f = launch_module._tracked_release_params  # type: ignore[attr-defined]
     d = RobotDescription.from_yaml(str(_REPO / "robots" / robot / "robot.yaml"))
-    for mode in ("off", "shadow"):
-        assert f(d, mode) == {}
-    p = f(d, "bind")
+    assert f(d, "off") == {}
+    p = f(d, "tracking")
     assert len(p["tracked_release_jaw_joints"]) == jaws
     assert set(p["tracked_release_jaw_open_sign"]) <= {1.0, -1.0}
     cals = [j.closure_calibration for j in d.joints if j.name in p["tracked_release_jaw_joints"]]

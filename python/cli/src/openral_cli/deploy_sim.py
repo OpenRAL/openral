@@ -1684,14 +1684,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "runtime.workspace_contact_enabled is sim-only until Safety-WG review "
             "(docs/reference/manipulation-workspace-contact.md): deploy run refuses it."
         )
-    # The #418 tracker owning attachment_state (bind | on) is sim-only until Safety-WG
-    # review. Shadow may run: the kernel ingests its tracked_objects through K1 (via the
-    # aggregator's world_state_fast), but no TRACKED_OBJECT binding exists and K2 / K5 are
-    # off, so no kernel decision changes.
-    if hal_mode == "real" and rt is not None and rt.object_tracking in ("bind", "on"):
+    # The #418 tracker (tracking | on) owns attachment_state and measures the regions the
+    # kernel exempts: sim-only until Safety-WG review. A real deploy runs it off.
+    if hal_mode == "real" and rt is not None and rt.object_tracking != "off":
         raise ROSConfigError(
             f"runtime.object_tracking={rt.object_tracking!r} is sim-only until Safety-WG "
-            "review (issue #418): deploy run refuses it; 'shadow' is allowed."
+            "review (issue #418): deploy run refuses it; use 'off'."
         )
     # The payload's octree clearing removes world occupancy: sim-only until Safety-WG review.
     if hal_mode == "real" and rt is not None and rt.payload_sweep_clear_enabled:
@@ -1909,22 +1907,14 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"exemption_provider:={rt.exemption_provider}")
     # The #418 object tracker: forwarded only when on, so the off path's argv is unchanged.
     # The launch adds the tracked cameras' robot masks and gates the HAL bridge's
-    # attachment_state publisher in bind/on.
+    # attachment_state publisher. The tracker grounds the goal queries in both modes, so the
+    # scene's `grounding_required` holds as committed.
     if rt is not None and rt.object_tracking != "off":
-        # `shadow` changes no decision, so it never refuses a goal: a scene's committed
-        # `grounding_required` (the Isaac twins commit `true` for `on`) is not inherited by
-        # a `--runtime object_tracking=shadow` override.
-        grounding_required = rt.grounding_required and rt.object_tracking != "shadow"
-        if rt.grounding_required and not grounding_required:
-            _console.print(
-                "[yellow]object tracking: grounding_required ignored under shadow "
-                "(shadow refuses no goal)[/yellow]"
-            )
         argv_template.extend(
             [
                 f"object_tracking:={rt.object_tracking}",
                 f"grounding_wait_s:={rt.grounding_wait_s}",
-                f"grounding_required:={str(grounding_required).lower()}",
+                f"grounding_required:={str(rt.grounding_required).lower()}",
             ]
         )
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,
@@ -2323,7 +2313,7 @@ def _with_runtime_overrides(
     """``deploy_scene`` with ``--runtime key=value`` applied to its ``runtime`` block.
 
     The scene file is never edited; the merged block is re-validated whole, so an
-    override cannot produce a posture the schema refuses (e.g. ``object_tracking=shadow``
+    override cannot produce a posture the schema refuses (e.g. ``object_tracking=tracking``
     without ``grounding_wait_s``).
 
     Raises:
@@ -2333,10 +2323,10 @@ def _with_runtime_overrides(
         >>> from openral_core import DeployScene
         >>> scene = DeployScene.from_yaml("scenes/deploy/isaac_leisaac_pick_orange.yaml")
         >>> rt = _with_runtime_overrides(
-        ...     scene, {"object_tracking": "shadow", "grounding_wait_s": 8}
+        ...     scene, {"object_tracking": "off", "grounding_wait_s": 8}
         ... ).runtime
         >>> rt.object_tracking, rt.grounding_wait_s
-        ('shadow', 8.0)
+        ('off', 8.0)
     """
     from openral_core import DeployRuntime
     from pydantic import ValidationError
@@ -3577,7 +3567,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         help=(
             "Override a ``DeployRuntime`` field of the scene, ``key=value`` (repeatable, "
             "JSON-parsed like ``--hal``), re-validated whole; the scene file is untouched. "
-            "E.g. ``--runtime object_tracking=shadow --runtime grounding_wait_s=8``."
+            "E.g. ``--runtime object_tracking=tracking --runtime grounding_wait_s=8``."
         ),
     ),
     enable_slam: bool | None = typer.Option(

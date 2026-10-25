@@ -40,7 +40,7 @@ _NODES = ("openral_segmenter", "openral_object_tracker")
 
 def _compose() -> list[Any]:
     """An OpenArm Isaac sim deploy (head_zed depth) with the segmenter and the tracker
-    (shadow) on."""
+    (tracking) on."""
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
 
@@ -63,7 +63,7 @@ def _compose() -> list[Any]:
     cfg["enable_octomap"] = "true"
     cfg["enable_object_detector"] = "false"
     cfg["enable_vision_attachment"] = "true"
-    cfg["object_tracking"] = "shadow"
+    cfg["object_tracking"] = "tracking"
     # An Isaac scene: its rendered depth shows the robot, so the self-filter runs and
     # renders the tracker's robot masks (a MuJoCo ray-cast hides the robot: no masks, and
     # the launch refuses tracking there).

@@ -245,7 +245,7 @@ class _GripperLeg:
             re-measured region or a later pick's (its own ``approach:<link>:<n>``
             identity) may be taken.
         pending: Whether this leg is holding the ack barrier.
-        tracker_baseline: #418 ``bind`` / ``on``: the tracker's newest attachment revision
+        tracker_baseline: #418 ``tracking`` / ``on``: the tracker's newest attachment revision
             when this leg's ATTACH began holding the barrier (``None``: none seen yet); a
             revision above it releases the hold.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
@@ -1175,7 +1175,7 @@ class VisionAttachmentConfig:
             (``mask_without_removed_points``), so the robot's own fingers never enter
             the target's fit. Empty: no removal (the fit sees the hand).
         publish_attachment_state: Publish ``/openral/attachment_state``. ``False`` when
-            the #418 object tracker owns that topic (``object_tracking: bind | on``): the
+            the #418 object tracker owns that topic (``object_tracking: tracking | on``): the
             bridge is then only the grasp trigger feeding ``/openral/grasp_events`` (what
             the tracker binds from). No ``SegmentInView`` call, no grasp- or place-target
             leg, no depth / voxel subscription and no heartbeat — everything those produce
@@ -1504,7 +1504,7 @@ class VisionAttachmentBridge:
         self._grasp_event_pub: Any = None
         # Issue #353: ``KIND_GRASP_OUTCOME`` on /openral/failure/hal (a FailureBusPublisher).
         self._failure_bus: Any = None
-        # #418 bind / on: the tracker's /openral/attachment_state, read only for the ack
+        # #418 tracking / on: the tracker's /openral/attachment_state, read only for the ack
         # barrier (the newest revision seen, None before the first).
         self._tracker_state_sub: Any = None
         self._tracker_revision: int | None = None
@@ -1559,7 +1559,7 @@ class VisionAttachmentBridge:
     def setup(self) -> None:
         """Create the depth subscription, TF listener, service client, publisher.
 
-        With ``publish_attachment_state`` off (#418 ``bind`` / ``on``) only the
+        With ``publish_attachment_state`` off (#418 ``tracking`` / ``on``) only the
         ``/openral/grasp_events`` publisher and the ``/openral/failure/hal`` grasp-outcome
         publisher (issue #353), which are always created.
         """
@@ -1747,7 +1747,7 @@ class VisionAttachmentBridge:
         return not any(leg.pending for leg in self._legs)
 
     def _hold_for_tracker(self, leg: _GripperLeg, event: GraspEvent) -> None:
-        """#418 ``bind`` / ``on``: hold an ATTACH's ack until the tracker's next revision.
+        """#418 ``tracking`` / ``on``: hold an ATTACH's ack until the tracker's next revision.
 
         The tracker binds the hold from the grasp event and publishes the bound payload on
         ``/openral/attachment_state`` under a new revision; acking the tick before that
@@ -1848,7 +1848,7 @@ class VisionAttachmentBridge:
                 continue
             self._publish_grasp_event(leg, event, int(state.stamp_ns), held_at)
             if not self._config.publish_attachment_state:
-                # #418 bind/on: the tracker binds from the event; the ack waits for it.
+                # #418 tracking/on: the tracker binds from the event; the ack waits for it.
                 self._hold_for_tracker(leg, event)
                 continue
             if self._supersede(leg):

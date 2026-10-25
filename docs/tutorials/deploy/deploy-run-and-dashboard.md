@@ -517,8 +517,8 @@ shelf](images/collision-view-carry.webp)
    grasp region (`evidence_kind: grasp_target_region`). From now on the kernel checks it
    against the world and the robot as part of the hand. Its cells are **not** removed from
    the voxel map: the octomap bridge clears a held payload only for a `tracked_object`
-   attachment from the #418 object tracker (`runtime.object_tracking: bind` or `on`, sim-only), so with
-   tracking `off` or `shadow` the carton stays a mapped obstacle and the kernel may stop the
+   attachment from the #418 object tracker (`runtime.object_tracking: tracking` or `on`, sim-only), so with
+   tracking `off` the carton stays a mapped obstacle and the kernel may stop the
    arm on what it holds. That is the decided fail-closed posture
    ([octomap bridge README](https://github.com/OpenRAL/openral/blob/master/packages/openral_octomap_bridge/README.md#attached-objects-and-world-occupancy)).
 2. **Contact tolerated** (kernel log line `safety.workspace_contact`): a hand link or its
@@ -572,40 +572,38 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   openral deploy run --config scenes/deploy/so100_pick_cube.yaml --hal port=/dev/ttyUSB1
   ```
 
-- `runtime.object_tracking` (issue #418): `deploy run` allows only `shadow` (the object
-  tracker publishes `/openral/tracked_objects`; the safety kernel ingests the set (K1, it
-  may log `safety.tracked_objects_rejected`) but no decision changes); `bind` / `on` are
-  sim-only until Safety-WG review and are refused. In `deploy sim` a scene's runtime
-  field can be overridden without editing it, e.g.
-  `openral deploy sim --config <scene> --runtime object_tracking=bind --runtime grounding_wait_s=8`.
-  The schema default is `off`; the two Isaac deploy scenes
-  (`scenes/deploy/isaac_leisaac_pick_orange.yaml`,
-  `scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`) commit `shadow` with
-  `grounding_wait_s` 8 s / 15 s, the values of their successful Spark runs (which ran
-  `on`): the HAL's vision legs keep the grasp and place regions and the attachment set,
-  and the tracker grounds the target query without deciding anything.
-  `--runtime object_tracking=off` runs them without the tracker. `on` requires
-  `runtime.exemption_provider` (ADR-0121): its tracked-object rules are provided by
-  OpenRAL Pro's exemption provider, and the schema and the launch refuse `on` without
-  one. In `bind` / `on` the HAL's vision attachment bridge runs only its grasp
-  trigger (`/openral/grasp_events`, what the tracker binds from): no segmentation and no
-  grasp- or place-target leg. `bind` therefore arms no goal-scope place declaration;
-  `on` arms one and the tracker measures its region (`TrackerSession.place_region`,
-  the destination track's containing box), over which the kernel applies its place
-  allowance -- a non-monotone, sim-only relaxation pending Safety-WG review and a
-  hazard-log row (Spark A/B R388 vs R389: only with it does the DROID banana reach the
-  bowl). An ATTACH still holds the
-  action ack until the tracker's next `/openral/attachment_state` revision, at most the
-  leg's `deadline_s`.
-  `on` also hands the exemption provider the tracked-object rules (issue #418 K2, the
+- `runtime.object_tracking` (issue #418): `off` (the schema default) | `tracking` | `on`.
+  `deploy run` allows only `off`; `tracking` and `on` are sim-only until Safety-WG review
+  and are refused on a real HAL. The former `shadow` and `bind` load as deprecated aliases
+  of `tracking` (a `FutureWarning`), so a real scene still naming `shadow` is now refused:
+  set it `off`. In `deploy sim` a scene's runtime field can be overridden without editing
+  it, e.g.
+  `openral deploy sim --config <scene> --runtime object_tracking=tracking --runtime grounding_wait_s=8`.
+  In `tracking` the object tracker grounds the goal queries (`grounding_required` refuses
+  a goal it cannot ground), owns `/openral/attachment_state` (the held payload is the
+  tracker's box, cleared from the voxel map by tracked identity) and measures the boxes
+  the open kernel's box rules take: the grasp declaration's region (the one target track's
+  box, `TrackerSession.grasp_region`, until the hand holds it: the attachment snapshot
+  carries none, so the kernel never latches a box riding the hand), the place region
+  (`TrackerSession.place_region`, the destination track's containing box; the runner arms
+  its goal-scope place declaration) and the workspace region. The kernel applies the
+  ADR-0115 grasp allowance, the ADR-0097/0098 place allowance (a non-monotone, sim-only
+  relaxation pending Safety-WG review and a hazard-log row; Spark A/B R388 vs R389: only
+  with it does the DROID banana reach the bowl) and the #349 `workspace_box` contact rule
+  over them. The HAL's vision attachment bridge runs only its grasp trigger
+  (`/openral/grasp_events`, what the tracker binds from): no segmentation and no grasp- or
+  place-target leg. An ATTACH still holds the action ack until the tracker's next
+  `/openral/attachment_state` revision, at most the leg's `deadline_s`. The two Isaac
+  deploy scenes (`scenes/deploy/isaac_leisaac_pick_orange.yaml`,
+  `scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`) commit `tracking` with
+  `grounding_required: true` and `grounding_wait_s` 8 s / 15 s, the values of their
+  successful Spark runs (which ran `on`); `--runtime object_tracking=off` runs them without
+  the tracker. `on` publishes no grasp region and requires `runtime.exemption_provider`
+  (ADR-0121): it hands the exemption provider the tracked-object rules (issue #418 K2, the
   K5 release decision, K7 explained cells, payload-own cells) as `contact_exemptions.*`
-  parameters; the open kernel no longer implements them (ADR-0121 step 3) and the launch
-  never passes them to it without a provider. The open kernel keeps the box-based rules
-  a scene declares: the ADR-0115 `search_box` grasp allowance and the #349
-  `workspace_box` contact rule. `on` still needs `runtime.grasp_allowance_enabled: true`.
-  In `bind` without a provider no tracked-object rule runs at all: the HAL's grasp- and
-  place-target legs are down, so neither is the grasp exemption they measure; `shadow`
-  is the open posture that keeps them.
+  parameters; the open kernel no longer implements them (ADR-0121 step 3) and the schema
+  and the launch refuse `on` without a provider. `on` still needs
+  `runtime.grasp_allowance_enabled: true`.
 
 - The C++ safety kernel sits between the policy and the motors: Python
   proposes, C++ disposes, and `ROSSafetyViolation` is never silently caught.

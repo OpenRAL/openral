@@ -592,7 +592,7 @@ def _ungroundable_banana_params() -> dict[str, Any]:
     query = ObjectQuery(label="banana", count="one", role=ObjectRole.TARGET)
     return {
         "grasp_declaration_json": decl.model_dump_json(),
-        "object_tracking": "shadow",
+        "object_tracking": "tracking",
         "object_queries_json": f"[{query.model_dump_json()}]",
         "grounding_wait_s": 30.0,
         "grounding_wait_wall_s": 30.0,

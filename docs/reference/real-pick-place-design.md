@@ -149,7 +149,7 @@ using SAM 2.1 to see the object.
    consume `/openral/world_state_fast` regardless of the kernel flag, so a vision leg turned on
    without the kernel's attached check would have cleared the payload from the map while
    nothing checked it — an invisible payload. Since #418 the bridge clears only a
-   `tracked_object` binding, by identity (`clear_by_identity`, `object_tracking: bind | on`,
+   `tracked_object` binding, by identity (`clear_by_identity`, `object_tracking: tracking | on`,
    sim-only); the vision leg's geometry-only payload stays mapped (fail closed).
 
 ## 2. The design (proposal)
