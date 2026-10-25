@@ -1,6 +1,7 @@
 """Unit tests for the Cosmos 3 reasoner sidecar boot helper.
 
-Covers the pure, GPU-free logic: the ``vllm serve`` argv builder, the Edge
+Covers the pure, GPU-free logic: the ``vllm serve`` argv builder, the
+platform defaults and the OpenRAL Pro serve-args seam, the Edge
 diffusers-layout detector, and the flattened-reasoner-view materializer. These
 are the pieces that got vLLM to actually load ``nvidia/Cosmos3-Edge`` on an
 8 GB card (the diffusers subfolder layout is invisible to vLLM's weight loader
@@ -19,9 +20,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import pytest
+from openral_core.exceptions import ROSConfigError
 
 _SIDECAR = Path(__file__).resolve().parents[2] / "tools" / "cosmos3_reasoner_sidecar.py"
 _spec = importlib.util.spec_from_file_location("cosmos3_reasoner_sidecar", _SIDECAR)
@@ -144,8 +147,8 @@ def test_build_serve_argv_served_model_name() -> None:
     assert argv[argv.index("--served-model-name") + 1] == "nvidia/Cosmos3-Edge"
 
 
-def test_build_serve_argv_kv_bytes_and_quantization() -> None:
-    """Unset sends neither flag; set, each reaches vLLM verbatim."""
+def test_build_serve_argv_kv_bytes_and_extra_args() -> None:
+    """Unset sends no KV-bytes flag; extra args are appended verbatim, last."""
     common = dict(
         vllm_bin=Path("/venv/bin/vllm"),
         model="nvidia/Cosmos3-Edge",
@@ -156,27 +159,23 @@ def test_build_serve_argv_kv_bytes_and_quantization() -> None:
         gpu_memory_utilization=0.15,
         enforce_eager=False,
     )
-    argv = sidecar.build_serve_argv(**common)
-    assert "--kv-cache-memory-bytes" not in argv
-    assert "--quantization" not in argv
-    argv = sidecar.build_serve_argv(**common, kv_cache_memory_bytes="4G", quantization="fp8")
+    assert "--kv-cache-memory-bytes" not in sidecar.build_serve_argv(**common)
+    argv = sidecar.build_serve_argv(**common, kv_cache_memory_bytes="4G", extra_args=["--x", "1"])
     assert argv[argv.index("--kv-cache-memory-bytes") + 1] == "4G"
-    assert argv[argv.index("--quantization") + 1] == "fp8"
+    assert argv[-2:] == ["--x", "1"]
 
 
 # ── serve_defaults ─────────────────────────────────────────────────────────────
 
 
 def test_serve_defaults_off_jetson_are_unchanged() -> None:
-    """A dGPU keeps the 8 GB-card sizing, whatever its compute capability."""
-    for cc in (None, 8.9, 12.0):
-        assert sidecar.serve_defaults(tegra=False, compute_capability=cc) == {
-            "max_model_len": 8192,
-            "gpu_memory_utilization": 0.90,
-            "kv_cache_memory_bytes": None,
-            "enforce_eager": True,
-            "quantization": None,
-        }
+    """A dGPU keeps the 8 GB-card sizing."""
+    assert sidecar.serve_defaults(tegra=False) == {
+        "max_model_len": 8192,
+        "gpu_memory_utilization": 0.90,
+        "kv_cache_memory_bytes": None,
+        "enforce_eager": True,
+    }
 
 
 def test_serve_defaults_on_jetson() -> None:
@@ -184,18 +183,48 @@ def test_serve_defaults_on_jetson() -> None:
 
     On a Thor, 0.90 of the board is 110 GiB, which vLLM checks as free at
     start-up even with the KV cache sized in bytes — so it refuses to boot next
-    to a resident VLA. FP8 weights only where the GPU computes in FP8: Thor
-    (sm_110) yes, Orin (sm_87, Marlin weight-only, measured slower) no.
+    to a resident VLA. Weights stay BF16: quantized serving is Pro's.
     """
-    thor = sidecar.serve_defaults(tegra=True, compute_capability=11.0)
-    assert thor["gpu_memory_utilization"] == 0.15
-    assert thor["kv_cache_memory_bytes"] == "4G"
-    assert thor["max_model_len"] == 32768
-    assert thor["enforce_eager"] is False
-    assert thor["quantization"] == "fp8"
-    orin = sidecar.serve_defaults(tegra=True, compute_capability=8.7)
-    assert orin["quantization"] is None
-    assert sidecar.serve_defaults(tegra=True, compute_capability=None)["quantization"] is None
+    assert sidecar.serve_defaults(tegra=True) == {
+        "max_model_len": 32768,
+        "gpu_memory_utilization": 0.15,
+        "kv_cache_memory_bytes": "4G",
+        "enforce_eager": False,
+    }
+
+
+# ── pro_serve_args ─────────────────────────────────────────────────────────────
+
+
+def test_pro_serve_args_without_pro_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("openral_rskill.backend_registry.entry_points", lambda group: ())
+    assert sidecar.pro_serve_args(tegra=True) == []
+
+
+def test_pro_serve_args_from_an_installed_module(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real ``cosmos3_serving`` module's ``serve_args`` reaches the argv."""
+    (tmp_path / "_cosmos3_serving_fixture.py").write_text(
+        "def serve_args(*, tegra):\n    return ['--quantization', 'fp8'] if tegra else []\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    ep = EntryPoint(
+        name="cosmos3_serving", value="_cosmos3_serving_fixture", group="openral.pro_modules"
+    )
+    monkeypatch.setattr("openral_rskill.backend_registry.entry_points", lambda group: (ep,))
+    assert sidecar.pro_serve_args(tegra=True) == ["--quantization", "fp8"]
+    assert sidecar.pro_serve_args(tegra=False) == []
+
+
+def test_pro_serve_args_rejects_a_module_without_serve_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mis-registered module (here the real ``json``) is a config error, not a no-op."""
+    ep = EntryPoint(name="cosmos3_serving", value="json", group="openral.pro_modules")
+    monkeypatch.setattr("openral_rskill.backend_registry.entry_points", lambda group: (ep,))
+    with pytest.raises(ROSConfigError, match="serve_args"):
+        sidecar.pro_serve_args(tegra=True)
 
 
 # ── is_diffusers_reasoner_layout ───────────────────────────────────────────────

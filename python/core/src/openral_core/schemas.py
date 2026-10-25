@@ -14034,7 +14034,8 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         auth_required=False,
         # A runaway tool call (whitespace or filler inside the grammar) otherwise
         # runs to the end of the window: ~120 s, the client timeout. At 512 it
-        # costs ~10 s; the longest valid call measured on Thor was 503 tokens.
+        # costs 12-19 s on a Thor at BF16; the longest valid call measured was
+        # 503 tokens.
         max_tokens_default=512,
         min_gpu_vram_gb=12.0,
         required_dtype=QuantizationDtype.BF16,
