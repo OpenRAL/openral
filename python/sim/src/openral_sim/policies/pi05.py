@@ -114,7 +114,7 @@ class _PI05Adapter:
     # robosuite's `robot0_agentview_left_image` -> `agentview` (and
     # `robot0_eye_in_hand_image` -> `wrist`).
     _camera_aliases: dict[str, str] = field(default_factory=dict)
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
     # Dtype to cast float inputs to before forward; None leaves the
     # preprocessor's dtype. Used by nf4 so PaliGemma's bf16 Linear
     # weights match the activation dtype.
@@ -137,7 +137,9 @@ class _PI05Adapter:
     _last_state: NDArray[np.float32] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
-        return self._last_input_frame
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        return materialize_input_frame(self._last_input_frame)
 
     def reset(self) -> None:
         if self._chunk_executor is not None:
@@ -263,7 +265,7 @@ class _PI05Adapter:
         images = observation.get("images", {})
         # Slot -> checkpoint view, from the manifest (LIBERO: camera1 -> image).
         cam_alias = self._camera_aliases
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         # Record a stitched preview of every camera handed to the policy so
         # the debug video shows the real multi-camera input, not only the last
@@ -289,7 +291,7 @@ class _PI05Adapter:
             batch_key = self._image_input_template.format(cam=cam_alias.get(cam_key, cam_key))
             batch[batch_key] = t
 
-        self._last_input_frame = tile_input_frames(preview_frames)
+        self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is not None:

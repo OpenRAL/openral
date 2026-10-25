@@ -247,10 +247,12 @@ class _GrootAdapter:
     # Declared proprio width (state_contract.dim): 8 = LIBERO, 6 = SO-101.
     _state_dim: int = _GR00T_LIBERO_STATE_DIM
     _chunk_executor: Any = None
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
-        return self._last_input_frame
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        return materialize_input_frame(self._last_input_frame)
 
     def reset(self) -> None:
         if self._chunk_executor is not None:
@@ -310,7 +312,7 @@ class _GrootAdapter:
         batch: dict[str, Any] = {"task": instruction or observation.get("task", "")}
 
         images = observation.get("images", {})
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         preview_frames: list[NDArray[np.uint8]] = []
         for cam_key, modality_key in zip(self._camera_keys, self._image_input_keys, strict=True):
@@ -326,7 +328,7 @@ class _GrootAdapter:
             if self._flip_vertical:
                 t = torch.flip(t, dims=[1])
             batch[modality_key] = t.to(self.device)
-        self._last_input_frame = tile_input_frames(preview_frames)
+        self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is None:

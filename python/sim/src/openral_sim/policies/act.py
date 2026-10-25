@@ -91,7 +91,7 @@ class _ACTAdapter:
     _image_input_template: str = "observation.images.{cam}"
     _flip_images_180: bool = False
     _state_dim: int | None = None
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
     # Normalization stats extracted from the checkpoint when the
     # underlying lerobot ACTPolicy class no longer carries
     # normalize_inputs / unnormalize_outputs modules. ACT uses
@@ -114,7 +114,9 @@ class _ACTAdapter:
     _nvmm_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
-        return self._last_input_frame
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        return materialize_input_frame(self._last_input_frame)
 
     def reset(self) -> None:
         if hasattr(self._policy, "reset"):
@@ -214,7 +216,7 @@ class _ACTAdapter:
         batch: dict[str, Any] = {"task": [instruction or str(observation.get("task", ""))]}
 
         images = observation.get("images", {})
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         # Record every camera the policy consumed so the debug video does not
         # hide multi-camera setups behind a single wrist-only preview.
@@ -231,7 +233,7 @@ class _ACTAdapter:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
             batch[self._image_input_template.format(cam=self._cam_alias.get(cam_key, cam_key))] = t
-        self._last_input_frame = tile_input_frames(preview_frames)
+        self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is not None:

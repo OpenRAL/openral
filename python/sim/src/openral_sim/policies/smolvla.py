@@ -211,7 +211,7 @@ class _SmolVLAAdapter:
     _image_input_template: str = "observation.images.{cam}"
     # Last image fed to the policy, post-flip — populated by step() for the
     # eval-layer video helper. Not part of the public API.
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
     # Zero-copy NVMM vision leg — lazily built on the first
     # observation carrying image_handles; shares the TRT runtime's cached
     # vision engine.
@@ -219,7 +219,9 @@ class _SmolVLAAdapter:
     _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
-        return self._last_input_frame
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        return materialize_input_frame(self._last_input_frame)
 
     def reset(self) -> None:
         if self._chunk_executor is not None:
@@ -412,7 +414,7 @@ class _SmolVLAAdapter:
         ``last_input_frame`` every env step — without this it would show
         one frozen frame per chunk.
         """
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         images = observation.get("images", {})
         preview_frames: list[NDArray[np.uint8]] = []
@@ -424,7 +426,7 @@ class _SmolVLAAdapter:
             if preview is not None:
                 preview_frames.append(preview)
         if preview_frames:
-            self._last_input_frame = tile_input_frames(preview_frames)
+            self._last_input_frame = preview_frames
 
     def _build_batch(
         self, observation: Observation, instruction: str, *, gpu_frames: bool = False
@@ -460,7 +462,7 @@ class _SmolVLAAdapter:
             images = observation.get("images", {})
             # Preserve the original LIBERO key naming so the stored preprocessor
             # rename step (image → camera1, image2 → camera2) lines up.
-            from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+            from openral_sim.policies._video_capture import to_input_frame
 
             # Record every camera the policy consumed so the debug video does not
             # collapse multi-camera input to only the last stream in the loop.
@@ -479,7 +481,7 @@ class _SmolVLAAdapter:
                 batch[
                     self._image_input_template.format(cam=self._cam_alias.get(cam_key, cam_key))
                 ] = t
-            self._last_input_frame = tile_input_frames(preview_frames)
+            self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is not None:

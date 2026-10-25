@@ -637,6 +637,7 @@ _Tiny shared utility for VLA adapters to record what they fed the policy — the
 
 - `to_input_frame(image, *, flip_180=False) -> NDArray[np.uint8] | None` — Convert an adapter input image to an HWC uint8 RGB frame for video; `None` in, `None` out. (L24)
 - `tile_input_frames(images) -> NDArray[np.uint8] | None` — Compose multiple adapter input images into one debug-preview frame: unchanged for one camera, a padded near-square grid for several. (L53)
+- `materialize_input_frame(frame) -> NDArray[np.uint8] | None` — What an adapter's `last_input_frame()` returns: tiles the per-camera frame list the adapter kept from its last step, on read (only `sim run`'s debug video reads it, so `deploy sim` never pays for the tile). (L94)
 
 #### `python/sim/src/openral_sim/policies/mock.py`
 - `class _MockSim` — Tiny gym-like env for tests. (L32)
