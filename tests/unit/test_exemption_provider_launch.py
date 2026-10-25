@@ -12,10 +12,11 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
 import pytest
 import yaml
+from openral_cli.deploy_sim import LaunchInvocation, resolve_launch_invocation
 from openral_core import DeployRuntime, RobotDescription
 from openral_core.exceptions import ROSConfigError
 
@@ -27,8 +28,26 @@ _PROVIDER = "openral_pro_safety_exemptions/ContactExemptions"
 _CELL = _REPO / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
 
 
+class _LaunchModule(Protocol):
+    """The slice of ``deploy_e2e.launch.py`` these tests read."""
+
+    _PROVIDER_MOVED_RULES_OFF: dict[str, object]
+    _PROVIDER_MIRRORED_PREFIXES: tuple[str, ...]
+
+    def _exemption_provider_kernel_params(
+        self,
+        description: RobotDescription,
+        *,
+        provider: str,
+        hal_mode: str,
+        wrist_links: int = 1,
+    ) -> dict[str, object]: ...
+
+    def _hand_rules_to_provider(self, kernel_params: dict[str, object]) -> dict[str, object]: ...
+
+
 @pytest.fixture(scope="module")
-def launch_module() -> Any:
+def launch_module() -> _LaunchModule:
     """The real launch file, loaded by path — it is not an importable package."""
     for dep in ("launch", "launch_ros", "lifecycle_msgs", "openral_foxglove_bringup"):
         pytest.importorskip(dep, reason=f"{dep} is a module-level import of the launch file")
@@ -40,7 +59,7 @@ def launch_module() -> Any:
     return module
 
 
-def test_no_provider_adds_no_kernel_params(launch_module: Any) -> None:
+def test_no_provider_adds_no_kernel_params(launch_module: _LaunchModule) -> None:
     robot = RobotDescription.from_yaml(str(_OPENARM))
     derive = launch_module._exemption_provider_kernel_params
     assert derive(robot, provider="", hal_mode="sim") == {}
@@ -49,7 +68,7 @@ def test_no_provider_adds_no_kernel_params(launch_module: Any) -> None:
 
 @pytest.mark.parametrize("manifest", [_OPENARM, _DROID])
 def test_a_provider_gets_the_manifest_hand_links_as_its_mask(
-    launch_module: Any, manifest: Path
+    launch_module: _LaunchModule, manifest: Path
 ) -> None:
     robot = RobotDescription.from_yaml(str(manifest))
     params = launch_module._exemption_provider_kernel_params(
@@ -67,14 +86,13 @@ def test_a_provider_gets_the_manifest_hand_links_as_its_mask(
 
 
 @pytest.mark.parametrize("mode", ["real", "", "SIM"])
-def test_a_provider_off_sim_is_refused_at_launch(launch_module: Any, mode: str) -> None:
+def test_a_provider_off_sim_is_refused_at_launch(launch_module: _LaunchModule, mode: str) -> None:
     robot = RobotDescription.from_yaml(str(_OPENARM))
     with pytest.raises(ROSConfigError, match="sim-only"):
         launch_module._exemption_provider_kernel_params(robot, provider=_PROVIDER, hal_mode=mode)
 
 
-def _cell_invocation(tmp_path: Path, runtime: dict[str, object], hal_mode: str) -> Any:
-    from openral_cli.deploy_sim import resolve_launch_invocation
+def _cell_invocation(tmp_path: Path, runtime: dict[str, object], hal_mode: str) -> LaunchInvocation:
 
     data = yaml.safe_load(_CELL.read_text(encoding="utf-8"))
     data["runtime"].update(runtime)
@@ -105,7 +123,7 @@ def test_deploy_sim_forwards_the_runtime_provider_and_deploy_run_refuses_it(
         _cell_invocation(tmp_path, {"exemption_provider": _PROVIDER}, "real")
 
 
-def test_a_provider_takes_over_the_moved_rules_never_both(launch_module: Any) -> None:
+def test_a_provider_takes_over_the_moved_rules_never_both(launch_module: _LaunchModule) -> None:
     """With a provider the moved in-tree rules are off and mirrored for it (ADR-0121): a
     deploy runs the configuration the in-tree code's removal leaves, not both at once."""
     hand = launch_module._hand_rules_to_provider
@@ -134,7 +152,7 @@ def test_a_provider_takes_over_the_moved_rules_never_both(launch_module: Any) ->
     assert b["grasp_allowance_enabled"] is True, "ADR-0115 stays open"
 
 
-def test_the_launch_and_the_replay_tool_move_the_same_rules(launch_module: Any) -> None:
+def test_the_launch_and_the_replay_tool_move_the_same_rules(launch_module: _LaunchModule) -> None:
     """``tools/kernel_replay_diff.py``'s kernel B is the launch's provider configuration."""
     spec = importlib.util.spec_from_file_location(
         "kernel_replay_diff_pin", _REPO / "tools" / "kernel_replay_diff.py"
