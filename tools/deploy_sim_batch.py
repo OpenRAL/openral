@@ -405,7 +405,23 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["compare"]:
         return compare(Path(argv[1]), Path(argv[2]))
+    restore_sigint()
     return run_batch(parser().parse_args(argv))
+
+
+def restore_sigint() -> bool:
+    """Catch SIGINT again when this process inherited it ignored; ``True`` if it was.
+
+    A harness started as a background job of a non-interactive shell inherits SIGINT
+    ignored, and every child inherits that too. ``_stop_group``'s SIGINT then reaches no
+    one: the launch is SIGKILLed after its grace, and ``ros2 bag record`` dies without
+    finalizing its bag. A caught signal resets to its default across ``exec``, so this
+    gives every later child its SIGINT back.
+    """
+    if signal.getsignal(signal.SIGINT) is not signal.SIG_IGN:
+        return False
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    return True
 
 
 def parser() -> argparse.ArgumentParser:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import signal
 import socket
 import subprocess
 import sys
@@ -116,3 +117,24 @@ def test_record_is_opt_in_and_bags_exactly_the_replay_topics() -> None:
     argv = record_command("/tmp/x/bag")
     assert argv[-len(REPLAY_TOPICS) :] == list(REPLAY_TOPICS)
     assert "/openral/candidate_action" in REPLAY_TOPICS
+
+
+def test_an_inherited_ignored_sigint_is_caught_again_for_the_children() -> None:
+    """Spark 2026-10-25: a background harness SIGKILLed every unfinalized bag recorder."""
+    code = (
+        "import signal, subprocess, sys;"
+        f"sys.path.insert(0, {str(_TOOL.parent)!r});"
+        "import deploy_sim_batch as d;"
+        "print(d.restore_sigint(), d.restore_sigint());"
+        "print(subprocess.run(['grep', 'SigIgn', '/proc/self/status'],"
+        " capture_output=True, text=True).stdout.split()[1])"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert out[:2] == ["True", "False"]
+    assert int(out[2], 16) & (1 << (signal.SIGINT - 1)) == 0, "the child's SIGINT is not ignored"

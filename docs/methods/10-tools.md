@@ -205,7 +205,8 @@ _Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`
 - `run_batch(args) -> int` (L201) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
 - `compare(a, b) -> int` (L373) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
 - `main(argv=None) -> int` (L403) — `run` (default) or `compare A B`.
-- `parser() -> argparse.ArgumentParser` (L411) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
+- `restore_sigint() -> bool` (L412) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
+- `parser() -> argparse.ArgumentParser` (L427) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
 - `const READY_MARKERS = ('HAL activated at',)` (L48) — Log lines that mean the HAL is up.
 - `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L49) — Added to the ready markers when the scene preloads a skill.
 - `const REPO` (L47) — Repo root (the checkout the script runs from).
