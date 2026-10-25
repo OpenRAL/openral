@@ -87,6 +87,9 @@ struct AttachmentView {
   /// Index into `CandidateView::tracked`: the bound track (kTracked: live, same id and epoch) or
   /// the single live provisional track the evidence names (kProvisionalSingle); -1 = none.
   int track_index{-1};
+  /// kUntrackedGrasp: the lowest base-frame z of the payload's primitives at the first ingest that
+  /// saw this hold (measured FK at that ingest), kept while the hold lasts; NaN = unknown.
+  double bind_low_z{std::numeric_limits<double>::quiet_NaN()};
 };
 
 /// The live grasp declaration as the kernel's OWN ingest validated it (API v2). The refusal-type
@@ -159,7 +162,8 @@ struct CandidateView {
   /// match (API v2).
   const std::uint8_t* static_cells{nullptr};
   std::size_t static_cells_n{0};
-  const AttachmentView* attachments{nullptr};  ///< API v4; same index as the AttachedModel
+  const AttachedModel* attached_model{nullptr};  ///< API v4: primitives, hulls, touch links
+  const AttachmentView* attachments{nullptr};    ///< API v4; same index as the AttachedModel
   std::size_t n_attachments{0};
   bool static_points_declared{false};  ///< declared static colliders exist (API v4)
   bool voxel_overflow{false};          ///< the last grid overflowed the kernel's buffer (API v4)

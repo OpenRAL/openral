@@ -8443,3 +8443,23 @@ TEST_F(LifecycleKernelTest, AProviderSeesEachAttachmentsIdentityMatch) {
   EXPECT_TRUE(log.att0_on_hand);
   EXPECT_FALSE(log.static_points_declared);
 }
+
+TEST_F(LifecycleKernelTest, AProviderSeesAnUntrackedHoldsBindFloorWithOt10Off) {
+  // API v4: an untracked pinch hold's floor is a measurement the kernel takes at the first ingest
+  // that sees the hold, whatever the in-tree OT-10 switches say. With both off and a provider
+  // loaded, the provider's attachment view carries it, and the AttachedModel.
+  osk_test::serve_test_providers();
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  auto params = with_param(own_params(/*enabled=*/false), "exemption_provider",
+                           rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  bool latched = false;
+  EXPECT_FALSE(own_payload_passes("kernel_provider_pinch_floor", untracked_hold, params, &latched))
+      << "OT-10 off and the Recorder refusing: today's stop";
+  const auto& log = *osk_test_recorder();
+  EXPECT_EQ(log.n_attachments, 1);
+  EXPECT_EQ(log.att0_evidence, static_cast<int>(osk::AttachmentView::Evidence::kUntrackedGrasp));
+  EXPECT_TRUE(std::isfinite(log.att0_bind_low_z)) << "the bind-time floor";
+  EXPECT_TRUE(log.attached_model_set);
+}

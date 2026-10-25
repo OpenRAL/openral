@@ -41,6 +41,8 @@ struct RecorderLog {
   int att0_track_index{-2};
   bool att0_on_hand{false};
   bool static_points_declared{false};
+  double att0_bind_low_z{0.0};
+  bool attached_model_set{false};
 };
 
 }  // namespace openral_safety_kernel_test

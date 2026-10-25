@@ -165,7 +165,9 @@ void Recorder::begin_candidate(const osk::CandidateView& view) noexcept {
     log.att0_evidence = static_cast<int>(view.attachments[0].evidence);
     log.att0_track_index = view.attachments[0].track_index;
     log.att0_on_hand = view.attachments[0].on_hand;
+    log.att0_bind_low_z = view.attachments[0].bind_low_z;
   }
+  log.attached_model_set = view.attached_model != nullptr;
   log.static_points_declared = view.static_points_declared;
 }
 

@@ -610,7 +610,8 @@ private:
     /// ADR-0121 (provider view): the kernel's identity match, whatever OT-10's switch says.
     AttachmentView::Evidence evidence{AttachmentView::Evidence::kLegacy};
     std::size_t id_hash{0};
-    int track_k{-1};  ///< indexes `tracked_`; -1 = none
+    int track_k{-1};                                              ///< indexes `tracked_`; -1 = none
+    double bind_low_z{std::numeric_limits<double>::quiet_NaN()};  ///< untracked hold's floor
   };
   std::vector<AttachedBinding> attached_binding_;  ///< capacity = max objects
   CollisionScratch binding_scratch_;  ///< measured-configuration FK, sized at configure

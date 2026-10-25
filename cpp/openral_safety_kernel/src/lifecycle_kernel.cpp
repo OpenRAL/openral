@@ -2011,10 +2011,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           a.attach_link = attached_model_.objects[i].attach_link;
           a.evidence = b.evidence;
           a.on_hand = b.tracked && b.off_hand == nullptr;
+          a.bind_low_z = b.bind_low_z;
           a.track_index = b.track_k >= 0 && static_cast<std::size_t>(b.track_k) < tracked_n_
                               ? provider_view_index_[static_cast<std::size_t>(b.track_k)]
                               : -1;
         }
+        pview.attached_model = &attached_model_;
         pview.attachments = provider_attachments_.data();
         pview.n_attachments = n_att;
         pview.static_cells_n = static_ok ? static_cast<std::size_t>(voxel_grid_.sx) *
@@ -5047,8 +5049,9 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
           }
           break;
         }
-      } else if (pinch_own_enabled_ && wire.evidence_kind == "pinch_fallback" &&
-                 wire.evidence_ref == "untracked_grasp" && measured_state_fresh()) {
+      } else if ((pinch_own_enabled_ || provider_ != nullptr) &&
+                 wire.evidence_kind == "pinch_fallback" && wire.evidence_ref == "untracked_grasp" &&
+                 measured_state_fresh()) {
         // An untracked hold: the pinch volume is the object in the hand. Its floor is the
         // box's lowest point the first time this hold is seen (the fingers closed above the
         // support), kept while the hold lasts (Spark R191 / R194 / R200 / R203 / R206).
@@ -5093,9 +5096,12 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
         }
         if (f != nullptr) {
           f->seen = true;
-          binding.own_armed = true;
-          binding.own_fallback = true;
-          binding.own_floor_z = f->floor_z;
+          binding.bind_low_z = f->floor_z;  // the measurement, for a provider's view
+          if (pinch_own_enabled_) {
+            binding.own_armed = true;
+            binding.own_fallback = true;
+            binding.own_floor_z = f->floor_z;
+          }
         }
       }
       continue;
