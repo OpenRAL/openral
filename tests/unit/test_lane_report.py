@@ -62,6 +62,8 @@ CONFIG = select_tests.load_config(CONFIG_PATH)
         ("could not import 'rclpy': No module named 'rclpy'", "ros"),
         ("panda.srdf not installed", "ros"),
         ("moveit_resources panda.srdf not installed", "ros"),
+        ("needs OpenRAL Pro quantization (ADR-0123)", "pro-quant"),
+        ("8.0 GiB runs int8: needs OpenRAL Pro quantization (ADR-0123)", "pro-quant"),
     ],
 )
 def test_declared_capability_gaps_are_attributed(reason: str, expected: str) -> None:

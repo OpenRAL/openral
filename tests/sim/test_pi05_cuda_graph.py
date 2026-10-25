@@ -45,7 +45,7 @@ def _dtype() -> str:
     if vram >= _BF16_MIN_VRAM_GIB:
         return "bf16"
     if not pro_quantization_installed():
-        pytest.skip(f"{vram:.1f} GiB needs the int8 path, which needs OpenRAL Pro (ADR-0123)")
+        pytest.skip(f"{vram:.1f} GiB runs int8: needs OpenRAL Pro quantization (ADR-0123)")
     return "int8"
 
 

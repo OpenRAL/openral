@@ -175,7 +175,8 @@ The options:
 The mechanism is a **declared capability allowlist**, not a blanket tolerance:
 
 - `[capability_gaps]` in `tools/test_selection.toml` names each capability the
-  runner provably lacks (`cuda`, `vulkan`, `sidecar`, `ros`, `hf-cache`), what it is, what
+  runner provably lacks (`cuda`, `vulkan`, `sidecar`, `ros`, `hf-cache`, `pro-quant` —
+  the OpenRAL Pro quantization package, ADR-0123), what it is, what
   *would* satisfy it, and the skip-reason patterns that indicate it.
 - A skip matching a declared pattern is **declared-not-run** — allowed,
   attributed to the gap, counted, and printed in the job summary, never called
