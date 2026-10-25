@@ -205,9 +205,10 @@ TARGETS=(
 # packages/*/test node suites that test-ros2 runs only on dispatch, and the
 # tests/unit files that skip without ROS. Each runs in its OWN pytest process:
 # the packages/*/test suites own rclpy init/shutdown per module, and sharing
-# one interpreter with the block above cascades into failures. MUJOCO_GL=egl:
-# the camera-rendering twins need a GL context, and Mesa's EGL gives one with
-# no display or GPU. Left out until fixed: test_manifest_hal_reset_to_pose and
+# one interpreter with the block above cascades into failures. MUJOCO_GL
+# (default egl): the camera-rendering twins need a GL context. On a GPU-less
+# host MuJoCo's EGL backend finds no device, so the docker-build step sets
+# MUJOCO_GL=osmesa (the image ships libosmesa6). Left out until fixed: test_manifest_hal_reset_to_pose and
 # test_openarm_hal_lifecycle -- both abort at teardown, the exit 139 / 134
 # family #384 tracks -- and test_franka_scene_attach.launch, whose process
 # dies mid-test in this image.

@@ -436,6 +436,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # container. These are plain graphics/threading libs — NOT gstreamer.
         libgl1 \
         libglib2.0-0 \
+        # Software GL for MuJoCo's camera renders on a GPU-less host (the
+        # docker-build live-ROS step sets MUJOCO_GL=osmesa): Mesa's EGL gives
+        # MuJoCo no context without a GPU device ("gladLoadGL error").
+        libosmesa6 \
     && rm -rf /var/lib/apt/lists/* \
     # The ros-* set the image actually runs (issue #381) -- see the builder
     # stage. The docker-build "Live ROS tests" step prints it before the suite.
