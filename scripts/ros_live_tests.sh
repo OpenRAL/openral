@@ -65,14 +65,10 @@ TARGETS=(
     # and on a deliberate arm/box collision. Needs mujoco in the venv.
     tests/integration/test_safety_kernel_force_observer_openarm.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
-    tests/integration/test_sim_depth_registered_colour_live.py
     # DeployRuntime.estimated_depth_camera: the real depth provider in metric
     # mode against a fake DA3 sidecar at its ZMQ boundary (no GPU).
     tests/integration/test_estimated_depth_provider_live.py
     tests/integration/test_hal_sigint_teardown_live.py
-    # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
-    # HALs with attach mechanics (kernel fails closed on an unstamped set).
-    tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
     # Defense-in-depth E-stop, on a real three-process graph: the in-band
     # safety node is SIGKILLed mid chunk-stream and /openral/estop still fires,
     # from a different process, with the structured KIND_TIMEOUT trigger. Needs
@@ -213,6 +209,15 @@ TARGETS=(
 # family #384 tracks -- and test_franka_scene_attach.launch, whose process
 # dies mid-test in this image.
 ISOLATED_TARGETS=(
+    # Both assert on who publishes a shared topic (/openral/attachment_state
+    # publisher count; the camera mount on /tf_static), so a node an earlier
+    # test in the shared interpreter left behind fails them (docker-build
+    # 2026-10-25: "assert 1 == 0" publishers, "no zed_camera_link -> optical").
+    # MuJoCo twins: rendered under MUJOCO_GL (see above).
+    tests/integration/test_sim_depth_registered_colour_live.py
+    # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
+    # HALs with attach mechanics (kernel fails closed on an unstamped set).
+    tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
     packages/openral_foxglove_bringup/test/test_bucket2_markers.py
     packages/openral_foxglove_bringup/test/test_foxglove_launch.py
     packages/openral_foxglove_bringup/test/test_layout.py
