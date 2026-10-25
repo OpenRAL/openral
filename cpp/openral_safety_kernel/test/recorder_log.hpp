@@ -21,6 +21,7 @@ struct RecorderLog {
   bool declaration_live{false};
   bool grasp_region{false};
   bool hands{false};
+  std::size_t hands_extra{0};  ///< extra fixed jaws in the view's hands (K2's extra links)
   long long region_max_age_ns{0};
   int horizon{0};
   std::size_t n_dof{0};

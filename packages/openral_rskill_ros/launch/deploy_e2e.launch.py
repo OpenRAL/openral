@@ -1513,6 +1513,59 @@ def _exemption_provider_kernel_params(
     return {"exemption_provider": provider, "exemption_provider_links": links}
 
 
+#: In-tree kernel rule switches ADR-0121 moves to an exemption provider, and their "off" value.
+#: Mirrored by ``tools/kernel_replay_diff.py`` (pinned by
+#: ``tests/unit/test_exemption_provider_launch.py``).
+_PROVIDER_MOVED_RULES_OFF: dict[str, object] = {
+    "workspace_contact_enabled": False,
+    "workspace_contact_brake_enabled": False,
+    "workspace_contact_hold_max_consecutive": 0,
+    "workspace_explained_cells_enabled": False,
+    "tracked_grasp_exemption_enabled": False,
+    "tracked_release_jaw_joints": [],
+    "tracked_release_jaw_open_sign": [],
+    "payload_own_cells_enabled": False,
+    "pinch_payload_own_cells_enabled": False,
+}
+#: Kernel parameter prefixes the provider reads under ``contact_exemptions.``.
+_PROVIDER_MIRRORED_PREFIXES: tuple[str, ...] = (
+    "workspace_contact_",
+    "workspace_explained_",
+    "tracked_grasp_",
+    "tracked_release_",
+    "payload_own_",
+    "pinch_payload_own_",
+)
+
+
+def _hand_rules_to_provider(kernel_params: dict[str, object]) -> dict[str, object]:
+    """With an exemption provider, the moved in-tree rules go to it (ADR-0121).
+
+    Each moved rule's parameter is mirrored under ``contact_exemptions.`` for the provider and
+    the in-tree switch is turned off, so the provider decides what the in-tree rules did,
+    never both at once: the configuration the in-tree code's removal leaves. The open kernel
+    keeps measuring the hand (``workspace_contact_control_period_s``, ``..._jaw_joints``) and
+    keeps its own release window. Without a provider the params are returned unchanged.
+
+    Example:
+        >>> out = _hand_rules_to_provider(
+        ...     {"exemption_provider": "p/P", "workspace_contact_enabled": True}
+        ... )
+        >>> out["workspace_contact_enabled"], out["contact_exemptions.workspace_contact_enabled"]
+        (False, True)
+        >>> _hand_rules_to_provider({"workspace_contact_enabled": True})
+        {'workspace_contact_enabled': True}
+    """
+    if not kernel_params.get("exemption_provider"):
+        return kernel_params
+    out = dict(kernel_params)
+    for key, value in kernel_params.items():
+        if key.startswith(_PROVIDER_MIRRORED_PREFIXES):
+            out[f"contact_exemptions.{key}"] = value
+    out.update(_PROVIDER_MOVED_RULES_OFF)
+    return out
+
+
 def _workspace_contact_kernel_params(
     description: RobotDescription,
     *,
@@ -2812,6 +2865,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         }
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
+    # ADR-0121: a provider takes over the moved in-tree rules (never both at once).
+    kernel_params = _hand_rules_to_provider(kernel_params)
 
     # Run identity for the dashboard's Identity card. These
     # ride as OTLP resource attributes on every node so run mode / id /

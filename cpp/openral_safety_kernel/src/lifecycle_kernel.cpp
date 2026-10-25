@@ -736,27 +736,38 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   tracked_grasp_enabled_ = this->get_parameter("tracked_grasp_exemption_enabled").as_bool();
   tracked_grasp_ = TrackedGraspTable{};
   voxel_grid_.tracked_grasp = nullptr;
+  // The extra fixed jaws are hand geometry, read by K2 or by an exemption provider's hands
+  // (ADR-0121: K2 may move to the provider); set with neither, the parameter has no reader.
   const auto extra_names =
       this->get_parameter("tracked_grasp_extra_contact_links").as_string_array();
-  if (!extra_names.empty() && !tracked_grasp_enabled_) {
+  const bool provider_requested = !this->get_parameter("exemption_provider").as_string().empty();
+  if (!extra_names.empty() && !tracked_grasp_enabled_ && !provider_requested) {
     RCLCPP_ERROR(this->get_logger(),
-                 "tracked_grasp_extra_contact_links is set but tracked_grasp_exemption_enabled "
-                 "is off: refusing a K2-only parameter with no K2 to read it");
+                 "tracked_grasp_extra_contact_links is set but neither "
+                 "tracked_grasp_exemption_enabled nor an exemption_provider reads it");
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
+  grasp_extra_links_.reset();
+  const char* extra_why = nullptr;
+  for (const auto& name : extra_names) {
+    const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
+    const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
+    if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks) {
+      extra_why = "a tracked_grasp_extra_contact_links name is not a collision link";
+      grasp_extra_links_.reset();
+      break;
+    }
+    grasp_extra_links_.set(index);
+  }
+  if (extra_why != nullptr && !tracked_grasp_enabled_) {
+    RCLCPP_ERROR(this->get_logger(), "exemption_provider refused: %s", extra_why);
     envelope_loaded_ = false;
     return CallbackReturn::FAILURE;
   }
   if (tracked_grasp_enabled_) {
-    const char* why = nullptr;
-    std::bitset<kMaxGraspMaskLinks> extra;
-    for (const auto& name : extra_names) {
-      const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
-      const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
-      if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks) {
-        why = "a tracked_grasp_extra_contact_links name is not a collision link";
-        break;
-      }
-      extra.set(index);
-    }
+    const char* why = extra_why;
+    const std::bitset<kMaxGraspMaskLinks> extra = grasp_extra_links_;
     if (why == nullptr && !grasp_allowance_enabled_) {
       why = "it requires grasp_allowance_enabled (the allowlist and the declaration)";
     } else if (why == nullptr && this->get_parameter("hal_mode").as_string() != "sim") {
@@ -3773,11 +3784,12 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
   for (std::size_t l = 0; l < provider_links_.size() && l < kMaxGraspMaskLinks; ++l) {
     provider_link_bits_[l] = provider_links_[l] != 0;
   }
-  // The hands for the provider's DeclarationView, from the open ADR-0115 allowlist.
+  // The hands for the provider's DeclarationView: the open ADR-0115 allowlist plus the extra
+  // fixed jaws, exactly as the in-tree K2 table builds them.
   provider_hands_ = TrackedGraspTable{};
   provider_hands_valid_ =
       grasp_allowance_enabled_ &&
-      build_grasp_hands(collision_model_, grasp_allowlist_, provider_hands_, {});
+      build_grasp_hands(collision_model_, grasp_allowlist_, provider_hands_, grasp_extra_links_);
   provider_meas_scratch_.link_world.assign(collision_model_.n_links, Transform{});
   provider_attachments_.assign(attached_max_objects_, AttachmentView{});
   provider_q_fk_.assign(q_fk_.size(), 0.0);

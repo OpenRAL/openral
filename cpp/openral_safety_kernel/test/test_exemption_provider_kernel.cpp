@@ -145,3 +145,18 @@ TEST_F(ExemptionProviderKernelTest, AProviderThatDeclinesOrThrowsIsRefused) {
   EXPECT_TRUE(starts_with(throws->exemption_provider_status(), "refused: initialize threw"))
       << throws->exemption_provider_status();
 }
+
+TEST_F(ExemptionProviderKernelTest, TheProvidersHandsCarryTheExtraFixedJawsWithK2Off) {
+  // ADR-0121: K2 may live in the provider, so the open kernel resolves the extra fixed jaws
+  // (hand geometry: SO-101's fixed jaw) for the provider's hands exactly as for the in-tree K2
+  // table: the finger link1 plus link0 as a fixed jaw.
+  auto opts = options(cls("Recorder"), "sim", {"link1"});
+  auto params = opts.parameter_overrides();
+  params.emplace_back("grasp_allowance_enabled", true);
+  params.emplace_back("grasp_contact_links", std::vector<std::string>{"link1"});
+  params.emplace_back("tracked_grasp_extra_contact_links", std::vector<std::string>{"link0"});
+  opts.parameter_overrides(params);
+  auto node = configured("osk_prov_extra_jaw", opts);
+  ASSERT_TRUE(node->exemption_provider_loaded()) << node->exemption_provider_status();
+  EXPECT_EQ(node->exemption_provider_extra_jaws(), 1U);
+}

@@ -8235,6 +8235,41 @@ TEST_F(LifecycleKernelTest, AnExemptionProviderSeesTheValidatedViewAndTheChunkOu
   EXPECT_EQ(log.last_reset, static_cast<int>(osk::ResetReason::kExternalEstop));
 }
 
+TEST_F(LifecycleKernelTest, AProviderGetsTheK2ExtraFixedJawsWithTheInTreeK2Off) {
+  // The extra fixed jaws (SO-101's fixed jaw) are hand geometry: with K2 moved to a provider
+  // (ADR-0121) the open kernel still resolves tracked_grasp_extra_contact_links, with the same
+  // refusals, and hands them to the provider in DeclarationView::hands. Pro review 98c890d38:
+  // the K2-only refusal made a parity kernel B refuse configure on the PickOrange dump.
+  osk_test::serve_test_providers();
+  const auto params = [](std::vector<std::string> extra, bool provider) {
+    auto p = k2_params(/*enabled=*/false);
+    p.emplace_back("tracked_grasp_extra_contact_links", extra);
+    if (provider) {
+      p = with_param(p, "exemption_provider",
+                     rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+      p = with_param(p, "exemption_provider_links",
+                     rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+    }
+    return p;
+  };
+  GraspRig none("kernel_provider_extra_none", params({"link0"}, false));
+  EXPECT_FALSE(none.configure()) << "no K2 and no provider: still a parameter with no reader";
+  GraspRig unknown("kernel_provider_extra_unknown", params({"gripper"}, true));
+  EXPECT_FALSE(unknown.configure()) << "not a collision link, with a provider too";
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  GraspRig rig("kernel_provider_extra_ok", params({"link0"}, true));
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, kGraspClearQ, 300);
+  ASSERT_TRUE(rig.offer(&b, kGraspClearQ));
+  EXPECT_TRUE(osk_test_recorder()->hands);
+  // One link, a finger: `extra & ~fingers` is empty here, as in the in-tree K2 table. The
+  // two-link extra jaw is in test_exemption_provider_kernel.cpp.
+  EXPECT_EQ(osk_test_recorder()->hands_extra, 0U);
+}
+
 TEST_F(LifecycleKernelTest, AnExemptionProviderGetsTheKernelsHandMeasurementWithTheRuleOff) {
   // With the in-tree #349 rule OFF and a provider loaded, the kernel still ingests the workspace
   // and measures the hand (the measurement stays open) and quotes it in every pair query. The

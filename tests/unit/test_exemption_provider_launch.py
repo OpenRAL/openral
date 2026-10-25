@@ -103,3 +103,42 @@ def test_deploy_sim_forwards_the_runtime_provider_and_deploy_run_refuses_it(
     assert f"exemption_provider:={_PROVIDER}" in on
     with pytest.raises(ROSConfigError, match="sim-only"):
         _cell_invocation(tmp_path, {"exemption_provider": _PROVIDER}, "real")
+
+
+def test_a_provider_takes_over_the_moved_rules_never_both(launch_module: Any) -> None:
+    """With a provider the moved in-tree rules are off and mirrored for it (ADR-0121): a
+    deploy runs the configuration the in-tree code's removal leaves, not both at once."""
+    hand = launch_module._hand_rules_to_provider
+    a = {
+        "workspace_contact_enabled": True,
+        "workspace_contact_max_speed_mps": 0.5,
+        "workspace_contact_control_period_s": 0.0667,
+        "tracked_grasp_exemption_enabled": True,
+        "tracked_grasp_extra_contact_links": ["fixed_jaw"],
+        "tracked_release_jaw_joints": ["gripper"],
+        "pinch_payload_own_cells_enabled": True,
+        "grasp_allowance_enabled": True,
+    }
+    assert hand(a) is a, "no provider: unchanged"
+    b = hand({**a, "exemption_provider": _PROVIDER})
+    for key, off in launch_module._PROVIDER_MOVED_RULES_OFF.items():
+        assert b[key] == off, key
+    assert b["contact_exemptions.workspace_contact_enabled"] is True
+    assert b["contact_exemptions.tracked_release_jaw_joints"] == ["gripper"]
+    assert b["contact_exemptions.pinch_payload_own_cells_enabled"] is True
+    assert b["workspace_contact_control_period_s"] == 0.0667, "the measurement stays open"
+    assert b["tracked_grasp_extra_contact_links"] == ["fixed_jaw"], "hand geometry stays open"
+    assert b["grasp_allowance_enabled"] is True, "ADR-0115 stays open"
+
+
+def test_the_launch_and_the_replay_tool_move_the_same_rules(launch_module: Any) -> None:
+    """``tools/kernel_replay_diff.py``'s kernel B is the launch's provider configuration."""
+    spec = importlib.util.spec_from_file_location(
+        "kernel_replay_diff_pin", _REPO / "tools" / "kernel_replay_diff.py"
+    )
+    assert spec is not None and spec.loader is not None
+    krd = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = krd
+    spec.loader.exec_module(krd)
+    assert krd._MOVED_RULES_OFF == launch_module._PROVIDER_MOVED_RULES_OFF
+    assert krd._MIRRORED_PREFIXES == launch_module._PROVIDER_MIRRORED_PREFIXES

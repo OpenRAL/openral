@@ -1652,7 +1652,12 @@ installed header
 - **Parameters:**
   - `exemption_provider` is the pluginlib class name. Empty, the default, means no provider and
     today's verdicts. A deploy scene selects one with `runtime.exemption_provider`, which
-    `openral deploy sim` forwards as the launch argument of the same name.
+    `openral deploy sim` forwards as the launch argument of the same name. With a provider, the
+    launch hands it the moved rules: each in-tree switch off, its parameters mirrored under
+    `contact_exemptions.` (`_hand_rules_to_provider`), so the in-tree rules and the provider
+    never both decide.
+  - `tracked_grasp_extra_contact_links` (hand geometry, the fixed jaws) is read by K2 or by a
+    provider: the provider's hands are the allowlist plus those jaws, exactly as K2's table.
   - `exemption_provider_links` is the kernel's own relaxable-link mask. The launch passes
     `RobotDescription.hand_links()`.
 - **What refuses a provider**, with ERROR `safety.exemption_provider refused` and

@@ -110,6 +110,10 @@ public:
   /// "refused: <why>") and whether one is live.
   const std::string& exemption_provider_status() const noexcept { return provider_status_; }
   bool exemption_provider_loaded() const noexcept { return provider_ != nullptr; }
+  /// The extra fixed jaws in the provider's hands (0 when no provider or no hands).
+  std::size_t exemption_provider_extra_jaws() const noexcept {
+    return provider_ != nullptr && provider_hands_valid_ ? provider_hands_.extra_links.count() : 0U;
+  }
 
 private:
   // Topic callbacks.
@@ -429,6 +433,8 @@ private:
   std::bitset<kMaxGraspMaskLinks> provider_link_bits_{};  ///< `provider_links_` as a link mask
   TrackedGraspTable provider_hands_{};  ///< the hands, for the provider's DeclarationView
   bool provider_hands_valid_{false};
+  /// tracked_grasp_extra_contact_links, resolved: K2's and the provider's extra fixed jaws.
+  std::bitset<kMaxGraspMaskLinks> grasp_extra_links_{};
   CollisionScratch provider_meas_scratch_;  ///< FK at the measured state (sized at load)
   std::vector<double> provider_q_fk_;       ///< its FK input (sized at load)
   /// The workspace region is ingested for the in-tree #349 rule OR for a loaded provider; the

@@ -153,6 +153,8 @@ void Recorder::begin_candidate(const osk::CandidateView& view) noexcept {
   log.declaration_live = view.declaration.live;
   log.grasp_region = view.declaration.grasp_region != nullptr;
   log.hands = view.declaration.hands != nullptr;
+  log.hands_extra =
+      view.declaration.hands != nullptr ? view.declaration.hands->extra_links.count() : 0U;
   log.region_max_age_ns = view.region_max_age_ns;
   log.workspace = view.declaration.workspace != nullptr;
   log.grid_seq = view.grid_seq;
