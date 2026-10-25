@@ -13433,6 +13433,13 @@ class CollisionEvidence(_FailureEvidenceBase):
             raise ValueError(
                 "payload_evidence_kind and payload_evidence_ref must be present together"
             )
+        if (self.grasp_exemption_source == "provider") != (
+            self.grasp_exemption_provider is not None
+        ):
+            raise ValueError(
+                "grasp_exemption_provider is present exactly when grasp_exemption_source is "
+                "'provider'"
+            )
         return self
 
     @property

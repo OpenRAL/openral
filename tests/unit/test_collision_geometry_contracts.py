@@ -505,3 +505,21 @@ def test_a_provider_stop_still_decodes_with_its_exemption_source() -> None:
     payload["grasp_exemption_source"] = "somewhere"
     with pytest.raises(ValidationError):
         TypeAdapter(FailureEvidence).validate_json(json.dumps(payload))
+
+
+def test_a_provider_source_needs_its_provider_name_and_only_then() -> None:
+    """``grasp_exemption_provider`` pairs with ``grasp_exemption_source="provider"`` (the
+    kernel always writes both; CodeRabbit #432). Records with neither still decode."""
+    import json
+
+    payload = json.loads(_KERNEL_PREDICTIVE_EVIDENCE.read_text(encoding="utf-8"))
+    adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+    adapter.validate_json(json.dumps(payload))
+    with pytest.raises(ValidationError):
+        adapter.validate_json(json.dumps({**payload, "grasp_exemption_source": "provider"}))
+    with pytest.raises(ValidationError):
+        adapter.validate_json(
+            json.dumps(
+                {**payload, "grasp_exemption_source": "region", "grasp_exemption_provider": "p/1"}
+            )
+        )
