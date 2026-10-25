@@ -515,8 +515,8 @@ _RLBench-side scene sidecar (externally-provisioned py3.10 venv only; no openral
 
 #### `python/sim/src/openral_sim/backends/aloha.py`
 _gym-aloha bimanual MuJoCo scene adapter. Opt-in via the `sim` dependency group (gym-aloha lives there alongside mujoco/gymnasium/lerobot); auto-installs on first use via `ensure_backend_deps("aloha")`._
-- `class _AlohaSim` — `SimRollout` wrapping a `gym_aloha` env. — `reset/step/render/close/mujoco_handles/sim_time_ns/_wrap_obs`. `mujoco_handles()` reaches through `env.unwrapped._env.physics.{model,data}.ptr` (dm_control wrapper) for `openral sim run --view`. `sim_time_ns()` returns `round(MjData.time * 1e9)`.
-- `const _ALOHA_SCENES: dict[str, str]` — Scene id → `gym_aloha` env id (`aloha_transfer_cube` / `aloha_insertion`). (L37)
+- `class _AlohaSim` — `SimRollout` wrapping a `gym_aloha` env. — `reset/step/render/close/mujoco_handles/sim_time_ns/_wrap_obs`. `mujoco_handles()` reaches through `env.unwrapped._env.physics.{model,data}.ptr` (dm_control wrapper) for `openral sim run --view`. `sim_time_ns()` returns `round(MjData.time * 1e9)`. `_build_aloha_scene` swaps gym-aloha's three-view `get_observation` for one rendering only the consumed `top` view through one cached dm_control `Camera`, built lazily on the stepping thread (private `_render_only_top_camera`; env.step 5.4 → 1.2 ms).
+- `const _ALOHA_SCENES: dict[str, str]` — Scene id → `gym_aloha` env id (`aloha_transfer_cube` / `aloha_insertion`). (L38)
 
 #### `python/sim/src/openral_sim/backends/pusht.py`
 - `class _PushTSim` — `SimRollout` wrapping `gym_pusht/PushT-v0` (pymunk 2-D rigid body). — `reset/step/render/close/enable_intrinsic_viewer/_wrap_obs/_paint_view`. `enable_intrinsic_viewer()` opens a pygame window from inside the adapter and `_paint_view()` blits the last pixel frame on each `reset` / `step`, leaving the env in `render_mode="rgb_array"` so the Diffusion Policy still gets `observation.image`.

@@ -17,6 +17,7 @@ The default env_id when ``scene.id == "aloha_transfer_cube"`` is
 
 from __future__ import annotations
 
+import collections
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -190,7 +191,46 @@ def _build_aloha_scene(env_cfg: SimEnvironment) -> _AlohaSim:
         render_mode=None,
         max_episode_steps=int(env_cfg.task.max_steps or 500),
     )
+    _render_only_top_camera(env)
     return _AlohaSim(scene=env_cfg.scene, task=env_cfg.task, _env=env)
+
+
+def _render_only_top_camera(env: Any) -> None:
+    """Make gym-aloha render only the ``top`` camera, through one cached ``Camera``.
+
+    ``gym_aloha``'s ``BimanualViperXTask.get_observation`` renders three
+    640x480 views per step (``top``, ``angle``, ``front_close``) via
+    ``physics.render``, which builds and frees a fresh dm_control ``Camera``
+    (an ``MjvScene`` allocation) on every call. ``AlohaEnv._format_raw_obs``
+    then keeps only ``top`` — the other two renders are discarded unread. This
+    swaps in an observation that renders ``top`` alone through one persistent
+    ``Camera`` with the same height/width/camera id — the same pixels, up to
+    the 1-LSB EGL jitter two fresh renders already show
+    (``tests/sim/test_aloha_bimanual_hal_gym_aloha.py``) — and a 400-step
+    rollout spends ~1/6 of the time rendering.
+
+    The camera is built on the first render, not here: building it binds the
+    EGL context to the calling thread, and ``sim run`` builds the env on an
+    init thread but steps it on the main one. The returned image is a view
+    into the camera's reused buffer; ``_format_raw_obs`` copies it before the
+    next step overwrites it.
+    """
+    from dm_control.mujoco import Camera
+
+    task = env.unwrapped._env.task  # dm_control control.Environment's task
+    cameras: list[Camera] = []
+
+    def get_observation(physics: Any) -> collections.OrderedDict[str, Any]:
+        if not cameras:
+            cameras.append(Camera(physics=physics, height=480, width=640, camera_id="top"))
+        obs: collections.OrderedDict[str, Any] = collections.OrderedDict()
+        obs["qpos"] = task.get_qpos(physics)
+        obs["qvel"] = task.get_qvel(physics)
+        obs["env_state"] = task.get_env_state(physics)
+        obs["images"] = {"top": cameras[0].render()}
+        return obs
+
+    task.get_observation = get_observation
 
 
 for _scene_id in _ALOHA_SCENES:
