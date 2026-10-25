@@ -1759,7 +1759,12 @@ covers the kernel side with the most permissive provider loaded.
 **Step 1 of 3.** #349, K2, K5, K7 and the OT-10 payload-own cells are still in-tree. The provider
 seam is additive: nothing loads by default, so no verdict changes. The next steps are:
 1. the Pro provider implementing those rules against this header;
-2. their removal from this tree, after sim parity with the provider loaded.
+2. the removal of the tracker-based rules (K2, K5, K7, the contact hold, the payload/pinch-own
+   cells) from this tree, after sim parity with the provider loaded.
+
+The box-based rules stay open (ADR-0121 amendment, 2026-10-25): the ADR-0115 grasp allowance
+(`search_box`) and #349 workspace contact with its brake (`workspace_box`). A loaded provider
+still takes #349 over, because K7 narrows it.
 
 **Tests:**
 - `ExemptionProvider.*` in `test_collision`: no provider or the default provider is bit-for-bit

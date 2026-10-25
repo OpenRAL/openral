@@ -52,7 +52,10 @@ in full so the posture stays visible although the records are private:
   It can only do so behind the kernel's open, fail-closed, sim-only
   exemption-provider interface
   (`cpp/openral_safety_kernel/include/openral_safety_kernel/exemption_provider.hpp`).
-  The kernel enforces the provider's bounds itself (ADR-0121).
+  The kernel enforces the provider's bounds itself (ADR-0121). The box-based rules
+  a scene declares stay open (the ADR-0115 `search_box` grasp allowance, #349
+  `workspace_box` contact); the tracker-based rules (#418 K2, K5, K7,
+  payload-own cells) are the ones that move (ADR-0121 amendment, 2026-10-25).
 - Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
   own upstream license, independent of OpenRAL's code license. This is
   compliance for models OpenRAL doesn't own, not a statement about
