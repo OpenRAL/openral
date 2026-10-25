@@ -144,3 +144,21 @@ def test_identical_kernels_agree_and_a_different_one_is_caught(tmp_path: Path) -
     assert not first["a"]["passed"] and first["a"]["latched"]
     assert first["b"]["passed"] and not first["b"]["latched"]
     assert _kernels_left() == before, "every replay kernel is stopped"
+
+
+def test_a_kernel_b_without_its_provider_is_refused(tmp_path: Path) -> None:
+    """A provider that does not load still lets kernel B activate; the replay must refuse
+    rather than report a parity it never tested (CodeRabbit #432). No kernel is left."""
+    pytest.importorskip("rclpy")
+    krd = _tool()
+    bag = tmp_path / "bag"
+    _write_bag(bag)
+    before = _kernels_left()
+    missing = dict(
+        _PARAMS,
+        exemption_provider="openral_no_such_pkg/NoSuchProvider",
+        exemption_provider_links=["link0"],
+    )
+    with pytest.raises(RuntimeError, match="exemption provider"):
+        krd.replay(bag, _PARAMS, missing, tmp_path / "missing")
+    assert _kernels_left() == before, "every replay kernel is stopped"

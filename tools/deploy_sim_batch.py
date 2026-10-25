@@ -202,11 +202,15 @@ def _dispatch_goal(args: argparse.Namespace, env: Mapping[str, str], log: Path) 
     dispatch = subprocess.Popen(
         cmd, env=dict(env), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
-    graph = _SimGraph(env)
     settle = GradeSettle(args.grade_settle_s)
     ended_by, tail = "goal", ""
+    graph: _SimGraph | None = None
     try:
+        graph = _SimGraph(env)
         while dispatch.poll() is None:
+            # Spin first, then read: a grade logged during the spin (a `fail` after the
+            # `complete`) is fed before `due()` can complete the goal on the stale grade.
+            graph.spin(0.5)
             with log.open("rb") as fh:
                 fh.seek(offset)
                 chunk = fh.read().decode(errors="replace")
@@ -214,11 +218,16 @@ def _dispatch_goal(args: argparse.Namespace, env: Mapping[str, str], log: Path) 
             text, _, tail = (tail + chunk).rpartition("\n")
             for grade, sim_s in grade_events(text):
                 settle.feed(grade, sim_s)
-            graph.spin(0.5)
             if ended_by == "goal" and settle.due(graph.now_s) and graph.complete():
                 ended_by = "grade"
+    # Any monitor failure is recorded in ended_by; the caller still tears the episode down.
+    except Exception as exc:
+        dispatch.kill()
+        out, _ = dispatch.communicate()
+        return out, f"monitor_failed: {exc!r}"
     finally:
-        graph.close()
+        if graph is not None:
+            graph.close()
     out, _ = dispatch.communicate()
     return out, ended_by
 
@@ -449,7 +458,12 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                     env=env,
                     start_new_session=True,
                 )
-                (ep / "kernel_params.yaml").write_text(_dump_kernel_params(env))
+                dump = _dump_kernel_params(env)
+                if "ros__parameters" in dump:
+                    (ep / "kernel_params.yaml").write_text(dump)
+                else:
+                    (ep / "kernel_params.err").write_text(dump)
+                    rec["param_dump"] = "failed"
             if boot_s is None:
                 rec["failure"] = "stack did not come up"
             else:

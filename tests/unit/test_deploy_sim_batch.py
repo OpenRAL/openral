@@ -184,3 +184,94 @@ def test_end_on_grade_is_opt_in() -> None:
     args = tool.parser().parse_args(base)
     assert not args.end_on_grade and args.grade_settle_s == 1.0
     assert tool.parser().parse_args([*base, "--end-on-grade"]).end_on_grade
+
+
+class _GraphLoggingFailOnSpin:
+    """Stands in for the ROS graph (a network boundary): its spin is when the HAL logs
+    ``fail`` right after a held ``complete``, and the sim clock jumps past the settle time."""
+
+    def __init__(self, log: Path) -> None:
+        self._log = log
+        self.now_s = 60.0
+        self.completed = False
+
+    def spin(self, seconds: float) -> None:
+        with self._log.open("a") as fh:
+            fh.write('sim.placement_grade {"grade": "fail", "sim_time_s": 61.5}\n')
+        self.now_s = 70.0
+
+    def complete(self, timeout_s: float = 10.0) -> bool:
+        self.completed = True
+        return True
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_fail_logged_during_the_spin_blocks_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The grade is re-read after the spin: a ``fail`` that lands during it must not let the
+    stale ``complete`` end the goal (CodeRabbit #432)."""
+    tool = _tool()
+    log = tmp_path / "deploy.log"
+    log.write_text('sim.placement_grade {"grade": "complete", "sim_time_s": 60.0}\n')
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/_validation_matrix_dispatch.py").write_text(
+        "import time\ntime.sleep(1.5)\nprint('{}')\n"
+    )
+    graph = _GraphLoggingFailOnSpin(log)
+    monkeypatch.setattr(tool, "REPO", tmp_path)
+    monkeypatch.setattr(tool, "_SimGraph", lambda env: graph)
+    args = tool.parser().parse_args(
+        [
+            "--scene",
+            "s",
+            "--out",
+            "o",
+            "--sidecar-port",
+            "1",
+            "--rskill-id",
+            "r",
+            "--prompt",
+            "p",
+            "--end-on-grade",
+        ]
+    )
+    _, ended_by = tool._dispatch_goal(args, {}, log)
+    assert ended_by == "goal" and not graph.completed
+
+
+def test_a_graph_failure_stops_dispatch_and_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A monitor that cannot start kills the dispatch and returns, so the caller still tears
+    the episode down (CodeRabbit #432)."""
+    tool = _tool()
+    log = tmp_path / "deploy.log"
+    log.write_text("")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/_validation_matrix_dispatch.py").write_text("import time\ntime.sleep(60)\n")
+
+    def _no_graph(env: object) -> None:
+        raise RuntimeError("rclpy init failed")
+
+    monkeypatch.setattr(tool, "REPO", tmp_path)
+    monkeypatch.setattr(tool, "_SimGraph", _no_graph)
+    args = tool.parser().parse_args(
+        [
+            "--scene",
+            "s",
+            "--out",
+            "o",
+            "--sidecar-port",
+            "1",
+            "--rskill-id",
+            "r",
+            "--prompt",
+            "p",
+            "--end-on-grade",
+        ]
+    )
+    _, ended_by = tool._dispatch_goal(args, {}, log)
+    assert ended_by.startswith("monitor_failed:") and "rclpy init failed" in ended_by

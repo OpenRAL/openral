@@ -339,6 +339,9 @@ class _Side:
 
     def __init__(self, domain: int, types: Mapping[str, Any]) -> None:
         import rclpy  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay, absent from some venvs
+        from diagnostic_msgs.msg import (
+            DiagnosticArray,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        )
         from openral_msgs.msg import (
             ActionChunk,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
         )
@@ -370,9 +373,30 @@ class _Side:
             reliable,
         )
         self.node.create_subscription(Empty, "/openral/estop", lambda _m: self._latch(), reliable)
+        self.provider_status = ""
+        self.node.create_subscription(DiagnosticArray, "/diagnostics", self._on_diag, reliable)
 
     def _latch(self) -> None:
         self.latched = True
+
+    def _on_diag(self, msg: Any) -> None:
+        for status in msg.status:
+            for kv in status.values:
+                if kv.key == "exemption_provider":
+                    self.provider_status = str(kv.value)
+
+    def require_provider(self, timeout_s: float) -> None:
+        """Refuse the replay unless the kernel reports its provider ``loaded:`` on
+        ``/diagnostics``: a refused provider still activates, and a replay without it would
+        report parity it never tested."""
+        end = time.monotonic() + timeout_s
+        while time.monotonic() < end and not self.provider_status.startswith("loaded:"):
+            self.spin(0.1)
+        if not self.provider_status.startswith("loaded:"):
+            raise RuntimeError(
+                f"the kernel did not load its exemption provider: "
+                f"{self.provider_status or 'no /diagnostics'}"
+            )
 
     def activate(self, timeout_s: float) -> None:
         """CONFIGURE then ACTIVATE, each confirmed by ``get_state``.
@@ -467,13 +491,18 @@ def replay(
     }
     types = {t: get_message(n) for t, n in type_names.items()}
     workdir.mkdir(parents=True, exist_ok=True)
-    procs = [_spawn_kernel(params_a, 71, workdir), _spawn_kernel(params_b, 72, workdir)]
-    sides = [_Side(71, types), _Side(72, types)]
+    procs: list[subprocess.Popen[bytes]] = []
+    sides: list[_Side] = []
     diffs: list[Diff] = []
     n = 0
     try:
-        for side in sides:
+        procs.append(_spawn_kernel(params_a, 71, workdir))
+        procs.append(_spawn_kernel(params_b, 72, workdir))
+        sides.extend([_Side(71, types), _Side(72, types)])
+        for side, params in zip(sides, (params_a, params_b), strict=True):
             side.activate(timeout_s=60.0)
+            if params.get("exemption_provider"):
+                side.require_provider(timeout_s=5.0)
         for topic, data, stamp in _read_bag(bag):
             msg = deserialize_message(data, types[topic])
             if topic == "/openral/candidate_action":
