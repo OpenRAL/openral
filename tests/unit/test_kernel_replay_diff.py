@@ -123,3 +123,11 @@ def test_every_moved_rule_and_mirrored_prefix_names_a_declared_kernel_parameter(
         assert key in declared, key
     for prefix in krd._MIRRORED_PREFIXES:
         assert any(d.startswith(prefix) for d in declared), prefix
+
+
+def test_only_diffs_outside_the_self_check_noise_fail_tier_2() -> None:
+    """Pro tier 2 on master_dr ep3: A-vs-A also differed on some runs (replay noise)."""
+    report = {"diffs": [{"index": 12}, {"index": 44}, {"index": 50}]}
+    checks = [{"diffs": [{"index": 12}]}, {"diffs": [{"index": 44}, {"index": 45}]}]
+    assert krd.outside_noise(report, checks) == [50]
+    assert krd.outside_noise(report, []) == [12, 44, 50], "no self-check: every diff counts"

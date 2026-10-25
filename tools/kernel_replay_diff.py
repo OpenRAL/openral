@@ -39,7 +39,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -210,6 +210,20 @@ def summarize(diffs: list[Diff], n_candidates: int) -> dict[str, Any]:
         "b_only_passes": sum(1 for d in diffs if d.b.passed and not d.a.passed),
         "diffs": [asdict(d) for d in diffs],
     }
+
+
+def outside_noise(report: Mapping[str, Any], self_checks: Sequence[Mapping[str, Any]]) -> list[int]:
+    """Candidate indices where A and B differ but no A-vs-A run did.
+
+    The ADR-0121 tier-2 criterion: A-vs-B differences must fall inside the replay's own
+    nondeterminism, which ``--self-check`` measures by replaying A against itself.
+
+    Example:
+        >>> outside_noise({"diffs": [{"index": 3}, {"index": 9}]}, [{"diffs": [{"index": 3}]}])
+        [9]
+    """
+    noise = {d["index"] for r in self_checks for d in r["diffs"]}
+    return sorted(d["index"] for d in report["diffs"] if d["index"] not in noise)
 
 
 # ── the live replay (needs ROS 2 Jazzy and the kernel package sourced) ─────────
@@ -398,14 +412,34 @@ class _Side:
         rclpy.shutdown(context=self.ctx)
 
 
+#: The deploy graph's Fast DDS profile (``openral_cli.deploy_sim.FASTDDS_LARGE_DATA_PROFILE``):
+#: under the default 512 KiB shared-memory segment a multi-MB voxel grid is mostly lost.
+_FASTDDS_PROFILE = (
+    Path(__file__).resolve().parent.parent / "python/cli/src/openral_cli/fastdds_large_data.xml"
+)
+
+
 def replay(
     bag: Path,
     params_a: Mapping[str, Any],
     params_b: Mapping[str, Any],
     workdir: Path,
     verdict_timeout_s: float = 0.3,
+    settle_s: float = 0.02,
 ) -> dict[str, Any]:
-    """Run the two-kernel replay and return :func:`summarize`'s report."""
+    """Run the two-kernel replay and return :func:`summarize`'s report.
+
+    Delivery is made deterministic, as far as the kernel's KEEP_LAST(1) inputs allow: the
+    deploy graph's Fast DDS profile (set before the first participant, inherited by both
+    kernels), every reliable input acknowledged by both kernels before the next message, and
+    ``settle_s`` of spinning before each candidate so its inputs' callbacks run first (the
+    executor does not order callbacks across subscriptions). ``--self-check`` measures what
+    nondeterminism is left.
+    """
+    os.environ.setdefault("FASTRTPS_DEFAULT_PROFILES_FILE", str(_FASTDDS_PROFILE))
+    from rclpy.duration import (
+        Duration,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+    )
     from rclpy.serialization import (
         deserialize_message,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
     )
@@ -433,10 +467,15 @@ def replay(
             side.activate(timeout_s=60.0)
         for topic, data, stamp in _read_bag(bag):
             msg = deserialize_message(data, types[topic])
+            if topic == "/openral/candidate_action":
+                for side in sides:
+                    side.spin(settle_s)
             for side in sides:
                 side.pubs[topic].publish(msg)
             if topic != "/openral/candidate_action":
                 for side in sides:
+                    if topic != "/joint_states":  # the reliable inputs: both kernels have it
+                        side.pubs[topic].wait_for_all_acked(Duration(seconds=2.0))
                     side.spin(0.003)
                 continue
             before = [len(s.safe) for s in sides]
@@ -473,6 +512,14 @@ def main(argv: list[str] | None = None) -> int:
     diff.add_argument("--provider", required=True)
     diff.add_argument("--out", type=Path, required=True)
     diff.add_argument("--verdict-timeout-s", type=float, default=0.3)
+    diff.add_argument("--settle-s", type=float, default=0.02)
+    diff.add_argument(
+        "--self-check",
+        type=int,
+        default=0,
+        metavar="K",
+        help="first replay A against itself K times; pass iff every A-vs-B diff is in that noise",
+    )
     args = parser.parse_args(argv)
     if args.cmd == "record-cmd":
         print(" ".join(record_command(args.out_dir)))
@@ -481,14 +528,21 @@ def main(argv: list[str] | None = None) -> int:
     params_b = provider_params(params_a, args.provider)
     workdir = args.out.parent
     workdir.mkdir(parents=True, exist_ok=True)
-    report = replay(args.bag, params_a, params_b, workdir, args.verdict_timeout_s)
+    checks = [
+        replay(args.bag, params_a, dict(params_a), workdir, args.verdict_timeout_s, args.settle_s)
+        for _ in range(args.self_check)
+    ]
+    report = replay(args.bag, params_a, params_b, workdir, args.verdict_timeout_s, args.settle_s)
+    report["self_check"] = [{"different": c["different"], "diffs": c["diffs"]} for c in checks]
+    report["outside_noise"] = outside_noise(report, checks)
     args.out.write_text(json.dumps(report, indent=2))
     print(
         f"candidates={report['candidates']} equal={report['equal']} "
         f"different={report['different']} a_only={report['a_only_passes']} "
-        f"b_only={report['b_only_passes']}"
+        f"b_only={report['b_only_passes']} self_check={[c['different'] for c in checks]} "
+        f"outside_noise={report['outside_noise']}"
     )
-    return 0 if report["different"] == 0 else 1
+    return 0 if not report["outside_noise"] else 1
 
 
 if __name__ == "__main__":
