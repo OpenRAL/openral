@@ -4491,7 +4491,10 @@ TEST(VoxelCollisionTightGeometry, NeverStopsWhereTheShippedPathWouldNotHave) {
   grid.sx = 40;
   grid.sy = 40;
   grid.sz = 40;
-  std::vector<std::uint8_t> occ(static_cast<std::size_t>(grid.sx) * grid.sy * grid.sz, 0);
+  std::vector<std::uint8_t> occ(static_cast<std::size_t>(grid.sx) *
+                                    static_cast<std::size_t>(grid.sy) *
+                                    static_cast<std::size_t>(grid.sz),
+                                0);
   grid.occupancy = occ.data();
 
   int recovered = 0;
@@ -4593,7 +4596,10 @@ TEST(VoxelCollisionTightGeometry, ExhaustingTheStage2BudgetOnlyEverAddsConservat
   grid.sy = 40;
   grid.sz = 40;
   // Every cell occupied: far past the budget, and the adverse case for cost.
-  std::vector<std::uint8_t> occ(static_cast<std::size_t>(grid.sx) * grid.sy * grid.sz, 1);
+  std::vector<std::uint8_t> occ(static_cast<std::size_t>(grid.sx) *
+                                    static_cast<std::size_t>(grid.sy) *
+                                    static_cast<std::size_t>(grid.sz),
+                                1);
   grid.occupancy = occ.data();
 
   const auto a = osk::check_voxel_collision(shipped, scratch, grid, 0.02);
@@ -8095,7 +8101,7 @@ TEST(ExplainedCells, AHandSizedBodyJustOutsideThePaddedWallStillStops) {
       declared.push_back({c[0] - declared_shift, c[1], c[2]});
     }
     std::vector<std::uint8_t> mask(occ.size(), 0);
-    osk::mark_static_cells(grid, declared, mask.data(), mask.size(), pad);
+    osk::mark_static_cells(grid, declared, mask.data(), mask.size(), static_cast<std::size_t>(pad));
     osk::WorkspaceExplanation e;
     e.static_cells = mask.data();
     e.static_cells_n = mask.size();
@@ -8489,7 +8495,7 @@ TEST(PayloadOwnCells, TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes) {
       const std::array<double, 3> c{-0.2 + (i + 0.5) * kPoRes, -0.2 + (j + 0.5) * kPoRes,
                                     -0.2 + (k + 0.5) * kPoRes};
       const auto overlaps = [&](const std::array<double, 6>& b) {
-        for (int a = 0; a < 3; ++a) {
+        for (std::size_t a = 0; a < 3; ++a) {
           if (std::abs(c[a] - b[a]) > b[3 + a] + 0.5 * kPoRes) {
             return false;
           }
