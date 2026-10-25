@@ -1978,6 +1978,16 @@ def suppress_hf_weight_init() -> Iterator[None]:
 
     i.e. ~6 s of the ~15 s cold load is init math for values nothing reads.
 
+    Patching ``_init_weights`` alone left the *torch*-level init running:
+    every ``nn.Linear`` / ``nn.Embedding`` constructor still calls
+    ``kaiming_uniform_`` / ``normal_`` from ``reset_parameters``. The context
+    therefore also enters ``transformers.initialization.no_init_weights``,
+    which no-ops the ``torch.nn.init`` functions for its duration. Measured on
+    the same checkpoint (RTX 5070 Laptop host, warm page cache): SmolVLA
+    ``from_pretrained`` 6.7 s → 4.3 s, with a bit-identical state dict and
+    identical buffers (non-persistent buffers such as rotary ``inv_freq`` are
+    computed in ``__init__``, not by an init function).
+
     The remaining time is allocation. Reclaiming it needs a meta-device
     build plus an assign-mode state-dict load — deliberately not
     attempted here. **Measured ceiling on an RTX 4070 host: ~1.6 s**
@@ -1990,11 +2000,15 @@ def suppress_hf_weight_init() -> Iterator[None]:
 
     Safety: only sound when the checkpoint supplies **every** parameter —
     otherwise a param that would have been randomly initialised is left
-    as whatever ``malloc`` returned. Callers must validate the loaded
-    model; ``assert_all_parameters_finite`` is the guard the SmolVLA
-    adapter uses.
+    as whatever ``malloc`` returned. So while the context is active a
+    lerobot ``load_model_as_safetensor`` call that reports a missing key
+    raises ``ROSConfigError`` (a reused heap block is finite garbage that
+    no value check can tell from a weight), and callers must still
+    validate the loaded model; ``assert_all_parameters_finite`` is the
+    guard the SmolVLA adapter uses.
 
-    Process-global for the duration (patches ``PreTrainedModel``), so it
+    Process-global for the duration (patches ``PreTrainedModel``,
+    ``torch.nn.init`` and ``lerobot.policies.pretrained``), so it
     must not wrap a block loading models on several threads at once. The
     skill runner serialises loads behind its resident-skill lock, the
     only in-process caller.
@@ -2008,6 +2022,7 @@ def suppress_hf_weight_init() -> Iterator[None]:
         ...     pass  # SmolVLAPolicy.from_pretrained(...) goes here
     """
     try:
+        from transformers.initialization import no_init_weights
         from transformers.modeling_utils import PreTrainedModel
     except ImportError:  # transformers is an opt-in extra
         yield
@@ -2020,9 +2035,42 @@ def suppress_hf_weight_init() -> Iterator[None]:
 
     PreTrainedModel._init_weights = _skip  # type: ignore[method-assign]  # reason: restored in finally
     try:
-        yield
+        with no_init_weights(), _refuse_missing_checkpoint_keys():
+            yield
     finally:
         PreTrainedModel._init_weights = original  # type: ignore[method-assign]  # reason: restore
+
+
+@contextmanager
+def _refuse_missing_checkpoint_keys() -> Iterator[None]:
+    """Raise when lerobot's safetensors load leaves a key unloaded.
+
+    See ``suppress_hf_weight_init``: an unloaded key keeps uninitialised memory.
+    """
+    try:
+        from lerobot.policies import pretrained
+    except ImportError:  # lerobot is an opt-in extra
+        yield
+        return
+
+    original = pretrained.load_model_as_safetensor
+
+    # reason: Any mirrors the untyped safetensors loader signature.
+    def _strict_cover(model: Any, filename: Any, **kwargs: Any) -> Any:
+        missing, unexpected = original(model, filename, **kwargs)
+        if missing:
+            raise ROSConfigError(
+                f"checkpoint {filename} leaves {len(missing)} key(s) unloaded "
+                f"(e.g. {sorted(missing)[:3]}) while weight init is suppressed; they would "
+                "hold uninitialised memory"
+            )
+        return missing, unexpected
+
+    pretrained.load_model_as_safetensor = _strict_cover
+    try:
+        yield
+    finally:
+        pretrained.load_model_as_safetensor = original
 
 
 @contextmanager
