@@ -144,6 +144,60 @@ def test_build_serve_argv_served_model_name() -> None:
     assert argv[argv.index("--served-model-name") + 1] == "nvidia/Cosmos3-Edge"
 
 
+def test_build_serve_argv_kv_bytes_and_quantization() -> None:
+    """Unset sends neither flag; set, each reaches vLLM verbatim."""
+    common = dict(
+        vllm_bin=Path("/venv/bin/vllm"),
+        model="nvidia/Cosmos3-Edge",
+        host="127.0.0.1",
+        port=8901,
+        tool_call_parser="hermes",
+        max_model_len=32768,
+        gpu_memory_utilization=0.15,
+        enforce_eager=False,
+    )
+    argv = sidecar.build_serve_argv(**common)
+    assert "--kv-cache-memory-bytes" not in argv
+    assert "--quantization" not in argv
+    argv = sidecar.build_serve_argv(**common, kv_cache_memory_bytes="4G", quantization="fp8")
+    assert argv[argv.index("--kv-cache-memory-bytes") + 1] == "4G"
+    assert argv[argv.index("--quantization") + 1] == "fp8"
+
+
+# ── serve_defaults ─────────────────────────────────────────────────────────────
+
+
+def test_serve_defaults_off_jetson_are_unchanged() -> None:
+    """A dGPU keeps the 8 GB-card sizing, whatever its compute capability."""
+    for cc in (None, 8.9, 12.0):
+        assert sidecar.serve_defaults(tegra=False, compute_capability=cc) == {
+            "max_model_len": 8192,
+            "gpu_memory_utilization": 0.90,
+            "kv_cache_memory_bytes": None,
+            "enforce_eager": True,
+            "quantization": None,
+        }
+
+
+def test_serve_defaults_on_jetson() -> None:
+    """Unified memory: KV in bytes, utilization only gates start-up.
+
+    On a Thor, 0.90 of the board is 110 GiB, which vLLM checks as free at
+    start-up even with the KV cache sized in bytes — so it refuses to boot next
+    to a resident VLA. FP8 weights only where the GPU computes in FP8: Thor
+    (sm_110) yes, Orin (sm_87, Marlin weight-only, measured slower) no.
+    """
+    thor = sidecar.serve_defaults(tegra=True, compute_capability=11.0)
+    assert thor["gpu_memory_utilization"] == 0.15
+    assert thor["kv_cache_memory_bytes"] == "4G"
+    assert thor["max_model_len"] == 32768
+    assert thor["enforce_eager"] is False
+    assert thor["quantization"] == "fp8"
+    orin = sidecar.serve_defaults(tegra=True, compute_capability=8.7)
+    assert orin["quantization"] is None
+    assert sidecar.serve_defaults(tegra=True, compute_capability=None)["quantization"] is None
+
+
 # ── is_diffusers_reasoner_layout ───────────────────────────────────────────────
 
 

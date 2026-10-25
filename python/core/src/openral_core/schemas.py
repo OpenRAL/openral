@@ -13949,7 +13949,8 @@ class ReasonerModel(BaseModel):
             contract); ``"auto"`` for endpoints that reject ``"required"``.
         max_tokens_default: Optional completion-token cap applied when the
             operator sets none — bounds a metered gateway's up-front reservation
-            for reasoning models (GPT-5.x). ``None`` sends no cap.
+            for reasoning models (GPT-5.x), or a small local model's runaway
+            tool call (Cosmos 3 Edge). ``None`` sends no cap.
         min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.
             ``None`` for ``cloud`` models (not a local-compute question).
         required_dtype: Dtype the local runtime must support, matched against
@@ -14031,6 +14032,10 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         served_model_id="nvidia/Cosmos3-Edge",
         default_endpoint=REASONER_MANAGED_ENDPOINT,
         auth_required=False,
+        # A runaway tool call (whitespace or filler inside the grammar) otherwise
+        # runs to the end of the window: ~120 s, the client timeout. At 512 it
+        # costs ~10 s; the longest valid call measured on Thor was 503 tokens.
+        max_tokens_default=512,
         min_gpu_vram_gb=12.0,
         required_dtype=QuantizationDtype.BF16,
         weights_license="OpenMDW-1.1",

@@ -53,6 +53,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from openral_core.gpu import is_tegra_host
 from openral_sim._sidecar_common import (
     alloc_conf_var,
     default_expandable_segments,
@@ -86,6 +87,15 @@ _TRANSFORMERS_EDGE_SHA = "cbf4d720ec734edb77d25452b2790c7e4be2f8d7"
 #: which is ~64x the 0.2 Hz reasoner's one-in-flight request and exhausts an 8 GB
 #: card before serving. See ``build_serve_argv``.
 _DEFAULT_MAX_NUM_SEQS: int = 4
+#: Defaults off a Jetson: sized for the 8 GB x86 cards this sidecar was first
+#: validated on. See ``serve_defaults``.
+_DGPU_DEFAULTS: dict[str, object] = {
+    "max_model_len": 8192,
+    "gpu_memory_utilization": 0.90,
+    "kv_cache_memory_bytes": None,
+    "enforce_eager": True,
+    "quantization": None,
+}
 #: The reasoner sends text plus at most one camera frame, never video. Left
 #: unset, vLLM sizes the encoder cache for a max-resolution video and OOMs in
 #: the vision tower. See ``build_serve_argv``.
@@ -283,6 +293,61 @@ def resolve_served_model(
     return str(view), model
 
 
+def gpu_compute_capability() -> float | None:
+    """GPU 0's compute capability from ``nvidia-smi`` (torch-free), or ``None``."""
+    try:
+        out = subprocess.run(  # reason: fixed argv
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+        return float(out.split()[0])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+def serve_defaults(*, tegra: bool, compute_capability: float | None) -> dict[str, object]:
+    """Platform defaults for the sizing flags; each one is env/CLI-overridable.
+
+    Off a Jetson these are ``_DGPU_DEFAULTS`` (8 GB-card sizing, unchanged).
+    On a Jetson the GPU shares system RAM, which changes three of them
+    (measured on AGX Thor and AGX Orin with the real reasoner prompt — see
+    docs/reference/cosmos3-edge-reasoner.md, "Jetson defaults"):
+
+    * vLLM's ``--gpu-memory-utilization`` becomes a fraction of the **whole
+      board's RAM**, checked as free at start-up even when the KV cache is
+      sized in bytes. 0.90 asks a Thor for 110 GiB and refuses to boot next to
+      a resident VLA. So the KV cache is sized in bytes (4 GiB = 37,440 BF16
+      tokens) and utilization drops to 0.15, which then only gates start-up.
+    * The window is 32768: real palettes are 17K+ tokens, and memory is not the
+      constraint that kept the 8 GB default at 8192.
+    * CUDA graphs are on (the eager default exists for 8 GB VRAM), and the
+      weights are FP8 when the GPU computes in FP8 (``sm_89``+, i.e. Thor):
+      ~1.3x decode alone and ~2x faster ticks beside a running VLA. Orin
+      (``sm_87``) only gets weight-only Marlin FP8, which measured slower than
+      BF16, so it stays BF16.
+
+    Example:
+        >>> serve_defaults(tegra=True, compute_capability=11.0)["quantization"]
+        'fp8'
+        >>> serve_defaults(tegra=True, compute_capability=8.7)["quantization"] is None
+        True
+        >>> serve_defaults(tegra=False, compute_capability=12.0)["max_model_len"]
+        8192
+    """
+    if not tegra:
+        return dict(_DGPU_DEFAULTS)
+    return {
+        "max_model_len": 32768,
+        "gpu_memory_utilization": 0.15,
+        "kv_cache_memory_bytes": "4G",
+        "enforce_eager": False,
+        "quantization": "fp8" if (compute_capability or 0.0) >= 8.9 else None,
+    }
+
+
 def build_serve_argv(
     *,
     vllm_bin: Path,
@@ -297,6 +362,8 @@ def build_serve_argv(
     kv_cache_dtype: str = "auto",
     max_num_seqs: int = _DEFAULT_MAX_NUM_SEQS,
     limit_mm_per_prompt: str = _DEFAULT_LIMIT_MM_PER_PROMPT,
+    kv_cache_memory_bytes: str | None = None,
+    quantization: str | None = None,
 ) -> list[str]:
     """Build the ``vllm serve`` argv (split out for unit-testability).
 
@@ -357,6 +424,10 @@ def build_serve_argv(
     argv += ["--max-num-seqs", str(max_num_seqs)]
     if limit_mm_per_prompt:
         argv += ["--limit-mm-per-prompt", limit_mm_per_prompt]
+    if kv_cache_memory_bytes:
+        argv += ["--kv-cache-memory-bytes", kv_cache_memory_bytes]
+    if quantization:
+        argv += ["--quantization", quantization]
     return argv
 
 
@@ -368,23 +439,43 @@ def main() -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8901)
     p.add_argument("--tool-call-parser", default="hermes")
-    p.add_argument("--max-model-len", type=int, default=8192)
+    # The five sizing flags below default to None and resolve CLI > env >
+    # serve_defaults() (which differs on a Jetson — see there).
+    p.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="Context window (default 8192, 32768 on a Jetson; or "
+        "$OPENRAL_COSMOS3_MAX_MODEL_LEN). Real palettes are 17K+ tokens.",
+    )
     p.add_argument(
         "--gpu-memory-utilization",
         type=float,
-        default=float(os.environ.get("OPENRAL_COSMOS3_GPU_MEM_UTIL", "0.90")),
-        help="vLLM GPU memory fraction (default 0.90, or $OPENRAL_COSMOS3_GPU_MEM_UTIL). "
-        "vLLM's own 0.92 default fails when the GPU already hosts a display / another "
-        "process; drop it further if engine init reports 'free memory on startup'.",
+        default=None,
+        help="vLLM GPU memory fraction (default 0.90, 0.15 on a Jetson; or "
+        "$OPENRAL_COSMOS3_GPU_MEM_UTIL). vLLM's own 0.92 default fails when the GPU "
+        "already hosts a display / another process; drop it further if engine init "
+        "reports 'free memory on startup'.",
     )
     p.add_argument(
-        "--no-enforce-eager",
-        dest="enforce_eager",
-        action="store_false",
-        help="Enable CUDA-graph capture (off by default: capture overflows an 8 GB "
-        "card's VRAM and adds minutes to startup; the 0.2 Hz reasoner doesn't need it).",
+        "--kv-cache-memory-bytes",
+        default=None,
+        help="Size the KV cache in bytes, e.g. '4G' (default unset, '4G' on a Jetson; "
+        "or $OPENRAL_COSMOS3_KV_CACHE_BYTES; '' unsets it).",
     )
-    p.set_defaults(enforce_eager=True)
+    p.add_argument(
+        "--quantization",
+        default=None,
+        help="vLLM --quantization (default none, 'fp8' on an sm_89+ Jetson; or "
+        "$OPENRAL_COSMOS3_QUANTIZATION; '' forces BF16).",
+    )
+    p.add_argument(
+        "--enforce-eager",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Skip CUDA-graph capture (default on, off on a Jetson; capture overflows "
+        "an 8 GB card's VRAM and adds minutes to startup there).",
+    )
     p.add_argument(
         "--max-num-seqs",
         type=int,
@@ -416,6 +507,21 @@ def main() -> int:
     )
     p.add_argument("--venv", default=None, help=f"Reuse this venv (or set {_VENV_ENV}).")
     args = p.parse_args()
+    tegra = is_tegra_host()
+    defaults = serve_defaults(
+        tegra=tegra, compute_capability=gpu_compute_capability() if tegra else None
+    )
+    for name, env_var, cast in (
+        ("max_model_len", "OPENRAL_COSMOS3_MAX_MODEL_LEN", int),
+        ("gpu_memory_utilization", "OPENRAL_COSMOS3_GPU_MEM_UTIL", float),
+        ("kv_cache_memory_bytes", "OPENRAL_COSMOS3_KV_CACHE_BYTES", str),
+        ("quantization", "OPENRAL_COSMOS3_QUANTIZATION", str),
+    ):
+        if getattr(args, name) is None:
+            raw = os.environ.get(env_var)
+            setattr(args, name, defaults[name] if raw is None else cast(raw))
+    if args.enforce_eager is None:
+        args.enforce_eager = defaults["enforce_eager"]
 
     py = ensure_venv(args.home, override=args.venv)
 
@@ -458,6 +564,8 @@ def main() -> int:
         kv_cache_dtype=args.kv_cache_dtype,
         max_num_seqs=args.max_num_seqs,
         limit_mm_per_prompt=args.limit_mm_per_prompt,
+        kv_cache_memory_bytes=args.kv_cache_memory_bytes or None,
+        quantization=args.quantization or None,
     )
     if "edge" in args.model.lower() and not native_edge:
         # Only true without the native Edge model (see module docstring):
