@@ -4486,6 +4486,7 @@ TEST_F(LifecycleKernelTest, AGraspRegionThatFollowsTheCarriedPayloadStillRetires
   EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
   EXPECT_EQ(logs.count("grasp_exemption_active=0"), 1U) << logs.joined();
   EXPECT_EQ(logs.count("grasp_exemption_active=1"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_source=none "), 1U) << logs.joined();
   EXPECT_EQ(logs.count("safety.grasp_region_moved_after_handover target=cell:cube"), 1U)
       << "announced once, not on every heartbeat: " << logs.joined();
   EXPECT_EQ(logs.max_severity("safety.grasp_region_moved_after_handover"),
@@ -5924,6 +5925,7 @@ TEST_F(LifecycleKernelTest, ASlowHandInsideTheConfirmedWorkspaceDoesNotTripAndIs
   EXPECT_EQ(logs.count("safety.workspace_region_armed target=cell:cube"), 1U) << logs.joined();
   EXPECT_GE(logs.count("safety.workspace_contact link=link0"), 1U) << "never silent";
   EXPECT_EQ(logs.count("safety.workspace_contact enabled"), 1U) << "configure WARNs the rule";
+  EXPECT_EQ(logs.count("owner=in_tree rskill="), 1U) << logs.joined();
   // The declaration ends: the exemption with it, and its summary is logged.
   b.active = false;
   rig.warm(&b, kGraspClearQ, 100);
@@ -7508,6 +7510,7 @@ TEST_F(LifecycleKernelTest, AStopUnderK2ReportsTheTrackedExemptionOnItsCollision
   EXPECT_GE(logs.count("safety.tracked_grasp_eligible n=1 of=1"), 1U) << logs.joined();
   EXPECT_EQ(logs.count("grasp_exemption_active=1"), 1U) << logs.joined();
   EXPECT_EQ(logs.count("grasp_exemption_active=0"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_source=tracked "), 1U) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, AProvisionalTrackStillServesAsTheK2Exemption) {
@@ -8292,6 +8295,8 @@ TEST_F(LifecycleKernelTest, AProviderOwnedWorkspaceSummaryNamesTheProvider) {
             1U)
       << logs.joined();
   EXPECT_EQ(logs.count("safety.workspace_contact_summary target=cell:cube pairs="), 0U);
+  EXPECT_EQ(logs.count("owner=provider:tolerate-every-pair/1 rskill="), 1U)
+      << "the armed line names the owner too: " << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, AnExemptionProviderGetsTheKernelsHandMeasurementWithTheRuleOff) {

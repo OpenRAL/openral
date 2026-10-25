@@ -1809,20 +1809,23 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // declaration, so an incident review can tell that case apart from an
         // ordinary stop without re-deriving it (CLAUDE.md §1.4). Under K2 the tracked table,
         // not the (cleared) legacy region, is the grasp exemption (as in the FailureTrigger).
-        const bool grasp_active =
-            tracked_grasp_enabled_ ? tracked_grasp_.n_objects > 0 : voxel_grid_.grasp_region.valid;
+        const char* grasp_source = grasp_exemption_source();
+        const bool grasp_active = std::strcmp(grasp_source, "none") != 0;
+        const bool by_provider = std::strcmp(grasp_source, "provider") == 0;
         RCLCPP_ERROR(this->get_logger(),
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
-                     "grasp_target=%s workspace_contact_active=%d hand_speed_mps=%g "
+                     "grasp_target=%s grasp_exemption_source=%s%s%s "
+                     "workspace_contact_active=%d hand_speed_mps=%g "
                      "hand_lead_m=%g hand_speed_source=%s workspace_denied=%d",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
                      hit.place_allowance_active ? place_declaration_target_.c_str() : "",
                      static_cast<int>(hit.depth_is_box_bound), static_cast<int>(grasp_active),
-                     grasp_active ? grasp_declaration_target_.c_str() : "",
+                     grasp_active ? grasp_declaration_target_.c_str() : "", grasp_source,
+                     by_provider ? ":" : "", by_provider ? provider_->name() : "",
                      static_cast<int>(voxel_grid_.workspace_region.valid),
                      voxel_grid_.workspace_region.hand_speed_mps,
                      voxel_grid_.workspace_region.hand_lead_m,
@@ -2302,7 +2305,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           }
           const auto hit = check_attached_self_collision(
               collision_model_, attached_model_, collision_scratch_, amargin,
-              workspace_contact_enabled_ ? &voxel_grid_.workspace_region : nullptr, provider_gate);
+              workspace_contact_enabled_ ? &voxel_grid_.workspace_region : nullptr, provider_gate,
+              payload_narrowing_workspace(workspace_contact_enabled_, provider_ != nullptr,
+                                          workspace_live(), workspace_region_));
           note_slack(hit, amargin);
           disclose_workspace(hit, step, "payload-self@");
           disclose_provider(hit, step, "payload-self@");
@@ -4269,10 +4274,14 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   }
   oss << R"(,"workspace_contact_active":)"
       << (voxel_grid_.workspace_region.valid ? "true" : "false");
-  const bool grasp_active =
-      tracked_grasp_enabled_ ? tracked_grasp_.n_objects > 0 : voxel_grid_.grasp_region.valid;
+  const char* grasp_source = grasp_exemption_source();
+  const bool grasp_active = std::strcmp(grasp_source, "none") != 0;
   oss << R"(,"grasp_exemption_active":)" << (grasp_active ? "true" : "false")
-      << R"(,"depth_is_box_bound":)" << (hit.depth_is_box_bound ? "true" : "false");
+      << R"(,"grasp_exemption_source":")" << grasp_source << '"';
+  if (std::strcmp(grasp_source, "provider") == 0) {
+    oss << R"(,"grasp_exemption_provider":")" << provider_->name() << '"';
+  }
+  oss << R"(,"depth_is_box_bound":)" << (hit.depth_is_box_bound ? "true" : "false");
   // Expose accepted wire provenance only when the named pair contains that
   // attached object. Keep both values paired and omit malformed or overlong
   // producer text rather than truncating it into a different reference.
@@ -6506,13 +6515,28 @@ void SafetyKernelLifecycleNode::ingest_workspace_contact(
   workspace_refusal_reason_.clear();
   if (announce) {
     clear_workspace_commands(ResetReason::kDeclarationChanged);  // start the chain afresh
+    // owner: who decides #349 on this region; a provider-owned rule leaves the in-tree bounds
+    // idle (0 unless the provider enabled the kernel's brake on its own bounds).
+    const bool by_provider = !workspace_contact_enabled_ && provider_ != nullptr;
     RCLCPP_INFO(this->get_logger(),
                 "safety.workspace_region_armed target=%s links=%zu half_m=%g,%g,%g "
-                "max_speed_mps=%g max_lead_m=%g rskill=%s trace=%s evidence=%s",
+                "max_speed_mps=%g max_lead_m=%g owner=%s%s rskill=%s trace=%s evidence=%s",
                 declaration.target_id.c_str(), workspace_links_.count(), half.x, half.y, half.z,
-                workspace_max_speed_mps_, workspace_max_lead_m_, declaration.rskill_id.c_str(),
-                declaration.trace_id.c_str(), region.evidence_ref.c_str());
+                workspace_max_speed_mps_, workspace_max_lead_m_,
+                by_provider ? "provider:" : "in_tree", by_provider ? provider_->name() : "",
+                declaration.rskill_id.c_str(), declaration.trace_id.c_str(),
+                region.evidence_ref.c_str());
   }
+}
+
+const char* SafetyKernelLifecycleNode::grasp_exemption_source() const noexcept {
+  if (provider_ != nullptr && provider_replaces_region_) {
+    return tracked_decl_active_ ? "provider" : "none";
+  }
+  if (tracked_grasp_enabled_) {
+    return tracked_grasp_.n_objects > 0 ? "tracked" : "none";
+  }
+  return voxel_grid_.grasp_region.valid ? "region" : "none";
 }
 
 bool SafetyKernelLifecycleNode::workspace_live() const noexcept {

@@ -1147,7 +1147,10 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /
-  `grasp_target=` on every `safety.collision` stop line.
+  `grasp_target=` / `grasp_exemption_source=` on every `safety.collision` stop line (and
+  `grasp_exemption_source` in the `FailureTrigger`): `region` (ADR-0115), `tracked` (in-tree
+  K2), `provider:<name>` (an ADR-0121 provider replacing the region while a tracked
+  declaration is live, with `grasp_exemption_provider` in the trigger), or `none`.
 
 * **Scope.** While valid, a cell whose base-frame centre is inside the box does
   not trip **for a link in the mask only**. Every other link takes the unchanged
@@ -1691,7 +1694,12 @@ A `kTolerate` answer has these effects:
 - it is logged as WARN `safety.exemption_provider_contact` (≤ 1 Hz) and set as span attribute
   `safety.exemption_provider_pairs`.
 - with a provider owning #349 (the in-tree rule off), the declaration's
-  `safety.workspace_contact_summary` names it: `owner=provider:<name> provider_pairs=<since load>`.
+  `safety.workspace_contact_summary` names it: `owner=provider:<name> provider_pairs=<since load>`,
+  and `safety.workspace_region_armed` carries `owner=provider:<name>` (else `owner=in_tree`);
+- the kernel still narrows a refined box payload to its measured inner box against the robot
+  under its own live ingested workspace (`payload_narrowing_workspace`): that narrowing is the
+  kernel's measurement, not the rule, so it does not change with who owns #349; it never enables
+  the in-tree two-slow-hands tolerance.
 
 The limits, the envelope, the lead bound and the watchdog are never offered. Before any query,
 each candidate gets a preallocated read-only `CandidateView` through `begin_candidate`. It

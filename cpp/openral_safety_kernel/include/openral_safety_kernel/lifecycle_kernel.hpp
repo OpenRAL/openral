@@ -343,6 +343,10 @@ private:
   // identity does not end it), the world-state stream older than `attached_collision_deadline`,
   // or the confirmation older than `grasp_region_max_age_s`.
   bool workspace_live() const noexcept;
+  /// The grasp exemption this candidate ran under, for the stop line and the FailureTrigger:
+  /// "provider" (a provider replacing the region, with a tracked declaration live), "tracked"
+  /// (in-tree K2 with an eligible object), "region" (the ADR-0115 region) or "none".
+  const char* grasp_exemption_source() const noexcept;
   // Hand speed bound (m/s) of the configuration FK'd into `collision_scratch_`,
   // relative to `prev` (the hand links' poses at the previous row; updated to
   // this row's): max over the workspace links of `link_displacement_bound` /

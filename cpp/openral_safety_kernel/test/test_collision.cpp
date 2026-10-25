@@ -6916,6 +6916,43 @@ TEST(AttachedSelfCollision, ARefinedBoxPayloadIsCheckedAgainstTheRobotAsItsInner
   EXPECT_NEAR(hit.min_distance, 0.02, 1e-6);
 }
 
+TEST(AttachedSelfCollision, AProviderOwnedWorkspaceNarrowsThePayloadAsTheInTreeRuleDoes) {
+  // ADR-0121: the inner-box narrowing is the kernel's own measurement, so with #349 handed to a
+  // provider (no rule workspace) the kernel's live ingested workspace still narrows the payload
+  // exactly as the in-tree rule's workspace does, and enables no in-tree tolerance.
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.02, 0.0, translate(0.15, 0.0, 0.0));
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  std::vector<osk::Vec3> verts;
+  osk::AttachedModel refined;
+  refined.hulls = {axis_aligned_box_hull(osk::Vec3{0.11, 0.05, 0.05}, verts)};
+  refined.hull_vertices = verts;
+  osk::AttachedPrimitive prim = box_prim(0.14, 0.05, 0.05);
+  prim.hull_index = 0;
+  append_object(refined, 1, identity(), {prim});
+  const osk::WorkspaceContactRegion ws = workspace(0.3, {1}, 0.0);
+  const auto in_tree = osk::check_attached_self_collision(
+      m, refined, s, 0.0, &ws, nullptr, osk::payload_narrowing_workspace(true, false, true, ws));
+  const auto provider =
+      osk::check_attached_self_collision(m, refined, s, 0.0, nullptr, nullptr,
+                                         osk::payload_narrowing_workspace(false, true, true, ws));
+  EXPECT_FALSE(in_tree.hit);
+  EXPECT_FALSE(provider.hit) << "a provider-owned #349 still narrows the payload";
+  EXPECT_DOUBLE_EQ(provider.min_distance, in_tree.min_distance);
+  EXPECT_EQ(provider.workspace_pairs, 0) << "the narrowing enables no in-tree tolerance";
+  EXPECT_TRUE(
+      osk::check_attached_self_collision(m, refined, s, 0.0, nullptr, nullptr,
+                                         osk::payload_narrowing_workspace(false, true, false, ws))
+          .hit)
+      << "a stale workspace narrows nothing";
+  EXPECT_TRUE(
+      osk::check_attached_self_collision(m, refined, s, 0.0, nullptr, nullptr,
+                                         osk::payload_narrowing_workspace(false, false, true, ws))
+          .hit)
+      << "no rule and no provider: the shipped box";
+}
+
 TEST(WorkspaceContact, APayloadsReachBoundsItsFarthestPoint) {
   osk::AttachedModel att;
   append_object(att, 1, translate(0.05, 0.0, 0.0),

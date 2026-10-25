@@ -2950,7 +2950,9 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
                                            const AttachedModel& attached,
                                            const CollisionScratch& scratch, double margin,
                                            const WorkspaceContactRegion* workspace,
-                                           const ProviderGate* gate) noexcept {
+                                           const ProviderGate* gate,
+                                           const WorkspaceContactRegion* narrow_under) noexcept {
+  const WorkspaceContactRegion* narrow = narrow_under != nullptr ? narrow_under : workspace;
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
@@ -3012,7 +3014,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       // workspace (the sim-only #349 rule): without one this is today's check on
       // the shipped, padded box (#349 review).
       AttachedPrimitive inner = prim0;
-      if (workspace != nullptr && workspace->valid && prim0.kind == AttachedShapeKind::kBox &&
+      if (narrow != nullptr && narrow->valid && prim0.kind == AttachedShapeKind::kBox &&
           prim0.hull_index >= 0 &&
           static_cast<std::size_t>(prim0.hull_index) < attached.hulls.size()) {
         const LinkHull& hull = attached.hulls[static_cast<std::size_t>(prim0.hull_index)];
