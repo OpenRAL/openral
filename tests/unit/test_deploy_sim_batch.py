@@ -138,3 +138,49 @@ def test_an_inherited_ignored_sigint_is_caught_again_for_the_children() -> None:
     ).stdout.split()
     assert out[:2] == ["True", "False"]
     assert int(out[2], 16) & (1 << (signal.SIGINT - 1)) == 0, "the child's SIGINT is not ignored"
+
+
+# Spark r2 master_dr seed 2, verbatim: the banana leaned on the bowl's rim for 0.13 s.
+_GRADE_LINES = (
+    '[lifecycle_node.py-7] sim.placement_grade {"goal_active": true, "grade": "complete", '
+    '"previous": "fail", "prompt": "pick up the banana and place it in the bowl", "scene_id": '
+    '"isaac_sim", "score": 1.0, "sim_time_ns": 60150003137, "sim_time_s": 60.15, "step": 877, '
+    '"task_id": "isaac_sim/_hal_deploy_noop"}\n'
+    "[lifecycle_node.py-7] 2026-10-25T07:27:12.624576Z [info     ] sim.placement_grade            "
+    "goal_active=True grade=fail previous=complete sim_time_s=60.283\n"
+    '[lifecycle_node.py-7] sim.placement_grade {"goal_active": true, "grade": "fail", '
+    '"previous": "complete", "sim_time_s": 60.283}\n'
+)
+
+
+def test_a_transient_complete_never_ends_the_goal() -> None:
+    """--end-on-grade needs complete held for the settle time; a rim-lean pass is not success."""
+    tool = _tool()
+    events = tool.grade_events(_GRADE_LINES)
+    assert events == [("complete", 60.15), ("fail", 60.283)], "only the JSON lines, in order"
+    settle = tool.GradeSettle(settle_s=1.0)
+    for grade, t in events:
+        settle.feed(grade, t)
+    assert not settle.due(75.0)
+    settle.feed("complete", 80.0)
+    assert not settle.due(80.9)
+    assert settle.due(81.0)
+
+
+def test_end_on_grade_is_opt_in() -> None:
+    tool = _tool()
+    base = [
+        "--scene",
+        "s",
+        "--out",
+        "o",
+        "--sidecar-port",
+        "1",
+        "--rskill-id",
+        "r",
+        "--prompt",
+        "p",
+    ]
+    args = tool.parser().parse_args(base)
+    assert not args.end_on_grade and args.grade_settle_s == 1.0
+    assert tool.parser().parse_args([*base, "--end-on-grade"]).end_on_grade

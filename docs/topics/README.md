@@ -20,7 +20,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
-| `/clock` | `rosgraph_msgs/Clock` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | tools/_validation_matrix_dispatch.py (main) |
+| `/clock` | `rosgraph_msgs/Clock` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | tools/_validation_matrix_dispatch.py (main)<br>tools/deploy_sim_batch.py (_SimGraph.__init__) |
 | `/cmd_vel` | `geometry_msgs/Twist` | — | packages/openral_nav2_bringup/openral_nav2_bringup/twist_to_action_relay_node.py (main.TwistToActionRelayNode.__init__) [param `cmd_vel_topic`]<br>python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) |
 | `/collision_markers` | `MarkerArray` | tools/viz_collision.py (_run_rviz) | — |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._create_outputs)<br>python/observability/src/openral_observability/diagnostics.py (DiagnosticsHeartbeat.create_publisher) | — |
@@ -102,7 +102,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/perception/query_scene` | `openral_msgs/QueryScene` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_query_scene) |
 | `/openral/perception/query_task_progress` | `openral_msgs/QueryTaskProgress` | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_query_task_progress)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._maybe_verify_active_mission_task) |
 | `/openral/perception/segment_in_view` | `openral_msgs/SegmentInView` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) [param `segment_in_view_service`] | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._create_outputs) |
-| `/openral/rskill/complete` | `std_srvs/Trigger` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__) |
+| `/openral/rskill/complete` | `std_srvs/Trigger` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>tools/deploy_sim_batch.py (_SimGraph.__init__) |
 | `/openral/rskill/hold` | `std_srvs/SetBool` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__) |
 | `/openral_safety_kernel/change_state` | `lifecycle_msgs/ChangeState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 | `/openral_safety_kernel/get_state` | `lifecycle_msgs/GetState` | — | tools/kernel_replay_diff.py (_Side.activate) |

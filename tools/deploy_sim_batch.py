@@ -23,6 +23,12 @@ Run (a sourced ROS 2 overlay and the scene's rSkill/prompt)::
 ``REPLAY_TOPICS``, into ``<episode>/bag``) and dumps the kernel's parameters into
 ``<episode>/kernel_params.yaml``: the input of ``tools/kernel_replay_diff.py diff`` (ADR-0121).
 
+``--end-on-grade`` ends a goal through ``/openral/rskill/complete`` (the completion check's own
+service) once the HAL's sim grader has held ``complete`` for ``--grade-settle-s`` of sim time,
+and records ``ended_by`` (``grade`` or ``goal``): a run is then scored like ``openral sim run``,
+at its first settled completion, instead of manipulating on until its deadline. Sim ground
+truth ends the goal; the safety stack and the kernel are untouched.
+
 ``python tools/deploy_sim_batch.py compare <fresh_dir> <persistent_dir>`` prints the
 per-episode outcome, stop time and wall time side by side.
 """
@@ -33,6 +39,7 @@ import argparse
 import contextlib
 import copy
 import json
+import math
 import os
 import signal
 import subprocess
@@ -67,6 +74,153 @@ def episode_scene(
     opts["port"] = port
     opts["keep_alive"] = keep_alive
     return out
+
+
+#: The HAL's grade-change line (``SimAttachedHAL._observe_placement_grade``), JSON variant.
+_GRADE_EVENT = "sim.placement_grade {"
+
+
+def grade_events(text: str) -> list[tuple[str, float]]:
+    r"""The ``(grade, sim_time_s)`` of each grade-change line in a slice of ``deploy.log``.
+
+    Example:
+        >>> grade_events(
+        ...     '[hal] sim.placement_grade {"grade": "complete", "sim_time_s": 60.15}\n'
+        ...     '[hal] sim.placement_grade_final {"grade": "fail", "sim_time_s": 70.0}\n'
+        ... )
+        [('complete', 60.15)]
+    """
+    out = []
+    for line in text.splitlines():
+        at = line.find(_GRADE_EVENT)
+        if at < 0:
+            continue
+        with contextlib.suppress(ValueError, KeyError, TypeError):
+            data = json.loads(line[at + len(_GRADE_EVENT) - 1 :])
+            out.append((str(data["grade"]), float(data["sim_time_s"])))
+    return out
+
+
+class GradeSettle:
+    """When a goal may end on the sim grader: ``complete`` held for ``settle_s`` of sim time.
+
+    A transient pass does not count: Spark r2 master_dr seed 2 graded ``complete`` for 0.1 s
+    while the banana leaned on the bowl's rim, then ``fail``.
+
+    Example:
+        >>> g = GradeSettle(settle_s=1.0)
+        >>> g.feed("complete", 60.15)
+        >>> g.due(60.5)
+        False
+        >>> g.feed("fail", 60.28)
+        >>> g.due(62.0)
+        False
+        >>> g.feed("complete", 63.0)
+        >>> g.due(64.1)
+        True
+    """
+
+    def __init__(self, settle_s: float) -> None:
+        self.settle_s = settle_s
+        self._since: float | None = None
+
+    def feed(self, grade: str, sim_time_s: float) -> None:
+        """One grade change (``grade_events``)."""
+        self._since = sim_time_s if grade == "complete" else None
+
+    def due(self, now_sim_s: float) -> bool:
+        """Whether ``complete`` has held ``settle_s`` by sim time ``now_sim_s``."""
+        return self._since is not None and now_sim_s - self._since >= self.settle_s
+
+
+class _SimGraph:
+    """The harness's own ROS participant: the sim clock, and the goal's ``complete`` service."""
+
+    def __init__(self, env: Mapping[str, str]) -> None:
+        import rclpy  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        from rosgraph_msgs.msg import (
+            Clock,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        )
+        from std_srvs.srv import (
+            Trigger,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        )
+
+        for key in ("FASTRTPS_DEFAULT_PROFILES_FILE", "RMW_IMPLEMENTATION"):
+            if env.get(key):
+                os.environ.setdefault(key, env[key])  # read once, at the first participant
+        self._ctx = rclpy.Context()
+        rclpy.init(context=self._ctx, domain_id=int(env.get("ROS_DOMAIN_ID", "0")))
+        self._node = rclpy.create_node("deploy_sim_batch_grade", context=self._ctx)
+        self._exec = rclpy.executors.SingleThreadedExecutor(context=self._ctx)
+        self._exec.add_node(self._node)
+        self.now_s = -math.inf
+        self._node.create_subscription(Clock, "/clock", self._on_clock, 10)
+        self._trigger_cls = Trigger
+        self._complete = self._node.create_client(Trigger, "/openral/rskill/complete")
+
+    def _on_clock(self, msg: Any) -> None:
+        self.now_s = msg.clock.sec + msg.clock.nanosec * 1e-9
+
+    def spin(self, seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self._exec.spin_once(timeout_sec=0.05)
+
+    def complete(self, timeout_s: float = 10.0) -> bool:
+        """End the running goal as a success; ``True`` if the runner accepted."""
+        if not self._complete.wait_for_service(timeout_sec=timeout_s):
+            return False
+        future = self._complete.call_async(self._trigger_cls.Request())
+        self._exec.spin_until_future_complete(future, timeout_sec=timeout_s)
+        result = future.result()
+        return bool(result is not None and result.success)
+
+    def close(self) -> None:
+        import rclpy  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+
+        self._node.destroy_node()
+        rclpy.shutdown(context=self._ctx)
+
+
+def _dispatch_goal(args: argparse.Namespace, env: Mapping[str, str], log: Path) -> tuple[str, str]:
+    """Run one goal; with ``--end-on-grade``, end it on a settled grade. Returns its output
+    and ``ended_by`` (``grade``: the harness completed it; ``goal``: it ended on its own)."""
+    cmd = [
+        sys.executable,
+        str(REPO / "tools/_validation_matrix_dispatch.py"),
+        "--deadline-s",
+        str(args.deadline_s),
+        "--rskill-id",
+        args.rskill_id,
+        "--prompt",
+        args.prompt,
+    ]
+    if not args.end_on_grade:
+        res = subprocess.run(cmd, env=dict(env), capture_output=True, text=True, check=False)
+        return res.stdout + res.stderr, "goal"
+    offset = log.stat().st_size if log.exists() else 0
+    dispatch = subprocess.Popen(
+        cmd, env=dict(env), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    graph = _SimGraph(env)
+    settle = GradeSettle(args.grade_settle_s)
+    ended_by, tail = "goal", ""
+    try:
+        while dispatch.poll() is None:
+            with log.open("rb") as fh:
+                fh.seek(offset)
+                chunk = fh.read().decode(errors="replace")
+            offset += len(chunk.encode())
+            text, _, tail = (tail + chunk).rpartition("\n")
+            for grade, sim_s in grade_events(text):
+                settle.feed(grade, sim_s)
+            graph.spin(0.5)
+            if ended_by == "goal" and settle.due(graph.now_s) and graph.complete():
+                ended_by = "grade"
+    finally:
+        graph.close()
+    out, _ = dispatch.communicate()
+    return out, ended_by
 
 
 def sidecar_pids(port: int) -> list[int]:
@@ -305,25 +459,10 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                     json.dumps(truth, default=lambda o: o.tolist())
                 )
                 t_goal = time.monotonic()
-                res = subprocess.run(
-                    [
-                        sys.executable,
-                        str(REPO / "tools/_validation_matrix_dispatch.py"),
-                        "--deadline-s",
-                        str(args.deadline_s),
-                        "--rskill-id",
-                        args.rskill_id,
-                        "--prompt",
-                        args.prompt,
-                    ],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                (ep / "goal.log").write_text(res.stdout + res.stderr)
+                output, rec["ended_by"] = _dispatch_goal(args, env, log)
+                (ep / "goal.log").write_text(output)
                 with contextlib.suppress(ValueError, IndexError):
-                    goal = json.loads(res.stdout.strip().splitlines()[-1])
+                    goal = json.loads(output.strip().splitlines()[-1])
                 rec["goal_s"] = time.monotonic() - t_goal
             if recorder is not None:
                 rec["recorder"] = _stop_group(recorder, 20.0)
@@ -459,6 +598,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--boot-timeout-s", type=float, default=420.0)
     p.add_argument("--grace-s", type=float, default=60.0)
     p.add_argument("--expect-preload", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument(
+        "--end-on-grade",
+        action="store_true",
+        help="end a goal once the sim grader holds complete for --grade-settle-s (sim time)",
+    )
+    p.add_argument("--grade-settle-s", type=float, default=1.0)
     p.add_argument(
         "--record",
         action="store_true",
