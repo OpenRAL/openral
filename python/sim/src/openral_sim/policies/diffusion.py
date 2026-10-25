@@ -179,7 +179,15 @@ def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
     require_supported_dtype(
         resolve_quant_plan(spec, load_manifest_for_spec(spec)), frozenset({"fp32"}), "diffusion"
     )
-    policy = DiffusionPolicy.from_pretrained(repo_id, revision=revision).to(device)
+    # Resolve the snapshot once (one Hub call; an installed skill dir is used as
+    # is) and load config, weights and norm stats from it. Passing the repo id
+    # made lerobot's `from_pretrained` resolve each file over the network
+    # (~2.5 s of HEAD redirects per run), and the norm-stat read below
+    # re-snapshotted `main`, ignoring a pinned revision.
+    from openral_rskill import local_snapshot_dir
+
+    snapshot = local_snapshot_dir(repo_id, revision=revision)
+    policy = DiffusionPolicy.from_pretrained(snapshot).to(device)
     policy.eval()
 
     preprocessor: Any | None = None
@@ -213,7 +221,7 @@ def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
     # [-1, 1] training space and PushT's eef pushes toward origin.
     stats: dict[str, Any] = {}
     if not preprocessor and not postprocessor:
-        stats = _try_load_norm_stats(repo_id, device, torch)
+        stats = _try_load_norm_stats(snapshot, device, torch)
 
     return _DiffusionAdapter(
         spec=spec,
@@ -235,6 +243,9 @@ def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
 
 def _try_load_norm_stats(repo_id: str, device: str, torch: Any) -> dict[str, Any]:
     """Pull normalize_* / unnormalize_* tensors from the checkpoint's safetensors.
+
+    ``repo_id`` is the resolved snapshot directory from ``_build_diffusion``
+    (a bare repo id still works, snapshotting its default revision).
 
     Returns an empty dict if no usable stats are found — adapters then
     fall back to passing raw inputs and trust the policy's own
