@@ -77,6 +77,8 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 
 The public repo stays Apache-2.0 and ships the protocols plus extension seams. Pro-only features live in the private `OpenRAL/openral-pro` monorepo.
 
+Open code never imports an `openral_pro*` module (`tools/check_no_pro_imports.py`, run by `just lint`, pre-commit and CI). Pro plugs in only through the `openral.runtime_backends`, `openral.policy_attach_hooks`, `openral.detector_tiers` and `openral.pro_modules` entry-point groups.
+
 | Pro capability | Status in this repo |
 |---|---|
 | TensorRT engine runtime for SmolVLA / ACT fast paths | entry-point seam only; PyTorch / ONNX stay open-core |

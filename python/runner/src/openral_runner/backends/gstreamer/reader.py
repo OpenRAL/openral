@@ -513,6 +513,31 @@ class GStreamerSensorReader:
             self._latest_encoding = encoding
         return int(Gst.FlowReturn.OK)
 
+    def _nvbufsurface_or_bus_error(self) -> Any:  # noqa: ANN401  # reason: a private Pro module, untyped here
+        """Resolve the Pro ``nvbufsurface`` module, or latch a bus error and return ``None``.
+
+        Lazy: keeps the CPU path independent of libnvbufsurface. The module
+        ships in the private openral-pro-trt package, resolved through the
+        ``openral.pro_modules`` entry point. A physically-absent module
+        degrades identically to a present-but-unloadable libnvbufsurface.so —
+        both are "NVMM caps negotiated but the runtime backend is unavailable"
+        (§1.4, no silent fallback: this is a bus error, not a quiet skip).
+        """
+        from openral_rskill.backend_registry import resolve_pro_module  # noqa: PLC0415
+
+        try:
+            module = resolve_pro_module("nvbufsurface")
+            reason = "no 'nvbufsurface' entry point"
+        except ImportError as exc:
+            module, reason = None, str(exc)
+        if module is None:
+            with self._frame_lock:
+                self._bus_error = (
+                    f"NVMM caps negotiated but the NVMM runtime backend is unavailable "
+                    f"(openral-pro-trt not installed): {reason}"
+                )
+        return module
+
     def _handle_nvmm_buffer(self, buffer: Any, structure: Any) -> int:  # noqa: ANN401  # reason: Gst.Buffer / Gst.Structure — duck-typed
         """NVMM zero-copy path: map → wrap as ``NvBufSurfaceHandle`` → latch ``handle``.
 
@@ -521,30 +546,13 @@ class GStreamerSensorReader:
         underlying GPU memory isn't recycled while a consumer reads
         through the handle.
         """
-        # Lazy import: keeps the CPU path independent of libnvbufsurface.
-        # ``nvbufsurface`` ships in the private openral-pro-trt package;
-        # a physically-absent module degrades identically to a
-        # present-but-unloadable libnvbufsurface.so — both are "NVMM caps
-        # negotiated but the runtime backend is unavailable" (§1.4, no
-        # silent fallback: this is a bus error, not a quiet skip).
-        try:
-            from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found, import-untyped, unused-ignore]  # noqa: PLC0415
-                NvBufSurfaceColorFormat,
-                NvBufSurfaceLibraryError,
-                StableSurfaceMirror,
-                load,
-                wrap_buffer,
-            )
-        except ImportError as exc:
-            with self._frame_lock:
-                self._bus_error = (
-                    f"NVMM caps negotiated but the NVMM runtime backend is unavailable "
-                    f"(openral-pro-trt not installed): {exc}"
-                )
+        nvbufsurface = self._nvbufsurface_or_bus_error()
+        if nvbufsurface is None:
             return int(Gst.FlowReturn.ERROR)
+        NvBufSurfaceLibraryError = nvbufsurface.NvBufSurfaceLibraryError  # noqa: N806
 
         try:
-            load()
+            nvbufsurface.load()
         except NvBufSurfaceLibraryError as exc:
             with self._frame_lock:
                 self._bus_error = (
@@ -572,7 +580,7 @@ class GStreamerSensorReader:
             buffer_address = ctypes.cast(struct_bytes, ctypes.c_void_p).value
             if buffer_address is None:
                 raise ValueError("NVMM mapped buffer has NULL base address")
-            pool_handle = wrap_buffer(buffer_address)
+            pool_handle = nvbufsurface.wrap_buffer(buffer_address)
             # Decouple the latched handle from the Gst buffer pool:
             # DtoD-copy the surface into a reader-owned double buffer
             # while the map is provably valid. Consumers (VLA vision leg /
@@ -580,7 +588,7 @@ class GStreamerSensorReader:
             # frame is at worst a torn frame, never a use-after-free — and the
             # Gst buffer can be unmapped immediately below (no held maps).
             if self._nvmm_mirror is None:
-                self._nvmm_mirror = StableSurfaceMirror()
+                self._nvmm_mirror = nvbufsurface.StableSurfaceMirror()
             handle = self._nvmm_mirror.mirror(pool_handle)
         except (ValueError, OSError, NvBufSurfaceLibraryError) as exc:
             with self._frame_lock:
@@ -596,7 +604,7 @@ class GStreamerSensorReader:
         # NV12 on Tegra. NV12 is semi-planar Y + UV interleaved
         # (1.5 bytes/pixel) reported as 3 channels because consumers typically
         # want a 3-channel CUDA view.
-        is_rgba = handle.color_format == NvBufSurfaceColorFormat.RGBA
+        is_rgba = handle.color_format == nvbufsurface.NvBufSurfaceColorFormat.RGBA
         encoding = FrameEncoding.CUDA_RGBA if is_rgba else FrameEncoding.CUDA_NV12
         channels = 4 if is_rgba else 3
         with self._frame_lock:

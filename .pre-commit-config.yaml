@@ -35,6 +35,11 @@ repos:
         pass_filenames: false
         # Every tracked .py is in a run_mypy.sh lane, so any .py change can break it.
         files: \.py$|^mypy\.ini$
+      - id: no-pro-imports
+        name: refuse openral_pro* imports (Apache-2.0 / Pro boundary)
+        entry: uv run python tools/check_no_pro_imports.py
+        language: system
+        files: \.py$
       - id: schema-export
         name: check JSON Schema drift
         entry: uv run python tools/schema_export.py --check

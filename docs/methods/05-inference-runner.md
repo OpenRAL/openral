@@ -184,13 +184,13 @@ _GStreamer-backed `SensorReader` (CPU appsink path + NVMM zero-copy path). Mirro
   - `_start_ros_publisher()` (L276) — Look up the `ros_sink` appsink and start a `RosImagePublisher`; tears the pipeline back down with an actionable `ROSConfigError` if `rclpy` is unavailable.
   - `_on_new_sample(appsink) -> int` (L445) — Streaming-thread callback; branches on `memory:NVMM` caps features to the zero-copy or CPU handler.
   - `_handle_cpu_buffer(buffer, structure) -> int` (L474) — Map → copy → latch `data`; unsupported format latches a bus error.
-  - `_handle_nvmm_buffer(buffer, structure) -> int` (L516) — Map → wrap as an `NvBufSurfaceHandle` (lazy `openral_pro_trt.nvbufsurface` import) → DtoD-mirror into a reader-owned `StableSurfaceMirror` → latch `handle`; an absent/unloadable NVMM backend latches a bus error rather than silently falling back.
-  - `_bus_loop()` (L623) — Background thread draining the GStreamer bus for ERROR / EOS.
-  - `_teardown_pipeline()` (L655) — Drop the pipeline and join the bus thread; shared by `close()` and `open()`'s rollback path.
-  - `_wrap_in_pipeline(element) -> Gst.Pipeline` (L667) [@staticmethod] — Wraps a bare `Gst.Element` from `Gst.parse_launch` in a `Pipeline` bin (single-element strings only).
-- module constant `_GST_INIT_LOCK` (L680) — one-shot-init guard lock.
-- module constant `_GST_INITIALISED` (L681) — one-shot-init guard flag.
-- `_ensure_gst_initialised() -> None` (L684) — Calls `Gst.init` exactly once per process, thread-safely.
+  - `_handle_nvmm_buffer(buffer, structure) -> int` (L541) — Map → wrap as an `NvBufSurfaceHandle` (lazy `openral_pro_trt.nvbufsurface` import) → DtoD-mirror into a reader-owned `StableSurfaceMirror` → latch `handle`; an absent/unloadable NVMM backend latches a bus error rather than silently falling back.
+  - `_bus_loop()` (L631) — Background thread draining the GStreamer bus for ERROR / EOS.
+  - `_teardown_pipeline()` (L663) — Drop the pipeline and join the bus thread; shared by `close()` and `open()`'s rollback path.
+  - `_wrap_in_pipeline(element) -> Gst.Pipeline` (L675) [@staticmethod] — Wraps a bare `Gst.Element` from `Gst.parse_launch` in a `Pipeline` bin (single-element strings only).
+- module constant `_GST_INIT_LOCK` (L688) — one-shot-init guard lock.
+- module constant `_GST_INITIALISED` (L689) — one-shot-init guard flag.
+- `_ensure_gst_initialised() -> None` (L692) — Calls `Gst.init` exactly once per process, thread-safely.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/ros_tee.py`
 _ROS 2 image-publisher tee for `GStreamerSensorReader`. Republishes the `ros_sink` appsink branch as `sensor_msgs/Image` on a configurable topic, independently rate-limited from the inference loop, plus — when manifest intrinsics are supplied — a companion `sensor_msgs/CameraInfo` on the sibling topic built by `openral_sensors.ros_publisher.build_camera_info_msg`. `rclpy` is lazy-imported inside `start()` so the module is import-safe without a sourced ROS env._
@@ -365,7 +365,7 @@ _Runtime glue that wires a ``kind: detector`` rSkill to a live camera pipeline �
   - `start() -> None` (L156) — Attaches the tee branch matching the tier: `NVMM_AGGREGATOR` gets the NVMM RGBA appsink, every other tier a BGR appsink; raises `ROSRuntimeError` if the appsink isn't found after attach.
   - `_on_sample_bgr(appsink) -> int` (L220) — pulls BGR sample, format assert, buffer.map/unmap, calls `detector.detect`, fires `on_detection` on non-`None`; errors guarded.
   - `_on_sample_nvmm(appsink) -> int` (L279) — pulls NVMM sample, `wrap_buffer` (lazy import from the private `openral_pro_trt.nvbufsurface`), calls the entry-point-resolved NVMM detector's `detect_nvmm`, fires `on_detection`; always unmaps; errors guarded.
-  - `stop() -> None` (L336) — disconnects signal + detaches branch + calls `detector.close()` if present; idempotent.
+  - `stop() -> None` (L344) — disconnects signal + detaches branch + calls `detector.close()` if present; idempotent.
 
 ### `python/runner/src/openral_runner/__init__.py`
 _Public surface of the inference runner. Imports are PEP 562 lazy: heavy symbols (`InferenceRunnerBase`, `factory.*`, `DeployRunner`, `safety.*`) are resolved on first attribute access so importing any subpackage does not eagerly drag in torch or trigger downstream glib conflicts._

@@ -73,13 +73,15 @@ _Runtime Protocol and NullRuntime — inference backend contract._
 ### `python/rskill/src/openral_rskill/backend_registry.py`
 _Extraction seam: entry-point-based runtime-backend + policy-attach-hook registry._
 
-- const `_RUNTIME_BACKENDS_GROUP = "openral.runtime_backends"` (L41)
-- const `_POLICY_ATTACH_HOOKS_GROUP = "openral.policy_attach_hooks"` (L42)
-- const `_BUILTIN_RUNTIME_BACKENDS: dict[str, str] = {...}` — Built-in `kind` → runtime-class-name map (`pytorch`/`onnx`/`null`). (L48)
-- `resolve_runtime_backend(kind: str) -> type[Runtime]` — built-in dict (`pytorch`→`PyTorchRuntime`, `onnx`→`ONNXRuntime`, `null`→`NullRuntime`) first, else looked up via the `openral.runtime_backends` entry-point group (e.g. `openral-pro-trt` registering `tensorrt`). Miss → `ROSConfigError` naming `openral-pro-trt`. (L55)
-- `maybe_attach_pro_hooks(policy_name: str, skill, **kwargs) -> bool` — Generic policy-attach-hook lookup via the `openral.policy_attach_hooks` entry-point group (name = `policy_name`). No hook installed → debug log + `False`, never a silent skip; hook found → invoked as `hook(skill, **kwargs)`. (L106)
+- const `_RUNTIME_BACKENDS_GROUP = "openral.runtime_backends"` (L46)
+- const `_POLICY_ATTACH_HOOKS_GROUP = "openral.policy_attach_hooks"` (L47)
+- const `_PRO_MODULES_GROUP = "openral.pro_modules"` (L48)
+- const `_BUILTIN_RUNTIME_BACKENDS: dict[str, str] = {...}` — Built-in `kind` → runtime-class-name map (`pytorch`/`onnx`/`null`). (L54)
+- `resolve_runtime_backend(kind: str) -> type[Runtime]` — built-in dict (`pytorch`→`PyTorchRuntime`, `onnx`→`ONNXRuntime`, `null`→`NullRuntime`) first, else looked up via the `openral.runtime_backends` entry-point group (e.g. `openral-pro-trt` registering `tensorrt`). Miss → `ROSConfigError` naming `openral-pro-trt`. (L61)
+- `maybe_attach_pro_hooks(policy_name: str, skill, **kwargs) -> bool` — Generic policy-attach-hook lookup via the `openral.policy_attach_hooks` entry-point group (name = `policy_name`). No hook installed → debug log + `False`, never a silent skip; hook found → invoked as `hook(skill, **kwargs)`. (L112)
+- `resolve_pro_module(name: str) -> ModuleType | None` — Logical name → privately installed helper module via the `openral.pro_modules` entry-point group (entry values are bare module paths, e.g. `nvbufsurface = openral_pro_trt.nvbufsurface`). Absent → debug log + `None`; an `ImportError` inside the module propagates; a non-module target → `ROSConfigError`. The only way open code reaches a Pro module (`tools/check_no_pro_imports.py` refuses direct imports). (L168)
 
-> **Moved to OpenRAL Pro:** `runtime_tensorrt.py` (`TensorRTRuntime`), `smolvla_export.py`, `smolvla_trt.py`, and `act_trt.py` now live in the private `openral-pro-trt` package as `openral_pro_trt.*`, plugging in via the `openral.runtime_backends` / `openral.policy_attach_hooks` entry-point groups above.
+> **Moved to OpenRAL Pro:** `runtime_tensorrt.py` (`TensorRTRuntime`), `smolvla_export.py`, `smolvla_trt.py`, and `act_trt.py` now live in the private `openral-pro-trt` package as `openral_pro_trt.*`, plugging in via the `openral.runtime_backends` / `openral.policy_attach_hooks` / `openral.pro_modules` entry-point groups above.
 
 ### `python/rskill/src/openral_rskill/loader.py`
 _rSkill loader — HF Hub download, manifest validation, license guard, local registry._
