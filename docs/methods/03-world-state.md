@@ -324,7 +324,7 @@ _Issue #418 WP C2, design "Release". Source-clock stamps only._
 _Issue #418 WP D1. `TrackerSession` — the ROS-free glue the object-tracker lifecycle node drives: goals from the declarations, the grounding wait, binding/release at grasp events and the jaw-open rule. All stamps source time. A RELEASED track is never followed: it lives out the release window (the kernel freezes the payload), is then retired (`released_track_retired`), and the object is found afresh under a new id. Logs `object_tracker.goal_closed` / `grounding_ready` / `grounding_incomplete` (error level under `grounding_required`) / `reground_queued` / `jaw_open_release` / `ambiguous_pruned` / `grasp_event_unposed`._
 
 - const `RELEASED_CLEAR_TIMEOUT_S = 3.0` (L102) — The released-binding lifetime default (must equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`).
-- const `RELEASE_DWELL_S = 0.3` (L99) — The jaw-open release dwell default; the node's param defaults and the deploy launch (`release_dwell_s`, the kernel's `tracked_release_dwell_s`, the `tracked_release_timeout_s` launch-arg default) read them.
+- const `RELEASE_DWELL_S = 0.3` (L99) — The jaw-open release dwell default; the node's param defaults and the deploy launch (`release_dwell_s`, the exemption provider's `contact_exemptions.tracked_release_dwell_s`, the `tracked_release_timeout_s` launch-arg default) read them.
 - `class TrackingMode(StrEnum)` (L147) — `shadow`, `bind`, `on` (`DeployRuntime.object_tracking`; `off` never starts the node).
 - `class GraspEventKind(StrEnum)` (L155) — `attach`, `regrasp`, `detach` (`openral_msgs/GraspEvent.kind`).
 - `declaration_key(target_id, stamp_ns) -> str` (L179) — The kernel's `"<target_id>@<stamp_ns>"`.

@@ -421,8 +421,11 @@ effort is the PD law plus stiction and cannot resolve it (that page, §3).
 
 ### 6.x Issue #418 K7 narrowing, and the scenes that keep this rule alone
 
-With `object_tracking: on` the kernel narrows this rule to *explained* cells (#418 K7): a
-cell a tracked object's box, the declared static geometry or the measured support explains.
+With `object_tracking: on` (which requires an exemption provider) the narrowing to
+*explained* cells (#418 K7) runs in OpenRAL Pro's exemption provider, no longer in the open
+kernel (ADR-0121 step 3): a cell a tracked object's box, the declared static geometry or the
+measured support explains. This rule itself, with its brake and hand measurement, stays in the
+open kernel.
 `DeployRuntime.workspace_explained_cells: false` (default `true`) keeps this rule alone for a
 scene whose neighbours the depth cameras cannot track. Restock is one: the tote carton beside
 the target sits behind the left gripper in the one depth camera (head ZED), and the finger

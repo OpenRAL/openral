@@ -160,16 +160,22 @@ runtime:
   # grants clearing. Per-cell ownership remains incomplete; this stays SIM-ONLY,
   # pending Safety-WG review. `deploy run` refuses it.
   payload_sweep_clear_enabled: true
-  # The #418 object tracker owns the attachment set and keys the kernel's grasp exemption
-  # and payload ownership on tracked ids (the values of the successful Spark run R372,
-  # 2026-10-23). It is what clears the held payload from the voxel map:
-  # with tracking off a geometry-only attachment stays mapped and the arm may stop on what
-  # it holds. A goal waits up to `grounding_wait_s` (source time) for its target query and
-  # is refused if it does not ground. SIM-ONLY, pending Safety-WG review (ADR + hazard rows
-  # owed). `deploy run` refuses `on`.
-  object_tracking: "on"
+  # Open path (ADR-0121 step 3): `shadow`. The HAL legs own the grasp region (the
+  # grasp-target leg, premeasure) and the attachment set; the #418 tracker runs and grounds
+  # the seedless target query within `grounding_wait_s` (source time) but decides nothing.
+  # The held payload is the HAL's measured attachment (with payload_sweep_clear), not a
+  # tracked identity. This scene has no place-target leg, so in shadow it has NO place
+  # allowance (it had one from the tracker under `on`). `on`, the tracker-keyed grasp
+  # exemption and payload ownership the successful Spark run R372 (2026-10-23) used, needs
+  # `exemption_provider:` (OpenRAL Pro, ADR-0121).
+  # Open-only Spark r6 (2026-10-25) went 0/5: four gripper/jaw stops with the hand
+  # over the 0.5 m/s #349 bound, one payload-vs-arm self stop.
+  # `grounding_required` is false
+  # because shadow refuses no goal (`deploy sim` ignores it there). SIM-ONLY scene, pending
+  # Safety-WG review.
+  object_tracking: shadow
   grounding_wait_s: 8.0
-  grounding_required: true
+  grounding_required: false
   # The target query has no seed (the grasp declaration's search_box is sim ground truth),
   # so the tracker grounds it through this on-demand locator; without one `deploy sim`
   # refuses to configure. Needs the omdet dependency group (`just sync --group omdet`).

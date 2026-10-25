@@ -82,18 +82,18 @@ _Pre-commit drift guard checking the mechanically verifiable half of `docs/archi
 ### `tools/kernel_replay_diff.py`
 _ADR-0121 parity gate, deterministic half: replays one recorded deploy into two real `safety_kernel_node` processes on private ROS domains (A = the run's parameters with the in-tree rules; B = the moved rules off and the OpenRAL Pro provider on) and diffs their per-candidate verdicts. `REPLAY_TOPICS` is the one topic list a parity run records._
 
-- `REPLAY_TOPICS: tuple[str, ...]` (L50) — `/clock`, `/joint_states`, `/openral/candidate_action`, `/openral/world_voxels`, `/openral/world_state_fast`, `/openral/estop` and the verdict topics.
-- `record_command(out_dir: str) -> list[str]` — The `ros2 bag record --storage mcap` argv for exactly `REPLAY_TOPICS`. (L98)
-- `params_yaml(params) -> str` — The kernel's `--params-file` text: empty lists omitted (rclcpp refuses an untyped list), no YAML anchors/aliases (rcl refuses them; a mirrored `contact_exemptions.<x>` list is the same object as `<x>`). (L284)
-- `provider_params(params, provider: str) -> dict[str, Any]` — Kernel B's parameters: `_MOVED_RULES_OFF` applied, `exemption_provider` + `exemption_provider_links` (the in-tree workspace's hand links), every in-tree rule parameter mirrored as `contact_exemptions.<name>`, the open measurement kept; `ValueError` when A runs none of the moved rules. (L124)
-- `missing_inputs(counts) -> list[str]` — The required inputs (`/joint_states`, `/openral/world_voxels`, `/openral/candidate_action`) a bag records no message of; `replay` refuses a bag missing any (both kernels would refuse every candidate alike). (L260)
-- `class Verdict` (L175) — One kernel's answer to one candidate: `passed`, published `flat`, `latched`.
-- `class Diff` (L184) — A candidate whose two verdicts differ (`index`, `stamp_ns`, `a`, `b`).
-- `verdicts_equal(a, b, tol=1e-9) -> bool` — Same pass/refuse, same latch, same rows within `tol`. (L193)
-- `summarize(diffs, n_candidates) -> dict` — Counts (`equal`, `different`, `a_only_passes`, `b_only_passes`) and every diff. (L207)
-- `outside_noise(report, self_checks) -> list[int]` — Candidate indices where A and B differ but no A-vs-A run did: the tier-2 criterion (`diff --self-check K` exits non-zero iff any). (L224)
-- `replay(bag, params_a, params_b, workdir, verdict_timeout_s=0.3, settle_s=0.02) -> dict` — The live two-kernel replay (needs ROS 2 Jazzy and both packages built). Delivery made as deterministic as the kernel's KEEP_LAST(1) inputs allow: the deploy graph's Fast DDS large-data profile, each reliable input acknowledged by both kernels, `settle_s` of spinning before each candidate. (L479)
-- `main(argv=None) -> int` — `record-cmd OUT` / `diff --bag --params --provider --out`; exit 1 on any differing verdict. (L567)
+- `REPLAY_TOPICS: tuple[str, ...]` (L52) — `/clock`, `/joint_states`, `/openral/candidate_action`, `/openral/world_voxels`, `/openral/world_state_fast`, `/openral/estop` and the verdict topics.
+- `record_command(out_dir: str) -> list[str]` — The `ros2 bag record --storage mcap` argv for exactly `REPLAY_TOPICS`. (L107)
+- `params_yaml(params) -> str` — The kernel's `--params-file` text: empty lists omitted (rclcpp refuses an untyped list), no YAML anchors/aliases (rcl refuses them; a mirrored `contact_exemptions.<x>` list is the same object as `<x>`). (L301)
+- `provider_params(params, provider: str) -> dict[str, Any]` — Kernel B's parameters: `_MOVED_RULES_OFF` (the #349 switches) applied, `_PROVIDER_ONLY_RULES` (the K2 / K5-release / K7 / OT-10 params ADR-0121 step 3 removed from the open kernel) dropped from B's in-tree set, `exemption_provider` + `exemption_provider_links` (the in-tree workspace's hand links), every in-tree rule parameter mirrored as `contact_exemptions.<name>`, the open measurement kept; `ValueError` when A runs none of the moved or provider-only rules. (L133)
+- `missing_inputs(counts) -> list[str]` — The required inputs (`/joint_states`, `/openral/world_voxels`, `/openral/candidate_action`) a bag records no message of; `replay` refuses a bag missing any (both kernels would refuse every candidate alike). (L277)
+- `class Verdict` (L192) — One kernel's answer to one candidate: `passed`, published `flat`, `latched`.
+- `class Diff` (L201) — A candidate whose two verdicts differ (`index`, `stamp_ns`, `a`, `b`).
+- `verdicts_equal(a, b, tol=1e-9) -> bool` — Same pass/refuse, same latch, same rows within `tol`. (L210)
+- `summarize(diffs, n_candidates) -> dict` — Counts (`equal`, `different`, `a_only_passes`, `b_only_passes`) and every diff. (L224)
+- `outside_noise(report, self_checks) -> list[int]` — Candidate indices where A and B differ but no A-vs-A run did: the tier-2 criterion (`diff --self-check K` exits non-zero iff any). (L241)
+- `replay(bag, params_a, params_b, workdir, verdict_timeout_s=0.3, settle_s=0.02) -> dict` — The live two-kernel replay (needs ROS 2 Jazzy and both packages built). Delivery made as deterministic as the kernel's KEEP_LAST(1) inputs allow: the deploy graph's Fast DDS large-data profile, each reliable input acknowledged by both kernels, `settle_s` of spinning before each candidate. (L496)
+- `main(argv=None) -> int` — `record-cmd OUT` / `diff --bag --params --provider --out`; exit 1 on any differing verdict. (L584)
 
 ### `tools/check_no_pro_imports.py`
 _Lint guard for the Apache-2.0 / OpenRAL Pro boundary: fails when any tracked `.py` imports an `openral_pro*` module (`import`, `from … import`, or `import_module`/`__import__` with a literal). Names in strings and docs stay allowed; `openral_prompt_router` is not a hit. Run by `just lint`, pre-commit and `quality.yml`. Open code reaches Pro only through `openral_rskill.backend_registry`._

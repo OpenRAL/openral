@@ -397,16 +397,20 @@ adds a simulated depth camera at LeIsaac's front view through
 sensors for this scene only (`sim_scene_description`), mounted by `camera_mounts`.
 The HAL publishes its cloud, octomap maps it, and the kernel checks every chunk
 against the voxels; the robot manifest, and so a real deploy, is unchanged.
-Both Isaac deploy twins commit `runtime.object_tracking: on` with
-`grounding_required: true` and the grounding wait the successful Spark runs used
-(pick-orange 8 s, R372; banana-in-bowl 15 s, R365, 2026-10-23): the #418 object tracker
-owns the attachment set, so the held payload is cleared from the voxel map by tracked
-identity. Their target query has no seed, so both also commit
+Both Isaac deploy twins commit `runtime.object_tracking: shadow` (ADR-0121 step 3): the
+HAL's vision legs own the grasp region (grasp-target leg), the place region (the
+banana-in-bowl twin's place-target leg; pick-orange has none, so it has no place
+allowance in shadow) and the attachment set, and the held payload is the HAL's measured
+attachment (with `payload_sweep_clear_enabled`), not a tracked identity. The #418 object
+tracker still runs with the grounding wait the successful Spark runs used (pick-orange
+8 s, R372; banana-in-bowl 15 s, R365, 2026-10-23) and grounds the target query, but
+decides nothing (shadow refuses no goal, so `grounding_required: false`). Those runs used
+`on`, which keys the grasp exemption and payload ownership on tracked ids; `on` needs an
+exemption provider (OpenRAL Pro), so add `exemption_provider:` to run it. The shadow
+configuration has not been run in sim since step 3: an open-only tier-3 run is owed.
+Their target query has no seed, so both also commit
 `object_detector_locators: [omdet-turbo-locator]` to ground it; that needs the `omdet`
-dependency group (`just sync --group omdet`). SIM-ONLY, pending Safety-WG review;
-`--runtime object_tracking=off` runs the
-legacy geometry-only path, on which the payload stays mapped and the kernel may stop the
-arm on what it holds.
+dependency group (`just sync --group omdet`). SIM-ONLY, pending Safety-WG review.
 
 [`sim/isaac_arena_droid_banana_in_bowl.yaml`](sim/isaac_arena_droid_banana_in_bowl.yaml)
 is the second Isaac task: Isaac Lab-Arena's DROID / RoboLab `banana_in_bowl`
