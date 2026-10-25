@@ -645,6 +645,10 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    # ADR-0123: every scheme this tool writes (nf4, int8) is sub-16-bit.
+    from openral_rskill.quantization_gate import require_pro_for_dtype
+
+    require_pro_for_dtype(args.scheme, what="tools/quantize_rskill.py")
 
     # Resolve a write token from env first, then from the cached
     # `huggingface-cli login` credential (`~/.cache/huggingface/token`).

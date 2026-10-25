@@ -31,6 +31,7 @@ import pytest
 from openral_core import SimEnvironment, VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import load_rskill_manifest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 pytest.importorskip("zmq", reason="sidecar tests require the `sidecar-wire` group")
 pytest.importorskip("msgpack", reason="sidecar tests require the `sidecar-wire` group")
@@ -191,6 +192,9 @@ def rc365_env_cfg() -> SimEnvironment:
     )
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_factory_reuses_matching_sidecar_with_correct_layout(
     rc365_env_cfg: SimEnvironment,
 ) -> None:
@@ -224,6 +228,9 @@ def test_factory_reuses_matching_sidecar_with_correct_layout(
         sidecar_identity_path(port).unlink(missing_ok=True)
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_factory_refuses_mismatched_sidecar(rc365_env_cfg: SimEnvironment) -> None:
     """A sidecar serving a *different* checkpoint is rejected, not adopted.
 
@@ -255,6 +262,9 @@ def test_factory_refuses_mismatched_sidecar(rc365_env_cfg: SimEnvironment) -> No
         sidecar_identity_path(port).unlink(missing_ok=True)
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_factory_trusts_unidentified_sidecar(rc365_env_cfg: SimEnvironment) -> None:
     """No identity record on disk → reuse is allowed (operator-managed boot).
 

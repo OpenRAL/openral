@@ -7,6 +7,7 @@ from collections import deque
 import numpy as np
 import pytest
 from openral_core.exceptions import ROSConfigError
+from openral_rskill.quantization_gate import pro_quantization_installed
 from openral_sim.policies.xr1 import (
     _history_sample,
     _preprocess_image,
@@ -23,6 +24,9 @@ def test_remote_code_requires_explicit_ack(monkeypatch: pytest.MonkeyPatch) -> N
         _require_remote_code_ack()
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_int4_manifest_selects_nf4_sidecar() -> None:
     from pathlib import Path
 
@@ -40,6 +44,9 @@ def test_int4_manifest_selects_nf4_sidecar() -> None:
     assert _quantization_mode(spec, local) == "nf4"
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_xr1_honours_the_shared_override_and_rejects_int8(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

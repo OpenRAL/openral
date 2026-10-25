@@ -47,6 +47,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 from tests.sim.conftest import _robotwin_obs
 
@@ -106,6 +107,10 @@ _REPO = _repo_checkout()
 _CKPT = _checkpoint()
 
 pytestmark = [
+    # ADR-0123: these weights are sub-16-bit and need OpenRAL Pro.
+    pytest.mark.skipif(
+        not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+    ),
     pytest.mark.sim,
     pytest.mark.slow,
     pytest.mark.skipif(

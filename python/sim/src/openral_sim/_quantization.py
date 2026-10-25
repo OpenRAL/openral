@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 from openral_core.exceptions import ROSConfigError
+from openral_rskill.quantization_gate import require_pro_for_checkpoint, require_pro_for_dtype
 
 if TYPE_CHECKING:
     from openral_core import VLASpec
@@ -1185,13 +1186,17 @@ def quantization_extra(manifest: Any | None) -> Mapping[str, Any]:
     return dict(extra) if isinstance(extra, dict) else {}
 
 
-def resolve_quant_plan(
+def plan_quantization(
     spec: Any,
     manifest: Any | None = None,
     *,
     default: str | None = None,
 ) -> QuantPlan:
-    """Resolve one load's quantization from every source, in one place.
+    """Resolve one load's quantization from every source, without the Pro gate.
+
+    The precedence logic of :func:`resolve_quant_plan`, which every loader calls;
+    that function adds the ADR-0123 check on top. Call this one only to inspect a
+    plan, never to load weights.
 
     Precedence, first hit wins:
 
@@ -1264,6 +1269,45 @@ def resolve_quant_plan(
     return QuantPlan(
         dtype=token, quantize=quantize, source=source, extra=quantization_extra(manifest)
     )
+
+
+def resolve_quant_plan(
+    spec: Any,
+    manifest: Any | None = None,
+    *,
+    default: str | None = None,
+) -> QuantPlan:
+    """Resolve one load's quantization, refusing sub-16-bit weights without OpenRAL Pro.
+
+    :func:`plan_quantization` (precedence: ``$OPENRAL_QUANTIZATION_DTYPE``,
+    ``spec.quantization``, ``spec.extra["dtype"]``, the manifest, ``default``),
+    then the ADR-0123 checks: a resolved dtype of 8 bits or fewer, or a
+    ``spec.weights_uri`` checkpoint carrying a ``quantization_config``, needs the
+    OpenRAL Pro quantization package.
+
+    Args:
+        spec: The ``VLASpec`` for this run.
+        manifest: The resolved ``RSkillManifest``, when the caller has one.
+        default: Fallback token when no source declares a dtype.
+
+    Returns:
+        A :class:`QuantPlan`.
+
+    Raises:
+        ROSConfigError: Sub-16-bit weights requested, or a quantized checkpoint,
+            and OpenRAL Pro's quantization module is not installed.
+    """
+    plan = plan_quantization(spec, manifest, default=default)
+    what = (
+        f"rSkill {getattr(manifest, 'name', '?')!r}"
+        if manifest is not None
+        else f"policy {getattr(spec, 'id', '?')!r}"
+    )
+    require_pro_for_dtype(plan.dtype, what=what)
+    weights_uri = getattr(spec, "weights_uri", None)
+    if isinstance(weights_uri, str) and weights_uri:
+        require_pro_for_checkpoint(weights_uri, what=what)
+    return plan
 
 
 def require_supported_dtype(plan: QuantPlan, supported: frozenset[str], family: str) -> None:

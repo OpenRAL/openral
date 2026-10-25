@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from openral_core import RSkillManifest
 from openral_core.exceptions import ROSConfigError
+from openral_rskill.quantization_gate import require_pro_for_manifest
 
 if TYPE_CHECKING:
     from openral_runner.backends.reward.frame_source import Frame
@@ -244,6 +245,7 @@ def build_reward_monitor(
         )
 
         return build_topreward_monitor(manifest)
+    require_pro_for_manifest(manifest)  # ADR-0123: sub-16-bit weights need OpenRAL Pro
     raw = (
         manifest.weights_uri
         or manifest.source_repo

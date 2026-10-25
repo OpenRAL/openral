@@ -30,6 +30,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 if TYPE_CHECKING:
     import numpy as np
@@ -48,7 +49,13 @@ _REPO = pathlib.Path(__file__).resolve().parents[2]
 _ROBOMETER = "OpenRAL/rskill-robometer_4b-any-general-nf4"
 _TOPREWARD = "OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4"
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a local GPU")
+pytestmark = [
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a local GPU"),
+    # ADR-0123: these weights are sub-16-bit and need OpenRAL Pro.
+    pytest.mark.skipif(
+        not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+    ),
+]
 
 
 def _buffers(model: Module) -> dict[str, Tensor]:

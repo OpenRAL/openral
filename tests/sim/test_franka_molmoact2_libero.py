@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 if TYPE_CHECKING:
     from openral_core import SimEnvironment
@@ -47,6 +48,10 @@ if not _MISSING_MODULES:
 
 
 pytestmark = [
+    # ADR-0123: these weights are sub-16-bit and need OpenRAL Pro.
+    pytest.mark.skipif(
+        not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+    ),
     pytest.mark.sim,
     pytest.mark.slow,
     pytest.mark.skipif(

@@ -26,6 +26,7 @@ from pathlib import Path
 
 from openral_core import RSkillManifest
 from openral_core.exceptions import ROSConfigError
+from openral_rskill.quantization_gate import require_pro_for_manifest
 
 from ._zmq_sidecar import ZmqSidecarMixin
 
@@ -233,6 +234,7 @@ def build_scene_vlm(
         raise ROSConfigError(
             f"build_scene_vlm requires kind='vlm', got {manifest.kind!r} for {manifest.name!r}"
         )
+    require_pro_for_manifest(manifest)  # ADR-0123: sub-16-bit weights need OpenRAL Pro
     # Load ``weights_uri`` — the deployable checkpoint (the pre-quantized NF4
     # repo, e.g. OpenRAL/rskill-qwen35_4b-any-general-nf4) — NOT ``source_repo``, which is
     # provenance (the raw upstream model it was quantized from). The sidecar

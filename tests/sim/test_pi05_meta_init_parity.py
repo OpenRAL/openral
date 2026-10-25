@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("lerobot.policies.pi05.modeling_pi05")
@@ -212,6 +213,9 @@ def test_bf16_fast_meta_init_equals_from_pretrained(reference: dict[str, Digest]
     assert torch.equal(out, ref_out), max_abs
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_int8_fast_meta_init_matches_from_pretrained(reference: dict[str, Digest]) -> None:
     """int8 goes through the same streamed, key-normalised, fail-closed load.
 

@@ -12,6 +12,7 @@ Gated on a local GPU + the topreward deps; CI runners without a GPU skip.
 from __future__ import annotations
 
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 pytest.importorskip("torch")
 pytest.importorskip("lerobot")
@@ -19,6 +20,11 @@ pytest.importorskip("bitsandbytes")
 
 import numpy as np
 import torch
+
+# ADR-0123: these weights are sub-16-bit and need OpenRAL Pro.
+pytestmark = pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 
 _HAS_GPU = torch.cuda.is_available()
 

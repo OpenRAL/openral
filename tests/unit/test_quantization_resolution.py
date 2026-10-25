@@ -14,9 +14,9 @@ from openral_rskill.loader import load_rskill_manifest
 from openral_sim._quantization import (
     QUANTIZATION_DTYPE_ENV,
     canonical_quant_token,
+    plan_quantization,
     quantization_extra,
     require_supported_dtype,
-    resolve_quant_plan,
     sidecar_quant_token,
 )
 
@@ -63,7 +63,7 @@ _SHIPPED: list[tuple[str, str | None, str]] = [
 def test_shipped_skill_dtype_is_unchanged(skill: str, default: str | None, expected: str) -> None:
     """Each in-tree skill still resolves to the dtype it loaded at before."""
     manifest = load_rskill_manifest(f"rskills/{skill}")
-    plan = resolve_quant_plan(_spec(skill), manifest, default=default)
+    plan = plan_quantization(_spec(skill), manifest, default=default)
     assert plan.dtype == expected
     assert plan.quantize is (expected in {"nf4", "int8"})
 
@@ -82,10 +82,10 @@ def test_env_override_reaches_every_family() -> None:
 
     os.environ[QUANTIZATION_DTYPE_ENV] = "bf16"
     try:
-        in_process = resolve_quant_plan(
+        in_process = plan_quantization(
             _spec("pi05-libero-int8"), load_rskill_manifest("rskills/pi05-libero-int8")
         )
-        sidecar = resolve_quant_plan(
+        sidecar = plan_quantization(
             _spec("gr00t-n17-libero"),
             load_rskill_manifest("rskills/gr00t-n17-libero"),
             default="nf4",
@@ -107,20 +107,20 @@ def test_env_beats_spec_extra_beats_manifest() -> None:
     spec_bf16 = VLASpec(
         id="pi05", weights_uri="rskills/pi05-libero-int8", device="auto", extra={"dtype": "bf16"}
     )
-    assert resolve_quant_plan(spec_bf16, manifest).source == "spec_extra"
+    assert plan_quantization(spec_bf16, manifest).source == "spec_extra"
 
     os.environ[QUANTIZATION_DTYPE_ENV] = "fp32"
     try:
-        plan = resolve_quant_plan(spec_bf16, manifest)
+        plan = plan_quantization(spec_bf16, manifest)
     finally:
         del os.environ[QUANTIZATION_DTYPE_ENV]
     assert (plan.dtype, plan.source) == ("fp32", "env")
 
-    assert resolve_quant_plan(_spec("pi05-libero-int8"), manifest).source == "manifest"
+    assert plan_quantization(_spec("pi05-libero-int8"), manifest).source == "manifest"
     bare = VLASpec(id="x", weights_uri="r", device="auto", extra={})
-    assert resolve_quant_plan(bare, None, default="nf4").source == "default"
+    assert plan_quantization(bare, None, default="nf4").source == "default"
 
-    unset = resolve_quant_plan(bare, None)
+    unset = plan_quantization(bare, None)
     assert (unset.dtype, unset.quantize, unset.source) == (None, False, "unset")
 
 
@@ -128,7 +128,7 @@ def test_int4_normalises_to_the_token_sidecars_accept() -> None:
     """`tools/behavior_groot_sidecar.py` argparse only accepts none/nf4/int8."""
     manifest = load_rskill_manifest("rskills/rldx1-ft-libero-nf4")
     assert manifest.quantization.dtype.value == "int4"
-    assert resolve_quant_plan(_spec("rldx1-ft-libero-nf4"), manifest).dtype == "nf4"
+    assert plan_quantization(_spec("rldx1-ft-libero-nf4"), manifest).dtype == "nf4"
 
 
 @pytest.mark.parametrize(
@@ -175,7 +175,7 @@ def test_typed_spec_quantization_beats_untyped_extra() -> None:
         quantization=QuantizationConfig(dtype=QuantizationDtype.INT4),
         extra={"dtype": "bf16"},
     )
-    plan = resolve_quant_plan(spec, manifest)
+    plan = plan_quantization(spec, manifest)
     assert (plan.dtype, plan.source) == ("nf4", "spec_quantization")
 
 
@@ -184,7 +184,7 @@ def test_unsupported_dtype_raises_naming_family_and_set(
 ) -> None:
     """MolmoAct2 has no int8 path: the request fails instead of loading bf16."""
     monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "int8")
-    plan = resolve_quant_plan(
+    plan = plan_quantization(
         _spec("molmoact2-libero-nf4"), load_rskill_manifest("rskills/molmoact2-libero-nf4")
     )
     with pytest.raises(ROSConfigError, match=r"molmoact2 cannot load dtype 'int8' \(from env\)"):
@@ -194,7 +194,7 @@ def test_unsupported_dtype_raises_naming_family_and_set(
     # The adapter default (plan unset) is always accepted.
     monkeypatch.delenv(QUANTIZATION_DTYPE_ENV)
     bare = VLASpec(id="x", weights_uri="r")
-    require_supported_dtype(resolve_quant_plan(bare, None), frozenset({"fp32"}), "act")
+    require_supported_dtype(plan_quantization(bare, None), frozenset({"fp32"}), "act")
 
 
 @pytest.mark.parametrize(
@@ -205,7 +205,7 @@ def test_sidecar_token_maps_bf16_onto_unquantized_mode(
     monkeypatch: pytest.MonkeyPatch, raw: str, expected: str
 ) -> None:
     monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, raw)
-    plan = resolve_quant_plan(_spec("lingbot-vla2-robotwin"), None)
+    plan = plan_quantization(_spec("lingbot-vla2-robotwin"), None)
     assert sidecar_quant_token(plan, frozenset({"none", "nf4"}), "lingbot_vla2") == expected
 
 
@@ -214,6 +214,6 @@ def test_sidecar_token_rejects_what_the_sidecar_cannot_parse(
 ) -> None:
     """LingBot's argparse has no int8 choice; it used to crash the sidecar boot."""
     monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "int8")
-    plan = resolve_quant_plan(_spec("lingbot-vla2-robotwin"), None)
+    plan = plan_quantization(_spec("lingbot-vla2-robotwin"), None)
     with pytest.raises(ROSConfigError, match="lingbot_vla2 cannot load dtype 'int8'"):
         sidecar_quant_token(plan, frozenset({"none", "nf4"}), "lingbot_vla2")
