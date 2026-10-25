@@ -12553,7 +12553,14 @@ class DeployScene(BaseModel):
         with a box on every goal, and a warning escalated to an error there would escape
         their ``except ValueError`` handling.
         """
-        scene = _load_yaml_model(cls, path)
+        import yaml  # noqa: PLC0415  # reason: deferred to avoid import-time cost
+
+        from openral_core.scene_paths import anchor_scene_paths  # noqa: PLC0415  # reason: as yaml
+
+        with open(path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        # Relative asset paths resolve beside the scene file first (scene_paths.py).
+        scene = cls.model_validate(anchor_scene_paths(data, Path(path).parent))
         if scene.grasp_declaration is not None and scene.grasp_declaration.search_box is not None:
             # FutureWarning, as `image_flip_180`'s: scene authors are end users, and Python
             # hides (Pending)DeprecationWarning outside __main__. stacklevel=2 names the caller.

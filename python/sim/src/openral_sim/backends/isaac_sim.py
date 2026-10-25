@@ -54,8 +54,9 @@ fields — ``scene.assets_uri`` (the environment USD), ``robot_id``, and
       backend: isaacsim
       assets_uri: isaac:Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
 
-``assets_uri`` accepts a local path (``file://`` optional; relative to
-the working directory), an ``http(s)://`` / ``omniverse://`` URL, or
+``assets_uri`` accepts a local path (``file://`` optional; a relative path
+resolves beside the scene YAML first, then under the repo root and the working
+directory), an ``http(s)://`` / ``omniverse://`` URL, or
 ``isaac:<path>`` under the sidecar's own Isaac asset root. NVIDIA's Isaac
 environments are licensed for use inside Isaac Sim — they are referenced here,
 never converted or vendored.
@@ -2097,9 +2098,10 @@ def _build_robot_spec(
             "(--layout manifest) imports the robot from its URDF."
         )
     # ``file:`` URDFs (the vendored arms) resolve against the robot's manifest
-    # dir; ``rd:`` refs ignore it. The repo-root fallback in resolve_asset covers
-    # a relative run cwd, so deriving robots/<robot_id>/ is a safe primary root.
-    manifest_dir = Path("robots") / robot_id
+    # dir (absolute, so any cwd works); ``rd:`` refs ignore it.
+    from openral_sim.policies.robots import resolve_robot_manifest
+
+    manifest_dir = resolve_robot_manifest(robot_id).parent
     try:
         urdf_path = resolve_asset(desc.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
     except AssetRefError as exc:

@@ -137,6 +137,12 @@ adapters. Quick reference:
 - A `BenchmarkScene` is a `SimScene` with `metadata: BenchmarkMetadata`
   (paper URL + honest_scope string), `seed` and `n_episodes` required.
 
+Relative file paths in a scene (`scene.assets_uri`, `backend_options.objects[].usd`,
+`runtime.static_geometry_file`, `runtime.vision_attachment.segmenter_manifest`) resolve
+**beside the scene YAML** first, then under the repo root, then the working directory. A
+scene that ships its own assets, here or in another repository, writes them relative to
+itself (`../../assets/<family>/stage.usd`) and runs from any directory.
+
 On a wrong-tier YAML the loader names the tier the file actually fits. A YAML
 that still carries a `vla:` block raises `ROSConfigError`; the policy is always
 supplied via `--rskill <name>`.
@@ -249,8 +255,8 @@ scene:
   assets_uri: "isaac:Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
 ```
 
-`assets_uri` takes a local path (`file://` optional, relative to the working
-directory), an `http(s)://` / `omniverse://` URL, or `isaac:<path>` — a path
+`assets_uri` takes a local path (`file://` optional; relative paths resolve as
+below), an `http(s)://` / `omniverse://` URL, or `isaac:<path>` — a path
 under the sidecar's own Isaac asset root, so the asset matches the installed
 Isaac release. Either field implies `backend_options.layout: manifest`. The
 environment replaces the bring-up ground plane, so it must carry its own floor
