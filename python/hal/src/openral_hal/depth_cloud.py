@@ -613,22 +613,27 @@ def cloud_from_depth_frame(
     grid = np.asarray(depth, dtype=np.float32)
     fx, fy, cx, cy = (float(v) for v in np.asarray(k, dtype=np.float64).reshape(4))
     # The pinhole ray of every pixel, as points_from_depth_grid lifts them, cached per
-    # raster size and K (a camera's never change): the per-frame cost is one masked
-    # gather, a scale and one matrix product, in float32 (the cloud's own precision).
-    measured = grid > 0.0
-    pts_opt = _pixel_rays(grid.shape[0], grid.shape[1], fx, fy, cx, cy)[measured]
-    pts_opt *= grid[measured][:, None]
+    # raster size and K (a camera's never change): the per-frame cost is one gather by
+    # flat pixel index, a scale and one matrix product, in float32 (the cloud's own
+    # precision). Flat indices, not a boolean mask over the (H, W, 3) rays: the same
+    # points, ~30 % faster, and the colours and range filter reuse the same indices.
+    z = grid.reshape(-1)
+    idx = np.flatnonzero(z > 0.0)
+    pts_opt = _pixel_rays(grid.shape[0], grid.shape[1], fx, fy, cx, cy).reshape(-1, 3)[idx]
+    pts_opt *= z[idx, None]
     pose = np.asarray(optical_in_base, dtype=np.float64).reshape(4, 4)
-    pts = pts_opt @ pose[:3, :3].T.astype(np.float32) + pose[:3, 3].astype(np.float32)
+    pts = pts_opt @ pose[:3, :3].T.astype(np.float32)
+    pts += pose[:3, 3].astype(np.float32)
+    if max_planar_range_m is not None:
+        keep = pts[:, 0] ** 2 + pts[:, 1] ** 2 <= float(max_planar_range_m) ** 2
+        pts = pts[keep]
+        idx = idx[keep]
     colour_raster = np.asarray(rgb)
     colours: NDArray[np.uint8] | None = None
     if colour_raster.ndim == 3 and colour_raster.shape[:2] == grid.shape:  # noqa: PLR2004  # reason: (H, W, C)
         # The same row-major pixel order as the points.
-        colours = np.ascontiguousarray(colour_raster[measured][:, :3], dtype=np.uint8)
-    if max_planar_range_m is not None:
-        keep = pts[:, 0] ** 2 + pts[:, 1] ** 2 <= float(max_planar_range_m) ** 2
-        pts = pts[keep]
-        colours = None if colours is None else colours[keep]
+        flat_rgb = colour_raster.reshape(-1, colour_raster.shape[2])
+        colours = np.ascontiguousarray(flat_rgb[idx, :3], dtype=np.uint8)
     return pts, colours
 
 

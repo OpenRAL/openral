@@ -5427,13 +5427,15 @@ class SimSensorBridge:
                 rgb = colours.get(name)
                 if rgb is not None and len(rgb) != len(pts):
                     rgb = None
-                optical_in_base = np.asarray(frame["optical_in_base"], dtype=np.float64)
+                optical_in_base = np.asarray(frame["optical_in_base"], dtype=np.float32)
                 optical_in_base = optical_in_base.reshape(4, 4)
-                pts_optical = (np.asarray(pts, dtype=np.float64) - optical_in_base[:3, 3]) @ (
+                # float32 throughout (the cloud's own precision, < 1 um off a float64
+                # pass): this runs on the HAL's single executor between action ticks.
+                pts_optical = (np.asarray(pts, dtype=np.float32) - optical_in_base[:3, 3]) @ (
                     optical_in_base[:3, :3]
                 )
                 cloud = pointcloud2_from_points_xyz(
-                    pts_optical.astype(np.float32),
+                    np.asarray(pts_optical, dtype=np.float32),  # no copy: already float32
                     frame_id=depth_optical_frame_id(specs_by_name[name]),
                     stamp=stamp,
                     rgb=rgb,

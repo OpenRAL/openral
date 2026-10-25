@@ -818,3 +818,29 @@ def test_pointcloud2_from_points_xyz_packs_rgb() -> None:
     assert np.allclose(xyz, points)
     packed = np.frombuffer(bytes(msg.data), dtype="<u4").reshape(2, 4)[:, 3]
     assert packed.tolist() == [0xFF0000, 0x010203]
+
+
+def test_cloud_from_depth_frame_matches_per_pixel_back_projection() -> None:
+    """Every measured pixel in range lands at its pinhole point, with its own colour."""
+    from openral_hal.depth_cloud import cloud_from_depth_frame
+
+    rng = np.random.default_rng(0)
+    depth = rng.uniform(0.3, 2.5, (12, 16)).astype(np.float32)
+    depth[rng.random(depth.shape) < 0.2] = 0.0
+    rgba = rng.integers(0, 256, (12, 16, 4), dtype=np.uint8)
+    k = np.array([20.0, 22.0, 7.5, 5.5])
+    pose = np.eye(4)
+    pose[:3, :3] = [[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]
+    pose[:3, 3] = [0.1, -0.5, 0.6]
+    pts, colours = cloud_from_depth_frame(depth, rgba, k, pose, max_planar_range_m=1.5)
+    expected_pts, expected_rgb = [], []
+    for v, u in zip(*np.nonzero(depth > 0.0), strict=True):
+        z = float(depth[v, u])
+        p_opt = np.array([(u - k[2]) / k[0] * z, (v - k[3]) / k[1] * z, z])
+        p = pose[:3, :3] @ p_opt + pose[:3, 3]
+        if p[0] ** 2 + p[1] ** 2 <= 1.5**2:
+            expected_pts.append(p)
+            expected_rgb.append(rgba[v, u, :3])
+    assert colours is not None
+    np.testing.assert_allclose(pts, np.array(expected_pts), atol=1e-5)
+    np.testing.assert_array_equal(colours, np.array(expected_rgb))
