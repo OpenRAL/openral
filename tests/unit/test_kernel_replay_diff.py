@@ -131,3 +131,9 @@ def test_only_diffs_outside_the_self_check_noise_fail_tier_2() -> None:
     checks = [{"diffs": [{"index": 12}]}, {"diffs": [{"index": 44}, {"index": 45}]}]
     assert krd.outside_noise(report, checks) == [50]
     assert krd.outside_noise(report, []) == [12, 44, 50], "no self-check: every diff counts"
+
+
+def test_a_dump_without_hand_links_refuses_rather_than_an_empty_mask() -> None:
+    """An empty mask makes the kernel refuse the provider: B would run with none (pro review)."""
+    with pytest.raises(ValueError, match="hand links"):
+        krd.provider_params({"hal_mode": "sim", "tracked_release_jaw_joints": ["gripper"]}, _P)

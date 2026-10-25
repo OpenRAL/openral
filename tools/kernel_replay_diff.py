@@ -136,7 +136,8 @@ def provider_params(params: Mapping[str, Any], provider: str) -> dict[str, Any]:
         Kernel B's ``ros__parameters``.
 
     Raises:
-        ValueError: A has none of the moved rules on, so there is nothing to compare.
+        ValueError: A has none of the moved rules on, so there is nothing to compare; or A names
+            no hand links for the provider's mask.
 
     Example:
         >>> b = provider_params(
@@ -157,6 +158,14 @@ def provider_params(params: Mapping[str, Any], provider: str) -> dict[str, Any]:
             out[f"contact_exemptions.{key}"] = value
     out.update(_MOVED_RULES_OFF)
     links = params.get("workspace_contact_links") or params.get("grasp_contact_links") or []
+    if not links:
+        # The kernel refuses a provider with an empty mask; the launch passes the manifest's hand
+        # links, which a dump without either list does not carry. Say so rather than replay a B
+        # that silently runs with no provider (pro review, a K5-only scene).
+        raise ValueError(
+            "kernel A names no workspace_contact_links or grasp_contact_links: pass the manifest's "
+            "hand links as exemption_provider_links"
+        )
     out["exemption_provider"] = provider
     out["exemption_provider_links"] = list(links)
     return out
