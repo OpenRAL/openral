@@ -2074,7 +2074,11 @@ def _root_to_base(desc: RobotDescription) -> NDArray[np.float64]:
 
 
 def _build_robot_spec(
-    desc: RobotDescription, robot_id: str, *, control_freq_hz: float | None = None
+    desc: RobotDescription,
+    robot_id: str,
+    *,
+    control_freq_hz: float | None = None,
+    manifest_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Marshal a ``RobotDescription`` to the JSON isaac robot spec.
 
@@ -2097,11 +2101,13 @@ def _build_robot_spec(
             f"robot {robot_id!r} has no assets.urdf; the Isaac manifest scene "
             "(--layout manifest) imports the robot from its URDF."
         )
-    # ``file:`` URDFs (the vendored arms) resolve against the robot's manifest
-    # dir (absolute, so any cwd works); ``rd:`` refs ignore it.
-    from openral_sim.policies.robots import resolve_robot_manifest
+    # ``file:`` URDFs (the vendored arms) resolve against the robot's manifest dir:
+    # the caller's (the manifest it already resolved), else looked up here; absolute
+    # either way, so any cwd works. ``rd:`` refs ignore it.
+    if manifest_dir is None:
+        from openral_sim.policies.robots import resolve_robot_manifest
 
-    manifest_dir = resolve_robot_manifest(robot_id).parent
+        manifest_dir = resolve_robot_manifest(robot_id).parent
     try:
         urdf_path = resolve_asset(desc.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
     except AssetRefError as exc:
@@ -2600,7 +2606,9 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
             }
         )
     render_desc, render_scale = _render_desc(desc, camera_render_height or {}, depth_cameras)
-    spec = _build_robot_spec(render_desc, robot_id, control_freq_hz=control_freq_hz)
+    spec = _build_robot_spec(
+        render_desc, robot_id, control_freq_hz=control_freq_hz, manifest_dir=manifest.parent
+    )
     spec.update(
         camera_render_scale=render_scale,
         translucent_materials=translucent_materials,

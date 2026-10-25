@@ -584,7 +584,7 @@ _Strict YAML loaders for the three scene tiers._
 ### `python/core/src/openral_core/scene_paths.py`
 _Resolve a scene YAML's relative file references beside the scene file._
 
-- `def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T` (L27) — `raw` (a scene's YAML mapping, unmodified) with `scene.assets_uri`, `backend_options.objects[].usd`, `runtime.static_geometry_file` and `runtime.vision_attachment.segmenter_manifest` made absolute when the file exists beside the scene; schemes, absolute paths and paths with nothing beside the scene are left for the repo-root / cwd lookups. Applied by `load_scene_strict`, `DeployScene.from_yaml` and `tools/deploy_sim_batch.py`, so a scene shipping its own assets (in this repo or another) runs from any directory.
+- `def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T` (L30) — `raw` (a scene's YAML mapping, unmodified) with `scene.assets_uri`, `backend_options.objects[].usd`, `runtime.static_geometry_file` and `runtime.vision_attachment.segmenter_manifest` made absolute when the file exists beside the scene; schemes, absolute paths and paths with nothing beside the scene are left for the repo-root / cwd lookups. Applied by `load_scene_strict`, `DeployScene.from_yaml` and `tools/deploy_sim_batch.py`, so a scene shipping its own assets (in this repo or another) runs from any directory.
 
 ### `python/core/src/openral_core/usd_catalog.py`
 _Optional OpenUSD reader for deploy scene declarations; it never imports or starts Isaac Sim._

@@ -18,9 +18,12 @@ _T = TypeVar("_T")
 
 
 def _anchored(ref: object, scene_dir: Path) -> object:
-    if not isinstance(ref, str) or not ref or ":" in ref or Path(ref).is_absolute():
-        return ref  # not a plain relative path: `isaac:`, a URL, `file://`, absolute
-    beside = scene_dir / ref
+    if not isinstance(ref, str):
+        return ref
+    rel = ref.removeprefix("file://")  # the Isaac backend's optional local-file scheme
+    if not rel or ":" in rel or Path(rel).is_absolute():
+        return ref  # not a relative local path: `isaac:`, a URL, absolute
+    beside = scene_dir / rel
     return str(beside.resolve()) if beside.exists() else ref
 
 
@@ -39,6 +42,9 @@ def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:
         >>> _ = (d / "stage.usd").write_text("")
         >>> out = anchor_scene_paths({"scene": {"assets_uri": "stage.usd"}}, d)
         >>> out["scene"]["assets_uri"] == str((d / "stage.usd").resolve())
+        True
+        >>> anchored = anchor_scene_paths({"scene": {"assets_uri": "file://stage.usd"}}, d)
+        >>> anchored == out
         True
         >>> anchor_scene_paths({"scene": {"assets_uri": "isaac:Isaac/x.usd"}}, d)
         {'scene': {'assets_uri': 'isaac:Isaac/x.usd'}}
