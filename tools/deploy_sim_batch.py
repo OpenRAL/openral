@@ -19,6 +19,10 @@ Run (a sourced ROS 2 overlay and the scene's rSkill/prompt)::
         --rskill-id OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16 \\
         --prompt "Grab orange and place into plate" --deadline-s 90
 
+``--record`` also bags each episode's kernel inputs and verdicts (``kernel_replay_diff``'s
+``REPLAY_TOPICS``, into ``<episode>/bag``) and dumps the kernel's parameters into
+``<episode>/kernel_params.yaml``: the input of ``tools/kernel_replay_diff.py diff`` (ADR-0121).
+
 ``python tools/deploy_sim_batch.py compare <fresh_dir> <persistent_dir>`` prints the
 per-episode outcome, stop time and wall time side by side.
 """
@@ -253,6 +257,27 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                 "boot_s": boot_s,
             }
             goal: dict[str, Any] = {}
+            recorder = None
+            if boot_s is not None and args.record:
+                from kernel_replay_diff import (  # type: ignore[import-not-found,unused-ignore]  # reason: sibling tool, on sys.path[0] when run as a script
+                    record_command,
+                )
+
+                recorder = subprocess.Popen(
+                    record_command(str(ep / "bag")),
+                    stdout=(ep / "record.log").open("wb"),
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    start_new_session=True,
+                )
+                dump = subprocess.run(
+                    ["ros2", "param", "dump", "/openral_safety_kernel"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                (ep / "kernel_params.yaml").write_text(dump.stdout or dump.stderr)
             if boot_s is None:
                 rec["failure"] = "stack did not come up"
             else:
@@ -282,6 +307,8 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                 with contextlib.suppress(ValueError, IndexError):
                     goal = json.loads(res.stdout.strip().splitlines()[-1])
                 rec["goal_s"] = time.monotonic() - t_goal
+            if recorder is not None:
+                rec["recorder"] = _stop_group(recorder, 20.0)
             t_down = time.monotonic()
             rec["teardown"] = _stop_group(proc, args.grace_s)
             rec["teardown_s"] = time.monotonic() - t_down
@@ -398,6 +425,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--boot-timeout-s", type=float, default=420.0)
     p.add_argument("--grace-s", type=float, default=60.0)
     p.add_argument("--expect-preload", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument(
+        "--record",
+        action="store_true",
+        help="bag the kernel's replay topics and dump its parameters per episode (ADR-0121)",
+    )
     p.add_argument(
         "--deploy-arg",
         action="append",

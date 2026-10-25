@@ -97,3 +97,22 @@ def test_expect_preload_can_be_turned_off() -> None:
     p = _tool().parser()
     assert p.parse_args(base).expect_preload is True
     assert p.parse_args([*base, "--no-expect-preload"]).expect_preload is False
+
+
+def test_record_is_opt_in_and_bags_exactly_the_replay_topics() -> None:
+    """``--record`` feeds ``kernel_replay_diff diff`` (ADR-0121); off by default."""
+    tool = _tool()
+    base = ["--scene", "s", "--out", "o", "--sidecar-port", "1", "--rskill-id", "r"]
+    assert not tool.parser().parse_args([*base, "--prompt", "p"]).record
+    assert tool.parser().parse_args([*base, "--prompt", "p", "--record"]).record
+    sys.path.insert(0, str(_TOOL.parent))
+    try:
+        from kernel_replay_diff import (  # type: ignore[import-not-found,unused-ignore]  # reason: sibling tool
+            REPLAY_TOPICS,
+            record_command,
+        )
+    finally:
+        sys.path.remove(str(_TOOL.parent))
+    argv = record_command("/tmp/x/bag")
+    assert argv[-len(REPLAY_TOPICS) :] == list(REPLAY_TOPICS)
+    assert "/openral/candidate_action" in REPLAY_TOPICS

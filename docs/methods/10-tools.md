@@ -194,21 +194,21 @@ _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS gr
 - `main() -> int` (L434) — CLI: `sys.argv[1]`=output path, `[2]`=snapshot dir; creates the node, runs `Monitor`, spins until SIGINT/SIGTERM, writes `monitor_started`/`monitor_stopped` markers.
 
 ### `tools/deploy_sim_batch.py`
-_Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`: a fresh ROS graph per episode against a kept-alive sidecar the new HAL adopts and resets with the episode's seed; `--mode fresh`: the baseline, a sidecar per episode). Between episodes: domain quiet, no leftover graph process, sidecar answering; else the sidecar is ended and `batch.json` records a `restarts` entry. `compare A B` prints outcome, boot/total wall time and the max difference of the sidecar's initial ground truth per episode. Sim only; nothing here clears an e-stop._
+_Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`: a fresh ROS graph per episode against a kept-alive sidecar the new HAL adopts and resets with the episode's seed; `--mode fresh`: the baseline, a sidecar per episode). Between episodes: domain quiet, no leftover graph process, sidecar answering; else the sidecar is ended and `batch.json` records a `restarts` entry. `compare A B` prints outcome, boot/total wall time and the max difference of the sidecar's initial ground truth per episode. `--record` bags each episode's `kernel_replay_diff.REPLAY_TOPICS` into `<episode>/bag` and dumps the kernel's parameters into `<episode>/kernel_params.yaml`, the input of `kernel_replay_diff.py diff` (ADR-0121). Sim only; nothing here clears an e-stop._
 
-- `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L48) — The scene dict one episode launches (seed, sidecar port, keep-alive).
-- `sidecar_pids(port) -> list[int]` (L68) — Pids of this user's sidecars serving `port`.
-- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L84) — One request to the sidecar; `None` when it does not answer.
-- `graph_leaks(domain) -> list[str]` (L113) — Deploy-graph processes of this user still alive on the ROS domain.
-- `domain_nodes(env) -> list[str]` (L129) — ROS node names on the domain (`ros2 node list --no-daemon`).
-- `batch_env(environ) -> tuple[dict[str, str], str]` (L182) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review).
-- `run_batch(args) -> int` (L197) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
-- `compare(a, b) -> int` (L346) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
-- `main(argv=None) -> int` (L376) — `run` (default) or `compare A B`.
-- `parser() -> argparse.ArgumentParser` (L384) — The `run` command line (`--expect-preload` / `--no-expect-preload`).
-- `const READY_MARKERS = ('HAL activated at',)` (L44) — Log lines that mean the HAL is up.
-- `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L45) — Added to the ready markers when the scene preloads a skill.
-- `const REPO` (L43) — Repo root (the checkout the script runs from).
+- `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L52) — The scene dict one episode launches (seed, sidecar port, keep-alive).
+- `sidecar_pids(port) -> list[int]` (L72) — Pids of this user's sidecars serving `port`.
+- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L88) — One request to the sidecar; `None` when it does not answer.
+- `graph_leaks(domain) -> list[str]` (L117) — Deploy-graph processes of this user still alive on the ROS domain.
+- `domain_nodes(env) -> list[str]` (L133) — ROS node names on the domain (`ros2 node list --no-daemon`).
+- `batch_env(environ) -> tuple[dict[str, str], str]` (L186) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review).
+- `run_batch(args) -> int` (L201) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
+- `compare(a, b) -> int` (L373) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
+- `main(argv=None) -> int` (L403) — `run` (default) or `compare A B`.
+- `parser() -> argparse.ArgumentParser` (L411) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
+- `const READY_MARKERS = ('HAL activated at',)` (L48) — Log lines that mean the HAL is up.
+- `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L49) — Added to the ready markers when the scene preloads a skill.
+- `const REPO` (L47) — Repo root (the checkout the script runs from).
 
 ### `tools/_validation_matrix_dispatch.py`
 _Private helper of `validation_matrix.py`. Sends one `ExecuteRskill` goal at the live graph (the matrix runs with the reasoner off) and prints one JSON line — the run's `goal.log`. Needs ROS 2 sourced._
