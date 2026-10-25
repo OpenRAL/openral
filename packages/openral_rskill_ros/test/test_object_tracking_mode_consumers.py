@@ -12,14 +12,17 @@ mode owns:
   reasoner are told the mode (never ``grounding_required``: shadow refuses no goal). The
   HAL and the kernel are untouched.
 * ``bind``: adds the HAL's vision bridge giving up ``/openral/attachment_state`` (it runs
-  only its grasp trigger then, so the segmenter caches only the tracked cameras), the
-  kernel's jaw-open release (K5) and the scene's ``grounding_required``.
-* ``on``: adds the kernel's tracked grasp exemption (K2), its contact-link list,
-  payload ownership and explained-workspace cells.
+  only its grasp trigger then, so the segmenter caches only the tracked cameras) and the
+  scene's ``grounding_required``. The kernel is untouched: the jaw-open release (K5) is an
+  exemption-provider rule since ADR-0121 step 3, never emitted without a provider.
+* ``on`` (refused without an ``exemption_provider``; diffed against ``off`` with the same
+  provider): adds the tracker-measured place declaration and, for the provider only, under
+  ``contact_exemptions.``, K5, the tracked grasp exemption (K2), payload ownership and
+  explained-workspace cells; the fixed-jaw contact-link list goes to the kernel, which
+  hands it to the provider.
 
-Neither ``bind`` nor ``on`` arms the runner's goal-scope place declaration: the HAL's
-place-target leg that measures its region is not built there, and a tracker-measured
-place allowance awaits Safety-WG review.
+``bind`` does not arm the runner's goal-scope place declaration: the HAL's place-target leg
+that measures its region is not built there.
 """
 
 from __future__ import annotations
@@ -83,20 +86,23 @@ _BIND = {
     _SEGMENTER: _SHADOW[_SEGMENTER] | {"primary_camera"},
     _RUNTIME: _SHADOW[_RUNTIME] | {"grounding_required"},
     _HAL: {"vision_attachment_publish_attachment_state"},
-    _KERNEL: _K5,
 }
+#: The rules ADR-0121 step 3 removed from the open kernel: provider-only.
+_PROVIDER_ONLY = _K5 | {
+    "tracked_grasp_exemption_enabled",
+    "payload_own_cells_enabled",
+    "pinch_payload_own_cells_enabled",
+    "workspace_explained_cells_enabled",
+}
+_PROVIDER = "openral_pro_safety_exemptions/ContactExemptions"
 _ON = {
     **_BIND,
     # The tracker measures the place region: the goal-scope place declaration is armed.
     _RUNTIME: _BIND[_RUNTIME] | {"place_approach_enabled"},
-    _KERNEL: _K5
-    | {
-        "tracked_grasp_exemption_enabled",
-        "tracked_grasp_extra_contact_links",
-        "payload_own_cells_enabled",
-        "pinch_payload_own_cells_enabled",
-        "workspace_explained_cells_enabled",
-    },
+    _KERNEL: {
+        f"contact_exemptions.{k}" for k in _PROVIDER_ONLY | {"tracked_grasp_extra_contact_links"}
+    }
+    | {"tracked_grasp_extra_contact_links"},
 }
 
 
@@ -108,6 +114,7 @@ def _graph(
     scene_path: Path = _SCENE,
     real_hal_params: bool = False,
     extra_args: dict[str, str] | None = None,
+    provider: str = "",
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """``(package, executable) -> evaluated parameters`` of every composed node.
 
@@ -124,6 +131,10 @@ def _graph(
     scene["runtime"] = {**(scene.get("runtime") or {}), "object_tracking": mode}
     if mode != "off":
         scene["runtime"]["grounding_wait_s"] = 5.0
+        # Pinned true (the twins commit false under shadow) so bind/on show it forwarded.
+        scene["runtime"]["grounding_required"] = True
+    if provider:
+        scene["runtime"]["exemption_provider"] = provider
     path = tmp / f"{mode}.yaml"
     path.write_text(yaml.safe_dump(scene))
     invocation = resolve_launch_invocation(
@@ -171,14 +182,17 @@ def _graph(
 @pytest.fixture(scope="module")
 def graphs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     tmp = tmp_path_factory.mktemp("modes")
-    return {mode: _graph(tmp, mode) for mode in ("off", "shadow", "bind", "on")}
+    out = {mode: _graph(tmp, mode) for mode in ("off", "shadow", "bind")}
+    out["off+provider"] = _graph(tmp, "off", provider=_PROVIDER)
+    out["on"] = _graph(tmp, "on", provider=_PROVIDER)
+    return out
 
 
 @pytest.mark.parametrize(("mode", "expected"), [("shadow", _SHADOW), ("bind", _BIND), ("on", _ON)])
 def test_each_mode_switches_only_its_own_consumers(
     graphs: dict[str, Any], mode: str, expected: dict[tuple[str, str], set[str]]
 ) -> None:
-    off, now = graphs["off"], graphs[mode]
+    off, now = graphs["off+provider" if mode == "on" else "off"], graphs[mode]
     assert set(now) - set(off) == {_TRACKER}, "the tracker is the only node a mode adds"
     assert set(off) <= set(now), "a mode never removes a node"
     changed = {
@@ -194,11 +208,26 @@ def test_each_mode_switches_only_its_own_consumers(
     assert now[_RUNTIME]["grounding_required"] is (mode in ("bind", "on"))
     va = {e.split("=", 1)[0] for e in now[_SEGMENTER]["cameras"]}
     assert ("top" in va) is (mode == "shadow"), "bind/on cache only the tracked cameras"
-    assert now[_KERNEL]["tracked_grasp_exemption_enabled"] is (mode == "on")
-    assert now[_KERNEL]["payload_own_cells_enabled"] is (mode == "on")
-    assert now[_KERNEL]["pinch_payload_own_cells_enabled"] is (mode == "on")
-    assert bool(now[_KERNEL].get("tracked_release_jaw_joints")) is (mode in ("bind", "on"))
+    for key in _PROVIDER_ONLY:
+        assert key not in now[_KERNEL], f"{key}: provider-only since ADR-0121 step 3"
+    if mode == "on":
+        assert now[_KERNEL]["contact_exemptions.tracked_grasp_exemption_enabled"] is True
+        assert now[_KERNEL]["contact_exemptions.payload_own_cells_enabled"] is True
+        assert now[_KERNEL]["contact_exemptions.tracked_release_jaw_joints"]
+    else:
+        assert not [k for k in now[_KERNEL] if k.startswith("contact_exemptions.")]
+        assert "tracked_grasp_extra_contact_links" not in now[_KERNEL]
     assert now[_FILTER]["robot_mask_enabled"] is True
+
+
+def test_tracking_on_without_a_provider_is_refused(tmp_path: Path) -> None:
+    """ADR-0121 step 3: in open, `on` would stand the HAL region producer down and leave no
+    grasp exemption; the scene's `DeployRuntime` refuses it at load."""
+    from openral_core.exceptions import ROSConfigError
+    from pydantic import ValidationError
+
+    with pytest.raises((ROSConfigError, ValidationError), match="ADR-0121"):
+        _graph(tmp_path, "on")
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow", "bind", "on"])
@@ -213,7 +242,13 @@ def test_bind_never_arms_the_place_declaration_and_on_arms_the_trackers(
     awaits Safety-WG review (Spark A/B R388 vs R389: only then does the banana reach
     the bowl).
     """
-    nodes = _graph(tmp_path, mode, scene_path=_BANANA, real_hal_params=True)
+    nodes = _graph(
+        tmp_path,
+        mode,
+        scene_path=_BANANA,
+        real_hal_params=True,
+        provider=_PROVIDER if mode == "on" else "",
+    )
     assert nodes[_RUNTIME]["place_approach_enabled"] is (mode != "bind")
 
 
@@ -221,7 +256,8 @@ def test_payload_own_cells_get_the_declared_static_cells_with_k7_off(tmp_path: P
     """Spark R374: with K7 (`workspace_explained_cells`) off the kernel got no
     `static_points_file`, so payload ownership (on with `on`) logged `static_cells=0` and
     tolerated shelf cells inside the held box as payload. The declared static cells follow
-    every consumer: here K7 off, payload-own cells on."""
+    every consumer: here K7 off, payload-own cells on. Since ADR-0121 step 3 both are provider
+    rules, so this composes `on` with a provider; the kernel takes the cells for its view."""
     geometry = tmp_path / "static.yaml"
     geometry.write_text(
         yaml.safe_dump(
@@ -245,9 +281,10 @@ def test_payload_own_cells_get_the_declared_static_cells_with_k7_off(tmp_path: P
             "static_geometry_file": str(geometry),
             "workspace_explained_cells": "false",
         },
+        provider=_PROVIDER,
     )[_KERNEL]
-    assert kernel.get("workspace_explained_cells_enabled", False) is False
-    assert kernel["payload_own_cells_enabled"] is True
+    assert kernel.get("contact_exemptions.workspace_explained_cells_enabled", False) is False
+    assert kernel["contact_exemptions.payload_own_cells_enabled"] is True
     cells = Path(kernel["static_points_file"])
     assert cells.name.startswith("openral_static_cells_") and cells.read_text().strip()
 

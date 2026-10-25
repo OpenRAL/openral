@@ -1196,7 +1196,8 @@ class JointSpec(BaseModel):
             part of a body link rather than a finger link of its own (the
             SO-101: the fixed jaw is the ``gripper`` link, the joint's
             ``parent_link``), the link that carries that fixed jaw. Read only
-            by the safety kernel's tracked grasp exemption (issue #418 K2,
+            by the tracked grasp exemption (issue #418 K2, an exemption-provider
+            rule since ADR-0121 step 3; the kernel's
             ``tracked_grasp_extra_contact_links``), which may then exempt it
             against the selected tracked object's box like the moving jaw;
             the legacy ``grasp_contact_links`` allowlist is unchanged.
@@ -3328,8 +3329,9 @@ class RobotDescription(BaseModel):
         """The ``role: gripper`` joints' ``fixed_jaw_link`` s not already grasp-contact links.
 
         The launch passes this as the safety kernel's
-        ``tracked_grasp_extra_contact_links`` when the tracked grasp exemption is on
-        (issue #418 K2, hazard OT-6; Safety-WG review pending). ``gripper_joints``
+        ``tracked_grasp_extra_contact_links`` when the tracked grasp exemption is on, i.e.
+        only with an exemption provider (issue #418 K2, hazard OT-6, ADR-0121; Safety-WG
+        review pending). ``gripper_joints``
         restricts it as in ``grasp_contact_links``.
 
         Example:
@@ -5035,7 +5037,8 @@ class AttachedCollisionPrimitive(BaseModel):
             observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of
             candidates that may not be the held object; the default, and what a reader treats an
             unknown code as). Only measured and grown primitives can explain the payload's own
-            cells to the kernel (``payload_own_cells_enabled``, sim only).
+            cells to the exemption provider's payload-own rule
+            (``contact_exemptions.payload_own_cells_enabled``, sim only; ADR-0121).
 
     Example:
         >>> p = AttachedCollisionPrimitive(
@@ -12211,8 +12214,10 @@ class DeployRuntime(BaseModel):
     object_tracking: Literal["off", "shadow", "bind", "on"] = "off"
     """Layer-2 object tracker posture (issue #418). ``off``: no tracker. ``shadow``: it
     runs and publishes, nothing consumes it. ``bind``: it owns ``attachment_state``.
-    ``on``: the kernel keys grasp exemptions on tracked ids. Set explicitly per scene.
-    Backward-compatible addition."""
+    ``on``: the grasp exemption keys on tracked ids, a rule OpenRAL Pro's exemption
+    provider supplies, so ``on`` requires ``exemption_provider`` (ADR-0121 step 3; in open
+    ``on`` would stand the HAL's grasp-region producer down and leave no grasp exemption).
+    Set explicitly per scene. Backward-compatible addition."""
     grounding_wait_s: float | None = Field(default=None, gt=0.0)
     """How long (source time) a goal waits for every query to reach CONFIRMED before the
     tracker logs ``grounding_incomplete``. Required whenever ``object_tracking`` is not
@@ -12233,6 +12238,12 @@ class DeployRuntime(BaseModel):
             )
         if self.object_surface_model is not None and self.object_tracking == "off":
             raise ValueError("DeployRuntime.object_surface_model requires object_tracking")
+        if self.object_tracking == "on" and not self.exemption_provider:
+            raise ValueError(
+                "DeployRuntime.object_tracking='on' requires exemption_provider (ADR-0121): the "
+                "tracked-object grasp exemption is provided by an exemption provider, and 'on' "
+                "stands the HAL's grasp-region producer down. Use 'bind' without one."
+            )
         return self
 
     @model_validator(mode="after")

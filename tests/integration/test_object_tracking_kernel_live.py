@@ -148,7 +148,8 @@ def test_tracker_to_kernel_ingest_qos_and_frame_mismatch_refusal() -> None:
 
     params = _kernel_params("bind")
     assert params["attached_collision_enabled"] is True
-    assert params["tracked_release_jaw_joints"]  # K5 wired: this is the bind posture
+    # ADR-0121 step 3: the K5 release decision is a provider rule; no provider, not emitted.
+    assert "tracked_release_jaw_joints" not in params
     name = f"openral_safety_kernel_{uuid.uuid4().hex[:8]}"
     log_path = Path(tempfile.mkdtemp()) / "kernel.log"
     domain = int(os.environ.get("ROS_DOMAIN_ID", "0"))

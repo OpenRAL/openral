@@ -378,6 +378,12 @@ def test_fuzz_every_deploy_scene_with_the_additive_fields(
             "object_tracking": mode,
             "grounding_wait_s": wait,
             "grounding_required": required,
+            # ADR-0121 step 3: `on` needs an exemption provider (`_check_object_tracking`).
+            **(
+                {"exemption_provider": "openral_pro_safety_exemptions/ContactExemptions"}
+                if mode == "on"
+                else {}
+            ),
         }
     )
     _round_trip(runtime)

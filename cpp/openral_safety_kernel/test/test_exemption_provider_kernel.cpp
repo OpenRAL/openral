@@ -146,10 +146,10 @@ TEST_F(ExemptionProviderKernelTest, AProviderThatDeclinesOrThrowsIsRefused) {
       << throws->exemption_provider_status();
 }
 
-TEST_F(ExemptionProviderKernelTest, TheProvidersHandsCarryTheExtraFixedJawsWithK2Off) {
-  // ADR-0121: K2 may live in the provider, so the open kernel resolves the extra fixed jaws
-  // (hand geometry: SO-101's fixed jaw) for the provider's hands exactly as for the in-tree K2
-  // table: the finger link1 plus link0 as a fixed jaw.
+TEST_F(ExemptionProviderKernelTest, TheProvidersHandsCarryTheExtraFixedJaws) {
+  // ADR-0121: K2 lives in the provider, so the open kernel resolves the extra fixed jaws (hand
+  // geometry: SO-101's fixed jaw) only for the provider's hands: the finger link1 plus link0 as
+  // a fixed jaw.
   auto opts = options(cls("Recorder"), "sim", {"link1"});
   auto params = opts.parameter_overrides();
   params.emplace_back("grasp_allowance_enabled", true);
