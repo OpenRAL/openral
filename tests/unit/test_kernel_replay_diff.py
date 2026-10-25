@@ -137,3 +137,12 @@ def test_a_dump_without_hand_links_refuses_rather_than_an_empty_mask() -> None:
     """An empty mask makes the kernel refuse the provider: B would run with none (pro review)."""
     with pytest.raises(ValueError, match="hand links"):
         krd.provider_params({"hal_mode": "sim", "tracked_release_jaw_joints": ["gripper"]}, _P)
+
+
+def test_a_bag_missing_a_required_input_is_named() -> None:
+    """Without measured state, voxels or a candidate both kernels refuse alike: the replay
+    refuses such a bag rather than report a parity that tested nothing (CodeRabbit #432)."""
+    full = dict.fromkeys(krd._REQUIRED_INPUTS, 5)
+    assert krd.missing_inputs(full) == []
+    assert krd.missing_inputs({**full, "/openral/world_voxels": 0}) == ["/openral/world_voxels"]
+    assert krd.missing_inputs({}) == list(krd._REQUIRED_INPUTS)

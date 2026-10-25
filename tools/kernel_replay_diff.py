@@ -252,6 +252,30 @@ def _read_bag(bag: Path) -> Iterator[tuple[str, bytes, int]]:
         yield str(topic), bytes(data), int(stamp)
 
 
+#: Inputs a bag must record for the replay to compare anything: without the measured state or
+#: the voxel grid both kernels refuse every candidate alike, a parity that tested nothing.
+_REQUIRED_INPUTS = ("/joint_states", "/openral/world_voxels", "/openral/candidate_action")
+
+
+def missing_inputs(counts: Mapping[str, int]) -> list[str]:
+    """The required inputs a bag records no message of (``counts``: topic -> messages).
+
+    Example:
+        >>> missing_inputs({"/joint_states": 9, "/openral/world_voxels": 3})
+        ['/openral/candidate_action']
+        >>> missing_inputs(dict.fromkeys(_REQUIRED_INPUTS, 1))
+        []
+    """
+    return [t for t in _REQUIRED_INPUTS if counts.get(t, 0) <= 0]
+
+
+def _bag_counts(bag: Path) -> dict[str, int]:
+    import rosbag2_py  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay, absent from some venvs
+
+    info = rosbag2_py.Info().read_metadata(str(bag), "")
+    return {t.topic_metadata.name: int(t.message_count) for t in info.topics_with_message_count}
+
+
 class _NoAliasDumper(yaml.SafeDumper):
     def ignore_aliases(self, data: Any) -> bool:
         return True
@@ -495,6 +519,8 @@ def replay(
     sides: list[_Side] = []
     diffs: list[Diff] = []
     n = 0
+    if missing := missing_inputs(_bag_counts(bag)):
+        raise RuntimeError(f"the bag records no {missing}: the replay could compare nothing")
     try:
         procs.append(_spawn_kernel(params_a, 71, workdir))
         procs.append(_spawn_kernel(params_b, 72, workdir))
