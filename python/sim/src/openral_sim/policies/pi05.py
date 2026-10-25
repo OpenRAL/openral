@@ -35,6 +35,7 @@ from openral_rskill._vla_core import (
     apply_chunk_replay,
     build_chunk_executor,
     call_make_processors_cached_first,
+    image_to_chw_tensor,
     relative_rtc_prefix_fn,
     release_torch_modules,
     resolve_camera_keys,
@@ -281,7 +282,7 @@ class _PI05Adapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
+            t = image_to_chw_tensor(img, torch=torch, device=self.device)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)

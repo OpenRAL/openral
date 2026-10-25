@@ -1340,6 +1340,25 @@ def relative_rtc_prefix_fn(preprocessor: Any, *, device: str) -> Callable[[Any],
     return prefix
 
 
+def image_to_chw_tensor(img: Any, *, torch: Any, device: str) -> Any:
+    """HWC ``uint8`` frame → ``(3, H, W)`` float32 in ``[0, 1]`` on ``device``.
+
+    Uploads the 1-byte pixels first and converts on the device: building the
+    float32 tensor on the host costs ~10 ms per 640x480 frame per tick and was
+    the largest single cost of a ``sim run`` step.
+
+    Args:
+        img: ``(H, W, 3)`` image array (``uint8``, 0..255).
+        torch: The lazily imported ``torch`` module.
+        device: Target device string.
+
+    Returns:
+        ``(3, H, W)`` float32 tensor on ``device``.
+    """
+    t = torch.from_numpy(np.ascontiguousarray(img)).to(device)
+    return t.permute(2, 0, 1).float().div_(255.0)
+
+
 def to_numpy_action(action_tensor: Any) -> NDArray[np.float32]:
     """Squeeze a single-batch action tensor to a 1-D float32 NumPy array.
 

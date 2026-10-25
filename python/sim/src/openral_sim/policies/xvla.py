@@ -36,6 +36,7 @@ from openral_rskill._vla_core import (
     apply_chunk_replay,
     build_chunk_executor,
     checkpoint_image_keys,
+    image_to_chw_tensor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -173,8 +174,7 @@ class _XVLAAdapter:
         device = self.device
 
         def _hwc_uint8_to_bchw_float(img: NDArray[np.uint8]) -> Any:
-            t = torch.from_numpy(np.ascontiguousarray(img)).float().div(255.0)
-            return t.permute(2, 0, 1).unsqueeze(0).to(device)
+            return image_to_chw_tensor(img, torch=torch, device=device).unsqueeze(0)
 
         def _to_tensor(arr: Any, shape: tuple[int, ...]) -> Any:
             if arr is None:

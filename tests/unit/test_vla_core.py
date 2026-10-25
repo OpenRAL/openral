@@ -24,6 +24,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import VLASpec
 from openral_observability import semconv
 from openral_rskill._vla_core import (
+    image_to_chw_tensor,
     resolve_device,
     resolve_inference_engine,
     resolve_rskill_repo_id,
@@ -278,6 +279,17 @@ class TestRunInference:
             _openral_inference_engine = "tensorrt"
 
         assert resolve_inference_engine(_Policy(), "pytorch") == "trt"
+
+
+# ── image_to_chw_tensor ───────────────────────────────────────────────────────
+
+
+def test_image_to_chw_tensor_matches_host_float_conversion() -> None:
+    img = np.random.default_rng(0).integers(0, 256, (48, 64, 3), dtype=np.uint8)
+    out = image_to_chw_tensor(img, torch=torch, device="cpu")
+    ref = torch.tensor(img, dtype=torch.float32).div(255.0).permute(2, 0, 1)
+    assert out.shape == (3, 48, 64) and out.dtype == torch.float32
+    assert torch.equal(out, ref)
 
 
 # ── to_numpy_action ───────────────────────────────────────────────────────────

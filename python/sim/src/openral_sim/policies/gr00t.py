@@ -61,6 +61,7 @@ from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     build_chunk_executor,
     checkpoint_image_keys,
+    image_to_chw_tensor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -319,7 +320,7 @@ class _GrootAdapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
+            t = image_to_chw_tensor(img, torch=torch, device=self.device)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             if self._flip_vertical:
