@@ -13346,6 +13346,12 @@ class CollisionEvidence(_FailureEvidenceBase):
             active during the check, when reported by the producer.
         grasp_exemption_active: Whether a live grasp exemption was active during
             the check, when reported by the producer.
+        grasp_exemption_source: Which grasp exemption the check ran under (ADR-0121):
+            ``region`` (ADR-0115), ``tracked`` (in-tree K2), ``provider`` (an exemption
+            provider replacing the region) or ``none``; ``None`` from a producer that
+            predates it. Backward-compatible addition.
+        grasp_exemption_provider: The provider's name when ``grasp_exemption_source`` is
+            ``provider``. Backward-compatible addition.
         depth_is_box_bound: Whether ``min_distance_m`` reports a bounding-box
             lower bound instead of a tight-geometry distance.
         payload_evidence_kind: Attached-payload source kind from the accepted
@@ -13390,6 +13396,10 @@ class CollisionEvidence(_FailureEvidenceBase):
     ) = None
     workspace_contact_active: bool | None = None
     grasp_exemption_active: bool | None = None
+    grasp_exemption_source: Literal["region", "tracked", "provider", "none"] | None = None
+    grasp_exemption_provider: str | None = Field(
+        default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
+    )
     depth_is_box_bound: bool | None = None
     payload_evidence_kind: str | None = Field(
         default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
