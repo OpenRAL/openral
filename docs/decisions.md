@@ -57,7 +57,9 @@ in full so the posture stays visible although the records are private:
   `workspace_box` contact); the tracker-based rules (#418 K2, K5, K7,
   payload-own cells) are the ones that move (ADR-0121 amendment, 2026-10-25),
   and step 3 has removed them from the open kernel: `object_tracking: on`
-  requires an exemption provider.
+  requires an exemption provider. Open's tracker mode is `tracking`: the
+  open tracker measures the box rules' regions, and the kernel applies only
+  its open rules to them (ADR-0122).
 - Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
   own upstream license, independent of OpenRAL's code license. This is
   compliance for models OpenRAL doesn't own, not a statement about
