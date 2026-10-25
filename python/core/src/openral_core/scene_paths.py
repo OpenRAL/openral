@@ -24,7 +24,7 @@ def _anchored(ref: object, scene_dir: Path) -> object:
     if not rel or ":" in rel or Path(rel).is_absolute():
         return ref  # not a relative local path: `isaac:`, a URL, absolute
     beside = scene_dir / rel
-    return str(beside.resolve()) if beside.exists() else ref
+    return str(beside.resolve()) if beside.is_file() else ref
 
 
 def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:

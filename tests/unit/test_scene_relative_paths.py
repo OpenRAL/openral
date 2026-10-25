@@ -94,3 +94,11 @@ def test_the_isaac_robot_spec_resolves_the_urdf_outside_the_checkout(
     monkeypatch.chdir(tmp_path)
     spec = _build_robot_spec(ROBOTS.get("openarm")(), "openarm")
     assert Path(spec["urdf_path"]).is_file()
+
+
+def test_a_directory_beside_the_scene_never_shadows_the_fallback(tmp_path: Path) -> None:
+    """Only a FILE beside the scene anchors a reference: a same-named directory leaves it
+    as written, so the repo-root / cwd lookup still finds the real file (CodeRabbit #434)."""
+    (tmp_path / "stage.usd").mkdir()
+    raw = {"scene": {"assets_uri": "stage.usd"}}
+    assert anchor_scene_paths(raw, tmp_path) == raw
