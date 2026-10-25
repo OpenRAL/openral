@@ -1,4 +1,4 @@
-"""Which gripper command a safety-approved chunk carries (issue #418, bind/on, sim only).
+"""Which gripper command a safety-approved chunk carries (issue #418, tracking/on, sim only).
 
 The tracker's own stalled-jaw read (``stall.JawStallDetector``) needs the commanded jaw. The
 approved chunk carries it three ways, and the node read only the first:

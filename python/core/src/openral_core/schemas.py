@@ -4495,9 +4495,9 @@ class GraspDeclaration(BaseModel):
             (OpenRAL's own producers set it on every goal and do not warn).
             ``target_queries`` grounded by the Layer-2 tracker replace it, but it
             stays the only input of the HAL grasp-target leg while
-            ``DeployRuntime.object_tracking`` is ``off`` or ``shadow`` (the two
-            postures ``deploy run`` allows), and, unless sim ground truth, it
-            seeds the tracker's TARGET query. It is removed only after #418
+            ``DeployRuntime.object_tracking`` is ``off`` (the posture ``deploy
+            run`` allows), and, unless sim ground truth, it seeds the tracker's
+            TARGET query. It is removed only after #418
             phase 5, with an on-disk ``schema_version`` bump and a migrator.
         workspace_box: Optional manipulation workspace (issue #349,
             ``docs/reference/manipulation-workspace-contact.md``) in the voxel
@@ -12211,13 +12211,19 @@ class DeployRuntime(BaseModel):
     refuses it with the octomap leg off rather than drop declared walls. For a sim
     scene, ``tools/derive_scene_inputs.py`` exports it from the static colliders (an
     Isaac stage or a MuJoCo model). Backward-compatible addition."""
-    object_tracking: Literal["off", "shadow", "bind", "on"] = "off"
-    """Layer-2 object tracker posture (issue #418). ``off``: no tracker. ``shadow``: it
-    runs and publishes, nothing consumes it. ``bind``: it owns ``attachment_state``.
-    ``on``: the grasp exemption keys on tracked ids, a rule OpenRAL Pro's exemption
-    provider supplies, so ``on`` requires ``exemption_provider`` (ADR-0121 step 3; in open
-    ``on`` would stand the HAL's grasp-region producer down and leave no grasp exemption).
-    Set explicitly per scene. Backward-compatible addition."""
+    object_tracking: Literal["off", "tracking", "on"] = "off"
+    """Layer-2 object tracker posture (issue #418). ``off``: no tracker (every real
+    deploy). ``tracking`` (open, sim-only pending Safety-WG review): the tracker grounds
+    the goal queries, owns ``attachment_state`` (the held payload is its box, cleared from
+    the voxel map by tracked identity) and measures the boxes the kernel's open box rules
+    take: the grasp declaration's ``region`` (the target track's box until the hand holds
+    it, ``TrackerSession.grasp_region``), the place declaration's ``region`` and the
+    workspace region; the HAL grasp- and place-target legs stand down. ``on``: as
+    ``tracking`` minus the grasp ``region``, plus the tracker-keyed exemption rules OpenRAL
+    Pro's exemption provider supplies, so ``on`` requires ``exemption_provider`` (ADR-0121
+    step 3). The former ``shadow`` and ``bind`` load as deprecated aliases of ``tracking``
+    with a ``FutureWarning``; ``shadow``'s observe-only posture is gone. Set explicitly per
+    scene."""
     grounding_wait_s: float | None = Field(default=None, gt=0.0)
     """How long (source time) a goal waits for every query to reach CONFIRMED before the
     tracker logs ``grounding_incomplete``. Required whenever ``object_tracking`` is not
@@ -12228,6 +12234,27 @@ class DeployRuntime(BaseModel):
     object_surface_model: ObjectSurfaceModelConfig | None = None
     """Optional resource-bounded object-local registration settings. This config
     controls observation/model work only; it grants no contact or safety allowance."""
+
+    @field_validator("object_tracking", mode="before")
+    @classmethod
+    def _map_deprecated_tracking_modes(cls, value: object) -> object:
+        """Map the removed ``shadow`` / ``bind`` onto ``tracking`` with a ``FutureWarning``.
+
+        ``FutureWarning``, as ``image_flip_180``'s: scene authors are end users, and Python
+        hides (Pending)DeprecationWarning outside ``__main__``.
+        """
+        if value not in ("shadow", "bind"):
+            return value
+        import warnings  # noqa: PLC0415  # reason: only paid when a deprecated mode is present
+
+        warnings.warn(
+            f"DeployRuntime.object_tracking={value!r} is deprecated and maps to 'tracking' "
+            "(the tracker owns attachment_state and measures the grasp/place/workspace boxes; "
+            "shadow's observe-only posture is gone). Real deploys use 'off'.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return "tracking"
 
     @model_validator(mode="after")
     def _check_object_tracking(self) -> Self:
@@ -12242,7 +12269,7 @@ class DeployRuntime(BaseModel):
             raise ValueError(
                 "DeployRuntime.object_tracking='on' requires exemption_provider (ADR-0121): the "
                 "tracked-object grasp exemption is provided by an exemption provider, and 'on' "
-                "stands the HAL's grasp-region producer down. Use 'bind' without one."
+                "stands the HAL's grasp-region producer down. Use 'tracking' without one."
             )
         return self
 
@@ -12571,8 +12598,8 @@ class DeployScene(BaseModel):
             warnings.warn(
                 f"{path}: grasp_declaration.search_box is pending deprecation (issue #418): "
                 "the Layer-2 object tracker grounds target_queries instead. It still seeds the "
-                "HAL grasp-target leg (object_tracking off or shadow, so `deploy run` too) and, "
-                "unless it is sim ground truth, the tracker's TARGET query (shadow, bind, on). "
+                "HAL grasp-target leg (object_tracking off, so `deploy run` too) and, "
+                "unless it is sim ground truth, the tracker's TARGET query (tracking, on). "
                 "It is removed only after #418 phase 5, with a schema migrator.",
                 FutureWarning,
                 stacklevel=2,

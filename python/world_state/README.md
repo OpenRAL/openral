@@ -61,10 +61,17 @@ newest voxel grid and the answers to the tracker's own requests, and returns at 
   self-filter hides a held object, old cells clear late); a wrong bind is released by the
   in-hand drop check below. A derived ATTACH while the hand already holds is the same hold
   (a chattering command re-reads it), never a rebind.
-- In `bind` / `on` the place declaration's region is the tracker's: the one CONFIRMED /
+- In `tracking` / `on` the place declaration's region is the tracker's: the one CONFIRMED /
   OCCLUDED DESTINATION track labelled as its `destination_query`, its box stamped with its
   last map confirmation, while a payload is held (`TrackerSession.place_region`); `None`
   otherwise. The HAL's flat-support producer never arms over a container.
+- In `tracking` (not `on`) the grasp declaration's region is the tracker's too: the one
+  CONFIRMED / OCCLUDED TARGET track keyed to the declaration, its box stamped with its last
+  map confirmation (`TrackerSession.grasp_region`); `None` with no unique target, past the
+  grasp-region caps, or once a hold started under that declaration. The region is a
+  pre-grasp allowance: the attachment snapshot carries none, so the kernel never latches it
+  and a box riding the hand cannot keep the exemption through the carry; a new declaration
+  re-arms.
 - Normal `TRACKED_OBJECT` ATTACH also requires a nonfuture fit within `TrackerParams.max_age_s`;
   map confirmation cannot renew that geometry-age check.
 - A DESTINATION track is never bound: the place target is where the payload goes, never the

@@ -2299,7 +2299,7 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_place_target_search_depth_m", 0.20),
                     ("vision_attachment_place_target_extrinsic_error_m", MAX_PLANAR_ERR_M),
                     # False when the #418 object tracker owns /openral/attachment_state
-                    # (DeployRuntime.object_tracking bind | on): the bridge publishes nothing.
+                    # (DeployRuntime.object_tracking tracking | on): the bridge publishes nothing.
                     ("vision_attachment_publish_attachment_state", True),
                 ],
             )

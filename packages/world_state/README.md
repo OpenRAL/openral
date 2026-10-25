@@ -187,14 +187,13 @@ target track. The completion check asks its judge only while it is true.
 
 | Mode | What leaves the node |
 | --- | --- |
-| `shadow` | `/openral/tracked_objects` and the logged predicted bindings (`object_tracker.bound`). The aggregator relays the set on `world_state_fast` and the kernel ingests it (K1, refusals logged), with no decision change: no `TRACKED_OBJECT` binding exists and no tracked-object rule runs. Allowed on `deploy run`. |
-| `bind` | Also `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations relayed **without** a region. The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`) and runs only its grasp trigger (`/openral/grasp_events`): no segmentation, no grasp/place-target leg; an ATTACH holds the action ack until this node's next attachment revision (at most the leg's `deadline_s`). The octomap bridge clears a `TRACKED_OBJECT` binding's cells by identity (in `on` too); a `PINCH_FALLBACK` hold stays mapped. Sim-only until Safety-WG review. |
-| `on` | As `bind`; grasp exemptions are additionally keyed on tracked ids (K2), with K5 / K7 / payload-own cells: rules of the exemption provider (OpenRAL Pro, ADR-0121), so `on` is refused without `exemption_provider`. Sim-only. |
+| `tracking` | `/openral/tracked_objects` and `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations with the regions the tracker measures: the grasp declaration's `region` (the one CONFIRMED / OCCLUDED TARGET track keyed to it, `TrackerSession.grasp_region`; none once a hold started under that declaration, so the kernel never latches a box riding the hand), its `workspace_region` and the place declaration's `region` (`place_region`). The kernel applies its open box rules over them (ADR-0115 grasp allowance, ADR-0097/0098 place allowance, #349 workspace contact). The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`) and runs only its grasp trigger (`/openral/grasp_events`): no segmentation, no grasp/place-target leg; an ATTACH holds the action ack until this node's next attachment revision (at most the leg's `deadline_s`). The octomap bridge clears a `TRACKED_OBJECT` binding's cells by identity (in `on` too); a `PINCH_FALLBACK` hold stays mapped. Sim-only until Safety-WG review. The former `shadow` / `bind` load as deprecated aliases of `tracking`. |
+| `on` | As `tracking` without the grasp `region`; grasp exemptions are keyed on tracked ids (K2), with K5 / K7 / payload-own cells: rules of the exemption provider (OpenRAL Pro, ADR-0121), so `on` is refused without `exemption_provider`. Sim-only. |
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `robot_yaml` | — | Manifest; the tracks' frame is its `base_frame`. |
-| `mode` | `shadow` | `shadow` / `bind` / `on` (`bind`/`on` refused with `hal_mode:=real`). |
+| `mode` | `tracking` | `tracking` / `on` (both refused with `hal_mode:=real`). |
 | `hal_mode` | `sim` | |
 | `cameras` | none | Depth cameras: `camera_topic(<cam>, DEPTH_IMAGE / DEPTH_CAMERA_INFO / ROBOT_MASK)`. |
 | `cell_m` | `0.015` | The octomap resolution (the pinch volume is grown by one cell). |
@@ -259,7 +258,7 @@ fresh track or the pinch fallback.
 | Sub | `/openral/grasp_events` | RELIABLE / VOLATILE / KEEP_LAST=10 | `openral_msgs/GraspEvent` |
 | Sub | `/openral/grasp_declaration`, `/openral/place_declaration` | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/GraspDeclaration`, `PlaceDeclaration` |
 | Pub | `/openral/tracked_objects` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/TrackedObjectSet` |
-| Pub | `/openral/attachment_state` (`bind`/`on`) | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
+| Pub | `/openral/attachment_state` | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
 | Client | `DEFAULT_SEGMENT_SERVICE`, `locate_service` | | `SegmentInView`, `LocateInView` |
 
 Clocks: every lifetime runs on source stamps (depth, grid `source_stamp`, joint states,
@@ -269,7 +268,8 @@ regressing `tracked_objects` revision until it is re-activated).
 
 Covered by `tests/unit/test_object_tracker_session.py` and the live
 `tests/integration/test_object_tracker_node_live.py` (real tracker + World State nodes:
-grounding, relay, staleness, `bind`-mode `TRACKED_OBJECT` binding, restart revision).
+grounding, relay, staleness, the `tracking` grasp region and `TRACKED_OBJECT` binding, no
+region under `on`, restart revision).
 
 ## Observed object-local surfaces
 

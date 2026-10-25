@@ -183,24 +183,22 @@ runtime:
   # grants clearing. Per-cell ownership remains incomplete; this stays SIM-ONLY,
   # pending Safety-WG review. `deploy run` refuses it.
   payload_sweep_clear_enabled: true
-  # Open path (ADR-0121 step 3): `shadow`. The HAL legs own the grasp region (the
-  # grasp-target leg), the place region (the place-target leg) and the attachment set; the
-  # #418 tracker runs and grounds the seedless target query within `grounding_wait_s`
-  # (source time) but decides nothing. The held payload is the HAL's measured attachment
-  # (with payload_sweep_clear), not a tracked identity. `on`, as the successful Spark runs
-  # R365/R389 (2026-10-23) ran it, keys the grasp exemption and payload ownership on
-  # tracked ids and arms the runner's goal-scope place declaration over the tracked bowl
-  # (A/B R388 off: the banana dropped on the table vs R389 on: in the bowl); it needs
-  # `exemption_provider:` (OpenRAL Pro, ADR-0121).
-  # Open-only Spark r6 (2026-10-25) went 0/5: the grasp-target leg never measured the
-  # banana, and the HAL's frozen release left it attached to the base, where it
-  # stopped on its own cells.
-  # `grounding_required` is false
-  # because shadow refuses no goal (`deploy sim` ignores it there). SIM-ONLY scene, pending
-  # Safety-WG review.
-  object_tracking: shadow
+  # Open path (ADR-0121 step 3): `tracking`. The #418 tracker grounds the seedless target
+  # query within `grounding_wait_s` (source time), owns the attachment set (the held
+  # payload is the tracker's box, cleared from the voxel map by tracked identity) and
+  # measures the grasp region (the target track's box until the hand holds it), the place
+  # region (the tracked bowl; the runner arms its goal-scope place declaration) and the
+  # workspace region; the kernel applies its open box rules over them (ADR-0115 grasp
+  # allowance, ADR-0097/0098 place allowance, #349 workspace contact). The HAL grasp- and
+  # place-target legs stand down. `on` + `exemption_provider:` (OpenRAL Pro, ADR-0121) adds
+  # the tracker-keyed Pro rules, as the successful Spark runs R365/R389 (2026-10-23) used
+  # (A/B R388 off: the banana dropped on the table vs R389: in the bowl).
+  # History: r6 (2026-10-25) under the removed `shadow` went 0/5 (the HAL leg never
+  # measured the banana). The tracker grounds the goal, so `grounding_required` refuses one
+  # it cannot ground. SIM-ONLY scene, pending Safety-WG review.
+  object_tracking: tracking
   grounding_wait_s: 15.0
-  grounding_required: false
+  grounding_required: true
   # The target query has no seed (the grasp declaration's search_box is sim ground truth),
   # so the tracker grounds it through this on-demand locator; without one `deploy sim`
   # refuses to configure. Needs the omdet dependency group (`just sync --group omdet`).
@@ -236,7 +234,7 @@ runtime:
     grasp_target_enabled: true
     grasp_target_premeasure: true
     # The banana goes into the bowl: without the place producer a payload meeting its
-    # destination is a world collision (Spark R142, 2026-10-22). Built only in off /
-    # shadow; under `on` the tracker measures the place region instead.
+    # destination is a world collision (Spark R142, 2026-10-22). Built only with
+    # object_tracking off; under `tracking` / `on` the tracker measures the place region.
     place_target_enabled: true
     tf_frames: {robotiq_finger_pair: robotiq_arg2f_tcp}

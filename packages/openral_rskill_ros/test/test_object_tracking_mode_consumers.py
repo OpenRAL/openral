@@ -1,28 +1,23 @@
 """Each ``object_tracking`` mode switches only its own consumers (issue #418 matrix A).
 
-``scenes/deploy/isaac_leisaac_pick_orange.yaml`` is composed at ``off``, ``shadow``,
-``bind`` and ``on`` the way ``openral deploy`` drives it (``resolve_launch_invocation`` →
-the real ``compose_runtime_graph``; nothing is launched). Every node's evaluated
-parameters are diffed against ``off``, and the diff must be exactly the consumers the
-mode owns:
+``scenes/deploy/isaac_leisaac_pick_orange.yaml`` is composed at ``off``, ``tracking`` and
+``on`` the way ``openral deploy`` drives it (``resolve_launch_invocation`` → the real
+``compose_runtime_graph``; nothing is launched). Every node's evaluated parameters are
+diffed against ``off``, and the diff must be exactly the consumers the mode owns:
 
-* ``shadow``: the tracker node is added; the self-filter renders robot masks for the
-  tracked camera; the segmenter caches its frames and serves it on the tracker's frame
-  wait and skew budget, and so does the scene's on-demand locator; the runtime and the
-  reasoner are told the mode (never ``grounding_required``: shadow refuses no goal). The
-  HAL and the kernel are untouched.
-* ``bind``: adds the HAL's vision bridge giving up ``/openral/attachment_state`` (it runs
-  only its grasp trigger then, so the segmenter caches only the tracked cameras) and the
-  scene's ``grounding_required``. The kernel is untouched: the jaw-open release (K5) is an
-  exemption-provider rule since ADR-0121 step 3, never emitted without a provider.
+* ``tracking``: the tracker node is added; the self-filter renders robot masks for the
+  tracked camera; the segmenter caches only the tracked cameras (the HAL's vision bridge
+  gives up ``/openral/attachment_state`` and runs only its grasp trigger) and serves them on
+  the tracker's frame wait and skew budget, and so does the scene's on-demand locator; the
+  runtime and the reasoner are told the mode, the runtime gets the scene's
+  ``grounding_required`` and arms its goal-scope place declaration (the tracker measures
+  its region, ``TrackerSession.place_region``). The kernel is untouched: no
+  ``contact_exemptions.*`` (K2 / K5 / K7 / OT-10 are exemption-provider rules since
+  ADR-0121 step 3); its open box rules take the regions the tracker measures.
 * ``on`` (refused without an ``exemption_provider``; diffed against ``off`` with the same
-  provider): adds the tracker-measured place declaration and, for the provider only, under
-  ``contact_exemptions.``, K5, the tracked grasp exemption (K2), payload ownership and
-  explained-workspace cells; the fixed-jaw contact-link list goes to the kernel, which
-  hands it to the provider.
-
-``bind`` does not arm the runner's goal-scope place declaration: the HAL's place-target leg
-that measures its region is not built there.
+  provider): as ``tracking`` plus, for the provider only, under ``contact_exemptions.``, K5,
+  the tracked grasp exemption (K2), payload ownership and explained-workspace cells; the
+  fixed-jaw contact-link list goes to the kernel, which hands it to the provider.
 """
 
 from __future__ import annotations
@@ -71,20 +66,26 @@ _K5 = {
     "tracked_release_gap",
     "tracked_release_dwell_s",
 }
-_SHADOW = {
+_TRACKING = {
     _FILTER: _MASK,
-    _SEGMENTER: {"cameras", "camera_infos", "camera_request_deadlines", "camera_max_frame_skews"},
+    # The HAL vision camera is dropped from the segmenter: only the tracked cameras stay.
+    _SEGMENTER: {
+        "cameras",
+        "camera_infos",
+        "camera_request_deadlines",
+        "camera_max_frame_skews",
+        "primary_camera",
+    },
     # The scene's committed omdet-turbo-locator also caches the tracked cameras.
     _LOCATOR: {"cameras", "camera_infos"},
     _REASONER: {"object_tracking"},
-    # The scene commits `grounding_required: true`; shadow forwards it as false.
-    _RUNTIME: {"object_tracking", "grounding_wait_s"},
-}
-_BIND = {
-    **_SHADOW,
-    # The HAL vision camera is dropped from the segmenter: only the tracked cameras stay.
-    _SEGMENTER: _SHADOW[_SEGMENTER] | {"primary_camera"},
-    _RUNTIME: _SHADOW[_RUNTIME] | {"grounding_required"},
+    # The tracker measures the place region: the goal-scope place declaration is armed.
+    _RUNTIME: {
+        "object_tracking",
+        "grounding_wait_s",
+        "grounding_required",
+        "place_approach_enabled",
+    },
     _HAL: {"vision_attachment_publish_attachment_state"},
 }
 #: The rules ADR-0121 step 3 removed from the open kernel: provider-only.
@@ -96,9 +97,7 @@ _PROVIDER_ONLY = _K5 | {
 }
 _PROVIDER = "openral_pro_safety_exemptions/ContactExemptions"
 _ON = {
-    **_BIND,
-    # The tracker measures the place region: the goal-scope place declaration is armed.
-    _RUNTIME: _BIND[_RUNTIME] | {"place_approach_enabled"},
+    **_TRACKING,
     _KERNEL: {
         f"contact_exemptions.{k}" for k in _PROVIDER_ONLY | {"tracked_grasp_extra_contact_links"}
     }
@@ -131,7 +130,7 @@ def _graph(
     scene["runtime"] = {**(scene.get("runtime") or {}), "object_tracking": mode}
     if mode != "off":
         scene["runtime"]["grounding_wait_s"] = 5.0
-        # Pinned true (the twins commit false under shadow) so bind/on show it forwarded.
+        # Pinned true (the twins commit it) so tracking/on show it forwarded.
         scene["runtime"]["grounding_required"] = True
     if provider:
         scene["runtime"]["exemption_provider"] = provider
@@ -182,13 +181,13 @@ def _graph(
 @pytest.fixture(scope="module")
 def graphs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     tmp = tmp_path_factory.mktemp("modes")
-    out = {mode: _graph(tmp, mode) for mode in ("off", "shadow", "bind")}
+    out = {mode: _graph(tmp, mode) for mode in ("off", "tracking")}
     out["off+provider"] = _graph(tmp, "off", provider=_PROVIDER)
     out["on"] = _graph(tmp, "on", provider=_PROVIDER)
     return out
 
 
-@pytest.mark.parametrize(("mode", "expected"), [("shadow", _SHADOW), ("bind", _BIND), ("on", _ON)])
+@pytest.mark.parametrize(("mode", "expected"), [("tracking", _TRACKING), ("on", _ON)])
 def test_each_mode_switches_only_its_own_consumers(
     graphs: dict[str, Any], mode: str, expected: dict[tuple[str, str], set[str]]
 ) -> None:
@@ -203,11 +202,11 @@ def test_each_mode_switches_only_its_own_consumers(
     assert now[_TRACKER]["mode"] == mode
     assert now[_RUNTIME]["object_tracking"] == mode
     hal = now[_HAL].get("vision_attachment_publish_attachment_state", True)
-    assert hal is (mode == "shadow"), "the HAL publishes attachment_state only in shadow"
-    assert now[_RUNTIME]["place_approach_enabled"] is (mode == "on")
-    assert now[_RUNTIME]["grounding_required"] is (mode in ("bind", "on"))
+    assert hal is False, "the tracker is the only attachment_state author"
+    assert now[_RUNTIME]["place_approach_enabled"] is True
+    assert now[_RUNTIME]["grounding_required"] is True
     va = {e.split("=", 1)[0] for e in now[_SEGMENTER]["cameras"]}
-    assert ("top" in va) is (mode == "shadow"), "bind/on cache only the tracked cameras"
+    assert "top" not in va, "only the tracked cameras are cached"
     for key in _PROVIDER_ONLY:
         assert key not in now[_KERNEL], f"{key}: provider-only since ADR-0121 step 3"
     if mode == "on":
@@ -230,17 +229,14 @@ def test_tracking_on_without_a_provider_is_refused(tmp_path: Path) -> None:
         _graph(tmp_path, "on")
 
 
-@pytest.mark.parametrize("mode", ["off", "shadow", "bind", "on"])
-def test_bind_never_arms_the_place_declaration_and_on_arms_the_trackers(
-    tmp_path: Path, mode: str
-) -> None:
-    """The banana scene runs the HAL place-target leg; bind / on do not build it.
+@pytest.mark.parametrize("mode", ["off", "tracking", "on"])
+def test_every_mode_arms_the_place_declaration_over_its_producer(tmp_path: Path, mode: str) -> None:
+    """The banana scene runs the HAL place-target leg; tracking / on do not build it.
 
-    Off / shadow arm the goal-scope place declaration whose region that leg measures; in
-    bind no producer measures it, so none. Under on the tracker measures it
-    (`TrackerSession.place_region`): armed, a sim-only non-monotone relaxation that
-    awaits Safety-WG review (Spark A/B R388 vs R389: only then does the banana reach
-    the bowl).
+    Off arms the goal-scope place declaration whose region that leg measures. Under
+    tracking / on the tracker measures it (`TrackerSession.place_region`): armed, a
+    sim-only non-monotone relaxation that awaits Safety-WG review (Spark A/B R388 vs R389:
+    only then does the banana reach the bowl).
     """
     nodes = _graph(
         tmp_path,
@@ -249,7 +245,7 @@ def test_bind_never_arms_the_place_declaration_and_on_arms_the_trackers(
         real_hal_params=True,
         provider=_PROVIDER if mode == "on" else "",
     )
-    assert nodes[_RUNTIME]["place_approach_enabled"] is (mode != "bind")
+    assert nodes[_RUNTIME]["place_approach_enabled"] is True
 
 
 def test_payload_own_cells_get_the_declared_static_cells_with_k7_off(tmp_path: Path) -> None:

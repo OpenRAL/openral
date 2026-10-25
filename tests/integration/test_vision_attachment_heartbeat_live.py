@@ -314,7 +314,7 @@ def test_the_vision_leg_heartbeats_only_on_live_jaw_positions_with_a_monotonic_r
 
 
 def test_a_bridge_gated_off_never_publishes_attachment_state() -> None:
-    """``publish_attachment_state=False`` (#418 ``bind``/``on``): the tracker owns the topic."""
+    """``publish_attachment_state=False`` (#418 ``tracking``/``on``): the tracker owns the topic."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
     from openral_core import JointState, RobotDescription

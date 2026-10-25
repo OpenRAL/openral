@@ -391,17 +391,18 @@ adds a simulated depth camera at LeIsaac's front view through
 sensors for this scene only (`sim_scene_description`), mounted by `camera_mounts`.
 The HAL publishes its cloud, octomap maps it, and the kernel checks every chunk
 against the voxels; the robot manifest, and so a real deploy, is unchanged.
-Both Isaac deploy twins commit `runtime.object_tracking: shadow` (ADR-0121 step 3): the
-HAL's vision legs own the grasp region (grasp-target leg), the place region (the
-banana-in-bowl twin's place-target leg; pick-orange has none, so it has no place
-allowance in shadow) and the attachment set, and the held payload is the HAL's measured
-attachment (with `payload_sweep_clear_enabled`), not a tracked identity. The #418 object
-tracker still runs with the grounding wait the successful Spark runs used (pick-orange
-8 s, R372; banana-in-bowl 15 s, R365, 2026-10-23) and grounds the target query, but
-decides nothing (shadow refuses no goal, so `grounding_required: false`). Those runs used
-`on`, which keys the grasp exemption and payload ownership on tracked ids; `on` needs an
-exemption provider (OpenRAL Pro), so add `exemption_provider:` to run it. The shadow
-configuration has not been run in sim since step 3: an open-only tier-3 run is owed.
+Both Isaac deploy twins commit `runtime.object_tracking: tracking` (ADR-0121 step 3) with
+`grounding_required: true` and the grounding wait the successful Spark runs used
+(pick-orange 8 s, R372; banana-in-bowl 15 s, R365, 2026-10-23). The #418 object tracker
+grounds the target query, owns the attachment set (the held payload is the tracker's box,
+cleared from the voxel map by tracked identity) and measures the boxes the kernel's open box
+rules take: the grasp region (the target track's box until the hand holds it), the place
+region (the tracked destination; the runner arms its goal-scope place declaration) and the
+workspace region. The HAL's grasp- and place-target legs stand down. `on` +
+`exemption_provider:` (OpenRAL Pro, ADR-0121) adds the tracker-keyed rules those runs used.
+History: Spark r6 (2026-10-25) under the removed `shadow` (HAL legs measuring) went 0/5 on
+both twins; the HAL leg fit the 5.7 cm orange as ~10 x 10 x 18 cm and never measured the
+banana. `tracking` has not been run in sim yet: an open-only tier-3 run is owed.
 Their target query has no seed, so both also commit
 `object_detector_locators: [omdet-turbo-locator]` to ground it; that needs the `omdet`
 dependency group (`just sync --group omdet`). SIM-ONLY, pending Safety-WG review.

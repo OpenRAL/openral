@@ -1362,11 +1362,11 @@ def _fire_attach(bridge: VisionAttachmentBridge) -> None:
 def test_with_the_tracker_owning_attachment_state_an_attach_is_only_an_event(
     tracker_owned: bool,
 ) -> None:
-    """Issue #418 ``bind`` / ``on`` (``publish_attachment_state=False``): the tracker binds from
+    """Issue #418 ``tracking`` / ``on`` (``publish_attachment_state=False``): the tracker binds from
     ``/openral/grasp_events`` and segments on its own, so the bridge runs no grasp/place leg
     and resolves no payload for the ATTACH (no ``SegmentInView`` client, nothing to segment);
-    it still holds the action ack for the tracker's binding (see the next test). ``off`` /
-    ``shadow`` (the control) build every legacy producer and resolve a payload: here the
+    it still holds the action ack for the tracker's binding (see the next test). ``off``
+    (the control) builds every legacy producer and resolve a payload: here the
     typed no-depth fallback, as no depth frame is fed."""
     pytest.importorskip("openral_msgs")
     rclpy = pytest.importorskip("rclpy")
@@ -1407,7 +1407,7 @@ def test_with_the_tracker_owning_attachment_state_an_attach_is_only_an_event(
 def test_a_tracker_owned_attach_holds_the_ack_until_the_trackers_next_revision(
     revision_arrives: bool,
 ) -> None:
-    """#418 ``bind`` / ``on``: acking the ATTACH tick before the tracker's binding is on
+    """#418 ``tracking`` / ``on``: acking the ATTACH tick before the tracker's binding is on
     ``/openral/attachment_state`` would resume motion with the kernel still checking the
     pre-grasp set. The ack is held until a revision newer than the one seen at the ATTACH
     (a heartbeat of the same revision does not release it), and, as a segmentation is,

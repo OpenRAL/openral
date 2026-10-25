@@ -6,6 +6,7 @@ Real manifests (``robots/droid_franka_robotiq``, ``robots/so101_follower``), the
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import Any
 
@@ -453,8 +454,8 @@ def test_a_grasp_event_without_a_measured_jaw_uses_the_newest_sample() -> None:
     assert binding is not None and binding.attachment.object_id == oid
 
 
-def test_bind_relays_the_workspace_box_while_the_map_confirms_it() -> None:
-    """With the HAL producer stood down (bind/on) the tracker confirms the declaration's
+def test_tracking_relays_the_workspace_box_while_the_map_confirms_it() -> None:
+    """With the HAL producer stood down (tracking/on) the tracker confirms the declaration's
     workspace_box on its own grid, the producer's rule, and stamps it with the grid."""
     s = _session("droid_franka_robotiq")
     x, y = _RIG.centre_xy
@@ -471,6 +472,104 @@ def test_bind_relays_the_workspace_box_while_the_map_confirms_it() -> None:
     assert held is not None and held.stamp_ns == 7 * _S and held.half_extents == ws.half_extents
     s.on_grid(grid_from_depth(render([], _RIG)[0], _RIG, shift_z=10.0), 8 * _S)  # map empty
     assert s.workspace_region() is None
+
+
+def _grasp_region_rig() -> tuple[TrackerSession, str, dict[str, float], NDArray[np.float64]]:
+    """SO-101 at its hold, one CONFIRMED orange there, a grid, the orange declared at 1."""
+    from tests.unit.test_object_tracker_binding import _grid
+
+    _, q, centre = arm_at_hold("so101_follower")
+    s = _session("so101_follower")
+    oid = _mint(s, centre)
+    s.on_grid(_grid(s.frame_id, centre[None, :], centre - 0.3, 60), 5)
+    s.on_joint_state(q, 6)
+    s.on_grasp_declaration(_decl(1, label="orange", robot="so101_follower"))
+    return s, oid, q, centre
+
+
+def test_the_grasp_region_is_the_declarations_one_target_box() -> None:
+    """`tracking`: the tracker publishes the grasp region the HAL leg mis-sized (Spark r6: a
+    5.7 cm orange fit as ~10 x 10 x 18 cm): the declaration's one target track's box, stamped
+    with its last map confirmation, tagged with its identity."""
+    s, oid, _, _ = _grasp_region_rig()
+    track = s.tracker.store.get(oid)
+    assert track is not None and track.declaration_key == "orange@1"
+    region = s.grasp_region()
+    assert region is not None
+    assert region.pose == track.box.pose and region.half_extents == track.box.half_extents
+    assert region.frame_id == s.grid.frame_id  # type: ignore[union-attr]
+    assert region.stamp_ns == track.last_confirmed_stamp_ns
+    assert region.evidence_ref == f"tracked:{oid}|epoch={track.epoch}"
+    GraspDeclaration.model_validate(  # within the declaration's caps: the kernel takes it
+        {**_decl(1, label="orange", robot="so101_follower").model_dump(), "region": region}
+    )
+    s.on_grasp_declaration(_decl(1, label="orange", robot="so101_follower", active=False))
+    assert s.grasp_region() is None, "no declaration, no region"
+
+
+def test_the_grasp_region_fails_closed_on_doubt() -> None:
+    s, oid, _, centre = _grasp_region_rig()
+    store = s.tracker.store
+    track = store.get(oid)
+    assert track is not None
+    for status in (TrackStatus.TENTATIVE, TrackStatus.SPLIT, TrackStatus.LOST):
+        store.replace(track.model_copy(update={"status": status}))
+        assert s.grasp_region() is None, status
+    store.replace(track.model_copy(update={"status": TrackStatus.OCCLUDED}))
+    assert s.grasp_region() is not None, "the map holds an occluded target"
+    other = _mint(s, centre + np.array([0.08, 0.0, 0.0]))
+    s.on_grasp_declaration(_decl(1, label="orange", robot="so101_follower"))  # rekeys it
+    assert store.get(other).declaration_key == "orange@1"  # type: ignore[union-attr]
+    assert s.grasp_region() is None, "two targets: which one is not the tracker's to guess"
+    store.drop(other)
+    assert s.grasp_region() is not None
+    store.replace(track.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    grid = s.grid
+    assert grid is not None and s.grasp_region() is not None
+    s.grid = dataclasses.replace(grid, frame_id="world")  # the store pins the box frame
+    assert s.grasp_region() is None, "a box off the grid frame"
+    s.grid = grid
+    # Past the caps (a model_copy skips TrackedObject's own cap check): never the kernel's.
+    for half in ((GraspDeclaration.MAX_HALF_EXTENT_M + 0.01, 0.02, 0.02), (0.19, 0.19, 0.19)):
+        big = track.box.model_copy(update={"half_extents": half})
+        store.replace(track.model_copy(update={"box": big}))
+        assert s.grasp_region() is None, half
+
+
+def test_the_grasp_region_rides_through_the_hold_for_the_kernels_latch() -> None:
+    """The region keeps being published once the target is held, as a HAL-measured one is:
+    the kernel latches the box the first attachment snapshot carries, ignores later moves,
+    and retires the declaration once the payload leaves it (ADR-0115's handover)."""
+    s, oid, _, _ = _grasp_region_rig()
+    joint, _, jaw = ROBOTS["so101_follower"]
+    before = s.grasp_region()
+    assert before is not None
+    binding = s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=20)
+    assert binding is not None and binding.outcome is BindOutcome.TRACKED
+    held = s.grasp_region()
+    assert held is not None and held.evidence_ref.startswith(f"tracked:{oid}|")
+
+
+def test_several_targets_are_narrowed_to_the_one_in_the_search_box() -> None:
+    """A ``count="all"`` query keys every orange to the declaration; the declaration's own
+    ``search_box`` picks the declared one. Two inside it (or no box) stays fail-closed."""
+    s, oid, _, centre = _grasp_region_rig()
+    other = _mint(s, centre + np.array([0.12, 0.0, 0.0]))
+    base = _decl(1, label="orange", robot="so101_follower")
+    s.on_grasp_declaration(base)  # rekeys `other` too
+    assert s.tracker.store.get(other).declaration_key == "orange@1"  # type: ignore[union-attr]
+    assert s.grasp_region() is None, "two targets and no search box"
+    frame = s.grid.frame_id  # type: ignore[union-attr]
+    pose = Pose6D(
+        xyz=tuple(float(v) for v in centre), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=frame
+    )
+    tight = PlaceRegion(frame_id=frame, pose=pose, half_extents=(0.05, 0.05, 0.05))
+    s.on_grasp_declaration(base.model_copy(update={"search_box": tight}))
+    region = s.grasp_region()
+    assert region is not None and region.evidence_ref.startswith(f"tracked:{oid}|")
+    wide = tight.model_copy(update={"half_extents": (0.2, 0.2, 0.2)})
+    s.on_grasp_declaration(base.model_copy(update={"search_box": wide}))
+    assert s.grasp_region() is None, "both oranges inside the search box"
 
 
 def test_a_count_all_declaration_makes_every_orange_eligible_and_nothing_else() -> None:
@@ -499,7 +598,7 @@ def test_a_count_all_declaration_makes_every_orange_eligible_and_nothing_else() 
     assert keys[plate] != "obj:orange_1@300", keys
 
 
-# ── The tracker's own grasp event (bind/on, sim only; #418 2026-10-17) ────────────────────────
+# ── The tracker's own grasp event (tracking/on, sim only; #418 2026-10-17) ────────────────────────
 
 
 def _derived_session(robot: str, derive: bool = True, *, max_age_s: float = 2.0) -> TrackerSession:
@@ -592,7 +691,7 @@ def test_a_jaw_that_closes_on_nothing_binds_nothing() -> None:
 def test_the_derived_rule_is_off_unless_asked() -> None:
     _, q, centre = arm_at_hold("so101_follower")
     joint, _, jaw = ROBOTS["so101_follower"]
-    s = _derived_session("so101_follower", derive=False)  # shadow, and every real HAL
+    s = _derived_session("so101_follower", derive=False)  # every real HAL (object_tracking off)
     _mint(s, centre)
     _hold_for(s, joint, q, jaw, command=0.10)
     assert s.binders[joint].held is None and not s.attachments()

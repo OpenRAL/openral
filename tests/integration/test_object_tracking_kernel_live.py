@@ -4,7 +4,7 @@
 The rig (``_tracker_rig``) runs the real ``object_tracker_node`` and the real World State
 lifecycle node on the SO-101 PickOrange ``top_depth`` camera. The kernel is the real
 ``safety_kernel_node`` binary, started with the exact parameters ``deploy_e2e.launch.py``
-composes for ``scenes/deploy/isaac_leisaac_pick_orange.yaml`` at ``object_tracking: bind``
+composes for ``scenes/deploy/isaac_leisaac_pick_orange.yaml`` at ``object_tracking: tracking``
 (``use_sim_time`` off: the rig runs on wall time).
 
 Asserts, issue #418 test matrix A ("Integration"):
@@ -16,8 +16,11 @@ Asserts, issue #418 test matrix A ("Integration"):
 * the kernel ingests what the tracker publishes: it acknowledges the tracker's
   ``attachment_state`` revision, and with the set accepted it never reports the tracked
   binding as having ``no_accepted_set``;
-* in ``bind`` the tracker is the only ``attachment_state`` author, with the HAL's vision
-  attachment bridge wired the way the launch wires it in ``bind``;
+* the kernel arms its ADR-0115 grasp allowance over the tracker's box of the grounded,
+  unheld orange (``evidence=tracked:trk:1``), and the ATTACH snapshot still carries it, so
+  the kernel latches that box at handover (ADR-0115) instead of dropping the region;
+* in ``tracking`` the tracker is the only ``attachment_state`` author, with the HAL's vision
+  attachment bridge wired the way the launch wires it in ``tracking``;
 * a frame mismatch is refused end to end: once the map arrives in another frame than the
   tracker's set, the kernel logs ``safety.tracked_objects_rejected reason=frame_mismatch``
   and the binding loses its accepted set.
@@ -146,7 +149,7 @@ def test_tracker_to_kernel_ingest_qos_and_frame_mismatch_refusal() -> None:
 
     from tests.sim.safety._kernel_subprocess import start_kernel, terminate_kernel
 
-    params = _kernel_params("bind")
+    params = _kernel_params("tracking")
     assert params["attached_collision_enabled"] is True
     # ADR-0121 step 3: the K5 release decision is a provider rule; no provider, not emitted.
     assert "tracked_release_jaw_joints" not in params
@@ -183,10 +186,11 @@ def test_tracker_to_kernel_ingest_qos_and_frame_mismatch_refusal() -> None:
                 ),
             )
             assert _activate(rig.helper, name), log_path.read_text(errors="replace")[-4000:]
-            tracker = rig.tracker("bind")
+            tracker = rig.tracker("tracking")
             rig.declare()
             assert rig.ground()
             assert wait(lambda: bool(rig.fast) and rig.fast[-1].tracked_objects_valid, 5.0)
+            assert params["grasp_allowance_enabled"] is True
 
             # QoS per data class, read off the live graph (the kernel's endpoints included).
             h, tn, ws = rig.helper, tracker.get_name(), rig.world_state.get_name()
@@ -205,14 +209,22 @@ def test_tracker_to_kernel_ingest_qos_and_frame_mismatch_refusal() -> None:
                 assert _qos(h, topic, tn, publisher=False)[0] == "BEST_EFFORT", topic
             assert _qos(h, "/joint_states", tn, publisher=False)[0] == "BEST_EFFORT"
 
-            # Bind: ATTACH at the hold. The kernel acknowledges the tracker's revision.
             def hold_frames(grid_frame: str | None = None) -> None:
                 rig.publish_hold()
                 rig.frame(grid_frame)
                 time.sleep(0.1)
 
-            rig.publish_hold()
-            assert wait(lambda: bool(rig.attach), 5.0)
+            # The grounded, unheld orange's box arms the kernel's grasp allowance.
+            def armed() -> bool:
+                hold_frames()
+                return any(
+                    "safety.grasp_region_armed target=orange" in m and "evidence=tracked:trk:1" in m
+                    for m in logs
+                )
+
+            assert wait(armed, 10.0), [m for m in logs if "grasp_region" in m]
+
+            # ATTACH at the hold. The kernel acknowledges the tracker's revision.
             rig.attach_event()
             assert wait(lambda: bool(rig.attach[-1].objects), 5.0)
             revision = int(rig.attach[-1].revision)
@@ -226,6 +238,11 @@ def test_tracker_to_kernel_ingest_qos_and_frame_mismatch_refusal() -> None:
                 hold_frames()
             assert not [m for m in logs if "safety.tracked_objects_rejected" in m], logs
             assert not [m for m in logs if "reason=no_accepted_set" in m], logs
+            # Held: the attachment snapshot carries the box, and the kernel latches it.
+            assert any(
+                "safety.grasp_region_latched target=orange at handover" in m for m in logs
+            ), [m for m in logs if "grasp_region" in m]
+            assert not [m for m in logs if "grasp_region_dropped reason=no_region" in m], logs
 
             # The map arrives in another frame than the tracker's set: refused whole.
             n = len(logs)
@@ -253,8 +270,8 @@ def test_tracker_to_kernel_ingest_qos_and_frame_mismatch_refusal() -> None:
         terminate_kernel(kernel)
 
 
-def test_in_bind_the_tracker_is_the_only_attachment_state_author() -> None:
-    """The HAL's vision attachment bridge, as ``bind`` wires it, opens no publisher."""
+def test_in_tracking_the_tracker_is_the_only_attachment_state_author() -> None:
+    """The HAL's vision attachment bridge, as ``tracking`` wires it, opens no publisher."""
     pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
     from openral_hal.vision_attachment_bridge import (
@@ -263,7 +280,7 @@ def test_in_bind_the_tracker_is_the_only_attachment_state_author() -> None:
     )
 
     with tracker_rig() as rig:
-        tracker = rig.tracker("bind")
+        tracker = rig.tracker("tracking")
         hal = VisionAttachmentBridge(
             rig.helper,
             rig.description,
@@ -284,7 +301,7 @@ def test_in_bind_the_tracker_is_the_only_attachment_state_author() -> None:
         rig.attach_event()
         assert wait(lambda: bool(rig.attach) and bool(rig.attach[-1].objects), 5.0)
         assert authors() == [tracker.get_name()]
-        # The control: the same bridge as `off`/`shadow` wire it is a second author.
+        # The control: the same bridge as `off` wires it is a second author.
         VisionAttachmentBridge(
             rig.helper,
             rig.description,

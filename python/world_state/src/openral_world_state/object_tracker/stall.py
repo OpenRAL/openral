@@ -1,4 +1,4 @@
-"""The tracker's own grasp event: a stalled jaw read robustly (issue #418, bind/on, sim only).
+"""The tracker's own grasp event: a stalled jaw read robustly (issue #418, tracking/on, sim only).
 
 The HAL's position-stall trigger (``openral_hal._grasp_trigger``) gives ATTACH only for a command
 within ``close_band`` of closed and a jaw whose span over a short window is within

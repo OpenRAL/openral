@@ -829,7 +829,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # the exemption.
         self.declare_parameter("grasp_target_voxel_m", 0.0)
         self.declare_parameter("grasp_target_extrinsic_error_m", MAX_PLANAR_ERR_M)
-        # Issue #418: the deploy's DeployRuntime.object_tracking (off | shadow | bind | on).
+        # Issue #418: the deploy's DeployRuntime.object_tracking (off | tracking | on).
         # Not "off": grounded declarations also carry ObjectQuery s for the Layer-2 tracker,
         # and a label several live detections carry grounds (count "all") instead of refusing.
         self.declare_parameter("object_tracking", "off")

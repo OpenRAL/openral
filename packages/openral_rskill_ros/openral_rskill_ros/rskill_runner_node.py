@@ -392,7 +392,7 @@ if _ROS2_AVAILABLE:
             # place allowance. Default off; the deploy launch turns it on with
             # the HAL's `vision_attachment_place_target_enabled`.
             self.declare_parameter("place_approach_enabled", False)
-            # Issue #418: the deploy's DeployRuntime.object_tracking (off | shadow | bind |
+            # Issue #418: the deploy's DeployRuntime.object_tracking (off | tracking |
             # on). Not "off": the declarations armed per goal also carry the standing
             # `object_queries_json` (a JSON list of core.ObjectQuery — TARGET/CONTEXT ones
             # become GraspDeclaration.target_queries, the DESTINATION one

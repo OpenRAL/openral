@@ -3285,7 +3285,7 @@ def test_object_queries_follow_the_graded_task_only_with_tracking_on() -> None:
             "synonyms": [],
         },
     ]
-    banana = _tracking("isaac_arena_droid_banana_in_bowl.yaml", "shadow")
+    banana = _tracking("isaac_arena_droid_banana_in_bowl.yaml", "tracking")
     labels = [
         (q["label"], q["count"])
         for q in json.loads(
@@ -3318,7 +3318,7 @@ def test_external_usd_catalog_and_surface_config_reach_shared_launch_args(
         "expected_revision": "tutorial-v1",
     }
     scene_data["runtime"] = {
-        "object_tracking": "shadow",
+        "object_tracking": "tracking",
         "grounding_wait_s": 3.0,
         "object_surface_model": {
             "voxel_m": 0.01,
@@ -3385,7 +3385,7 @@ def test_the_declared_target_seeds_the_query_its_placement_label_names() -> None
 
     from openral_cli.deploy_sim import _object_queries_json
 
-    orange = _tracking("isaac_leisaac_pick_orange.yaml", "shadow")
+    orange = _tracking("isaac_leisaac_pick_orange.yaml", "tracking")
     options = dict(orange.scene.backend_options)
     success = dict(options["placement_success"])
     task = "Grab orange and place into plate"

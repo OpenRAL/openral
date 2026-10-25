@@ -218,10 +218,18 @@ def test_kernel_caps_are_validators() -> None:
 def test_deploy_runtime_object_tracking_needs_explicit_wait() -> None:
     assert DeployRuntime().object_tracking == "off"
     with pytest.raises(ValidationError, match="grounding_wait_s"):
-        DeployRuntime(object_tracking="shadow")
+        DeployRuntime(object_tracking="tracking")
     _round_trip(
-        DeployRuntime(object_tracking="bind", grounding_wait_s=3.0, grounding_required=True)
+        DeployRuntime(object_tracking="tracking", grounding_wait_s=3.0, grounding_required=True)
     )
+
+
+@pytest.mark.parametrize("old", ["shadow", "bind"])
+def test_deploy_runtime_maps_the_removed_modes_to_tracking(old: str) -> None:
+    with pytest.warns(FutureWarning, match=f"object_tracking={old!r} is deprecated"):
+        rt = DeployRuntime.model_validate({"object_tracking": old, "grounding_wait_s": 3.0})
+    assert rt.object_tracking == "tracking"
+    _round_trip(rt)  # dumps 'tracking': the round trip no longer warns
 
 
 _frames = st.sampled_from(["base", "panda_link0", "openarm_base"])
@@ -351,7 +359,7 @@ def _scene_frame(scene: DeployScene) -> str:
 @pytest.mark.parametrize("path", _DEPLOY_SCENES, ids=lambda p: p.stem)
 @settings(max_examples=6, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
-    mode=st.sampled_from(["off", "shadow", "bind", "on"]),
+    mode=st.sampled_from(["off", "tracking", "on"]),
     wait=st.floats(min_value=0.01, max_value=60.0),
     required=st.booleans(),
     n_queries=st.integers(min_value=0, max_value=GraspDeclaration.MAX_TARGET_QUERIES),

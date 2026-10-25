@@ -1,4 +1,4 @@
-"""The tracker's own stalled-jaw event, on the real traces (#418, 2026-10-17, bind/on sim only).
+"""The tracker's own stalled-jaw event, on the real traces (#418, 2026-10-17, tracking/on sim only).
 
 ``fixtures/jaw_close_traces.npz`` (made by ``livesim/418/phase1/mkstall.py``):
 * DROID ``r7dr_on1``: the Robotiq ``finger_joint`` measured (fox_mcap, 15 Hz) and the three

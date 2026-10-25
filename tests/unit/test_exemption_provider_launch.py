@@ -217,8 +217,7 @@ def test_tracking_on_without_a_provider_is_refused_at_launch(launch_module: _Lau
     with pytest.raises(ROSConfigError, match="ADR-0121"):
         _track(launch_module, "on", "")
     assert _track(launch_module, "on", _PROVIDER) == ("on", ("top_depth",))
-    for mode in ("shadow", "bind"):
-        assert _track(launch_module, mode, "") == (mode, ("top_depth",))
+    assert _track(launch_module, "tracking", "") == ("tracking", ("top_depth",))
 
 
 def test_deploy_runtime_refuses_tracking_on_without_a_provider() -> None:
@@ -228,7 +227,7 @@ def test_deploy_runtime_refuses_tracking_on_without_a_provider() -> None:
 
     scene = _REPO / "scenes" / "deploy" / "isaac_leisaac_pick_orange.yaml"
     runtime = DeployScene.from_yaml(str(scene)).runtime
-    assert runtime is not None and runtime.object_tracking == "shadow"
+    assert runtime is not None and runtime.object_tracking == "tracking"
     base = runtime.model_dump()
     with pytest.raises(ValidationError, match="ADR-0121"):
         DeployRuntime.model_validate({**base, "object_tracking": "on"})

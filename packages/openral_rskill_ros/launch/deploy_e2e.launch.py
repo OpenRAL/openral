@@ -1206,7 +1206,7 @@ def _runner_joint_state_staleness_s(
     return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
 
 
-_TRACKING_MODES = ("off", "shadow", "bind", "on")
+_TRACKING_MODES = ("off", "tracking", "on")
 
 
 def _object_tracking(
@@ -1227,16 +1227,18 @@ def _object_tracking(
     confirmation), the robot self-filter (``self_filter_runs``: its robot masks; without
     one every depth frame is fed for ageing only and nothing is ever fitted), the vision
     attachment leg (its trigger publishes ``/openral/grasp_events``; it brings up the
-    segmenter) and an explicit ``grounding_wait_s``; ``bind`` / ``on`` are sim-only until
+    segmenter) and an explicit ``grounding_wait_s``; ``tracking`` / ``on`` are sim-only until
     Safety-WG review. ``on`` also needs an ``exemption_provider`` (ADR-0121 step 3): it keys
     the grasp exemption on tracked ids, a rule only the provider (OpenRAL Pro) supplies, and
-    stands the HAL's grasp-region producer down, so without one no grasp exemption is left.
-    ``cameras`` (comma-separated) empty = every publishing depth camera.
+    the tracker publishes no grasp region under it, so without one no grasp exemption is left.
+    The removed ``shadow`` / ``bind`` are refused here (``DeployRuntime`` maps them to
+    ``tracking`` before a scene reaches the launch). ``cameras`` (comma-separated) empty =
+    every publishing depth camera.
 
     Example:
         >>> _object_tracking(
-        ...     "shadow",
-        ...     hal_mode="real",
+        ...     "tracking",
+        ...     hal_mode="sim",
         ...     vision_attachment_enabled=True,
         ...     enable_octomap=True,
         ...     self_filter_runs=True,
@@ -1244,7 +1246,7 @@ def _object_tracking(
         ...     cameras="",
         ...     depth_cameras=["top_depth"],
         ... )
-        ('shadow', ('top_depth',))
+        ('tracking', ('top_depth',))
     """
     from openral_core.exceptions import ROSConfigError
 
@@ -1252,17 +1254,17 @@ def _object_tracking(
         raise ROSConfigError(f"object_tracking={mode!r}; expected one of {_TRACKING_MODES}.")
     if mode == "off":
         return mode, ()
-    if mode in ("bind", "on") and hal_mode != "sim":
+    if hal_mode != "sim":
         raise ROSConfigError(
             f"object_tracking={mode!r} is sim-only until Safety-WG review (issue #418); "
-            f"refused on hal_mode={hal_mode!r}. 'shadow' is allowed."
+            f"refused on hal_mode={hal_mode!r}. A real deploy runs object_tracking=off."
         )
     if mode == "on" and not exemption_provider:
         raise ROSConfigError(
             "object_tracking='on' needs an exemption_provider (ADR-0121): the tracked-object "
             "grasp exemption is a provider rule, and 'on' stands the HAL's grasp-region "
             "producer down, so the open kernel would have no grasp exemption at all. Use "
-            "'bind', or set exemption_provider."
+            "'tracking', or set exemption_provider."
         )
     if not grounding_wait_s:
         raise ROSConfigError(f"object_tracking={mode!r} needs an explicit grounding_wait_s.")
@@ -1336,7 +1338,7 @@ def _locator_cameras(
 
 
 def _tracked_release_params(description: object, object_tracking: str) -> dict[str, object]:
-    """The K5 jaw-open release (issue #418) for ``bind`` / ``on``; ``{}`` otherwise.
+    """The K5 jaw-open release (issue #418) for ``tracking`` / ``on``; ``{}`` otherwise.
 
     An exemption-provider rule since ADR-0121 step 3: ``_hand_rules_to_provider`` hands these
     to the provider as ``contact_exemptions.*`` and drops them without one.
@@ -1351,13 +1353,13 @@ def _tracked_release_params(description: object, object_tracking: str) -> dict[s
     Example:
         >>> from openral_core import RobotDescription
         >>> d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-        >>> p = _tracked_release_params(d, "bind")
+        >>> p = _tracked_release_params(d, "tracking")
         >>> p["tracked_release_jaw_joints"], p["tracked_release_jaw_open_sign"]
         (['gripper'], [1.0])
-        >>> _tracked_release_params(d, "shadow")
+        >>> _tracked_release_params(d, "off")
         {}
     """
-    if object_tracking not in ("bind", "on"):
+    if object_tracking not in ("tracking", "on"):
         return {}
     jaws: list[str] = []
     signs: list[float] = []
@@ -1395,7 +1397,7 @@ def _payload_own_cells(object_tracking: str, *, tracked_grasp_exemption_enabled:
     Example:
         >>> _payload_own_cells("on", tracked_grasp_exemption_enabled=True)
         True
-        >>> _payload_own_cells("bind", tracked_grasp_exemption_enabled=False)
+        >>> _payload_own_cells("tracking", tracked_grasp_exemption_enabled=False)
         False
     """
     return object_tracking == "on" and tracked_grasp_exemption_enabled
@@ -1408,16 +1410,17 @@ def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: b
     without a provider is refused by ``_object_tracking``).
 
     It selects the SOURCE of the grasp-target exemption, never disables a check:
-    ``off`` / ``shadow`` / ``bind`` keep the producer-measured region; ``on`` replaces
-    it with the kernel's per-hand nearest eligible tracked object (the HAL's grasp
-    target leg stands down in ``bind`` / ``on``). ``on`` without the grasp exemption
+    ``off`` keeps the HAL-measured region and ``tracking`` the tracker-measured one
+    (``TrackerSession.grasp_region``); ``on`` replaces it with the provider's per-hand
+    nearest eligible tracked object (the HAL's grasp target leg stands down in
+    ``tracking`` / ``on``). ``on`` without the grasp exemption
     itself is refused here, as the kernel would refuse it at configure. ``on`` is
     already sim-only (``_object_tracking``).
 
     Example:
         >>> _tracked_grasp_exemption("on", grasp_allowance_enabled=True)
         True
-        >>> _tracked_grasp_exemption("bind", grasp_allowance_enabled=False)
+        >>> _tracked_grasp_exemption("tracking", grasp_allowance_enabled=False)
         False
 
     Raises:
@@ -1460,7 +1463,7 @@ def _workspace_explained_cells(
         True
         >>> _workspace_explained_cells("on", workspace_contact_enabled=False)
         False
-        >>> _workspace_explained_cells("bind", workspace_contact_enabled=True)
+        >>> _workspace_explained_cells("tracking", workspace_contact_enabled=True)
         False
         >>> _workspace_explained_cells("on", workspace_contact_enabled=True, requested=False)
         False
@@ -3275,13 +3278,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
             },
             {"use_sim_time": use_sim_time},
-            # After the params file: in bind/on the tracker owns /openral/attachment_state
+            # After the params file: with tracking on the tracker owns /openral/attachment_state
             # (two publishers on that latched topic would interleave revisions), so the HAL's
             # vision bridge runs only its grasp trigger (/openral/grasp_events): no legs, no
             # segmentation; an ATTACH holds the ack until the tracker's next revision.
             *(
                 [{"vision_attachment_publish_attachment_state": False}]
-                if object_tracking in ("bind", "on")
+                if object_tracking != "off"
                 else []
             ),
         ],
@@ -3428,20 +3431,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
                 > 0.0,
                 # Place mirror (§2.3): a goal-scope place declaration per goal, when a
-                # producer measures its region. Off / shadow: the HAL's place-target leg,
-                # which attaches its measured region to that declaration and never
-                # declares on its own (no goal, no allowance). `bind`: that leg is not
-                # built and nothing measures the region, so no declaration. `on`: the
-                # tracker measures it (`TrackerSession.place_region`) and the kernel
-                # applies its ADR-0097/0098 place allowance over that region -- a
-                # NON-MONOTONE relaxation (the region is the destination track's
-                # containing box), SIM-ONLY (`deploy run` refuses `on`); Safety-WG
-                # review and a hazard-log row are owed (#418). Spark A/B R388 (off: the
-                # banana dropped on the table) vs R389 (on: the banana in the bowl).
-                "place_approach_enabled": object_tracking == "on"
+                # producer measures its region. Off: the HAL's place-target leg, which
+                # attaches its measured region to that declaration and never declares on
+                # its own (no goal, no allowance). `tracking` / `on`: that leg is not built;
+                # the tracker measures the region (`TrackerSession.place_region`) and the
+                # kernel applies its ADR-0097/0098 place allowance over it -- a NON-MONOTONE
+                # relaxation (the region is the destination track's containing box),
+                # SIM-ONLY (`deploy run` refuses tracking); Safety-WG review and a
+                # hazard-log row are owed (#418). Spark A/B R388 (off: the banana dropped
+                # on the table) vs R389 (on: the banana in the bowl).
+                "place_approach_enabled": object_tracking != "off"
                 or (
-                    object_tracking not in ("bind", "on")
-                    and vision_attachment_enabled
+                    vision_attachment_enabled
                     and hal_file_params.get("vision_attachment_enabled") is True
                     and hal_file_params.get("vision_attachment_place_target_enabled") is True
                 ),
@@ -4455,9 +4456,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # Each tracked depth camera's registered RGB stream (the #418 tracker's cameras).
         seg_cameras = {c: camera_topic(c, CameraTopicKind.IMAGE) for c in tracked_cameras}
         seg_infos = _tracked_camera_infos(tracked_cameras, publishing, hal_mode)
-        # In bind / on the HAL bridge runs only its grasp trigger and never calls the
+        # With tracking on the HAL bridge runs only its grasp trigger and never calls the
         # segmenter, so caching its camera there would decode frames nothing reads.
-        if object_tracking not in ("bind", "on"):
+        if object_tracking == "off":
             seg_cameras = {
                 va_camera: LaunchConfiguration("vision_attachment_rgb_topic").perform(context),
                 **{c: t for c, t in seg_cameras.items() if c != va_camera},
@@ -4912,11 +4913,12 @@ def generate_launch_description() -> LaunchDescription:
             "object_tracking",
             default_value="off",
             description=(
-                "DeployRuntime.object_tracking (issue #418): off | shadow | bind | on. Not "
-                "off: the Layer-2 object tracker runs (needs octomap, the vision attachment "
-                "leg and grounding_wait_s); bind/on make it own /openral/attachment_state "
-                "and are sim-only until Safety-WG review; on also needs exemption_provider "
-                "(ADR-0121). Also passed to the skill runner and the reasoner."
+                "DeployRuntime.object_tracking (issue #418): off | tracking | on. Not off: "
+                "the Layer-2 object tracker runs (needs octomap, the vision attachment leg "
+                "and grounding_wait_s), owns /openral/attachment_state and measures the "
+                "grasp (tracking only), place and workspace regions; sim-only until "
+                "Safety-WG review; on also needs exemption_provider (ADR-0121). Also passed "
+                "to the skill runner and the reasoner."
             ),
         ),
         DeclareLaunchArgument(
