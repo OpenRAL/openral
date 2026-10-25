@@ -229,12 +229,33 @@ def _read_bag(bag: Path) -> Iterator[tuple[str, bytes, int]]:
         yield str(topic), bytes(data), int(stamp)
 
 
+class _NoAliasDumper(yaml.SafeDumper):
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
+def params_yaml(params: Mapping[str, Any]) -> str:
+    """The kernel's ``--params-file`` text for ``params``.
+
+    Empty lists are omitted: an empty YAML list carries no type and rclcpp refuses it, and
+    every kernel array parameter but the (never empty) force-observer gravity defaults to
+    empty, so omitting one is its default. No anchors or aliases: a mirrored
+    ``contact_exemptions.<x>`` list is the same object as ``<x>``, and rcl refuses an
+    aliased file ("Will not support aliasing").
+
+    Example:
+        >>> jaws = ["finger_joint"]
+        >>> text = params_yaml({"a": jaws, "contact_exemptions.a": jaws, "e": []})
+        >>> "&" in text or "*" in text, "e:" in text
+        (False, False)
+    """
+    typed = {k: v for k, v in params.items() if v != []}
+    return yaml.dump({f"/{_NODE}": {"ros__parameters": typed}}, Dumper=_NoAliasDumper)
+
+
 def _spawn_kernel(params: Mapping[str, Any], domain: int, workdir: Path) -> subprocess.Popen[bytes]:
     path = workdir / f"kernel_{domain}.yaml"
-    # An empty YAML list carries no type and rclcpp refuses it; every kernel array parameter but
-    # the (never empty) force-observer gravity defaults to empty, so omitting one is its default.
-    typed = {k: v for k, v in params.items() if v != []}
-    path.write_text(yaml.safe_dump({f"/{_NODE}": {"ros__parameters": typed}}))
+    path.write_text(params_yaml(params))
     env = dict(os.environ, ROS_DOMAIN_ID=str(domain), ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST")
     log = (workdir / f"kernel_{domain}.log").open("wb")
     return subprocess.Popen(

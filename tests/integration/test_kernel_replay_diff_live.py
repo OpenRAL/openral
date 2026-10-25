@@ -25,12 +25,16 @@ pytestmark = pytest.mark.skipif(
     reason="live kernels: set OPENRAL_TEST_ROS_LIVE=1 and source install/",
 )
 
+# One list object under two keys, as provider_params' mirrored ``contact_exemptions.<x>``: a
+# YAML dump with aliases is refused by rcl ("Will not support aliasing"), pro review 286ee01af.
+_SHARED_LIMIT = [3.15]
+
 _PARAMS: dict[str, Any] = {
     "n_dof": 1,
     "joint_position_min": [-3.14],
     "joint_position_max": [3.14],
-    "joint_velocity_max": [3.15],
-    "joint_torque_max": [5.0],
+    "joint_velocity_max": _SHARED_LIMIT,
+    "joint_torque_max": _SHARED_LIMIT,
     "self_collision_enabled": False,
     "world_voxel_enabled": True,
     "world_voxel_margin_m": 0.0,
