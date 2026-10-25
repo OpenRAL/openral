@@ -199,24 +199,24 @@ _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS gr
 ### `tools/deploy_sim_batch.py`
 _Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`: a fresh ROS graph per episode against a kept-alive sidecar the new HAL adopts and resets with the episode's seed; `--mode fresh`: the baseline, a sidecar per episode). Between episodes: domain quiet, no leftover graph process, sidecar answering; else the sidecar is ended and `batch.json` records a `restarts` entry. `compare A B` prints outcome, boot/total wall time and the max difference of the sidecar's initial ground truth per episode. `--record` bags each episode's `kernel_replay_diff.REPLAY_TOPICS` into `<episode>/bag` and dumps the kernel's parameters into `<episode>/kernel_params.yaml`, the input of `kernel_replay_diff.py diff` (ADR-0121). `--end-on-grade` ends a goal through `/openral/rskill/complete` once the HAL's sim grader has held `complete` for `--grade-settle-s` (default 1.0) of sim time and records `ended_by` (`grade` / `goal`), so a run is scored at its first settled completion like `openral sim run`. Sim only; nothing here clears an e-stop._
 
-- `grade_events(text) -> list[tuple[str, float]]` (L83) — The `(grade, sim_time_s)` of each `sim.placement_grade {…}` line in a slice of `deploy.log` (not the `_final` line).
-- `class GradeSettle(settle_s)` (L104) — When a goal may end on the sim grader: `complete` held for `settle_s` of sim time; a transient pass (r2 master_dr seed 2, 0.1 s on the rim) never counts.
-- `GradeSettle.feed(grade, sim_time_s) -> None` (L127) — One grade change from `grade_events`.
-- `GradeSettle.due(now_sim_s) -> bool` (L131) — Whether `complete` has held `settle_s` by sim time `now_sim_s`.
-- `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L59) — The scene dict one episode launches (seed, sidecar port, keep-alive).
-- `sidecar_pids(port) -> list[int]` (L235) — Pids of this user's sidecars serving `port`.
-- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L251) — One request to the sidecar; `None` when it does not answer.
-- `graph_leaks(domain) -> list[str]` (L280) — Deploy-graph processes of this user still alive on the ROS domain.
-- `domain_nodes(env) -> list[str]` (L296) — ROS node names on the domain (`ros2 node list --no-daemon`).
-- `batch_env(environ) -> tuple[dict[str, str], str]` (L367) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review). It also carries the deploy graph's Fast DDS profile (`apply_fastdds_large_data_profile`), so `--record`'s recorder and parameter dump see the graph as its own nodes do.
-- `run_batch(args) -> int` (L389) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
-- `compare(a, b) -> int` (L544) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
-- `main(argv=None) -> int` (L574) — `run` (default) or `compare A B`.
-- `restore_sigint() -> bool` (L583) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
-- `parser() -> argparse.ArgumentParser` (L598) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
-- `const READY_MARKERS = ('HAL activated at',)` (L55) — Log lines that mean the HAL is up.
-- `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L56) — Added to the ready markers when the scene preloads a skill.
-- `const REPO` (L54) — Repo root (the checkout the script runs from).
+- `grade_events(text) -> list[tuple[str, float]]` (L84) — The `(grade, sim_time_s)` of each `sim.placement_grade {…}` line in a slice of `deploy.log` (not the `_final` line).
+- `class GradeSettle(settle_s)` (L105) — When a goal may end on the sim grader: `complete` held for `settle_s` of sim time; a transient pass (r2 master_dr seed 2, 0.1 s on the rim) never counts.
+- `GradeSettle.feed(grade, sim_time_s) -> None` (L128) — One grade change from `grade_events`.
+- `GradeSettle.due(now_sim_s) -> bool` (L132) — Whether `complete` has held `settle_s` by sim time `now_sim_s`.
+- `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L60) — The scene dict one episode launches (seed, sidecar port, keep-alive).
+- `sidecar_pids(port) -> list[int]` (L236) — Pids of this user's sidecars serving `port`.
+- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L252) — One request to the sidecar; `None` when it does not answer.
+- `graph_leaks(domain) -> list[str]` (L281) — Deploy-graph processes of this user still alive on the ROS domain.
+- `domain_nodes(env) -> list[str]` (L297) — ROS node names on the domain (`ros2 node list --no-daemon`).
+- `batch_env(environ) -> tuple[dict[str, str], str]` (L368) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review). It also carries the deploy graph's Fast DDS profile (`apply_fastdds_large_data_profile`), so `--record`'s recorder and parameter dump see the graph as its own nodes do.
+- `run_batch(args) -> int` (L390) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
+- `compare(a, b) -> int` (L548) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
+- `main(argv=None) -> int` (L578) — `run` (default) or `compare A B`.
+- `restore_sigint() -> bool` (L587) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
+- `parser() -> argparse.ArgumentParser` (L602) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
+- `const READY_MARKERS = ('HAL activated at',)` (L56) — Log lines that mean the HAL is up.
+- `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L57) — Added to the ready markers when the scene preloads a skill.
+- `const REPO` (L55) — Repo root (the checkout the script runs from).
 
 ### `tools/_validation_matrix_dispatch.py`
 _Private helper of `validation_matrix.py`. Sends one `ExecuteRskill` goal at the live graph (the matrix runs with the reasoner off) and prints one JSON line — the run's `goal.log`. Needs ROS 2 sourced._
