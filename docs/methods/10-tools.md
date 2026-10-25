@@ -201,12 +201,12 @@ _Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`
 - `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L88) — One request to the sidecar; `None` when it does not answer.
 - `graph_leaks(domain) -> list[str]` (L117) — Deploy-graph processes of this user still alive on the ROS domain.
 - `domain_nodes(env) -> list[str]` (L133) — ROS node names on the domain (`ros2 node list --no-daemon`).
-- `batch_env(environ) -> tuple[dict[str, str], str]` (L186) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review).
-- `run_batch(args) -> int` (L201) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
-- `compare(a, b) -> int` (L373) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
-- `main(argv=None) -> int` (L403) — `run` (default) or `compare A B`.
-- `restore_sigint() -> bool` (L412) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
-- `parser() -> argparse.ArgumentParser` (L427) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
+- `batch_env(environ) -> tuple[dict[str, str], str]` (L204) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review). It also carries the deploy graph's Fast DDS profile (`apply_fastdds_large_data_profile`), so `--record`'s recorder and parameter dump see the graph as its own nodes do.
+- `run_batch(args) -> int` (L226) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
+- `compare(a, b) -> int` (L391) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
+- `main(argv=None) -> int` (L421) — `run` (default) or `compare A B`.
+- `restore_sigint() -> bool` (L430) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
+- `parser() -> argparse.ArgumentParser` (L445) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
 - `const READY_MARKERS = ('HAL activated at',)` (L48) — Log lines that mean the HAL is up.
 - `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L49) — Added to the ready markers when the scene preloads a skill.
 - `const REPO` (L47) — Repo root (the checkout the script runs from).

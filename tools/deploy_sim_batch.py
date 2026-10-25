@@ -158,6 +158,24 @@ def _wait_for(
     return None
 
 
+def _dump_kernel_params(env: Mapping[str, str], tries: int = 3) -> str:
+    """``ros2 param dump`` of the kernel, without the CLI daemon (whose graph view can be
+    stale), retried: the first discovery spin can miss a node that is up."""
+    out = ""
+    for _ in range(tries):
+        res = subprocess.run(
+            ["ros2", "param", "dump", "/openral_safety_kernel", "--no-daemon", "--spin-time", "10"],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        out = res.stdout or res.stderr
+        if "ros__parameters" in out:
+            break
+    return out
+
+
 def _stop_group(proc: subprocess.Popen[bytes], grace_s: float) -> str:
     """SIGINT the launch's process group (what Ctrl-C does), SIGKILL after ``grace_s``."""
     with contextlib.suppress(ProcessLookupError):
@@ -186,15 +204,22 @@ def _end_sidecar(port: int) -> None:
 def batch_env(environ: Mapping[str, str]) -> tuple[dict[str, str], str]:
     """The episodes' environment and ROS domain, the domain written into it.
 
+    It also carries the deploy graph's Fast DDS profile (``apply_fastdds_large_data_profile``).
+
     ``graph_leaks`` matches ``ROS_DOMAIN_ID=<domain>`` in each process's environ, so the
     children must carry the variable even when the caller's shell left it unset.
 
     Example:
-        >>> batch_env({"PATH": "/bin"})
-        ({'PATH': '/bin', 'ROS_DOMAIN_ID': '0'}, '0')
+        >>> env, domain = batch_env({"PATH": "/bin"})
+        >>> domain, env["ROS_DOMAIN_ID"], env["FASTRTPS_DEFAULT_PROFILES_FILE"][-22:]
+        ('0', '0', 'fastdds_large_data.xml')
     """
     env = dict(environ)
     domain = env.setdefault("ROS_DOMAIN_ID", "0")
+    from openral_cli.deploy_sim import apply_fastdds_large_data_profile
+
+    # The graph's own transport profile, so the recorder and the param dump see it as it is.
+    apply_fastdds_large_data_profile(env)
     return env, domain
 
 
@@ -270,14 +295,7 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                     env=env,
                     start_new_session=True,
                 )
-                dump = subprocess.run(
-                    ["ros2", "param", "dump", "/openral_safety_kernel"],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                (ep / "kernel_params.yaml").write_text(dump.stdout or dump.stderr)
+                (ep / "kernel_params.yaml").write_text(_dump_kernel_params(env))
             if boot_s is None:
                 rec["failure"] = "stack did not come up"
             else:
