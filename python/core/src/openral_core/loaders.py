@@ -23,6 +23,7 @@ import yaml as _yaml
 from pydantic import ValidationError
 
 from openral_core.exceptions import ROSConfigError
+from openral_core.scene_paths import anchor_scene_paths
 from openral_core.schemas import BenchmarkScene, DeployScene, SimScene
 
 __all__ = [
@@ -67,7 +68,7 @@ def load_scene_strict(
     raw_obj = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw_obj, dict):
         raise ROSConfigError(f"{path}: YAML root must be a mapping, got {type(raw_obj).__name__}")
-    raw: dict[str, object] = raw_obj
+    raw: dict[str, object] = anchor_scene_paths(raw_obj, Path(path).parent)
 
     if expected is DeployScene:
         return _load_as_deploy(path, raw)

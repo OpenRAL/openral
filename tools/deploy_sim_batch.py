@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from openral_core.scene_paths import anchor_scene_paths
 
 REPO = Path(__file__).resolve().parent.parent
 READY_MARKERS = ("HAL activated at",)
@@ -389,7 +390,10 @@ def batch_env(environ: Mapping[str, str]) -> tuple[dict[str, str], str]:
 def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode loop
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=False)
-    template = yaml.safe_load(Path(args.scene).read_text())
+    # Each episode's copy lands in --out, so anchor the scene's relative paths first.
+    template = anchor_scene_paths(
+        yaml.safe_load(Path(args.scene).read_text()), Path(args.scene).parent
+    )
     seeds = [int(s) for s in args.seeds.split(",")]
     env, domain = batch_env(os.environ)
     episodes: list[dict[str, Any]] = []
