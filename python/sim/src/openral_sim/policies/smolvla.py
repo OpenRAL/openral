@@ -17,6 +17,7 @@ lazily so installing ``openral-sim`` never pulls them transitively.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -566,6 +567,37 @@ def _resolve_smolvla_processors(
         )
 
 
+# Every non-weight file of a backbone repo: config, tokenizer, processor, chat template.
+_BACKBONE_WEIGHT_PATTERNS = ("*.md", "*.safetensors", "*.bin", "*.pt", "*.pth", "*.onnx", "*.gguf")
+
+
+def _config_with_local_backbone(repo_id: str, revision: str | None) -> tuple[Any, str]:
+    """The checkpoint's ``SmolVLAConfig``, its backbone resolved to a local snapshot.
+
+    ``SmolVLMWithExpert`` builds the backbone from ``config.vlm_model_name`` (a Hub
+    id) with ``AutoConfig`` + ``AutoProcessor.from_pretrained``, which resolve
+    every config / tokenizer / template file over the network one at a time:
+    42 sequential Hub requests, ~3.4 s per load on a warm cache (SO-101
+    eraser-place, RTX 5070 Laptop host). One ``local_snapshot_dir`` fetch of the
+    backbone's non-weight files gives the same files (same revision the per-file
+    calls resolve; processor, tokenizer and chat template compared equal) in
+    ~0.6 s. Skipped when the checkpoint loads the backbone's own weights
+    (``load_vlm_weights=True``), where transformers needs the weight files too.
+    Returns ``(config, backbone_id)``: the caller puts the Hub id back after
+    construction.
+    """
+    from lerobot.configs.policies import PreTrainedConfig
+    from openral_rskill import local_snapshot_dir
+
+    config = PreTrainedConfig.from_pretrained(repo_id, revision=revision)
+    backbone = str(config.vlm_model_name)
+    if config.load_vlm_weights or Path(backbone).is_dir():
+        return config, backbone
+    config.vlm_model_name = local_snapshot_dir(backbone, ignore_patterns=_BACKBONE_WEIGHT_PATTERNS)
+    _log.info("smolvla.backbone_snapshot", backbone=backbone, path=config.vlm_model_name)
+    return config, backbone
+
+
 @POLICIES.register(
     "smolvla",
     install_groups=("sim",),
@@ -638,9 +670,12 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
                 suppress_hf_weight_init,
             )
 
+            config, backbone_id = _config_with_local_backbone(repo_id, revision)
             with suppress_hf_weight_init(), stage_safetensors_on_host():
-                policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
+                policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision, config=config)
             assert_all_parameters_finite(policy, repo_id=repo_id)
+            # Keep the Hub id in the live config (it is what a saved config records).
+            policy.config.vlm_model_name = backbone_id
         with _smolvla_phase("to_device", device=device):
             policy = policy.to(device)
     finally:
