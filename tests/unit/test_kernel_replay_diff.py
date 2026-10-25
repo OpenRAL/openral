@@ -9,6 +9,7 @@ and the verdict comparison.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -69,7 +70,7 @@ def test_kernel_b_turns_every_moved_rule_off_and_loads_the_provider() -> None:
         "workspace_explained_cells_enabled",
         "tracked_grasp_exemption_enabled",
         "payload_own_cells_enabled",
-        "pinch_own_cells_enabled",
+        "pinch_payload_own_cells_enabled",
     ):
         assert b[key] is False, key
     assert b["tracked_release_jaw_joints"] == []
@@ -111,3 +112,14 @@ def test_verdicts_compare_pass_latch_and_rows() -> None:
     assert report["a_only_passes"] == 1
     assert report["b_only_passes"] == 0
     assert report["diffs"][0]["index"] == 4
+
+
+def test_every_moved_rule_and_mirrored_prefix_names_a_declared_kernel_parameter() -> None:
+    """A misspelt key silently leaves the in-tree rule on in kernel B (pro review of 286ee01af)."""
+    src = (REPO_ROOT / "cpp/openral_safety_kernel/src/lifecycle_kernel.cpp").read_text()
+    declared = set(re.findall(r'declare_parameter<.+?>\(\s*"([^"]+)"', src, re.S))
+    assert declared, "the kernel's declare_parameter calls were not found"
+    for key in krd._MOVED_RULES_OFF:
+        assert key in declared, key
+    for prefix in krd._MIRRORED_PREFIXES:
+        assert any(d.startswith(prefix) for d in declared), prefix

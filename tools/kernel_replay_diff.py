@@ -79,7 +79,7 @@ _MOVED_RULES_OFF: dict[str, object] = {
     "tracked_release_jaw_joints": [],
     "tracked_release_jaw_open_sign": [],
     "payload_own_cells_enabled": False,
-    "pinch_own_cells_enabled": False,
+    "pinch_payload_own_cells_enabled": False,
 }
 
 #: Parameter prefixes the provider mirrors under ``contact_exemptions.``.
@@ -89,7 +89,7 @@ _MIRRORED_PREFIXES: tuple[str, ...] = (
     "tracked_grasp_",
     "tracked_release_",
     "payload_own_",
-    "pinch_own_",
+    "pinch_payload_own_",
 )
 
 _NODE = "openral_safety_kernel"
