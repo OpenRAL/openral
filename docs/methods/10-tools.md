@@ -79,6 +79,12 @@ _Pre-commit drift guard checking the mechanically verifiable half of `docs/archi
 - `check_literals(html) -> list[str]` — Report data lines whose string literals are not well-formed JS strings, each line shape checked whole: card `title`/`pkg`/`status`/`desc` scalars (matched on the field name, so a field missing its opening quote is reported, not skipped), card `inputs`/`outputs`/`schemas` arrays, and the one-line SCHEMAS rows; an unescaped `"` there blanks the whole page while the path/count regexes still parse the prefix. (L161)
 - `main(argv: list[str] | None = None) -> int` (L179) — CLI entry; `--quiet`; runs `check_literals` + `check_paths` + `check_counts`, prints drift and returns 1, else 0.
 
+### `tools/check_no_pro_imports.py`
+_Lint guard for the Apache-2.0 / OpenRAL Pro boundary: fails when any tracked `.py` imports an `openral_pro*` module (`import`, `from … import`, or `import_module`/`__import__` with a literal). Names in strings and docs stay allowed; `openral_prompt_router` is not a hit. Run by `just lint`, pre-commit and `quality.yml`. Open code reaches Pro only through `openral_rskill.backend_registry`._
+
+- `find_pro_imports(source: str, filename: str = "<string>") -> list[tuple[int, str]]` — `(line, module)` for every `openral_pro*` import in *source*, by AST. (L47)
+- `main(argv: list[str] | None = None) -> int` — Scan the given files (default: every git-tracked `.py`), print each hit, return 1 on any. (L92)
+
 ### `tools/audit_sim_configs.py`
 _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven, one episode per config; writes `outputs/audit_sim_configs.json` and prints a Markdown table (`just sim-audit`). Two modes: a full rollout, or `--check-compatibility` for a cheap in-process gate with no subprocess or GPU._
 

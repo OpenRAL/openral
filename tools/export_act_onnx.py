@@ -1,6 +1,6 @@
 """Export a LeRobot ACT policy to a single whole-model ONNX graph.
 
-Unlike SmolVLA (split export, see ``openral_rskill.smolvla_export``), ACT is a
+Unlike SmolVLA (split export, in the private openral-pro-trt package), ACT is a
 plain CNN + transformer, so it exports whole-model in one shot.
 
 Export target: ``ACTPolicy.model``, called as ``predict_action_chunk`` does —
