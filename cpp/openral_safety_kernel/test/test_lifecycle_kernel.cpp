@@ -8270,6 +8270,30 @@ TEST_F(LifecycleKernelTest, AProviderGetsTheK2ExtraFixedJawsWithTheInTreeK2Off) 
   EXPECT_EQ(osk_test_recorder()->hands_extra, 0U);
 }
 
+TEST_F(LifecycleKernelTest, AProviderOwnedWorkspaceSummaryNamesTheProvider) {
+  // With #349 handed to a provider the in-tree counters are idle; the declaration's summary names
+  // the owner and its tolerated pairs instead of an in-tree pairs=0 (pro review, r2 master_dr).
+  LogCapture logs;
+  osk_test::serve_test_providers();
+  auto params = with_param(workspace_params(false), "exemption_provider",
+                           rclcpp::ParameterValue(osk_test::test_provider("TolerateEveryPair")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_provider_ws_summary", params);
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.active = false;
+  rig.warm(&b, kGraspClearQ, 100);
+  EXPECT_EQ(logs.count("safety.workspace_contact_summary target=cell:cube "
+                       "owner=provider:tolerate-every-pair/1 provider_pairs="),
+            1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_contact_summary target=cell:cube pairs="), 0U);
+}
+
 TEST_F(LifecycleKernelTest, AnExemptionProviderGetsTheKernelsHandMeasurementWithTheRuleOff) {
   // With the in-tree #349 rule OFF and a provider loaded, the kernel still ingests the workspace
   // and measures the hand (the measurement stays open) and quotes it in every pair query. The

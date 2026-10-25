@@ -6369,15 +6369,25 @@ void SafetyKernelLifecycleNode::drop_workspace(const char* reason) {
   if (workspace_region_.valid) {
     RCLCPP_INFO(this->get_logger(), "safety.workspace_region_dropped reason=%s target=%s", reason,
                 workspace_target_.c_str());
-    RCLCPP_INFO(this->get_logger(),
-                "safety.workspace_contact_summary target=%s pairs=%llu max_depth_mm=%.1f "
-                "max_speed_mps=%.3f max_speed_source=%s max_mps=%g max_lead_m=%.3f "
-                "lead_bound_m=%g",
-                workspace_target_.c_str(), static_cast<unsigned long long>(workspace_pairs_total_),
-                workspace_pairs_total_ > 0 ? std::max(0.0, -workspace_min_distance_total_) * 1e3
-                                           : 0.0,
-                workspace_speed_max_seen_, workspace_speed_max_measured_ ? "measured" : "commanded",
-                workspace_max_speed_mps_, workspace_lead_max_seen_, workspace_max_lead_m_);
+    if (!workspace_contact_enabled_ && provider_ != nullptr) {
+      // A provider owns #349 (ADR-0121): the in-tree counters are idle, so name the owner and
+      // its tolerated pairs (since load) rather than a misleading pairs=0.
+      RCLCPP_INFO(
+          this->get_logger(),
+          "safety.workspace_contact_summary target=%s owner=provider:%s provider_pairs=%llu",
+          workspace_target_.c_str(), provider_->name(),
+          static_cast<unsigned long long>(provider_pairs_total_));
+    } else {
+      RCLCPP_INFO(
+          this->get_logger(),
+          "safety.workspace_contact_summary target=%s pairs=%llu max_depth_mm=%.1f "
+          "max_speed_mps=%.3f max_speed_source=%s max_mps=%g max_lead_m=%.3f "
+          "lead_bound_m=%g",
+          workspace_target_.c_str(), static_cast<unsigned long long>(workspace_pairs_total_),
+          workspace_pairs_total_ > 0 ? std::max(0.0, -workspace_min_distance_total_) * 1e3 : 0.0,
+          workspace_speed_max_seen_, workspace_speed_max_measured_ ? "measured" : "commanded",
+          workspace_max_speed_mps_, workspace_lead_max_seen_, workspace_max_lead_m_);
+    }
     clear_workspace_commands(ResetReason::kDeclarationChanged);  // start the chain afresh
   }
   workspace_region_ = WorkspaceContactRegion{};

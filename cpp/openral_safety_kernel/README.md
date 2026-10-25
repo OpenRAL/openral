@@ -1690,6 +1690,8 @@ A `kTolerate` answer has these effects:
 - it is counted in `CollisionHit::provider_pairs`;
 - it is logged as WARN `safety.exemption_provider_contact` (≤ 1 Hz) and set as span attribute
   `safety.exemption_provider_pairs`.
+- with a provider owning #349 (the in-tree rule off), the declaration's
+  `safety.workspace_contact_summary` names it: `owner=provider:<name> provider_pairs=<since load>`.
 
 The limits, the envelope, the lead bound and the watchdog are never offered. Before any query,
 each candidate gets a preallocated read-only `CandidateView` through `begin_candidate`. It
