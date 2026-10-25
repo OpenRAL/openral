@@ -191,8 +191,11 @@ runtime:
   # R365/R389 (2026-10-23) ran it, keys the grasp exemption and payload ownership on
   # tracked ids and arms the runner's goal-scope place declaration over the tracked bowl
   # (A/B R388 off: the banana dropped on the table vs R389 on: in the bowl); it needs
-  # `exemption_provider:` (OpenRAL Pro, ADR-0121). This configuration has not been run in
-  # sim since step 3: an open-only tier-3 run is owed. `grounding_required` is false
+  # `exemption_provider:` (OpenRAL Pro, ADR-0121).
+  # Open-only Spark r6 (2026-10-25) went 0/5: the grasp-target leg never measured the
+  # banana, and the HAL's frozen release left it attached to the base, where it
+  # stopped on its own cells.
+  # `grounding_required` is false
   # because shadow refuses no goal (`deploy sim` ignores it there). SIM-ONLY scene, pending
   # Safety-WG review.
   object_tracking: shadow
