@@ -1563,7 +1563,9 @@ def _hand_rules_to_provider(kernel_params: dict[str, object]) -> dict[str, objec
         if key.startswith(_PROVIDER_MIRRORED_PREFIXES):
             out[f"contact_exemptions.{key}"] = value
     out.update(_PROVIDER_MOVED_RULES_OFF)
-    return out
+    # An empty list has no ROS parameter type (launch_ros refuses it); the kernel's default for
+    # every list parameter here is empty, so leaving one out is its "off".
+    return {k: v for k, v in out.items() if not (isinstance(v, list | tuple) and not v)}
 
 
 def _workspace_contact_kernel_params(

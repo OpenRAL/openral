@@ -122,7 +122,10 @@ def test_a_provider_takes_over_the_moved_rules_never_both(launch_module: Any) ->
     assert hand(a) is a, "no provider: unchanged"
     b = hand({**a, "exemption_provider": _PROVIDER})
     for key, off in launch_module._PROVIDER_MOVED_RULES_OFF.items():
-        assert b[key] == off, key
+        assert b.get(key, []) == off, key
+    # launch_ros refuses an empty list (no ROS type): Spark 2026-10-25, every provider launch died.
+    assert not [k for k, v in b.items() if isinstance(v, list | tuple) and not v]
+    assert "tracked_release_jaw_joints" not in b, "off = the kernel's empty default"
     assert b["contact_exemptions.workspace_contact_enabled"] is True
     assert b["contact_exemptions.tracked_release_jaw_joints"] == ["gripper"]
     assert b["contact_exemptions.pinch_payload_own_cells_enabled"] is True
