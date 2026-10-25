@@ -1147,7 +1147,10 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /
-  `grasp_target=` on every `safety.collision` stop line.
+  `grasp_target=` / `grasp_exemption_source=` on every `safety.collision` stop line (and
+  `grasp_exemption_source` in the `FailureTrigger`): `region` (ADR-0115), `tracked` (in-tree
+  K2), `provider:<name>` (an ADR-0121 provider replacing the region while a tracked
+  declaration is live, with `grasp_exemption_provider` in the trigger), or `none`.
 
 * **Scope.** While valid, a cell whose base-frame centre is inside the box does
   not trip **for a link in the mask only**. Every other link takes the unchanged
@@ -1638,6 +1641,153 @@ reads MuJoCo's solver contact list, which `contype`/`conaffinity` exclusions can
 leave empty under a payload demonstrably in contact. That blind spot is
 survivable precisely because this check can only add refusals: failing to arm
 lands on today's behaviour, never on something more permissive than it.
+
+## Exemption provider (ADR-0121) — default none, sim-only
+
+**Accepted 2026-10-24. Safety-WG sign-off pending (hazard log Entry 065, `HZ-0121-1` … `-6`).**
+The kernel stays open. So does every check that can only refuse motion. A rule that *relaxes* a
+verdict may live outside this tree, in a private provider (OpenRAL Pro). It plugs in through the
+installed header
+[`exemption_provider.hpp`](include/openral_safety_kernel/exemption_provider.hpp) and a
+`pluginlib` class deriving `openral_safety_kernel::ExemptionProvider`.
+
+**Loading** happens once, at configure, after the collision model. It **never fails configure.**
+- **Parameters:**
+  - `exemption_provider` is the pluginlib class name. Empty, the default, means no provider and
+    today's verdicts. A deploy scene selects one with `runtime.exemption_provider`, which
+    `openral deploy sim` forwards as the launch argument of the same name. With a provider, the
+    launch hands it the moved rules: each in-tree switch off, its parameters mirrored under
+    `contact_exemptions.` (`_hand_rules_to_provider`), so the in-tree rules and the provider
+    never both decide.
+  - `tracked_grasp_extra_contact_links` (hand geometry, the fixed jaws) is read by K2 or by a
+    provider: the provider's hands are the allowlist plus those jaws, exactly as K2's table.
+  - `exemption_provider_links` is the kernel's own relaxable-link mask. The launch passes
+    `RobotDescription.hand_links()`.
+- **What refuses a provider**, with ERROR `safety.exemption_provider refused` and
+  `/diagnostics exemption_provider=refused: <why>`, leaving the kernel exactly as with none:
+  - `hal_mode` other than `sim`;
+  - an empty mask;
+  - a mask link the model does not know;
+  - a pluginlib load failure;
+  - an `api_version()` other than `kExemptionProviderApiVersion`;
+  - `initialize` returning false or throwing.
+
+**On the live check** (API v2) the provider is consulted in four places:
+- `check_voxel_collision`: robot link vs cell (`voxel_pair`);
+- `check_self_collision`: link vs link (`self_pair`);
+- `check_attached_voxel_collision`: carried payload vs cell (`payload_voxel_pair`);
+- `check_attached_self_collision`: carried payload vs link (`payload_self_pair`).
+
+Each query is made only under all of these conditions:
+- *after* every open check and open exemption (ADR-0115 grasp region, ADR-0092 witnesses and
+  residue, #349 workspace, K2/K7, OT-10);
+- for a pair that would otherwise trip (world-voxel capsules: before the narrow phase; boxes:
+  after it, so the query carries the tripping distance);
+- with **every robot link of the pair** in the mask;
+- for a payload query, on a carried payload only. A frozen payload has no attach link and is
+  never offered.
+
+A `kTolerate` answer has these effects:
+- the pair does not trip;
+- it reaches `sweep_min_distance` at its own depth;
+- it is counted in `CollisionHit::provider_pairs`;
+- it is logged as WARN `safety.exemption_provider_contact` (≤ 1 Hz) and set as span attribute
+  `safety.exemption_provider_pairs`.
+- with a provider owning #349 (the in-tree rule off), the declaration's
+  `safety.workspace_contact_summary` names it: `owner=provider:<name> provider_pairs=<since load>`,
+  and `safety.workspace_region_armed` carries `owner=provider:<name>` (else `owner=in_tree`);
+- the kernel still narrows a refined box payload to its measured inner box against the robot
+  under its own live ingested workspace (`payload_narrowing_workspace`): that narrowing is the
+  kernel's measurement, not the rule, so it does not change with who owns #349; it never enables
+  the in-tree two-slow-hands tolerance.
+
+The limits, the envelope, the lead bound and the watchdog are never offered. Before any query,
+each candidate gets a preallocated read-only `CandidateView` through `begin_candidate`. It
+carries:
+- the tracked set after K1, without K6-retired identities (with each track's declaration-key
+  hash);
+- the kernel's FK at the fresh measured state;
+- a `DeclarationView`: the kernel's own ADR-0115 verdict and region, its refusal and wrong-claim
+  flags, the K2 identity checks and key hash, the frame- and age-checked workspace box, and the
+  hands built from `grasp_contact_links`;
+- `region_max_age_ns`;
+- whether the tracked set shares the grid's frame.
+
+The refusal-type ingest (frames, ages, backstop, retirement) stays here; the provider reads only
+verdicts. While a provider is loaded, the workspace declaration is ingested even with the
+in-tree #349 rule off. That rule and the in-tree contact hold still need
+`workspace_contact_enabled`.
+
+**The measurement stays open.** While a provider is loaded and the workspace is live, the
+kernel runs its own #349 hand measurement even with the in-tree rule off:
+- links are the provider's mask;
+- the period is `workspace_contact_control_period_s` (0 = no measurement);
+- jaw joints are `workspace_contact_jaw_joints`.
+
+Every pair query quotes the result: `hand_speed_mps`, the raw `hand_lead_m` before any
+allowance, `hand_contact`, and the row (step). The "is the hand already touching" check runs
+with the provider masked out. The view also carries:
+- `grid_seq` (bumped per ingested grid);
+- `workspace_period_s`;
+- `tracked_stream_fresh`;
+- the declared static colliders' cells on this grid.
+
+A provider whose `replaces_grasp_region()` is true becomes the grasp exemption source, as
+in-tree K2 is today. The open ADR-0115 region then exempts nothing, which only narrows the open
+kernel. `compose`, `inverse_rigid`, `apply`, `voxel_center`, `point_in_obb`, `footprint_gap` and
+`grid_cell_of` are exported from `collision.hpp`, so a provider's rules use the kernel's own
+arithmetic.
+
+**API v4** adds `CandidateView::attachments`: the kernel's identity match per attachment (evidence kind, the bound or named provisional track, the K3 on-hand verdict), plus `static_points_declared` and `voxel_overflow`, so a provider can run OT-10's rule.
+
+**API v3** adds three hooks.
+- **Cover hold.** `hold_cover` is asked in the kernel's own cover refresh, for a box whose cover
+  fell short while the kernel's own check passed within `grasp_region_max_age_s`. A held pass is
+  never re-stamped, so the hold ends at that bound.
+- **K5 release.** `release_payload` is asked on the world-state ingest path for each bound
+  payload at a fresh measured state, while the in-tree K5 is off. The kernel freezes a released
+  payload itself, keeps its own window (`tracked_release_clear_m` / `tracked_release_timeout_s`,
+  validated at load) and closes it. During the window the frozen payload is offered to
+  `payload_self_pair` on the releasing hand.
+- **Brake.** `brake_config` enables the kernel's own #349 brake on the provider's bounds. The
+  brake mechanism stays open: the dry run, the relaxed re-check with the hand read as still, and
+  the hold or creep, all re-checked by every open check. It needs the hand measurement.
+
+The kernel library is SHARED, so a provider .so and `safety_kernel_node` share one copy.
+
+**A known, stricter difference under a provider.** With the in-tree #349 rule on, a box payload
+with a stage-2 refinement is checked against the robot's own links as its measured (unpadded)
+box. With a provider and the in-tree rule off, it is checked as the shipped, padded box. That
+narrowing loosens geometry for every link, arm links included, so it is not offered as a
+provider capability. It ends with the in-tree rule.
+
+`end_candidate` reports each accepted JOINT_POSITION chunk's last row, commanded joints and
+horizon. `on_reset(reason)` fires wherever the kernel forgets its command chain: configure,
+activate, cleanup, refusal, latch, external E-stop, reset, declaration change. Hooks are `noexcept` and must not allocate; `test_no_alloc`
+covers the kernel side with the most permissive provider loaded.
+
+**Step 1 of 3.** #349, K2, K5, K7 and the OT-10 payload-own cells are still in-tree. The provider
+seam is additive: nothing loads by default, so no verdict changes. The next steps are:
+1. the Pro provider implementing those rules against this header;
+2. the removal of the tracker-based rules (K2, K5, K7, the contact hold, the payload/pinch-own
+   cells) from this tree, after sim parity with the provider loaded.
+
+The box-based rules stay open (ADR-0121 amendment, 2026-10-25): the ADR-0115 grasp allowance
+(`search_box`) and #349 workspace contact with its brake (`workspace_box`). A loaded provider
+still takes #349 over, because K7 narrows it.
+
+**Tests:**
+- `ExemptionProvider.*` in `test_collision`: no provider or the default provider is bit-for-bit
+  today; the most permissive provider cannot reach an unmasked link, a clear pair or an
+  open-exempt pair, nor a self or payload pair with one link unmasked, nor a frozen payload.
+- `test_exemption_provider_kernel`: every refusal path, and a real plugin load from a
+  never-installed test library.
+- In `test_lifecycle_kernel`:
+  - the live-check pass and disclosure;
+  - the off-sim stop;
+  - a recording provider that receives the v2 view, an accepted chunk's outcome and an E-stop
+    reset.
+- `NoAlloc.TheExemptionProviderQueryIsAllocationFree`.
 
 ## Slot rows: uncommanded joints at their measured pose (ADR-0102)
 

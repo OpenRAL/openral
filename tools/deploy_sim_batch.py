@@ -19,6 +19,16 @@ Run (a sourced ROS 2 overlay and the scene's rSkill/prompt)::
         --rskill-id OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16 \\
         --prompt "Grab orange and place into plate" --deadline-s 90
 
+``--record`` also bags each episode's kernel inputs and verdicts (``kernel_replay_diff``'s
+``REPLAY_TOPICS``, into ``<episode>/bag``) and dumps the kernel's parameters into
+``<episode>/kernel_params.yaml``: the input of ``tools/kernel_replay_diff.py diff`` (ADR-0121).
+
+``--end-on-grade`` ends a goal through ``/openral/rskill/complete`` (the completion check's own
+service) once the HAL's sim grader has held ``complete`` for ``--grade-settle-s`` of sim time,
+and records ``ended_by`` (``grade`` or ``goal``): a run is then scored like ``openral sim run``,
+at its first settled completion, instead of manipulating on until its deadline. Sim ground
+truth ends the goal; the safety stack and the kernel are untouched.
+
 ``python tools/deploy_sim_batch.py compare <fresh_dir> <persistent_dir>`` prints the
 per-episode outcome, stop time and wall time side by side.
 """
@@ -29,6 +39,7 @@ import argparse
 import contextlib
 import copy
 import json
+import math
 import os
 import signal
 import subprocess
@@ -63,6 +74,162 @@ def episode_scene(
     opts["port"] = port
     opts["keep_alive"] = keep_alive
     return out
+
+
+#: The HAL's grade-change line (``SimAttachedHAL._observe_placement_grade``), JSON variant.
+_GRADE_EVENT = "sim.placement_grade {"
+
+
+def grade_events(text: str) -> list[tuple[str, float]]:
+    r"""The ``(grade, sim_time_s)`` of each grade-change line in a slice of ``deploy.log``.
+
+    Example:
+        >>> grade_events(
+        ...     '[hal] sim.placement_grade {"grade": "complete", "sim_time_s": 60.15}\n'
+        ...     '[hal] sim.placement_grade_final {"grade": "fail", "sim_time_s": 70.0}\n'
+        ... )
+        [('complete', 60.15)]
+    """
+    out = []
+    for line in text.splitlines():
+        at = line.find(_GRADE_EVENT)
+        if at < 0:
+            continue
+        with contextlib.suppress(ValueError, KeyError, TypeError):
+            data = json.loads(line[at + len(_GRADE_EVENT) - 1 :])
+            out.append((str(data["grade"]), float(data["sim_time_s"])))
+    return out
+
+
+class GradeSettle:
+    """When a goal may end on the sim grader: ``complete`` held for ``settle_s`` of sim time.
+
+    A transient pass does not count: Spark r2 master_dr seed 2 graded ``complete`` for 0.1 s
+    while the banana leaned on the bowl's rim, then ``fail``.
+
+    Example:
+        >>> g = GradeSettle(settle_s=1.0)
+        >>> g.feed("complete", 60.15)
+        >>> g.due(60.5)
+        False
+        >>> g.feed("fail", 60.28)
+        >>> g.due(62.0)
+        False
+        >>> g.feed("complete", 63.0)
+        >>> g.due(64.1)
+        True
+    """
+
+    def __init__(self, settle_s: float) -> None:
+        self.settle_s = settle_s
+        self._since: float | None = None
+
+    def feed(self, grade: str, sim_time_s: float) -> None:
+        """One grade change (``grade_events``)."""
+        self._since = sim_time_s if grade == "complete" else None
+
+    def due(self, now_sim_s: float) -> bool:
+        """Whether ``complete`` has held ``settle_s`` by sim time ``now_sim_s``."""
+        return self._since is not None and now_sim_s - self._since >= self.settle_s
+
+
+class _SimGraph:
+    """The harness's own ROS participant: the sim clock, and the goal's ``complete`` service."""
+
+    def __init__(self, env: Mapping[str, str]) -> None:
+        import rclpy  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        from rosgraph_msgs.msg import (
+            Clock,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        )
+        from std_srvs.srv import (
+            Trigger,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        )
+
+        for key in ("FASTRTPS_DEFAULT_PROFILES_FILE", "RMW_IMPLEMENTATION"):
+            if env.get(key):
+                os.environ.setdefault(key, env[key])  # read once, at the first participant
+        self._ctx = rclpy.Context()
+        rclpy.init(context=self._ctx, domain_id=int(env.get("ROS_DOMAIN_ID", "0")))
+        self._node = rclpy.create_node("deploy_sim_batch_grade", context=self._ctx)
+        self._exec = rclpy.executors.SingleThreadedExecutor(context=self._ctx)
+        self._exec.add_node(self._node)
+        self.now_s = -math.inf
+        self._node.create_subscription(Clock, "/clock", self._on_clock, 10)
+        self._trigger_cls = Trigger
+        self._complete = self._node.create_client(Trigger, "/openral/rskill/complete")
+
+    def _on_clock(self, msg: Any) -> None:
+        self.now_s = msg.clock.sec + msg.clock.nanosec * 1e-9
+
+    def spin(self, seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self._exec.spin_once(timeout_sec=0.05)
+
+    def complete(self, timeout_s: float = 10.0) -> bool:
+        """End the running goal as a success; ``True`` if the runner accepted."""
+        if not self._complete.wait_for_service(timeout_sec=timeout_s):
+            return False
+        future = self._complete.call_async(self._trigger_cls.Request())
+        self._exec.spin_until_future_complete(future, timeout_sec=timeout_s)
+        result = future.result()
+        return bool(result is not None and result.success)
+
+    def close(self) -> None:
+        import rclpy  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+
+        self._node.destroy_node()
+        rclpy.shutdown(context=self._ctx)
+
+
+def _dispatch_goal(args: argparse.Namespace, env: Mapping[str, str], log: Path) -> tuple[str, str]:
+    """Run one goal; with ``--end-on-grade``, end it on a settled grade. Returns its output
+    and ``ended_by`` (``grade``: the harness completed it; ``goal``: it ended on its own)."""
+    cmd = [
+        sys.executable,
+        str(REPO / "tools/_validation_matrix_dispatch.py"),
+        "--deadline-s",
+        str(args.deadline_s),
+        "--rskill-id",
+        args.rskill_id,
+        "--prompt",
+        args.prompt,
+    ]
+    if not args.end_on_grade:
+        res = subprocess.run(cmd, env=dict(env), capture_output=True, text=True, check=False)
+        return res.stdout + res.stderr, "goal"
+    offset = log.stat().st_size if log.exists() else 0
+    dispatch = subprocess.Popen(
+        cmd, env=dict(env), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    settle = GradeSettle(args.grade_settle_s)
+    ended_by, tail = "goal", ""
+    graph: _SimGraph | None = None
+    try:
+        graph = _SimGraph(env)
+        while dispatch.poll() is None:
+            # Spin first, then read: a grade logged during the spin (a `fail` after the
+            # `complete`) is fed before `due()` can complete the goal on the stale grade.
+            graph.spin(0.5)
+            with log.open("rb") as fh:
+                fh.seek(offset)
+                chunk = fh.read().decode(errors="replace")
+            offset += len(chunk.encode())
+            text, _, tail = (tail + chunk).rpartition("\n")
+            for grade, sim_s in grade_events(text):
+                settle.feed(grade, sim_s)
+            if ended_by == "goal" and settle.due(graph.now_s) and graph.complete():
+                ended_by = "grade"
+    # Any monitor failure is recorded in ended_by; the caller still tears the episode down.
+    except Exception as exc:
+        dispatch.kill()
+        out, _ = dispatch.communicate()
+        return out, f"monitor_failed: {exc!r}"
+    finally:
+        if graph is not None:
+            graph.close()
+    out, _ = dispatch.communicate()
+    return out, ended_by
 
 
 def sidecar_pids(port: int) -> list[int]:
@@ -154,6 +321,24 @@ def _wait_for(
     return None
 
 
+def _dump_kernel_params(env: Mapping[str, str], tries: int = 3) -> str:
+    """``ros2 param dump`` of the kernel, without the CLI daemon (whose graph view can be
+    stale), retried: the first discovery spin can miss a node that is up."""
+    out = ""
+    for _ in range(tries):
+        res = subprocess.run(
+            ["ros2", "param", "dump", "/openral_safety_kernel", "--no-daemon", "--spin-time", "10"],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        out = res.stdout or res.stderr
+        if "ros__parameters" in out:
+            break
+    return out
+
+
 def _stop_group(proc: subprocess.Popen[bytes], grace_s: float) -> str:
     """SIGINT the launch's process group (what Ctrl-C does), SIGKILL after ``grace_s``."""
     with contextlib.suppress(ProcessLookupError):
@@ -182,15 +367,22 @@ def _end_sidecar(port: int) -> None:
 def batch_env(environ: Mapping[str, str]) -> tuple[dict[str, str], str]:
     """The episodes' environment and ROS domain, the domain written into it.
 
+    It also carries the deploy graph's Fast DDS profile (``apply_fastdds_large_data_profile``).
+
     ``graph_leaks`` matches ``ROS_DOMAIN_ID=<domain>`` in each process's environ, so the
     children must carry the variable even when the caller's shell left it unset.
 
     Example:
-        >>> batch_env({"PATH": "/bin"})
-        ({'PATH': '/bin', 'ROS_DOMAIN_ID': '0'}, '0')
+        >>> env, domain = batch_env({"PATH": "/bin"})
+        >>> domain, env["ROS_DOMAIN_ID"], env["FASTRTPS_DEFAULT_PROFILES_FILE"][-22:]
+        ('0', '0', 'fastdds_large_data.xml')
     """
     env = dict(environ)
     domain = env.setdefault("ROS_DOMAIN_ID", "0")
+    from openral_cli.deploy_sim import apply_fastdds_large_data_profile
+
+    # The graph's own transport profile, so the recorder and the param dump see it as it is.
+    apply_fastdds_large_data_profile(env)
     return env, domain
 
 
@@ -253,6 +445,25 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                 "boot_s": boot_s,
             }
             goal: dict[str, Any] = {}
+            recorder = None
+            if boot_s is not None and args.record:
+                from kernel_replay_diff import (  # type: ignore[import-not-found,unused-ignore]  # reason: sibling tool, on sys.path[0] when run as a script
+                    record_command,
+                )
+
+                recorder = subprocess.Popen(
+                    record_command(str(ep / "bag")),
+                    stdout=(ep / "record.log").open("wb"),
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    start_new_session=True,
+                )
+                dump = _dump_kernel_params(env)
+                if "ros__parameters" in dump:
+                    (ep / "kernel_params.yaml").write_text(dump)
+                else:
+                    (ep / "kernel_params.err").write_text(dump)
+                    rec["param_dump"] = "failed"
             if boot_s is None:
                 rec["failure"] = "stack did not come up"
             else:
@@ -262,26 +473,13 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                     json.dumps(truth, default=lambda o: o.tolist())
                 )
                 t_goal = time.monotonic()
-                res = subprocess.run(
-                    [
-                        sys.executable,
-                        str(REPO / "tools/_validation_matrix_dispatch.py"),
-                        "--deadline-s",
-                        str(args.deadline_s),
-                        "--rskill-id",
-                        args.rskill_id,
-                        "--prompt",
-                        args.prompt,
-                    ],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                (ep / "goal.log").write_text(res.stdout + res.stderr)
+                output, rec["ended_by"] = _dispatch_goal(args, env, log)
+                (ep / "goal.log").write_text(output)
                 with contextlib.suppress(ValueError, IndexError):
-                    goal = json.loads(res.stdout.strip().splitlines()[-1])
+                    goal = json.loads(output.strip().splitlines()[-1])
                 rec["goal_s"] = time.monotonic() - t_goal
+            if recorder is not None:
+                rec["recorder"] = _stop_group(recorder, 20.0)
             t_down = time.monotonic()
             rec["teardown"] = _stop_group(proc, args.grace_s)
             rec["teardown_s"] = time.monotonic() - t_down
@@ -378,7 +576,23 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["compare"]:
         return compare(Path(argv[1]), Path(argv[2]))
+    restore_sigint()
     return run_batch(parser().parse_args(argv))
+
+
+def restore_sigint() -> bool:
+    """Catch SIGINT again when this process inherited it ignored; ``True`` if it was.
+
+    A harness started as a background job of a non-interactive shell inherits SIGINT
+    ignored, and every child inherits that too. ``_stop_group``'s SIGINT then reaches no
+    one: the launch is SIGKILLed after its grace, and ``ros2 bag record`` dies without
+    finalizing its bag. A caught signal resets to its default across ``exec``, so this
+    gives every later child its SIGINT back.
+    """
+    if signal.getsignal(signal.SIGINT) is not signal.SIG_IGN:
+        return False
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    return True
 
 
 def parser() -> argparse.ArgumentParser:
@@ -398,6 +612,17 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--boot-timeout-s", type=float, default=420.0)
     p.add_argument("--grace-s", type=float, default=60.0)
     p.add_argument("--expect-preload", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument(
+        "--end-on-grade",
+        action="store_true",
+        help="end a goal once the sim grader holds complete for --grade-settle-s (sim time)",
+    )
+    p.add_argument("--grade-settle-s", type=float, default=1.0)
+    p.add_argument(
+        "--record",
+        action="store_true",
+        help="bag the kernel's replay topics and dump its parameters per episode (ADR-0121)",
+    )
     p.add_argument(
         "--deploy-arg",
         action="append",

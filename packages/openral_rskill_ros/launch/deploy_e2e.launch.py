@@ -1478,6 +1478,96 @@ def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, st
     return {"payload_sweep_clear_service": "/openral_octomap_server/clear_bbox"}
 
 
+def _exemption_provider_kernel_params(
+    description: RobotDescription,
+    *,
+    provider: str,
+    hal_mode: str,
+    wrist_links: int = 1,
+) -> dict[str, object]:
+    """The safety kernel's exemption-provider params (ADR-0121).
+
+    Empty ``provider``: ``{}``, so the kernel runs exactly as with no provider. Otherwise the
+    pluginlib class name, plus the kernel's own relaxable-link mask: the manifest's hand
+    links (``RobotDescription.hand_links()``), never configured by name. The kernel refuses
+    a provider off sim and any link it does not know; this refuses earlier, at launch.
+
+    Raises:
+        ROSConfigError: A provider on a non-sim HAL, or for a robot with no hand links.
+    """
+    if not provider:
+        return {}
+    from openral_core.exceptions import ROSConfigError
+
+    if hal_mode != "sim":
+        raise ROSConfigError(
+            f"exemption_provider {provider!r} is sim-only (ADR-0121); refused on hal_mode="
+            f"{hal_mode!r}."
+        )
+    links = list(description.hand_links(wrist_links=wrist_links))
+    if not links:
+        raise ROSConfigError(
+            f"exemption_provider {provider!r} but robot {description.name!r} declares no "
+            "role: gripper joint, so it has no hand links to relax."
+        )
+    return {"exemption_provider": provider, "exemption_provider_links": links}
+
+
+#: In-tree kernel rule switches ADR-0121 moves to an exemption provider, and their "off" value.
+#: Mirrored by ``tools/kernel_replay_diff.py`` (pinned by
+#: ``tests/unit/test_exemption_provider_launch.py``).
+_PROVIDER_MOVED_RULES_OFF: dict[str, object] = {
+    "workspace_contact_enabled": False,
+    "workspace_contact_brake_enabled": False,
+    "workspace_contact_hold_max_consecutive": 0,
+    "workspace_explained_cells_enabled": False,
+    "tracked_grasp_exemption_enabled": False,
+    "tracked_release_jaw_joints": [],
+    "tracked_release_jaw_open_sign": [],
+    "payload_own_cells_enabled": False,
+    "pinch_payload_own_cells_enabled": False,
+}
+#: Kernel parameter prefixes the provider reads under ``contact_exemptions.``.
+_PROVIDER_MIRRORED_PREFIXES: tuple[str, ...] = (
+    "workspace_contact_",
+    "workspace_explained_",
+    "tracked_grasp_",
+    "tracked_release_",
+    "payload_own_",
+    "pinch_payload_own_",
+)
+
+
+def _hand_rules_to_provider(kernel_params: dict[str, object]) -> dict[str, object]:
+    """With an exemption provider, the moved in-tree rules go to it (ADR-0121).
+
+    Each moved rule's parameter is mirrored under ``contact_exemptions.`` for the provider and
+    the in-tree switch is turned off, so the provider decides what the in-tree rules did,
+    never both at once: the configuration the in-tree code's removal leaves. The open kernel
+    keeps measuring the hand (``workspace_contact_control_period_s``, ``..._jaw_joints``) and
+    keeps its own release window. Without a provider the params are returned unchanged.
+
+    Example:
+        >>> out = _hand_rules_to_provider(
+        ...     {"exemption_provider": "p/P", "workspace_contact_enabled": True}
+        ... )
+        >>> out["workspace_contact_enabled"], out["contact_exemptions.workspace_contact_enabled"]
+        (False, True)
+        >>> _hand_rules_to_provider({"workspace_contact_enabled": True})
+        {'workspace_contact_enabled': True}
+    """
+    if not kernel_params.get("exemption_provider"):
+        return kernel_params
+    out = dict(kernel_params)
+    for key, value in kernel_params.items():
+        if key.startswith(_PROVIDER_MIRRORED_PREFIXES):
+            out[f"contact_exemptions.{key}"] = value
+    out.update(_PROVIDER_MOVED_RULES_OFF)
+    # An empty list has no ROS parameter type (launch_ros refuses it); the kernel's default for
+    # every list parameter here is empty, so leaving one out is its "off".
+    return {k: v for k, v in out.items() if not (isinstance(v, list | tuple) and not v)}
+
+
 def _workspace_contact_kernel_params(
     description: RobotDescription,
     *,
@@ -2272,6 +2362,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     workspace_contact_max_lead_m = float(_ws_lead) if _ws_lead else None
     _ws_wrist = LaunchConfiguration("workspace_contact_wrist_links").perform(context)
     workspace_contact_wrist_links = int(_ws_wrist) if _ws_wrist else 1
+    # The kernel's exemption provider (ADR-0121); empty = none.
+    exemption_provider = LaunchConfiguration("exemption_provider").perform(context).strip()
     # The octomap bridge's payload octree clearing (DeployRuntime.payload_sweep_clear_enabled).
     # Resolved here, so a non-sim HAL refuses it even with the octomap leg off.
     payload_sweep_clear_params = _payload_sweep_clear_params(
@@ -2716,6 +2808,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             wrist_links=workspace_contact_wrist_links,
         )
     )
+    kernel_params.update(
+        _exemption_provider_kernel_params(
+            description,
+            provider=exemption_provider,
+            hal_mode=hal_mode,
+            wrist_links=workspace_contact_wrist_links,
+        )
+    )
     # Issue #418 K7: in `on`, workspace contact is tolerated only on explained cells; the
     # declared static geometry explains its own cells (the bridge's cells, one centre each).
     explained_requested = (
@@ -2767,6 +2867,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         }
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
+    # ADR-0121: a provider takes over the moved in-tree rules (never both at once).
+    kernel_params = _hand_rules_to_provider(kernel_params)
 
     # Run identity for the dashboard's Identity card. These
     # ride as OTLP resource attributes on every node so run mode / id /
@@ -5296,6 +5398,15 @@ def generate_launch_description() -> LaunchDescription:
                 "Issue #418 K7 with object_tracking on: workspace contact only on explained "
                 "cells; false keeps the workspace rule alone "
                 "(DeployRuntime.workspace_explained_cells)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "exemption_provider",
+            default_value="",
+            description=(
+                "Safety-kernel exemption provider, a pluginlib class deriving "
+                "openral_safety_kernel::ExemptionProvider (ADR-0121). Empty = none; sim only. "
+                "Its relaxable links are the manifest's hand links."
             ),
         ),
         DeclareLaunchArgument(

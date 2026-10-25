@@ -10,6 +10,7 @@
 // that guarantee enforceable in CI.
 
 #include "openral_safety_kernel/collision.hpp"
+#include "openral_safety_kernel/exemption_provider.hpp"
 #include "openral_safety_kernel/force_observer.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
@@ -577,4 +578,89 @@ TEST(NoAlloc, TheForceObserverUpdateIsAllocationFree) {
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
   EXPECT_EQ(ok, 5000);
+}
+
+namespace {
+
+// ADR-0121: the most permissive provider, so every pair the kernel offers is tolerated.
+class TolerateEveryPair final : public osk::ExemptionProvider {
+public:
+  std::uint32_t api_version() const noexcept override { return osk::kExemptionProviderApiVersion; }
+  const char* name() const noexcept override { return "tolerate-every-pair"; }
+  bool initialize(const osk::CollisionModel& /*model*/,
+                  rclcpp::node_interfaces::NodeParametersInterface::SharedPtr /*params*/,
+                  const rclcpp::Logger& /*logger*/) override {
+    return true;
+  }
+  osk::ProviderVerdict voxel_pair(const osk::VoxelPairQuery& /*q*/) noexcept override {
+    return osk::ProviderVerdict::kTolerate;
+  }
+  osk::ProviderVerdict self_pair(const osk::SelfPairQuery& /*q*/) noexcept override {
+    return osk::ProviderVerdict::kTolerate;
+  }
+};
+
+}  // namespace
+
+TEST(NoAlloc, TheExemptionProviderQueryIsAllocationFree) {
+  // ADR-0121 HZ-0121-3: the kernel side of a provider query (mask check, query build, disclosure)
+  // sits in the cell loop and must not allocate. Model, grid, mask and provider are built OUTSIDE
+  // the counted window; the provider here allocates nothing, so any count is the kernel's.
+  osk::CollisionModel m;
+  m.n_links = 3;
+  m.parent = {-1, 0, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+  osk::Obb finger;  // openarm_left_finger_pair's box, robots/openarm/robot.yaml
+  finger.half_extents = {0.0294, 0.0711, 0.0811};
+  finger.origin = osk::transform_from_xyz_rpy(0.0004, 0.0484, -0.0298, -2.8925, 0.0066, 3.1375);
+  m.box_link = {1};
+  m.boxes = {finger};
+  m.capsule_link = {2};
+  m.capsules = {osk::Capsule{0.01, 0.02, osk::Transform{}}};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+  constexpr int kN = 16;
+  std::vector<std::uint8_t> occ(kN * kN * kN, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 7) {
+    occ[i] = 1;
+  }
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.16, -0.16, -0.16};
+  grid.resolution = 0.02;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+  TolerateEveryPair provider;
+  const std::vector<std::uint8_t> mask{0, 1, 1};
+  grid.provider_gate.provider = &provider;
+  grid.provider_gate.links = mask.data();
+  grid.provider_gate.links_n = mask.size();
+
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int tolerated = 0;
+  for (int i = 0; i < 10000; ++i) {
+    tolerated += osk::check_voxel_collision(m, s, grid, 0.02).provider_pairs;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the voxel check allocated with a provider armed; CLAUDE.md §2 forbids this.";
+  EXPECT_GT(tolerated, 0) << "the loop really exercised tolerated provider pairs";
+
+  // API v2: the self-pair query (the box finger and the capsule finger overlap at one pose).
+  const osk::ProviderGate gate{&provider, mask.data(), mask.size(), 0};
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int self_tolerated = 0;
+  for (int i = 0; i < 10000; ++i) {
+    self_tolerated += osk::check_self_collision(m, s, 0.0, nullptr, &gate).provider_pairs;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the self check allocated with a provider armed; CLAUDE.md §2 forbids this.";
+  EXPECT_GT(self_tolerated, 0) << "the loop really exercised tolerated self pairs";
 }

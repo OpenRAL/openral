@@ -1699,6 +1699,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "runtime.payload_sweep_clear_enabled is sim-only until Safety-WG review "
             "(packages/openral_octomap_bridge/README.md): deploy run refuses it."
         )
+    # An exemption provider relaxes kernel rules (ADR-0121): sim-only.
+    if hal_mode == "real" and rt is not None and rt.exemption_provider:
+        raise ROSConfigError(
+            f"runtime.exemption_provider={rt.exemption_provider!r} is sim-only (ADR-0121): "
+            "deploy run refuses it."
+        )
     # On real hardware the vision bridge's target leg is the only grasp-region producer (in
     # sim the HAL's MuJoCo evidence tracker measures it), so the exemption without it would
     # arm with nothing measuring the region. Judged on the EFFECTIVE HAL params (scene plus
@@ -1899,6 +1905,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # on `deploy run`, and again by the launch on a non-sim HAL).
     if rt is not None and rt.payload_sweep_clear_enabled:
         argv_template.append("payload_sweep_clear_enabled:=true")
+    if rt is not None and rt.exemption_provider:
+        argv_template.append(f"exemption_provider:={rt.exemption_provider}")
     # The #418 object tracker: forwarded only when on, so the off path's argv is unchanged.
     # The launch adds the tracked cameras' robot masks and gates the HAL bridge's
     # attachment_state publisher in bind/on.

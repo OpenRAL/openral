@@ -12189,6 +12189,14 @@ class DeployRuntime(BaseModel):
     removed. Default off; no raw octree clearing service is configured when off.
     **Sim-only until Safety-WG review**: ``openral deploy run``
     and ``deploy_e2e`` on a non-sim HAL refuse it on. Backward-compatible addition."""
+    exemption_provider: str = ""
+    """Safety-kernel exemption provider (ADR-0121): a pluginlib class deriving
+    ``openral_safety_kernel::ExemptionProvider`` (e.g. OpenRAL Pro's
+    ``openral_pro_safety_exemptions/ContactExemptions``), forwarded as the launch's
+    ``exemption_provider`` argument. Empty (default) = none: the in-tree rules decide.
+    The kernel fails closed on any provider it cannot load, and the provider can only
+    tolerate pairs on the manifest's hand links. **Sim-only**: ``openral deploy run``, the
+    launch and the kernel each refuse it off sim. Backward-compatible addition."""
     static_geometry_file: str | None = None
     """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
     repo-relative): walls, shelf frame, table, tote shell, in the robot's ``base_frame``.
@@ -13338,6 +13346,12 @@ class CollisionEvidence(_FailureEvidenceBase):
             active during the check, when reported by the producer.
         grasp_exemption_active: Whether a live grasp exemption was active during
             the check, when reported by the producer.
+        grasp_exemption_source: Which grasp exemption the check ran under (ADR-0121):
+            ``region`` (ADR-0115), ``tracked`` (in-tree K2), ``provider`` (an exemption
+            provider replacing the region) or ``none``; ``None`` from a producer that
+            predates it. Backward-compatible addition.
+        grasp_exemption_provider: The provider's name when ``grasp_exemption_source`` is
+            ``provider``. Backward-compatible addition.
         depth_is_box_bound: Whether ``min_distance_m`` reports a bounding-box
             lower bound instead of a tight-geometry distance.
         payload_evidence_kind: Attached-payload source kind from the accepted
@@ -13382,6 +13396,10 @@ class CollisionEvidence(_FailureEvidenceBase):
     ) = None
     workspace_contact_active: bool | None = None
     grasp_exemption_active: bool | None = None
+    grasp_exemption_source: Literal["region", "tracked", "provider", "none"] | None = None
+    grasp_exemption_provider: str | None = Field(
+        default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
+    )
     depth_is_box_bound: bool | None = None
     payload_evidence_kind: str | None = Field(
         default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
@@ -13414,6 +13432,13 @@ class CollisionEvidence(_FailureEvidenceBase):
         if (self.payload_evidence_kind is None) != (self.payload_evidence_ref is None):
             raise ValueError(
                 "payload_evidence_kind and payload_evidence_ref must be present together"
+            )
+        if (self.grasp_exemption_source == "provider") != (
+            self.grasp_exemption_provider is not None
+        ):
+            raise ValueError(
+                "grasp_exemption_provider is present exactly when grasp_exemption_source is "
+                "'provider'"
             )
         return self
 

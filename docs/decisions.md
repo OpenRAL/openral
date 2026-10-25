@@ -46,6 +46,16 @@ in full so the posture stays visible although the records are private:
   zero-copy runtime fast path, WAM (World Action Model) implementations,
   fleet/cloud dispatch, and future premium rSkills. This repo keeps the
   protocols and extension seams they plug into, not the implementations.
+- **The safety kernel stays open, and every check that can only refuse
+  motion stays open with it.** A kernel rule that *relaxes* a verdict
+  (lets a hand touch a cell, ends a payload binding) may move to OpenRAL Pro.
+  It can only do so behind the kernel's open, fail-closed, sim-only
+  exemption-provider interface
+  (`cpp/openral_safety_kernel/include/openral_safety_kernel/exemption_provider.hpp`).
+  The kernel enforces the provider's bounds itself (ADR-0121). The box-based rules
+  a scene declares stay open (the ADR-0115 `search_box` grasp allowance, #349
+  `workspace_box` contact); the tracker-based rules (#418 K2, K5, K7,
+  payload-own cells) are the ones that move (ADR-0121 amendment, 2026-10-25).
 - Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
   own upstream license, independent of OpenRAL's code license. This is
   compliance for models OpenRAL doesn't own, not a statement about
@@ -54,5 +64,7 @@ in full so the posture stays visible although the records are private:
 The first two points come from separate records: the original
 uniform-Apache-2.0 posture, and a later decision establishing the OpenRAL
 Pro commercial tier. The later one superseded the original's "no commercial
-tier, ever" commitment and kept the public repo Apache-2.0. Context,
-alternatives, and consequences are in the private decision log.
+tier, ever" commitment and kept the public repo Apache-2.0. The safety-kernel
+point is `ADR-0121`. It narrows that later record's "the safety kernel stays
+open" line to the refuses/relaxes rule above. Context, alternatives, and
+consequences are in the private decision log.

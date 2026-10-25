@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import signal
 import socket
 import subprocess
 import sys
@@ -97,3 +98,180 @@ def test_expect_preload_can_be_turned_off() -> None:
     p = _tool().parser()
     assert p.parse_args(base).expect_preload is True
     assert p.parse_args([*base, "--no-expect-preload"]).expect_preload is False
+
+
+def test_record_is_opt_in_and_bags_exactly_the_replay_topics() -> None:
+    """``--record`` feeds ``kernel_replay_diff diff`` (ADR-0121); off by default."""
+    tool = _tool()
+    base = ["--scene", "s", "--out", "o", "--sidecar-port", "1", "--rskill-id", "r"]
+    assert not tool.parser().parse_args([*base, "--prompt", "p"]).record
+    assert tool.parser().parse_args([*base, "--prompt", "p", "--record"]).record
+    sys.path.insert(0, str(_TOOL.parent))
+    try:
+        from kernel_replay_diff import (  # type: ignore[import-not-found,unused-ignore]  # reason: sibling tool
+            REPLAY_TOPICS,
+            record_command,
+        )
+    finally:
+        sys.path.remove(str(_TOOL.parent))
+    argv = record_command("/tmp/x/bag")
+    assert argv[-len(REPLAY_TOPICS) :] == list(REPLAY_TOPICS)
+    assert "/openral/candidate_action" in REPLAY_TOPICS
+
+
+def test_an_inherited_ignored_sigint_is_caught_again_for_the_children() -> None:
+    """Spark 2026-10-25: a background harness SIGKILLed every unfinalized bag recorder."""
+    code = (
+        "import signal, subprocess, sys;"
+        f"sys.path.insert(0, {str(_TOOL.parent)!r});"
+        "import deploy_sim_batch as d;"
+        "print(d.restore_sigint(), d.restore_sigint());"
+        "print(subprocess.run(['grep', 'SigIgn', '/proc/self/status'],"
+        " capture_output=True, text=True).stdout.split()[1])"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert out[:2] == ["True", "False"]
+    assert int(out[2], 16) & (1 << (signal.SIGINT - 1)) == 0, "the child's SIGINT is not ignored"
+
+
+# Spark r2 master_dr seed 2, verbatim: the banana leaned on the bowl's rim for 0.13 s.
+_GRADE_LINES = (
+    '[lifecycle_node.py-7] sim.placement_grade {"goal_active": true, "grade": "complete", '
+    '"previous": "fail", "prompt": "pick up the banana and place it in the bowl", "scene_id": '
+    '"isaac_sim", "score": 1.0, "sim_time_ns": 60150003137, "sim_time_s": 60.15, "step": 877, '
+    '"task_id": "isaac_sim/_hal_deploy_noop"}\n'
+    "[lifecycle_node.py-7] 2026-10-25T07:27:12.624576Z [info     ] sim.placement_grade            "
+    "goal_active=True grade=fail previous=complete sim_time_s=60.283\n"
+    '[lifecycle_node.py-7] sim.placement_grade {"goal_active": true, "grade": "fail", '
+    '"previous": "complete", "sim_time_s": 60.283}\n'
+)
+
+
+def test_a_transient_complete_never_ends_the_goal() -> None:
+    """--end-on-grade needs complete held for the settle time; a rim-lean pass is not success."""
+    tool = _tool()
+    events = tool.grade_events(_GRADE_LINES)
+    assert events == [("complete", 60.15), ("fail", 60.283)], "only the JSON lines, in order"
+    settle = tool.GradeSettle(settle_s=1.0)
+    for grade, t in events:
+        settle.feed(grade, t)
+    assert not settle.due(75.0)
+    settle.feed("complete", 80.0)
+    assert not settle.due(80.9)
+    assert settle.due(81.0)
+
+
+def test_end_on_grade_is_opt_in() -> None:
+    tool = _tool()
+    base = [
+        "--scene",
+        "s",
+        "--out",
+        "o",
+        "--sidecar-port",
+        "1",
+        "--rskill-id",
+        "r",
+        "--prompt",
+        "p",
+    ]
+    args = tool.parser().parse_args(base)
+    assert not args.end_on_grade and args.grade_settle_s == 1.0
+    assert tool.parser().parse_args([*base, "--end-on-grade"]).end_on_grade
+
+
+class _GraphLoggingFailOnSpin:
+    """Stands in for the ROS graph (a network boundary): its spin is when the HAL logs
+    ``fail`` right after a held ``complete``, and the sim clock jumps past the settle time."""
+
+    def __init__(self, log: Path) -> None:
+        self._log = log
+        self.now_s = 60.0
+        self.completed = False
+
+    def spin(self, seconds: float) -> None:
+        with self._log.open("a") as fh:
+            fh.write('sim.placement_grade {"grade": "fail", "sim_time_s": 61.5}\n')
+        self.now_s = 70.0
+
+    def complete(self, timeout_s: float = 10.0) -> bool:
+        self.completed = True
+        return True
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_fail_logged_during_the_spin_blocks_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The grade is re-read after the spin: a ``fail`` that lands during it must not let the
+    stale ``complete`` end the goal (CodeRabbit #432)."""
+    tool = _tool()
+    log = tmp_path / "deploy.log"
+    log.write_text('sim.placement_grade {"grade": "complete", "sim_time_s": 60.0}\n')
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/_validation_matrix_dispatch.py").write_text(
+        "import time\ntime.sleep(1.5)\nprint('{}')\n"
+    )
+    graph = _GraphLoggingFailOnSpin(log)
+    monkeypatch.setattr(tool, "REPO", tmp_path)
+    monkeypatch.setattr(tool, "_SimGraph", lambda env: graph)
+    args = tool.parser().parse_args(
+        [
+            "--scene",
+            "s",
+            "--out",
+            "o",
+            "--sidecar-port",
+            "1",
+            "--rskill-id",
+            "r",
+            "--prompt",
+            "p",
+            "--end-on-grade",
+        ]
+    )
+    _, ended_by = tool._dispatch_goal(args, {}, log)
+    assert ended_by == "goal" and not graph.completed
+
+
+def test_a_graph_failure_stops_dispatch_and_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A monitor that cannot start kills the dispatch and returns, so the caller still tears
+    the episode down (CodeRabbit #432)."""
+    tool = _tool()
+    log = tmp_path / "deploy.log"
+    log.write_text("")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/_validation_matrix_dispatch.py").write_text("import time\ntime.sleep(60)\n")
+
+    def _no_graph(env: object) -> None:
+        raise RuntimeError("rclpy init failed")
+
+    monkeypatch.setattr(tool, "REPO", tmp_path)
+    monkeypatch.setattr(tool, "_SimGraph", _no_graph)
+    args = tool.parser().parse_args(
+        [
+            "--scene",
+            "s",
+            "--out",
+            "o",
+            "--sidecar-port",
+            "1",
+            "--rskill-id",
+            "r",
+            "--prompt",
+            "p",
+            "--end-on-grade",
+        ]
+    )
+    _, ended_by = tool._dispatch_goal(args, {}, log)
+    assert ended_by.startswith("monitor_failed:") and "rclpy init failed" in ended_by

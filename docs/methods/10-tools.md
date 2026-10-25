@@ -79,6 +79,22 @@ _Pre-commit drift guard checking the mechanically verifiable half of `docs/archi
 - `check_literals(html) -> list[str]` — Report data lines whose string literals are not well-formed JS strings, each line shape checked whole: card `title`/`pkg`/`status`/`desc` scalars (matched on the field name, so a field missing its opening quote is reported, not skipped), card `inputs`/`outputs`/`schemas` arrays, and the one-line SCHEMAS rows; an unescaped `"` there blanks the whole page while the path/count regexes still parse the prefix. (L161)
 - `main(argv: list[str] | None = None) -> int` (L179) — CLI entry; `--quiet`; runs `check_literals` + `check_paths` + `check_counts`, prints drift and returns 1, else 0.
 
+### `tools/kernel_replay_diff.py`
+_ADR-0121 parity gate, deterministic half: replays one recorded deploy into two real `safety_kernel_node` processes on private ROS domains (A = the run's parameters with the in-tree rules; B = the moved rules off and the OpenRAL Pro provider on) and diffs their per-candidate verdicts. `REPLAY_TOPICS` is the one topic list a parity run records._
+
+- `REPLAY_TOPICS: tuple[str, ...]` (L50) — `/clock`, `/joint_states`, `/openral/candidate_action`, `/openral/world_voxels`, `/openral/world_state_fast`, `/openral/estop` and the verdict topics.
+- `record_command(out_dir: str) -> list[str]` — The `ros2 bag record --storage mcap` argv for exactly `REPLAY_TOPICS`. (L98)
+- `params_yaml(params) -> str` — The kernel's `--params-file` text: empty lists omitted (rclcpp refuses an untyped list), no YAML anchors/aliases (rcl refuses them; a mirrored `contact_exemptions.<x>` list is the same object as `<x>`). (L284)
+- `provider_params(params, provider: str) -> dict[str, Any]` — Kernel B's parameters: `_MOVED_RULES_OFF` applied, `exemption_provider` + `exemption_provider_links` (the in-tree workspace's hand links), every in-tree rule parameter mirrored as `contact_exemptions.<name>`, the open measurement kept; `ValueError` when A runs none of the moved rules. (L124)
+- `missing_inputs(counts) -> list[str]` — The required inputs (`/joint_states`, `/openral/world_voxels`, `/openral/candidate_action`) a bag records no message of; `replay` refuses a bag missing any (both kernels would refuse every candidate alike). (L260)
+- `class Verdict` (L175) — One kernel's answer to one candidate: `passed`, published `flat`, `latched`.
+- `class Diff` (L184) — A candidate whose two verdicts differ (`index`, `stamp_ns`, `a`, `b`).
+- `verdicts_equal(a, b, tol=1e-9) -> bool` — Same pass/refuse, same latch, same rows within `tol`. (L193)
+- `summarize(diffs, n_candidates) -> dict` — Counts (`equal`, `different`, `a_only_passes`, `b_only_passes`) and every diff. (L207)
+- `outside_noise(report, self_checks) -> list[int]` — Candidate indices where A and B differ but no A-vs-A run did: the tier-2 criterion (`diff --self-check K` exits non-zero iff any). (L224)
+- `replay(bag, params_a, params_b, workdir, verdict_timeout_s=0.3, settle_s=0.02) -> dict` — The live two-kernel replay (needs ROS 2 Jazzy and both packages built). Delivery made as deterministic as the kernel's KEEP_LAST(1) inputs allow: the deploy graph's Fast DDS large-data profile, each reliable input acknowledged by both kernels, `settle_s` of spinning before each candidate. (L479)
+- `main(argv=None) -> int` — `record-cmd OUT` / `diff --bag --params --provider --out`; exit 1 on any differing verdict. (L567)
+
 ### `tools/check_no_pro_imports.py`
 _Lint guard for the Apache-2.0 / OpenRAL Pro boundary: fails when any tracked `.py` imports an `openral_pro*` module (`import`, `from … import`, or `import_module`/`__import__` with a literal). Names in strings and docs stay allowed; `openral_prompt_router` is not a hit. Run by `just lint`, pre-commit and `quality.yml`. Open code reaches Pro only through `openral_rskill.backend_registry`._
 
@@ -181,21 +197,26 @@ _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS gr
 - `main() -> int` (L434) — CLI: `sys.argv[1]`=output path, `[2]`=snapshot dir; creates the node, runs `Monitor`, spins until SIGINT/SIGTERM, writes `monitor_started`/`monitor_stopped` markers.
 
 ### `tools/deploy_sim_batch.py`
-_Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`: a fresh ROS graph per episode against a kept-alive sidecar the new HAL adopts and resets with the episode's seed; `--mode fresh`: the baseline, a sidecar per episode). Between episodes: domain quiet, no leftover graph process, sidecar answering; else the sidecar is ended and `batch.json` records a `restarts` entry. `compare A B` prints outcome, boot/total wall time and the max difference of the sidecar's initial ground truth per episode. Sim only; nothing here clears an e-stop._
+_Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`: a fresh ROS graph per episode against a kept-alive sidecar the new HAL adopts and resets with the episode's seed; `--mode fresh`: the baseline, a sidecar per episode). Between episodes: domain quiet, no leftover graph process, sidecar answering; else the sidecar is ended and `batch.json` records a `restarts` entry. `compare A B` prints outcome, boot/total wall time and the max difference of the sidecar's initial ground truth per episode. `--record` bags each episode's `kernel_replay_diff.REPLAY_TOPICS` into `<episode>/bag` and dumps the kernel's parameters into `<episode>/kernel_params.yaml`, the input of `kernel_replay_diff.py diff` (ADR-0121). `--end-on-grade` ends a goal through `/openral/rskill/complete` once the HAL's sim grader has held `complete` for `--grade-settle-s` (default 1.0) of sim time and records `ended_by` (`grade` / `goal`), so a run is scored at its first settled completion like `openral sim run`. Sim only; nothing here clears an e-stop._
 
-- `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L48) — The scene dict one episode launches (seed, sidecar port, keep-alive).
-- `sidecar_pids(port) -> list[int]` (L68) — Pids of this user's sidecars serving `port`.
-- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L84) — One request to the sidecar; `None` when it does not answer.
-- `graph_leaks(domain) -> list[str]` (L113) — Deploy-graph processes of this user still alive on the ROS domain.
-- `domain_nodes(env) -> list[str]` (L129) — ROS node names on the domain (`ros2 node list --no-daemon`).
-- `batch_env(environ) -> tuple[dict[str, str], str]` (L182) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review).
-- `run_batch(args) -> int` (L197) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
-- `compare(a, b) -> int` (L346) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
-- `main(argv=None) -> int` (L376) — `run` (default) or `compare A B`.
-- `parser() -> argparse.ArgumentParser` (L384) — The `run` command line (`--expect-preload` / `--no-expect-preload`).
-- `const READY_MARKERS = ('HAL activated at',)` (L44) — Log lines that mean the HAL is up.
-- `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L45) — Added to the ready markers when the scene preloads a skill.
-- `const REPO` (L43) — Repo root (the checkout the script runs from).
+- `grade_events(text) -> list[tuple[str, float]]` (L83) — The `(grade, sim_time_s)` of each `sim.placement_grade {…}` line in a slice of `deploy.log` (not the `_final` line).
+- `class GradeSettle(settle_s)` (L104) — When a goal may end on the sim grader: `complete` held for `settle_s` of sim time; a transient pass (r2 master_dr seed 2, 0.1 s on the rim) never counts.
+- `GradeSettle.feed(grade, sim_time_s) -> None` (L127) — One grade change from `grade_events`.
+- `GradeSettle.due(now_sim_s) -> bool` (L131) — Whether `complete` has held `settle_s` by sim time `now_sim_s`.
+- `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L59) — The scene dict one episode launches (seed, sidecar port, keep-alive).
+- `sidecar_pids(port) -> list[int]` (L235) — Pids of this user's sidecars serving `port`.
+- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L251) — One request to the sidecar; `None` when it does not answer.
+- `graph_leaks(domain) -> list[str]` (L280) — Deploy-graph processes of this user still alive on the ROS domain.
+- `domain_nodes(env) -> list[str]` (L296) — ROS node names on the domain (`ros2 node list --no-daemon`).
+- `batch_env(environ) -> tuple[dict[str, str], str]` (L367) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review). It also carries the deploy graph's Fast DDS profile (`apply_fastdds_large_data_profile`), so `--record`'s recorder and parameter dump see the graph as its own nodes do.
+- `run_batch(args) -> int` (L389) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
+- `compare(a, b) -> int` (L544) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
+- `main(argv=None) -> int` (L574) — `run` (default) or `compare A B`.
+- `restore_sigint() -> bool` (L583) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
+- `parser() -> argparse.ArgumentParser` (L598) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
+- `const READY_MARKERS = ('HAL activated at',)` (L55) — Log lines that mean the HAL is up.
+- `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L56) — Added to the ready markers when the scene preloads a skill.
+- `const REPO` (L54) — Repo root (the checkout the script runs from).
 
 ### `tools/_validation_matrix_dispatch.py`
 _Private helper of `validation_matrix.py`. Sends one `ExecuteRskill` goal at the live graph (the matrix runs with the reasoner off) and prints one JSON line — the run's `goal.log`. Needs ROS 2 sourced._

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from openral_core import (
     BoxShape,
     CapsuleShape,
@@ -487,3 +488,38 @@ def test_collision_evidence_without_a_grid_origin_is_still_valid() -> None:
     assert CollisionEvidence.model_validate_json(
         disclosed.model_dump_json()
     ).world_grid_origin_m == (0.0, 0.0, -0.15)
+
+
+def test_a_provider_stop_still_decodes_with_its_exemption_source() -> None:
+    """Spark r4 (02d54f9d7): the kernel added grasp_exemption_source / _provider and the HAL's
+    extra-forbidding decode dropped every provider stop's evidence (pro review)."""
+    import json
+
+    payload = json.loads(_KERNEL_PREDICTIVE_EVIDENCE.read_text(encoding="utf-8"))
+    payload["grasp_exemption_source"] = "provider"
+    payload["grasp_exemption_provider"] = "openral-pro-contact-exemptions/0.1.0"
+    decoded: FailureEvidence = TypeAdapter(FailureEvidence).validate_json(json.dumps(payload))
+    assert isinstance(decoded, CollisionEvidence)
+    assert decoded.grasp_exemption_source == "provider"
+    assert decoded.grasp_exemption_provider == "openral-pro-contact-exemptions/0.1.0"
+    payload["grasp_exemption_source"] = "somewhere"
+    with pytest.raises(ValidationError):
+        TypeAdapter(FailureEvidence).validate_json(json.dumps(payload))
+
+
+def test_a_provider_source_needs_its_provider_name_and_only_then() -> None:
+    """``grasp_exemption_provider`` pairs with ``grasp_exemption_source="provider"`` (the
+    kernel always writes both; CodeRabbit #432). Records with neither still decode."""
+    import json
+
+    payload = json.loads(_KERNEL_PREDICTIVE_EVIDENCE.read_text(encoding="utf-8"))
+    adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+    adapter.validate_json(json.dumps(payload))
+    with pytest.raises(ValidationError):
+        adapter.validate_json(json.dumps({**payload, "grasp_exemption_source": "provider"}))
+    with pytest.raises(ValidationError):
+        adapter.validate_json(
+            json.dumps(
+                {**payload, "grasp_exemption_source": "region", "grasp_exemption_provider": "p/1"}
+            )
+        )

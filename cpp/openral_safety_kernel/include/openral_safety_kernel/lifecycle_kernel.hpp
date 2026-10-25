@@ -8,6 +8,7 @@
 
 #include "openral_safety_kernel/collision.hpp"
 #include "openral_safety_kernel/envelope.hpp"
+#include "openral_safety_kernel/exemption_provider.hpp"
 #include "openral_safety_kernel/force_observer.hpp"
 #include "openral_safety_kernel/otel.hpp"
 #include "openral_safety_kernel/validator.hpp"
@@ -22,6 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <pluginlib/class_loader.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
@@ -104,6 +106,14 @@ public:
   const EnvelopeIntersection& envelope() const noexcept { return envelope_; }
   bool self_collision_active() const noexcept { return self_collision_enabled_; }
   std::size_t collision_link_count() const noexcept { return collision_model_.n_links; }
+  /// ADR-0121: the exemption provider's load outcome ("none", "loaded: <name>",
+  /// "refused: <why>") and whether one is live.
+  const std::string& exemption_provider_status() const noexcept { return provider_status_; }
+  bool exemption_provider_loaded() const noexcept { return provider_ != nullptr; }
+  /// The extra fixed jaws in the provider's hands (0 when no provider or no hands).
+  std::size_t exemption_provider_extra_jaws() const noexcept {
+    return provider_ != nullptr && provider_hands_valid_ ? provider_hands_.extra_links.count() : 0U;
+  }
 
 private:
   // Topic callbacks.
@@ -272,7 +282,7 @@ private:
   bool refresh_tracked_cover();
   // The tracked set's stream (world_state_fast) is received, accepted and within
   // the attached-collision deadline.
-  bool tracked_stream_fresh();
+  bool tracked_stream_fresh() const noexcept;
   // Issue #418 K7 — fill `workspace_explained_` with the tracked objects that
   // explain workspace cells NOW (any role; confirmed / occluded; (id, epoch) not
   // retired; confirmed within `grasp_region_max_age_s`; cover-checked; the set's
@@ -295,6 +305,9 @@ private:
   // `attached_collision_deadline` (stale is "no exemption", never a drop by
   // itself). Re-evaluated per candidate action.
   bool grasp_declaration_live() const noexcept;
+  /// The tracked declaration's liveness: accepted, within its backstop, no future stamp, and
+  /// the attached stream carrying it fresh (`grasp_declaration_live`'s rules).
+  bool tracked_declaration_live() const noexcept;
 
   // Retire the current grasp declaration for good: the region is dropped and
   // the declaration's identity joins the retired set so its heartbeat cannot
@@ -333,6 +346,10 @@ private:
   // identity does not end it), the world-state stream older than `attached_collision_deadline`,
   // or the confirmation older than `grasp_region_max_age_s`.
   bool workspace_live() const noexcept;
+  /// The grasp exemption this candidate ran under, for the stop line and the FailureTrigger:
+  /// "provider" (a provider replacing the region, with a tracked declaration live), "tracked"
+  /// (in-tree K2 with an eligible object), "region" (the ADR-0115 region) or "none".
+  const char* grasp_exemption_source() const noexcept;
   // Hand speed bound (m/s) of the configuration FK'd into `collision_scratch_`,
   // relative to `prev` (the hand links' poses at the previous row; updated to
   // this row's): max over the workspace links of `link_displacement_bound` /
@@ -350,7 +367,8 @@ private:
   /// magnifies on paper (#349 p3_mix02: 95.6 mm with the payload's reach).
   double workspace_reach(std::size_t link) const noexcept;
   // Forget every previously accepted command (row 0 falls back to measured).
-  void clear_workspace_commands() noexcept;
+  /// Also the provider's `on_reset(why)` (ADR-0121), at every site that forgets the chunk chain.
+  void clear_workspace_commands(ResetReason why = ResetReason::kOther) noexcept;
   // Is joint `d`'s previously accepted command still row 0's previous row at
   // `now_ns`? Recorded, not cleared since, its last row due (acceptance +
   // (horizon-1) periods) at or before now, and at most
@@ -402,6 +420,38 @@ private:
   bool self_collision_enabled_{false};
   double self_collision_margin_m_{0.0};
   std::size_t collision_required_dof_{0};
+
+  /// ADR-0121 exemption provider (`exemption_provider`, empty = none; sim only). The
+  /// loader is declared before the instance so the instance is destroyed first.
+  /// Loading never fails configure: any refusal leaves the kernel with no provider.
+  void load_exemption_provider();
+  /// The #349 hand speed / lead measurement setup; "" on success, else why it is refused.
+  /// `param` names the list in the refusal (`exemption_provider_links` for the provider).
+  std::string configure_workspace_measurement(const std::vector<std::string>& names,
+                                              std::string& listed,
+                                              const char* param = "workspace_contact_links");
+  std::unique_ptr<pluginlib::ClassLoader<ExemptionProvider>> provider_loader_;
+  std::shared_ptr<ExemptionProvider> provider_;
+  std::string provider_status_{"none"};
+  std::vector<std::uint8_t> provider_links_;  ///< per collision link: relaxable (hand) link
+  std::array<TrackedObjectView, kMaxTrackedObjects> provider_tracked_{};
+  std::array<int, kMaxTrackedObjects> provider_view_index_{};  ///< tracked_ k -> view index
+  std::vector<AttachmentView> provider_attachments_;  ///< sized at load (no per-chunk alloc)
+  std::uint64_t provider_pairs_total_{0};
+  std::chrono::steady_clock::time_point provider_last_warn_{};
+  std::bitset<kMaxGraspMaskLinks> provider_link_bits_{};  ///< `provider_links_` as a link mask
+  TrackedGraspTable provider_hands_{};  ///< the hands, for the provider's DeclarationView
+  bool provider_hands_valid_{false};
+  /// tracked_grasp_extra_contact_links, resolved: K2's and the provider's extra fixed jaws.
+  std::bitset<kMaxGraspMaskLinks> grasp_extra_links_{};
+  CollisionScratch provider_meas_scratch_;  ///< FK at the measured state (sized at load)
+  std::vector<double> provider_q_fk_;       ///< its FK input (sized at load)
+  /// The workspace region is ingested for the in-tree #349 rule OR for a loaded provider; the
+  /// in-tree rule still needs `workspace_contact_enabled_`.
+  bool workspace_ingest_enabled_{false};
+  bool ws_provider_measure_{false};  ///< this candidate: measure the hand for the provider only
+  std::uint64_t voxel_grid_seq_{0};  ///< bumped on every grid ingest (provider view)
+  bool provider_replaces_region_{false};  ///< ExemptionProvider::replaces_grasp_region()
 
   // Voxel phase — dense occupancy grid (octomap path). `voxel_grid_`
   // is a view into the pre-sized `voxel_occupancy_` buffer.
@@ -484,6 +534,8 @@ private:
     double floor_z{std::numeric_limits<double>::quiet_NaN()};
   };
   std::array<TrackedEntry, kMaxTrackedObjects> tracked_{};
+  /// The provider's read-only view of one tracked entry (ADR-0121).
+  TrackedObjectView tracked_view(const TrackedEntry& e) const noexcept;
   std::size_t tracked_n_{0};
   bool tracked_have_revision_{false};
   std::uint64_t tracked_revision_{0};
@@ -512,6 +564,7 @@ private:
   /// stamps on the tracks it grounds or re-keys for that declaration).
   bool tracked_decl_active_{false};
   std::string tracked_decl_key_;
+  std::size_t tracked_decl_key_hash_{0};  ///< std::hash of tracked_decl_key_ (provider view)
   std::int64_t tracked_decl_stamp_ns_{0};
   double tracked_decl_timeout_s_{0.0};
   std::size_t tracked_grasp_logged_n_{static_cast<std::size_t>(-1)};
@@ -569,6 +622,11 @@ private:
     bool own_fallback{false};  ///< an untracked pinch hold (`pinch_floor_`), no own track
     int own_track{-1};
     double own_floor_z{std::numeric_limits<double>::quiet_NaN()};
+    /// ADR-0121 (provider view): the kernel's identity match, whatever OT-10's switch says.
+    AttachmentView::Evidence evidence{AttachmentView::Evidence::kLegacy};
+    std::size_t id_hash{0};
+    int track_k{-1};                                              ///< indexes `tracked_`; -1 = none
+    double bind_low_z{std::numeric_limits<double>::quiet_NaN()};  ///< untracked hold's floor
   };
   std::vector<AttachedBinding> attached_binding_;  ///< capacity = max objects
   CollisionScratch binding_scratch_;  ///< measured-configuration FK, sized at configure
