@@ -22,6 +22,8 @@ inference: false
 
 # rskill-openvla_oft-widowx-simpler_env-nf4
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > OpenVLA-OFT bridge policy (RLinf, PPO-tuned on ManiSkill3 PutOnPlateInScene25),
 > packaged for OpenRAL and locally verified on SimplerEnv WidowX carrot-on-plate.
 

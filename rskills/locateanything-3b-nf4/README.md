@@ -25,6 +25,8 @@ license_link: https://huggingface.co/nvidia/LocateAnything-3B/blob/main/LICENSE
 
 # rskill-locateanything_3b-any-general-nf4
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > **OpenRAL rSkill** - NVIDIA LocateAnything-3B packaged as an NF4
 > bitsandbytes PyTorch detector rSkill. It localizes queried objects, text,
 > GUI elements, and points from RGB images and emits perception results only.

@@ -27,6 +27,8 @@ base_model_relation: quantized
 
 # rskill-pi05-franka_panda-libero_spatial-int8
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int8` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > **OpenRAL rSkill** — π0.5 (3 B PaliGemma backbone, flow-matching
 > action head) finetuned on the [LIBERO](https://libero-project.github.io/)
 > benchmark, loaded bf16 and **LLM.int8-quantized in place** so it runs on

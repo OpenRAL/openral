@@ -14,6 +14,8 @@ tags:
 inference: false
 ---
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 <!-- OpenRAL rSkill README — LingBot-VLA 1.0 (4B) RoboTwin post-train -->
 
 # rskill-lingbot_vla-aloha_agilex-robotwin-nf4

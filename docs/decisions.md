@@ -60,6 +60,13 @@ in full so the posture stays visible although the records are private:
   requires an exemption provider. Open's tracker mode is `tracking`: the
   open tracker measures the box rules' regions, and the kernel applies only
   its open rules to them (ADR-0122).
+- **Open runs weights in fp32, fp16 and bf16; every format of 8 bits or
+  fewer needs OpenRAL Pro** (`ADR-0123`): int8, fp8, int4/NF4 and nvfp4,
+  whether quantized at load time, loaded from a pre-quantized pack, or
+  quantized upstream. The quantized rSkills stay in the open catalogue and
+  refuse to load without Pro, with a typed error naming it. Pro plugs in as
+  `openral.pro_modules: quantization`
+  (`python/rskill/src/openral_rskill/quantization_gate.py`).
 - Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
   own upstream license, independent of OpenRAL's code license. This is
   compliance for models OpenRAL doesn't own, not a statement about

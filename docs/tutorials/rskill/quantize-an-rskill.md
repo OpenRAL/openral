@@ -5,6 +5,13 @@ quantization runs them on 8 GB-class hardware. It is never silent: declared in
 the manifest, reported in logs and traces, and gated by the host's capabilities
 ([CLAUDE.md §1.4](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md)).
 
+> **Sub-16-bit formats need OpenRAL Pro (ADR-0123).** Open OpenRAL loads and
+> runs `fp32`, `fp16` and `bf16`. `int8`, `fp8`, `int4`/NF4 and `fp4_nvfp4`
+> (quantizing at load, loading a pre-quantized pack, or a checkpoint quantized
+> upstream) and `tools/quantize_rskill.py` need the OpenRAL Pro quantization
+> package. Without it, the load raises `ROSConfigError` naming OpenRAL Pro; it
+> never falls back to bf16. The steps below describe a Pro install.
+
 ---
 
 ## 1. Declare it in the manifest

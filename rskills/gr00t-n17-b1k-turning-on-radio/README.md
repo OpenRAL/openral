@@ -24,6 +24,8 @@ base_model_relation: finetune
 
 # rskill-gr00t-n17-b1k-turning-on-radio
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > **OpenRAL rSkill** — the official 2026 BEHAVIOR-1K GR00T N1.7
 > `turning_on_radio` checkpoint for the simulated Galaxea R1 Pro.
 
