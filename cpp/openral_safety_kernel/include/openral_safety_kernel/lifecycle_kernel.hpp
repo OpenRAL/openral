@@ -251,49 +251,35 @@ private:
   // geometry is still unioned and WARNed (`safety.tracked_geometry_unrevised`).
   // A new epoch starts fresh. Legacy inputs are untouched. Ingest path only.
   void union_bound_geometry(const openral_msgs::msg::WorldStateStamped& msg);
-  // Issue #418 K5 — the jaw-open release. NOT monotone (hazard OT-7). For each
-  // TRACKED_OBJECT binding at the hand, the measured jaw (`tracked_release_jaw_*`,
-  // the one whose column drives the attach or a touch link) is captured at
-  // attach as the hold; open past hold + `tracked_release_gap` for
-  // `tracked_release_dwell_s` and the kernel freezes the payload in the base
-  // frame at its measured pose and opens the (id, epoch) release window: the
-  // hand and touch links stay exempt against it until FK separation >
-  // `tracked_release_clear_m` or `tracked_release_timeout_s`, after which it is
-  // a plain obstacle (no exemption) while the wire carries that binding. The
-  // frozen payload is checked against everything else throughout, is never a
-  // handover and arms no witness; a handover latched on it retires. Called after
-  // `check_attachment_bindings`, on every world-state message. No-op when no jaw
-  // joint is configured (the default: today's semantics). Configure refuses it
-  // off `hal_mode: sim`, as it does K2.
+  // Issue #418 K5 — the release window. NOT monotone (hazard OT-7). For each
+  // TRACKED_OBJECT binding a loaded exemption provider decides to release
+  // (`ExemptionProvider::release_payload`; the jaw-open rule lives in OpenRAL Pro),
+  // the kernel freezes the payload in the base frame at its measured pose and
+  // opens the (id, epoch) release window: the hand and touch links stay exempt
+  // against it until FK separation > `tracked_release_clear_m` or
+  // `tracked_release_timeout_s`, after which it is a plain obstacle (no exemption)
+  // while the wire carries that binding. The frozen payload is checked against
+  // everything else throughout, is never a handover and arms no witness; a
+  // handover latched on it retires. Called after `check_attachment_bindings`, on
+  // every world-state message. No-op without a provider: the open kernel never
+  // releases on its own decision.
   void apply_tracked_release();
-  // Issue #418 K2 — record the live grasp declaration's `declaration_key`
-  // (active, a target, `timeout_s` in range, not retired). Ingest path only.
+  // Issue #418 — record the live grasp declaration's `declaration_key`
+  // (active, a target, `timeout_s` in range, not retired), for a provider's
+  // DeclarationView. Ingest path only.
   void ingest_tracked_declaration_key(const openral_msgs::msg::WorldStateStamped& msg);
-  // Issue #418 K2 — fill `tracked_grasp_` with the tracked objects eligible NOW:
-  // role TARGET, the live declaration's key, confirmed / occluded, (id, epoch)
-  // not retired, confirmed within `grasp_region_max_age_s`, the set's frame still
-  // the grid's, and the kernel's cover check on the current grid (re-run once
-  // per new grid or set). Candidate path: no allocation of its own (its one
-  // transition log aside). Returns the count.
-  std::size_t fill_tracked_grasp();
-  // Issue #418 K7 — the kernel's cover check on the current grid, re-run once
-  // per new grid or set (shared by K2 and K7). Returns whether the set's frame
-  // is still the grid's.
+  // Issue #418 — the kernel's cover check on the current grid, re-run once per
+  // new grid or set (a provider's `cover_ok`, and the provider cover hold).
+  // Returns whether the set's frame is still the grid's.
   bool refresh_tracked_cover();
   // The tracked set's stream (world_state_fast) is received, accepted and within
   // the attached-collision deadline.
   bool tracked_stream_fresh() const noexcept;
-  // Issue #418 K7 — fill `workspace_explained_` with the tracked objects that
-  // explain workspace cells NOW (any role; confirmed / occluded; (id, epoch) not
-  // retired; confirmed within `grasp_region_max_age_s`; cover-checked; the set's
-  // frame the grid's; the stream fresh) and the declared static cells of the
-  // current grid. Candidate path: no allocation of its own (its one transition
-  // log aside). Returns the object count.
-  std::size_t fill_workspace_explained();
-  // Issue #418 K7 — re-mark `static_cells_` from `static_points_` when the grid's
-  // lattice (pose, resolution, size) changed. World-voxel callback only.
+  // Issue #418 — re-mark `static_cells_` from `static_points_` when the grid's
+  // lattice (pose, resolution, size) changed, for a loaded provider's view.
+  // World-voxel callback only.
   void refresh_static_cells();
-  // Issue #418 K7 — the octomap bridge's points-file format (`x y z` per line,
+  // Issue #418 — the octomap bridge's points-file format (`x y z` per line,
   // blank lines and `#` comments skipped). False, `out` empty, on any malformed
   // line, an unreadable file or no points. Configure-time.
   static bool load_static_points(const std::string& path, std::vector<Vec3>& out,
@@ -347,8 +333,8 @@ private:
   // or the confirmation older than `grasp_region_max_age_s`.
   bool workspace_live() const noexcept;
   /// The grasp exemption this candidate ran under, for the stop line and the FailureTrigger:
-  /// "provider" (a provider replacing the region, with a tracked declaration live), "tracked"
-  /// (in-tree K2 with an eligible object), "region" (the ADR-0115 region) or "none".
+  /// "provider" (a provider replacing the region, with a tracked declaration live), "region"
+  /// (the ADR-0115 region) or "none".
   const char* grasp_exemption_source() const noexcept;
   // Hand speed bound (m/s) of the configuration FK'd into `collision_scratch_`,
   // relative to `prev` (the hand links' poses at the previous row; updated to
@@ -442,7 +428,7 @@ private:
   std::bitset<kMaxGraspMaskLinks> provider_link_bits_{};  ///< `provider_links_` as a link mask
   TrackedGraspTable provider_hands_{};  ///< the hands, for the provider's DeclarationView
   bool provider_hands_valid_{false};
-  /// tracked_grasp_extra_contact_links, resolved: K2's and the provider's extra fixed jaws.
+  /// tracked_grasp_extra_contact_links, resolved: the provider's extra fixed jaws.
   std::bitset<kMaxGraspMaskLinks> grasp_extra_links_{};
   CollisionScratch provider_meas_scratch_;  ///< FK at the measured state (sized at load)
   std::vector<double> provider_q_fk_;       ///< its FK input (sized at load)
@@ -518,19 +504,19 @@ private:
     bool live{false};       ///< status confirmed / occluded / bound
     bool released{false};   ///< status released: the tracker let go of it (K5 trigger)
     GraspTargetRegion box;  ///< the containing box, validated as a grasp region
-    // Issue #418 K2 eligibility inputs, recorded at ingest.
+    // Issue #418 eligibility inputs, recorded at ingest (a provider's TrackedObjectView).
     bool target{false};       ///< role == "target"
     bool contact{false};      ///< role "target" or "destination": touched by design
     bool exemptible{false};   ///< status confirmed / occluded (never bound / split / …)
-    bool provisional{false};  ///< K2 exemption geometry only, never a K3 binding
+    bool provisional{false};  ///< exemption geometry only, never a K3 binding
     std::string declaration_key;
     std::size_t id_hash{0};          ///< std::hash of object_id (the K6 retirement key)
     std::int64_t confirmed_ns{0};    ///< last_confirmed_stamp_ns (source clock)
     std::uint32_t visible_cells{0};  ///< the tracker's expected-cell count
     bool cover_ok{false};            ///< the kernel's own cover check on the current grid
-    /// Issue #418 K7: measured support top less one cell (grid frame z); NaN = none.
+    /// Issue #418: measured support top less one cell (grid frame z), for a provider; NaN = none.
     double support_z{std::numeric_limits<double>::quiet_NaN()};
-    /// Issue #418 OT-10 amendment: the clearing floor (support top + one cell, base z); NaN = none.
+    /// Issue #418: the clearing floor (support top + one cell, base z), for a provider; NaN = none.
     double floor_z{std::numeric_limits<double>::quiet_NaN()};
   };
   std::array<TrackedEntry, kMaxTrackedObjects> tracked_{};
@@ -540,17 +526,11 @@ private:
   bool tracked_have_revision_{false};
   std::uint64_t tracked_revision_{0};
   std::string tracked_refusal_reason_;  ///< last announced refusal (logged on change)
-  std::string tracked_set_frame_;       ///< frame of the last accepted set (K2 re-checks it)
-  /// Issue #418 K2, the grasp exemption by tracked-object id
-  /// (`tracked_grasp_exemption_enabled`, sim-only, requires
-  /// `grasp_allowance_enabled`). While on, `tracked_grasp_` replaces the legacy
-  /// region as the exemption source of the world-voxel check, every candidate.
-  bool tracked_grasp_enabled_{false};
-  TrackedGraspTable tracked_grasp_{};
+  std::string
+      tracked_set_frame_;  ///< frame of the last accepted set (the cover check re-checks it)
   bool tracked_cover_dirty_{true};  ///< a new grid or set: re-run the cover check once
-  /// Issue #418 contact hold: per tracked identity, the kernel time (ROS clock) its OWN
-  /// cover check last passed. A TARGET or DESTINATION box whose cover falls short while a declared
-  /// hand link (the kernel's FK of the measured state) is within a cell of it keeps `cover_ok`
+  /// Issue #418: per tracked identity, the kernel time (ROS clock) its OWN cover check last
+  /// passed. A loaded provider may hold a box whose cover falls short (`hold_cover`) only
   /// until that pass is older than `grasp_region_max_age_s`; then it fails closed.
   struct CoverPass {
     std::size_t id_hash{0};
@@ -567,36 +547,15 @@ private:
   std::size_t tracked_decl_key_hash_{0};  ///< std::hash of tracked_decl_key_ (provider view)
   std::int64_t tracked_decl_stamp_ns_{0};
   double tracked_decl_timeout_s_{0.0};
-  std::size_t tracked_grasp_logged_n_{static_cast<std::size_t>(-1)};
-  /// Issue #418 K7, explained cells for workspace contact
-  /// (`workspace_explained_cells_enabled`, requires `workspace_contact_enabled`).
-  /// While on, `workspace_explained_` narrows the #349 workspace exemption to
-  /// explained cells, every candidate.
-  bool workspace_explained_enabled_{false};
-  WorkspaceExplanation workspace_explained_{};
+  /// The declared static colliders (`static_points_file`), marked per grid for a provider.
   std::vector<Vec3> static_points_;         ///< `static_points_file`, base frame
   std::vector<std::uint8_t> static_cells_;  ///< pre-sized to world_voxel_max_cells
   std::size_t static_cells_marked_{0};      ///< cells marked for `static_cells_for_`
   VoxelGrid static_cells_for_{};            ///< the lattice `static_cells_` was marked on
   bool static_cells_for_valid_{false};
   bool static_cells_lattice_ok_{false};  ///< `static_cells_for_` is the base frame's lattice
-  /// #418 K7 amendment: the connected support layer (`mark_support_cells`), re-marked
-  /// only when a grid arrives or the explaining objects / workspace change (`support_key_`).
-  static constexpr std::size_t kSupportKeyN = 1 + kMaxTrackedObjects * 16 + 16;
-  std::vector<std::uint8_t> support_cells_;   ///< pre-sized to world_voxel_max_cells
-  std::vector<std::uint32_t> support_queue_;  ///< its flood-fill queue, the same size
-  std::size_t support_cells_marked_{0};
-  bool support_cells_dirty_{true};  ///< a new grid: re-mark on the next fill
-  std::array<double, kSupportKeyN> support_key_{};
-  std::size_t workspace_explained_logged_n_{static_cast<std::size_t>(-1)};
-  /// Issue #418 (hazard OT-10 amendment, `payload_own_cells_enabled`, sim-only, requires K2):
-  /// a bound payload's measured / grown cells cannot stop that payload. `payload_own_` is
-  /// refilled per candidate from the tracked set and the per-attachment bindings.
-  bool payload_own_enabled_{false};
-  /// Issue #418 (OT-10 amendment, untracked holds, `pinch_payload_own_cells_enabled`, requires
-  /// the above): an `untracked_grasp` pinch hold's fallback cells cannot stop it above the
-  /// pinch box's lowest point at the bind. `pinch_floor_` keeps that floor per held object.
-  bool pinch_own_enabled_{false};
+  /// Issue #418: an `untracked_grasp` pinch hold's floor (the pinch box's lowest point at the
+  /// bind), kept per held object for a provider's view (`AttachmentView::bind_low_z`).
   struct PinchFloor {
     std::string object_id;
     std::string attach_link;
@@ -605,24 +564,13 @@ private:
     bool seen{false};
   };
   std::array<PinchFloor, 8> pinch_floor_{};
-  PayloadOwnCells payload_own_{};
-  std::size_t payload_own_logged_n_{static_cast<std::size_t>(-1)};
-  const char* payload_own_disarm_logged_{nullptr};  ///< last `payload_own_disarmed` reason
-  std::chrono::steady_clock::time_point payload_own_last_warn_{};
-  std::size_t fill_payload_own();
   /// Issue #418 K3: per accepted attachment, its binding. `off_hand` is the
   /// refusal reason (nullptr = a legacy payload or a binding at the hand).
   struct AttachedBinding {
     bool tracked{false};
     std::uint32_t epoch{0};
     const char* off_hand{nullptr};
-    /// Issue #418 OT-10 amendment (`payload_own_cells_enabled`): this binding's own track, valid
-    /// right now, with a floor. `own_track` indexes `tracked_`.
-    bool own_armed{false};
-    bool own_fallback{false};  ///< an untracked pinch hold (`pinch_floor_`), no own track
-    int own_track{-1};
-    double own_floor_z{std::numeric_limits<double>::quiet_NaN()};
-    /// ADR-0121 (provider view): the kernel's identity match, whatever OT-10's switch says.
+    /// ADR-0121 (provider view): the kernel's identity match.
     AttachmentView::Evidence evidence{AttachmentView::Evidence::kLegacy};
     std::size_t id_hash{0};
     int track_k{-1};                                              ///< indexes `tracked_`; -1 = none
@@ -855,10 +803,6 @@ private:
     // K5, per binding.
     enum class Release : std::uint8_t { kHeld, kWindow, kClosed };
     Release release{Release::kHeld};
-    int jaw{-1};  ///< index into release_jaw_cols_; -1 = not resolved yet
-    bool hold_set{false};
-    double hold{0.0};  ///< measured jaw at attach
-    std::int64_t open_since_ns{-1};
     std::int64_t window_opened_ns{0};
     Transform frozen{};  ///< base-frame pose at release
     int hand_link{-1};   ///< the attach link that held it
@@ -867,11 +811,7 @@ private:
   std::array<BoundPayload, kMaxTrackedObjects> bound_{};
   std::chrono::steady_clock::time_point bound_cap_last_warn_{};
   std::vector<int> bound_slot_;  ///< per accepted attachment, its `bound_` slot (-1 = none)
-  /// Issue #418 K5 parameters (`tracked_release_*`), resolved at configure.
-  std::vector<int> release_jaw_cols_;
-  std::vector<double> release_jaw_sign_;
-  double release_gap_{0.0};
-  double release_dwell_s_{0.0};
+  /// Issue #418 K5 window bounds (`tracked_release_clear_m` / `_timeout_s`), resolved at configure.
   double release_clear_m_{0.0};
   double release_timeout_s_{0.0};
 
