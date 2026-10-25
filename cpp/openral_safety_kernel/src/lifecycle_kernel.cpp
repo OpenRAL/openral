@@ -1955,11 +1955,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // every view carries this grid's `cover_ok`.
         const bool tracked_frame_ok = tracked_n_ > 0 && refresh_tracked_cover();
         std::size_t n_view = 0;
+        provider_view_index_.fill(-1);
         for (std::size_t i = 0; i < tracked_n_ && n_view < provider_tracked_.size(); ++i) {
           const TrackedEntry& e = tracked_[i];
           if (tracked_retired_.contains(e.id_hash, e.epoch)) {
             continue;
           }
+          provider_view_index_[i] = static_cast<int>(n_view);
           provider_tracked_[n_view++] = tracked_view(e);
         }
         const bool fresh = measured_state_fresh();
@@ -1996,6 +1998,25 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         pview.workspace_period_s = workspace_control_period_s_;
         const bool static_ok = static_cells_marked_ > 0 && !voxel_overflow_;
         pview.static_cells = static_ok ? static_cells_.data() : nullptr;
+        pview.static_points_declared = !static_points_.empty();
+        pview.voxel_overflow = voxel_overflow_;
+        std::size_t n_att = 0;
+        for (std::size_t i = 0; i < attached_model_.n_objects && i < attached_binding_.size() &&
+                                n_att < provider_attachments_.size();
+             ++i) {
+          const AttachedBinding& b = attached_binding_[i];
+          AttachmentView& a = provider_attachments_[n_att++];
+          a.object_id_hash = b.id_hash;
+          a.epoch = b.epoch;
+          a.attach_link = attached_model_.objects[i].attach_link;
+          a.evidence = b.evidence;
+          a.on_hand = b.tracked && b.off_hand == nullptr;
+          a.track_index = b.track_k >= 0 && static_cast<std::size_t>(b.track_k) < tracked_n_
+                              ? provider_view_index_[static_cast<std::size_t>(b.track_k)]
+                              : -1;
+        }
+        pview.attachments = provider_attachments_.data();
+        pview.n_attachments = n_att;
         pview.static_cells_n = static_ok ? static_cast<std::size_t>(voxel_grid_.sx) *
                                                static_cast<std::size_t>(voxel_grid_.sy) *
                                                static_cast<std::size_t>(voxel_grid_.sz)
@@ -3756,6 +3777,7 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
       grasp_allowance_enabled_ &&
       build_grasp_hands(collision_model_, grasp_allowlist_, provider_hands_, {});
   provider_meas_scratch_.link_world.assign(collision_model_.n_links, Transform{});
+  provider_attachments_.assign(attached_max_objects_, AttachmentView{});
   provider_q_fk_.assign(q_fk_.size(), 0.0);
   provider_replaces_region_ = provider_->replaces_grasp_region();
   if (!workspace_contact_enabled_) {
@@ -4968,6 +4990,24 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
     binding = AttachedBinding{};
     binding.epoch = wire.epoch;
     binding.tracked = wire.evidence_kind == "tracked_object";
+    binding.id_hash = std::hash<std::string>{}(wire.object_id);
+    if (binding.tracked) {
+      binding.evidence = AttachmentView::Evidence::kTracked;
+    } else if (wire.evidence_kind == "pinch_fallback" && wire.evidence_ref == "untracked_grasp") {
+      binding.evidence = AttachmentView::Evidence::kUntrackedGrasp;
+    } else if (wire.evidence_kind == "pinch_fallback" &&
+               wire.evidence_ref.rfind("provisional:", 0) == 0 &&
+               wire.evidence_ref.find(',') == std::string::npos) {
+      // Exactly one named candidate (no comma): the live provisional track by identity only.
+      binding.evidence = AttachmentView::Evidence::kProvisionalSingle;
+      const std::string id = wire.evidence_ref.substr(std::string("provisional:").size());
+      for (std::size_t k = 0; k < tracked_n_; ++k) {
+        if (tracked_[k].live && tracked_[k].provisional && tracked_[k].object_id == id) {
+          binding.track_k = static_cast<int>(k);
+          break;
+        }
+      }
+    }
     const auto ensure_fk = [&]() {
       if (!fk_done) {
         // The MEASURED configuration, base dofs zeroed exactly as the candidate
@@ -5070,6 +5110,7 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
         break;
       }
     }
+    binding.track_k = entry_k;
     if (tracked_n_ == 0) {
       binding.off_hand = "no_accepted_set";
     } else if (entry == nullptr) {

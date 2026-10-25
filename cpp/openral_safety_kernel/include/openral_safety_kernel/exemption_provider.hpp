@@ -40,7 +40,7 @@ namespace openral_safety_kernel {
 
 /// Bumped on any change to this header's layout or hook semantics. A provider
 /// built against another version is refused at load (fail closed).
-inline constexpr std::uint32_t kExemptionProviderApiVersion = 3;
+inline constexpr std::uint32_t kExemptionProviderApiVersion = 4;
 
 /// A provider's answer for one pair. Anything but `kTolerate` keeps the open
 /// kernel's verdict.
@@ -67,6 +67,26 @@ struct TrackedObjectView {
   double floor_z{0.0};                  ///< NaN = none
   std::size_t declaration_key_hash{0};  ///< std::hash of the track's declaration_key (API v2)
   GraspTargetRegion box{};              ///< the validated containing box
+};
+
+/// One accepted attachment (same index as the kernel's AttachedModel) and the kernel's identity
+/// match for it (API v4). The kernel keeps only the identity matching (refusal-type ingest);
+/// whether a binding owns its cells is the provider's rule.
+struct AttachmentView {
+  enum class Evidence : std::uint8_t {
+    kLegacy = 0,             ///< any other evidence kind
+    kTracked = 1,            ///< evidence_kind "tracked_object"
+    kProvisionalSingle = 2,  ///< "pinch_fallback" naming exactly one `provisional:<id>`
+    kUntrackedGrasp = 3,     ///< "pinch_fallback" with evidence_ref "untracked_grasp"
+  };
+  std::size_t object_id_hash{0};  ///< std::hash of the wire object_id
+  std::uint32_t epoch{0};
+  int attach_link{-1};
+  Evidence evidence{Evidence::kLegacy};
+  bool on_hand{false};  ///< kTracked: the kernel's K3 binding check holds it on the hand
+  /// Index into `CandidateView::tracked`: the bound track (kTracked: live, same id and epoch) or
+  /// the single live provisional track the evidence names (kProvisionalSingle); -1 = none.
+  int track_index{-1};
 };
 
 /// The live grasp declaration as the kernel's OWN ingest validated it (API v2). The refusal-type
@@ -139,6 +159,10 @@ struct CandidateView {
   /// match (API v2).
   const std::uint8_t* static_cells{nullptr};
   std::size_t static_cells_n{0};
+  const AttachmentView* attachments{nullptr};  ///< API v4; same index as the AttachedModel
+  std::size_t n_attachments{0};
+  bool static_points_declared{false};  ///< declared static colliders exist (API v4)
+  bool voxel_overflow{false};          ///< the last grid overflowed the kernel's buffer (API v4)
 };
 
 /// One (robot link, occupied cell) pair the open kernel is about to trip on.

@@ -36,6 +36,11 @@ struct RecorderLog {
   bool cover_ok0{false};  ///< the first tracked view's cover_ok at the last begin_candidate
   int n_tracked{0};
   int hold_asked{0};
+  int n_attachments{0};
+  int att0_evidence{-1};
+  int att0_track_index{-2};
+  bool att0_on_hand{false};
+  bool static_points_declared{false};
 };
 
 }  // namespace openral_safety_kernel_test

@@ -1722,6 +1722,8 @@ kernel. `compose`, `inverse_rigid`, `apply`, `voxel_center`, `point_in_obb`, `fo
 `grid_cell_of` are exported from `collision.hpp`, so a provider's rules use the kernel's own
 arithmetic.
 
+**API v4** adds `CandidateView::attachments`: the kernel's identity match per attachment (evidence kind, the bound or named provisional track, the K3 on-hand verdict), plus `static_points_declared` and `voxel_overflow`, so a provider can run OT-10's rule.
+
 **API v3** adds three hooks.
 - **Cover hold.** `hold_cover` is asked in the kernel's own cover refresh, for a box whose cover
   fell short while the kernel's own check passed within `grasp_region_max_age_s`. A held pass is

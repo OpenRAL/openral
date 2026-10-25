@@ -160,6 +160,13 @@ void Recorder::begin_candidate(const osk::CandidateView& view) noexcept {
   log.stream_fresh = view.tracked_stream_fresh;
   log.n_tracked = static_cast<int>(view.n_tracked);
   log.cover_ok0 = view.n_tracked > 0 && view.tracked[0].cover_ok;
+  log.n_attachments = static_cast<int>(view.n_attachments);
+  if (view.n_attachments > 0) {
+    log.att0_evidence = static_cast<int>(view.attachments[0].evidence);
+    log.att0_track_index = view.attachments[0].track_index;
+    log.att0_on_hand = view.attachments[0].on_hand;
+  }
+  log.static_points_declared = view.static_points_declared;
 }
 
 osk::ProviderVerdict Recorder::voxel_pair(const osk::VoxelPairQuery& q) noexcept {

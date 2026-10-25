@@ -422,6 +422,8 @@ private:
   std::string provider_status_{"none"};
   std::vector<std::uint8_t> provider_links_;  ///< per collision link: relaxable (hand) link
   std::array<TrackedObjectView, kMaxTrackedObjects> provider_tracked_{};
+  std::array<int, kMaxTrackedObjects> provider_view_index_{};  ///< tracked_ k -> view index
+  std::vector<AttachmentView> provider_attachments_;  ///< sized at load (no per-chunk alloc)
   std::uint64_t provider_pairs_total_{0};
   std::chrono::steady_clock::time_point provider_last_warn_{};
   std::bitset<kMaxGraspMaskLinks> provider_link_bits_{};  ///< `provider_links_` as a link mask
@@ -605,6 +607,10 @@ private:
     bool own_fallback{false};  ///< an untracked pinch hold (`pinch_floor_`), no own track
     int own_track{-1};
     double own_floor_z{std::numeric_limits<double>::quiet_NaN()};
+    /// ADR-0121 (provider view): the kernel's identity match, whatever OT-10's switch says.
+    AttachmentView::Evidence evidence{AttachmentView::Evidence::kLegacy};
+    std::size_t id_hash{0};
+    int track_k{-1};  ///< indexes `tracked_`; -1 = none
   };
   std::vector<AttachedBinding> attached_binding_;  ///< capacity = max objects
   CollisionScratch binding_scratch_;  ///< measured-configuration FK, sized at configure

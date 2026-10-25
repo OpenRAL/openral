@@ -8418,3 +8418,28 @@ TEST_F(LifecycleKernelTest, AProviderBrakeWithoutTheHandMeasurementIsRefused) {
             std::string::npos)
       << rig.node->exemption_provider_status();
 }
+
+TEST_F(LifecycleKernelTest, AProviderSeesEachAttachmentsIdentityMatch) {
+  // API v4: the kernel's identity match per attachment (index-aligned with the AttachedModel): a
+  // tracked_object payload bound to the live trk:1 of the same epoch, on the hand by K3.
+  osk_test::serve_test_providers();
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  auto params = with_param(release_params(), "tracked_release_jaw_joints",
+                           rclcpp::ParameterValue(std::vector<std::string>{}));
+  params = with_param(params, "tracked_release_jaw_open_sign",
+                      rclcpp::ParameterValue(std::vector<double>{}));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"hand", "finger"}));
+  ReleaseRig r("kernel_provider_attachments", params);
+  ASSERT_TRUE(r.rig.node->exemption_provider_loaded()) << r.rig.node->exemption_provider_status();
+  r.jaw(0.30, 300);
+  ASSERT_TRUE(r.passes(0.0)) << "the hand at its payload, the finger an allowed touch link";
+  const auto& log = *osk_test_recorder();
+  EXPECT_EQ(log.n_attachments, 1);
+  EXPECT_EQ(log.att0_evidence, static_cast<int>(osk::AttachmentView::Evidence::kTracked));
+  EXPECT_EQ(log.att0_track_index, 0) << "the live trk:1, epoch 0";
+  EXPECT_TRUE(log.att0_on_hand);
+  EXPECT_FALSE(log.static_points_declared);
+}
