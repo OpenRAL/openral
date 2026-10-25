@@ -6,7 +6,7 @@ Because deploy forwards declarations to the object tracker, a scene that declare
 
 ```yaml
 runtime:
-  object_tracking: shadow
+  object_tracking: tracking  # sim only; a real deploy runs tracking off
   grounding_wait_s: 3.0
 ```
 

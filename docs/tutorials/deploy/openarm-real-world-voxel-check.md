@@ -45,7 +45,7 @@ The evaluation exists to measure these gaps; expect each to show up, not a clean
    `/openral/attachment_state`. So the bridge never clears the object's cells, and the
    gripper stops against its own payload. The sim contract, where the payload leaves world
    occupancy and is checked as attached geometry, does **not** hold here. It holds only for
-   a `tracked_object` attachment from the #418 object tracker (`runtime.object_tracking: bind`
+   a `tracked_object` attachment from the #418 object tracker (`runtime.object_tracking: tracking`
    or `on`, sim-only): the octomap bridge clears payload cells by tracked identity only
    (`OctomapVoxelBridge::clear_by_identity`), so even with the vision leg below enabled, its
    geometry-only payload stays mapped and the gripper may still stop on what it holds. That is
