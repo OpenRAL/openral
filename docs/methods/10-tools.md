@@ -89,8 +89,8 @@ _ADR-0121 parity gate, deterministic half: replays one recorded deploy into two 
 - `class Diff` (L175) — A candidate whose two verdicts differ (`index`, `stamp_ns`, `a`, `b`).
 - `verdicts_equal(a, b, tol=1e-9) -> bool` — Same pass/refuse, same latch, same rows within `tol`. (L184)
 - `summarize(diffs, n_candidates) -> dict` — Counts (`equal`, `different`, `a_only_passes`, `b_only_passes`) and every diff. (L198)
-- `replay(bag, params_a, params_b, workdir, verdict_timeout_s=0.3) -> dict` — The live two-kernel replay (needs ROS 2 Jazzy and both packages built). (L323)
-- `main(argv=None) -> int` — `record-cmd OUT` / `diff --bag --params --provider --out`; exit 1 on any differing verdict. (L386)
+- `replay(bag, params_a, params_b, workdir, verdict_timeout_s=0.3) -> dict` — The live two-kernel replay (needs ROS 2 Jazzy and both packages built). (L380)
+- `main(argv=None) -> int` — `record-cmd OUT` / `diff --bag --params --provider --out`; exit 1 on any differing verdict. (L443)
 
 ### `tools/check_no_pro_imports.py`
 _Lint guard for the Apache-2.0 / OpenRAL Pro boundary: fails when any tracked `.py` imports an `openral_pro*` module (`import`, `from … import`, or `import_module`/`__import__` with a literal). Names in strings and docs stay allowed; `openral_prompt_router` is not a hit. Run by `just lint`, pre-commit and `quality.yml`. Open code reaches Pro only through `openral_rskill.backend_registry`._

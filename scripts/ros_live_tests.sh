@@ -48,6 +48,8 @@ TARGETS=(
     # the DEPLOYED margin -- the collision gtests run at margin 0, where
     # gating at `margin` vs at the surface is algebraically identical.
     tests/integration/test_safety_kernel_place_target_geometry.py
+    # ADR-0121 parity tool: a recorded bag replayed into two real kernels (agree / caught).
+    tests/integration/test_kernel_replay_diff_live.py
     # Grasp-target exemption on the REAL OpenArm collision model at the real
     # cell's 20 mm margin -- every fail-closed row, plus the default-off kernel.
     tests/integration/test_safety_kernel_grasp_target_band.py

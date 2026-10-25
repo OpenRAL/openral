@@ -231,7 +231,10 @@ def _read_bag(bag: Path) -> Iterator[tuple[str, bytes, int]]:
 
 def _spawn_kernel(params: Mapping[str, Any], domain: int, workdir: Path) -> subprocess.Popen[bytes]:
     path = workdir / f"kernel_{domain}.yaml"
-    path.write_text(yaml.safe_dump({f"/{_NODE}": {"ros__parameters": dict(params)}}))
+    # An empty YAML list carries no type and rclcpp refuses it; every kernel array parameter but
+    # the (never empty) force-observer gravity defaults to empty, so omitting one is its default.
+    typed = {k: v for k, v in params.items() if v != []}
+    path.write_text(yaml.safe_dump({f"/{_NODE}": {"ros__parameters": typed}}))
     env = dict(os.environ, ROS_DOMAIN_ID=str(domain), ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST")
     log = (workdir / f"kernel_{domain}.log").open("wb")
     return subprocess.Popen(
@@ -249,7 +252,42 @@ def _spawn_kernel(params: Mapping[str, Any], domain: int, workdir: Path) -> subp
         env=env,
         stdout=log,
         stderr=subprocess.STDOUT,
+        # Its own process group: `ros2 run` forks the node, and terminating the wrapper alone
+        # leaves the kernel running (and answering on the domain) after the replay.
+        start_new_session=True,
     )
+
+
+def _stop(proc: subprocess.Popen[bytes]) -> None:
+    """SIGTERM the kernel's whole process group, SIGKILL it if it lingers.
+
+    Waiting on ``proc`` only reaps the ``ros2 run`` wrapper; the kernel it spawned is a
+    separate group member, so the group itself is polled until it is empty.
+    """
+    import signal
+
+    def group_gone(within_s: float) -> bool:
+        deadline = time.monotonic() + within_s
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                return True
+            proc.poll()
+            time.sleep(0.05)
+        return False
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    if not group_gone(10.0):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        group_gone(10.0)
+    proc.wait(timeout=10)
 
 
 class _Side:
@@ -293,20 +331,39 @@ class _Side:
         self.latched = True
 
     def activate(self, timeout_s: float) -> None:
-        from lifecycle_msgs.srv import (
-            ChangeState,  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+        """CONFIGURE then ACTIVATE, each confirmed by ``get_state``.
+
+        A Jazzy ``change_state`` reply can be dropped while the transition lands
+        (``tools/lifecycle_autostart.py``), so the FSM state, not the reply, is the evidence.
+        """
+        from lifecycle_msgs.srv import (  # type: ignore[import-not-found,unused-ignore]  # reason: ROS 2 overlay
+            ChangeState,
+            GetState,
         )
 
-        client = self.node.create_client(ChangeState, f"/{_NODE}/change_state")
-        if not client.wait_for_service(timeout_sec=timeout_s):
-            raise RuntimeError("the kernel's change_state service never appeared")
-        for transition in (1, 3):  # CONFIGURE, ACTIVATE
-            req = ChangeState.Request()
-            req.transition.id = transition
-            future = client.call_async(req)
-            self.executor.spin_until_future_complete(future, timeout_sec=timeout_s)
-            if future.result() is None or not future.result().success:
-                raise RuntimeError(f"lifecycle transition {transition} failed")
+        change = self.node.create_client(ChangeState, f"/{_NODE}/change_state")
+        get = self.node.create_client(GetState, f"/{_NODE}/get_state")
+        if not change.wait_for_service(timeout_sec=timeout_s) or not get.wait_for_service(
+            timeout_sec=timeout_s
+        ):
+            raise RuntimeError("the kernel's lifecycle services never appeared")
+
+        def state() -> str:
+            future = get.call_async(GetState.Request())
+            self.executor.spin_until_future_complete(future, timeout_sec=5.0)
+            result = future.result()
+            return str(result.current_state.label) if result is not None else ""
+
+        for transition, goal in ((1, "inactive"), (3, "active")):  # CONFIGURE, ACTIVATE
+            for _attempt in range(3):
+                if state() == goal:
+                    break
+                req = ChangeState.Request()
+                req.transition.id = transition
+                future = change.call_async(req)
+                self.executor.spin_until_future_complete(future, timeout_sec=timeout_s / 3)
+            if state() != goal:
+                raise RuntimeError(f"the kernel never reached '{goal}'")
 
     def spin(self, seconds: float) -> None:
         end = time.monotonic() + seconds
@@ -345,6 +402,7 @@ def replay(
         "/openral/safe_action": "openral_msgs/msg/ActionChunk",
     }
     types = {t: get_message(n) for t, n in type_names.items()}
+    workdir.mkdir(parents=True, exist_ok=True)
     procs = [_spawn_kernel(params_a, 71, workdir), _spawn_kernel(params_b, 72, workdir)]
     sides = [_Side(71, types), _Side(72, types)]
     diffs: list[Diff] = []
@@ -378,8 +436,7 @@ def replay(
         for side in sides:
             side.close()
         for p in procs:
-            p.terminate()
-            p.wait(timeout=10)
+            _stop(p)
     return summarize(diffs, n)
 
 

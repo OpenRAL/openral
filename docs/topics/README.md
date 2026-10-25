@@ -92,7 +92,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/prompt_in/{source}` | `openral_msgs/PromptStamped` | — | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure) |
 | `/{which}_costmap/costmap_raw` | `nav2_msgs/Costmap` | — | tools/_nav2_costmap_silhouette_probe.py (SilhouetteProbe.__init__) |
 
-## Services (9)
+## Services (10)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
@@ -105,6 +105,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/rskill/complete` | `std_srvs/Trigger` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__) |
 | `/openral/rskill/hold` | `std_srvs/SetBool` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__) |
 | `/openral_safety_kernel/change_state` | `lifecycle_msgs/ChangeState` | — | tools/kernel_replay_diff.py (_Side.activate) |
+| `/openral_safety_kernel/get_state` | `lifecycle_msgs/GetState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 
 ## Per-instance services (8)
 
