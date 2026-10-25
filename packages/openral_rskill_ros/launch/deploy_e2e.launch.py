@@ -1219,6 +1219,7 @@ def _object_tracking(
     grounding_wait_s: str,
     cameras: str,
     depth_cameras: list[str],
+    exemption_provider: str = "",
 ) -> tuple[str, tuple[str, ...]]:
     """``DeployRuntime.object_tracking`` (issue #418) checked, with the cameras it tracks.
 
@@ -1227,7 +1228,10 @@ def _object_tracking(
     one every depth frame is fed for ageing only and nothing is ever fitted), the vision
     attachment leg (its trigger publishes ``/openral/grasp_events``; it brings up the
     segmenter) and an explicit ``grounding_wait_s``; ``bind`` / ``on`` are sim-only until
-    Safety-WG review. ``cameras`` (comma-separated) empty = every publishing depth camera.
+    Safety-WG review. ``on`` also needs an ``exemption_provider`` (ADR-0121 step 3): it keys
+    the grasp exemption on tracked ids, a rule only the provider (OpenRAL Pro) supplies, and
+    stands the HAL's grasp-region producer down, so without one no grasp exemption is left.
+    ``cameras`` (comma-separated) empty = every publishing depth camera.
 
     Example:
         >>> _object_tracking(
@@ -1252,6 +1256,13 @@ def _object_tracking(
         raise ROSConfigError(
             f"object_tracking={mode!r} is sim-only until Safety-WG review (issue #418); "
             f"refused on hal_mode={hal_mode!r}. 'shadow' is allowed."
+        )
+    if mode == "on" and not exemption_provider:
+        raise ROSConfigError(
+            "object_tracking='on' needs an exemption_provider (ADR-0121): the tracked-object "
+            "grasp exemption is a provider rule, and 'on' stands the HAL's grasp-region "
+            "producer down, so the open kernel would have no grasp exemption at all. Use "
+            "'bind', or set exemption_provider."
         )
     if not grounding_wait_s:
         raise ROSConfigError(f"object_tracking={mode!r} needs an explicit grounding_wait_s.")
@@ -1325,7 +1336,10 @@ def _locator_cameras(
 
 
 def _tracked_release_params(description: object, object_tracking: str) -> dict[str, object]:
-    """The kernel's K5 jaw-open release (issue #418) for ``bind`` / ``on``; ``{}`` otherwise.
+    """The K5 jaw-open release (issue #418) for ``bind`` / ``on``; ``{}`` otherwise.
+
+    An exemption-provider rule since ADR-0121 step 3: ``_hand_rules_to_provider`` hands these
+    to the provider as ``contact_exemptions.*`` and drops them without one.
 
     Every calibrated gripper joint (``role: gripper`` with a ``closure_calibration``), its
     open direction (away from ``closed_position``, which is an end of its
@@ -1368,7 +1382,9 @@ def _tracked_release_params(description: object, object_tracking: str) -> dict[s
 
 
 def _payload_own_cells(object_tracking: str, *, tracked_grasp_exemption_enabled: bool) -> bool:
-    """The kernel's ``payload_own_cells_enabled`` (issue #418, hazard OT-10 amendment): ``on`` + K2.
+    """``payload_own_cells_enabled`` (issue #418, hazard OT-10 amendment): ``on`` + K2.
+
+    A provider rule since ADR-0121 step 3 (reaches only ``contact_exemptions.*``).
 
     "A bound payload's measured cells cannot stop that payload": a relaxation of the
     payload-vs-voxel check for cells inside the payload's own measured / grown geometry. It
@@ -1386,7 +1402,10 @@ def _payload_own_cells(object_tracking: str, *, tracked_grasp_exemption_enabled:
 
 
 def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: bool) -> bool:
-    """The kernel's ``tracked_grasp_exemption_enabled`` (issue #418 K2): true iff ``on``.
+    """``tracked_grasp_exemption_enabled`` (issue #418 K2): true iff ``on``.
+
+    A provider rule since ADR-0121 step 3 (reaches only ``contact_exemptions.*``; ``on``
+    without a provider is refused by ``_object_tracking``).
 
     It selects the SOURCE of the grasp-target exemption, never disables a check:
     ``off`` / ``shadow`` / ``bind`` keep the producer-measured region; ``on`` replaces
@@ -1426,7 +1445,9 @@ _FIRST_CHUNK_MARGIN_S = 30.0
 def _workspace_explained_cells(
     object_tracking: str, *, workspace_contact_enabled: bool, requested: bool = True
 ) -> bool:
-    """The kernel's ``workspace_explained_cells_enabled`` (issue #418 K7): ``on`` + workspace.
+    """``workspace_explained_cells_enabled`` (issue #418 K7): ``on`` + workspace.
+
+    A provider rule since ADR-0121 step 3 (reaches only ``contact_exemptions.*``).
 
     It narrows workspace contact to cells a tracked object, the declared static geometry or the
     measured support explains, so it only ever adds stops. It has nothing to narrow without the
@@ -1513,20 +1534,31 @@ def _exemption_provider_kernel_params(
     return {"exemption_provider": provider, "exemption_provider_links": links}
 
 
-#: In-tree kernel rule switches ADR-0121 moves to an exemption provider, and their "off" value.
-#: Mirrored by ``tools/kernel_replay_diff.py`` (pinned by
+#: Open-kernel rule switches a provider takes over (the #349 workspace contact rule and its
+#: brake), and their "off" value. Mirrored by ``tools/kernel_replay_diff.py`` (pinned by
 #: ``tests/unit/test_exemption_provider_launch.py``).
 _PROVIDER_MOVED_RULES_OFF: dict[str, object] = {
     "workspace_contact_enabled": False,
     "workspace_contact_brake_enabled": False,
     "workspace_contact_hold_max_consecutive": 0,
-    "workspace_explained_cells_enabled": False,
-    "tracked_grasp_exemption_enabled": False,
-    "tracked_release_jaw_joints": [],
-    "tracked_release_jaw_open_sign": [],
-    "payload_own_cells_enabled": False,
-    "pinch_payload_own_cells_enabled": False,
 }
+#: Rule params ADR-0121 step 3 removed from the open kernel (K2, the K5 release decision, K7,
+#: OT-10): only an exemption provider reads them, under ``contact_exemptions.``, so they are
+#: never emitted as kernel params. Mirrored by ``tools/kernel_replay_diff.py``.
+_PROVIDER_ONLY_RULES: tuple[str, ...] = (
+    "tracked_grasp_exemption_enabled",
+    "tracked_release_jaw_joints",
+    "tracked_release_jaw_open_sign",
+    "tracked_release_gap",
+    "tracked_release_dwell_s",
+    "workspace_explained_cells_enabled",
+    "payload_own_cells_enabled",
+    "pinch_payload_own_cells_enabled",
+)
+#: Open-kernel inputs that only feed a provider: the kernel refuses
+#: ``tracked_grasp_extra_contact_links`` without one and reads ``static_points_file`` only for
+#: the provider's view. Emitted only with a provider.
+_PROVIDER_INPUTS: tuple[str, ...] = ("tracked_grasp_extra_contact_links", "static_points_file")
 #: Kernel parameter prefixes the provider reads under ``contact_exemptions.``.
 _PROVIDER_MIRRORED_PREFIXES: tuple[str, ...] = (
     "workspace_contact_",
@@ -1539,13 +1571,16 @@ _PROVIDER_MIRRORED_PREFIXES: tuple[str, ...] = (
 
 
 def _hand_rules_to_provider(kernel_params: dict[str, object]) -> dict[str, object]:
-    """With an exemption provider, the moved in-tree rules go to it (ADR-0121).
+    """The provider-only rules go to the exemption provider, or nowhere (ADR-0121 step 3).
 
-    Each moved rule's parameter is mirrored under ``contact_exemptions.`` for the provider and
-    the in-tree switch is turned off, so the provider decides what the in-tree rules did,
-    never both at once: the configuration the in-tree code's removal leaves. The open kernel
-    keeps measuring the hand (``workspace_contact_control_period_s``, ``..._jaw_joints``) and
-    keeps its own release window. Without a provider the params are returned unchanged.
+    Without a provider the rules the open kernel no longer has (``_PROVIDER_ONLY_RULES``) and
+    the inputs only a provider reads (``_PROVIDER_INPUTS``) are dropped; the box-based rules
+    (ADR-0115 grasp allowance, #349 workspace contact) stay as they are. With one, each rule's
+    parameter is mirrored under ``contact_exemptions.`` for the provider, the #349 in-tree
+    switches are turned off and the provider-only rules leave the kernel's own set, so the
+    provider decides what those rules did, never both at once. The open kernel keeps
+    measuring the hand (``workspace_contact_control_period_s``, ``..._jaw_joints``) and keeps
+    its own release window.
 
     Example:
         >>> out = _hand_rules_to_provider(
@@ -1553,16 +1588,21 @@ def _hand_rules_to_provider(kernel_params: dict[str, object]) -> dict[str, objec
         ... )
         >>> out["workspace_contact_enabled"], out["contact_exemptions.workspace_contact_enabled"]
         (False, True)
-        >>> _hand_rules_to_provider({"workspace_contact_enabled": True})
+        >>> _hand_rules_to_provider(
+        ...     {"workspace_contact_enabled": True, "tracked_release_gap": 0.01}
+        ... )
         {'workspace_contact_enabled': True}
     """
     if not kernel_params.get("exemption_provider"):
-        return kernel_params
+        drop = (*_PROVIDER_ONLY_RULES, *_PROVIDER_INPUTS)
+        return {k: v for k, v in kernel_params.items() if k not in drop}
     out = dict(kernel_params)
     for key, value in kernel_params.items():
         if key.startswith(_PROVIDER_MIRRORED_PREFIXES):
             out[f"contact_exemptions.{key}"] = value
     out.update(_PROVIDER_MOVED_RULES_OFF)
+    for key in _PROVIDER_ONLY_RULES:
+        out.pop(key, None)
     # An empty list has no ROS parameter type (launch_ros refuses it); the kernel's default for
     # every list parameter here is empty, so leaving one out is its "off".
     return {k: v for k, v in out.items() if not (isinstance(v, list | tuple) and not v)}
@@ -2550,6 +2590,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         grounding_wait_s=LaunchConfiguration("grounding_wait_s").perform(context),
         cameras=LaunchConfiguration("object_tracking_cameras").perform(context),
         depth_cameras=[s.name for s in publishing if s.modality == "depth"],
+        exemption_provider=exemption_provider,
     )
     if object_surface_model_json and object_tracking == "off":
         from openral_core.exceptions import ROSConfigError
@@ -2771,8 +2812,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             "grasp-target exemption with no producer measuring its region."
         )
     kernel_params["grasp_allowance_enabled"] = grasp_allowance_enabled
-    # Issue #418 K2: `object_tracking: on` makes the tracked objects the grasp
-    # exemption's source (the kernel refuses it off sim or without the exemption).
+    # Issue #418 K2, K5, K7 and OT-10 below are exemption-provider rules (ADR-0121 step 3): their
+    # values are computed here and reach only the provider, as `contact_exemptions.*`
+    # (`_hand_rules_to_provider`); without one they are not emitted. K2: `object_tracking: on`
+    # (which needs a provider) makes the tracked objects the grasp exemption's source.
     kernel_params["tracked_grasp_exemption_enabled"] = _tracked_grasp_exemption(
         object_tracking, grasp_allowance_enabled=grasp_allowance_enabled
     )
@@ -2836,7 +2879,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # The declared static cells also keep the kernel's payload ownership honest: "a declared
     # static collider's cell is never the payload". Without them a shelf cell inside the held
     # box was tolerated as payload with K7 off (Spark R374, `payload_own_armed static_cells=0`).
-    # Only ever removes tolerance, so it follows any consumer, not K7 alone.
+    # Only ever removes tolerance, so it follows any consumer, not K7 alone. The kernel reads it
+    # only for the provider's view, so it is dropped without one (`_PROVIDER_INPUTS`).
     if static_geometry_file and (
         kernel_params.get("workspace_explained_cells_enabled")
         or kernel_params["payload_own_cells_enabled"]
@@ -4871,8 +4915,8 @@ def generate_launch_description() -> LaunchDescription:
                 "DeployRuntime.object_tracking (issue #418): off | shadow | bind | on. Not "
                 "off: the Layer-2 object tracker runs (needs octomap, the vision attachment "
                 "leg and grounding_wait_s); bind/on make it own /openral/attachment_state "
-                "and are sim-only until Safety-WG review. Also passed to the skill runner "
-                "and the reasoner."
+                "and are sim-only until Safety-WG review; on also needs exemption_provider "
+                "(ADR-0121). Also passed to the skill runner and the reasoner."
             ),
         ),
         DeclareLaunchArgument(
@@ -5395,8 +5439,8 @@ def generate_launch_description() -> LaunchDescription:
             "workspace_explained_cells",
             default_value="true",
             description=(
-                "Issue #418 K7 with object_tracking on: workspace contact only on explained "
-                "cells; false keeps the workspace rule alone "
+                "Issue #418 K7 (an exemption-provider rule) with object_tracking on: "
+                "workspace contact only on explained cells; false keeps the workspace rule alone "
                 "(DeployRuntime.workspace_explained_cells)."
             ),
         ),

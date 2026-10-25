@@ -38,10 +38,10 @@ def _argv(
 
 
 def test_deploy_sim_forwards_the_runtime_override_and_leaves_off_unchanged() -> None:
-    # The scene commits the Spark R372 posture: `on`, 8 s, grounding required.
+    # The scene commits the open posture (ADR-0121 step 3): `shadow`, R372's 8 s, nothing refused.
     scene = _argv(_PICK_ORANGE, "sim", {})
-    assert "object_tracking:=on" in scene and "grounding_wait_s:=8.0" in scene
-    assert "grounding_required:=true" in scene
+    assert "object_tracking:=shadow" in scene and "grounding_wait_s:=8.0" in scene
+    assert "grounding_required:=false" in scene
     argv = _argv(
         _PICK_ORANGE,
         "sim",
@@ -175,17 +175,33 @@ def test_an_override_must_validate_whole() -> None:
         _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow", "grounding_wait_s": None})
 
 
-def test_a_shadow_override_does_not_inherit_the_scenes_grounding_required() -> None:
-    """Shadow changes no decision: the scene's committed `grounding_required: true` (for `on`)
-    must not make the runner refuse goals under `--runtime object_tracking=shadow`."""
+def test_shadow_never_forwards_grounding_required() -> None:
+    """Shadow changes no decision: a `grounding_required: true` must not make the runner refuse
+    goals under `object_tracking=shadow`; bind keeps it."""
     scene = DeployScene.from_yaml(str(_PICK_ORANGE))
-    assert scene.runtime is not None and scene.runtime.grounding_required is True
-    argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})
+    assert scene.runtime is not None and scene.runtime.object_tracking == "shadow"
+    assert scene.runtime.grounding_required is False, "the twin commits what shadow does"
+    argv = _argv(_PICK_ORANGE, "sim", {"grounding_required": True})
     assert "object_tracking:=shadow" in argv
     assert "grounding_required:=false" in argv
-    # The scene's own posture and a bind override keep it.
-    assert "grounding_required:=true" in _argv(_PICK_ORANGE, "sim", {})
-    assert "grounding_required:=true" in _argv(_PICK_ORANGE, "sim", {"object_tracking": "bind"})
+    bind = _argv(_PICK_ORANGE, "sim", {"object_tracking": "bind", "grounding_required": True})
+    assert "grounding_required:=true" in bind
+
+
+@pytest.mark.parametrize(
+    "path",
+    [_PICK_ORANGE, _REPO / "scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml"],
+)
+def test_on_without_an_exemption_provider_is_refused_at_scene_load(path: Path) -> None:
+    """ADR-0121 step 3: the tracked-id grasp exemption is a provider rule, and `on` stands the
+    HAL region producer down, so open `on` would leave no grasp exemption at all."""
+    with pytest.raises(ROSConfigError, match="ADR-0121"):
+        _argv(path, "sim", {"object_tracking": "on"})
+    argv = _argv(
+        path, "sim", {"object_tracking": "on", "exemption_provider": "pro_pkg/ContactExemptions"}
+    )
+    assert "object_tracking:=on" in argv
+    assert "exemption_provider:=pro_pkg/ContactExemptions" in argv
 
 
 @pytest.mark.parametrize(
@@ -213,8 +229,10 @@ def test_the_isaac_twins_commit_a_locator_for_their_unseeded_target(path: Path) 
 
 @pytest.mark.parametrize("mode", ["bind", "on"])
 def test_deploy_run_refuses_bind_and_on(mode: str) -> None:
+    # `on` names a provider so the schema accepts it and the real-HAL refusal is what fires.
+    provider = {"exemption_provider": "pro_pkg/ContactExemptions"} if mode == "on" else {}
     with pytest.raises(ROSConfigError, match="sim-only until Safety-WG"):
-        _argv(_REAL, "real", {"object_tracking": mode, "grounding_wait_s": 5})
+        _argv(_REAL, "real", {"object_tracking": mode, "grounding_wait_s": 5, **provider})
 
 
 def test_deploy_run_allows_shadow() -> None:
@@ -254,7 +272,8 @@ def test_the_launch_tracks_every_depth_camera_unless_named(object_tracking: obje
     f = object_tracking
     assert f("off", **_OK) == ("off", ())  # type: ignore[operator]
     assert f("bind", **_OK) == ("bind", ("top_depth",))  # type: ignore[operator]
-    assert f("on", **{**_OK, "cameras": "a, b"}) == ("on", ("a", "b"))  # type: ignore[operator]
+    on = {**_OK, "cameras": "a, b", "exemption_provider": "pro_pkg/ContactExemptions"}
+    assert f("on", **on) == ("on", ("a", "b"))  # type: ignore[operator]
 
 
 @pytest.mark.parametrize(
@@ -262,6 +281,8 @@ def test_the_launch_tracks_every_depth_camera_unless_named(object_tracking: obje
     [
         ("maybe", {}, "expected one of"),
         ("bind", {"hal_mode": "real"}, "sim-only"),
+        # ADR-0121 step 3: `on` keys a provider rule; without one it is refused.
+        ("on", {}, "ADR-0121"),
         ("shadow", {"grounding_wait_s": ""}, "grounding_wait_s"),
         ("shadow", {"enable_octomap": False}, "octomap"),
         ("shadow", {"vision_attachment_enabled": False}, "vision attachment"),

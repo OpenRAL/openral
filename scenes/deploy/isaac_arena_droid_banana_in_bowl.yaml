@@ -183,20 +183,21 @@ runtime:
   # grants clearing. Per-cell ownership remains incomplete; this stays SIM-ONLY,
   # pending Safety-WG review. `deploy run` refuses it.
   payload_sweep_clear_enabled: true
-  # The #418 object tracker owns the attachment set and keys the kernel's grasp exemption
-  # and payload ownership on tracked ids (the values of the successful Spark run R365,
-  # 2026-10-23). It is what clears the held payload from the voxel map:
-  # with tracking off a geometry-only attachment stays mapped and the arm may stop on what
-  # it holds. A goal waits up to `grounding_wait_s` (source time) for its target query and
-  # is refused if it does not ground. Under `on` the runner also arms its goal-scope place
-  # declaration and the tracker measures its region (`TrackerSession.place_region`, the
-  # bowl track's containing box), over which the kernel applies the ADR-0097/0098 place
-  # allowance: a non-monotone relaxation. Spark A/B R388 (off: the banana dropped on the
-  # table, a stop after the release) vs R389 (on: the banana in the bowl). SIM-ONLY,
-  # pending Safety-WG review (ADR + hazard rows owed). `deploy run` refuses `on`.
-  object_tracking: "on"
+  # Open path (ADR-0121 step 3): `shadow`. The HAL legs own the grasp region (the
+  # grasp-target leg), the place region (the place-target leg) and the attachment set; the
+  # #418 tracker runs and grounds the seedless target query within `grounding_wait_s`
+  # (source time) but decides nothing. The held payload is the HAL's measured attachment
+  # (with payload_sweep_clear), not a tracked identity. `on`, as the successful Spark runs
+  # R365/R389 (2026-10-23) ran it, keys the grasp exemption and payload ownership on
+  # tracked ids and arms the runner's goal-scope place declaration over the tracked bowl
+  # (A/B R388 off: the banana dropped on the table vs R389 on: in the bowl); it needs
+  # `exemption_provider:` (OpenRAL Pro, ADR-0121). This configuration has not been run in
+  # sim since step 3: an open-only tier-3 run is owed. `grounding_required` is false
+  # because shadow refuses no goal (`deploy sim` ignores it there). SIM-ONLY scene, pending
+  # Safety-WG review.
+  object_tracking: shadow
   grounding_wait_s: 15.0
-  grounding_required: true
+  grounding_required: false
   # The target query has no seed (the grasp declaration's search_box is sim ground truth),
   # so the tracker grounds it through this on-demand locator; without one `deploy sim`
   # refuses to configure. Needs the omdet dependency group (`just sync --group omdet`).

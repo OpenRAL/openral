@@ -1,9 +1,11 @@
 """Replay one recorded deploy into two safety kernels and diff their verdicts (ADR-0121 parity).
 
-Step 3 of ADR-0121 removes #349 / K2 / K5 / K7 / OT-10 from the open kernel once an OpenRAL Pro
-exemption provider reproduces them. This is the deterministic half of that parity gate:
+Step 3 of ADR-0121 removes K2 / K5 / K7 / OT-10 from the open kernel (an OpenRAL Pro exemption
+provider reproduces them); #349 stays open and a provider may take it over. This is the
+deterministic half of that parity gate:
 
-* **A**: the kernel exactly as the run configured it (the in-tree rules on).
+* **A**: the kernel exactly as the run configured it (the in-tree rules on; for K2 / K5 / K7 /
+  OT-10 that is a kernel built before step 3).
 * **B**: the same parameters with every moved in-tree rule off and the provider loaded
   (``--provider``), its ``contact_exemptions.*`` parameters mirroring the in-tree ones
   (:func:`provider_params`).
@@ -69,18 +71,25 @@ _INPUTS: tuple[str, ...] = (
     "/openral/estop",
 )
 
-#: In-tree rule switches ADR-0121 moves to the provider, and their "off" value.
+#: Open-kernel rule switches the provider takes over (#349 and its brake), and their "off" value.
 _MOVED_RULES_OFF: dict[str, object] = {
     "workspace_contact_enabled": False,
     "workspace_contact_brake_enabled": False,
     "workspace_contact_hold_max_consecutive": 0,
-    "workspace_explained_cells_enabled": False,
-    "tracked_grasp_exemption_enabled": False,
-    "tracked_release_jaw_joints": [],
-    "tracked_release_jaw_open_sign": [],
-    "payload_own_cells_enabled": False,
-    "pinch_payload_own_cells_enabled": False,
 }
+
+#: Rule params ADR-0121 step 3 removed from the open kernel; only the provider reads them, under
+#: ``contact_exemptions.`` (a dump from an older kernel may still carry them in-tree).
+_PROVIDER_ONLY_RULES: tuple[str, ...] = (
+    "tracked_grasp_exemption_enabled",
+    "tracked_release_jaw_joints",
+    "tracked_release_jaw_open_sign",
+    "tracked_release_gap",
+    "tracked_release_dwell_s",
+    "workspace_explained_cells_enabled",
+    "payload_own_cells_enabled",
+    "pinch_payload_own_cells_enabled",
+)
 
 #: Parameter prefixes the provider mirrors under ``contact_exemptions.``.
 _MIRRORED_PREFIXES: tuple[str, ...] = (
@@ -124,6 +133,10 @@ def _kernel_params(dump: Mapping[str, Any]) -> dict[str, Any]:
 def provider_params(params: Mapping[str, Any], provider: str) -> dict[str, Any]:
     """Kernel B's parameters: the moved in-tree rules off, the provider on, values mirrored.
 
+    The #349 switches are turned off and the rules ADR-0121 step 3 removed from the open kernel
+    (``_PROVIDER_ONLY_RULES``) leave B's in-tree set; both reach the provider only as
+    ``contact_exemptions.*``, as ``deploy_e2e``'s ``_hand_rules_to_provider`` does.
+
     The hand-speed measurement parameters (``workspace_contact_control_period_s``,
     ``workspace_contact_jaw_joints``) stay, because the open kernel still measures for the
     provider. The provider's mask is the in-tree workspace's hand links.
@@ -149,7 +162,9 @@ def provider_params(params: Mapping[str, Any], provider: str) -> dict[str, Any]:
         True
     """
     if not any(
-        params.get(k) not in (None, False, 0, [], "") for k in _MOVED_RULES_OFF if k in params
+        params.get(k) not in (None, False, 0, [], "")
+        for k in (*_MOVED_RULES_OFF, *_PROVIDER_ONLY_RULES)
+        if k in params
     ):
         raise ValueError("kernel A runs none of the ADR-0121 moved rules: nothing to compare")
     out = dict(params)
@@ -157,6 +172,8 @@ def provider_params(params: Mapping[str, Any], provider: str) -> dict[str, Any]:
         if key.startswith(_MIRRORED_PREFIXES):
             out[f"contact_exemptions.{key}"] = value
     out.update(_MOVED_RULES_OFF)
+    for key in _PROVIDER_ONLY_RULES:
+        out.pop(key, None)
     links = params.get("workspace_contact_links") or params.get("grasp_contact_links") or []
     if not links:
         # The kernel refuses a provider with an empty mask; the launch passes the manifest's hand

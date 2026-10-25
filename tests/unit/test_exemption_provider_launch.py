@@ -33,6 +33,8 @@ class _LaunchModule(Protocol):
 
     _PROVIDER_MOVED_RULES_OFF: dict[str, object]
     _PROVIDER_MIRRORED_PREFIXES: tuple[str, ...]
+    _PROVIDER_ONLY_RULES: tuple[str, ...]
+    _PROVIDER_INPUTS: tuple[str, ...]
 
     def _exemption_provider_kernel_params(
         self,
@@ -44,6 +46,20 @@ class _LaunchModule(Protocol):
     ) -> dict[str, object]: ...
 
     def _hand_rules_to_provider(self, kernel_params: dict[str, object]) -> dict[str, object]: ...
+
+    def _object_tracking(
+        self,
+        mode: str,
+        *,
+        hal_mode: str,
+        vision_attachment_enabled: bool,
+        enable_octomap: bool,
+        self_filter_runs: bool,
+        grounding_wait_s: str,
+        cameras: str,
+        depth_cameras: list[str],
+        exemption_provider: str = "",
+    ) -> tuple[str, tuple[str, ...]]: ...
 
 
 @pytest.fixture(scope="module")
@@ -123,33 +139,103 @@ def test_deploy_sim_forwards_the_runtime_provider_and_deploy_run_refuses_it(
         _cell_invocation(tmp_path, {"exemption_provider": _PROVIDER}, "real")
 
 
+#: Kernel A as the launch computes it for `object_tracking: on` (every rule's value present).
+_ALL_RULES: dict[str, object] = {
+    "workspace_contact_enabled": True,
+    "workspace_contact_brake_enabled": True,
+    "workspace_contact_max_speed_mps": 0.5,
+    "workspace_contact_control_period_s": 0.0667,
+    "tracked_release_timeout_s": 3.0,
+    "tracked_grasp_exemption_enabled": True,
+    "tracked_grasp_extra_contact_links": ["fixed_jaw"],
+    "tracked_release_jaw_joints": ["gripper"],
+    "tracked_release_jaw_open_sign": [1.0],
+    "tracked_release_gap": 0.01,
+    "tracked_release_dwell_s": 0.3,
+    "workspace_explained_cells_enabled": True,
+    "payload_own_cells_enabled": True,
+    "pinch_payload_own_cells_enabled": True,
+    "static_points_file": "static_cells.txt",
+    "grasp_allowance_enabled": True,
+}
+
+
+def test_without_a_provider_the_removed_rules_are_never_emitted(
+    launch_module: _LaunchModule,
+) -> None:
+    """ADR-0121 step 3: the open kernel has no K2 / K5-release / K7 / OT-10, so their params
+    and the inputs only a provider reads are dropped; the box-based rules stay as they are."""
+    out = launch_module._hand_rules_to_provider(dict(_ALL_RULES))
+    for key in (*launch_module._PROVIDER_ONLY_RULES, *launch_module._PROVIDER_INPUTS):
+        assert key not in out, key
+    assert not [k for k in out if k.startswith("contact_exemptions.")]
+    for key in (
+        "workspace_contact_enabled",
+        "workspace_contact_brake_enabled",
+        "workspace_contact_max_speed_mps",
+        "tracked_release_timeout_s",
+        "grasp_allowance_enabled",
+    ):
+        assert out[key] == _ALL_RULES[key], key
+
+
 def test_a_provider_takes_over_the_moved_rules_never_both(launch_module: _LaunchModule) -> None:
-    """With a provider the moved in-tree rules are off and mirrored for it (ADR-0121): a
-    deploy runs the configuration the in-tree code's removal leaves, not both at once."""
-    hand = launch_module._hand_rules_to_provider
-    a = {
-        "workspace_contact_enabled": True,
-        "workspace_contact_max_speed_mps": 0.5,
-        "workspace_contact_control_period_s": 0.0667,
-        "tracked_grasp_exemption_enabled": True,
-        "tracked_grasp_extra_contact_links": ["fixed_jaw"],
-        "tracked_release_jaw_joints": ["gripper"],
-        "pinch_payload_own_cells_enabled": True,
-        "grasp_allowance_enabled": True,
-    }
-    assert hand(a) is a, "no provider: unchanged"
-    b = hand({**a, "exemption_provider": _PROVIDER})
+    """With a provider the #349 switches are off and every rule is mirrored for it (ADR-0121);
+    the removed rules reach it only as ``contact_exemptions.*``, never as kernel params."""
+    b = launch_module._hand_rules_to_provider({**_ALL_RULES, "exemption_provider": _PROVIDER})
     for key, off in launch_module._PROVIDER_MOVED_RULES_OFF.items():
         assert b.get(key, []) == off, key
+    for key in launch_module._PROVIDER_ONLY_RULES:
+        assert key not in b, key
+        assert b[f"contact_exemptions.{key}"] == _ALL_RULES[key], key
     # launch_ros refuses an empty list (no ROS type): Spark 2026-10-25, every provider launch died.
     assert not [k for k, v in b.items() if isinstance(v, list | tuple) and not v]
-    assert "tracked_release_jaw_joints" not in b, "off = the kernel's empty default"
     assert b["contact_exemptions.workspace_contact_enabled"] is True
-    assert b["contact_exemptions.tracked_release_jaw_joints"] == ["gripper"]
-    assert b["contact_exemptions.pinch_payload_own_cells_enabled"] is True
     assert b["workspace_contact_control_period_s"] == 0.0667, "the measurement stays open"
-    assert b["tracked_grasp_extra_contact_links"] == ["fixed_jaw"], "hand geometry stays open"
+    assert b["tracked_release_timeout_s"] == 3.0, "the kernel's freeze window stays open"
+    assert b["tracked_grasp_extra_contact_links"] == ["fixed_jaw"], "hand geometry, provider-read"
+    assert b["static_points_file"] == "static_cells.txt", "the provider's static cells"
     assert b["grasp_allowance_enabled"] is True, "ADR-0115 stays open"
+
+
+def _track(launch_module: _LaunchModule, mode: str, provider: str) -> tuple[str, tuple[str, ...]]:
+    return launch_module._object_tracking(
+        mode,
+        hal_mode="sim",
+        vision_attachment_enabled=True,
+        enable_octomap=True,
+        self_filter_runs=True,
+        grounding_wait_s="8",
+        cameras="",
+        depth_cameras=["top_depth"],
+        exemption_provider=provider,
+    )
+
+
+def test_tracking_on_without_a_provider_is_refused_at_launch(launch_module: _LaunchModule) -> None:
+    """In open, `on` stands the HAL region producer down and no grasp exemption is left."""
+    with pytest.raises(ROSConfigError, match="ADR-0121"):
+        _track(launch_module, "on", "")
+    assert _track(launch_module, "on", _PROVIDER) == ("on", ("top_depth",))
+    for mode in ("shadow", "bind"):
+        assert _track(launch_module, mode, "") == (mode, ("top_depth",))
+
+
+def test_deploy_runtime_refuses_tracking_on_without_a_provider() -> None:
+    """The same refusal at scene load: the committed PickOrange twin, switched to `on`."""
+    from openral_core import DeployScene
+    from pydantic import ValidationError
+
+    scene = _REPO / "scenes" / "deploy" / "isaac_leisaac_pick_orange.yaml"
+    runtime = DeployScene.from_yaml(str(scene)).runtime
+    assert runtime is not None and runtime.object_tracking == "shadow"
+    base = runtime.model_dump()
+    with pytest.raises(ValidationError, match="ADR-0121"):
+        DeployRuntime.model_validate({**base, "object_tracking": "on"})
+    on = DeployRuntime.model_validate(
+        {**base, "object_tracking": "on", "exemption_provider": _PROVIDER}
+    )
+    assert on.object_tracking == "on"
 
 
 def test_the_launch_and_the_replay_tool_move_the_same_rules(launch_module: _LaunchModule) -> None:
@@ -163,3 +249,4 @@ def test_the_launch_and_the_replay_tool_move_the_same_rules(launch_module: _Laun
     spec.loader.exec_module(krd)
     assert krd._MOVED_RULES_OFF == launch_module._PROVIDER_MOVED_RULES_OFF
     assert krd._MIRRORED_PREFIXES == launch_module._PROVIDER_MIRRORED_PREFIXES
+    assert krd._PROVIDER_ONLY_RULES == launch_module._PROVIDER_ONLY_RULES

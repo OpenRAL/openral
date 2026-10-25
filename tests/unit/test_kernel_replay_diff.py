@@ -1,9 +1,9 @@
 """The ADR-0121 parity replay tool (``tools/kernel_replay_diff.py``): its pure half.
 
 The live two-kernel replay needs ROS 2 and a recorded deploy (the Spark parity runs); what is
-pinned here is what decides the comparison: the topics a run records, kernel B's parameters (every
-moved in-tree rule off, the provider on, the in-tree values mirrored, the open measurement kept),
-and the verdict comparison.
+pinned here is what decides the comparison: the topics a run records, kernel B's parameters (the
+#349 switches off, the rules ADR-0121 step 3 removed out of B's in-tree set, the provider on, the
+in-tree values mirrored, the open measurement kept), and the verdict comparison.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ krd = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = krd
 _spec.loader.exec_module(krd)
 
-# The DROID banana scene's in-tree kernel posture (#418 `on` + #349 + K7 + K5), as the launch
-# passes it.
+# The DROID banana scene's in-tree kernel posture (#418 `on` + #349 + K7 + K5), as a kernel built
+# before ADR-0121 step 3 dumped it.
 _A = {
     "hal_mode": "sim",
     "world_voxel_enabled": True,
@@ -64,17 +64,13 @@ def test_the_recorder_records_every_kernel_input() -> None:
 
 def test_kernel_b_turns_every_moved_rule_off_and_loads_the_provider() -> None:
     b = krd.provider_params(_A, _P)
-    for key in (
-        "workspace_contact_enabled",
-        "workspace_contact_brake_enabled",
-        "workspace_explained_cells_enabled",
-        "tracked_grasp_exemption_enabled",
-        "payload_own_cells_enabled",
-        "pinch_payload_own_cells_enabled",
-    ):
+    for key in ("workspace_contact_enabled", "workspace_contact_brake_enabled"):
         assert b[key] is False, key
-    assert b["tracked_release_jaw_joints"] == []
     assert b["workspace_contact_hold_max_consecutive"] == 0
+    for key in krd._PROVIDER_ONLY_RULES:
+        assert key not in b, f"{key}: removed from the open kernel, provider-only"
+    assert b["contact_exemptions.tracked_grasp_exemption_enabled"] is True
+    assert b["contact_exemptions.workspace_explained_cells_enabled"] is True
     assert b["exemption_provider"] == _P
     assert b["exemption_provider_links"] == _A["workspace_contact_links"]
 
@@ -115,14 +111,18 @@ def test_verdicts_compare_pass_latch_and_rows() -> None:
 
 
 def test_every_moved_rule_and_mirrored_prefix_names_a_declared_kernel_parameter() -> None:
-    """A misspelt key silently leaves the in-tree rule on in kernel B (pro review of 286ee01af)."""
+    """A misspelt key silently leaves the in-tree rule on in kernel B (pro review of 286ee01af);
+    a provider-only rule the open kernel still declared would run in-tree beside the provider."""
     src = (REPO_ROOT / "cpp/openral_safety_kernel/src/lifecycle_kernel.cpp").read_text()
     declared = set(re.findall(r'declare_parameter<.+?>\(\s*"([^"]+)"', src, re.S))
     assert declared, "the kernel's declare_parameter calls were not found"
     for key in krd._MOVED_RULES_OFF:
         assert key in declared, key
+    for key in krd._PROVIDER_ONLY_RULES:
+        assert key not in declared, f"{key}: ADR-0121 step 3 removed it from the open kernel"
+    named = declared | set(krd._PROVIDER_ONLY_RULES)
     for prefix in krd._MIRRORED_PREFIXES:
-        assert any(d.startswith(prefix) for d in declared), prefix
+        assert any(d.startswith(prefix) for d in named), prefix
 
 
 def test_only_diffs_outside_the_self_check_noise_fail_tier_2() -> None:
