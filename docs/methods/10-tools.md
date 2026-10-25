@@ -91,8 +91,8 @@ _ADR-0121 parity gate, deterministic half: replays one recorded deploy into two 
 - `verdicts_equal(a, b, tol=1e-9) -> bool` — Same pass/refuse, same latch, same rows within `tol`. (L193)
 - `summarize(diffs, n_candidates) -> dict` — Counts (`equal`, `different`, `a_only_passes`, `b_only_passes`) and every diff. (L207)
 - `outside_noise(report, self_checks) -> list[int]` — Candidate indices where A and B differ but no A-vs-A run did: the tier-2 criterion (`diff --self-check K` exits non-zero iff any). (L224)
-- `replay(bag, params_a, params_b, workdir, verdict_timeout_s=0.3, settle_s=0.02) -> dict` — The live two-kernel replay (needs ROS 2 Jazzy and both packages built). Delivery made as deterministic as the kernel's KEEP_LAST(1) inputs allow: the deploy graph's Fast DDS large-data profile, each reliable input acknowledged by both kernels, `settle_s` of spinning before each candidate. (L431)
-- `main(argv=None) -> int` — `record-cmd OUT` / `diff --bag --params --provider --out`; exit 1 on any differing verdict. (L512)
+- `replay(bag, params_a, params_b, workdir, verdict_timeout_s=0.3, settle_s=0.02) -> dict` — The live two-kernel replay (needs ROS 2 Jazzy and both packages built). Delivery made as deterministic as the kernel's KEEP_LAST(1) inputs allow: the deploy graph's Fast DDS large-data profile, each reliable input acknowledged by both kernels, `settle_s` of spinning before each candidate. (L455)
+- `main(argv=None) -> int` — `record-cmd OUT` / `diff --bag --params --provider --out`; exit 1 on any differing verdict. (L541)
 
 ### `tools/check_no_pro_imports.py`
 _Lint guard for the Apache-2.0 / OpenRAL Pro boundary: fails when any tracked `.py` imports an `openral_pro*` module (`import`, `from … import`, or `import_module`/`__import__` with a literal). Names in strings and docs stay allowed; `openral_prompt_router` is not a hit. Run by `just lint`, pre-commit and `quality.yml`. Open code reaches Pro only through `openral_rskill.backend_registry`._
@@ -203,16 +203,16 @@ _Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`
 - `GradeSettle.feed(grade, sim_time_s) -> None` (L127) — One grade change from `grade_events`.
 - `GradeSettle.due(now_sim_s) -> bool` (L131) — Whether `complete` has held `settle_s` by sim time `now_sim_s`.
 - `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L59) — The scene dict one episode launches (seed, sidecar port, keep-alive).
-- `sidecar_pids(port) -> list[int]` (L226) — Pids of this user's sidecars serving `port`.
-- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L242) — One request to the sidecar; `None` when it does not answer.
-- `graph_leaks(domain) -> list[str]` (L271) — Deploy-graph processes of this user still alive on the ROS domain.
-- `domain_nodes(env) -> list[str]` (L287) — ROS node names on the domain (`ros2 node list --no-daemon`).
-- `batch_env(environ) -> tuple[dict[str, str], str]` (L358) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review). It also carries the deploy graph's Fast DDS profile (`apply_fastdds_large_data_profile`), so `--record`'s recorder and parameter dump see the graph as its own nodes do.
-- `run_batch(args) -> int` (L380) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
-- `compare(a, b) -> int` (L530) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
-- `main(argv=None) -> int` (L560) — `run` (default) or `compare A B`.
-- `restore_sigint() -> bool` (L569) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
-- `parser() -> argparse.ArgumentParser` (L584) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
+- `sidecar_pids(port) -> list[int]` (L235) — Pids of this user's sidecars serving `port`.
+- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L251) — One request to the sidecar; `None` when it does not answer.
+- `graph_leaks(domain) -> list[str]` (L280) — Deploy-graph processes of this user still alive on the ROS domain.
+- `domain_nodes(env) -> list[str]` (L296) — ROS node names on the domain (`ros2 node list --no-daemon`).
+- `batch_env(environ) -> tuple[dict[str, str], str]` (L367) — The episodes' environment and ROS domain, the domain (default `"0"`) written into it so `graph_leaks`, which matches `ROS_DOMAIN_ID=<d>` in each child's environ, sees the children (#421 review). It also carries the deploy graph's Fast DDS profile (`apply_fastdds_large_data_profile`), so `--record`'s recorder and parameter dump see the graph as its own nodes do.
+- `run_batch(args) -> int` (L389) — The episode loop; refuses (exit 2) a port a sidecar already serves before its cleanup scope, so the refusal never ends that foreign sidecar.
+- `compare(a, b) -> int` (L544) — Side-by-side per-episode report of two batches; an episode with no `ground_truth.json` (it never booted) prints `n/a`.
+- `main(argv=None) -> int` (L574) — `run` (default) or `compare A B`.
+- `restore_sigint() -> bool` (L583) — Catches SIGINT again when the harness inherited it ignored (a background job of a non-interactive shell), so every child, the launch and `ros2 bag record`, gets its SIGINT back and `_stop_group` finalizes rather than SIGKILLs it.
+- `parser() -> argparse.ArgumentParser` (L598) — The `run` command line (`--expect-preload` / `--no-expect-preload`, `--record`).
 - `const READY_MARKERS = ('HAL activated at',)` (L55) — Log lines that mean the HAL is up.
 - `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L56) — Added to the ready markers when the scene preloads a skill.
 - `const REPO` (L54) — Repo root (the checkout the script runs from).
