@@ -282,7 +282,7 @@ private:
   bool refresh_tracked_cover();
   // The tracked set's stream (world_state_fast) is received, accepted and within
   // the attached-collision deadline.
-  bool tracked_stream_fresh();
+  bool tracked_stream_fresh() const noexcept;
   // Issue #418 K7 — fill `workspace_explained_` with the tracked objects that
   // explain workspace cells NOW (any role; confirmed / occluded; (id, epoch) not
   // retired; confirmed within `grasp_region_max_age_s`; cover-checked; the set's
@@ -305,6 +305,9 @@ private:
   // `attached_collision_deadline` (stale is "no exemption", never a drop by
   // itself). Re-evaluated per candidate action.
   bool grasp_declaration_live() const noexcept;
+  /// The tracked declaration's liveness: accepted, within its backstop, no future stamp, and
+  /// the attached stream carrying it fresh (`grasp_declaration_live`'s rules).
+  bool tracked_declaration_live() const noexcept;
 
   // Retire the current grasp declaration for good: the region is dropped and
   // the declaration's identity joins the retired set so its heartbeat cannot
@@ -423,8 +426,10 @@ private:
   /// Loading never fails configure: any refusal leaves the kernel with no provider.
   void load_exemption_provider();
   /// The #349 hand speed / lead measurement setup; "" on success, else why it is refused.
+  /// `param` names the list in the refusal (`exemption_provider_links` for the provider).
   std::string configure_workspace_measurement(const std::vector<std::string>& names,
-                                              std::string& listed);
+                                              std::string& listed,
+                                              const char* param = "workspace_contact_links");
   std::unique_ptr<pluginlib::ClassLoader<ExemptionProvider>> provider_loader_;
   std::shared_ptr<ExemptionProvider> provider_;
   std::string provider_status_{"none"};

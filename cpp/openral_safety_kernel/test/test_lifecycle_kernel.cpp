@@ -8351,6 +8351,33 @@ TEST_F(LifecycleKernelTest, AProviderThatReplacesTheGraspRegionOnlyNarrowsTheOpe
   EXPECT_TRUE(rig.node->fault_latched());
 }
 
+TEST_F(LifecycleKernelTest, AProviderGraspSourceIsReportedOnlyWhileTheDeclarationLives) {
+  // The stop line names the provider as the grasp exemption source only while the declaration
+  // passes its backstop: an accepted declaration past its timeout_s reads "none", though the
+  // world-state heartbeats carrying it stay fresh (CodeRabbit #432).
+  osk_test::serve_test_providers();
+  auto params = with_param(grasp_params(true), "hal_mode", rclcpp::ParameterValue("sim"));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("RecorderReplacing")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  for (const bool expired : {false, true}) {
+    LogCapture logs;
+    GraspRig rig(expired ? "kernel_provider_source_expired" : "kernel_provider_source_live",
+                 params);
+    rig.start();
+    ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+    GraspBeat b;
+    b.declaration_stamp_ns = expired ? rig.now_ns() - 120'000'000'000LL : rig.now_ns();
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0));
+    EXPECT_EQ(
+        logs.count(expired ? "grasp_exemption_source=none " : "grasp_exemption_source=provider"),
+        1U)
+        << logs.joined();
+  }
+}
+
 TEST_F(LifecycleKernelTest, AProviderCoverHoldKeepsTheKernelsBoundsAndNeverReStamps) {
   // API v3: the target's kernel cover passes (2 of 2), then the hand hides it (2 of the 3 needed).
   // A provider that holds every cover keeps `cover_ok` inside the kernel's age bound (0.6 s) and

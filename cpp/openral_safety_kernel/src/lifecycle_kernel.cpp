@@ -2135,7 +2135,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // ADR-0121: never silent. Every pair the provider tolerated is counted, the chunk's count is
       // a span attribute, and one WARN a second names the deepest.
       const auto disclose_provider = [&](const CollisionHit& hit, int step, const char* who) {
-        if (hit.provider_pairs <= 0 || provider_ == nullptr) {
+        if (hit.provider_pairs <= 0 || provider_ == nullptr || ws_quiet_) {
           return;
         }
         provider_pairs_total_ += static_cast<std::uint64_t>(hit.provider_pairs);
@@ -3619,20 +3619,20 @@ TrackedObjectView SafetyKernelLifecycleNode::tracked_view(const TrackedEntry& e)
 
 std::string
 SafetyKernelLifecycleNode::configure_workspace_measurement(const std::vector<std::string>& names,
-                                                           std::string& listed) {
+                                                           std::string& listed, const char* param) {
   // The #349 hand speed / lead MEASUREMENT (links, reaches, jaw joints, command memory), shared by
   // the in-tree rule and an ADR-0121 provider. The rule's own bounds are configured by its caller.
   workspace_links_.reset();
   workspace_link_index_.clear();
   if (names.empty()) {
-    return "workspace_contact_links is empty";
+    return std::string(param) + " is empty";
   }
   for (const auto& name : names) {
     const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
     const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
     if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks ||
         index >= collision_model_.n_links) {
-      return "workspace_contact_links names '" + name +
+      return std::string(param) + " names '" + name +
              "', which is not a collision link of this model";
     }
     if (!workspace_links_[index]) {
@@ -3727,7 +3727,8 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
       }
       workspace_control_period_s_ = period;
       std::string listed;
-      const std::string why = configure_workspace_measurement(links, listed);
+      const std::string why =
+          configure_workspace_measurement(links, listed, "exemption_provider_links");
       if (!why.empty()) {
         refuse(why);
         return;
@@ -4279,7 +4280,7 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   oss << R"(,"grasp_exemption_active":)" << (grasp_active ? "true" : "false")
       << R"(,"grasp_exemption_source":")" << grasp_source << '"';
   if (std::strcmp(grasp_source, "provider") == 0) {
-    oss << R"(,"grasp_exemption_provider":")" << provider_->name() << '"';
+    oss << R"(,"grasp_exemption_provider":")" << json_escape(provider_->name()) << '"';
   }
   oss << R"(,"depth_is_box_bound":)" << (hit.depth_is_box_bound ? "true" : "false");
   // Expose accepted wire provenance only when the named pair contains that
@@ -6093,10 +6094,17 @@ bool SafetyKernelLifecycleNode::refresh_tracked_cover() {
   return frame_ok;
 }
 
-bool SafetyKernelLifecycleNode::tracked_stream_fresh() {
+bool SafetyKernelLifecycleNode::tracked_stream_fresh() const noexcept {
   const double age_s = (this->now() - attached_stamp_).seconds();
   return attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
          age_s <= attached_collision_deadline_s_;
+}
+
+bool SafetyKernelLifecycleNode::tracked_declaration_live() const noexcept {
+  const std::int64_t elapsed_ns = this->now().nanoseconds() - tracked_decl_stamp_ns_;
+  return tracked_decl_active_ && elapsed_ns >= 0 &&
+         elapsed_ns <= static_cast<std::int64_t>(tracked_decl_timeout_s_ * 1e9) &&
+         tracked_stream_fresh();
 }
 
 std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
@@ -6104,12 +6112,7 @@ std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
   const bool frame_ok = refresh_tracked_cover();
   // The declaration's own liveness: its backstop, no future stamp, and the
   // stream carrying it fresh (exactly `grasp_declaration_live`'s rules).
-  const std::int64_t now_ns = this->now().nanoseconds();
-  const std::int64_t elapsed_ns = now_ns - tracked_decl_stamp_ns_;
-  const bool declaration_live =
-      tracked_decl_active_ && elapsed_ns >= 0 &&
-      elapsed_ns <= static_cast<std::int64_t>(tracked_decl_timeout_s_ * 1e9) &&
-      tracked_stream_fresh();
+  const bool declaration_live = tracked_declaration_live();
   if (declaration_live && frame_ok) {
     for (std::size_t k = 0; k < tracked_n_; ++k) {
       const TrackedEntry& e = tracked_[k];
@@ -6531,7 +6534,7 @@ void SafetyKernelLifecycleNode::ingest_workspace_contact(
 
 const char* SafetyKernelLifecycleNode::grasp_exemption_source() const noexcept {
   if (provider_ != nullptr && provider_replaces_region_) {
-    return tracked_decl_active_ ? "provider" : "none";
+    return tracked_declaration_live() ? "provider" : "none";
   }
   if (tracked_grasp_enabled_) {
     return tracked_grasp_.n_objects > 0 ? "tracked" : "none";
