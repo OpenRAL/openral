@@ -12189,6 +12189,14 @@ class DeployRuntime(BaseModel):
     removed. Default off; no raw octree clearing service is configured when off.
     **Sim-only until Safety-WG review**: ``openral deploy run``
     and ``deploy_e2e`` on a non-sim HAL refuse it on. Backward-compatible addition."""
+    exemption_provider: str = ""
+    """Safety-kernel exemption provider (ADR-0121): a pluginlib class deriving
+    ``openral_safety_kernel::ExemptionProvider`` (e.g. OpenRAL Pro's
+    ``openral_pro_safety_exemptions/ContactExemptions``), forwarded as the launch's
+    ``exemption_provider`` argument. Empty (default) = none: the in-tree rules decide.
+    The kernel fails closed on any provider it cannot load, and the provider can only
+    tolerate pairs on the manifest's hand links. **Sim-only**: ``openral deploy run``, the
+    launch and the kernel each refuse it off sim. Backward-compatible addition."""
     static_geometry_file: str | None = None
     """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
     repo-relative): walls, shelf frame, table, tote shell, in the robot's ``base_frame``.

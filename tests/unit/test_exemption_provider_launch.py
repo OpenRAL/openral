@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from openral_core import RobotDescription
+import yaml
+from openral_core import DeployRuntime, RobotDescription
 from openral_core.exceptions import ROSConfigError
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -23,6 +24,7 @@ _LAUNCH = _REPO / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
 _OPENARM = _REPO / "robots" / "openarm" / "robot.yaml"
 _DROID = _REPO / "robots" / "droid_franka_robotiq" / "robot.yaml"
 _PROVIDER = "openral_pro_safety_exemptions/ContactExemptions"
+_CELL = _REPO / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -69,3 +71,35 @@ def test_a_provider_off_sim_is_refused_at_launch(launch_module: Any, mode: str) 
     robot = RobotDescription.from_yaml(str(_OPENARM))
     with pytest.raises(ROSConfigError, match="sim-only"):
         launch_module._exemption_provider_kernel_params(robot, provider=_PROVIDER, hal_mode=mode)
+
+
+def _cell_invocation(tmp_path: Path, runtime: dict[str, object], hal_mode: str) -> Any:
+    from openral_cli.deploy_sim import resolve_launch_invocation
+
+    data = yaml.safe_load(_CELL.read_text(encoding="utf-8"))
+    data["runtime"].update(runtime)
+    scene = tmp_path / "cell.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+        hal_mode=hal_mode,
+    )
+
+
+def test_deploy_sim_forwards_the_runtime_provider_and_deploy_run_refuses_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``DeployRuntime.exemption_provider`` is how ``openral deploy sim`` selects one."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    assert DeployRuntime().exemption_provider == ""
+    off = _cell_invocation(tmp_path, {}, "sim").argv_template
+    assert not any(a.startswith("exemption_provider") for a in off), "none: argv unchanged"
+    on = _cell_invocation(tmp_path, {"exemption_provider": _PROVIDER}, "sim").argv_template
+    assert f"exemption_provider:={_PROVIDER}" in on
+    with pytest.raises(ROSConfigError, match="sim-only"):
+        _cell_invocation(tmp_path, {"exemption_provider": _PROVIDER}, "real")

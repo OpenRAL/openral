@@ -1651,7 +1651,8 @@ installed header
 **Loading** happens once, at configure, after the collision model. It **never fails configure.**
 - **Parameters:**
   - `exemption_provider` is the pluginlib class name. Empty, the default, means no provider and
-    today's verdicts.
+    today's verdicts. A deploy scene selects one with `runtime.exemption_provider`, which
+    `openral deploy sim` forwards as the launch argument of the same name.
   - `exemption_provider_links` is the kernel's own relaxable-link mask. The launch passes
     `RobotDescription.hand_links()`.
 - **What refuses a provider**, with ERROR `safety.exemption_provider refused` and

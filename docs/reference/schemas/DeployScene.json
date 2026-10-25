@@ -722,6 +722,11 @@
           "title": "Payload Sweep Clear Enabled",
           "type": "boolean"
         },
+        "exemption_provider": {
+          "default": "",
+          "title": "Exemption Provider",
+          "type": "string"
+        },
         "static_geometry_file": {
           "anyOf": [
             {
