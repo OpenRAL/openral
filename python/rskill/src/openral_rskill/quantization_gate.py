@@ -117,6 +117,35 @@ def pro_quantization(*, what: str) -> ModuleType:
     return mod
 
 
+def sidecar_quantization_args(dtype: str | None, *, what: str) -> list[str]:
+    """The ``--quantization-config`` argv a sidecar takes for a sub-16-bit load.
+
+    A sidecar runs in its own venv, where OpenRAL Pro is not installed, so the
+    adapter asks Pro for the ``BitsAndBytesConfig`` keyword arguments here and
+    passes them as JSON; the sidecar only calls ``BitsAndBytesConfig(**kwargs)``
+    and refuses ``nf4`` / ``int8`` without them (ADR-0123 step 3).
+
+    Args:
+        dtype: The sidecar's ``--quantization`` token (``"nf4"``, ``"int8"``,
+            ``"none"`` …). 16/32-bit and pre-quantized tokens get no config.
+        what: Names the load for the error.
+
+    Returns:
+        ``["--quantization-config", "<json>"]``, or ``[]``.
+
+    Raises:
+        ROSConfigError: ``dtype`` is ``nf4`` / ``int8`` and Pro is absent.
+
+    Example:
+        >>> sidecar_quantization_args("none", what="xr1")
+        []
+    """
+    if dtype not in {"nf4", "int8"}:
+        return []
+    kwargs = pro_quantization(what=what).hf_quantization_kwargs(dtype)
+    return ["--quantization-config", json.dumps(kwargs, sort_keys=True)]
+
+
 def require_pro_for_manifest(manifest: RSkillManifest) -> None:
     """Refuse an rSkill whose declared dtype is sub-16-bit, unless Pro is installed.
 

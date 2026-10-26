@@ -13,6 +13,7 @@ import os
 import platform
 from pathlib import Path
 
+from openral_rskill.quantization_gate import sidecar_quantization_args
 from openral_sim._sidecar_common import (
     ensure_pip_venv,
     make_isolated_env,
@@ -152,6 +153,8 @@ def main() -> int:
             "revision, then set OPENRAL_ALLOW_REMOTE_CODE=1."
         )
 
+    # Before the venv build, so a missing OpenRAL Pro fails in seconds.
+    quant_args = sidecar_quantization_args(args.quantization, what="the XR-1 sidecar")
     venv_py = _ensure_venv(args.home)
     if args.export_dir is None:
         write_sidecar_identity(
@@ -175,6 +178,7 @@ def main() -> int:
         args.host,
         "--port",
         str(args.port),
+        *quant_args,
     ]
     if args.export_dir is not None:
         server_argv.extend(["--export-dir", str(args.export_dir)])

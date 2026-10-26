@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import io
+import json
 import os
 import sys
 import time
@@ -58,7 +59,21 @@ from transformers import (
 )
 
 
-def _load(model_id: str) -> tuple[object, object]:
+def _pro_bnb_kwargs(config_json: str | None) -> dict[str, object]:
+    """The ``BitsAndBytesConfig`` kwargs OpenRAL Pro chose, as the launcher passed them.
+
+    This venv has no OpenRAL Pro; ``tools/qwen_vlm_sidecar.py`` asks Pro for the config and
+    hands it over as ``--quantization-config`` (ADR-0123).
+    """
+    if not config_json:
+        raise SystemExit(
+            "NF4 needs OpenRAL Pro (ADR-0123): start this sidecar through "
+            "tools/qwen_vlm_sidecar.py with OpenRAL Pro installed, which passes --quantization-config."
+        )
+    return dict(json.loads(config_json))
+
+
+def _load(model_id: str, quantization_config: str | None) -> tuple[object, object]:
     """Load the processor and the NF4 model on the GPU.
 
     ``Qwen/Qwen3.5-4B`` registers as ``Qwen3_5ForConditionalGeneration``
@@ -84,12 +99,7 @@ def _load(model_id: str) -> tuple[object, object]:
     import transformers.core_model_loading as _cml
 
     _cml.GLOBAL_WORKERS = 1
-    bnb = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
+    bnb = BitsAndBytesConfig(**_pro_bnb_kwargs(quantization_config))
     model = AutoModelForImageTextToText.from_pretrained(
         model_id,
         quantization_config=bnb,
@@ -179,11 +189,16 @@ def main() -> int:
     # the <think> trace plus the answer — 256/512 both truncated mid-trace on
     # a question measured at ~801 tokens.
     ap.add_argument("--max-new-tokens", type=int, default=1024)
+    ap.add_argument(
+        "--quantization-config",
+        default=None,
+        help="BitsAndBytesConfig kwargs as JSON, from OpenRAL Pro via tools/qwen_vlm_sidecar.py (ADR-0123).",
+    )
     args = ap.parse_args()
 
     print(f"[qwen-server] loading {args.model} (NF4)...", flush=True)
     t0 = time.perf_counter()
-    processor, model = _load(args.model)
+    processor, model = _load(args.model, args.quantization_config)
     print(
         f"[qwen-server] loaded in {time.perf_counter() - t0:.1f}s; "
         f"VRAM {torch.cuda.memory_allocated() / 1e9:.2f} GB",

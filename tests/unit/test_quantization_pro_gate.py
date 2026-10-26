@@ -20,6 +20,7 @@ from openral_rskill.quantization_gate import (
     pro_quantization_installed,
     require_pro_for_checkpoint,
     require_pro_for_manifest,
+    sidecar_quantization_args,
 )
 from openral_sim._quantization import QUANTIZATION_DTYPE_ENV, resolve_quant_plan
 
@@ -99,3 +100,16 @@ def test_an_unquantized_checkpoint_passes(tmp_path: Path) -> None:
     require_pro_for_checkpoint(str(tmp_path), what="no config")
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_vl"}))
     require_pro_for_checkpoint(f"local://{tmp_path}", what="plain config")
+
+
+@pytest.mark.parametrize("token", ["nf4", "int8"])
+def test_a_sidecar_launcher_cannot_quantize_without_pro(token: str) -> None:
+    """The launcher asks Pro for --quantization-config; without Pro it refuses up front."""
+    with pytest.raises(ROSConfigError, match="OpenRAL Pro"):
+        sidecar_quantization_args(token, what="the XR-1 sidecar")
+
+
+@pytest.mark.parametrize("token", ["none", "bf16", "prequantized_nf4", None])
+def test_a_sidecar_launch_without_on_load_quantization_gets_no_config(token: str | None) -> None:
+    """Nothing to hand over when the sidecar does not quantize at load."""
+    assert sidecar_quantization_args(token, what="the XR-1 sidecar") == []

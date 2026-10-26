@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 import time
@@ -200,18 +201,16 @@ def _build_agent(args: argparse.Namespace) -> Any:
             "action_encoder",
             "action_decoder",
         ]
-        if args.quantization == "nf4":
-            load_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-                llm_int8_skip_modules=skip,
+        # OpenRAL Pro chose the config; this venv has no Pro, so
+        # tools/internvla_n1_sidecar.py passes it as --quantization-config (ADR-0123).
+        if not args.quantization_config:
+            raise SystemExit(
+                f"--quantization {args.quantization} needs OpenRAL Pro (ADR-0123): start "
+                "this sidecar through tools/internvla_n1_sidecar.py with OpenRAL Pro "
+                "installed, which passes --quantization-config."
             )
-        else:
-            load_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_8bit=True, llm_int8_skip_modules=skip
-            )
+        bnb_kwargs = {**json.loads(args.quantization_config), "llm_int8_skip_modules": skip}
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(**bnb_kwargs)
 
     class _QuantizedAgent(InternVLAN1AsyncAgent):
         def __init__(self, a: SimpleNamespace) -> None:
@@ -325,6 +324,11 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=5781)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--quantization", choices=("none", "nf4", "int8"), default="nf4")
+    ap.add_argument(
+        "--quantization-config",
+        default=None,
+        help="BitsAndBytesConfig kwargs as JSON, from OpenRAL Pro via the launcher (ADR-0123).",
+    )
     ap.add_argument("--resize", type=int, default=384)
     ap.add_argument("--num-history", type=int, default=8)
     ap.add_argument("--plan-step-gap", type=int, default=4)
