@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -67,6 +68,15 @@ def pro_quantization_installed() -> bool:
     return resolve_pro_module(PRO_QUANTIZATION_MODULE) is not None
 
 
+def _pro_refusal(token: str, *, what: str) -> ROSConfigError:
+    return ROSConfigError(
+        f"{what} requests {token!r} weights. Formats of 8 bits or fewer (int8, fp8, "
+        "int4/NF4, nvfp4) need the OpenRAL Pro quantization package (ADR-0123); open "
+        "OpenRAL runs fp32, fp16 and bf16. Install OpenRAL Pro, or run a 16/32-bit "
+        "variant of this model."
+    )
+
+
 def require_pro_for_dtype(dtype: object, *, what: str) -> None:
     """Refuse a sub-16-bit ``dtype`` unless OpenRAL Pro's quantization is installed.
 
@@ -86,13 +96,25 @@ def require_pro_for_dtype(dtype: object, *, what: str) -> None:
     if pro_quantization_installed():
         log.info("quantization.pro_provider", dtype=str(getattr(dtype, "value", dtype)), what=what)
         return
-    token = str(getattr(dtype, "value", dtype))
-    raise ROSConfigError(
-        f"{what} requests {token!r} weights. Formats of 8 bits or fewer (int8, fp8, "
-        "int4/NF4, nvfp4) need the OpenRAL Pro quantization package (ADR-0123); open "
-        "OpenRAL runs fp32, fp16 and bf16. Install OpenRAL Pro, or run a 16/32-bit "
-        "variant of this model."
-    )
+    raise _pro_refusal(str(getattr(dtype, "value", dtype)), what=what)
+
+
+def pro_quantization(*, what: str) -> ModuleType:
+    """The OpenRAL Pro quantization module, which carries every sub-16-bit loader.
+
+    Open adapters call its NF4 / LLM.int8 rewrites and pre-quantized pack loaders
+    through this (ADR-0123 step 3); open ships no bitsandbytes code of its own.
+
+    Args:
+        what: Names the load for the error (the rSkill or the policy family).
+
+    Raises:
+        ROSConfigError: the Pro module is absent.
+    """
+    mod = resolve_pro_module(PRO_QUANTIZATION_MODULE)
+    if mod is None:
+        raise _pro_refusal("sub-16-bit", what=what)
+    return mod
 
 
 def require_pro_for_manifest(manifest: RSkillManifest) -> None:

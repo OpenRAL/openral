@@ -52,15 +52,13 @@ from openral_rskill.backend_registry import maybe_attach_pro_hooks
 # reuse them. The dtype-resolution helpers (resolve_quant_plan,
 # torch_dtype_for, default_dtype_for_device) also live there so every
 # adapter speaks the same QuantizationDtype enum vocabulary.
+from openral_rskill.quantization_gate import pro_quantization
+
 from openral_sim._quantization import (
     KeyMap,
     default_dtype_for_device,
-    detect_prequantized_nf4,
     expand_covered_keys_via_tied_storage,
-    load_prequantized_state_for_rskill,
     peek_safetensors_keys,
-    quantize_int8_in_place,
-    quantize_nf4_in_place,
     rebuild_non_persistent_buffers,
     require_supported_dtype,
     resolve_quant_plan,
@@ -508,51 +506,6 @@ def _emitted_action_dim(policy: Any) -> int | None:
         return None
 
 
-def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
-    """Re-wrap each ``Linear8bitLt.weight`` as a fresh ``bnb.nn.Int8Params``.
-
-    ``torch.nn.Module.to_empty(device=...)`` strips Parameter subclasses:
-    an ``Int8Params`` becomes a plain ``torch.nn.Parameter`` wrapping a
-    bf16 tensor, so the downstream ``policy.to(<cuda>)`` walks it via
-    plain ``Tensor.to`` instead of ``Int8Params.cuda`` — bnb's int8 pack
-    never fires and the ~7 GiB bf16 model lands on the GPU as bf16, OOMing
-    an 8 GiB card. The nf4 fast path avoids this via
-    ``install_prequantized_linears`` / ``Params4bit.from_prequantized``;
-    int8 has no prequant pack, so this re-wraps the bf16 storage in a
-    fresh ``Int8Params(has_fp16_weights=False)`` so the next
-    ``policy.to(<cuda>)`` dispatches through ``Int8Params.cuda`` (packs
-    to int8, frees the bf16 source).
-
-    Returns the rewrapped-module count (should match
-    ``quantize_int8_in_place``'s count on the same policy).
-    """
-    try:
-        import bitsandbytes as bnb
-    except ImportError as exc:  # pragma: no cover
-        raise ROSConfigError(
-            "int8 fast meta-init requires bitsandbytes; install with: "
-            "uv pip install 'bitsandbytes>=0.45'"
-        ) from exc
-
-    rebuilt = 0
-    for module in policy.modules():
-        if not isinstance(module, bnb.nn.Linear8bitLt):
-            continue
-        # ``weight.data`` is bf16 CPU storage after ``to_empty`` +
-        # ``load_state_dict``. Wrapping it in a fresh Int8Params with
-        # ``has_fp16_weights=False`` re-arms the bnb.cuda() pack path.
-        # We re-share the existing storage (no clone) — the source
-        # bf16 weight is about to be replaced anyway when .to(<cuda>)
-        # calls Int8Params.cuda().
-        module.weight = bnb.nn.Int8Params(
-            module.weight.data,
-            requires_grad=False,
-            has_fp16_weights=False,
-        )
-        rebuilt += 1
-    return rebuilt
-
-
 def _rebuild_gemma_buffer(name: str, mod: Any, buf: Any, *, torch: Any) -> bool:
     """π0.5's ``BufferRebuilder`` hook: the Gemma buffers a meta-init cannot load.
 
@@ -743,7 +696,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     # `Int8Params.cuda()` packs to int8 on the final `.to(<cuda>)`).
     if use_nf4:
         with _pi05_phase("detect_prequant"):
-            prequant_repo = detect_prequantized_nf4(spec)
+            prequant_repo = pro_quantization(what="pi05").detect_prequantized_nf4(spec)
     else:
         prequant_repo = None
     nf4_fast_meta_init = prequant_repo is not None
@@ -848,7 +801,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # Fast meta-init path: build new bnb.nn.Linear4bit shells on
             # meta too, not real CPU storage (would allocate ~7 GiB of bf16
             # placeholders only to be overwritten by `to_empty` + prequant load).
-            quantize_nf4_in_place(
+            pro_quantization(what="pi05").quantize_nf4_in_place(
                 policy,
                 torch=torch,
                 compute_dtype=torch.bfloat16,
@@ -897,7 +850,9 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         # quantize-on-`.to(cuda)` with a ~1-2s state-dict load. Produced by
         # `tools/quantize_rskill.py`.
         with _pi05_phase("prequant_state_load"):
-            load_prequantized_state_for_rskill(policy, spec, torch=torch, log_event_prefix="pi05")
+            pro_quantization(what="pi05").load_prequantized_state_for_rskill(
+                policy, spec, torch=torch, log_event_prefix="pi05"
+            )
         # Peak GPU memory hits here: the nf4-packed weights are smaller
         # than the bf16 placeholders they replace.
         with _pi05_phase("to_device", device=device):
@@ -919,7 +874,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # int8 pack happens on the final `policy.to(<cuda>)`, same as
             # the slow path.
             with _pi05_phase("quantize_int8"):
-                quantize_int8_in_place(
+                pro_quantization(what="pi05").quantize_int8_in_place(
                     policy,
                     torch=torch,
                     compute_dtype=torch.bfloat16,
@@ -962,7 +917,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # dispatches through `Int8Params.cuda` (bf16->int8 pack)
             # instead of `Tensor.to` (would copy 7 GiB bf16 to GPU, OOM).
             with _pi05_phase("rebuild_int8_params"):
-                rebuilt = _rebuild_int8_params_for_linear8bitlt(policy)
+                rebuilt = pro_quantization(what="pi05").rebuild_int8_params_for_linear8bitlt(policy)
                 _log.info("pi05_int8_params_rewrapped", modules=rebuilt)
             with _pi05_phase("to_device", device=device):
                 policy = policy.to(device=device)
@@ -979,7 +934,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                     if b.dtype == torch.float32:
                         b.data = b.data.to(torch.bfloat16)
             with _pi05_phase("quantize_int8"):
-                quantize_int8_in_place(
+                pro_quantization(what="pi05").quantize_int8_in_place(
                     policy,
                     torch=torch,
                     compute_dtype=torch.bfloat16,
