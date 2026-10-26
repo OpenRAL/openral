@@ -201,7 +201,10 @@ Then point your manifest's `weights_uri` at the new repo and set
 Some checkpoints instead ship as a transformers-native pre-quantized
 `save_pretrained` layout with an embedded `quantization_config`; those load
 directly as 4-bit with no bf16 spike. `tools/build_qwen_vlm_nf4_checkpoint.py`
-and `tools/build_robometer_nf4_checkpoint.py` build that shape.
+and `tools/build_robometer_nf4_checkpoint.py` build that shape. Both, and
+`tools/quantize_lingbot_vla2.py`, need OpenRAL Pro: the sidecar-venv builders
+take its config as `--quantization-config` (from
+`openral_rskill.quantization_gate.sidecar_quantization_args`).
 
 ---
 

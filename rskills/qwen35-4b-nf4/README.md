@@ -101,12 +101,15 @@ sidecar loads it **directly as 4-bit** (~3.3 GB resident, no bf16 load spike),
 so it fits an 8 GB GPU with no loader workaround. `source_repo` records the
 SHA-pinned upstream Apache-2.0 model it was quantized from (provenance, CLAUDE.md §1.8).
 
-Reproduce the checkpoint with `tools/build_qwen_vlm_nf4_checkpoint.py` (run in
-the sidecar venv):
+Reproduce the checkpoint with `tools/build_qwen_vlm_nf4_checkpoint.py`. NF4
+needs OpenRAL Pro (ADR-0123): take the quantization config from Pro in the
+workspace venv, then build in the sidecar venv:
 
 ```bash
+CFG=$(.venv/bin/python -c 'from openral_rskill.quantization_gate import \
+  sidecar_quantization_args as a; print(a("nf4", what="the Qwen NF4 build")[1])')
 $OPENRAL_QWEN_VLM_SIDECAR_VENV/bin/python tools/build_qwen_vlm_nf4_checkpoint.py \
-  --source Qwen/Qwen3.5-4B \
+  --source Qwen/Qwen3.5-4B --quantization-config "$CFG" \
   --out ~/.cache/openral/qwen35-4b-nf4-ckpt
 ```
 

@@ -21,12 +21,16 @@ one at a time (GPU peak stays a few hundred MB), and fp32 shards load one at
 a time (~5 GB each, vs. the upstream's merge-then-load ~51 GB peak); peak
 here is ~25.5 GB model + one ~5 GB shard ~= 30 GB.
 
-Usage (in the sidecar venv)::
+NF4 needs OpenRAL Pro (ADR-0123): take ``--quantization-config`` from Pro in
+the workspace venv, then run in the sidecar venv::
 
+    CFG=$(.venv/bin/python -c 'from openral_rskill.quantization_gate import \
+        sidecar_quantization_args as a; print(a("nf4", what="the LingBot NF4 pack")[1])')
     /path/to/.sidecar_venv/bin/python tools/quantize_lingbot_vla2.py \
         --ckpt   /path/to/lingbot-vla-v2-6b        \
         --out    /path/to/lingbot-vla-v2-6b-nf4    \
-        --qwen   /path/to/Qwen3-VL-4B-Instruct
+        --qwen   /path/to/Qwen3-VL-4B-Instruct     \
+        --quantization-config "$CFG"
 
 Upload to the Hub (``hf upload``) is a separate step; this only writes the
 local pack.
@@ -343,6 +347,12 @@ def main(argv: list[str]) -> int:
         "--source-revision",
         default="11c703bf6a5c1f45b3b69168482da11fdbba53d7",
         help="Upstream revision recorded in quantization_metadata.json provenance.",
+    )
+    p.add_argument(
+        "--quantization-config",
+        required=True,
+        help="OpenRAL Pro's BitsAndBytesConfig kwargs as JSON (see the module docstring); "
+        "the pack is not built without it (ADR-0123).",
     )
     args = p.parse_args(argv)
 

@@ -2,7 +2,8 @@
 
 The policy factories in ``openral_sim.policies`` live behind opt-in extras
 groups (``sim`` / ``libero`` / ``metaworld`` / ``robocasa``): ``transformers``,
-``bitsandbytes``, ``lerobot[…]``, etc. When the right group isn't installed
+``lerobot[…]``, etc. (sub-16-bit loads also need OpenRAL Pro, which brings
+``bitsandbytes``; ADR-0123). When the right group isn't installed
 the factory raises ``ImportError`` deep inside lerobot — confusing to surface,
 and it leaves partially-loaded modules in ``sys.modules`` so subsequent calls
 fail with a *different* ``cannot import name 'X'`` cascade error.

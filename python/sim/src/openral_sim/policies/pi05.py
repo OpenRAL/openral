@@ -629,7 +629,7 @@ def _resolve_pretrained_path(spec: Any, repo_id: str) -> str:
 @POLICIES.register(
     "pi05",
     install_groups=("sim", "libero"),
-    required_imports=("transformers", "bitsandbytes", "lerobot.policies.pi05.modeling_pi05"),
+    required_imports=("transformers", "lerobot.policies.pi05.modeling_pi05"),
 )
 def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-phase orchestration (from_pretrained/meta-init/quantize/prequant/to_device) is naturally long
     """Load a π0.5 LIBERO/SO-100 finetune via the lerobot ``PI05Policy``."""

@@ -763,7 +763,7 @@ _In-process stateless scorer for the Robometer-4B reward monitor, companion to `
 ### `tools/build_qwen_vlm_nf4_checkpoint.py`
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._
 
-- `main() -> int` (L52) — argparse (`--source`, `--out`); loads the upstream model once, quantizes to NF4, saves the weights + processor, then verifies the checkpoint reloads directly as 4-bit and answers a smoke query.
+- `main() -> int` (L56) — argparse (`--source`, `--out`, required `--quantization-config`: OpenRAL Pro's `BitsAndBytesConfig` kwargs from `sidecar_quantization_args`, ADR-0123); loads the upstream model once, quantizes to NF4, saves the weights + processor, then verifies the checkpoint reloads directly as 4-bit and answers a smoke query.
 
 ### `tools/fix_libero_config.py`
 _Auto-fix for the stale `~/.libero/config.yaml` pitfall._
@@ -821,7 +821,7 @@ _Generates `docs/topics/README.md`, the ROS 2 topic / service / action graph, by
 ### `tools/quantize_lingbot_vla2.py`
 _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._
 
-- `main(argv) -> int` — CLI entry (`--ckpt`, `--out`, `--qwen`). (L313)
+- `main(argv) -> int` — CLI entry (`--ckpt`, `--out`, `--qwen`, required `--quantization-config` from OpenRAL Pro, ADR-0123). (L317)
 
 ### `tools/quantize_rskill.py`
 _Quantize a lerobot policy and upload the result to the HuggingFace Hub. Policy-agnostic counterpart to the in-process fast-path in `openral_sim._quantization`. Loads any lerobot policy via `from_pretrained`, quantizes in place, saves `model.safetensors` + `quantization_metadata.json`, and uploads to a target rSkill repo — the adapter's `load_prequantized_state_for_rskill` detects the metadata sentinel and skips the on-line nf4 conversion on every subsequent launch. Not part of CI — a one-shot Hub-mutating tool gated on `HF_TOKEN`._

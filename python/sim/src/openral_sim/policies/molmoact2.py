@@ -706,7 +706,6 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     install_groups=("libero",),
     required_imports=(
         "transformers",
-        "bitsandbytes",
         "lerobot.policies.molmoact2.molmoact2_hf_model.modeling_molmoact2",
     ),
 )

@@ -51,7 +51,6 @@ _GROUPS: Final[dict[str, list[str]]] = {
     "sim": [
         "gym-aloha>=0.1.3",
         "accelerate>=1.13.0",
-        "bitsandbytes>=0.45",
         "gym-pusht>=0.1.6",
         "gymnasium[mujoco]>=1.3.0",
         "mujoco>=3.8.0",
@@ -65,7 +64,6 @@ _GROUPS: Final[dict[str, list[str]]] = {
         "lerobot[libero]",
         "transformers>=5.4.0,<5.6.0",
         "num2words>=0.5.14",
-        "bitsandbytes>=0.45",
         "accelerate>=1.13.0",
     ],
     "metaworld": [
@@ -96,7 +94,6 @@ _GROUPS: Final[dict[str, list[str]]] = {
         "lerobot",
         "transformers>=5.4.0,<5.6.0",
         "accelerate>=1.13.0",
-        "bitsandbytes>=0.45",
         "num2words>=0.5.14",
         "imageio[ffmpeg]>=2.34",
     ],
@@ -296,7 +293,7 @@ def _install_group(group: str, *, force: bool) -> None:
 def install_sim(
     force: bool = typer.Option(False, "--force", help="Bypass conflict checks."),
 ) -> None:
-    """Install the ``sim`` group (gym-aloha, gym-pusht, MuJoCo, bitsandbytes)."""
+    """Install the ``sim`` group (gym-aloha, gym-pusht, MuJoCo)."""
     _install_group("sim", force=force)
 
 
