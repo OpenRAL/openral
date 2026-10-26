@@ -89,6 +89,9 @@ def _load(model_id: str, quantization_config: str | None) -> tuple[object, objec
     cfg = AutoConfig.from_pretrained(model_id)
     processor = AutoProcessor.from_pretrained(model_id)
 
+    # Both paths are NF4, so both need Pro's config; a packed checkpoint keeps
+    # its own embedded quantization settings.
+    bnb_kwargs = _pro_bnb_kwargs(quantization_config)
     if getattr(cfg, "quantization_config", None) is not None:
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
@@ -99,7 +102,7 @@ def _load(model_id: str, quantization_config: str | None) -> tuple[object, objec
     import transformers.core_model_loading as _cml
 
     _cml.GLOBAL_WORKERS = 1
-    bnb = BitsAndBytesConfig(**_pro_bnb_kwargs(quantization_config))
+    bnb = BitsAndBytesConfig(**bnb_kwargs)
     model = AutoModelForImageTextToText.from_pretrained(
         model_id,
         quantization_config=bnb,

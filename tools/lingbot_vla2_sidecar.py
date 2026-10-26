@@ -384,7 +384,10 @@ def main() -> int:
 
     source = _ensure_source(home, url=url, sha=sha, repo_env=repo_env)
     # Sub-16-bit needs OpenRAL Pro; ask before the venv build (ADR-0123).
-    quant_args = sidecar_quantization_args(str(args.quantization), what="the LingBot sidecar")
+    # CPU NF4 runs bf16 (no CPU 4-bit kernel; the server falls back), so only a
+    # GPU sub-16-bit load needs Pro.
+    effective = "none" if str(args.device) == "cpu" else str(args.quantization)
+    quant_args = sidecar_quantization_args(effective, what="the LingBot sidecar")
     venv_py = _ensure_venv(home, source, install=install, venv_env=venv_env)
     venv = venv_py.parent.parent
 

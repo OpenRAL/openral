@@ -314,6 +314,30 @@ def _save_pack(
     print(f"[quantize] copied {copied} source sidecar files into {out_dir}", flush=True)
 
 
+def _check_pro_config(quantization: str, config_json: str | None, *, launcher: str) -> None:
+    """Refuse a sub-16-bit load without a valid OpenRAL Pro config (ADR-0123).
+
+    The config must be the JSON ``BitsAndBytesConfig`` kwargs Pro chose for this
+    mode (``load_in_4bit`` for nf4, ``load_in_8bit`` for int8); a malformed or
+    mismatched one is refused rather than treated as a pass.
+    """
+    if not config_json:
+        raise SystemExit(
+            f"--quantization {quantization} needs OpenRAL Pro (ADR-0123): start this "
+            f"sidecar through {launcher} with OpenRAL Pro installed, which passes "
+            "--quantization-config."
+        )
+    try:
+        cfg = json.loads(config_json)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--quantization-config is not valid JSON: {exc}") from exc
+    key = "load_in_8bit" if quantization == "int8" else "load_in_4bit"
+    if not isinstance(cfg, dict) or cfg.get(key) is not True:
+        raise SystemExit(
+            f"--quantization-config does not describe {quantization} ({key} is not true)."
+        )
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -355,6 +379,7 @@ def main(argv: list[str]) -> int:
         "the pack is not built without it (ADR-0123).",
     )
     args = p.parse_args(argv)
+    _check_pro_config("nf4", args.quantization_config, launcher="the module docstring's recipe")
 
     # torch renamed PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF in 2.9 (warns on
     # the old spelling); resolved from metadata since this venv serves both

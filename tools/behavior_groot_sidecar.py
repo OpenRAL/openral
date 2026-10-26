@@ -7,6 +7,7 @@ import argparse
 import importlib
 import importlib.metadata
 import io
+import json
 import os
 import sys
 from typing import Any
@@ -27,6 +28,30 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
     if "__ndarray__" in obj:
         return np.load(io.BytesIO(obj["npy"]), allow_pickle=False)
     return obj
+
+
+def _check_pro_config(quantization: str, config_json: str | None, *, launcher: str) -> None:
+    """Refuse a sub-16-bit load without a valid OpenRAL Pro config (ADR-0123).
+
+    The config must be the JSON ``BitsAndBytesConfig`` kwargs Pro chose for this
+    mode (``load_in_4bit`` for nf4, ``load_in_8bit`` for int8); a malformed or
+    mismatched one is refused rather than treated as a pass.
+    """
+    if not config_json:
+        raise SystemExit(
+            f"--quantization {quantization} needs OpenRAL Pro (ADR-0123): start this "
+            f"sidecar through {launcher} with OpenRAL Pro installed, which passes "
+            "--quantization-config."
+        )
+    try:
+        cfg = json.loads(config_json)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--quantization-config is not valid JSON: {exc}") from exc
+    key = "load_in_8bit" if quantization == "int8" else "load_in_4bit"
+    if not isinstance(cfg, dict) or cfg.get(key) is not True:
+        raise SystemExit(
+            f"--quantization-config does not describe {quantization} ({key} is not true)."
+        )
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -51,11 +76,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22000)
     args = parser.parse_args(argv)
-    if args.quantization != "none" and not args.quantization_config:
-        raise SystemExit(
-            f"--quantization {args.quantization} needs OpenRAL Pro (ADR-0123): start this "
-            "sidecar through the openral behavior_groot adapter with OpenRAL Pro installed, "
-            "which passes --quantization-config."
+    if args.quantization != "none":
+        _check_pro_config(
+            args.quantization,
+            args.quantization_config,
+            launcher="the openral behavior_groot adapter",
         )
     return args
 

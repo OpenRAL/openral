@@ -631,8 +631,8 @@ _Boot helper + server for the Qwen3.5-4B scene-VLM sidecar, companion to `QwenSc
 - `ensure_venv(home, *, override=None) -> Path` (L68) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded); honours `$OPENRAL_QWEN_VLM_SIDECAR_VENV`.
 - `main() -> int` (L112) — argparse (`--model`, `--host`, `--port`, `--max-side`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME` and `os.execvpe`s into `_qwen_vlm_server.py`.
 - `_load(model_id) -> (processor, model)` (_qwen_vlm_server.py L76) — dual-path NF4 load: auto-detects a pre-quantized checkpoint via its embedded config and loads 4-bit directly, else quantizes at load — with the `--quantization-config` its launcher took from OpenRAL Pro, refusing without it — with serial materialization for 8 GB.
-- `_query(processor, model, *, image, question, max_side, max_new_tokens) -> str` (_qwen_vlm_server.py L113) — one scene-question→answer generate via the canonical Qwen-VL recipe (strips the `<think>` trace).
-- `main() -> int` (_qwen_vlm_server.py L182) — ZMQ REP loop (`ping`/`query`/`shutdown`) that replies with an error object rather than dying on exception. Validated live against real hardware.
+- `_query(processor, model, *, image, question, max_side, max_new_tokens) -> str` (_qwen_vlm_server.py L116) — one scene-question→answer generate via the canonical Qwen-VL recipe (strips the `<think>` trace).
+- `main() -> int` (_qwen_vlm_server.py L185) — ZMQ REP loop (`ping`/`query`/`shutdown`) that replies with an error object rather than dying on exception. Validated live against real hardware.
 
 ### `tools/locateanything_sidecar.py` + `tools/_locateanything_server.py`
 _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detector sidecar, companion to `LocateAnythingDetector`. Runs out-of-process over the same ZMQ pattern as `rldx_sidecar` because its pinned transformers version conflicts with the workspace's. No upstream repo to clone — the model is custom-code on the Hub._
@@ -646,8 +646,8 @@ _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detecto
 - `main() -> int` (L110) — argparse (`--model` required, `--host`, `--port`, `--max-side`, `--home`, `--venv`); sets `OPENRAL_ALLOW_REMOTE_CODE=1` (the operator opted in by launching this sidecar) and execs into `_locateanything_server.py`.
 - `_split_model_ref(model_ref) -> tuple[str, str]` (_locateanything_server.py L45) — Split a `repo@revision` reference into `(repo, revision)`.
 - `_load(model_ref) -> (processor, model)` (_locateanything_server.py L70) — NF4 bitsandbytes load of the pinned custom-code checkpoint; a non-prequantized source takes its `BitsAndBytesConfig` from the launcher's `--quantization-config` (OpenRAL Pro, ADR-0123).
-- `_detect(processor, model, image, query, *, max_side, mode, max_new_tokens) -> str` (_locateanything_server.py L111) — One detection request → the model's raw generated text; `<ref>`/`<box>` parsing stays in the main-env backend.
-- `main() -> int` (_locateanything_server.py L158) — ZMQ REP loop (`ping`/`detect`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
+- `_detect(processor, model, image, query, *, max_side, mode, max_new_tokens) -> str` (_locateanything_server.py L112) — One detection request → the model's raw generated text; `<ref>`/`<box>` parsing stays in the main-env backend.
+- `main() -> int` (_locateanything_server.py L159) — ZMQ REP loop (`ping`/`detect`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
 
 ### `tools/da3_depth_sidecar.py` + `tools/_da3_depth_server.py`
 _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, companion to `openral_perception_ros`'s depth-provider node. Runs in its own Python 3.12 venv behind a ZMQ REQ/REP + msgpack wire, since the model ships outside transformers; the provider republishes the reply as a depth image for nvblox. Loaded by file path so the deploy launch can autostart it under a plain interpreter._
@@ -714,9 +714,9 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 - `_TRITON_PIN` (L98) — matching v2 torch-stack pin.
 - `_V2_OVERRIDES: tuple[str, ...]` (L99) — the override requirement files applied on top of upstream's v2 lock.
 - `main() -> int` (L326) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
-- `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L47) — Marker key for the msgpack ndarray codec.
-- `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L336) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
-- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L967) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy. `--quantization nf4` needs `--quantization-config`, which `lingbot_vla2_sidecar.py` takes from OpenRAL Pro (`sidecar_quantization_args`); without it the server exits (ADR-0123).
+- `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L48) — Marker key for the msgpack ndarray codec.
+- `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L337) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
+- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L992) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy. `--quantization nf4` on CUDA needs a valid `--quantization-config` (Pro's kwargs with `load_in_4bit`), which `lingbot_vla2_sidecar.py` takes from OpenRAL Pro (`sidecar_quantization_args`); a missing, malformed or mismatched config makes the server exit (ADR-0123). `--device cpu` falls back to bf16 and needs neither Pro nor a config.
 
 ### `tools/cosmos3_reasoner_sidecar.py`
 _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASONER_MODEL=cosmos3-edge`), companion to `Cosmos3ToolUseClient`. Provisions an isolated venv plus a SHA-pinned transformers overlay, builds a flattened reasoner view for vLLM's loader, and execs into `vllm serve` — its OpenAI-compatible HTTP API is the wire contract the reasoner already speaks. Cosmos 3 weights are commercial-OK, so there is no license guard; forward-pass inference is currently blocked by an upstream bug (see [`docs/reference/cosmos3-edge-reasoner.md`](../reference/cosmos3-edge-reasoner.md))._
@@ -734,7 +734,7 @@ _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASO
 ### `tools/behavior_groot_sidecar.py`
 _Python 3.10 sidecar for the official 2026 BEHAVIOR-1K GR00T N1.7 checkpoint. Imports the pinned behavior runtime, wraps `Gr00tPolicy` for the R1Pro modality slices, and serves ZMQ `ping/reset/get_action/close`. Supports whole-model NF4 quantization (default) plus dropping the unused Qwen3-VL `lm_head` to fit an 8 GB host._
 
-- `main(argv) -> int` (L379) — Parses checkpoint/task/instruction/control-mode/device/endpoint plus a quantization mode (`nf4` / `int8` also need the adapter's `--quantization-config` from OpenRAL Pro, ADR-0123; refused without it), loads the real checkpoint (CPU-first under NF4/int8), and serves the 23-D action API.
+- `main(argv) -> int` (L404) — Parses checkpoint/task/instruction/control-mode/device/endpoint plus a quantization mode (`nf4` / `int8` also need the adapter's `--quantization-config` from OpenRAL Pro, ADR-0123; refused without it), loads the real checkpoint (CPU-first under NF4/int8), and serves the 23-D action API.
 - `_drop_backbone_lm_head(model) -> None` — Replace the Qwen3-VL `lm_head` with `Identity`; the B1K wrapper consumes only `hidden_states[-1]`, so the full-vocab logits projection is dead weight and was the largest single inference allocation.
 - `_quantize_nf4(model, *, device, min_params) -> None` — Whole-model bitsandbytes NF4 rewrite of large linear layers, keeping small layers floating; behaviourally lossless for this checkpoint against a bf16 reference.
 - `_quantize_int8(model, *, device, min_params) -> None` — Same rewrite with 8-bit linear layers; higher fidelity but too large to co-reside with OmniGibson on 8 GB, so used for offline comparison only.
@@ -821,7 +821,7 @@ _Generates `docs/topics/README.md`, the ROS 2 topic / service / action graph, by
 ### `tools/quantize_lingbot_vla2.py`
 _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._
 
-- `main(argv) -> int` — CLI entry (`--ckpt`, `--out`, `--qwen`, required `--quantization-config` from OpenRAL Pro, ADR-0123). (L317)
+- `main(argv) -> int` — CLI entry (`--ckpt`, `--out`, `--qwen`, required `--quantization-config` from OpenRAL Pro, ADR-0123). (L341)
 
 ### `tools/quantize_rskill.py`
 _Quantize a lerobot policy and upload the result to the HuggingFace Hub. Policy-agnostic counterpart to the in-process fast-path in `openral_sim._quantization`. Loads any lerobot policy via `from_pretrained`, quantizes in place, saves `model.safetensors` + `quantization_metadata.json`, and uploads to a target rSkill repo — the adapter's `load_prequantized_state_for_rskill` detects the metadata sentinel and skips the on-line nf4 conversion on every subsequent launch. Not part of CI — a one-shot Hub-mutating tool gated on `HF_TOKEN`._

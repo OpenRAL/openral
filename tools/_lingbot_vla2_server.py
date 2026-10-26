@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -927,6 +928,30 @@ def _serve(
     return 0
 
 
+def _check_pro_config(quantization: str, config_json: str | None, *, launcher: str) -> None:
+    """Refuse a sub-16-bit load without a valid OpenRAL Pro config (ADR-0123).
+
+    The config must be the JSON ``BitsAndBytesConfig`` kwargs Pro chose for this
+    mode (``load_in_4bit`` for nf4, ``load_in_8bit`` for int8); a malformed or
+    mismatched one is refused rather than treated as a pass.
+    """
+    if not config_json:
+        raise SystemExit(
+            f"--quantization {quantization} needs OpenRAL Pro (ADR-0123): start this "
+            f"sidecar through {launcher} with OpenRAL Pro installed, which passes "
+            "--quantization-config."
+        )
+    try:
+        cfg = json.loads(config_json)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--quantization-config is not valid JSON: {exc}") from exc
+    key = "load_in_8bit" if quantization == "int8" else "load_in_4bit"
+    if not isinstance(cfg, dict) or cfg.get(key) is not True:
+        raise SystemExit(
+            f"--quantization-config does not describe {quantization} ({key} is not true)."
+        )
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="OpenRAL LingBot-VLA 2.0 policy server (sidecar venv)")
     p.add_argument("--model", required=True, help="HF id or local checkpoint dir")
@@ -976,11 +1001,11 @@ def main(argv: list[str]) -> int:
     if not os.path.exists("/etc/nv_tegra_release"):
         os.environ.setdefault(_var, "expandable_segments:True")
     args = _parse_args(argv)
-    if args.quantization != "none" and not args.quantization_config:
-        raise SystemExit(
-            f"--quantization {args.quantization} needs OpenRAL Pro (ADR-0123): start this "
-            "sidecar through tools/lingbot_vla2_sidecar.py with OpenRAL Pro installed, "
-            "which passes --quantization-config."
+    # CPU NF4 falls back to bf16 in both policies (no CPU 4-bit kernel), so it
+    # needs no Pro config; every other sub-16-bit load does.
+    if args.quantization != "none" and args.device != "cpu":
+        _check_pro_config(
+            args.quantization, args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
         )
     policy: _LingBotPolicy | _LingBotV1Policy = (
         _LingBotV1Policy(args) if args.variant == "v1" else _LingBotPolicy(args)
