@@ -70,10 +70,13 @@ completion-adjudication gate (`describe_image`). Against that contract:
   --enforce-eager --max-num-seqs 4 --limit-mm-per-prompt '{"video":0,"image":1}'`
   (plus `--kv-cache-dtype` when set) on port **8901**, with
   `VLLM_USE_FLASHINFER_SAMPLER=0`. Every one of those non-obvious flags was
-  forced by a real failure (see the validation ledger).
+  forced by a real failure (see the validation ledger). Those are the dGPU
+  defaults; a Jetson gets different sizing (see [Jetson defaults](#jetson-defaults)).
 - Config surface: `OPENRAL_REASONER_{MODEL,ENDPOINT,API_KEY,TIMEOUT_S,MAX_TOKENS}`
   plus `OPENRAL_COSMOS3_AUTOSTART` / `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`
   / `OPENRAL_COSMOS3_SIDECAR` (client) and `OPENRAL_COSMOS3_GPU_MEM_UTIL` /
+  `OPENRAL_COSMOS3_MAX_MODEL_LEN` / `OPENRAL_COSMOS3_KV_CACHE_BYTES` /
+  `OPENRAL_COSMOS3_ENFORCE_EAGER` /
   `OPENRAL_COSMOS3_MAX_NUM_SEQS` / `OPENRAL_COSMOS3_LIMIT_MM_PER_PROMPT` /
   `OPENRAL_COSMOS3_SIDECAR_HOME` / `OPENRAL_COSMOS3_SIDECAR_VENV` (sidecar). Self-managed
   serving (your own `vllm serve`, or the Cosmos 3 Reasoner NIM container) is a
@@ -98,11 +101,56 @@ practical floor**: it works for small palettes only, with no room for a
 co-resident S1 VLA and little KV headroom.
 
 A **≥12 GB card is the comfortable minimum**; Jetson Thor T3000 (32 GB) /
-T2000 (16 GB) — Edge's actual targets — have ample room, and the sidecar's
-0.90 default suits them. The checkpoint's limit is 131,072 tokens
+T2000 (16 GB) — Edge's actual targets — have ample room, but they need the
+[Jetson defaults](#jetson-defaults), not the 0.90 one. The checkpoint's limit is 131,072 tokens
 (`max_position_embeddings`; the model card's "256K" is not what this
 checkpoint's config allows), KV-VRAM permitting; raise `--max-model-len` to
 use it.
+
+## Jetson defaults
+
+On a Jetson (`openral_core.gpu.is_tegra_host()`), `serve_defaults` changes
+four flags. Each can still be overridden by env var or CLI flag. All of them
+were measured on a Jetson AGX Thor (R38.4, 122 GiB) and an AGX Orin (R39.2,
+61 GiB) with the real reasoner prompt. The full write-up, including the run
+beside a π0.5 VLA, is in openral-pro `docs/reference/cosmos3-edge-jetson.md`.
+
+| flag | dGPU | Jetson | why |
+|---|---|---|---|
+| `--gpu-memory-utilization` | 0.90 | 0.15 | On unified memory this is a fraction of the whole board, checked as free at start-up. 0.90 asks a Thor for 110 GiB and refuses to boot next to a resident VLA (`Free memory on device cuda:0 (86.63/122.82 GiB) on startup is less than desired`). |
+| `--kv-cache-memory-bytes` | unset | `4G` | Sizes the KV cache directly (37,440 BF16 tokens), so the utilization above only gates start-up. |
+| `--max-model-len` | 8192 | 32768 | Real palettes are 17K+ tokens (`so100_follower` 17,181; with the read-only query tools 21,357). |
+| `--enforce-eager` | on | off | Eager mode exists for 8 GB of VRAM. On Thor, CUDA graphs cost nothing in boot time once the compile cache is warm. On Orin, BF16 with CUDA graphs ran a warm tick in 3.7 s. |
+
+Weights stay BF16. Quantized serving is OpenRAL Pro's: the sidecar appends
+whatever `serve_args(tegra=...)` returns from a `cosmos3_serving` module
+registered in the `openral.pro_modules` entry-point group
+(`pro_serve_args`), and prints those arguments when there are any. With no
+such module installed, nothing is added.
+
+The registry entry also sets `max_tokens_default=512`. Every invalid tick
+measured was a runaway inside the tool-call grammar, and without a cap it
+ran to the client's 120 s timeout. With the cap it stops after 12–19 s at BF16
+on Thor, or about 9 s with FP8 weights.
+The longest valid call measured was 503 tokens; raise the cap with
+`OPENRAL_REASONER_MAX_TOKENS`.
+
+Live check of the managed path on Thor with these defaults: the client
+autostarted the sidecar, which was ready in 94 s from a warm cache. Real
+`select_tool` ticks on the `so100_follower` palette decoded 8 of 12 through
+the full Pydantic decode. Valid ticks took 1.7–6.9 s, and the four failing
+ticks were capped at 11.6–19 s. Before this change the same path returned a
+400 on every tick, because the prompt did not fit the 8192 window.
+
+With openral-pro's `cosmos3_serving` module installed, the same run printed
+`OpenRAL Pro serve args: --quantization fp8`, booted in 80 s and decoded 9 of
+12, with valid ticks at 1.2–4.0 s and failures capped at 8.8 s. FP8's gain
+is largest beside a running VLA (median tick 3.5–4.7 s against 8.2 s for
+BF16); see the openral-pro reference page.
+
+Palettes over ~32K tokens (`franka_panda`: 44,047, or 48,223 with the query
+tools) do not work on Edge at any window. With a 64K window, every serving
+configuration gave 0–2 valid calls out of 8.
 
 ## Risks and open questions
 

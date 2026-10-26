@@ -51,8 +51,12 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
+from openral_core.exceptions import ROSConfigError
+from openral_core.gpu import is_tegra_host
+from openral_rskill.backend_registry import resolve_pro_module
 from openral_sim._sidecar_common import (
     alloc_conf_var,
     default_expandable_segments,
@@ -60,6 +64,7 @@ from openral_sim._sidecar_common import (
     run_cmd,
     venv_torch_version,
 )
+from pydantic import TypeAdapter, ValidationError
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "cosmos3-reasoner-sidecar"
 _VENV_ENV = "OPENRAL_COSMOS3_SIDECAR_VENV"
@@ -86,6 +91,14 @@ _TRANSFORMERS_EDGE_SHA = "cbf4d720ec734edb77d25452b2790c7e4be2f8d7"
 #: which is ~64x the 0.2 Hz reasoner's one-in-flight request and exhausts an 8 GB
 #: card before serving. See ``build_serve_argv``.
 _DEFAULT_MAX_NUM_SEQS: int = 4
+#: Defaults off a Jetson: sized for the 8 GB x86 cards this sidecar was first
+#: validated on. See ``serve_defaults``.
+_DGPU_DEFAULTS: dict[str, object] = {
+    "max_model_len": 8192,
+    "gpu_memory_utilization": 0.90,
+    "kv_cache_memory_bytes": None,
+    "enforce_eager": True,
+}
 #: The reasoner sends text plus at most one camera frame, never video. Left
 #: unset, vLLM sizes the encoder cache for a max-resolution video and OOMs in
 #: the vision tower. See ``build_serve_argv``.
@@ -283,6 +296,76 @@ def resolve_served_model(
     return str(view), model
 
 
+def serve_defaults(*, tegra: bool) -> dict[str, object]:
+    """Platform defaults for the sizing flags; each one is env/CLI-overridable.
+
+    Off a Jetson these are ``_DGPU_DEFAULTS`` (8 GB-card sizing, unchanged).
+    On a Jetson the GPU shares system RAM, which changes all four
+    (measured on AGX Thor and AGX Orin with the real reasoner prompt — see
+    docs/reference/cosmos3-edge-reasoner.md, "Jetson defaults"):
+
+    * vLLM's ``--gpu-memory-utilization`` becomes a fraction of the **whole
+      board's RAM**, checked as free at start-up even when the KV cache is
+      sized in bytes. 0.90 asks a Thor for 110 GiB and refuses to boot next to
+      a resident VLA. So the KV cache is sized in bytes (4 GiB = 37,440 BF16
+      tokens) and utilization drops to 0.15, which then only gates start-up.
+    * The window is 32768: real palettes are 17K+ tokens, and memory is not the
+      constraint that kept the 8 GB default at 8192.
+    * CUDA graphs are on: the eager default exists for 8 GB of VRAM.
+
+    Weights stay BF16 here. Quantized serving is OpenRAL Pro's; see
+    ``pro_serve_args``.
+
+    Example:
+        >>> serve_defaults(tegra=True)["kv_cache_memory_bytes"]
+        '4G'
+        >>> serve_defaults(tegra=False)["max_model_len"]
+        8192
+    """
+    if not tegra:
+        return dict(_DGPU_DEFAULTS)
+    return {
+        "max_model_len": 32768,
+        "gpu_memory_utilization": 0.15,
+        "kv_cache_memory_bytes": "4G",
+        "enforce_eager": False,
+    }
+
+
+def pro_serve_args(*, tegra: bool) -> list[str]:
+    """Extra ``vllm serve`` flags from an installed OpenRAL Pro module, else ``[]``.
+
+    Quantized serving (FP8 weights on a Jetson Thor) is OpenRAL Pro's. Pro
+    registers a ``cosmos3_serving`` module in the ``openral.pro_modules``
+    entry-point group whose ``serve_args(*, tegra: bool) -> list[str]`` returns
+    flags to append; the open tree names no Pro module (``resolve_pro_module``).
+
+    Raises:
+        ROSConfigError: The module is installed but has no callable
+            ``serve_args``.
+    """
+    mod = resolve_pro_module("cosmos3_serving")
+    if mod is None:
+        return []
+    serve_args = getattr(mod, "serve_args", None)
+    if not callable(serve_args):
+        raise ROSConfigError(
+            f"OpenRAL Pro module {mod.__name__!r} (cosmos3_serving) has no callable serve_args"
+        )
+    return [str(a) for a in serve_args(tegra=tegra)]
+
+
+def _env_override(env_var: str, typ: type) -> object | None:
+    """``$env_var`` parsed as ``typ``, ``None`` when unset; a bad value raises."""
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return None
+    try:
+        return TypeAdapter(typ).validate_python(raw)
+    except ValidationError as exc:
+        raise ROSConfigError(f"${env_var}={raw!r} is not a valid {typ.__name__}") from exc
+
+
 def build_serve_argv(
     *,
     vllm_bin: Path,
@@ -297,6 +380,8 @@ def build_serve_argv(
     kv_cache_dtype: str = "auto",
     max_num_seqs: int = _DEFAULT_MAX_NUM_SEQS,
     limit_mm_per_prompt: str = _DEFAULT_LIMIT_MM_PER_PROMPT,
+    kv_cache_memory_bytes: str | None = None,
+    extra_args: Sequence[str] = (),
 ) -> list[str]:
     """Build the ``vllm serve`` argv (split out for unit-testability).
 
@@ -357,6 +442,9 @@ def build_serve_argv(
     argv += ["--max-num-seqs", str(max_num_seqs)]
     if limit_mm_per_prompt:
         argv += ["--limit-mm-per-prompt", limit_mm_per_prompt]
+    if kv_cache_memory_bytes:
+        argv += ["--kv-cache-memory-bytes", kv_cache_memory_bytes]
+    argv += list(extra_args)
     return argv
 
 
@@ -368,23 +456,38 @@ def main() -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8901)
     p.add_argument("--tool-call-parser", default="hermes")
-    p.add_argument("--max-model-len", type=int, default=8192)
+    # The four sizing flags below default to None and resolve CLI > env >
+    # serve_defaults() (which differs on a Jetson — see there).
+    p.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="Context window (default 8192, 32768 on a Jetson; or "
+        "$OPENRAL_COSMOS3_MAX_MODEL_LEN). Real palettes are 17K+ tokens.",
+    )
     p.add_argument(
         "--gpu-memory-utilization",
         type=float,
-        default=float(os.environ.get("OPENRAL_COSMOS3_GPU_MEM_UTIL", "0.90")),
-        help="vLLM GPU memory fraction (default 0.90, or $OPENRAL_COSMOS3_GPU_MEM_UTIL). "
-        "vLLM's own 0.92 default fails when the GPU already hosts a display / another "
-        "process; drop it further if engine init reports 'free memory on startup'.",
+        default=None,
+        help="vLLM GPU memory fraction (default 0.90, 0.15 on a Jetson; or "
+        "$OPENRAL_COSMOS3_GPU_MEM_UTIL). vLLM's own 0.92 default fails when the GPU "
+        "already hosts a display / another process; drop it further if engine init "
+        "reports 'free memory on startup'.",
     )
     p.add_argument(
-        "--no-enforce-eager",
-        dest="enforce_eager",
-        action="store_false",
-        help="Enable CUDA-graph capture (off by default: capture overflows an 8 GB "
-        "card's VRAM and adds minutes to startup; the 0.2 Hz reasoner doesn't need it).",
+        "--kv-cache-memory-bytes",
+        default=None,
+        help="Size the KV cache in bytes, e.g. '4G' (default unset, '4G' on a Jetson; "
+        "or $OPENRAL_COSMOS3_KV_CACHE_BYTES; '' unsets it).",
     )
-    p.set_defaults(enforce_eager=True)
+    p.add_argument(
+        "--enforce-eager",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Skip CUDA-graph capture (default on, off on a Jetson, or "
+        "$OPENRAL_COSMOS3_ENFORCE_EAGER=true/false; capture overflows an 8 GB card's VRAM "
+        "and adds minutes to startup there).",
+    )
     p.add_argument(
         "--max-num-seqs",
         type=int,
@@ -416,6 +519,17 @@ def main() -> int:
     )
     p.add_argument("--venv", default=None, help=f"Reuse this venv (or set {_VENV_ENV}).")
     args = p.parse_args()
+    tegra = is_tegra_host()
+    defaults = serve_defaults(tegra=tegra)
+    for name, env_var, typ in (
+        ("max_model_len", "OPENRAL_COSMOS3_MAX_MODEL_LEN", int),
+        ("gpu_memory_utilization", "OPENRAL_COSMOS3_GPU_MEM_UTIL", float),
+        ("kv_cache_memory_bytes", "OPENRAL_COSMOS3_KV_CACHE_BYTES", str),
+        ("enforce_eager", "OPENRAL_COSMOS3_ENFORCE_EAGER", bool),
+    ):
+        if getattr(args, name) is None:
+            value = _env_override(env_var, typ)
+            setattr(args, name, defaults[name] if value is None else value)
 
     py = ensure_venv(args.home, override=args.venv)
 
@@ -445,6 +559,9 @@ def main() -> int:
     native_edge = vllm_has_native_edge_model(py)
     served_path, served_name = resolve_served_model(args.model, args.home, native_edge=native_edge)
 
+    extra_args = pro_serve_args(tegra=tegra)
+    if extra_args:
+        print(f"[cosmos3-sidecar] OpenRAL Pro serve args: {' '.join(extra_args)}", flush=True)
     cmd = build_serve_argv(
         vllm_bin=py.parent / "vllm",
         model=served_path,
@@ -458,6 +575,8 @@ def main() -> int:
         kv_cache_dtype=args.kv_cache_dtype,
         max_num_seqs=args.max_num_seqs,
         limit_mm_per_prompt=args.limit_mm_per_prompt,
+        kv_cache_memory_bytes=args.kv_cache_memory_bytes or None,
+        extra_args=extra_args,
     )
     if "edge" in args.model.lower() and not native_edge:
         # Only true without the native Edge model (see module docstring):
