@@ -225,6 +225,17 @@ skip_patterns = [
   "*panda.srdf not installed*",
 ]
 
+[capability_gaps.pro-quant]
+summary = "the OpenRAL Pro quantization package"
+satisfied_by = "a host with openral-pro-quant installed (`openral.pro_modules: quantization`), e.g. the openral-pro image's test-pro lane (ADR-0123)"
+# ADR-0123: open loads only fp32/fp16/bf16, so every test that builds an
+# int8 / int4-NF4 rSkill skips on an open-only runner and runs where Pro is
+# installed. Anchored to the one phrase those skips use, so it cannot excuse
+# any other missing dependency.
+skip_patterns = [
+  "*needs OpenRAL Pro quantization (ADR-0123)*",
+]
+
 [capability_gaps.hf-cache]
 summary = "a pre-populated Hugging Face model cache"
 satisfied_by = "a host that already snapshotted the checkpoint, or a CI warm step that fetches it before the lane runs"

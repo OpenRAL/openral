@@ -20,16 +20,23 @@ import time
 from pathlib import Path
 
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 _REPO = Path(__file__).resolve().parents[2]
 _NODE = _REPO / "packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py"
 _FAKE = _REPO / "tests/integration/fakes/fake_qwen_vlm_sidecar.py"
 _MANIFEST = _REPO / "rskills/qwen35-4b-nf4/rskill.yaml"
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("OPENRAL_TEST_ROS_LIVE"),
-    reason="live rclpy node subprocess: set OPENRAL_TEST_ROS_LIVE=1 and source install/",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not os.getenv("OPENRAL_TEST_ROS_LIVE"),
+        reason="live rclpy node subprocess: set OPENRAL_TEST_ROS_LIVE=1 and source install/",
+    ),
+    # ADR-0123: these weights are sub-16-bit and need OpenRAL Pro.
+    pytest.mark.skipif(
+        not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+    ),
+]
 
 
 def _alive(pid: int) -> bool:

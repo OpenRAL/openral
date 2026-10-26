@@ -16,6 +16,8 @@ inference: false
 
 # rskill-internvla_n1-mobile_base-vln-nf4
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > **OpenRAL rSkill** — InternVLA-N1 / DualVLN vision-language **navigation**
 > foundation model on any mobile base, NF4-quantized to fit an 8 GB GPU.
 > Wraps `hf://InternRobotics/InternVLA-N1-DualVLN`; ships no weights.

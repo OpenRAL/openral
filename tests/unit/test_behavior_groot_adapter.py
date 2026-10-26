@@ -10,6 +10,7 @@ import pytest
 from openral_core import VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import load_rskill_manifest
+from openral_rskill.quantization_gate import pro_quantization_installed
 from openral_sim.policies import behavior_groot
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -117,6 +118,9 @@ def test_gr00t_b1k_factory_dispatches_behavior_sidecar(
     assert gr00t._build_gr00t_b1k(env) is sentinel
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_gr00t_b1k_factory_reports_missing_organizer_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

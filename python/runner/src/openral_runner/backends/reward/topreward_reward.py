@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from openral_core import RSkillManifest
 from openral_core.exceptions import ROSConfigError
+from openral_rskill.quantization_gate import require_pro_for_manifest
 
 if TYPE_CHECKING:
     from openral_runner.backends.reward.frame_source import Frame
@@ -217,6 +218,7 @@ def build_topreward_monitor(manifest: RSkillManifest, *, device: str = "cuda") -
         raise ROSConfigError(
             f"build_topreward_monitor requires a reward manifest, got {manifest.name!r}"
         )
+    require_pro_for_manifest(manifest)  # ADR-0123: sub-16-bit weights need OpenRAL Pro
     raw = (
         manifest.weights_uri
         or manifest.source_repo

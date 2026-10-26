@@ -24,6 +24,8 @@ license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 
 # rskill-rldx1_ft-franka_panda-libero_spatial-nf4
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > **openral rSkill** — RLWRLD's [RLDX-1-FT-LIBERO](https://huggingface.co/RLWRLD/RLDX-1-FT-LIBERO) (Qwen3-VL-8B backbone + Multi-Stream Action Transformer, ~6.9 B params), packaged for the [openral](https://github.com/OpenRAL/openral) robot agent framework.
 
 This package wraps the upstream RLDX-1 LIBERO finetune with a `rskill.yaml` manifest that adds capability checking, license surfacing, latency budgets, and `openral` registry integration. **It does not copy model weights**; they download from the upstream HF repo at first use.

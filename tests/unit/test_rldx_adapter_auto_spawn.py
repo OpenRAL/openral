@@ -19,6 +19,7 @@ import pytest
 from openral_core import SimEnvironment, VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import load_rskill_manifest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 # Skip the whole module on hosts that don't have the `rldx` opt-in group
 # installed — pyzmq is the canonical marker (see pyproject.toml).
@@ -63,6 +64,9 @@ def libero_env_cfg() -> SimEnvironment:
     )
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_build_rldx_picks_libero_layout(libero_env_cfg: SimEnvironment) -> None:
     """The factory routes FT-LIBERO manifests through the LIBERO obs layout.
 
@@ -94,6 +98,9 @@ def test_build_rldx_picks_libero_layout(libero_env_cfg: SimEnvironment) -> None:
         POLICIES.get("rldx")(libero_env_cfg)
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_auto_spawn_disabled_via_env(libero_env_cfg: SimEnvironment) -> None:
     """``OPENRAL_RLDX_AUTO_SPAWN=0`` overrides ``vla.extra.auto_spawn=true`` — mirrors
     a hand-managed sidecar on a shared GPU where the env var overrides the per-config

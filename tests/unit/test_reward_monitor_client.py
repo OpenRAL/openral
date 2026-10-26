@@ -17,6 +17,7 @@ import pytest
 import yaml
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import RSkillManifest
+from openral_rskill.quantization_gate import pro_quantization_installed
 from openral_runner.backends.reward.frame_source import Frame
 from openral_runner.backends.reward.robometer_reward import (
     RobometerInProcessReward,
@@ -32,6 +33,9 @@ def _load_manifest() -> RSkillManifest:
         return RSkillManifest.model_validate(yaml.safe_load(fh))
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_build_reward_monitor_propagates_contract() -> None:
     """The factory carries num_bins + success_threshold + weights from the manifest."""
     manifest = _load_manifest()
@@ -45,6 +49,9 @@ def test_build_reward_monitor_propagates_contract() -> None:
     assert mon._weights_source == "OpenRAL/rskill-robometer_4b-any-general-nf4"
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_build_reward_monitor_local_scheme() -> None:
     """``local://`` weights resolve to a bare path (pre-quantized checkpoint dir)."""
     manifest = _load_manifest()
@@ -131,6 +138,9 @@ def _missing_live_deps() -> list[str]:
 @pytest.mark.skipif(
     not _gpu_present() or bool(_missing_live_deps()),
     reason="needs a local GPU plus Robometer deps in the current env",
+)
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
 )
 def test_e2e_score_clip_in_process() -> None:
     """The real NF4 Robometer backend scores a clip end-to-end via build_reward_monitor.

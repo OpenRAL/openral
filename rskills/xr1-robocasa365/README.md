@@ -20,6 +20,8 @@ inference: false
 
 # XR-1 RoboCasa365
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > OpenRAL wrapper for Xiaomi Robotics' XR-1 RoboCasa365 checkpoint. `weights_uri`
 > is a SHA-pinned, pre-quantized NF4 pack (`policy_extras.prequantized_nf4: true`)
 > built from the SHA-pinned upstream `source_repo`; the adapter preserves the

@@ -31,6 +31,7 @@ from typing import Any
 
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import DetectorEngine, DetectorMode, RSkillManifest, RSkillRuntime
+from openral_rskill.quantization_gate import require_pro_for_manifest
 
 from openral_runner.backends.gstreamer.objects_detector import (
     DetectorTier,
@@ -151,6 +152,7 @@ def build_manifest_detector(
             f"kind:detector with a detector block (kind={manifest.kind!r})."
         )
     contract = manifest.detector
+    require_pro_for_manifest(manifest)  # ADR-0123: sub-16-bit weights need OpenRAL Pro
 
     # Explicit engine selector wins (disambiguates backends that share a
     # runtime: an in-process zero-shot detector is `runtime: pytorch` too).

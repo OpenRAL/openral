@@ -25,6 +25,8 @@ inference: false
 
 # rskill-gr00t_n17-franka_panda-libero_spatial-bf16
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > **OpenRAL rSkill** — NVIDIA Isaac **GR00T N1.7** (3B) finetuned on the
 > [LIBERO](https://libero-project.github.io/) benchmark, packaged for the
 > [OpenRAL](https://github.com/OpenRAL/openral) robot agent framework.

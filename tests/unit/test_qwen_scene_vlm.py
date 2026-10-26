@@ -22,6 +22,7 @@ from collections.abc import Callable
 import pytest
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import RSkillManifest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 _FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 _REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -117,6 +118,9 @@ def test_build_scene_vlm_rejects_non_vlm_manifest() -> None:
         build_scene_vlm(m)
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_build_scene_vlm_from_qwen_manifest() -> None:
     """build_scene_vlm wires model_id + weights_source from the rSkill manifest."""
     from openral_runner.backends.gstreamer.qwen_scene_vlm import QwenSceneVlm, build_scene_vlm

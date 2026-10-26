@@ -22,6 +22,7 @@ from collections.abc import Callable
 
 import pytest
 from openral_core import ObjectsMetadata
+from openral_rskill.quantization_gate import pro_quantization_installed
 from openral_runner.backends.gstreamer.locateanything_detector import (
     build_objects_metadata,
     parse_grounding_answer,
@@ -122,6 +123,9 @@ def test_locateanything_manifest_validates() -> None:
     assert m.detector.max_side == 512
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 def test_build_manifest_detector_dispatches_pytorch_to_sidecar() -> None:
     from openral_core.schemas import RSkillManifest
     from openral_runner.backends.gstreamer.detector_factory import (

@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("lerobot.policies.pi05.modeling_pi05")
@@ -41,7 +42,11 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a l
 
 def _dtype() -> str:
     vram = float(torch.cuda.get_device_properties(0).total_memory) / 2**30
-    return "bf16" if vram >= _BF16_MIN_VRAM_GIB else "int8"
+    if vram >= _BF16_MIN_VRAM_GIB:
+        return "bf16"
+    if not pro_quantization_installed():
+        pytest.skip(f"{vram:.1f} GiB runs int8: needs OpenRAL Pro quantization (ADR-0123)")
+    return "int8"
 
 
 @pytest.fixture(scope="module")

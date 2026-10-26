@@ -83,6 +83,18 @@ _Extraction seam: entry-point-based runtime-backend + policy-attach-hook registr
 
 > **Moved to OpenRAL Pro:** `runtime_tensorrt.py` (`TensorRTRuntime`), `smolvla_export.py`, `smolvla_trt.py`, and `act_trt.py` now live in the private `openral-pro-trt` package as `openral_pro_trt.*`, plugging in via the `openral.runtime_backends` / `openral.policy_attach_hooks` / `openral.pro_modules` entry-point groups above.
 
+### `python/rskill/src/openral_rskill/quantization_gate.py`
+
+ADR-0123: open runs fp32 / fp16 / bf16; every format of 8 bits or fewer needs the OpenRAL Pro quantization package, registered as `openral.pro_modules: quantization`. Each check raises `ROSConfigError` naming the dtype, the caller and OpenRAL Pro, and never falls back to a wider dtype.
+
+- const `PRO_QUANTIZATION_MODULE = "quantization"` — the Pro module's logical name in `openral.pro_modules`. (L39)
+- const `SUB_16_BIT_DTYPES: frozenset[str]` — every spelling of an 8-bit-or-fewer format (`int8`, `fp8`, `int4`, `nf4`, `4bit`, `8bit`, `fp4`, `nvfp4`, `fp4_nvfp4`). (L43)
+- `is_sub_16_bit(dtype: object) -> bool` — whether a token or `QuantizationDtype` is 8 bits or fewer; `None` → `False`. (L48)
+- `pro_quantization_installed() -> bool` — `resolve_pro_module(PRO_QUANTIZATION_MODULE) is not None`. (L60)
+- `require_pro_for_dtype(dtype: object, *, what: str) -> None` — the dtype check, called by `openral_sim._quantization.resolve_quant_plan` on the resolved token and by `tools/quantize_rskill.py` on `--scheme`. (L70)
+- `require_pro_for_manifest(manifest: RSkillManifest) -> None` — the declared-dtype check for loaders that bypass the policy resolver: `build_manifest_detector`, `build_topreward_monitor`, `build_reward_monitor` (Robometer), `build_scene_vlm`. (L98)
+- `require_pro_for_checkpoint(source: str, *, what: str) -> None` — refuses a checkpoint whose `config.json` carries a `quantization_config` (local dir, `local://`, `hf://org/repo[@rev]` or `org/repo`); returns at once when Pro is installed; an unreadable config (offline, private, missing) logs `quantization.checkpoint_unchecked` and passes, since the load that follows fails the same way. Called by `resolve_quant_plan` on `spec.weights_uri`. (L142)
+
 ### `python/rskill/src/openral_rskill/loader.py`
 _rSkill loader — HF Hub download, manifest validation, license guard, local registry._
 

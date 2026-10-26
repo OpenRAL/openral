@@ -24,6 +24,8 @@ license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 
 # rskill-rldx1_ft-panda_mobile-robocasa-nf4
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > RLDX-1 finetuned on the **RoboCasa-365** cross-task generalization
 > benchmark — 365 tasks across a wide scene/skill distribution,
 > PandaMobile embodiment. Upstream paper-reported success: **31.5 %**

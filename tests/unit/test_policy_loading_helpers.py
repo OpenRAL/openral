@@ -22,7 +22,7 @@ from openral_rskill.loader import load_rskill_manifest
 from openral_sim._quantization import (
     default_dtype_for_device,
     normalise_manifest_dtype,
-    resolve_quant_plan,
+    plan_quantization,
     torch_dtype_for,
 )
 from openral_sim.policies._policy_loading import load_manifest_for_spec
@@ -117,16 +117,16 @@ class TestManifestDtype:
             weights_uri=str(_PI05_LIBERO),
             extra={"dtype": "bf16"},
         )
-        assert resolve_quant_plan(spec, manifest).dtype == "bf16"
+        assert plan_quantization(spec, manifest).dtype == "bf16"
 
     def test_manifest_used_when_no_extra(self) -> None:
         manifest = load_rskill_manifest(str(_PI05_LIBERO))
         spec = VLASpec(id="pi05", weights_uri=str(_PI05_LIBERO))
-        assert resolve_quant_plan(spec, manifest).dtype == "int8"
+        assert plan_quantization(spec, manifest).dtype == "int8"
 
     def test_none_when_neither_source_has_dtype(self) -> None:
         spec = VLASpec(id="pi05", weights_uri="")
-        assert resolve_quant_plan(spec, None).dtype is None
+        assert plan_quantization(spec, None).dtype is None
 
     def test_rldx_libero_int4_normalises_to_the_nf4_token(self) -> None:
         """rldx1-ft-libero-nf4 pins the schema's `int4`; callers get `nf4`.
@@ -139,7 +139,7 @@ class TestManifestDtype:
         manifest = load_rskill_manifest(str(_RLDX_LIBERO))
         spec = VLASpec(id="rldx", weights_uri=str(_RLDX_LIBERO))
         assert manifest.quantization.dtype.value == "int4"
-        assert resolve_quant_plan(spec, manifest).dtype == "nf4"
+        assert plan_quantization(spec, manifest).dtype == "nf4"
 
 
 # ── torch dtype mapping ───────────────────────────────────────────────────────

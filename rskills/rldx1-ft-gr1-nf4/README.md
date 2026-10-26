@@ -23,6 +23,8 @@ license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 
 # rskill-rldx1_ft-gr1-tabletop-nf4
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > RLDX-1 finetuned on the [RoboCasa GR-1 tabletop tasks](https://github.com/robocasa/robocasa-gr1-tabletop-tasks)
 > (24-task suite, Fourier GR-1 ArmsAndWaistFourierHands humanoid),
 > packaged for OpenRAL.

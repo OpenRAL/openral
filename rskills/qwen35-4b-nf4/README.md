@@ -23,6 +23,8 @@ inference: false
 
 # rskill-qwen35_4b-any-general-nf4
 
+> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+
 > **OpenRAL rSkill** — Qwen3.5-4B natively-multimodal video-language model
 > packaged as an NF4 bitsandbytes `vlm` rSkill. Accepts RGB
 > image or video frames plus a natural-language query; returns a text answer.

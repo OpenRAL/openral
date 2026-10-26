@@ -23,6 +23,7 @@ import sys
 import time
 
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
 
 _REPO = pathlib.Path(__file__).resolve().parents[2]
 _FIXTURES = _REPO / "tests" / "unit" / "fixtures"
@@ -45,13 +46,19 @@ def _ros_available() -> bool:
     return True
 
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("OPENRAL_QWEN_VLM_SIDECAR_VENV")
-    or not _gpu_present()
-    or not _ros_available(),
-    reason="needs a provisioned Qwen sidecar venv + GPU + a built/sourced ROS stack "
-    "(OPENRAL_QWEN_VLM_SIDECAR_VENV; openral_msgs built; rclpy sourced).",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not os.environ.get("OPENRAL_QWEN_VLM_SIDECAR_VENV")
+        or not _gpu_present()
+        or not _ros_available(),
+        reason="needs a provisioned Qwen sidecar venv + GPU + a built/sourced ROS stack "
+        "(OPENRAL_QWEN_VLM_SIDECAR_VENV; openral_msgs built; rclpy sourced).",
+    ),
+    # ADR-0123: these weights are sub-16-bit and need OpenRAL Pro.
+    pytest.mark.skipif(
+        not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+    ),
+]
 
 
 def test_query_scene_service_e2e() -> None:
