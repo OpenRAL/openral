@@ -39,8 +39,13 @@ def test_disconnect_waits_for_an_in_flight_render() -> None:
     hal = _connected_rendering_arm()
     lock = hal._render_lock  # type: ignore[attr-defined]  # reason: MujocoArmHAL internal
     done = threading.Event()
+
+    def teardown() -> None:
+        hal.disconnect()  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
+        done.set()
+
     with lock:  # stands in for a render in progress
-        t = threading.Thread(target=lambda: (hal.disconnect(), done.set()))  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
+        t = threading.Thread(target=teardown)
         t.start()
         assert not done.wait(0.3), "disconnect closed the renderers under a live render"
     t.join(timeout=10.0)
