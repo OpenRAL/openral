@@ -349,14 +349,28 @@ def _pinned_tensor_uploads(module: Any, torch: Any, keepalive: list[Any]) -> Ite
         module.torch = real
 
 
+def _has_llm_int8_outliers(policy: Any) -> bool:
+    """Whether any ``bitsandbytes`` ``Linear8bitLt`` runs the outlier decomposition.
+
+    Checks class names, so it never imports bitsandbytes.
+    """
+    return any(
+        type(m).__name__ == "Linear8bitLt"
+        and type(m).__module__.startswith("bitsandbytes")
+        and float(getattr(getattr(m, "state", None), "threshold", 0.0) or 0.0) > 0.0
+        for m in policy.modules()
+    )
+
+
 def _maybe_cuda_graph(adapter: _PI05Adapter, spec_extra: dict[str, Any], *, trt: bool) -> None:
     """Attach a `CudaGraphChunkForward` when ``policy_extras.cuda_graph`` is true.
 
     Refused (``ROSConfigError``) for a non-bool flag (YAML ``"false"`` is a
     string, and truthy), and where a graph cannot apply: a non-CUDA device,
     an enabled ``rtc`` block (its per-call guidance arguments always run eager,
-    so the graph would never replay), or the TensorRT runtime (it replaced the
-    forward already).
+    so the graph would never replay), the TensorRT runtime (it replaced the
+    forward already), or LLM.int8 weights: bitsandbytes picks the outlier
+    columns from each input on the host, which no CUDA graph can capture.
     """
     flag = spec_extra.get("cuda_graph", False)
     if not isinstance(flag, bool):
@@ -376,6 +390,12 @@ def _maybe_cuda_graph(adapter: _PI05Adapter, spec_extra: dict[str, Any], *, trt:
         raise ROSConfigError(
             "pi05: policy_extras.cuda_graph with the TensorRT runtime attached; the engine "
             "already replaced the torch forward"
+        )
+    if _has_llm_int8_outliers(adapter._policy):
+        raise ROSConfigError(
+            "pi05: policy_extras.cuda_graph with int8 (LLM.int8) weights; bitsandbytes "
+            "selects outlier columns per input with a host sync, which cannot be captured. "
+            "Run bf16 or nf4 with the graph, or int8 without it"
         )
     import lerobot.policies.pi05.modeling_pi05 as modeling
 

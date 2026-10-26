@@ -8,9 +8,12 @@ checkpoint behind ``rskills/pi05-libero-int8``, so lerobot's actual
 ``predict_action_chunk`` — including the three per-forward host uploads the
 pinned-upload shim makes capturable — goes through capture and replay.
 
-bf16 on a >= 10 GiB GPU (Orin / Thor / a desktop card), else the rSkill's own
-int8 (an 8 GiB laptop). Needs the cached checkpoint (~7.5 GB) and a GPU; absent
-either is the legitimate skip (CLAUDE.md §1.12). Run under the shared GPU lock:
+Capture runs bf16 on a >= 10 GiB GPU (Orin / Thor / a desktop card). The rSkill's
+own int8 (LLM.int8) cannot be captured, since bitsandbytes picks outlier columns
+per input with a host sync, so the adapter refuses that pairing up front; that
+refusal is checked wherever OpenRAL Pro quantization is installed (ADR-0123). Needs
+the cached checkpoint (~7.5 GB) and a GPU; absent either is the legitimate skip
+(CLAUDE.md §1.12). Run under the shared GPU lock:
     flock <gpu.lock> ./.venv/bin/pytest tests/sim/test_pi05_cuda_graph.py -v
 """
 
@@ -40,28 +43,36 @@ _PROMPT = "pick up the black bowl between the plate and the ramekin and place it
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a local GPU")
 
 
-def _dtype() -> str:
-    vram = float(torch.cuda.get_device_properties(0).total_memory) / 2**30
-    if vram >= _BF16_MIN_VRAM_GIB:
-        return "bf16"
-    if not pro_quantization_installed():
-        pytest.skip(f"{vram:.1f} GiB runs int8: needs OpenRAL Pro quantization (ADR-0123)")
-    return "int8"
+def _vram_gib() -> float:
+    return float(torch.cuda.get_device_properties(0).total_memory) / 2**30
+
+
+def _env_with(dtype: str) -> Any:
+    from tests.sim.conftest import compose_sim_env
+
+    env = compose_sim_env(_CONFIG, rskill_uri=str(_RSKILL))
+    extra = {**env.vla.extra, "dtype": dtype, "cuda_graph": True}
+    vla = env.vla.model_copy(update={"device": "cuda:0", "extra": extra})
+    return env.model_copy(update={"vla": vla})
+
+
+def _require_cached_checkpoint() -> None:
+    from huggingface_hub import try_to_load_from_cache
+
+    if not isinstance(try_to_load_from_cache(_HF_REPO, "model.safetensors"), str):
+        pytest.skip(f"{_HF_REPO} is not in the local HF cache (~7.5 GB download)")
 
 
 @pytest.fixture(scope="module")
 def adapter() -> Iterator[Any]:
-    from huggingface_hub import try_to_load_from_cache
     from openral_sim.policies.pi05 import _build_pi05
 
-    from tests.sim.conftest import compose_sim_env
-
-    if not isinstance(try_to_load_from_cache(_HF_REPO, "model.safetensors"), str):
-        pytest.skip(f"{_HF_REPO} is not in the local HF cache (~7.5 GB download)")
-    env = compose_sim_env(_CONFIG, rskill_uri=str(_RSKILL))
-    extra = {**env.vla.extra, "dtype": _dtype(), "cuda_graph": True}
-    vla = env.vla.model_copy(update={"device": "cuda:0", "extra": extra})
-    built = _build_pi05(env.model_copy(update={"vla": vla}))
+    _require_cached_checkpoint()
+    if _vram_gib() < _BF16_MIN_VRAM_GIB:
+        pytest.skip(
+            f"capture needs bf16 (a >= {_BF16_MIN_VRAM_GIB} GiB GPU); int8 refuses the graph"
+        )
+    built = _build_pi05(_env_with("bf16"))
     yield built
     built.close()
     gc.collect()
@@ -110,5 +121,19 @@ def test_a_replay_is_faster_than_eager(adapter: Any) -> None:
     assert adapter._cuda_graph.captured
     eager = _timed(lambda: adapter._graph_forward(batch), 3)
     replay = _timed(lambda: adapter._chunk_forward(batch), 5)
-    print(f"pi05 {_dtype()} chunk: eager {eager * 1e3:.0f} ms, replay {replay * 1e3:.0f} ms")
+    print(f"pi05 bf16 chunk: eager {eager * 1e3:.0f} ms, replay {replay * 1e3:.0f} ms")
     assert replay < eager
+
+
+def test_int8_weights_refuse_the_graph() -> None:
+    """LLM.int8's per-input outlier selection syncs the host; the adapter refuses up front."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.policies.pi05 import _build_pi05
+
+    if not pro_quantization_installed():
+        pytest.skip("int8 loads only through OpenRAL Pro quantization (ADR-0123)")
+    _require_cached_checkpoint()
+    with pytest.raises(ROSConfigError, match=r"LLM\.int8"):
+        _build_pi05(_env_with("int8"))
+    gc.collect()
+    torch.cuda.empty_cache()
