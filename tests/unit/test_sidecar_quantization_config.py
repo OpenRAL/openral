@@ -28,7 +28,7 @@ def test_nf4_config_rejects_invalid_input(name: str, raw: str) -> None:
 
 
 @pytest.mark.parametrize("name", ["_lingbot_vla2_server", "behavior_groot_sidecar"])
-@pytest.mark.parametrize("skip_name", ["1", "1.0"])
+@pytest.mark.parametrize("skip_name", ["1", "model.qwenvl_with_expert.qwenvl.1.0"])
 def test_nf4_layers_use_pro_settings(name: str, skip_name: str) -> None:
     torch = pytest.importorskip("torch")
     bnb = pytest.importorskip("bitsandbytes")
@@ -40,7 +40,11 @@ def test_nf4_layers_use_pro_settings(name: str, skip_name: str) -> None:
         bnb_4bit_compute_dtype="float32",
         bnb_4bit_quant_type="fp4",
         bnb_4bit_use_double_quant=False,
-        llm_int8_skip_modules=[skip_name],
+        llm_int8_skip_modules=[
+            skip_name
+            if name == "_lingbot_vla2_server"
+            else skip_name.removeprefix("model.qwenvl_with_expert.qwenvl.")
+        ],
     )
     model = torch.nn.Sequential(
         torch.nn.Linear(64, 64), torch.nn.Sequential(torch.nn.Linear(64, 64))
@@ -111,9 +115,51 @@ def test_pack_skip_modules_must_match(
     if recorded is not None:
         quantization["config"] = {"llm_int8_skip_modules": recorded}
     (tmp_path / "quantization_metadata.json").write_text(json.dumps({"quantization": quantization}))
+    config = {
+        "bnb_4bit_quant_type": "nf4",
+        "bnb_4bit_compute_dtype": "bfloat16",
+        "bnb_4bit_use_double_quant": True,
+        "bnb_4bit_quant_storage": "uint8",
+        "llm_int8_skip_modules": launch,
+    }
     module = _load("_lingbot_vla2_server")
     if set(recorded or []) != set(launch or []):
         with pytest.raises(SystemExit, match="differs from the NF4 pack"):
-            module._check_pack_skip_modules(str(tmp_path), launch)
+            module._check_pack_config(str(tmp_path), config)
     else:
-        module._check_pack_skip_modules(str(tmp_path), launch)
+        module._check_pack_config(str(tmp_path), config)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("bnb_4bit_quant_type", "fp4"),
+        ("bnb_4bit_compute_dtype", "float32"),
+        ("bnb_4bit_use_double_quant", False),
+        ("bnb_4bit_quant_storage", "float16"),
+    ],
+)
+def test_pack_precision_must_match(tmp_path: Path, key: str, value: object) -> None:
+    config = {
+        "bnb_4bit_quant_type": "nf4",
+        "bnb_4bit_compute_dtype": "bfloat16",
+        "bnb_4bit_use_double_quant": True,
+        "bnb_4bit_quant_storage": "uint8",
+    }
+    (tmp_path / "quantization_metadata.json").write_text(
+        json.dumps({"quantization": {"scheme": "nf4", "config": {**config, key: value}}})
+    )
+    with pytest.raises(SystemExit, match=key):
+        _load("_lingbot_vla2_server")._check_pack_config(str(tmp_path), config)
+
+
+def test_lingbot_skips_a_model_root_subtree() -> None:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("bitsandbytes")
+    transformers = pytest.importorskip("transformers")
+    config = transformers.BitsAndBytesConfig(load_in_4bit=True, llm_int8_skip_modules=["model"])
+    model = torch.nn.Sequential(torch.nn.Linear(64, 64))
+    _load("_lingbot_vla2_server")._nf4_backbone_in_place(
+        model, torch=torch, config=config, min_params=1
+    )
+    assert type(model[0]) is torch.nn.Linear

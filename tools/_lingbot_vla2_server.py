@@ -338,7 +338,12 @@ def _nf4_backbone_in_place(
             else:
                 _replace(child, path)
 
-    _replace(backbone)
+    root = "model.qwenvl_with_expert.qwenvl"
+    if any(
+        root == name or root.startswith(f"{name}.") for name in (config.llm_int8_skip_modules or [])
+    ):
+        return
+    _replace(backbone, root)
 
 
 # bnb serialises a packed Params4bit into ``<prefix>.weight`` (packed uint8) plus
@@ -378,13 +383,24 @@ def _detect_prequantized(ckpt_dir: str) -> bool:
     return bool(meta.get("quantization", {}).get("scheme") == "nf4")
 
 
-def _check_pack_skip_modules(ckpt_dir: str, skip_modules: list[str] | None) -> None:
-    """Refuse shell layouts that differ from the pack's recorded skip list."""
+def _check_pack_config(ckpt_dir: str, config: dict[str, Any]) -> None:
+    """Refuse launch settings that differ from the stored pack's quantization."""
     meta = json.loads((Path(ckpt_dir) / "quantization_metadata.json").read_text())
-    recorded = meta["quantization"].get("config", {}).get("llm_int8_skip_modules") or []
-    if not isinstance(recorded, list) or not all(isinstance(name, str) for name in recorded):
+    # Legacy packs used these fixed settings before recording Pro's config.
+    legacy = {
+        "bnb_4bit_quant_type": "nf4",
+        "bnb_4bit_compute_dtype": "bfloat16",
+        "bnb_4bit_use_double_quant": True,
+        "bnb_4bit_quant_storage": "uint8",
+    }
+    recorded = meta["quantization"].get("config", legacy)
+    for key, default in legacy.items():
+        if recorded.get(key, default) != config.get(key):
+            raise SystemExit(f"Pro's {key} differs from the NF4 pack configuration.")
+    skips = recorded.get("llm_int8_skip_modules") or []
+    if not isinstance(skips, list) or not all(isinstance(name, str) for name in skips):
         raise SystemExit("NF4 pack has an invalid llm_int8_skip_modules list.")
-    if set(recorded) != set(skip_modules or []):
+    if set(skips) != set(config.get("llm_int8_skip_modules") or []):
         raise SystemExit("Pro's llm_int8_skip_modules differs from the NF4 pack configuration.")
 
 
@@ -594,7 +610,7 @@ class _LingBotPolicy:
             )
         if is_prequant:
             assert config is not None
-            _check_pack_skip_modules(ckpt_dir, config.llm_int8_skip_modules)
+            _check_pack_config(ckpt_dir, config.to_dict())
         if is_prequant and device == "cpu":
             raise SystemExit(
                 f"[lingbot_vla2_server] {ckpt_dir} is a pre-quantized NF4 pack, which "
@@ -829,7 +845,7 @@ class _LingBotV1Policy:
             )
         if is_prequant:
             assert config is not None
-            _check_pack_skip_modules(ckpt_dir, config.llm_int8_skip_modules)
+            _check_pack_config(ckpt_dir, config.to_dict())
         if is_prequant and device == "cpu":
             raise SystemExit(
                 f"[lingbot_vla2_server:v1] {ckpt_dir} is a pre-quantized NF4 pack, which "

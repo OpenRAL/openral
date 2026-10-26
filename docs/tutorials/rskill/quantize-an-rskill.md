@@ -235,4 +235,5 @@ Sidecar loaders and the LingBot pack builder validate Pro’s JSON configuration
 before quantizing and apply its bitsandbytes settings (compute dtype, quantization
 type, double quantization, storage dtype, and int8 threshold/weight retention).
 Skip-module lists accept qualified module paths. LingBot refuses a packed checkpoint
-when the launch skip list differs from the recorded list; legacy packs use an empty list.
+when launch precision settings or skip lists differ from the recorded configuration;
+legacy packs use NF4, bf16 compute, double quantization, uint8 storage, and an empty skip list.
