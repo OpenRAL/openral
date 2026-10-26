@@ -185,7 +185,7 @@ def _build_bf16_model_v1(ckpt_dir: str, qwen: str, attn: str) -> Any:
 
 
 def _stream_pack_backbone(
-    srv: Any, *, min_params: int, skip_names: frozenset[str] = frozenset()
+    srv: Any, *, config: Any, min_params: int, skip_names: frozenset[str] = frozenset()
 ) -> int:
     """NF4-rewrite the backbone and pack each Linear GPU-frugally.
 
@@ -200,7 +200,7 @@ def _stream_pack_backbone(
 
     backbone = srv.vla.model.qwenvl_with_expert.qwenvl
     srv_mod._nf4_backbone_in_place(
-        backbone, torch=torch, min_params=min_params, skip_names=skip_names
+        backbone, torch=torch, config=config, min_params=min_params, skip_names=skip_names
     )
 
     linears = [m for _, m in backbone.named_modules() if isinstance(m, bnb.nn.Linear4bit)]
@@ -226,6 +226,7 @@ def _save_pack(
     out_dir: Path,
     *,
     ckpt_dir: str,
+    config: Any,
     source_repo: str,
     source_revision: str,
     min_params: int,
@@ -280,14 +281,15 @@ def _save_pack(
             "backend": "bitsandbytes",
             "backend_version": bnb.__version__,
             "torch_version": torch.__version__,
-            "compute_dtype": "bfloat16",
+            "compute_dtype": str(config.bnb_4bit_compute_dtype).removeprefix("torch."),
+            "config": config.to_dict(),
             "min_params_to_quantize": min_params,
             "quantized_modules": n_packed,
             "target_submodule": "model.qwenvl_with_expert.qwenvl",
             "rule": (
                 f"{_backbone_name} backbone (model.qwenvl_with_expert.qwenvl) Linear layers "
-                f"with >={min_params:_} weight elements rewritten to bnb.nn.Linear4bit (nf4, "
-                f"double/nested quant, bf16 compute); {_expert_note}, align heads, and action "
+                f"with >={min_params:_} weight elements rewritten to bnb.nn.Linear4bit "
+                f"using the recorded Pro configuration; {_expert_note}, align heads, and action "
                 f"MLPs stay bf16.{_skip_note}"
             ),
             "runtime_status": (
@@ -312,30 +314,6 @@ def _save_pack(
             shutil.copy(src, out_dir / src.name)
             copied += 1
     print(f"[quantize] copied {copied} source sidecar files into {out_dir}", flush=True)
-
-
-def _check_pro_config(quantization: str, config_json: str | None, *, launcher: str) -> None:
-    """Refuse a sub-16-bit load without a valid OpenRAL Pro config (ADR-0123).
-
-    The config must be the JSON ``BitsAndBytesConfig`` kwargs Pro chose for this
-    mode (``load_in_4bit`` for nf4, ``load_in_8bit`` for int8); a malformed or
-    mismatched one is refused rather than treated as a pass.
-    """
-    if not config_json:
-        raise SystemExit(
-            f"--quantization {quantization} needs OpenRAL Pro (ADR-0123): start this "
-            f"sidecar through {launcher} with OpenRAL Pro installed, which passes "
-            "--quantization-config."
-        )
-    try:
-        cfg = json.loads(config_json)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"--quantization-config is not valid JSON: {exc}") from exc
-    key = "load_in_8bit" if quantization == "int8" else "load_in_4bit"
-    if not isinstance(cfg, dict) or cfg.get(key) is not True:
-        raise SystemExit(
-            f"--quantization-config does not describe {quantization} ({key} is not true)."
-        )
 
 
 def main(argv: list[str]) -> int:
@@ -379,7 +357,12 @@ def main(argv: list[str]) -> int:
         "the pack is not built without it (ADR-0123).",
     )
     args = p.parse_args(argv)
-    _check_pro_config("nf4", args.quantization_config, launcher="the module docstring's recipe")
+    kwargs = srv_mod._check_pro_config(
+        "nf4", args.quantization_config, launcher="the module docstring's recipe"
+    )
+    from transformers import BitsAndBytesConfig
+
+    config = BitsAndBytesConfig(**kwargs)  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
 
     # torch renamed PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF in 2.9 (warns on
     # the old spelling); resolved from metadata since this venv serves both
@@ -408,11 +391,14 @@ def main(argv: list[str]) -> int:
         attn = args.attn
         skip_names = frozenset()
         srv = _build_bf16_model(ckpt_dir, qwen, attn)
-    n_packed = _stream_pack_backbone(srv, min_params=args.min_params, skip_names=skip_names)
+    n_packed = _stream_pack_backbone(
+        srv, config=config, min_params=args.min_params, skip_names=skip_names
+    )
     _save_pack(
         srv,
         Path(args.out).expanduser().resolve(),
         ckpt_dir=ckpt_dir,
+        config=config,
         source_repo=args.source_repo,
         source_revision=args.source_revision,
         min_params=args.min_params,

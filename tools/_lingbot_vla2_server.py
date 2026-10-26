@@ -290,6 +290,7 @@ def _nf4_backbone_in_place(
     backbone: Any,
     *,
     torch: Any,
+    config: Any,
     min_params: int = 2_000_000,
     skip_names: frozenset[str] = frozenset(),
 ) -> None:
@@ -305,18 +306,24 @@ def _nf4_backbone_in_place(
 
     def _replace(module: Any) -> None:
         for name, child in list(module.named_children()):
-            if name in skip_names:
+            if name in skip_names or name in (config.llm_int8_skip_modules or []):
                 continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 new = bnb.nn.Linear4bit(
                     child.in_features,
                     child.out_features,
                     bias=child.bias is not None,
-                    compute_dtype=torch.bfloat16,
-                    quant_type="nf4",
+                    compute_dtype=config.bnb_4bit_compute_dtype,
+                    compress_statistics=config.bnb_4bit_use_double_quant,
+                    quant_type=config.bnb_4bit_quant_type,
+                    quant_storage=config.bnb_4bit_quant_storage,
                 )
                 new.weight = bnb.nn.Params4bit(
-                    child.weight.data.clone(), requires_grad=False, quant_type="nf4"
+                    child.weight.data.clone(),
+                    requires_grad=False,
+                    compress_statistics=config.bnb_4bit_use_double_quant,
+                    quant_type=config.bnb_4bit_quant_type,
+                    quant_storage=config.bnb_4bit_quant_storage,
                 )
                 if child.bias is not None:
                     new.bias = torch.nn.Parameter(
@@ -561,6 +568,15 @@ class _LingBotPolicy:
         # dequantize, so a CPU deployment cannot load it. Refuse early with a clear
         # pointer to the fp32 upstream ckpt rather than crashing deep in the overlay.
         is_prequant = _detect_prequantized(ckpt_dir)
+        config = None
+        if quant == "nf4" or is_prequant:
+            from transformers import BitsAndBytesConfig
+
+            config = BitsAndBytesConfig(  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
+                **_check_pro_config(
+                    "nf4", args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
+                )
+            )
         if is_prequant and device == "cpu":
             raise SystemExit(
                 f"[lingbot_vla2_server] {ckpt_dir} is a pre-quantized NF4 pack, which "
@@ -607,7 +623,9 @@ class _LingBotPolicy:
                 torch.set_default_dtype(prev_dtype)
             _coerce_attn_config(getattr(srv.vla, "config", None), args.attn)
             srv.vla.model = srv.vla.model.to(torch.bfloat16)
-            _nf4_backbone_in_place(srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch)
+            _nf4_backbone_in_place(
+                srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch, config=config
+            )
             _overlay_prequantized(srv.vla, ckpt_dir, torch=torch)
             srv.vla = srv.vla.to(device).eval()
         else:
@@ -616,7 +634,9 @@ class _LingBotPolicy:
             _coerce_attn_config(getattr(srv.vla, "config", None), args.attn)
             srv.vla.model = srv.vla.model.to(torch.bfloat16)
             if quant == "nf4":
-                _nf4_backbone_in_place(srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch)
+                _nf4_backbone_in_place(
+                    srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch, config=config
+                )
             srv.vla = srv.vla.to(device).eval()
         # ``sample_actions_batch`` hardcodes ``device="cuda"`` before the model
         # forward (upstream deploy path), which would move inputs to the GPU while
@@ -780,6 +800,15 @@ class _LingBotV1Policy:
             )
             quant = "none"
         is_prequant = _detect_prequantized(ckpt_dir)
+        config = None
+        if quant == "nf4" or is_prequant:
+            from transformers import BitsAndBytesConfig
+
+            config = BitsAndBytesConfig(  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
+                **_check_pro_config(
+                    "nf4", args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
+                )
+            )
         if is_prequant and device == "cpu":
             raise SystemExit(
                 f"[lingbot_vla2_server:v1] {ckpt_dir} is a pre-quantized NF4 pack, which "
@@ -830,6 +859,7 @@ class _LingBotV1Policy:
             _nf4_backbone_in_place(
                 srv.vla.model.qwenvl_with_expert.qwenvl,
                 torch=torch,
+                config=config,
                 skip_names=frozenset({"o_proj"}),
             )
             _overlay_prequantized(srv.vla, ckpt_dir, torch=torch)
@@ -839,6 +869,7 @@ class _LingBotV1Policy:
                 _nf4_backbone_in_place(
                     srv.vla.model.qwenvl_with_expert.qwenvl,
                     torch=torch,
+                    config=config,
                     skip_names=frozenset({"o_proj"}),
                 )
             srv.vla = srv.vla.to(device).eval()
@@ -928,7 +959,9 @@ def _serve(
     return 0
 
 
-def _check_pro_config(quantization: str, config_json: str | None, *, launcher: str) -> None:
+def _check_pro_config(
+    quantization: str, config_json: str | None, *, launcher: str
+) -> dict[str, Any]:
     """Refuse a sub-16-bit load without a valid OpenRAL Pro config (ADR-0123).
 
     The config must be the JSON ``BitsAndBytesConfig`` kwargs Pro chose for this
@@ -950,6 +983,8 @@ def _check_pro_config(quantization: str, config_json: str | None, *, launcher: s
         raise SystemExit(
             f"--quantization-config does not describe {quantization} ({key} is not true)."
         )
+
+    return cfg
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

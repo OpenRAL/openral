@@ -30,7 +30,9 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
     return obj
 
 
-def _check_pro_config(quantization: str, config_json: str | None, *, launcher: str) -> None:
+def _check_pro_config(
+    quantization: str, config_json: str | None, *, launcher: str
+) -> dict[str, Any]:
     """Refuse a sub-16-bit load without a valid OpenRAL Pro config (ADR-0123).
 
     The config must be the JSON ``BitsAndBytesConfig`` kwargs Pro chose for this
@@ -52,6 +54,8 @@ def _check_pro_config(quantization: str, config_json: str | None, *, launcher: s
         raise SystemExit(
             f"--quantization-config does not describe {quantization} ({key} is not true)."
         )
+
+    return cfg
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -202,6 +206,17 @@ class _BehaviorGrootPolicy:
         B1KPolicyWrapper = wrapper.B1KPolicyWrapper
         Gr00tPolicy = policy_module.Gr00tPolicy
 
+        config = None
+        if args.quantization != "none":
+            from transformers import BitsAndBytesConfig
+
+            config = BitsAndBytesConfig(  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
+                **_check_pro_config(
+                    args.quantization,
+                    args.quantization_config,
+                    launcher="the openral behavior_groot adapter",
+                )
+            )
         modality = _register_r1pro_modality()
         load_device = "cpu" if args.quantization in ("nf4", "int8") else args.device
         policy = Gr00tPolicy(
@@ -216,12 +231,14 @@ class _BehaviorGrootPolicy:
                 policy.model,
                 device=args.device,
                 min_params=args.nf4_min_params,
+                config=config,
             )
         elif args.quantization == "int8":
             _quantize_int8(
                 policy.model,
                 device=args.device,
                 min_params=args.nf4_min_params,
+                config=config,
             )
         self._policy = B1KPolicyWrapper(
             policy=policy,
@@ -266,7 +283,7 @@ def _drop_backbone_lm_head(model: Any) -> None:
             module.lm_head = torch.nn.Identity()
 
 
-def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> None:
+def _quantize_nf4(model: Any, *, device: str, config: Any, min_params: int = 4_000_000) -> None:
     """Whole-model NF4 rewrite matching OpenRAL's native GR00T N1.7 path."""
     if not device.startswith("cuda"):
         raise ValueError("NF4 quantization requires a CUDA device.")
@@ -275,18 +292,24 @@ def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> No
 
     def _replace(module: Any) -> None:
         for name, child in list(module.named_children()):
+            if name in (config.llm_int8_skip_modules or []):
+                continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 quantized = bnb.nn.Linear4bit(
                     child.in_features,
                     child.out_features,
                     bias=child.bias is not None,
-                    compute_dtype=torch.bfloat16,
-                    quant_type="nf4",
+                    compute_dtype=config.bnb_4bit_compute_dtype,
+                    compress_statistics=config.bnb_4bit_use_double_quant,
+                    quant_type=config.bnb_4bit_quant_type,
+                    quant_storage=config.bnb_4bit_quant_storage,
                 )
                 quantized.weight = bnb.nn.Params4bit(
                     child.weight.data.clone(),
                     requires_grad=False,
-                    quant_type="nf4",
+                    compress_statistics=config.bnb_4bit_use_double_quant,
+                    quant_type=config.bnb_4bit_quant_type,
+                    quant_storage=config.bnb_4bit_quant_storage,
                 )
                 if child.bias is not None:
                     quantized.bias = torch.nn.Parameter(
@@ -309,7 +332,7 @@ def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> No
     model.eval()
 
 
-def _quantize_int8(model: Any, *, device: str, min_params: int = 4_000_000) -> None:
+def _quantize_int8(model: Any, *, device: str, config: Any, min_params: int = 4_000_000) -> None:
     """Whole-model LLM.int8 rewrite; ~2x NF4 size but far less lossy on 3B policies."""
     if not device.startswith("cuda"):
         raise ValueError("int8 quantization requires a CUDA device.")
@@ -318,18 +341,20 @@ def _quantize_int8(model: Any, *, device: str, min_params: int = 4_000_000) -> N
 
     def _replace(module: Any) -> None:
         for name, child in list(module.named_children()):
+            if name in (config.llm_int8_skip_modules or []):
+                continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 quantized = bnb.nn.Linear8bitLt(
                     child.in_features,
                     child.out_features,
                     bias=child.bias is not None,
-                    has_fp16_weights=False,
-                    threshold=6.0,
+                    has_fp16_weights=config.llm_int8_has_fp16_weight,
+                    threshold=config.llm_int8_threshold,
                 )
                 quantized.weight = bnb.nn.Int8Params(
                     child.weight.data.clone(),
                     requires_grad=False,
-                    has_fp16_weights=False,
+                    has_fp16_weights=config.llm_int8_has_fp16_weight,
                 )
                 if child.bias is not None:
                     quantized.bias = torch.nn.Parameter(

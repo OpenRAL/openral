@@ -230,3 +230,7 @@ catches a dtype your card cannot execute before any weights move.
   catalogue, with the quantization posture of each entry.
 - [`docs/reference/vla_compatibility.md`](../../reference/vla_compatibility.md)
   — observed dims, normalization and per-checkpoint notes.
+
+Sidecar loaders and the LingBot pack builder validate Pro’s JSON configuration
+before quantizing and apply its bitsandbytes settings (compute dtype, quantization
+type, double quantization, storage dtype, and int8 threshold/weight retention).
