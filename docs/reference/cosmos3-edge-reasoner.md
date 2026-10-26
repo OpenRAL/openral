@@ -76,6 +76,7 @@ completion-adjudication gate (`describe_image`). Against that contract:
   plus `OPENRAL_COSMOS3_AUTOSTART` / `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`
   / `OPENRAL_COSMOS3_SIDECAR` (client) and `OPENRAL_COSMOS3_GPU_MEM_UTIL` /
   `OPENRAL_COSMOS3_MAX_MODEL_LEN` / `OPENRAL_COSMOS3_KV_CACHE_BYTES` /
+  `OPENRAL_COSMOS3_ENFORCE_EAGER` /
   `OPENRAL_COSMOS3_MAX_NUM_SEQS` / `OPENRAL_COSMOS3_LIMIT_MM_PER_PROMPT` /
   `OPENRAL_COSMOS3_SIDECAR_HOME` / `OPENRAL_COSMOS3_SIDECAR_VENV` (sidecar). Self-managed
   serving (your own `vllm serve`, or the Cosmos 3 Reasoner NIM container) is a

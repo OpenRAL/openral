@@ -472,8 +472,9 @@ def main() -> int:
         "--enforce-eager",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Skip CUDA-graph capture (default on, off on a Jetson; capture overflows "
-        "an 8 GB card's VRAM and adds minutes to startup there).",
+        help="Skip CUDA-graph capture (default on, off on a Jetson, or "
+        "$OPENRAL_COSMOS3_ENFORCE_EAGER=1/0; capture overflows an 8 GB card's VRAM "
+        "and adds minutes to startup there).",
     )
     p.add_argument(
         "--max-num-seqs",
@@ -512,12 +513,11 @@ def main() -> int:
         ("max_model_len", "OPENRAL_COSMOS3_MAX_MODEL_LEN", int),
         ("gpu_memory_utilization", "OPENRAL_COSMOS3_GPU_MEM_UTIL", float),
         ("kv_cache_memory_bytes", "OPENRAL_COSMOS3_KV_CACHE_BYTES", str),
+        ("enforce_eager", "OPENRAL_COSMOS3_ENFORCE_EAGER", lambda v: v.lower() in ("1", "true")),
     ):
         if getattr(args, name) is None:
             raw = os.environ.get(env_var)
             setattr(args, name, defaults[name] if raw is None else cast(raw))
-    if args.enforce_eager is None:
-        args.enforce_eager = defaults["enforce_eager"]
 
     py = ensure_venv(args.home, override=args.venv)
 

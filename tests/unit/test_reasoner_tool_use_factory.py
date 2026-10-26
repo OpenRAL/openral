@@ -149,6 +149,16 @@ def test_curated_cosmos_model(monkeypatch: pytest.MonkeyPatch) -> None:
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
     assert client.model_id == "nvidia/Cosmos3-Edge"
+    assert client._max_tokens == REASONER_MODELS["cosmos3-edge"].max_tokens_default == 512
+
+
+def test_curated_cosmos_cap_yields_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``OPENRAL_REASONER_MAX_TOKENS`` lifts the 512 cap, e.g. for long decompositions."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
+    monkeypatch.setenv("OPENRAL_REASONER_MAX_TOKENS", "2048")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, Cosmos3ToolUseClient)
+    assert client._max_tokens == 2048
 
 
 def test_curated_model_accepts_named_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
