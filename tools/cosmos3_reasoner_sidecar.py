@@ -64,6 +64,7 @@ from openral_sim._sidecar_common import (
     run_cmd,
     venv_torch_version,
 )
+from pydantic import TypeAdapter, ValidationError
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "cosmos3-reasoner-sidecar"
 _VENV_ENV = "OPENRAL_COSMOS3_SIDECAR_VENV"
@@ -354,6 +355,17 @@ def pro_serve_args(*, tegra: bool) -> list[str]:
     return [str(a) for a in serve_args(tegra=tegra)]
 
 
+def _env_override(env_var: str, typ: type) -> object | None:
+    """``$env_var`` parsed as ``typ``, ``None`` when unset; a bad value raises."""
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return None
+    try:
+        return TypeAdapter(typ).validate_python(raw)
+    except ValidationError as exc:
+        raise ROSConfigError(f"${env_var}={raw!r} is not a valid {typ.__name__}") from exc
+
+
 def build_serve_argv(
     *,
     vllm_bin: Path,
@@ -473,7 +485,7 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Skip CUDA-graph capture (default on, off on a Jetson, or "
-        "$OPENRAL_COSMOS3_ENFORCE_EAGER=1/0; capture overflows an 8 GB card's VRAM "
+        "$OPENRAL_COSMOS3_ENFORCE_EAGER=true/false; capture overflows an 8 GB card's VRAM "
         "and adds minutes to startup there).",
     )
     p.add_argument(
@@ -509,15 +521,15 @@ def main() -> int:
     args = p.parse_args()
     tegra = is_tegra_host()
     defaults = serve_defaults(tegra=tegra)
-    for name, env_var, cast in (
+    for name, env_var, typ in (
         ("max_model_len", "OPENRAL_COSMOS3_MAX_MODEL_LEN", int),
         ("gpu_memory_utilization", "OPENRAL_COSMOS3_GPU_MEM_UTIL", float),
         ("kv_cache_memory_bytes", "OPENRAL_COSMOS3_KV_CACHE_BYTES", str),
-        ("enforce_eager", "OPENRAL_COSMOS3_ENFORCE_EAGER", lambda v: v.lower() in ("1", "true")),
+        ("enforce_eager", "OPENRAL_COSMOS3_ENFORCE_EAGER", bool),
     ):
         if getattr(args, name) is None:
-            raw = os.environ.get(env_var)
-            setattr(args, name, defaults[name] if raw is None else cast(raw))
+            value = _env_override(env_var, typ)
+            setattr(args, name, defaults[name] if value is None else value)
 
     py = ensure_venv(args.home, override=args.venv)
 

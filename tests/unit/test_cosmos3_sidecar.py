@@ -384,3 +384,17 @@ def test_native_probe_is_false_for_an_interpreter_without_vllm(tmp_path: Path) -
     substituting subprocess.
     """
     assert sidecar.vllm_has_native_edge_model(Path(sys.executable)) is False
+
+
+def test_env_override_parses_and_rejects_typos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``enabled`` (not a bool) must not silently read as false and drop ``--enforce-eager``."""
+    env = "OPENRAL_COSMOS3_ENFORCE_EAGER"
+    monkeypatch.delenv(env, raising=False)
+    assert sidecar._env_override(env, bool) is None
+    monkeypatch.setenv(env, "0")
+    assert sidecar._env_override(env, bool) is False
+    monkeypatch.setenv(env, "true")
+    assert sidecar._env_override(env, bool) is True
+    monkeypatch.setenv(env, "enabled")
+    with pytest.raises(ROSConfigError, match=env):
+        sidecar._env_override(env, bool)
