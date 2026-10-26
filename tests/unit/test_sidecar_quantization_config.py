@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -27,7 +28,8 @@ def test_nf4_config_rejects_invalid_input(name: str, raw: str) -> None:
 
 
 @pytest.mark.parametrize("name", ["_lingbot_vla2_server", "behavior_groot_sidecar"])
-def test_nf4_layers_use_pro_settings(name: str) -> None:
+@pytest.mark.parametrize("skip_name", ["1", "1.0"])
+def test_nf4_layers_use_pro_settings(name: str, skip_name: str) -> None:
     torch = pytest.importorskip("torch")
     bnb = pytest.importorskip("bitsandbytes")
     transformers = pytest.importorskip("transformers")
@@ -38,9 +40,11 @@ def test_nf4_layers_use_pro_settings(name: str) -> None:
         bnb_4bit_compute_dtype="float32",
         bnb_4bit_quant_type="fp4",
         bnb_4bit_use_double_quant=False,
-        llm_int8_skip_modules=["1"],
+        llm_int8_skip_modules=[skip_name],
     )
-    model = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.Linear(64, 64))
+    model = torch.nn.Sequential(
+        torch.nn.Linear(64, 64), torch.nn.Sequential(torch.nn.Linear(64, 64))
+    )
     module = _load(name)
     if name == "_lingbot_vla2_server":
         module._nf4_backbone_in_place(model, torch=torch, config=config, min_params=1)
@@ -53,7 +57,7 @@ def test_nf4_layers_use_pro_settings(name: str) -> None:
     assert layer.weight.quant_type == "fp4"
     assert layer.weight.compress_statistics is False
     assert layer.weight.quant_state.nested is False
-    assert not isinstance(model[1], bnb.nn.Linear4bit)
+    assert not isinstance(model[1][0], bnb.nn.Linear4bit)
     assert torch.isfinite(layer(torch.ones(1, 64, device="cuda"))).all()
 
 
@@ -64,14 +68,20 @@ def test_int8_layers_use_pro_settings() -> None:
     if not torch.cuda.is_available():
         pytest.skip("bitsandbytes packing needs CUDA")
     config = transformers.BitsAndBytesConfig(
-        load_in_8bit=True, llm_int8_threshold=3.0, llm_int8_has_fp16_weight=True
+        load_in_8bit=True,
+        llm_int8_threshold=3.0,
+        llm_int8_has_fp16_weight=True,
+        llm_int8_skip_modules=["1.0"],
     )
-    model = torch.nn.Sequential(torch.nn.Linear(64, 64))
+    model = torch.nn.Sequential(
+        torch.nn.Linear(64, 64), torch.nn.Sequential(torch.nn.Linear(64, 64))
+    )
     _load("behavior_groot_sidecar")._quantize_int8(
         model, device="cuda", config=config, min_params=1
     )
     layer = model[0]
     assert isinstance(layer, bnb.nn.Linear8bitLt)
+    assert not isinstance(model[1][0], bnb.nn.Linear8bitLt)
     assert layer.state.threshold == 3.0
     assert layer.weight.has_fp16_weights is True
     assert torch.isfinite(layer(torch.ones(1, 64, device="cuda", dtype=torch.float16))).all()
@@ -89,3 +99,21 @@ def test_pack_rejects_invalid_config_before_loading_weights() -> None:
                 "invalid",
             ]
         )
+
+
+@pytest.mark.parametrize("recorded", [None, [], ["backbone.0"]])
+@pytest.mark.parametrize("launch", [None, [], ["backbone.0"]])
+def test_pack_skip_modules_must_match(
+    tmp_path: Path, recorded: list[str] | None, launch: list[str] | None
+) -> None:
+    # Legacy packs have no config and quantized every qualifying module.
+    quantization: dict[str, object] = {"scheme": "nf4"}
+    if recorded is not None:
+        quantization["config"] = {"llm_int8_skip_modules": recorded}
+    (tmp_path / "quantization_metadata.json").write_text(json.dumps({"quantization": quantization}))
+    module = _load("_lingbot_vla2_server")
+    if set(recorded or []) != set(launch or []):
+        with pytest.raises(SystemExit, match="differs from the NF4 pack"):
+            module._check_pack_skip_modules(str(tmp_path), launch)
+    else:
+        module._check_pack_skip_modules(str(tmp_path), launch)

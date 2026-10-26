@@ -290,9 +290,12 @@ def _quantize_nf4(model: Any, *, device: str, config: Any, min_params: int = 4_0
     torch = importlib.import_module("torch")
     bnb = importlib.import_module("bitsandbytes")
 
-    def _replace(module: Any) -> None:
+    def _replace(module: Any, prefix: str = "") -> None:
         for name, child in list(module.named_children()):
-            if name in (config.llm_int8_skip_modules or []):
+            path = f"{prefix}.{name}" if prefix else name
+            if name in (config.llm_int8_skip_modules or []) or path in (
+                config.llm_int8_skip_modules or []
+            ):
                 continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 quantized = bnb.nn.Linear4bit(
@@ -318,7 +321,7 @@ def _quantize_nf4(model: Any, *, device: str, config: Any, min_params: int = 4_0
                     )
                 setattr(module, name, quantized)
             else:
-                _replace(child)
+                _replace(child, path)
 
     def _first_float_dtype(self: Any) -> Any:
         for parameter in self.parameters():
@@ -339,9 +342,12 @@ def _quantize_int8(model: Any, *, device: str, config: Any, min_params: int = 4_
     torch = importlib.import_module("torch")
     bnb = importlib.import_module("bitsandbytes")
 
-    def _replace(module: Any) -> None:
+    def _replace(module: Any, prefix: str = "") -> None:
         for name, child in list(module.named_children()):
-            if name in (config.llm_int8_skip_modules or []):
+            path = f"{prefix}.{name}" if prefix else name
+            if name in (config.llm_int8_skip_modules or []) or path in (
+                config.llm_int8_skip_modules or []
+            ):
                 continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 quantized = bnb.nn.Linear8bitLt(
@@ -363,7 +369,7 @@ def _quantize_int8(model: Any, *, device: str, config: Any, min_params: int = 4_
                     )
                 setattr(module, name, quantized)
             else:
-                _replace(child)
+                _replace(child, path)
 
     def _first_float_dtype(self: Any) -> Any:
         for parameter in self.parameters():

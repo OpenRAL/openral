@@ -304,9 +304,14 @@ def _nf4_backbone_in_place(
     """
     import bitsandbytes as bnb
 
-    def _replace(module: Any) -> None:
+    def _replace(module: Any, prefix: str = "") -> None:
         for name, child in list(module.named_children()):
-            if name in skip_names or name in (config.llm_int8_skip_modules or []):
+            path = f"{prefix}.{name}" if prefix else name
+            if (
+                name in skip_names
+                or name in (config.llm_int8_skip_modules or [])
+                or path in (config.llm_int8_skip_modules or [])
+            ):
                 continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 new = bnb.nn.Linear4bit(
@@ -331,7 +336,7 @@ def _nf4_backbone_in_place(
                     )
                 setattr(module, name, new)
             else:
-                _replace(child)
+                _replace(child, path)
 
     _replace(backbone)
 
@@ -371,6 +376,16 @@ def _detect_prequantized(ckpt_dir: str) -> bool:
     except (json.JSONDecodeError, OSError):
         return False
     return bool(meta.get("quantization", {}).get("scheme") == "nf4")
+
+
+def _check_pack_skip_modules(ckpt_dir: str, skip_modules: list[str] | None) -> None:
+    """Refuse shell layouts that differ from the pack's recorded skip list."""
+    meta = json.loads((Path(ckpt_dir) / "quantization_metadata.json").read_text())
+    recorded = meta["quantization"].get("config", {}).get("llm_int8_skip_modules") or []
+    if not isinstance(recorded, list) or not all(isinstance(name, str) for name in recorded):
+        raise SystemExit("NF4 pack has an invalid llm_int8_skip_modules list.")
+    if set(recorded) != set(skip_modules or []):
+        raise SystemExit("Pro's llm_int8_skip_modules differs from the NF4 pack configuration.")
 
 
 def _install_prequantized_backbone(
@@ -577,6 +592,9 @@ class _LingBotPolicy:
                     "nf4", args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
                 )
             )
+        if is_prequant:
+            assert config is not None
+            _check_pack_skip_modules(ckpt_dir, config.llm_int8_skip_modules)
         if is_prequant and device == "cpu":
             raise SystemExit(
                 f"[lingbot_vla2_server] {ckpt_dir} is a pre-quantized NF4 pack, which "
@@ -809,6 +827,9 @@ class _LingBotV1Policy:
                     "nf4", args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
                 )
             )
+        if is_prequant:
+            assert config is not None
+            _check_pack_skip_modules(ckpt_dir, config.llm_int8_skip_modules)
         if is_prequant and device == "cpu":
             raise SystemExit(
                 f"[lingbot_vla2_server:v1] {ckpt_dir} is a pre-quantized NF4 pack, which "
