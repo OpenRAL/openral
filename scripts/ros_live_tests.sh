@@ -65,14 +65,10 @@ TARGETS=(
     # and on a deliberate arm/box collision. Needs mujoco in the venv.
     tests/integration/test_safety_kernel_force_observer_openarm.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
-    tests/integration/test_sim_depth_registered_colour_live.py
     # DeployRuntime.estimated_depth_camera: the real depth provider in metric
     # mode against a fake DA3 sidecar at its ZMQ boundary (no GPU).
     tests/integration/test_estimated_depth_provider_live.py
     tests/integration/test_hal_sigint_teardown_live.py
-    # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
-    # HALs with attach mechanics (kernel fails closed on an unstamped set).
-    tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
     # Defense-in-depth E-stop, on a real three-process graph: the in-band
     # safety node is SIGKILLed mid chunk-stream and /openral/estop still fires,
     # from a different process, with the structured KIND_TIMEOUT trigger. Needs
@@ -205,13 +201,23 @@ TARGETS=(
 # packages/*/test node suites that test-ros2 runs only on dispatch, and the
 # tests/unit files that skip without ROS. Each runs in its OWN pytest process:
 # the packages/*/test suites own rclpy init/shutdown per module, and sharing
-# one interpreter with the block above cascades into failures. MUJOCO_GL=egl:
-# the camera-rendering twins need a GL context, and Mesa's EGL gives one with
-# no display or GPU. Left out until fixed: test_manifest_hal_reset_to_pose and
+# one interpreter with the block above cascades into failures. MUJOCO_GL
+# (default egl): the camera-rendering twins need a GL context. On a GPU-less
+# host MuJoCo's EGL backend finds no device, so the docker-build step sets
+# MUJOCO_GL=osmesa (the image ships libosmesa6). Left out until fixed: test_manifest_hal_reset_to_pose and
 # test_openarm_hal_lifecycle -- both abort at teardown, the exit 139 / 134
 # family #384 tracks -- and test_franka_scene_attach.launch, whose process
 # dies mid-test in this image.
 ISOLATED_TARGETS=(
+    # Both assert on who publishes a shared topic (/openral/attachment_state
+    # publisher count; the camera mount on /tf_static), so a node an earlier
+    # test in the shared interpreter left behind fails them (docker-build
+    # 2026-10-25: "assert 1 == 0" publishers, "no zed_camera_link -> optical").
+    # MuJoCo twins: rendered under MUJOCO_GL (see above).
+    tests/integration/test_sim_depth_registered_colour_live.py
+    # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
+    # HALs with attach mechanics (kernel fails closed on an unstamped set).
+    tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
     packages/openral_foxglove_bringup/test/test_bucket2_markers.py
     packages/openral_foxglove_bringup/test/test_foxglove_launch.py
     packages/openral_foxglove_bringup/test/test_layout.py

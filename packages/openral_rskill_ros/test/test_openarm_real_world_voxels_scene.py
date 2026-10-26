@@ -396,6 +396,11 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "camera_infos": ("head_zed=/zed/zed_node/rgb/color/rect/camera_info",),
         "primary_camera": "head_zed",
         "device": "auto",
+        # #421: the HAL's reply deadline bounds the segmenter's frame wait; no
+        # tracker camera on this scene, so the per-camera lists are empty.
+        "request_deadline_s": 0.25,
+        "camera_request_deadlines": ("",),
+        "camera_max_frame_skews": ("",),
         "use_sim_time": False,
     }
 

@@ -252,7 +252,11 @@ jobs:
           # argument while keeping the ROS + colcon-overlay sourcing the tests
           # depend on. The ros-* listing first: the apt layer is unpinned, so
           # diff it between a crashing run and a clean one.
+          # MUJOCO_GL=osmesa: the hosted runner has no GPU, and MuJoCo's EGL
+          # backend needs a GPU device ("gladLoadGL error" on the camera-rendering
+          # twins); the image ships libosmesa6 for this.
           docker run --rm --entrypoint /entrypoint.sh \
+            -e MUJOCO_GL=osmesa -e PYOPENGL_PLATFORM=osmesa \
             --ulimit core=-1 \
             -v "$RUNNER_TEMP/cores:/cores" \
             -v "$PWD/tests:/workspace/tests:ro" \

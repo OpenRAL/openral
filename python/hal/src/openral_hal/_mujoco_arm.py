@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -288,6 +289,12 @@ class MujocoArmHAL(HALBase):
         # (SimSensorBridge's camera timer on the node's single-threaded
         # executor) — EGL contexts are thread-affine.
         self._renderers: dict[tuple[int, int], Any] = {}  # (h, w) -> mujoco.Renderer
+        # Serialises a render (the bridge's camera timer, on the executor's spin
+        # thread) against the renderers' teardown (``disconnect`` / ``estop``, from
+        # a lifecycle transition on another thread): closing a GL context mid
+        # ``render()`` is a use-after-free (docker-build live suite, OSMesa:
+        # segfault in ``Renderer.render`` while ``on_cleanup`` closed it).
+        self._render_lock = threading.RLock()
         self._render_failed: bool = False
         self._mjcf_cameras: set[str] = set()
         self._render_missing_warned: set[str] = set()
@@ -464,10 +471,11 @@ class MujocoArmHAL(HALBase):
         self._connected = False
 
     def _close_renderers(self) -> None:
-        for renderer in self._renderers.values():
-            with contextlib.suppress(Exception):
-                renderer.close()
-        self._renderers.clear()
+        with self._render_lock:
+            for renderer in self._renderers.values():
+                with contextlib.suppress(Exception):
+                    renderer.close()
+            self._renderers.clear()
 
     def mujoco_handles(self) -> tuple[Any, Any] | None:
         """Expose the live MuJoCo ``(model, data)`` for the bare-twin arm.
@@ -535,8 +543,14 @@ class MujocoArmHAL(HALBase):
         Renderers are created lazily on the first call that needs each resolution
         so their EGL context binds on the caller's thread (the bridge's camera
         timer runs on the node's single-threaded executor; EGL contexts are
-        thread-affine).
+        thread-affine). The whole render holds ``_render_lock``, so a concurrent
+        ``disconnect`` / ``estop`` waits for it and the connection is re-checked
+        under the lock.
         """
+        with self._render_lock:
+            return self._read_images_locked()
+
+    def _read_images_locked(self) -> dict[str, object]:
         if not self._connected or self._model is None or self._data is None:
             return {}
         rgb = [s for s in self.description.sensors if s.modality == "rgb"]
