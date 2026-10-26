@@ -68,6 +68,7 @@ from openral_rskill._vla_core import (
     resolve_n_action_steps,
     resolve_rskill_repo_revision,
 )
+from openral_rskill.quantization_gate import pro_quantization
 
 from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim.policies._policy_loading import lazy_import_lerobot, load_manifest_for_spec
@@ -139,45 +140,6 @@ def _import_real_groot_policy() -> Any:
         del sys.modules[name]
     module = importlib.import_module(name)
     return module.GrootPolicy
-
-
-def _quantize_groot_nf4(policy: Any, torch: Any, *, scope: str) -> None:
-    """NF4-quantize the GR00T model in place (accelerate-free).
-
-    ``scope`` selects how much of the model is packed to 4-bit:
-
-    - ``"backbone"`` (default): only ``_groot_model.backbone`` (the ~2 B Qwen3-VL
-      VLM). The diffusion action head stays bf16. Enough for the LIBERO N1.7
-      checkpoint (16-layer DiT head) to fit 8 GB.
-    - ``"model"``: the whole ``_groot_model`` — backbone **and** the diffusion
-      action head's large ``Linear`` blocks. Needed for checkpoints with a
-      heavier head (e.g. the SO-101 fruit checkpoint's 32-layer DiT), which
-      overshoot 8 GB by ~300 MiB when the head stays bf16.
-
-    Two GR00T-specific bnb hazards are avoided structurally in both scopes:
-
-    (a) ``.to(dtype=...)`` on a bnb model raises ``"cannot cast a bitsandbytes
-        model in a new dtype"``. We never dtype-cast the quantized model — the
-        rewrite keeps bf16 placeholder weights until a pure device-move
-        ``policy.to(cuda)`` packs them, and ``model_params_fp32=False`` stops
-        ``GrootPolicy`` from fp32-casting the params before we quantize.
-
-    (b) The GR00T DiT ``TimestepEncoder.forward`` infers its compute dtype from
-        ``next(self.parameters()).dtype``; a 4bit-packed encoder makes that
-        ``uint8`` and the following SiLU crashes (``silu not implemented for
-        'Byte'``). ``quantize_nf4_in_place`` only rewrites ``Linear`` modules with
-        ``>=4M`` weight elements, so the small ``TimestepEncoder`` MLP (its
-        Linears are ~0.26–1 M params) stays bf16 even under ``scope="model"`` —
-        the encoder reads bf16, not uint8, and the bug cannot recur.
-    """
-    from openral_sim._quantization import quantize_nf4_in_place
-
-    target = policy._groot_model if scope == "model" else policy._groot_model.backbone
-    quantize_nf4_in_place(
-        target,
-        torch=torch,
-        compute_dtype=torch.bfloat16,
-    )
 
 
 def _patch_groot_dtype_property(torch: Any) -> None:
@@ -563,7 +525,9 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # reason: staged loader
             policy = GrootPolicy.from_pretrained(local_path, config=config)
         if quantize:
             with _groot_phase("quantize_nf4", scope=quantize_scope):
-                _quantize_groot_nf4(policy, torch, scope=quantize_scope)
+                pro_quantization(what="gr00t").quantize_groot_nf4(
+                    policy, torch, scope=quantize_scope
+                )
         with _groot_phase("to_device", device=device):
             policy = policy.to(device)
     finally:

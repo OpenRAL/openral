@@ -75,7 +75,7 @@ before publishing a number; a published one is a benchmark result like any
 other ([Run a benchmark](../benchmark/run-a-benchmark.md)).
 
 Only large Linears are touched: every `torch.nn.Linear` whose weight has at
-least 4M elements (`DEFAULT_MIN_PARAMS_TO_QUANTIZE`). Bias terms stay in the
+least 4M elements (`DEFAULT_MIN_PARAMS_TO_QUANTIZE` in OpenRAL Pro's quantization module). Bias terms stay in the
 compute dtype for numerical safety.
 
 ### Partial scopes
@@ -146,13 +146,13 @@ describe the declared dtype, not what you just ran.
 
 Two paths to 4-bit weights; they differ in load time, not accuracy.
 
-**On-line (default).** The adapter downloads bf16 weights and calls
-`quantize_nf4_in_place`, which rewrites the Linears and defers the actual pack
+**On-line (default).** The adapter downloads bf16 weights and calls OpenRAL
+Pro's `quantize_nf4_in_place` (through `openral_rskill.quantization_gate.pro_quantization`), which rewrites the Linears and defers the actual pack
 to the next `.to(cuda)`. Costs roughly 90 s per checkpoint on a 4070-mobile,
 **every launch**.
 
 **Pre-quantized (fast path).** The packed weights live in the Hub repo
-alongside a `quantization_metadata.json` sentinel.
+alongside a `quantization_metadata.json` sentinel. Pro's
 `load_prequantized_state_for_rskill` spots the sentinel, downloads them, and
 installs them directly via `Params4bit.from_prequantized`, skipping the
 conversion. It is a no-op on a bf16 repo, so adapters call it unconditionally.

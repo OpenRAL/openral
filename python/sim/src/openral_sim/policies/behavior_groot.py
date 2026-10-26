@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_observability import inference_span
+from openral_rskill.quantization_gate import sidecar_quantization_args
 
 from openral_sim import _behavior_wire
 from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
@@ -278,6 +279,7 @@ def build_behavior_groot_policy(
             host,
             "--port",
             str(port),
+            *sidecar_quantization_args(quantization, what="the BEHAVIOR GR00T sidecar"),
         ]
 
     client = SidecarClient(

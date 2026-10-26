@@ -202,6 +202,10 @@ def test_sidecar_parses_int8_quantization() -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    args = module._parse_args(["--checkpoint", str(_RSKILL), "--quantization", "int8"])
+    base = ["--checkpoint", str(_RSKILL), "--quantization", "int8"]
+    # Sub-16-bit needs OpenRAL Pro: the adapter passes Pro's config (ADR-0123).
+    with pytest.raises(SystemExit, match="OpenRAL Pro"):
+        module._parse_args(base)
+    args = module._parse_args([*base, "--quantization-config", '{"load_in_8bit": true}'])
     assert args.quantization == "int8"
     assert args.nf4_min_params == 4_000_000

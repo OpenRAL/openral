@@ -67,6 +67,7 @@ from openral_rskill._vla_core import (
     resolve_n_action_steps,
     resolve_rskill_repo_id,
 )
+from openral_rskill.quantization_gate import pro_quantization
 
 from openral_sim._quantization import (
     require_supported_dtype,
@@ -236,14 +237,13 @@ def _openvla_phase(name: str, **fields: Any) -> Any:
     return phase_timer(name, prefix="openvla", gpu_mb=True, log=_log, **fields)
 
 
-def _import_transformers() -> tuple[Any, Any, Any]:
-    """Import the OpenVLA auto-model + ``AutoProcessor`` + ``BitsAndBytesConfig``.
+def _import_transformers() -> tuple[Any, Any]:
+    """Import the OpenVLA auto-model + ``AutoProcessor``.
 
     OpenVLA is a transformers custom-code model (``auto_map`` →
     ``OpenVLAForActionPrediction``), loaded with ``trust_remote_code=True``. It is
-    NOT a lerobot policy. ``BitsAndBytesConfig`` is returned so the 4-bit NF4
-    config is built at ``from_pretrained`` time (a 4-bit model cannot be
-    ``.to()``-moved afterwards).
+    NOT a lerobot policy. An NF4 load takes its ``quantization_config`` from
+    OpenRAL Pro (ADR-0123).
 
     OpenVLA's ``auto_map`` keys the model on ``AutoModelForVision2Seq``. Newer
     Transformers releases may remove that auto class without migrating legacy
@@ -251,7 +251,7 @@ def _import_transformers() -> tuple[Any, Any, Any]:
     when present; otherwise use a compatibility shim that reads the repo's legacy
     auto map and loads the referenced dynamic class directly.
 
-    Returns ``(auto_model_cls, AutoProcessor, BitsAndBytesConfig)``, untyped
+    Returns ``(auto_model_cls, AutoProcessor)``, untyped
     (transformers has no strict stubs in this workspace).
 
     Raises:
@@ -259,7 +259,7 @@ def _import_transformers() -> tuple[Any, Any, Any]:
     """
     try:
         import transformers
-        from transformers import AutoProcessor, BitsAndBytesConfig
+        from transformers import AutoProcessor
     except ImportError as exc:  # pragma: no cover - opt-in dependency
         from openral_sim.policy_deps import model_family_install_hint
 
@@ -272,7 +272,7 @@ def _import_transformers() -> tuple[Any, Any, Any]:
     if auto_model_cls is None:
         auto_model_cls = _AutoModelForVision2SeqCompat
     _install_tokenization_compat(transformers)
-    return auto_model_cls, AutoProcessor, BitsAndBytesConfig
+    return auto_model_cls, AutoProcessor
 
 
 class _AutoModelForVision2SeqCompat:
@@ -690,7 +690,6 @@ def _load_openvla_model(
     torch: Any,
     auto_model_cls: Any,
     auto_processor_cls: Any,
-    bnb_config_cls: Any,
     repo_id: str,
     revision: str | None,
     device: str,
@@ -710,12 +709,8 @@ def _load_openvla_model(
         "attn_implementation": "eager",
     }
     if use_nf4:
-        load_kwargs["quantization_config"] = bnb_config_cls(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-        )
+        pro = pro_quantization(what="openvla")
+        load_kwargs["quantization_config"] = pro.hf_quantization_config("nf4", torch)
         # A 4-bit model is placed at load time; it cannot be .to()-moved after.
         # Use the integer CUDA index ({"": 0}) — accelerate's single-device
         # dispatch path is sensitive to the device_map form for quantized
@@ -768,7 +763,7 @@ def _seed_torch_for_sampling(torch: Any, seed: int | None) -> None:
 @POLICIES.register(
     "openvla",
     install_groups=("sim",),
-    required_imports=("transformers", "bitsandbytes"),
+    required_imports=("transformers",),
 )
 def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     """Load an OpenVLA / OpenVLA-OFT checkpoint as a transformers custom-code model."""
@@ -781,7 +776,7 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     with _openvla_phase("imports"):
         import torch
 
-        auto_model_cls, auto_processor_cls, bnb_config_cls = _import_transformers()
+        auto_model_cls, auto_processor_cls = _import_transformers()
 
     # The rSkill manifest is the source of truth for the repo id + dtype.
     resolve_rskill_repo_id(spec.weights_uri, adapter_name="OpenVLA")  # validates the reference
@@ -810,7 +805,6 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         torch=torch,
         auto_model_cls=auto_model_cls,
         auto_processor_cls=auto_processor_cls,
-        bnb_config_cls=bnb_config_cls,
         repo_id=repo_id,
         revision=revision,
         device=device,

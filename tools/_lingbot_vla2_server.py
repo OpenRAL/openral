@@ -933,6 +933,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--robo-name", default="robotwin", help="upstream robot config stem")
     p.add_argument("--quantization", choices=("none", "nf4"), default="nf4")
     p.add_argument(
+        "--quantization-config",
+        default=None,
+        help="OpenRAL Pro's BitsAndBytesConfig kwargs (JSON) from tools/lingbot_vla2_sidecar.py; "
+        "nf4 is refused without it (ADR-0123).",
+    )
+    p.add_argument(
         "--device",
         choices=("cuda", "cpu"),
         default="cuda",
@@ -970,6 +976,12 @@ def main(argv: list[str]) -> int:
     if not os.path.exists("/etc/nv_tegra_release"):
         os.environ.setdefault(_var, "expandable_segments:True")
     args = _parse_args(argv)
+    if args.quantization != "none" and not args.quantization_config:
+        raise SystemExit(
+            f"--quantization {args.quantization} needs OpenRAL Pro (ADR-0123): start this "
+            "sidecar through tools/lingbot_vla2_sidecar.py with OpenRAL Pro installed, "
+            "which passes --quantization-config."
+        )
     policy: _LingBotPolicy | _LingBotV1Policy = (
         _LingBotV1Policy(args) if args.variant == "v1" else _LingBotPolicy(args)
     )

@@ -24,11 +24,13 @@ enforced upstream in the ``RSkillManifest`` loader, not here — the first
 from __future__ import annotations
 
 import argparse
+import json
 import platform
 import sys
 import textwrap
 from pathlib import Path
 
+from openral_rskill.quantization_gate import sidecar_quantization_args
 from openral_sim._sidecar_common import (
     build_parser,
     ensure_pip_venv,
@@ -173,6 +175,10 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
     only — the MSAT diffusion head is left at bf16. (``source`` is unused
     here — the rldx server is imported as a module, not run by path.)
     """
+    # OpenRAL Pro chooses the BitsAndBytesConfig; the RLDX venv has no Pro, so
+    # its kwargs are baked into the wrapper (ADR-0123).
+    quant_args = sidecar_quantization_args(args.quantization, what="the RLDX sidecar")
+    quant_kwargs = json.loads(quant_args[1]) if quant_args else None
     wrapper = work / "boot_server.py"
     wrapper.write_text(
         textwrap.dedent(
@@ -192,6 +198,7 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
             import sys
 
             QUANTIZATION = {args.quantization!r}
+            QUANT_KWARGS = {quant_kwargs!r}
 
             # rldx/model/modules/backbone/adapter.py reads
             # RLDX_ATTN_IMPL (default "flash_attention_2") as its opt-out.
@@ -226,19 +233,9 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
                     if "quantization_config" not in kwargs:
                         from transformers import BitsAndBytesConfig
                         import torch
-                        if QUANTIZATION == "nf4":
-                            kwargs["quantization_config"] = BitsAndBytesConfig(
-                                load_in_4bit=True,
-                                bnb_4bit_quant_type="nf4",
-                                bnb_4bit_compute_dtype=torch.bfloat16,
-                                bnb_4bit_use_double_quant=True,
-                                llm_int8_skip_modules=_SKIP_MODULES,
-                            )
-                        elif QUANTIZATION == "int8":
-                            kwargs["quantization_config"] = BitsAndBytesConfig(
-                                load_in_8bit=True,
-                                llm_int8_skip_modules=_SKIP_MODULES,
-                            )
+                        kwargs["quantization_config"] = BitsAndBytesConfig(
+                            **{{**QUANT_KWARGS, "llm_int8_skip_modules": _SKIP_MODULES}}
+                        )
                         # Keep torch_dtype=bf16. bnb only quantizes Linear
                         # layers; non-quantized parameters (embeddings,
                         # position tables, vision-tower Conv2d) honor

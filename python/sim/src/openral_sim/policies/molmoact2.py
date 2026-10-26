@@ -71,12 +71,11 @@ from openral_rskill._vla_core import (
 # path. The dtype-resolution helpers (resolve_quant_plan, torch_dtype_for,
 # default_dtype_for_device) live there too so every adapter speaks the same
 # QuantizationDtype enum vocabulary.
+from openral_rskill.quantization_gate import pro_quantization
+
 from openral_sim._quantization import (
     default_dtype_for_device,
-    detect_prequantized_nf4,
-    load_prequantized_state_for_rskill,
     peek_safetensors_keys,
-    quantize_nf4_in_place,
     require_supported_dtype,
     resolve_quant_plan,
     targeted_reset_parameters,
@@ -588,7 +587,11 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     # ``MolmoAct2RotaryEmbedding`` self-heals a meta/garbage ``inv_freq`` (it is
     # ``persistent=True`` → restored by the pack; the non-persistent cos/sin
     # caches are rebuilt lazily inside ``build_cache``).
-    prequant_repo = detect_prequantized_nf4(spec) if use_nf4 and device.startswith("cuda") else None
+    prequant_repo = (
+        pro_quantization(what="molmoact2").detect_prequantized_nf4(spec)
+        if use_nf4 and device.startswith("cuda")
+        else None
+    )
     if prequant_repo is not None:
         # reason: accelerate ships no py.typed; the exact code differs by install state
         from accelerate import init_empty_weights  # type: ignore[import-untyped,unused-ignore]
@@ -617,7 +620,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         finally:
             torch.set_default_dtype(prev_dtype)
         with _molmoact2_phase("quantize_nf4"):
-            quantize_nf4_in_place(
+            pro_quantization(what="molmoact2").quantize_nf4_in_place(
                 model, torch=torch, compute_dtype=torch.bfloat16, new_modules_on_meta=True
             )
         # Materialise meta params on CPU first, then a single move to the
@@ -631,7 +634,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         with _molmoact2_phase("reset_parameters"):
             targeted_reset_parameters(model, covered_keys=fast_state_keys)
         with _molmoact2_phase("prequant_state_load"):
-            load_prequantized_state_for_rskill(
+            pro_quantization(what="molmoact2").load_prequantized_state_for_rskill(
                 model, spec, torch=torch, log_event_prefix="molmoact2"
             )
         with _molmoact2_phase("to_device", device=device):
@@ -681,13 +684,17 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
             if b.dtype == torch.float32:
                 b.data = b.data.to(torch.bfloat16)
     with _molmoact2_phase("quantize_nf4"):
-        quantize_nf4_in_place(model, torch=torch, compute_dtype=torch.bfloat16)
+        pro_quantization(what="molmoact2").quantize_nf4_in_place(
+            model, torch=torch, compute_dtype=torch.bfloat16
+        )
     # Overlay the prequantized nf4 pack shipped at the rSkill's weights_uri so
     # the ~25 s on-line bf16→nf4 conversion on ``.to(cuda)`` is replaced by a
     # fast state-dict load. No-op when there is no pack (then ``.to(cuda)``
     # re-packs); a pack whose keys don't line up raises ``ROSConfigError``.
     with _molmoact2_phase("prequant_state_load"):
-        load_prequantized_state_for_rskill(model, spec, torch=torch, log_event_prefix="molmoact2")
+        pro_quantization(what="molmoact2").load_prequantized_state_for_rskill(
+            model, spec, torch=torch, log_event_prefix="molmoact2"
+        )
     with _molmoact2_phase("to_device", device=device):
         model = model.to(device=device)
     model.eval()

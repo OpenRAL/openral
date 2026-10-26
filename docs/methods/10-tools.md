@@ -593,61 +593,61 @@ The single canonical producer of the `SKILL.md` mirror: `rskill.yaml` is authori
 
 ### `tools/rldx_sidecar.py`
 _Boot helper for the RLDX-1 inference sidecar, companion to `openral_sim.policies.rldx`._
-Materialises a Python 3.10 venv, clones upstream RLDX-1, installs its dependencies (an override path on aarch64), patches in NF4/int8 quantization for the Qwen3-VL backbone, and execs into the inference server. Needed because upstream pins Python ~3.10 and ships a custom model class Transformers doesn't recognise.
+Materialises a Python 3.10 venv, clones upstream RLDX-1, installs its dependencies (an override path on aarch64), patches in NF4/int8 quantization for the Qwen3-VL backbone (the `BitsAndBytesConfig` kwargs come from OpenRAL Pro via `sidecar_quantization_args`, baked into the boot wrapper), and execs into the inference server. Needed because upstream pins Python ~3.10 and ships a custom model class Transformers doesn't recognise.
 
-- `_LABEL: str` (L40) — `"rldx-sidecar"`, the sentinel/log label for this sidecar's provisioning.
-- `_REPO_URL: str` (L41) — Upstream `RLWRLD/RLDX-1` git URL cloned into the venv's source tree.
-- `_DEFAULT_HOME: Path` (L42) — `~/.cache/openral/rldx-sidecar`, overridable via `--home`.
-- `_AARCH64_OVERRIDE: Path` (L52) — `sidecar_requirements/rldx-aarch64-override.txt`, the torch/torchvision pin override `_install_deps_aarch64` installs under.
-- `_NVRTC_OVERRIDE: Path` (L60) — Shared `aarch64-nvrtc-override.txt`, raising nvrtc past the sm_121 cliff.
+- `_LABEL: str` (L42) — `"rldx-sidecar"`, the sentinel/log label for this sidecar's provisioning.
+- `_REPO_URL: str` (L43) — Upstream `RLWRLD/RLDX-1` git URL cloned into the venv's source tree.
+- `_DEFAULT_HOME: Path` (L44) — `~/.cache/openral/rldx-sidecar`, overridable via `--home`.
+- `_AARCH64_OVERRIDE: Path` (L54) — `sidecar_requirements/rldx-aarch64-override.txt`, the torch/torchvision pin override `_install_deps_aarch64` installs under.
+- `_NVRTC_OVERRIDE: Path` (L62) — Shared `aarch64-nvrtc-override.txt`, raising nvrtc past the sm_121 cliff.
 
-- `_install_deps(*, source, uv, quantization) -> Path` — `uv sync` in the cloned source tree, then installs `bitsandbytes` when quantizing to NF4/int8. Delegates to `_install_deps_aarch64` on aarch64, where the plain sync can't succeed. (L129)
-- `_install_deps_aarch64(*, source, quantization) -> Path` — aarch64 replacement for `uv sync`: provisions the venv with pinned torch/cuda overrides plus the quantization extras, keyed so a corrected pin repairs an existing venv. (L65)
-- `_aarch64_extras(quantization) -> list[str]` — the packages installed on top of upstream's own dependency set on aarch64; shared between the install pass and the sentinel spec so they cannot drift. (L113)
-- `_make_wrapper(*, work, source, args) -> Path` — Generates the server-launching wrapper script: monkey-patches model loading for NF4/int8/no-op quantization, falls back to `sdpa` attention when flash-attn isn't importable, and hands off to the upstream server entry point. (L165)
-- `main() -> int` — argparse entry point (`--model`, `--port`, `--quantization`, `--home`); stamps the sidecar identity record and execs into the sidecar venv so SIGINT reaches the server. (L322)
+- `_install_deps(*, source, uv, quantization) -> Path` — `uv sync` in the cloned source tree, then installs `bitsandbytes` when quantizing to NF4/int8. Delegates to `_install_deps_aarch64` on aarch64, where the plain sync can't succeed. (L131)
+- `_install_deps_aarch64(*, source, quantization) -> Path` — aarch64 replacement for `uv sync`: provisions the venv with pinned torch/cuda overrides plus the quantization extras, keyed so a corrected pin repairs an existing venv. (L67)
+- `_aarch64_extras(quantization) -> list[str]` — the packages installed on top of upstream's own dependency set on aarch64; shared between the install pass and the sentinel spec so they cannot drift. (L115)
+- `_make_wrapper(*, work, source, args) -> Path` — Generates the server-launching wrapper script: monkey-patches model loading for NF4/int8/no-op quantization, falls back to `sdpa` attention when flash-attn isn't importable, and hands off to the upstream server entry point. (L167)
+- `main() -> int` — argparse entry point (`--model`, `--port`, `--quantization`, `--home`); stamps the sidecar identity record and execs into the sidecar venv so SIGINT reaches the server. (L319)
 
 ### `tools/xr1_sidecar.py` + `tools/_xr1_server.py`
 _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provisions its pinned dependency stack and execs the server, which loads the pinned MiBoT checkpoint (NF4 or BF16), recreates the benchmark-specific chat template, and serves `ping/reset/get_action/close` over the shared ZMQ/msgpack wire._
-- `main() -> int` (xr1_sidecar.py L122) — parse model/profile/quantization/host/port/home; `--export-dir` persists an NF4 checkpoint and exits, otherwise stamp sidecar identity and `os.execvpe` into `_xr1_server.py`.
+- `main() -> int` (xr1_sidecar.py L123) — parse model/profile/quantization/host/port/home; `--export-dir` persists an NF4 checkpoint and exits, otherwise stamp sidecar identity and `os.execvpe` into `_xr1_server.py`. An `nf4` load first asks OpenRAL Pro for `--quantization-config` (`sidecar_quantization_args`), before the venv build.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_xr1_server.py L17) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`'s `_NDARRAY_SENTINEL`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_STATE_DIM = 60` (_xr1_server.py L18) — XR-1's internal padded state width; `_pad_state` pads any frame/history up to this.
 - `_ACTION_DIMS = {"robocasa_mg": 7, "robocasa365": 12, "vlabench_choice": 7}` (_xr1_server.py L19) — Per-benchmark-profile action width the checkpoint processor decodes.
-- `main() -> int` (_xr1_server.py L410) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
+- `main() -> int` (_xr1_server.py L427) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
 - `_messages(profile, images, instruction) -> list[dict[str, Any]]` — exact RoboCasa, RoboCasa365-video, or VLABench message layout from upstream revision `7c20088`.
 - `_pad_state(state) -> NDArray[np.float32]` — pad one frame or a four-frame history to XR-1's 60-D internal state.
 - `_local_snapshot(model) -> str` — resolve a local path or `hf://repo@sha` ref to a local snapshot dir (`snapshot_download`, works offline). transformers 4.57.1's `AutoProcessor` drops `revision` from its config probes, so a repo id + `revision=` reads `main` (offline without a cached `refs/main`: falls back to the bare Qwen2 tokenizer).
 - `_require_mibot_processor(processor, model) -> Any` — raise `TypeError` at load when `AutoProcessor` returned anything without `decode_action` (i.e. not the checkpoint's MiBotProcessor), instead of failing the first forward on missing `state`/`action_mask`.
-- `class _XR1Policy` — Pinned `AutoModel`/`AutoProcessor` custom-code loader; NF4 uses a BF16 compute dtype, and `prequantized_nf4` reloads a saved packed checkpoint without re-quantizing. `export_pretrained` writes sharded packed safetensors plus quantization metadata.
+- `class _XR1Policy` — Pinned `AutoModel`/`AutoProcessor` custom-code loader; NF4 builds `BitsAndBytesConfig` from the launcher's `--quantization-config` (OpenRAL Pro, ADR-0123) and exits without it, and `prequantized_nf4` reloads a saved packed checkpoint without re-quantizing. `export_pretrained` writes sharded packed safetensors plus quantization metadata.
 
 ### `tools/qwen_vlm_sidecar.py` + `tools/_qwen_vlm_server.py`
 _Boot helper + server for the Qwen3.5-4B scene-VLM sidecar, companion to `QwenSceneVlm`. Provisions an isolated venv and execs into a ZMQ REQ/REP + msgpack server answering scene questions, run out-of-process for dependency/VRAM isolation. Apache-2.0 model._
 
-- `_DEFAULT_HOME: Path` (L34) — `~/.cache/openral/qwen-vlm-sidecar`, overridable via `--home` / `$OPENRAL_QWEN_VLM_SIDECAR_HOME`.
-- `_VENV_ENV: str` (L35) — Env var name for the `--venv` override.
-- `_HOME_ENV: str` (L36) — Env var name for the `--home` override.
-- `_LOCK: Path` (L53) — Hash-locked pinned deps file the venv is provisioned from.
-- `_NVRTC_OVERRIDE: Path` (L62) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
-- `ensure_venv(home, *, override=None) -> Path` (L67) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded); honours `$OPENRAL_QWEN_VLM_SIDECAR_VENV`.
-- `main() -> int` (L111) — argparse (`--model`, `--host`, `--port`, `--max-side`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME` and `os.execvpe`s into `_qwen_vlm_server.py`.
-- `_load(model_id) -> (processor, model)` (_qwen_vlm_server.py L61) — dual-path NF4 load: auto-detects a pre-quantized checkpoint via its embedded config and loads 4-bit directly, else quantizes at load with serial materialization for 8 GB.
-- `_query(processor, model, *, image, question, max_side, max_new_tokens) -> str` (_qwen_vlm_server.py L103) — one scene-question→answer generate via the canonical Qwen-VL recipe (strips the `<think>` trace).
-- `main() -> int` (_qwen_vlm_server.py L172) — ZMQ REP loop (`ping`/`query`/`shutdown`) that replies with an error object rather than dying on exception. Validated live against real hardware.
+- `_DEFAULT_HOME: Path` (L35) — `~/.cache/openral/qwen-vlm-sidecar`, overridable via `--home` / `$OPENRAL_QWEN_VLM_SIDECAR_HOME`.
+- `_VENV_ENV: str` (L36) — Env var name for the `--venv` override.
+- `_HOME_ENV: str` (L37) — Env var name for the `--home` override.
+- `_LOCK: Path` (L54) — Hash-locked pinned deps file the venv is provisioned from.
+- `_NVRTC_OVERRIDE: Path` (L63) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
+- `ensure_venv(home, *, override=None) -> Path` (L68) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded); honours `$OPENRAL_QWEN_VLM_SIDECAR_VENV`.
+- `main() -> int` (L112) — argparse (`--model`, `--host`, `--port`, `--max-side`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME` and `os.execvpe`s into `_qwen_vlm_server.py`.
+- `_load(model_id) -> (processor, model)` (_qwen_vlm_server.py L76) — dual-path NF4 load: auto-detects a pre-quantized checkpoint via its embedded config and loads 4-bit directly, else quantizes at load — with the `--quantization-config` its launcher took from OpenRAL Pro, refusing without it — with serial materialization for 8 GB.
+- `_query(processor, model, *, image, question, max_side, max_new_tokens) -> str` (_qwen_vlm_server.py L113) — one scene-question→answer generate via the canonical Qwen-VL recipe (strips the `<think>` trace).
+- `main() -> int` (_qwen_vlm_server.py L182) — ZMQ REP loop (`ping`/`query`/`shutdown`) that replies with an error object rather than dying on exception. Validated live against real hardware.
 
 ### `tools/locateanything_sidecar.py` + `tools/_locateanything_server.py`
 _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detector sidecar, companion to `LocateAnythingDetector`. Runs out-of-process over the same ZMQ pattern as `rldx_sidecar` because its pinned transformers version conflicts with the workspace's. No upstream repo to clone — the model is custom-code on the Hub._
 
-- `_DEFAULT_HOME: Path` (L33) — `~/.cache/openral/locateanything-sidecar`.
-- `_VENV_ENV: str` (L34) — Env var name for the `--venv` override.
-- `_HOME_ENV: str` (L35) — Env var name for the `--home` override.
-- `_LOCK: Path` (L50) — Hash-locked pinned deps (`transformers==4.57.1` load-bearing); regenerated via `uv pip compile tools/sidecar_requirements/locateanything.in`.
-- `_NVRTC_OVERRIDE: Path` (L59) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
-- `ensure_venv(home, *, override=None) -> Path` (L64) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded, keyed on `_LOCK` + `_NVRTC_OVERRIDE`); honours `$OPENRAL_LOCATEANYTHING_SIDECAR_VENV`.
-- `main() -> int` (L109) — argparse (`--model` required, `--host`, `--port`, `--max-side`, `--home`, `--venv`); sets `OPENRAL_ALLOW_REMOTE_CODE=1` (the operator opted in by launching this sidecar) and execs into `_locateanything_server.py`.
-- `_split_model_ref(model_ref) -> tuple[str, str]` (_locateanything_server.py L44) — Split a `repo@revision` reference into `(repo, revision)`.
-- `_load(model_ref) -> (processor, model)` (_locateanything_server.py L55) — NF4 bitsandbytes load of the pinned custom-code checkpoint.
-- `_detect(processor, model, image, query, *, max_side, mode, max_new_tokens) -> str` (_locateanything_server.py L99) — One detection request → the model's raw generated text; `<ref>`/`<box>` parsing stays in the main-env backend.
-- `main() -> int` (_locateanything_server.py L146) — ZMQ REP loop (`ping`/`detect`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
+- `_DEFAULT_HOME: Path` (L34) — `~/.cache/openral/locateanything-sidecar`.
+- `_VENV_ENV: str` (L35) — Env var name for the `--venv` override.
+- `_HOME_ENV: str` (L36) — Env var name for the `--home` override.
+- `_LOCK: Path` (L51) — Hash-locked pinned deps (`transformers==4.57.1` load-bearing); regenerated via `uv pip compile tools/sidecar_requirements/locateanything.in`.
+- `_NVRTC_OVERRIDE: Path` (L60) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
+- `ensure_venv(home, *, override=None) -> Path` (L65) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded, keyed on `_LOCK` + `_NVRTC_OVERRIDE`); honours `$OPENRAL_LOCATEANYTHING_SIDECAR_VENV`.
+- `main() -> int` (L110) — argparse (`--model` required, `--host`, `--port`, `--max-side`, `--home`, `--venv`); sets `OPENRAL_ALLOW_REMOTE_CODE=1` (the operator opted in by launching this sidecar) and execs into `_locateanything_server.py`.
+- `_split_model_ref(model_ref) -> tuple[str, str]` (_locateanything_server.py L45) — Split a `repo@revision` reference into `(repo, revision)`.
+- `_load(model_ref) -> (processor, model)` (_locateanything_server.py L70) — NF4 bitsandbytes load of the pinned custom-code checkpoint; a non-prequantized source takes its `BitsAndBytesConfig` from the launcher's `--quantization-config` (OpenRAL Pro, ADR-0123).
+- `_detect(processor, model, image, query, *, max_side, mode, max_new_tokens) -> str` (_locateanything_server.py L111) — One detection request → the model's raw generated text; `<ref>`/`<box>` parsing stays in the main-env backend.
+- `main() -> int` (_locateanything_server.py L158) — ZMQ REP loop (`ping`/`detect`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
 
 ### `tools/da3_depth_sidecar.py` + `tools/_da3_depth_server.py`
 _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, companion to `openral_perception_ros`'s depth-provider node. Runs in its own Python 3.12 venv behind a ZMQ REQ/REP + msgpack wire, since the model ships outside transformers; the provider republishes the reply as a depth image for nvblox. Loaded by file path so the deploy launch can autostart it under a plain interpreter._
@@ -671,52 +671,52 @@ _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, c
 ### `tools/internvla_n1_sidecar.py` + `tools/_internvla_n1_server.py`
 _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.policies.internvla_n1`. Runs out-of-process over ZMQ because upstream's pinned transformers version conflicts with the workspace's; provisions a py3.11 venv from an inference-only pin set and serves the Qwen2.5-VL-7B S2 planner + NavDP DiT S1 policy, mapping discrete VLN-CE actions to a `BODY_TWIST`._
 
-- `_LABEL = "internvla-n1-sidecar"` (L39) — sidecar identity.
-- `_REPO_URL = "https://github.com/InternRobotics/InternNav.git"` (L40) — upstream clone URL.
-- `_DEFAULT_HOME: Path` (L41) — cache dir.
-- `_PYTHON = "3.11"` (L42) — venv Python version.
-- `_PINNED_DEPS: list[str]` (L53) — Inference-only pin set mirroring upstream, minus flash-attn (sdpa instead); torch 2.9.1 on the `torch_backend()` index (cu130 on aarch64) for aarch64 support, and `diffusers==0.32.2` specifically since a later release changed the architecture the checkpoint was trained against.
-- `_DIFFUSION_POLICY_PIN: str` (L79) — Pins `diffusion_policy` to one commit installed with `--no-deps`, since System-1's NavDP imports only `SinusoidalPosEmb` from it.
-- `_NVRTC_OVERRIDE: Path` (L88) — aarch64 nvrtc override; without it transformers 4.51's Qwen2.5-VL vision stack's `.prod()` dies past the sm_121 ceiling on every System-2 replan.
-- `main() -> int` (L166) — argparse via the shared `build_parser`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
-- `_NDARRAY_SENTINEL = "__ndarray__"` (_internvla_n1_server.py L55) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`, re-implemented here because the sidecar venv cannot import `openral_sim`).
-- `_ACTION_STOP = 0` (_internvla_n1_server.py L60) — Discrete VLN-CE action ids emitted by System-2 (upstream `InternVLAN1AsyncAgent.actions2idx`): STOP.
-- `_ACTION_FORWARD = 1` (_internvla_n1_server.py L61) — forward 0.25 m.
-- `_ACTION_LEFT = 2` (_internvla_n1_server.py L62) — turn left 15°.
-- `_ACTION_RIGHT = 3` (_internvla_n1_server.py L63) — turn right 15°.
-- `_ACTION_LOOK_DOWN = 5` (_internvla_n1_server.py L64) — look down (no base motion).
-- `_DEFAULT_FORWARD_MPS = 0.25` (_internvla_n1_server.py L69) — forward speed magnitude for `_ACTION_FORWARD`, held for ~1 s of wall time between S2 replans.
-- `_DEFAULT_TURN_RADPS = float(np.deg2rad(15.0))` (_internvla_n1_server.py L70) — turn speed magnitude for `_ACTION_LEFT`/`_ACTION_RIGHT`.
-- `discrete_action_to_twist(actions, *, forward_mps, turn_radps) -> tuple[float, float, bool]` (_internvla_n1_server.py L73) — Maps a VLN-CE discrete action sequence to `(v_forward, w_yaw, stop)`; only the first action drives motion this step, STOP anywhere latches `stop=True`. Pure/side-effect-free (`tests/unit/test_internvla_n1_action_mapping.py`).
-- `main() -> int` (_internvla_n1_server.py L321) — argparse (`--model`, `--host`, `--port`, `--device`, `--quantization`, `--resize`, `--num-history`, `--plan-step-gap`, `--forward-mps`, `--turn-radps`, `--work-dir`); boots the ZMQ server.
+- `_LABEL = "internvla-n1-sidecar"` (L40) — sidecar identity.
+- `_REPO_URL = "https://github.com/InternRobotics/InternNav.git"` (L41) — upstream clone URL.
+- `_DEFAULT_HOME: Path` (L42) — cache dir.
+- `_PYTHON = "3.11"` (L43) — venv Python version.
+- `_PINNED_DEPS: list[str]` (L54) — Inference-only pin set mirroring upstream, minus flash-attn (sdpa instead); torch 2.9.1 on the `torch_backend()` index (cu130 on aarch64) for aarch64 support, and `diffusers==0.32.2` specifically since a later release changed the architecture the checkpoint was trained against.
+- `_DIFFUSION_POLICY_PIN: str` (L80) — Pins `diffusion_policy` to one commit installed with `--no-deps`, since System-1's NavDP imports only `SinusoidalPosEmb` from it.
+- `_NVRTC_OVERRIDE: Path` (L89) — aarch64 nvrtc override; without it transformers 4.51's Qwen2.5-VL vision stack's `.prod()` dies past the sm_121 ceiling on every System-2 replan.
+- `main() -> int` (L169) — argparse via the shared `build_parser`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
+- `_NDARRAY_SENTINEL = "__ndarray__"` (_internvla_n1_server.py L56) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`, re-implemented here because the sidecar venv cannot import `openral_sim`).
+- `_ACTION_STOP = 0` (_internvla_n1_server.py L61) — Discrete VLN-CE action ids emitted by System-2 (upstream `InternVLAN1AsyncAgent.actions2idx`): STOP.
+- `_ACTION_FORWARD = 1` (_internvla_n1_server.py L62) — forward 0.25 m.
+- `_ACTION_LEFT = 2` (_internvla_n1_server.py L63) — turn left 15°.
+- `_ACTION_RIGHT = 3` (_internvla_n1_server.py L64) — turn right 15°.
+- `_ACTION_LOOK_DOWN = 5` (_internvla_n1_server.py L65) — look down (no base motion).
+- `_DEFAULT_FORWARD_MPS = 0.25` (_internvla_n1_server.py L70) — forward speed magnitude for `_ACTION_FORWARD`, held for ~1 s of wall time between S2 replans.
+- `_DEFAULT_TURN_RADPS = float(np.deg2rad(15.0))` (_internvla_n1_server.py L71) — turn speed magnitude for `_ACTION_LEFT`/`_ACTION_RIGHT`.
+- `discrete_action_to_twist(actions, *, forward_mps, turn_radps) -> tuple[float, float, bool]` (_internvla_n1_server.py L74) — Maps a VLN-CE discrete action sequence to `(v_forward, w_yaw, stop)`; only the first action drives motion this step, STOP anywhere latches `stop=True`. Pure/side-effect-free (`tests/unit/test_internvla_n1_action_mapping.py`).
+- `main() -> int` (_internvla_n1_server.py L320) — argparse (`--model`, `--host`, `--port`, `--device`, `--quantization`, `--quantization-config` (Pro's `BitsAndBytesConfig` kwargs from the launcher, required for `nf4` / `int8`), `--resize`, `--num-history`, `--plan-step-gap`, `--forward-mps`, `--turn-radps`, `--work-dir`); boots the ZMQ server.
 
 ### `tools/lingbot_vla2_sidecar.py` + `tools/_lingbot_vla2_server.py`
 _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.policies.lingbot_vla2`. v2 (6B Qwen3-VL MoE) is the default; `--variant v1` selects the 4B Qwen2.5-VL dense RoboTwin post-train, which is x86_64-only. Runs out-of-process because upstream pins a torch/kernel stack incompatible with the workspace._
 
-- `_LABEL = "lingbot-sidecar"` (L49) — sidecar identity.
-- `_REPO_URL: str` (L50) — upstream `robbyant/lingbot-vla-v2` clone URL.
-- `_PINNED_SHA: str` (L53) — pinned v2 commit.
-- `_DEFAULT_HOME: Path` (L54) — v2 cache dir.
-- `_HOME_ENV: str` (L55) — `--home` override env var name.
-- `_VENV_ENV: str` (L56) — `--venv` override env var name (v2).
-- `_REPO_ENV: str` (L57) — repo-dir override env var name (v2).
-- `_REPO_URL_V1: str` (L63) — the v1 (`robbyant/lingbot-vla`) clone URL, driven by `--variant v1`.
-- `_PINNED_SHA_V1: str` (L64) — pinned v1 commit.
-- `_DEFAULT_HOME_V1: Path` (L65) — v1 cache dir.
-- `_VENV_ENV_V1: str` (L66) — `--venv` override env var name (v1).
-- `_REPO_ENV_V1: str` (L67) — repo-dir override env var name (v1).
-- `_SERVER: Path` (L69) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
-- `_AARCH64_PTXAS: str` (L74) — `nvidia-cuda-nvcc==13.0.88`, installed on aarch64 only so the MoE Triton kernels get a `ptxas` that targets both Thor (`sm_110`) and GB10 (`sm_121`); also part of the aarch64 venv spec, so a CUDA-12.9-ptxas venv is repaired.
-- `_TORCH_PIN` (L89) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
-- `_TORCHVISION_PIN` (L90) — matching v2 torch-stack pin.
-- `_TORCHAUDIO_PIN` (L91) — matching v2 torch-stack pin.
-- `_TORCHCODEC_PIN` (L96) — matching v2 torch-stack pin (excluded on aarch64).
-- `_TRITON_PIN` (L97) — matching v2 torch-stack pin.
-- `_V2_OVERRIDES: tuple[str, ...]` (L98) — the override requirement files applied on top of upstream's v2 lock.
-- `main() -> int` (L325) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
+- `_LABEL = "lingbot-sidecar"` (L50) — sidecar identity.
+- `_REPO_URL: str` (L51) — upstream `robbyant/lingbot-vla-v2` clone URL.
+- `_PINNED_SHA: str` (L54) — pinned v2 commit.
+- `_DEFAULT_HOME: Path` (L55) — v2 cache dir.
+- `_HOME_ENV: str` (L56) — `--home` override env var name.
+- `_VENV_ENV: str` (L57) — `--venv` override env var name (v2).
+- `_REPO_ENV: str` (L58) — repo-dir override env var name (v2).
+- `_REPO_URL_V1: str` (L64) — the v1 (`robbyant/lingbot-vla`) clone URL, driven by `--variant v1`.
+- `_PINNED_SHA_V1: str` (L65) — pinned v1 commit.
+- `_DEFAULT_HOME_V1: Path` (L66) — v1 cache dir.
+- `_VENV_ENV_V1: str` (L67) — `--venv` override env var name (v1).
+- `_REPO_ENV_V1: str` (L68) — repo-dir override env var name (v1).
+- `_SERVER: Path` (L70) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
+- `_AARCH64_PTXAS: str` (L75) — `nvidia-cuda-nvcc==13.0.88`, installed on aarch64 only so the MoE Triton kernels get a `ptxas` that targets both Thor (`sm_110`) and GB10 (`sm_121`); also part of the aarch64 venv spec, so a CUDA-12.9-ptxas venv is repaired.
+- `_TORCH_PIN` (L90) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
+- `_TORCHVISION_PIN` (L91) — matching v2 torch-stack pin.
+- `_TORCHAUDIO_PIN` (L92) — matching v2 torch-stack pin.
+- `_TORCHCODEC_PIN` (L97) — matching v2 torch-stack pin (excluded on aarch64).
+- `_TRITON_PIN` (L98) — matching v2 torch-stack pin.
+- `_V2_OVERRIDES: tuple[str, ...]` (L99) — the override requirement files applied on top of upstream's v2 lock.
+- `main() -> int` (L326) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L47) — Marker key for the msgpack ndarray codec.
 - `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L336) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
-- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L961) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy.
+- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L967) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy. `--quantization nf4` needs `--quantization-config`, which `lingbot_vla2_sidecar.py` takes from OpenRAL Pro (`sidecar_quantization_args`); without it the server exits (ADR-0123).
 
 ### `tools/cosmos3_reasoner_sidecar.py`
 _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASONER_MODEL=cosmos3-edge`), companion to `Cosmos3ToolUseClient`. Provisions an isolated venv plus a SHA-pinned transformers overlay, builds a flattened reasoner view for vLLM's loader, and execs into `vllm serve` — its OpenAI-compatible HTTP API is the wire contract the reasoner already speaks. Cosmos 3 weights are commercial-OK, so there is no license guard; forward-pass inference is currently blocked by an upstream bug (see [`docs/reference/cosmos3-edge-reasoner.md`](../reference/cosmos3-edge-reasoner.md))._
@@ -732,7 +732,7 @@ _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASO
 ### `tools/behavior_groot_sidecar.py`
 _Python 3.10 sidecar for the official 2026 BEHAVIOR-1K GR00T N1.7 checkpoint. Imports the pinned behavior runtime, wraps `Gr00tPolicy` for the R1Pro modality slices, and serves ZMQ `ping/reset/get_action/close`. Supports whole-model NF4 quantization (default) plus dropping the unused Qwen3-VL `lm_head` to fit an 8 GB host._
 
-- `main(argv) -> int` (L366) — Parses checkpoint/task/instruction/control-mode/device/endpoint plus a quantization mode, loads the real checkpoint (CPU-first under NF4/int8), and serves the 23-D action API.
+- `main(argv) -> int` (L379) — Parses checkpoint/task/instruction/control-mode/device/endpoint plus a quantization mode (`nf4` / `int8` also need the adapter's `--quantization-config` from OpenRAL Pro, ADR-0123; refused without it), loads the real checkpoint (CPU-first under NF4/int8), and serves the 23-D action API.
 - `_drop_backbone_lm_head(model) -> None` — Replace the Qwen3-VL `lm_head` with `Identity`; the B1K wrapper consumes only `hidden_states[-1]`, so the full-vocab logits projection is dead weight and was the largest single inference allocation.
 - `_quantize_nf4(model, *, device, min_params) -> None` — Whole-model bitsandbytes NF4 rewrite of large linear layers, keeping small layers floating; behaviourally lossless for this checkpoint against a bf16 reference.
 - `_quantize_int8(model, *, device, min_params) -> None` — Same rewrite with 8-bit linear layers; higher fidelity but too large to co-reside with OmniGibson on 8 GB, so used for offline comparison only.
@@ -743,25 +743,20 @@ _Official OmniGibson evaluator environment sidecar for `scene.id=behavior`. Reso
 - `main(argv) -> int` (L222) — Parse task/instance/mode/wrapper/max-steps/endpoint, load the real BEHAVIOR environment, and serve `ping/reset/step/close`.
 
 ### `tools/_robometer_quant.py`
-_Shared NF4 quantize + pre-quantized meta-load helpers for the Robometer reward scorer, re-implementing the repo's NF4 rule rather than importing `openral_sim._quantization`. Determinism is forced so a meta pre-quantized load matches a bf16-then-quantize reference bit-for-bit._
+_Determinism and meta-load helpers for the Robometer reward scorer. The NF4 shells and the `from_prequantized` install are OpenRAL Pro's (ADR-0123), reached through `openral_rskill.quantization_gate.pro_quantization`. Determinism is forced so a meta pre-quantized load matches a bf16-then-quantize reference bit-for-bit._
 
-- `MIN_PARAMS = 4_000_000` (L25) — Mirrors `openral_sim._quantization.DEFAULT_MIN_PARAMS_TO_QUANTIZE`.
-- `BNB_META_SUFFIXES: tuple[str, ...]` (L28) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`.
-- `set_cublas_workspace_env() -> None` (L38) — Pins the cuBLAS workspace BEFORE CUDA initialises (required for determinism).
-- `apply_determinism() -> None` (L43) — Forces byte-stable numerics: disables cudnn TF32, forces math SDP (flash/mem-efficient SDP are process-state dependent, math SDP is not).
-- `quantize_nf4_in_place(root, compute_dtype) -> int` (L55) — Rewrites large `nn.Linear` → `bnb.nn.Linear4bit` in place (the repo's NF4 rule); returns count replaced. Quantization happens lazily on first `.to("cuda")`.
-- `install_linear4bit_shells(root, compute_dtype) -> int` (L93) — Replaces large linear layers with empty `Linear4bit` shells on a meta-device skeleton, so a prequantized load can drop in packed weights without the RSS spike of an off-meta load.
-- `install_prequantized(policy, state, device) -> set` (L133) — Drops saved packed NF4 weights into `Linear4bit` shells via `from_prequantized`; returns consumed checkpoint keys. Bit-identical to the in-place quantization that produced the checkpoint.
-- `assign_meta_buffers(model, state, device) -> int` (L167) — Assigns any still-meta buffer by hand, since `load_state_dict` skips non-persistent buffers; raises if a meta buffer is missing from the checkpoint.
-- `is_prequantized_checkpoint(path) -> bool` (L192) — True if `path` holds a `model.safetensors` with bnb NF4 packed keys.
+- `set_cublas_workspace_env() -> None` (L21) — Pins the cuBLAS workspace BEFORE CUDA initialises (required for determinism).
+- `apply_determinism() -> None` (L26) — Forces byte-stable numerics: disables cudnn TF32, forces math SDP (flash/mem-efficient SDP are process-state dependent, math SDP is not).
+- `assign_meta_buffers(model, state, device) -> int` (L38) — Assigns any still-meta buffer by hand, since `load_state_dict` skips non-persistent buffers; raises if a meta buffer is missing from the checkpoint.
+- `is_prequantized_checkpoint(path) -> bool` (L63) — True if `path` holds a `model.safetensors` with bnb NF4 packed keys.
 
 ### `tools/_robometer_scorer.py`
 _In-process stateless scorer for the Robometer-4B reward monitor, companion to `RobometerInProcessReward`. Loaded directly by `reward_monitor_node` — no separate process or dedicated venv. Meta-builds lerobot's native reward-model skeleton and drops in OpenRAL's NF4 pre-quantized weights directly, with no bf16 spike and no extra download._
 
-- `_NATIVE_CONFIG_REPO: str` (L51) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
-- `class Scorer` (L104) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
-  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L107) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
-  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L211) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
+- `_NATIVE_CONFIG_REPO: str` (L52) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
+- `class Scorer` (L105) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
+  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L108) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
+  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L220) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
 
 ### `tools/build_qwen_vlm_nf4_checkpoint.py`
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._
@@ -791,7 +786,7 @@ _Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check
 ### `tools/build_robometer_nf4_checkpoint.py`
 _Builds the publishable pre-quantized Robometer-4B NF4 checkpoint: loads the upstream bf16 model, quantizes in place, and saves a self-contained directory the scorer can meta-load directly as 4-bit. Uploads to `OpenRAL/rskill-robometer_4b-any-general-nf4`._
 
-- `main() -> int` — CLI entry; `--out <dir>` writes the quantized checkpoint directory. (L45)
+- `main() -> int` — CLI entry; `--out <dir>` writes the quantized checkpoint directory. (L46)
 
 ### `tools/export_act_onnx.py`
 _Exports a LeRobot ACT policy to a single whole-model ONNX graph (`ACTPolicy.model`, called as `predict_action_chunk` does). Normalization stays external (checkpoint's `policy_preprocessor.json`/`policy_postprocessor.json` MEAN_STD sidecars); inputs ordered by `config.image_features` plus the checkpoint's declared state dim. Parity checked in `tests/integration/test_act_onnx.py`._
@@ -829,7 +824,7 @@ _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time 
 ### `tools/quantize_rskill.py`
 _Quantize a lerobot policy and upload the result to the HuggingFace Hub. Policy-agnostic counterpart to the in-process fast-path in `openral_sim._quantization`. Loads any lerobot policy via `from_pretrained`, quantizes in place, saves `model.safetensors` + `quantization_metadata.json`, and uploads to a target rSkill repo — the adapter's `load_prequantized_state_for_rskill` detects the metadata sentinel and skips the on-line nf4 conversion on every subsequent launch. Not part of CI — a one-shot Hub-mutating tool gated on `HF_TOKEN`._
 
-- `main() -> int` (L537) — CLI entry; `--repo-id`/`--out-repo-id`/`--quantization`/`--trust-remote-code`; loads, quantizes in place, uploads.
+- `main() -> int` (L543) — CLI entry; `--repo-id`/`--out-repo-id`/`--quantization`/`--trust-remote-code`; loads, quantizes in place, uploads.
 
 ### `tools/verify_test_envs.py`
 _Verifies selected optional test environments locally: syncs the matching dependency group declared in `tools/test_selection.toml`, runs its selected targets, and fails if any test skips. Hardware and externally-provisioned sidecars are opt-in since this script cannot create physical devices or proprietary simulator installs._

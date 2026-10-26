@@ -34,6 +34,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+from openral_rskill.quantization_gate import sidecar_quantization_args
 from openral_sim._sidecar_common import build_parser, run_cmd, run_sidecar, torch_backend
 
 _LABEL = "internvla-n1-sidecar"
@@ -139,6 +140,7 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
     ``internnav`` from the venv's editable install.)
     """
     server = Path(__file__).resolve().parent / "_internvla_n1_server.py"
+    quant_args = sidecar_quantization_args(args.quantization, what="the InternVLA-N1 sidecar")
     wrapper = work / "boot_server.py"
     wrapper.write_text(
         textwrap.dedent(
@@ -153,6 +155,7 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
                 "--host", "0.0.0.0",
                 "--port", str({args.port}),
                 "--quantization", {args.quantization!r},
+                *{quant_args!r},
             ]
             runpy.run_path({str(server)!r}, run_name="__main__")
             '''

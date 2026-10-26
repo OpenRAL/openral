@@ -28,6 +28,7 @@ import os
 import sys
 from pathlib import Path
 
+from openral_rskill.quantization_gate import sidecar_quantization_args
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, torch_backend
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "locateanything-sidecar"
@@ -127,6 +128,8 @@ def main() -> int:
     p.add_argument("--venv", default=None, help=f"Reuse this venv (or set {_VENV_ENV}).")
     args = p.parse_args()
 
+    # Every load here is NF4; ask OpenRAL Pro before the venv build (ADR-0123).
+    quant_args = sidecar_quantization_args("nf4", what="the LocateAnything sidecar")
     py = ensure_venv(args.home, override=args.venv)
     server = Path(__file__).resolve().parent / "_locateanything_server.py"
 
@@ -152,6 +155,7 @@ def main() -> int:
         str(args.port),
         "--max-side",
         str(args.max_side),
+        *quant_args,
     ]
     print(f"[la-sidecar] launching server: model={args.model} port={args.port}", flush=True)
     os.execvpe(str(py), cmd, env)

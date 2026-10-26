@@ -192,8 +192,25 @@ def _attn_implementation(torch: Any) -> str:
     return "flash_attention_2"
 
 
+def _pro_bnb_kwargs(quantization: str, config_json: str | None) -> dict[str, Any]:
+    """The ``BitsAndBytesConfig`` kwargs OpenRAL Pro chose, as the launcher passed them.
+
+    This venv has no OpenRAL Pro; ``tools/xr1_sidecar.py`` asks Pro for the
+    config and hands it over as ``--quantization-config`` (ADR-0123).
+    """
+    if not config_json:
+        raise SystemExit(
+            f"--quantization {quantization} needs OpenRAL Pro (ADR-0123): start this "
+            "sidecar through tools/xr1_sidecar.py with OpenRAL Pro installed, which "
+            "passes --quantization-config."
+        )
+    return dict(json.loads(config_json))
+
+
 class _XR1Policy:
-    def __init__(self, model: str, profile: str, quantization: str) -> None:
+    def __init__(
+        self, model: str, profile: str, quantization: str, quantization_config: str | None
+    ) -> None:
         import torch
         from transformers import AutoModel, AutoProcessor, BitsAndBytesConfig
 
@@ -221,13 +238,13 @@ class _XR1Policy:
         if quantization == "nf4":
             # reason: transformers ships BitsAndBytesConfig untyped (see above)
             model_kwargs["quantization_config"] = BitsAndBytesConfig(  # type: ignore[no-untyped-call, unused-ignore]
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
+                **_pro_bnb_kwargs(quantization, quantization_config)
             )
             model_kwargs["device_map"] = {"": 0}
         elif quantization == "prequantized_nf4":
+            # The packed checkpoint carries its own quantization_config; the
+            # launcher's config is still required — sub-16-bit needs Pro.
+            _pro_bnb_kwargs(quantization, quantization_config)
             model_kwargs["device_map"] = {"": 0}
         self._model = AutoModel.from_pretrained(local, **model_kwargs)
         if quantization == "none":
@@ -420,11 +437,16 @@ def main(argv: list[str]) -> int:
         choices=("none", "nf4", "prequantized_nf4"),
         default="nf4",
     )
+    parser.add_argument(
+        "--quantization-config",
+        default=None,
+        help="BitsAndBytesConfig kwargs as JSON, from OpenRAL Pro via tools/xr1_sidecar.py.",
+    )
     parser.add_argument("--export-dir", type=Path, default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5555)
     args = parser.parse_args(argv)
-    policy = _XR1Policy(args.model, args.profile, args.quantization)
+    policy = _XR1Policy(args.model, args.profile, args.quantization, args.quantization_config)
     if args.export_dir is not None:
         policy.export_pretrained(args.export_dir)
         return 0

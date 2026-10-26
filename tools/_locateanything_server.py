@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import sys
 import time
 
@@ -52,7 +53,21 @@ def _split_model_ref(model_ref: str) -> tuple[str, str]:
     return repo_id, revision
 
 
-def _load(model_ref: str) -> tuple[object, object, object]:
+def _pro_bnb_kwargs(config_json: str | None) -> dict[str, object]:
+    """The ``BitsAndBytesConfig`` kwargs OpenRAL Pro chose, as the launcher passed them.
+
+    This venv has no OpenRAL Pro; ``tools/locateanything_sidecar.py`` asks Pro for the config and
+    hands it over as ``--quantization-config`` (ADR-0123).
+    """
+    if not config_json:
+        raise SystemExit(
+            "NF4 needs OpenRAL Pro (ADR-0123): start this sidecar through "
+            "tools/locateanything_sidecar.py with OpenRAL Pro installed, which passes --quantization-config."
+        )
+    return dict(json.loads(config_json))
+
+
+def _load(model_ref: str, quantization_config: str | None) -> tuple[object, object, object]:
     """Load tokenizer, processor, and the NF4-quantized model on the GPU.
 
     The OpenRAL mirror ships prequantized bnb-NF4: config.json's
@@ -76,10 +91,7 @@ def _load(model_ref: str) -> tuple[object, object, object]:
     }
     if not prequantized:
         load_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
+            **_pro_bnb_kwargs(quantization_config)
         )
     tokenizer = AutoTokenizer.from_pretrained(
         model_id,
@@ -150,12 +162,17 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=5757)
     ap.add_argument("--max-side", type=int, default=1024)
     ap.add_argument("--max-new-tokens", type=int, default=1024)
+    ap.add_argument(
+        "--quantization-config",
+        default=None,
+        help="BitsAndBytesConfig kwargs as JSON, from OpenRAL Pro via tools/locateanything_sidecar.py (ADR-0123).",
+    )
     ap.add_argument("--mode", default="hybrid", choices=["fast", "slow", "hybrid"])
     args = ap.parse_args()
 
     print(f"[la-server] loading {args.model} (NF4)...", flush=True)
     t0 = time.perf_counter()
-    tokenizer, processor, model = _load(args.model)
+    tokenizer, processor, model = _load(args.model, args.quantization_config)
     print(
         f"[la-server] loaded in {time.perf_counter() - t0:.1f}s; "
         f"VRAM {torch.cuda.memory_allocated() / 1e9:.2f} GB",

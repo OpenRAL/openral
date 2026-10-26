@@ -42,6 +42,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from numpy.typing import NDArray  # noqa: E402
 from openral_core.exceptions import ROSConfigError  # noqa: E402
+from openral_rskill.quantization_gate import pro_quantization  # noqa: E402
 
 q.apply_determinism()
 
@@ -177,10 +178,18 @@ class Scorer:
         # weight (388M tied params) and would otherwise quantize to an empty shell.
         model.model.lm_head = torch.nn.Identity()
 
-        q.install_linear4bit_shells(model, torch.bfloat16)
+        pro = pro_quantization(what="the Robometer reward scorer")
+        # Empty Linear4bit shells on meta: a real-storage shell costs host RAM
+        # proportional to the dense layer (the 4B load peaked at 14.3 GB RSS
+        # and was OOM-killed before a packed weight was read).
+        pro.quantize_nf4_in_place(
+            model, torch=torch, compute_dtype=torch.bfloat16, new_modules_on_meta=True
+        )
         raw = load_file(os.path.join(local, "model.safetensors"), device=self.device)
         state = {_remap_backbone_key(k): v for k, v in raw.items()}
-        consumed = q.install_prequantized(model, state, self.device)
+        _, consumed = pro.install_prequantized_linears(
+            model, state, device=self.device, torch=torch
+        )
         leftover = {k: v for k, v in state.items() if k not in consumed}
         model.load_state_dict(leftover, strict=False, assign=True)
         # ``original_inv_freq`` is a non-persistent rope buffer equal to

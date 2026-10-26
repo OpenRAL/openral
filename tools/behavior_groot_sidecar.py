@@ -42,9 +42,22 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--quantization", choices=("none", "nf4", "int8"), default="nf4")
     parser.add_argument("--nf4-min-params", type=int, default=4_000_000)
+    parser.add_argument(
+        "--quantization-config",
+        default=None,
+        help="OpenRAL Pro's BitsAndBytesConfig kwargs (JSON) from the openral adapter; "
+        "nf4 / int8 are refused without it (ADR-0123).",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22000)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.quantization != "none" and not args.quantization_config:
+        raise SystemExit(
+            f"--quantization {args.quantization} needs OpenRAL Pro (ADR-0123): start this "
+            "sidecar through the openral behavior_groot adapter with OpenRAL Pro installed, "
+            "which passes --quantization-config."
+        )
+    return args
 
 
 def _register_r1pro_modality() -> dict[str, object]:

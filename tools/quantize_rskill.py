@@ -195,7 +195,13 @@ def _build_policy_and_quantize(
             ``custom_code`` models.
     """
     # Defer heavy imports so ``-h`` is cheap.
-    from openral_sim._quantization import quantize_int8_in_place, quantize_nf4_in_place
+    from openral_rskill.quantization_gate import pro_quantization
+
+    pro = pro_quantization(what="tools/quantize_rskill.py")
+    quantize_int8_in_place, quantize_nf4_in_place = (
+        pro.quantize_int8_in_place,
+        pro.quantize_nf4_in_place,
+    )
 
     print(f"[quantize] loading {source_repo} (bf16, CPU, loader={loader})...", flush=True)
     t0 = time.perf_counter()
