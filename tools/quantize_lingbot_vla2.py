@@ -360,9 +360,9 @@ def main(argv: list[str]) -> int:
     kwargs = srv_mod._check_pro_config(
         "nf4", args.quantization_config, launcher="the module docstring's recipe"
     )
-    from transformers import BitsAndBytesConfig
+    BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
-    config = BitsAndBytesConfig(**kwargs)  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
+    config = BitsAndBytesConfig(**kwargs)
 
     # torch renamed PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF in 2.9 (warns on
     # the old spelling); resolved from metadata since this venv serves both

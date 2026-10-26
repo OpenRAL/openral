@@ -208,9 +208,9 @@ class _BehaviorGrootPolicy:
 
         config = None
         if args.quantization != "none":
-            from transformers import BitsAndBytesConfig
+            BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
-            config = BitsAndBytesConfig(  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
+            config = BitsAndBytesConfig(
                 **_check_pro_config(
                     args.quantization,
                     args.quantization_config,

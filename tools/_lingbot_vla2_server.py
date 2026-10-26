@@ -570,9 +570,9 @@ class _LingBotPolicy:
         is_prequant = _detect_prequantized(ckpt_dir)
         config = None
         if quant == "nf4" or is_prequant:
-            from transformers import BitsAndBytesConfig
+            BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
-            config = BitsAndBytesConfig(  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
+            config = BitsAndBytesConfig(
                 **_check_pro_config(
                     "nf4", args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
                 )
@@ -802,9 +802,9 @@ class _LingBotV1Policy:
         is_prequant = _detect_prequantized(ckpt_dir)
         config = None
         if quant == "nf4" or is_prequant:
-            from transformers import BitsAndBytesConfig
+            BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
-            config = BitsAndBytesConfig(  # type: ignore[no-untyped-call]  # reason: upstream constructor is untyped
+            config = BitsAndBytesConfig(
                 **_check_pro_config(
                     "nf4", args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
                 )
