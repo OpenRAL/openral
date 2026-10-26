@@ -32,6 +32,7 @@ q.set_cublas_workspace_env()
 
 import torch  # noqa: E402 — must follow set_cublas_workspace_env()
 import yaml  # noqa: E402
+from openral_rskill.quantization_gate import pro_quantization  # noqa: E402
 
 q.apply_determinism()
 
@@ -73,7 +74,10 @@ def main() -> int:
     )
 
     t1 = time.monotonic()
-    n = q.quantize_nf4_in_place(model, compute_dtype=torch.bfloat16)
+    pro_quantization(what="tools/build_robometer_nf4_checkpoint.py").quantize_nf4_in_place(
+        model, torch=torch, compute_dtype=torch.bfloat16
+    )
+    n = sum(type(m).__name__ == "Linear4bit" for m in model.modules())
     model.to("cuda")
     torch.cuda.synchronize()
     print(

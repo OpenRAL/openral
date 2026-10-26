@@ -743,25 +743,20 @@ _Official OmniGibson evaluator environment sidecar for `scene.id=behavior`. Reso
 - `main(argv) -> int` (L222) — Parse task/instance/mode/wrapper/max-steps/endpoint, load the real BEHAVIOR environment, and serve `ping/reset/step/close`.
 
 ### `tools/_robometer_quant.py`
-_Shared NF4 quantize + pre-quantized meta-load helpers for the Robometer reward scorer, re-implementing the repo's NF4 rule rather than importing `openral_sim._quantization`. Determinism is forced so a meta pre-quantized load matches a bf16-then-quantize reference bit-for-bit._
+_Determinism and meta-load helpers for the Robometer reward scorer. The NF4 shells and the `from_prequantized` install are OpenRAL Pro's (ADR-0123), reached through `openral_rskill.quantization_gate.pro_quantization`. Determinism is forced so a meta pre-quantized load matches a bf16-then-quantize reference bit-for-bit._
 
-- `MIN_PARAMS = 4_000_000` (L25) — Mirrors `openral_sim._quantization.DEFAULT_MIN_PARAMS_TO_QUANTIZE`.
-- `BNB_META_SUFFIXES: tuple[str, ...]` (L28) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`.
-- `set_cublas_workspace_env() -> None` (L38) — Pins the cuBLAS workspace BEFORE CUDA initialises (required for determinism).
-- `apply_determinism() -> None` (L43) — Forces byte-stable numerics: disables cudnn TF32, forces math SDP (flash/mem-efficient SDP are process-state dependent, math SDP is not).
-- `quantize_nf4_in_place(root, compute_dtype) -> int` (L55) — Rewrites large `nn.Linear` → `bnb.nn.Linear4bit` in place (the repo's NF4 rule); returns count replaced. Quantization happens lazily on first `.to("cuda")`.
-- `install_linear4bit_shells(root, compute_dtype) -> int` (L93) — Replaces large linear layers with empty `Linear4bit` shells on a meta-device skeleton, so a prequantized load can drop in packed weights without the RSS spike of an off-meta load.
-- `install_prequantized(policy, state, device) -> set` (L133) — Drops saved packed NF4 weights into `Linear4bit` shells via `from_prequantized`; returns consumed checkpoint keys. Bit-identical to the in-place quantization that produced the checkpoint.
-- `assign_meta_buffers(model, state, device) -> int` (L167) — Assigns any still-meta buffer by hand, since `load_state_dict` skips non-persistent buffers; raises if a meta buffer is missing from the checkpoint.
-- `is_prequantized_checkpoint(path) -> bool` (L192) — True if `path` holds a `model.safetensors` with bnb NF4 packed keys.
+- `set_cublas_workspace_env() -> None` (L21) — Pins the cuBLAS workspace BEFORE CUDA initialises (required for determinism).
+- `apply_determinism() -> None` (L26) — Forces byte-stable numerics: disables cudnn TF32, forces math SDP (flash/mem-efficient SDP are process-state dependent, math SDP is not).
+- `assign_meta_buffers(model, state, device) -> int` (L38) — Assigns any still-meta buffer by hand, since `load_state_dict` skips non-persistent buffers; raises if a meta buffer is missing from the checkpoint.
+- `is_prequantized_checkpoint(path) -> bool` (L63) — True if `path` holds a `model.safetensors` with bnb NF4 packed keys.
 
 ### `tools/_robometer_scorer.py`
 _In-process stateless scorer for the Robometer-4B reward monitor, companion to `RobometerInProcessReward`. Loaded directly by `reward_monitor_node` — no separate process or dedicated venv. Meta-builds lerobot's native reward-model skeleton and drops in OpenRAL's NF4 pre-quantized weights directly, with no bf16 spike and no extra download._
 
-- `_NATIVE_CONFIG_REPO: str` (L51) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
-- `class Scorer` (L104) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
-  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L107) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
-  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L211) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
+- `_NATIVE_CONFIG_REPO: str` (L52) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
+- `class Scorer` (L105) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
+  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L108) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
+  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L220) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
 
 ### `tools/build_qwen_vlm_nf4_checkpoint.py`
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._
@@ -791,7 +786,7 @@ _Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check
 ### `tools/build_robometer_nf4_checkpoint.py`
 _Builds the publishable pre-quantized Robometer-4B NF4 checkpoint: loads the upstream bf16 model, quantizes in place, and saves a self-contained directory the scorer can meta-load directly as 4-bit. Uploads to `OpenRAL/rskill-robometer_4b-any-general-nf4`._
 
-- `main() -> int` — CLI entry; `--out <dir>` writes the quantized checkpoint directory. (L45)
+- `main() -> int` — CLI entry; `--out <dir>` writes the quantized checkpoint directory. (L46)
 
 ### `tools/export_act_onnx.py`
 _Exports a LeRobot ACT policy to a single whole-model ONNX graph (`ACTPolicy.model`, called as `predict_action_chunk` does). Normalization stays external (checkpoint's `policy_preprocessor.json`/`policy_postprocessor.json` MEAN_STD sidecars); inputs ordered by `config.image_features` plus the checkpoint's declared state dim. Parity checked in `tests/integration/test_act_onnx.py`._
