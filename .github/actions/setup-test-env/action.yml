@@ -48,8 +48,8 @@ runs:
       shell: bash
       run: |
         # Azure's mirror can stall FFmpeg downloads beyond the job timeout.
-        sudo sed -i 's|://azure.archive.ubuntu.com/ubuntu|://archive.ubuntu.com/ubuntu|g' \
-          /etc/apt/sources.list.d/ubuntu.sources
+        sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) \
+          -exec sed -i 's|://azure.archive.ubuntu.com/ubuntu|://archive.ubuntu.com/ubuntu|g' {} +
         # `apt-get update` exits non-zero on ANY broken index, including the
         # runner image's preinstalled third-party lists. dl.google.com's
         # chrome repo returns a hash-sum mismatch every time Google
