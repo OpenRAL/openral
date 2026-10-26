@@ -14,7 +14,7 @@ frames are seeded arrays), which is the sanctioned recorded-sensor exception.
 GPU: loads a ~3 B GR00T model NF4 on one 8 GB card. Run under the shared GPU
 lock: ``flock /tmp/openral-gpu.lock -c './.venv/bin/pytest -q
 tests/sim/test_franka_groot_libero.py'``. Skips only when torch/CUDA or the
-GR00T weights are genuinely unavailable.
+GR00T weights or OpenRAL Pro quantization are genuinely unavailable.
 """
 
 from __future__ import annotations
@@ -24,6 +24,11 @@ from typing import Any
 
 import numpy as np
 import pytest
+from openral_rskill.quantization_gate import pro_quantization_installed
+
+pytestmark = pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _SCENE = _REPO_ROOT / "scenes" / "sim" / "libero_spatial.yaml"

@@ -201,7 +201,10 @@ Then point your manifest's `weights_uri` at the new repo and set
 Some checkpoints instead ship as a transformers-native pre-quantized
 `save_pretrained` layout with an embedded `quantization_config`; those load
 directly as 4-bit with no bf16 spike. `tools/build_qwen_vlm_nf4_checkpoint.py`
-and `tools/build_robometer_nf4_checkpoint.py` build that shape.
+and `tools/build_robometer_nf4_checkpoint.py` build that shape. Both, and
+`tools/quantize_lingbot_vla2.py`, need OpenRAL Pro: the sidecar-venv builders
+take its config as `--quantization-config` (from
+`openral_rskill.quantization_gate.sidecar_quantization_args`).
 
 ---
 
@@ -227,3 +230,10 @@ catches a dtype your card cannot execute before any weights move.
   catalogue, with the quantization posture of each entry.
 - [`docs/reference/vla_compatibility.md`](../../reference/vla_compatibility.md)
   — observed dims, normalization and per-checkpoint notes.
+
+Sidecar loaders and the LingBot pack builder validate Pro’s JSON configuration
+before quantizing and apply its bitsandbytes settings (compute dtype, quantization
+type, double quantization, storage dtype, and int8 threshold/weight retention).
+Skip-module lists accept qualified module paths. LingBot refuses a packed checkpoint
+when launch precision settings or skip lists differ from the recorded configuration;
+legacy packs use NF4, bf16 compute, double quantization, uint8 storage, and an empty skip list.

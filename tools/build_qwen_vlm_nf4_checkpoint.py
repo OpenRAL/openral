@@ -15,11 +15,14 @@ an embedded ``quantization_config`` in ``config.json`` that
 different serialization.
 
 Recipe behind the published ``OpenRAL/rskill-qwen35_4b-any-general-nf4``
-weights. Run INSIDE the sidecar venv (same transformers / bitsandbytes /
-qwen-vl-utils stack as ``tools/_qwen_vlm_server.py``)::
+weights. NF4 needs OpenRAL Pro (ADR-0123): take the ``BitsAndBytesConfig``
+kwargs from Pro in the workspace venv, then run INSIDE the sidecar venv (same
+transformers / bitsandbytes / qwen-vl-utils stack as ``tools/_qwen_vlm_server.py``)::
 
+    CFG=$(.venv/bin/python -c 'from openral_rskill.quantization_gate import \
+        sidecar_quantization_args as a; print(a("nf4", what="the Qwen NF4 build")[1])')
     OPENRAL_QWEN_VLM_SIDECAR_VENV/bin/python tools/build_qwen_vlm_nf4_checkpoint.py \
-        --source Qwen/Qwen3.5-4B \
+        --source Qwen/Qwen3.5-4B --quantization-config "$CFG" \
         --out ~/.cache/openral/qwen35-4b-nf4-ckpt
 
 Writes NF4 ``model.safetensors`` + config + processor files to ``--out``,
@@ -30,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import os
 import sys
 from pathlib import Path
@@ -58,6 +62,11 @@ def main() -> int:
         default=Path.home() / ".cache" / "openral" / "qwen35-4b-nf4-ckpt",
         help="Output directory for the NF4 checkpoint.",
     )
+    ap.add_argument(
+        "--quantization-config",
+        required=True,
+        help="OpenRAL Pro's BitsAndBytesConfig kwargs as JSON (see the module docstring).",
+    )
     args = ap.parse_args()
     out = args.out.expanduser()
 
@@ -67,12 +76,7 @@ def main() -> int:
 
     cml.GLOBAL_WORKERS = 1  # serial materialization so the bf16 load fits 8 GB
 
-    bnb = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
+    bnb = BitsAndBytesConfig(**json.loads(args.quantization_config))
     print(f"[build] loading + quantizing {args.source} (NF4)...", flush=True)
     processor = AutoProcessor.from_pretrained(args.source)
     model = AutoModelForImageTextToText.from_pretrained(

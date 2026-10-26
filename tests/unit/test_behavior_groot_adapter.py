@@ -209,3 +209,30 @@ def test_sidecar_parses_int8_quantization() -> None:
     args = module._parse_args([*base, "--quantization-config", '{"load_in_8bit": true}'])
     assert args.quantization == "int8"
     assert args.nf4_min_params == 4_000_000
+
+
+@pytest.mark.parametrize(
+    ("mode", "config", "match"),
+    [
+        ("int8", "not json", "not valid JSON"),
+        ("int8", '{"load_in_4bit": true}', "does not describe int8"),
+        ("nf4", '{"load_in_8bit": true}', "does not describe nf4"),
+        ("nf4", "[]", "does not describe nf4"),
+    ],
+)
+def test_sidecar_refuses_a_malformed_or_mismatched_pro_config(
+    mode: str, config: str, match: str
+) -> None:
+    # A non-empty --quantization-config is not enough: it must be Pro's kwargs
+    # for the requested mode (ADR-0123).
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "behavior_groot_sidecar", _REPO_ROOT / "tools" / "behavior_groot_sidecar.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    argv = ["--checkpoint", str(_RSKILL), "--quantization", mode, "--quantization-config", config]
+    with pytest.raises(SystemExit, match=match):
+        module._parse_args(argv)

@@ -403,7 +403,6 @@ def _build_gr00t_b1k(env_cfg: Any) -> PolicyAdapter:
     install_groups=("sim", "gr00t"),
     required_imports=(
         "transformers",
-        "bitsandbytes",
         # Imported lazily INSIDE GrootPolicy's build, not by modeling_groot —
         # probing only the modeling module admitted gr00t skills that then
         # aborted every dispatch ("'diffusers' is required"; deploy-sim

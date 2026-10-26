@@ -7,6 +7,7 @@ import argparse
 import importlib
 import importlib.metadata
 import io
+import json
 import os
 import sys
 from typing import Any
@@ -27,6 +28,34 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
     if "__ndarray__" in obj:
         return np.load(io.BytesIO(obj["npy"]), allow_pickle=False)
     return obj
+
+
+def _check_pro_config(
+    quantization: str, config_json: str | None, *, launcher: str
+) -> dict[str, Any]:
+    """Refuse a sub-16-bit load without a valid OpenRAL Pro config (ADR-0123).
+
+    The config must be the JSON ``BitsAndBytesConfig`` kwargs Pro chose for this
+    mode (``load_in_4bit`` for nf4, ``load_in_8bit`` for int8); a malformed or
+    mismatched one is refused rather than treated as a pass.
+    """
+    if not config_json:
+        raise SystemExit(
+            f"--quantization {quantization} needs OpenRAL Pro (ADR-0123): start this "
+            f"sidecar through {launcher} with OpenRAL Pro installed, which passes "
+            "--quantization-config."
+        )
+    try:
+        cfg = json.loads(config_json)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--quantization-config is not valid JSON: {exc}") from exc
+    key = "load_in_8bit" if quantization == "int8" else "load_in_4bit"
+    if not isinstance(cfg, dict) or cfg.get(key) is not True:
+        raise SystemExit(
+            f"--quantization-config does not describe {quantization} ({key} is not true)."
+        )
+
+    return cfg
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -51,11 +80,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22000)
     args = parser.parse_args(argv)
-    if args.quantization != "none" and not args.quantization_config:
-        raise SystemExit(
-            f"--quantization {args.quantization} needs OpenRAL Pro (ADR-0123): start this "
-            "sidecar through the openral behavior_groot adapter with OpenRAL Pro installed, "
-            "which passes --quantization-config."
+    if args.quantization != "none":
+        _check_pro_config(
+            args.quantization,
+            args.quantization_config,
+            launcher="the openral behavior_groot adapter",
         )
     return args
 
@@ -177,6 +206,17 @@ class _BehaviorGrootPolicy:
         B1KPolicyWrapper = wrapper.B1KPolicyWrapper
         Gr00tPolicy = policy_module.Gr00tPolicy
 
+        config = None
+        if args.quantization != "none":
+            BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
+
+            config = BitsAndBytesConfig(
+                **_check_pro_config(
+                    args.quantization,
+                    args.quantization_config,
+                    launcher="the openral behavior_groot adapter",
+                )
+            )
         modality = _register_r1pro_modality()
         load_device = "cpu" if args.quantization in ("nf4", "int8") else args.device
         policy = Gr00tPolicy(
@@ -191,12 +231,14 @@ class _BehaviorGrootPolicy:
                 policy.model,
                 device=args.device,
                 min_params=args.nf4_min_params,
+                config=config,
             )
         elif args.quantization == "int8":
             _quantize_int8(
                 policy.model,
                 device=args.device,
                 min_params=args.nf4_min_params,
+                config=config,
             )
         self._policy = B1KPolicyWrapper(
             policy=policy,
@@ -241,27 +283,36 @@ def _drop_backbone_lm_head(model: Any) -> None:
             module.lm_head = torch.nn.Identity()
 
 
-def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> None:
+def _quantize_nf4(model: Any, *, device: str, config: Any, min_params: int = 4_000_000) -> None:
     """Whole-model NF4 rewrite matching OpenRAL's native GR00T N1.7 path."""
     if not device.startswith("cuda"):
         raise ValueError("NF4 quantization requires a CUDA device.")
     torch = importlib.import_module("torch")
     bnb = importlib.import_module("bitsandbytes")
 
-    def _replace(module: Any) -> None:
+    def _replace(module: Any, prefix: str = "") -> None:
         for name, child in list(module.named_children()):
+            path = f"{prefix}.{name}" if prefix else name
+            if name in (config.llm_int8_skip_modules or []) or path in (
+                config.llm_int8_skip_modules or []
+            ):
+                continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 quantized = bnb.nn.Linear4bit(
                     child.in_features,
                     child.out_features,
                     bias=child.bias is not None,
-                    compute_dtype=torch.bfloat16,
-                    quant_type="nf4",
+                    compute_dtype=config.bnb_4bit_compute_dtype,
+                    compress_statistics=config.bnb_4bit_use_double_quant,
+                    quant_type=config.bnb_4bit_quant_type,
+                    quant_storage=config.bnb_4bit_quant_storage,
                 )
                 quantized.weight = bnb.nn.Params4bit(
                     child.weight.data.clone(),
                     requires_grad=False,
-                    quant_type="nf4",
+                    compress_statistics=config.bnb_4bit_use_double_quant,
+                    quant_type=config.bnb_4bit_quant_type,
+                    quant_storage=config.bnb_4bit_quant_storage,
                 )
                 if child.bias is not None:
                     quantized.bias = torch.nn.Parameter(
@@ -270,7 +321,7 @@ def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> No
                     )
                 setattr(module, name, quantized)
             else:
-                _replace(child)
+                _replace(child, path)
 
     def _first_float_dtype(self: Any) -> Any:
         for parameter in self.parameters():
@@ -284,27 +335,32 @@ def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> No
     model.eval()
 
 
-def _quantize_int8(model: Any, *, device: str, min_params: int = 4_000_000) -> None:
+def _quantize_int8(model: Any, *, device: str, config: Any, min_params: int = 4_000_000) -> None:
     """Whole-model LLM.int8 rewrite; ~2x NF4 size but far less lossy on 3B policies."""
     if not device.startswith("cuda"):
         raise ValueError("int8 quantization requires a CUDA device.")
     torch = importlib.import_module("torch")
     bnb = importlib.import_module("bitsandbytes")
 
-    def _replace(module: Any) -> None:
+    def _replace(module: Any, prefix: str = "") -> None:
         for name, child in list(module.named_children()):
+            path = f"{prefix}.{name}" if prefix else name
+            if name in (config.llm_int8_skip_modules or []) or path in (
+                config.llm_int8_skip_modules or []
+            ):
+                continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 quantized = bnb.nn.Linear8bitLt(
                     child.in_features,
                     child.out_features,
                     bias=child.bias is not None,
-                    has_fp16_weights=False,
-                    threshold=6.0,
+                    has_fp16_weights=config.llm_int8_has_fp16_weight,
+                    threshold=config.llm_int8_threshold,
                 )
                 quantized.weight = bnb.nn.Int8Params(
                     child.weight.data.clone(),
                     requires_grad=False,
-                    has_fp16_weights=False,
+                    has_fp16_weights=config.llm_int8_has_fp16_weight,
                 )
                 if child.bias is not None:
                     quantized.bias = torch.nn.Parameter(
@@ -313,7 +369,7 @@ def _quantize_int8(model: Any, *, device: str, min_params: int = 4_000_000) -> N
                     )
                 setattr(module, name, quantized)
             else:
-                _replace(child)
+                _replace(child, path)
 
     def _first_float_dtype(self: Any) -> Any:
         for parameter in self.parameters():

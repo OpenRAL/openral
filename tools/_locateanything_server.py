@@ -83,6 +83,9 @@ def _load(model_ref: str, quantization_config: str | None) -> tuple[object, obje
         trust_remote_code=True,
     )
     prequantized = getattr(config, "quantization_config", None) is not None
+    # Both paths are NF4, so both need Pro's config; a packed checkpoint keeps
+    # its own embedded quantization settings.
+    pro_kwargs = _pro_bnb_kwargs(quantization_config)
     load_kwargs: dict[str, object] = {
         "dtype": torch.bfloat16,
         "revision": revision,
@@ -90,9 +93,7 @@ def _load(model_ref: str, quantization_config: str | None) -> tuple[object, obje
         "device_map": {"": 0},
     }
     if not prequantized:
-        load_kwargs["quantization_config"] = BitsAndBytesConfig(
-            **_pro_bnb_kwargs(quantization_config)
-        )
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(**pro_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(
         model_id,
         revision=revision,

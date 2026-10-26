@@ -221,7 +221,7 @@ COPY --from=manifests /manifests/python/ python/
 #
 # Groups needed for a real VLA deploy with the perception legs, all
 # gstreamer-free:
-#   sim   — the lerobot / transformers / accelerate / bitsandbytes stack the VLA
+#   sim   — the lerobot / transformers / accelerate stack the VLA
 #           policy adapters AND the in-process Robometer reward monitor import at
 #           load time (needed on REAL hardware too).
 #   omdet — the open-vocabulary object detector (omdet-turbo, transformers-based)

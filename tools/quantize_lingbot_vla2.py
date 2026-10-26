@@ -21,12 +21,16 @@ one at a time (GPU peak stays a few hundred MB), and fp32 shards load one at
 a time (~5 GB each, vs. the upstream's merge-then-load ~51 GB peak); peak
 here is ~25.5 GB model + one ~5 GB shard ~= 30 GB.
 
-Usage (in the sidecar venv)::
+NF4 needs OpenRAL Pro (ADR-0123): take ``--quantization-config`` from Pro in
+the workspace venv, then run in the sidecar venv::
 
+    CFG=$(.venv/bin/python -c 'from openral_rskill.quantization_gate import \
+        sidecar_quantization_args as a; print(a("nf4", what="the LingBot NF4 pack")[1])')
     /path/to/.sidecar_venv/bin/python tools/quantize_lingbot_vla2.py \
         --ckpt   /path/to/lingbot-vla-v2-6b        \
         --out    /path/to/lingbot-vla-v2-6b-nf4    \
-        --qwen   /path/to/Qwen3-VL-4B-Instruct
+        --qwen   /path/to/Qwen3-VL-4B-Instruct     \
+        --quantization-config "$CFG"
 
 Upload to the Hub (``hf upload``) is a separate step; this only writes the
 local pack.
@@ -181,7 +185,7 @@ def _build_bf16_model_v1(ckpt_dir: str, qwen: str, attn: str) -> Any:
 
 
 def _stream_pack_backbone(
-    srv: Any, *, min_params: int, skip_names: frozenset[str] = frozenset()
+    srv: Any, *, config: Any, min_params: int, skip_names: frozenset[str] = frozenset()
 ) -> int:
     """NF4-rewrite the backbone and pack each Linear GPU-frugally.
 
@@ -196,7 +200,7 @@ def _stream_pack_backbone(
 
     backbone = srv.vla.model.qwenvl_with_expert.qwenvl
     srv_mod._nf4_backbone_in_place(
-        backbone, torch=torch, min_params=min_params, skip_names=skip_names
+        backbone, torch=torch, config=config, min_params=min_params, skip_names=skip_names
     )
 
     linears = [m for _, m in backbone.named_modules() if isinstance(m, bnb.nn.Linear4bit)]
@@ -222,6 +226,7 @@ def _save_pack(
     out_dir: Path,
     *,
     ckpt_dir: str,
+    config: Any,
     source_repo: str,
     source_revision: str,
     min_params: int,
@@ -276,14 +281,15 @@ def _save_pack(
             "backend": "bitsandbytes",
             "backend_version": bnb.__version__,
             "torch_version": torch.__version__,
-            "compute_dtype": "bfloat16",
+            "compute_dtype": str(config.bnb_4bit_compute_dtype).removeprefix("torch."),
+            "config": config.to_dict(),
             "min_params_to_quantize": min_params,
             "quantized_modules": n_packed,
             "target_submodule": "model.qwenvl_with_expert.qwenvl",
             "rule": (
                 f"{_backbone_name} backbone (model.qwenvl_with_expert.qwenvl) Linear layers "
-                f"with >={min_params:_} weight elements rewritten to bnb.nn.Linear4bit (nf4, "
-                f"double/nested quant, bf16 compute); {_expert_note}, align heads, and action "
+                f"with >={min_params:_} weight elements rewritten to bnb.nn.Linear4bit "
+                f"using the recorded Pro configuration; {_expert_note}, align heads, and action "
                 f"MLPs stay bf16.{_skip_note}"
             ),
             "runtime_status": (
@@ -344,7 +350,19 @@ def main(argv: list[str]) -> int:
         default="11c703bf6a5c1f45b3b69168482da11fdbba53d7",
         help="Upstream revision recorded in quantization_metadata.json provenance.",
     )
+    p.add_argument(
+        "--quantization-config",
+        required=True,
+        help="OpenRAL Pro's BitsAndBytesConfig kwargs as JSON (see the module docstring); "
+        "the pack is not built without it (ADR-0123).",
+    )
     args = p.parse_args(argv)
+    kwargs = srv_mod._check_pro_config(
+        "nf4", args.quantization_config, launcher="the module docstring's recipe"
+    )
+    BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
+
+    config = BitsAndBytesConfig(**kwargs)
 
     # torch renamed PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF in 2.9 (warns on
     # the old spelling); resolved from metadata since this venv serves both
@@ -373,11 +391,14 @@ def main(argv: list[str]) -> int:
         attn = args.attn
         skip_names = frozenset()
         srv = _build_bf16_model(ckpt_dir, qwen, attn)
-    n_packed = _stream_pack_backbone(srv, min_params=args.min_params, skip_names=skip_names)
+    n_packed = _stream_pack_backbone(
+        srv, config=config, min_params=args.min_params, skip_names=skip_names
+    )
     _save_pack(
         srv,
         Path(args.out).expanduser().resolve(),
         ckpt_dir=ckpt_dir,
+        config=config,
         source_repo=args.source_repo,
         source_revision=args.source_revision,
         min_params=args.min_params,

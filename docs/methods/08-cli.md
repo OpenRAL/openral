@@ -278,17 +278,17 @@ _`openral check`: static, host-independent validation of the declarative robot/s
 ### `python/cli/src/openral_cli/install.py`
 _`openral install <group>` — post-install escape hatch for the Tier-0 curl-bash installer; each command wraps `_install_group` for one `uv sync --group` extras group (sim physics, LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, RLDX sidecar) or the sudo+apt ROS 2 bootstrap._
 
-- `install_sim(--force)` — `openral install sim`; installs the `sim` group (gym-aloha, gym-pusht, MuJoCo, bitsandbytes). (L296)
-- `install_libero(--force)` — `openral install libero`; installs LIBERO (mutually exclusive with `robocasa`). (L304)
-- `install_metaworld(--force)` — `openral install metaworld`; installs the MetaWorld MT50 task suite (Sawyer scenes). (L312)
-- `install_maniskill3(--force)` — `openral install maniskill3`; installs ManiSkill3 (SAPIEN GPU physics). (L320)
-- `install_simpler_env(--force)` — `openral install simpler-env`; installs the SimplerEnv real-to-sim correlator backend. (L328)
-- `install_robocasa(--force)` — `openral install robocasa`; installs RoboCasa (mutually exclusive with `libero`). (L336)
-- `install_rldx(--force)` — `openral install rldx`; installs the RLDX-1 sidecar client (pyzmq + msgpack). (L344)
-- `install_ros()` — `openral install ros`; re-runs the packaged `bootstrap_<os>.sh` (sudo + apt, Linux/macOS only); raises `ROSConfigError` on an unsupported platform or non-zero bootstrap exit. (L352)
-- `install_list()` — `openral install list`; table of every known group with package counts + conflicts. (L390)
+- `install_sim(--force)` — `openral install sim`; installs the `sim` group (gym-aloha, gym-pusht, MuJoCo). (L293)
+- `install_libero(--force)` — `openral install libero`; installs LIBERO (mutually exclusive with `robocasa`). (L301)
+- `install_metaworld(--force)` — `openral install metaworld`; installs the MetaWorld MT50 task suite (Sawyer scenes). (L309)
+- `install_maniskill3(--force)` — `openral install maniskill3`; installs ManiSkill3 (SAPIEN GPU physics). (L317)
+- `install_simpler_env(--force)` — `openral install simpler-env`; installs the SimplerEnv real-to-sim correlator backend. (L325)
+- `install_robocasa(--force)` — `openral install robocasa`; installs RoboCasa (mutually exclusive with `libero`). (L333)
+- `install_rldx(--force)` — `openral install rldx`; installs the RLDX-1 sidecar client (pyzmq + msgpack). (L341)
+- `install_ros()` — `openral install ros`; re-runs the packaged `bootstrap_<os>.sh` (sudo + apt, Linux/macOS only); raises `ROSConfigError` on an unsupported platform or non-zero bootstrap exit. (L349)
+- `install_list()` — `openral install list`; table of every known group with package counts + conflicts. (L387)
 - `_GROUPS: Final[dict[str, list[str]]]` — `uv sync --group` extras group name → its package list; source of truth for `install_list` and the per-group commands. (L50)
-- `_CONFLICTS: Final[tuple[frozenset[str], ...]]` — Mutually-exclusive group pairs (`{"libero", "robocasa"}`); checked before `_install_group` runs. (L116)
+- `_CONFLICTS: Final[tuple[frozenset[str], ...]]` — Mutually-exclusive group pairs (`{"libero", "robocasa"}`); checked before `_install_group` runs. (L113)
 
 ### `python/cli/src/openral_cli/robot.py`
 _`openral robot vendor-urdf <id>`: expand an upstream xacro to a flat, committed URDF so end users need no xacro tooling at runtime. Defers `robot_descriptions`/`xacrodoc`/`yourdfpy` inside the command so `openral --help` stays fast._

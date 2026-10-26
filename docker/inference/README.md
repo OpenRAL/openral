@@ -49,7 +49,7 @@ back to (or fails on) CPU.
   because Fast DDS' SHM transport interacts badly with pydantic v2's Rust core.
 - **uv-managed workspace venv** at `/workspace/.venv` with the OpenRAL Python
   packages plus:
-  - the `sim` group — the lerobot / transformers / accelerate / bitsandbytes
+  - the `sim` group — the lerobot / transformers / accelerate
     stack the VLA policy adapters AND the in-process Robometer reward monitor
     import at load time (needed on real hardware too);
   - the `omdet` group — the open-vocabulary object detector (omdet-turbo,
