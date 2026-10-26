@@ -97,6 +97,24 @@ def _timed(fn: Any, n: int) -> float:
     return statistics.median(ts)
 
 
+def test_int8_weights_refuse_the_graph() -> None:
+    """LLM.int8's per-input outlier selection syncs the host; the adapter refuses up front.
+
+    Defined before the capture tests so it runs before the module-scoped bf16
+    ``adapter`` loads: a 10-12 GiB GPU cannot hold both policies at once.
+    """
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.policies.pi05 import _build_pi05
+
+    if not pro_quantization_installed():
+        pytest.skip("int8 loads only through OpenRAL Pro quantization (ADR-0123)")
+    _require_cached_checkpoint()
+    with pytest.raises(ROSConfigError, match=r"LLM\.int8"):
+        _build_pi05(_env_with("int8"))
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 def test_the_real_forward_captures_and_replays_eager_exactly(adapter: Any) -> None:
     graphed = adapter._cuda_graph
     assert graphed is not None
@@ -123,17 +141,3 @@ def test_a_replay_is_faster_than_eager(adapter: Any) -> None:
     replay = _timed(lambda: adapter._chunk_forward(batch), 5)
     print(f"pi05 bf16 chunk: eager {eager * 1e3:.0f} ms, replay {replay * 1e3:.0f} ms")
     assert replay < eager
-
-
-def test_int8_weights_refuse_the_graph() -> None:
-    """LLM.int8's per-input outlier selection syncs the host; the adapter refuses up front."""
-    from openral_core.exceptions import ROSConfigError
-    from openral_sim.policies.pi05 import _build_pi05
-
-    if not pro_quantization_installed():
-        pytest.skip("int8 loads only through OpenRAL Pro quantization (ADR-0123)")
-    _require_cached_checkpoint()
-    with pytest.raises(ROSConfigError, match=r"LLM\.int8"):
-        _build_pi05(_env_with("int8"))
-    gc.collect()
-    torch.cuda.empty_cache()
