@@ -613,7 +613,7 @@ _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provision
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_xr1_server.py L17) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`'s `_NDARRAY_SENTINEL`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_STATE_DIM = 60` (_xr1_server.py L18) — XR-1's internal padded state width; `_pad_state` pads any frame/history up to this.
 - `_ACTION_DIMS = {"robocasa_mg": 7, "robocasa365": 12, "vlabench_choice": 7}` (_xr1_server.py L19) — Per-benchmark-profile action width the checkpoint processor decodes.
-- `main() -> int` (_xr1_server.py L424) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
+- `main() -> int` (_xr1_server.py L427) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
 - `_messages(profile, images, instruction) -> list[dict[str, Any]]` — exact RoboCasa, RoboCasa365-video, or VLABench message layout from upstream revision `7c20088`.
 - `_pad_state(state) -> NDArray[np.float32]` — pad one frame or a four-frame history to XR-1's 60-D internal state.
 - `_local_snapshot(model) -> str` — resolve a local path or `hf://repo@sha` ref to a local snapshot dir (`snapshot_download`, works offline). transformers 4.57.1's `AutoProcessor` drops `revision` from its config probes, so a repo id + `revision=` reads `main` (offline without a cached `refs/main`: falls back to the bare Qwen2 tokenizer).
@@ -693,30 +693,30 @@ _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.polici
 ### `tools/lingbot_vla2_sidecar.py` + `tools/_lingbot_vla2_server.py`
 _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.policies.lingbot_vla2`. v2 (6B Qwen3-VL MoE) is the default; `--variant v1` selects the 4B Qwen2.5-VL dense RoboTwin post-train, which is x86_64-only. Runs out-of-process because upstream pins a torch/kernel stack incompatible with the workspace._
 
-- `_LABEL = "lingbot-sidecar"` (L49) — sidecar identity.
-- `_REPO_URL: str` (L50) — upstream `robbyant/lingbot-vla-v2` clone URL.
-- `_PINNED_SHA: str` (L53) — pinned v2 commit.
-- `_DEFAULT_HOME: Path` (L54) — v2 cache dir.
-- `_HOME_ENV: str` (L55) — `--home` override env var name.
-- `_VENV_ENV: str` (L56) — `--venv` override env var name (v2).
-- `_REPO_ENV: str` (L57) — repo-dir override env var name (v2).
-- `_REPO_URL_V1: str` (L63) — the v1 (`robbyant/lingbot-vla`) clone URL, driven by `--variant v1`.
-- `_PINNED_SHA_V1: str` (L64) — pinned v1 commit.
-- `_DEFAULT_HOME_V1: Path` (L65) — v1 cache dir.
-- `_VENV_ENV_V1: str` (L66) — `--venv` override env var name (v1).
-- `_REPO_ENV_V1: str` (L67) — repo-dir override env var name (v1).
-- `_SERVER: Path` (L69) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
-- `_AARCH64_PTXAS: str` (L74) — `nvidia-cuda-nvcc==13.0.88`, installed on aarch64 only so the MoE Triton kernels get a `ptxas` that targets both Thor (`sm_110`) and GB10 (`sm_121`); also part of the aarch64 venv spec, so a CUDA-12.9-ptxas venv is repaired.
-- `_TORCH_PIN` (L89) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
-- `_TORCHVISION_PIN` (L90) — matching v2 torch-stack pin.
-- `_TORCHAUDIO_PIN` (L91) — matching v2 torch-stack pin.
-- `_TORCHCODEC_PIN` (L96) — matching v2 torch-stack pin (excluded on aarch64).
-- `_TRITON_PIN` (L97) — matching v2 torch-stack pin.
-- `_V2_OVERRIDES: tuple[str, ...]` (L98) — the override requirement files applied on top of upstream's v2 lock.
-- `main() -> int` (L325) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
+- `_LABEL = "lingbot-sidecar"` (L50) — sidecar identity.
+- `_REPO_URL: str` (L51) — upstream `robbyant/lingbot-vla-v2` clone URL.
+- `_PINNED_SHA: str` (L54) — pinned v2 commit.
+- `_DEFAULT_HOME: Path` (L55) — v2 cache dir.
+- `_HOME_ENV: str` (L56) — `--home` override env var name.
+- `_VENV_ENV: str` (L57) — `--venv` override env var name (v2).
+- `_REPO_ENV: str` (L58) — repo-dir override env var name (v2).
+- `_REPO_URL_V1: str` (L64) — the v1 (`robbyant/lingbot-vla`) clone URL, driven by `--variant v1`.
+- `_PINNED_SHA_V1: str` (L65) — pinned v1 commit.
+- `_DEFAULT_HOME_V1: Path` (L66) — v1 cache dir.
+- `_VENV_ENV_V1: str` (L67) — `--venv` override env var name (v1).
+- `_REPO_ENV_V1: str` (L68) — repo-dir override env var name (v1).
+- `_SERVER: Path` (L70) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
+- `_AARCH64_PTXAS: str` (L75) — `nvidia-cuda-nvcc==13.0.88`, installed on aarch64 only so the MoE Triton kernels get a `ptxas` that targets both Thor (`sm_110`) and GB10 (`sm_121`); also part of the aarch64 venv spec, so a CUDA-12.9-ptxas venv is repaired.
+- `_TORCH_PIN` (L90) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
+- `_TORCHVISION_PIN` (L91) — matching v2 torch-stack pin.
+- `_TORCHAUDIO_PIN` (L92) — matching v2 torch-stack pin.
+- `_TORCHCODEC_PIN` (L97) — matching v2 torch-stack pin (excluded on aarch64).
+- `_TRITON_PIN` (L98) — matching v2 torch-stack pin.
+- `_V2_OVERRIDES: tuple[str, ...]` (L99) — the override requirement files applied on top of upstream's v2 lock.
+- `main() -> int` (L326) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L47) — Marker key for the msgpack ndarray codec.
 - `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L336) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
-- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L961) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy.
+- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L967) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy. `--quantization nf4` needs `--quantization-config`, which `lingbot_vla2_sidecar.py` takes from OpenRAL Pro (`sidecar_quantization_args`); without it the server exits (ADR-0123).
 
 ### `tools/cosmos3_reasoner_sidecar.py`
 _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASONER_MODEL=cosmos3-edge`), companion to `Cosmos3ToolUseClient`. Provisions an isolated venv plus a SHA-pinned transformers overlay, builds a flattened reasoner view for vLLM's loader, and execs into `vllm serve` — its OpenAI-compatible HTTP API is the wire contract the reasoner already speaks. Cosmos 3 weights are commercial-OK, so there is no license guard; forward-pass inference is currently blocked by an upstream bug (see [`docs/reference/cosmos3-edge-reasoner.md`](../reference/cosmos3-edge-reasoner.md))._
@@ -732,7 +732,7 @@ _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASO
 ### `tools/behavior_groot_sidecar.py`
 _Python 3.10 sidecar for the official 2026 BEHAVIOR-1K GR00T N1.7 checkpoint. Imports the pinned behavior runtime, wraps `Gr00tPolicy` for the R1Pro modality slices, and serves ZMQ `ping/reset/get_action/close`. Supports whole-model NF4 quantization (default) plus dropping the unused Qwen3-VL `lm_head` to fit an 8 GB host._
 
-- `main(argv) -> int` (L366) — Parses checkpoint/task/instruction/control-mode/device/endpoint plus a quantization mode, loads the real checkpoint (CPU-first under NF4/int8), and serves the 23-D action API.
+- `main(argv) -> int` (L379) — Parses checkpoint/task/instruction/control-mode/device/endpoint plus a quantization mode (`nf4` / `int8` also need the adapter's `--quantization-config` from OpenRAL Pro, ADR-0123; refused without it), loads the real checkpoint (CPU-first under NF4/int8), and serves the 23-D action API.
 - `_drop_backbone_lm_head(model) -> None` — Replace the Qwen3-VL `lm_head` with `Identity`; the B1K wrapper consumes only `hidden_states[-1]`, so the full-vocab logits projection is dead weight and was the largest single inference allocation.
 - `_quantize_nf4(model, *, device, min_params) -> None` — Whole-model bitsandbytes NF4 rewrite of large linear layers, keeping small layers floating; behaviourally lossless for this checkpoint against a bf16 reference.
 - `_quantize_int8(model, *, device, min_params) -> None` — Same rewrite with 8-bit linear layers; higher fidelity but too large to co-reside with OmniGibson on 8 GB, so used for offline comparison only.

@@ -242,6 +242,9 @@ class _XR1Policy:
             )
             model_kwargs["device_map"] = {"": 0}
         elif quantization == "prequantized_nf4":
+            # The packed checkpoint carries its own quantization_config; the
+            # launcher's config is still required — sub-16-bit needs Pro.
+            _pro_bnb_kwargs(quantization, quantization_config)
             model_kwargs["device_map"] = {"": 0}
         self._model = AutoModel.from_pretrained(local, **model_kwargs)
         if quantization == "none":

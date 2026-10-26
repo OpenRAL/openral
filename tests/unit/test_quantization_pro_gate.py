@@ -102,14 +102,14 @@ def test_an_unquantized_checkpoint_passes(tmp_path: Path) -> None:
     require_pro_for_checkpoint(f"local://{tmp_path}", what="plain config")
 
 
-@pytest.mark.parametrize("token", ["nf4", "int8"])
+@pytest.mark.parametrize("token", ["nf4", "int8", "prequantized_nf4"])
 def test_a_sidecar_launcher_cannot_quantize_without_pro(token: str) -> None:
     """The launcher asks Pro for --quantization-config; without Pro it refuses up front."""
     with pytest.raises(ROSConfigError, match="OpenRAL Pro"):
         sidecar_quantization_args(token, what="the XR-1 sidecar")
 
 
-@pytest.mark.parametrize("token", ["none", "bf16", "prequantized_nf4", None])
-def test_a_sidecar_launch_without_on_load_quantization_gets_no_config(token: str | None) -> None:
-    """Nothing to hand over when the sidecar does not quantize at load."""
+@pytest.mark.parametrize("token", ["none", "bf16", "fp16", None])
+def test_a_16_or_32_bit_sidecar_launch_needs_no_pro(token: str | None) -> None:
+    """Open sidecars run fp16 / bf16 / fp32 with no config and no Pro."""
     assert sidecar_quantization_args(token, what="the XR-1 sidecar") == []

@@ -117,32 +117,39 @@ def pro_quantization(*, what: str) -> ModuleType:
     return mod
 
 
+#: Sidecar ``--quantization`` tokens of 8 bits or fewer.
+_SIDECAR_SUB_16_BIT = frozenset({"nf4", "int8", "prequantized_nf4"})
+
+
 def sidecar_quantization_args(dtype: str | None, *, what: str) -> list[str]:
     """The ``--quantization-config`` argv a sidecar takes for a sub-16-bit load.
 
     A sidecar runs in its own venv, where OpenRAL Pro is not installed, so the
     adapter asks Pro for the ``BitsAndBytesConfig`` keyword arguments here and
     passes them as JSON; the sidecar only calls ``BitsAndBytesConfig(**kwargs)``
-    and refuses ``nf4`` / ``int8`` without them (ADR-0123 step 3).
+    and refuses any sub-16-bit load without them (ADR-0123 step 3), so a
+    sidecar runs only fp16 / bf16 / fp32 unless OpenRAL Pro is installed.
 
     Args:
         dtype: The sidecar's ``--quantization`` token (``"nf4"``, ``"int8"``,
-            ``"none"`` …). 16/32-bit and pre-quantized tokens get no config.
+            ``"prequantized_nf4"``, ``"none"`` …). 16/32-bit tokens get no config.
         what: Names the load for the error.
 
     Returns:
         ``["--quantization-config", "<json>"]``, or ``[]``.
 
     Raises:
-        ROSConfigError: ``dtype`` is ``nf4`` / ``int8`` and Pro is absent.
+        ROSConfigError: ``dtype`` is sub-16-bit and Pro is absent.
 
     Example:
         >>> sidecar_quantization_args("none", what="xr1")
         []
     """
-    if dtype not in {"nf4", "int8"}:
+    if dtype not in _SIDECAR_SUB_16_BIT:
         return []
-    kwargs = pro_quantization(what=what).hf_quantization_kwargs(dtype)
+    kwargs = pro_quantization(what=what).hf_quantization_kwargs(
+        "int8" if dtype == "int8" else "nf4"
+    )
     return ["--quantization-config", json.dumps(kwargs, sort_keys=True)]
 
 

@@ -37,6 +37,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from openral_rskill.quantization_gate import sidecar_quantization_args
 from openral_sim._sidecar_common import (
     ensure_pip_venv,
     ensure_uv,
@@ -382,6 +383,8 @@ def main() -> int:
     home = args.home or default_home
 
     source = _ensure_source(home, url=url, sha=sha, repo_env=repo_env)
+    # Sub-16-bit needs OpenRAL Pro; ask before the venv build (ADR-0123).
+    quant_args = sidecar_quantization_args(str(args.quantization), what="the LingBot sidecar")
     venv_py = _ensure_venv(home, source, install=install, venv_env=venv_env)
     venv = venv_py.parent.parent
 
@@ -421,6 +424,7 @@ def main() -> int:
         str(args.host),
         "--port",
         str(args.port),
+        *quant_args,
     ]
     print(
         f"[{_LABEL}] launching server (variant={args.variant}): model={args.model} "

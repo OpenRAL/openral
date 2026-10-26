@@ -778,7 +778,7 @@ _Shared BEHAVIOR-1K R1Pro wire constants + option helpers — the single source 
 #### `python/sim/src/openral_sim/policies/behavior_groot.py`
 _Official BEHAVIOR-1K GR00T policy adapter. The organizer checkpoint depends on the pinned `wensi-ai/Isaac-GR00T` `behavior` branch rather than lerobot's native N1.7 loader, so it runs in an externally-provisioned Python 3.10 sidecar. The OpenRAL process carries only pyzmq/msgpack (`behavior-groot` dependency group)._
 
-- `build_behavior_groot_policy(env_cfg, manifest, extra) -> _BehaviorGrootAdapter` — Resolves the local organizer checkpoint, sidecar endpoint, task/instruction, control mode, and quantization; auto-spawns `tools/behavior_groot_sidecar.py` or connects to an operator/remote sidecar. (L207)
+- `build_behavior_groot_policy(env_cfg, manifest, extra) -> _BehaviorGrootAdapter` — Resolves the local organizer checkpoint, sidecar endpoint, task/instruction, control mode, and quantization; auto-spawns `tools/behavior_groot_sidecar.py` or connects to an operator/remote sidecar. (L208)
 - `_BehaviorGrootAdapter` — `PolicyAdapter` implementation that preserves the official flattened evaluator observation when present, otherwise maps canonical `images.{head,left_wrist,right_wrist}` + 61-D `state` back to the R1Pro wire keys; validates a finite 23-D action.
 - `_behavior_wire_observation(observation, *, instruction) -> dict[str, object]` — Pure official-wire assembler used by the adapter and unit tests.
 
