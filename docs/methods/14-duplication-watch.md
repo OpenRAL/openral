@@ -148,6 +148,8 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`openral_safety.supervisor_node.SafetySupervisorNode`** — back-compat alias of `SafetyPassthroughNode` with zero references outside its own package's `__init__` docstring. Removing it touches `packages/openral_safety/` (safety-WG review + hazard log), so it is recorded here rather than deleted by a cleanup PR.
 
+- **Shared YAML parser — `openral_core._safe_yaml.safe_load`.** The one `yaml.safe_load` replacement with linear merge-key (`<<`) cost (CWE-776). `openral_core.loaders`, `_load_yaml_model` and `DeployScene.from_yaml` route through it; ~49 other `yaml.safe_load` call sites (CLI, sim, tools) do not yet. Route a new manifest/scene parser through it rather than adding another loader subclass, and migrate the stragglers that read untrusted YAML.
+
 ### Resolved in the 2026-09-22 cleanup (openral PR #296)
 
 - **`_h1_group` / `_g1_group`** — one `_mujoco_arm._kinematic_group(joint_name, groups, *, robot)`; each robot keeps its group tuple.
