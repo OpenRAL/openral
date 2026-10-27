@@ -58,10 +58,11 @@ def _load_yaml_model(model: type[_ModelT], path: str) -> _ModelT:
     Shared body for every ``from_yaml`` classmethod in this module
     (docs/methods/14-duplication-watch.md — "from_yaml classmethods").
     """
-    import yaml  # noqa: PLC0415  # reason: deferred to avoid import-time cost
+    # Deferred to avoid the yaml import cost at module import.
+    from openral_core._safe_yaml import safe_load  # noqa: PLC0415  # reason: deferred
 
     with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
+        data = safe_load(fh)
     return model.model_validate(data)
 
 
@@ -7157,22 +7158,29 @@ class ActionContract(BaseModel):
                         f"ActionContract.slots: slot range [{lo}, {hi}] exceeds "
                         f"action_contract.dim={self.dim}"
                     )
-            # Coverage: every index in [0, dim) appears in exactly one slot.
-            covered: list[int] = [0] * self.dim
-            for slot in self.slots:
-                lo, hi = slot.range
-                for i in range(lo, hi + 1):
-                    covered[i] += 1
-            missing = [i for i, n in enumerate(covered) if n == 0]
-            overlapping = [i for i, n in enumerate(covered) if n > 1]
+            # Coverage: every index in [0, dim) appears in exactly one slot. Walk the
+            # sorted intervals so the work scales with the slot count, not with a
+            # manifest-supplied dim.
+            ranges = sorted(slot.range for slot in self.slots)
+            missing: list[tuple[int, int]] = []
+            overlapping: list[tuple[int, int]] = []
+            next_free = 0  # one past the highest index covered so far
+            for lo, hi in ranges:
+                if lo > next_free:
+                    missing.append((next_free, lo - 1))
+                elif lo < next_free:
+                    overlapping.append((lo, min(hi, next_free - 1)))
+                next_free = max(next_free, hi + 1)
+            if next_free < self.dim:
+                missing.append((next_free, self.dim - 1))
             if missing:
                 raise ValueError(
-                    f"ActionContract.slots: indices {missing!r} are not covered by any "
+                    f"ActionContract.slots: index ranges {missing!r} are not covered by any "
                     f"slot (dim={self.dim}). Declare a discard slot for unused channels."
                 )
             if overlapping:
                 raise ValueError(
-                    f"ActionContract.slots: indices {overlapping!r} are covered by "
+                    f"ActionContract.slots: index ranges {overlapping!r} are covered by "
                     "multiple slots; ranges must be disjoint."
                 )
         return self
@@ -12591,12 +12599,11 @@ class DeployScene(BaseModel):
         with a box on every goal, and a warning escalated to an error there would escape
         their ``except ValueError`` handling.
         """
-        import yaml  # noqa: PLC0415  # reason: deferred to avoid import-time cost
-
+        from openral_core._safe_yaml import safe_load  # noqa: PLC0415  # reason: deferred yaml
         from openral_core.scene_paths import anchor_scene_paths  # noqa: PLC0415  # reason: as yaml
 
         with open(path, encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+            data = safe_load(fh)
         # Relative asset paths resolve beside the scene file first (scene_paths.py).
         scene = cls.model_validate(anchor_scene_paths(data, Path(path).parent))
         if scene.grasp_declaration is not None and scene.grasp_declaration.search_box is not None:

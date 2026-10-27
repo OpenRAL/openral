@@ -363,6 +363,20 @@ def test_no_support_layer_is_refused() -> None:
     assert support_top_from_voxels(floating, empty, near_xy=(bx, by), min_cells=1) is None
 
 
+def test_support_probe_work_is_bounded_by_the_lattice_not_the_resolution() -> None:
+    """A near-zero message resolution must not dilate a ~(2 * margin / res)**2 square."""
+    occ = np.zeros(5 * 5 * 3, dtype=np.uint8)
+    occ[25:50] = 1  # the whole k=1 layer: a table top
+    occ[50 + 12] = 1  # one cell on it, at i=j=2
+    res = 1e-9  # probe_margin_m / res = 5e7 cells of reach before the clip
+    grid = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), res, (5, 5, 3), occ)
+    centres = grid.occupied_centers()
+    top = support_top_from_voxels(
+        grid, centres, near_xy=(2.5 * res, 2.5 * res), min_cells=16, probe_margin_m=0.05
+    )
+    assert top == pytest.approx(2 * res)
+
+
 def test_a_table_beside_the_target_is_not_support_under_it() -> None:
     """The column holds a table, but none of it around the target (a gap past the edge)."""
     bx, by = _box_centre_xy()

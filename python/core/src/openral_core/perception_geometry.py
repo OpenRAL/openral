@@ -449,6 +449,13 @@ def support_top_from_voxels(
     i0, j0, k0 = (int(v) for v in ijk[_anchor(centers, ijk, near_xy)])
     start = (i0, j0, k0)
     reach = math.ceil(probe_margin_m / grid.resolution - 1e-9)
+    # A ring cell is only counted when it is in `around`, and every footprint cell is in
+    # `occupied`: no cell of either lies farther apart than their joint xy span, so
+    # clipping to it changes no count and bounds the dilation by the data, not by
+    # margin / resolution (a near-zero message resolution would otherwise ask for a
+    # square of ~(2 * margin / resolution)**2 cells).
+    cells_xy = np.array([c[:2] for c in occupied | around], dtype=np.int64)
+    reach = min(reach, int(np.ptp(cells_xy, axis=0).max()))
     for k in sorted({c[2] for c in occupied | around if c[2] < start[2]}, reverse=True):
         footprint = {(i, j) for i, j, _ in _component_from(occupied, [start], min_k=k + 1)}
         inner = _dilate(footprint, 1)
