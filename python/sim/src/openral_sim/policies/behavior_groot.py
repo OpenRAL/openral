@@ -279,7 +279,9 @@ def build_behavior_groot_policy(
             host,
             "--port",
             str(port),
-            *sidecar_quantization_args(quantization, what="the BEHAVIOR GR00T sidecar"),
+            *sidecar_quantization_args(
+                quantization, what="the BEHAVIOR GR00T sidecar", rewrites=True
+            ),
         ]
 
     client = SidecarClient(

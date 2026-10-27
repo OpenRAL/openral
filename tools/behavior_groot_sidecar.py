@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.metadata
+import importlib.util
 import io
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -58,6 +60,27 @@ def _check_pro_config(
     return cfg
 
 
+def _load_pro_quant(path: str | None, *, launcher: str) -> Any:
+    """Load OpenRAL Pro's sidecar rewrites file (ADR-0123 step 3).
+
+    This Python 3.10 venv cannot install OpenRAL Pro, so the launcher, which has
+    it, passes ``openral_pro_quant.sidecar_module_path()`` as ``--pro-quant-module``
+    for an nf4 / int8 load. The file imports only the standard library and
+    bitsandbytes.
+    """
+    if not path or not Path(path).is_file():
+        raise SystemExit(
+            "nf4 / int8 need OpenRAL Pro (ADR-0123): start this sidecar through "
+            f"{launcher} with OpenRAL Pro installed, which passes --pro-quant-module."
+        )
+    spec = importlib.util.spec_from_file_location("openral_pro_quant_sidecar", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"--pro-quant-module {path} is not a loadable Python file.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OpenRAL BEHAVIOR GR00T policy sidecar")
     parser.add_argument("--checkpoint", required=True)
@@ -77,6 +100,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="OpenRAL Pro's BitsAndBytesConfig kwargs (JSON) from the openral adapter; "
         "nf4 / int8 are refused without it (ADR-0123).",
     )
+    parser.add_argument(
+        "--pro-quant-module",
+        default=None,
+        help="Path of OpenRAL Pro's sidecar rewrites file from the openral adapter; "
+        "nf4 / int8 are refused without it (ADR-0123).",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22000)
     args = parser.parse_args(argv)
@@ -86,6 +115,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             args.quantization_config,
             launcher="the openral behavior_groot adapter",
         )
+        _load_pro_quant(args.pro_quant_module, launcher="the openral behavior_groot adapter")
     return args
 
 
@@ -207,7 +237,11 @@ class _BehaviorGrootPolicy:
         Gr00tPolicy = policy_module.Gr00tPolicy
 
         config = None
+        pro: Any = None
         if args.quantization != "none":
+            pro = _load_pro_quant(
+                args.pro_quant_module, launcher="the openral behavior_groot adapter"
+            )
             BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
             config = BitsAndBytesConfig(
@@ -227,14 +261,16 @@ class _BehaviorGrootPolicy:
         )
         _drop_backbone_lm_head(policy.model)
         if args.quantization == "nf4":
-            _quantize_nf4(
+            _quantize(
+                pro.nf4_linears_in_place,
                 policy.model,
                 device=args.device,
                 min_params=args.nf4_min_params,
                 config=config,
             )
         elif args.quantization == "int8":
-            _quantize_int8(
+            _quantize(
+                pro.int8_linears_in_place,
                 policy.model,
                 device=args.device,
                 min_params=args.nf4_min_params,
@@ -283,45 +319,17 @@ def _drop_backbone_lm_head(model: Any) -> None:
             module.lm_head = torch.nn.Identity()
 
 
-def _quantize_nf4(model: Any, *, device: str, config: Any, min_params: int = 4_000_000) -> None:
-    """Whole-model NF4 rewrite matching OpenRAL's native GR00T N1.7 path."""
-    if not device.startswith("cuda"):
-        raise ValueError("NF4 quantization requires a CUDA device.")
-    torch = importlib.import_module("torch")
-    bnb = importlib.import_module("bitsandbytes")
+def _quantize(
+    rewrite: Any, model: Any, *, device: str, config: Any, min_params: int = 4_000_000
+) -> None:
+    """Whole-model NF4 / LLM.int8 rewrite through OpenRAL Pro, then move to ``device``.
 
-    def _replace(module: Any, prefix: str = "") -> None:
-        for name, child in list(module.named_children()):
-            path = f"{prefix}.{name}" if prefix else name
-            if name in (config.llm_int8_skip_modules or []) or path in (
-                config.llm_int8_skip_modules or []
-            ):
-                continue
-            if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
-                quantized = bnb.nn.Linear4bit(
-                    child.in_features,
-                    child.out_features,
-                    bias=child.bias is not None,
-                    compute_dtype=config.bnb_4bit_compute_dtype,
-                    compress_statistics=config.bnb_4bit_use_double_quant,
-                    quant_type=config.bnb_4bit_quant_type,
-                    quant_storage=config.bnb_4bit_quant_storage,
-                )
-                quantized.weight = bnb.nn.Params4bit(
-                    child.weight.data.clone(),
-                    requires_grad=False,
-                    compress_statistics=config.bnb_4bit_use_double_quant,
-                    quant_type=config.bnb_4bit_quant_type,
-                    quant_storage=config.bnb_4bit_quant_storage,
-                )
-                if child.bias is not None:
-                    quantized.bias = torch.nn.Parameter(
-                        child.bias.data.clone().to(torch.bfloat16),
-                        requires_grad=False,
-                    )
-                setattr(module, name, quantized)
-            else:
-                _replace(child, path)
+    ``rewrite`` is Pro's ``nf4_linears_in_place`` (matching OpenRAL's native GR00T
+    N1.7 path) or ``int8_linears_in_place`` (~2x NF4 size, far less lossy).
+    """
+    if not device.startswith("cuda"):
+        raise ValueError("NF4 / int8 quantization requires a CUDA device.")
+    torch = importlib.import_module("torch")
 
     def _first_float_dtype(self: Any) -> Any:
         for parameter in self.parameters():
@@ -330,55 +338,7 @@ def _quantize_nf4(model: Any, *, device: str, config: Any, min_params: int = 4_0
         return torch.bfloat16
 
     model.__class__.dtype = property(_first_float_dtype)
-    _replace(model)
-    model.to(device)
-    model.eval()
-
-
-def _quantize_int8(model: Any, *, device: str, config: Any, min_params: int = 4_000_000) -> None:
-    """Whole-model LLM.int8 rewrite; ~2x NF4 size but far less lossy on 3B policies."""
-    if not device.startswith("cuda"):
-        raise ValueError("int8 quantization requires a CUDA device.")
-    torch = importlib.import_module("torch")
-    bnb = importlib.import_module("bitsandbytes")
-
-    def _replace(module: Any, prefix: str = "") -> None:
-        for name, child in list(module.named_children()):
-            path = f"{prefix}.{name}" if prefix else name
-            if name in (config.llm_int8_skip_modules or []) or path in (
-                config.llm_int8_skip_modules or []
-            ):
-                continue
-            if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
-                quantized = bnb.nn.Linear8bitLt(
-                    child.in_features,
-                    child.out_features,
-                    bias=child.bias is not None,
-                    has_fp16_weights=config.llm_int8_has_fp16_weight,
-                    threshold=config.llm_int8_threshold,
-                )
-                quantized.weight = bnb.nn.Int8Params(
-                    child.weight.data.clone(),
-                    requires_grad=False,
-                    has_fp16_weights=config.llm_int8_has_fp16_weight,
-                )
-                if child.bias is not None:
-                    quantized.bias = torch.nn.Parameter(
-                        child.bias.data.clone().to(torch.float16),
-                        requires_grad=False,
-                    )
-                setattr(module, name, quantized)
-            else:
-                _replace(child, path)
-
-    def _first_float_dtype(self: Any) -> Any:
-        for parameter in self.parameters():
-            if parameter.is_floating_point():
-                return parameter.dtype
-        return torch.bfloat16
-
-    model.__class__.dtype = property(_first_float_dtype)
-    _replace(model)
+    rewrite(model, torch=torch, config=config, min_params=min_params)
     model.to(device)
     model.eval()
 

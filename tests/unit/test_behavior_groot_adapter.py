@@ -10,7 +10,7 @@ import pytest
 from openral_core import VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import load_rskill_manifest
-from openral_rskill.quantization_gate import pro_quantization_installed
+from openral_rskill.quantization_gate import pro_quantization, pro_quantization_installed
 from openral_sim.policies import behavior_groot
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -206,7 +206,14 @@ def test_sidecar_parses_int8_quantization() -> None:
     # Sub-16-bit needs OpenRAL Pro: the adapter passes Pro's config (ADR-0123).
     with pytest.raises(SystemExit, match="OpenRAL Pro"):
         module._parse_args(base)
-    args = module._parse_args([*base, "--quantization-config", '{"load_in_8bit": true}'])
+    with_config = [*base, "--quantization-config", '{"load_in_8bit": true}']
+    # ...and the path of Pro's sidecar rewrites file (ADR-0123 step 3).
+    with pytest.raises(SystemExit, match="--pro-quant-module"):
+        module._parse_args(with_config)
+    if not pro_quantization_installed():
+        pytest.skip("needs OpenRAL Pro quantization (ADR-0123)")
+    pro = pro_quantization(what="test")
+    args = module._parse_args([*with_config, "--pro-quant-module", pro.sidecar_module_path()])
     assert args.quantization == "int8"
     assert args.nf4_min_params == 4_000_000
 

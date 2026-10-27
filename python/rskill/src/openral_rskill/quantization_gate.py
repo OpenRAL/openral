@@ -121,7 +121,7 @@ def pro_quantization(*, what: str) -> ModuleType:
 _SIDECAR_SUB_16_BIT = frozenset({"nf4", "int8", "prequantized_nf4"})
 
 
-def sidecar_quantization_args(dtype: str | None, *, what: str) -> list[str]:
+def sidecar_quantization_args(dtype: str | None, *, what: str, rewrites: bool = False) -> list[str]:
     """The ``--quantization-config`` argv a sidecar takes for a sub-16-bit load.
 
     A sidecar runs in its own venv, where OpenRAL Pro is not installed, so the
@@ -134,9 +134,14 @@ def sidecar_quantization_args(dtype: str | None, *, what: str) -> list[str]:
         dtype: The sidecar's ``--quantization`` token (``"nf4"``, ``"int8"``,
             ``"prequantized_nf4"``, ``"none"`` …). 16/32-bit tokens get no config.
         what: Names the load for the error.
+        rewrites: Also pass ``--pro-quant-module``, the path of Pro's sidecar
+            Linear-rewrite file, for a sidecar that rewrites its own modules
+            (LingBot, BEHAVIOR GR00T) rather than handing the config to
+            ``from_pretrained``.
 
     Returns:
-        ``["--quantization-config", "<json>"]``, or ``[]``.
+        ``["--quantization-config", "<json>"]`` (plus ``["--pro-quant-module",
+        "<path>"]`` with ``rewrites``), or ``[]``.
 
     Raises:
         ROSConfigError: ``dtype`` is sub-16-bit and Pro is absent.
@@ -147,10 +152,12 @@ def sidecar_quantization_args(dtype: str | None, *, what: str) -> list[str]:
     """
     if dtype not in _SIDECAR_SUB_16_BIT:
         return []
-    kwargs = pro_quantization(what=what).hf_quantization_kwargs(
-        "int8" if dtype == "int8" else "nf4"
-    )
-    return ["--quantization-config", json.dumps(kwargs, sort_keys=True)]
+    pro = pro_quantization(what=what)
+    kwargs = pro.hf_quantization_kwargs("int8" if dtype == "int8" else "nf4")
+    args = ["--quantization-config", json.dumps(kwargs, sort_keys=True)]
+    if rewrites:
+        args += ["--pro-quant-module", pro.sidecar_module_path()]
+    return args
 
 
 def require_pro_for_manifest(manifest: RSkillManifest) -> None:

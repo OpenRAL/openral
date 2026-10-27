@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import importlib.util
 import io
 import json
 import os
@@ -286,7 +287,28 @@ def _install_attn_fallback(*, target: str) -> None:
         cls._from_config = classmethod(_patched)  # type: ignore[assignment]  # reason: monkeypatch
 
 
+def _load_pro_quant(path: str | None, *, launcher: str) -> Any:
+    """Load OpenRAL Pro's sidecar rewrites file (ADR-0123 step 3).
+
+    This venv cannot install OpenRAL Pro, so the launcher, which has it, passes
+    ``openral_pro_quant.sidecar_module_path()`` as ``--pro-quant-module`` for an
+    nf4 load. The file imports only the standard library and bitsandbytes.
+    """
+    if not path or not Path(path).is_file():
+        raise SystemExit(
+            "nf4 needs OpenRAL Pro (ADR-0123): start this sidecar through "
+            f"{launcher} with OpenRAL Pro installed, which passes --pro-quant-module."
+        )
+    spec = importlib.util.spec_from_file_location("openral_pro_quant_sidecar", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"--pro-quant-module {path} is not a loadable Python file.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _nf4_backbone_in_place(
+    pro: Any,
     backbone: Any,
     *,
     torch: Any,
@@ -294,7 +316,7 @@ def _nf4_backbone_in_place(
     min_params: int = 2_000_000,
     skip_names: frozenset[str] = frozenset(),
 ) -> None:
-    """Self-contained NF4 rewrite of ``nn.Linear`` -> ``Linear4bit`` (bnb packs on ``.cuda()``).
+    """NF4-rewrite the Qwen-VL backbone's large Linears through OpenRAL Pro.
 
     ``skip_names`` leaves matching child modules unquantized. The V1 Qwen2.5-VL
     backbone needs ``{"o_proj"}`` skipped: its interleaved-attention forward reads
@@ -302,63 +324,19 @@ def _nf4_backbone_in_place(
     would corrupt the bf16 activations to Byte — keeping o_proj bf16 also improves
     accuracy at ~0.3 GB cost.
     """
-    import bitsandbytes as bnb
-
-    def _replace(module: Any, prefix: str = "") -> None:
-        for name, child in list(module.named_children()):
-            path = f"{prefix}.{name}" if prefix else name
-            if (
-                name in skip_names
-                or name in (config.llm_int8_skip_modules or [])
-                or path in (config.llm_int8_skip_modules or [])
-            ):
-                continue
-            if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
-                new = bnb.nn.Linear4bit(
-                    child.in_features,
-                    child.out_features,
-                    bias=child.bias is not None,
-                    compute_dtype=config.bnb_4bit_compute_dtype,
-                    compress_statistics=config.bnb_4bit_use_double_quant,
-                    quant_type=config.bnb_4bit_quant_type,
-                    quant_storage=config.bnb_4bit_quant_storage,
-                )
-                new.weight = bnb.nn.Params4bit(
-                    child.weight.data.clone(),
-                    requires_grad=False,
-                    compress_statistics=config.bnb_4bit_use_double_quant,
-                    quant_type=config.bnb_4bit_quant_type,
-                    quant_storage=config.bnb_4bit_quant_storage,
-                )
-                if child.bias is not None:
-                    new.bias = torch.nn.Parameter(
-                        child.bias.data.clone().to(torch.bfloat16), requires_grad=False
-                    )
-                setattr(module, name, new)
-            else:
-                _replace(child, path)
-
     root = "model.qwenvl_with_expert.qwenvl"
     if any(
         root == name or root.startswith(f"{name}.") for name in (config.llm_int8_skip_modules or [])
     ):
         return
-    _replace(backbone, root)
-
-
-# bnb serialises a packed Params4bit into ``<prefix>.weight`` (packed uint8) plus
-# these sibling metadata tensors (double/nested quant is on by default in the
-# bnb our sidecar pins, so ``.absmax`` is itself quantized with ``.nested_*``).
-# The suffixes mirror ``openral_sim._quantization._BNB_META_SUFFIXES`` so the
-# on-disk pack format is identical to every other OpenRAL nf4 rSkill.
-_BNB_META_SUFFIXES = (
-    ".absmax",
-    ".quant_map",
-    ".nested_absmax",
-    ".nested_quant_map",
-    ".quant_state.bitsandbytes__nf4",
-    ".quant_state.bitsandbytes__fp4",
-)
+    pro.nf4_linears_in_place(
+        backbone,
+        torch=torch,
+        config=config,
+        min_params=min_params,
+        skip_names=skip_names,
+        prefix=root,
+    )
 
 
 def _detect_prequantized(ckpt_dir: str) -> bool:
@@ -404,57 +382,11 @@ def _check_pack_config(ckpt_dir: str, config: dict[str, Any]) -> None:
         raise SystemExit("Pro's llm_int8_skip_modules differs from the NF4 pack configuration.")
 
 
-def _install_prequantized_backbone(
-    vla: Any, state: dict[str, Any], *, device: str, torch: Any
-) -> tuple[int, set[str]]:
-    """Overlay packed nf4 weights onto the ``Linear4bit`` shells in ``vla``.
-
-    Self-contained twin of ``openral_sim._quantization.install_prequantized_linears``
-    (the sidecar never imports ``openral_*``). Walks the policy, and for every
-    ``bnb.nn.Linear4bit`` rebuilds ``weight`` via ``Params4bit.from_prequantized``
-    so the packed uint8 tensor lands directly on ``device`` with no intermediate
-    bf16 materialisation (the ~30 s ``.to(cuda)`` re-pack the standard path runs).
-
-    Returns ``(n_modules_rebuilt, consumed_state_keys)`` so the caller can drop the
-    consumed keys from the residual bf16 ``load_state_dict`` overlay.
-    """
-    del torch  # kept for parity with the sibling helpers
-    import bitsandbytes as bnb
-
-    consumed: set[str] = set()
-    count = 0
-    for prefix, module in vla.named_modules():
-        if not isinstance(module, bnb.nn.Linear4bit):
-            continue
-        weight_key = f"{prefix}.weight"
-        if weight_key not in state:
-            continue
-        quantized_stats: dict[str, Any] = {}
-        for suffix in _BNB_META_SUFFIXES:
-            full = f"{weight_key}{suffix}"
-            if full in state:
-                quantized_stats[suffix.lstrip(".")] = state[full]
-                consumed.add(full)
-        consumed.add(weight_key)
-        module.weight = bnb.nn.Params4bit.from_prequantized(
-            data=state[weight_key],
-            quantized_stats=quantized_stats,
-            requires_grad=False,
-            device=device,
-        )
-        bias_key = f"{prefix}.bias"
-        if module.bias is not None and bias_key in state:
-            module.bias.data = state[bias_key].to(device).to(module.bias.dtype)
-            consumed.add(bias_key)
-        count += 1
-    return count, consumed
-
-
-def _overlay_prequantized(vla: Any, ckpt_dir: str, *, torch: Any) -> None:
+def _overlay_prequantized(vla: Any, ckpt_dir: str, *, pro: Any, torch: Any) -> None:
     """Load ``model.safetensors`` from ``ckpt_dir`` into the nf4 shells + bf16 rest.
 
     The backbone ``Linear4bit`` modules get their packed weights via
-    ``_install_prequantized_backbone``; every remaining bf16 tensor (MoE
+    OpenRAL Pro's ``install_prequantized_linear4bit``; every remaining bf16 tensor (MoE
     expert, align heads, action MLPs, embeddings, vision tower) is applied with a
     non-strict ``load_state_dict`` (the consumed nf4 keys are dropped so PyTorch
     does not flag them as missing on the already-rebuilt modules). Prequant NF4 is
@@ -470,7 +402,7 @@ def _overlay_prequantized(vla: Any, ckpt_dir: str, *, torch: Any) -> None:
             "but the packed weights are missing."
         )
     state = load_file(str(weights_path), device="cpu")
-    loaded, consumed = _install_prequantized_backbone(vla, state, device="cuda", torch=torch)
+    loaded, consumed = pro.install_prequantized_linear4bit(vla, state, device="cuda", torch=torch)
     leftover = {k: v for k, v in state.items() if k not in consumed}
     missing, unexpected = vla.load_state_dict(leftover, strict=False)
     print(
@@ -600,7 +532,9 @@ class _LingBotPolicy:
         # pointer to the fp32 upstream ckpt rather than crashing deep in the overlay.
         is_prequant = _detect_prequantized(ckpt_dir)
         config = None
+        pro: Any = None
         if quant == "nf4" or is_prequant:
+            pro = _load_pro_quant(args.pro_quant_module, launcher="tools/lingbot_vla2_sidecar.py")
             BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
             config = BitsAndBytesConfig(
@@ -658,9 +592,9 @@ class _LingBotPolicy:
             _coerce_attn_config(getattr(srv.vla, "config", None), args.attn)
             srv.vla.model = srv.vla.model.to(torch.bfloat16)
             _nf4_backbone_in_place(
-                srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch, config=config
+                pro, srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch, config=config
             )
-            _overlay_prequantized(srv.vla, ckpt_dir, torch=torch)
+            _overlay_prequantized(srv.vla, ckpt_dir, pro=pro, torch=torch)
             srv.vla = srv.vla.to(device).eval()
         else:
             srv.vla = srv.load_vla(ckpt_dir)  # CPU build + strict load_state_dict
@@ -669,7 +603,7 @@ class _LingBotPolicy:
             srv.vla.model = srv.vla.model.to(torch.bfloat16)
             if quant == "nf4":
                 _nf4_backbone_in_place(
-                    srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch, config=config
+                    pro, srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch, config=config
                 )
             srv.vla = srv.vla.to(device).eval()
         # ``sample_actions_batch`` hardcodes ``device="cuda"`` before the model
@@ -835,7 +769,9 @@ class _LingBotV1Policy:
             quant = "none"
         is_prequant = _detect_prequantized(ckpt_dir)
         config = None
+        pro: Any = None
         if quant == "nf4" or is_prequant:
+            pro = _load_pro_quant(args.pro_quant_module, launcher="tools/lingbot_vla2_sidecar.py")
             BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
             config = BitsAndBytesConfig(
@@ -894,16 +830,18 @@ class _LingBotV1Policy:
         srv.vla.model = srv.vla.model.to(torch.bfloat16)
         if is_prequant:
             _nf4_backbone_in_place(
+                pro,
                 srv.vla.model.qwenvl_with_expert.qwenvl,
                 torch=torch,
                 config=config,
                 skip_names=frozenset({"o_proj"}),
             )
-            _overlay_prequantized(srv.vla, ckpt_dir, torch=torch)
+            _overlay_prequantized(srv.vla, ckpt_dir, pro=pro, torch=torch)
             srv.vla = srv.vla.to(device).eval()
         else:
             if quant == "nf4":
                 _nf4_backbone_in_place(
+                    pro,
                     srv.vla.model.qwenvl_with_expert.qwenvl,
                     torch=torch,
                     config=config,
@@ -1036,6 +974,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "nf4 is refused without it (ADR-0123).",
     )
     p.add_argument(
+        "--pro-quant-module",
+        default=None,
+        help="Path of OpenRAL Pro's sidecar rewrites file from tools/lingbot_vla2_sidecar.py; "
+        "nf4 is refused without it (ADR-0123).",
+    )
+    p.add_argument(
         "--device",
         choices=("cuda", "cpu"),
         default="cuda",
@@ -1079,6 +1023,7 @@ def main(argv: list[str]) -> int:
         _check_pro_config(
             args.quantization, args.quantization_config, launcher="tools/lingbot_vla2_sidecar.py"
         )
+        _load_pro_quant(args.pro_quant_module, launcher="tools/lingbot_vla2_sidecar.py")
     policy: _LingBotPolicy | _LingBotV1Policy = (
         _LingBotV1Policy(args) if args.variant == "v1" else _LingBotPolicy(args)
     )
