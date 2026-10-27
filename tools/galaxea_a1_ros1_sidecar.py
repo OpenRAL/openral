@@ -41,6 +41,20 @@ TRACKER_NODE = "openral_a1_joint_tracker"
 STAGED_COMMAND_TOPIC = "/openral/arm_joint_command_staged"
 HOST_COMMAND_TOPIC = "/arm_joint_command_host"
 TRACKER_ALLOWED_MODES = (0,)
+# The sidecar's own ceilings: any local process can reach the loopback port, so
+# the hello may tighten these but never widen them (the documented independent
+# sidecar live limit is 0.08 rad; the rest match GalaxeaA1HAL's defaults).
+HELLO_CEILINGS = {
+    "max_step": 0.08,
+    "alignment": 0.05,
+    "lease": 0.5,
+    "state_timeout": 0.5,
+    "status_timeout": 1.0,
+    "feedback_limit_tolerance": 0.01,
+}
+GRIPPER_STROKE_MM = (0.0, 104.0)
+# One JSON record is a few hundred bytes; an unterminated stream past this is refused.
+MAX_RECORD_BYTES = 64 * 1024
 
 
 def _driver_argv(serial: str) -> list[str]:
@@ -623,6 +637,11 @@ def _hello_config(packet: dict[str, Any]) -> dict[str, Any]:
         or config["gripper_max"] <= config["gripper_min"]
     ):
         raise ValueError("invalid gripper range")
+    widened = [key for key, ceiling in HELLO_CEILINGS.items() if config[key] > ceiling]
+    if config["gripper_min"] < GRIPPER_STROKE_MM[0] or config["gripper_max"] > GRIPPER_STROKE_MM[1]:
+        widened.append("gripper_stroke")
+    if widened:
+        raise ValueError(f"hello widens the sidecar's safety ceilings: {widened}")
     if any(
         isinstance(config[key], bool) or not 0 <= config[key] <= MAX_STATUS_MASK
         for key in ("idle_mask", "gripper_mask")
@@ -673,6 +692,8 @@ def _serve(
                     return
                 else:
                     raise ValueError(f"unsupported operation {packet.get('op')!r}")
+            if len(buffer) > MAX_RECORD_BYTES:
+                raise ValueError(f"unterminated record exceeds {MAX_RECORD_BYTES} bytes")
         # Drain a readable packet before evaluating the lease. The ROS tracker
         # callback may briefly starve this thread while the relay transitions
         # ARMING -> ACTIVE; current actions or an e-stop can already be buffered

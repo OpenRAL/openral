@@ -164,6 +164,16 @@ command limits after verifying they are no wider than Runtime's envelope, so
 Runtime calibration margins cannot widen the OpenRAL, safety-kernel, or
 sidecar command envelope.
 
+The sidecar's loopback port is reachable by any local process, so it enforces
+its own ceilings (`HELLO_CEILINGS` in `tools/galaxea_a1_ros1_sidecar.py`:
+`max_step` 0.08 rad, `alignment` 0.05 rad, `lease` 0.5 s, `state_timeout`
+0.5 s, `status_timeout` 1.0 s, `feedback_limit_tolerance` 0.01 rad, gripper
+stroke within 0–104 mm). A client hello may tighten any of them but one that
+widens any is refused; an unterminated record over 64 KiB is refused too. The
+Runtime local-service client likewise refuses a Unix-socket peer running as
+another uid (`SO_PEERCRED`), since its `/tmp` fallback directory is
+predictable.
+
 The gateway emits one bounded target per 30 Hz control tick. When its IK
 solution is farther than 0.045 rad from fresh feedback, it keeps advancing
 toward that same solved target on subsequent ticks and only consumes the next

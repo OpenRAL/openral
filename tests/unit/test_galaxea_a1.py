@@ -249,6 +249,22 @@ def test_runtime_local_client_closes_a_broken_transport() -> None:
     assert client._socket is None
 
 
+def test_runtime_local_client_accepts_a_same_user_peer(tmp_path: Path) -> None:
+    """``connect`` checks the peer's uid (SO_PEERCRED); a Runtime run as this user passes."""
+    path = tmp_path / "runtime.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(1)
+    client = RuntimeLocalClient("runtime.sock", label="test Runtime", max_response_bytes=1024)
+    client.path = path
+    try:
+        client.connect(timeout_s=1.0)
+        assert client._socket is not None
+    finally:
+        client.close()
+        server.close()
+
+
 def test_camera_bridge_batch_shares_one_paired_session() -> None:
     configs = [
         SensorReaderConfig(
@@ -308,6 +324,52 @@ def test_sidecar_cross_checks_identity_limits_and_mask_types() -> None:
         )
     with pytest.raises(ValueError, match="integers"):
         decode_hello({**hello, "idle_timeout_error_mask": True})
+    # The hello may tighten the sidecar's own ceilings, never widen them.
+    assert decode_hello({**hello, "max_target_step_rad": 0.04})["max_step"] == 0.04
+    for key, value in (
+        ("max_target_step_rad", 0.5),
+        ("command_lease_s", 5.0),
+        ("initial_alignment_tolerance_rad", 0.2),
+        ("state_timeout_s", 10.0),
+        ("gripper_stroke_max_mm", 200.0),
+    ):
+        with pytest.raises(ValueError, match="widens the sidecar's safety ceilings"):
+            decode_hello({**hello, key: value})
+
+
+def test_sidecar_refuses_an_unterminated_oversized_record() -> None:
+    """A newline-free stream is refused at the record cap instead of growing forever."""
+
+    class FakeRospy:
+        def loginfo(self, *_args: object) -> None:
+            pass
+
+        def is_shutdown(self) -> bool:
+            return False
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    client = socket.create_connection(listener.getsockname(), timeout=1.0)
+    failures: list[BaseException] = []
+
+    def serve() -> None:
+        try:
+            _SIDECAR["_serve"](listener, object(), FakeRospy(), lambda: None)
+        except BaseException as exc:
+            failures.append(exc)
+
+    server = threading.Thread(target=serve, daemon=True)
+    server.start()
+    try:
+        client.sendall(b"x" * (_SIDECAR["MAX_RECORD_BYTES"] + 1))
+    except OSError:
+        pass  # the server may close first
+    server.join(2.0)
+    client.close()
+    listener.close()
+    assert not server.is_alive()
+    assert len(failures) == 1 and "unterminated record" in str(failures[0])
 
 
 def test_sidecar_pins_every_vendor_topic_in_launch_commands() -> None:

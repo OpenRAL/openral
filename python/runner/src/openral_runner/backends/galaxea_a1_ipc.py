@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
 _PACKET_LENGTH = struct.Struct("!I")
+_PEER_CREDENTIALS = struct.Struct("3i")  # Linux ``struct ucred``: pid, uid, gid
 
 
 def runtime_socket_path(name: str) -> Path:
@@ -63,6 +64,19 @@ class RuntimeLocalClient:
                 f"{self.label} is unavailable at {self.path}; start the "
                 "corresponding A1 Runtime service"
             ) from exc
+        # The /tmp fallback directory is predictable: another local user could
+        # create it first and listen there. Only a peer running as this user is
+        # the Runtime; anything else would receive camera frames and joint state.
+        creds = active_socket.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, _PEER_CREDENTIALS.size
+        )
+        _pid, peer_uid, _gid = _PEER_CREDENTIALS.unpack(creds)
+        if peer_uid != os.getuid():
+            active_socket.close()
+            raise ROSConfigError(
+                f"{self.label} at {self.path} is served by uid {peer_uid}, not this user "
+                f"(uid {os.getuid()}); refusing to send it observations"
+            )
         self._socket = active_socket
 
     def call(
