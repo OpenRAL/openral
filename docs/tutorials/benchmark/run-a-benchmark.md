@@ -86,6 +86,20 @@ openral benchmark run --suite pusht --rskill rskills/diffusion-pusht \
   --n-episodes 2 --no-update-manifest
 ```
 
+### One task, as a plain sim run
+
+`openral sim run` takes a suite file too: `--task` picks the entry, which runs
+as that task's own sim scene would (relative asset paths resolve beside the
+suite file; the suite's `metadata` is dropped, and nothing is written to the
+rSkill package).
+
+```bash
+openral sim run --config benchmarks/libero_10.yaml --task libero_10/3 \
+  --rskill smolvla-libero --n-episodes 1
+```
+
+So a suite needs no `scenes/sim/` copy of each task.
+
 `--n-episodes` overrides every scene in the suite. It is for iteration only: a
 number produced under it is **not** paper-comparable, because the published
 protocol is the count in the YAML.
@@ -203,6 +217,7 @@ per-scene fields DRY:
 ```
 
 `honest_scope` is required: it states what the number does **not** cover. A
+suite that ships its own assets names them relative to the suite file. A
 file at `benchmarks/<id>.yaml` is suite `<id>`; see [`benchmarks/README.md`](https://github.com/OpenRAL/openral/blob/master/benchmarks/README.md)
 for the full invariant list.
 

@@ -29,6 +29,7 @@ from openral_core.schemas import BenchmarkScene, DeployScene, SimScene
 __all__ = [
     "load_benchmark_suite",
     "load_scene_strict",
+    "load_suite_task",
     "raise_on_invalid_suite",
 ]
 
@@ -209,7 +210,9 @@ def load_benchmark_suite(path: str) -> list[BenchmarkScene]:
                 f"{path}: entry [{i}] must be a mapping, got {type(raw_scene).__name__}."
             )
         try:
-            scenes.append(BenchmarkScene.model_validate(raw_scene))
+            scenes.append(
+                BenchmarkScene.model_validate(anchor_scene_paths(raw_scene, Path(path).parent))
+            )
         except ValidationError as exc:
             raise ROSConfigError(
                 f"{path}: entry [{i}] is not a valid BenchmarkScene: {exc}\n"
@@ -218,6 +221,57 @@ def load_benchmark_suite(path: str) -> list[BenchmarkScene]:
                 "and `task.success_key`."
             ) from exc
     return scenes
+
+
+def load_suite_task(path: str, task_id: str | None) -> SimScene:
+    """Load one task of a benchmark suite YAML as a ``SimScene``, for ``openral sim run``.
+
+    The entry whose ``task.id`` is ``task_id`` is loaded with its relative paths
+    anchored beside the suite file and its ``metadata`` dropped, so a single task of
+    a suite runs exactly as its own ``scenes/sim/`` YAML would. ``task_id`` may be
+    omitted only for a one-task suite.
+
+    Args:
+        path: Filesystem path to a benchmark suite YAML (a bare list at the root).
+        task_id: The ``task.id`` of the entry to load.
+
+    Returns:
+        The selected entry as a validated ``SimScene``.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        ROSConfigError: If the root is not a list, ``task_id`` is missing for a
+            multi-task suite or names no entry (the message lists the task ids), or
+            the entry is not a valid ``SimScene``.
+
+    Example:
+        >>> from openral_core import load_suite_task
+        >>> scene = load_suite_task("benchmarks/libero_10.yaml", "libero_10/3")
+        >>> scene.task.id
+        'libero_10/3'
+    """
+    raw_obj = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw_obj, list):
+        raise ROSConfigError(
+            f"{path}: YAML root must be a list of BenchmarkScene mappings, "
+            f"got {type(raw_obj).__name__}."
+        )
+    entries = [e for e in raw_obj if isinstance(e, dict)]
+    ids = [str((e.get("task") or {}).get("id")) for e in entries]
+    if task_id is None and len(entries) == 1:
+        task_id = ids[0]
+    if task_id is None:
+        raise ROSConfigError(
+            f"{path} is a benchmark suite of {len(ids)} tasks; pick one with --task: "
+            + ", ".join(ids)
+        )
+    if task_id not in ids:
+        raise ROSConfigError(
+            f"{path}: no task {task_id!r} in this benchmark suite. Tasks: " + ", ".join(ids)
+        )
+    raw = anchor_scene_paths(entries[ids.index(task_id)], Path(path).parent)
+    raw.pop("metadata", None)  # the suite's eval contract; a sim run does not carry it
+    return _load_as_sim(path, raw)
 
 
 def raise_on_invalid_suite(

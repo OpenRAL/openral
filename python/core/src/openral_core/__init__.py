@@ -27,7 +27,12 @@ from openral_core.exceptions import (
     ROSWorkspaceViolation,
 )
 from openral_core.gpu import TEGRA_RELEASE_PATH, detect_gpu_vram_gb, is_tegra_host
-from openral_core.loaders import load_benchmark_suite, load_scene_strict, raise_on_invalid_suite
+from openral_core.loaders import (
+    load_benchmark_suite,
+    load_scene_strict,
+    load_suite_task,
+    raise_on_invalid_suite,
+)
 from openral_core.schemas import (
     ANTHROPIC_BASE_URL,
     BODY_TWIST_DIM,
@@ -582,6 +587,7 @@ __all__ = [
     "load_benchmark_suite",
     "load_robot_unit",
     "load_scene_strict",
+    "load_suite_task",
     "load_usd_object_catalog",
     "merge_deploy_sensors",
     "parse_reasoner_tool_choice",
