@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections import deque
+from collections import Counter, deque
 
 from openral_core import (
     FailureEvidence,
@@ -1002,8 +1002,8 @@ class ContextRenderer:
                     for o in world_state.detected_objects
                 ],
             )
-            labels = [o.label.strip().casefold() for o in world_state.detected_objects]
-            repeated = sorted({label for label in labels if labels.count(label) > 1})
+            counts = Counter(o.label.strip().casefold() for o in world_state.detected_objects)
+            repeated = sorted(label for label, n in counts.items() if n > 1)
             if repeated:
                 lines.append(
                     f"repeated_labels: {', '.join(repeated)} — a bare label is ambiguous; "

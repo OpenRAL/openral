@@ -203,6 +203,16 @@ def test_tiled_jpeg_flip_180_rotates_every_view() -> None:
     assert all(m < 55.0 for m in _top_means(tiled_jpeg([view, view], flip_180=True)))
 
 
+def test_tiled_jpeg_refuses_a_canvas_over_the_pixel_budget() -> None:
+    """A short, very wide frame next to a tall one would upscale into a multi-gigapixel
+    canvas; it is refused from the message dimensions before any allocation."""
+    pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    tall = (bytes(64 * 64 * 3), 64, 64, "rgb8")
+    strip = (bytes(1 * 600_000 * 3), 1, 600_000, "rgb8")  # 1.8 MB message -> 38.4 Mpx wide
+    with pytest.raises(ValueError, match="pixel budget"):
+        tiled_jpeg([tall, strip])
+
+
 @pytest.mark.parametrize(
     "age_s,max_age_s,expected",
     [

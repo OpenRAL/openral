@@ -59,10 +59,14 @@ The effect/actuation variants:
 | Tool | Dispatch target | What's wired today |
 |---|---|---|
 | `ExecuteRskillTool` | action goal on `/openral/execute_rskill` (F1) | ✅ `rclpy.action.ActionClient` — sends a goal with `deadline_s`, streams feedback to the warning log, emits a `FailureTrigger` on `/openral/failure/rskill` with `KIND_CONTROLLER` (rejection / abort / server-unavailable) or `KIND_TIMEOUT` (deadline_s expired). One goal at a time: while a goal is in flight a second dispatch is refused with feedback and the context carries an `in_flight:` line |
-| `LifecycleTransitionTool` | service call on `<node>/change_state` | ✅ generic `lifecycle_msgs/srv/ChangeState` client — `configure` / `activate` / `deactivate` / `cleanup` only (`shutdown` reserved for the safety supervisor, CLAUDE.md §3) |
+| `LifecycleTransitionTool` | service call on `<node>/change_state` | ✅ generic `lifecycle_msgs/srv/ChangeState` client — `configure` / `activate` / `deactivate` / `cleanup` only (`shutdown` reserved for the safety supervisor, CLAUDE.md §3); `node` must be one of the palette's `node_ids` (the deployment's lifecycle peers) — the decoder rejects any other as `ROSReasonerInvalidPlan` and the dispatcher re-checks it, so the deadman or kernel can never be targeted |
 | `EmitPromptTool` | publish on `target_topic` | ✅ publishes on the call's `target_topic` (per-topic publisher cache; `/openral/prompt` reuses the cascade publisher); stamps the active OTel `traceparent` into `metadata_json` |
 | `WaitTool` | none (deliberate no-op) | ✅ the forced tool choice needs an explicit "observe and wait" option — logged with its rationale, no ROS traffic |
 | `ReloadGstPipelineTool` | service call on `/openral/sensors/<id>/reload_pipeline` | ⚠️ log-and-acknowledge stub — F6 sensor-package service IDL is not yet on disk (tracked in [GH-126](https://github.com/OpenRAL/openral/issues/126)) |
+
+**Inactive reasoner:** prompt and failure subscriptions stay live while the node is
+configured but not active; their payloads are kept in the context renderer for the
+next activation, but no tick runs and nothing is dispatched until `on_activate`.
 
 **Mission handling on `/openral/prompt`:** an operator prompt (re)builds the
 mission queue only when no mission is in progress. Mid-flight, a prompt is

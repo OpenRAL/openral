@@ -307,9 +307,10 @@ class ToolPalette(BaseModel):
             active runtime's sensor catalog at palette-build time. Used
             by the reasoner_node for client-side validation before the
             service call is made.
-        node_ids: Set of fully-qualified ROS node names the reasoner
-            may target with ``LifecycleTransitionTool``. Populated
-            from the deployment YAML's known lifecycle peers.
+        node_ids: The only fully-qualified ROS node names a
+            ``LifecycleTransitionTool`` may target; any other target is
+            refused as ``ROSReasonerInvalidPlan``. Populated from the
+            deployment YAML's known lifecycle peers.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

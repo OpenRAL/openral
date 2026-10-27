@@ -1039,6 +1039,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # a lifecycle transition is dropped instead of dispatching onto a
         # stopped node.
         self._llm_generation: int = 0
+        # True only between on_activate and on_deactivate/shutdown. Prompt and
+        # failure callbacks stay subscribed while inactive, so `_on_tick` checks
+        # this before starting any pass that could dispatch.
+        self._is_active: bool = False
         # An execute_rskill goal is being dispatched or is running (covers the
         # send→accept window `_active_rskill_goal` cannot). Gates a second
         # dispatch: the runner serves one goal at a time, and a forced tick
@@ -1532,12 +1536,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         del state
         period_s = 1.0 / self._tick_hz
         self._tick_timer = self.create_timer(period_s, self._on_tick)
+        self._is_active = True
         self.get_logger().info("on_activate: ticking")
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Stop the tick timer (subscriptions remain attached)."""
         del state
+        # First: a prompt/failure callback landing after this point must not
+        # start a fresh tick (it would capture the bumped generation below).
+        self._is_active = False
         if self._tick_timer is not None:
             self._tick_timer.cancel()
             self._tick_timer = None
@@ -1663,6 +1671,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         a node that failed ``on_configure`` will ever reach.
         """
         del state
+        self._is_active = False
         self._shutdown_worker_pools()
         self.get_logger().info("on_shutdown")
         return TransitionCallbackReturn.SUCCESS
@@ -2936,6 +2945,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 for the four event tiers, or ``"heartbeat"`` (default) for the
                 periodic timer. Recorded on the OTel span as ``reasoner.tier``.
         """
+        if not self._is_active:
+            # Inactive: subscriptions still deliver prompts/failures (they are
+            # kept in the renderer for the next activation) but nothing ticks.
+            return
         mission = self._renderer.mission
         active = mission.active() if mission is not None else None
         if self._object_query_recovery_pending:
@@ -5127,7 +5140,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         return client.call_async(req)
 
     def _dispatch_lifecycle_transition(self, call: LifecycleTransitionTool) -> None:
-        """Call ``<call.node>/change_state`` with the matching ``Transition.TRANSITION_*``."""
+        """Call ``<call.node>/change_state`` with the matching ``Transition.TRANSITION_*``.
+
+        Refuses a target outside ``ToolPalette.node_ids`` (the deployment's
+        lifecycle peers) — the decoder already rejects it, this re-checks at the
+        sink so no client path can reach an unlisted node (e.g. the deadman).
+        """
+        if call.node not in self._palette.node_ids:
+            self.get_logger().error(
+                f"dispatch: lifecycle_transition node={call.node!r} refused — not a "
+                f"lifecycle peer of this deployment (allowed: {sorted(self._palette.node_ids)!r})",
+            )
+            return
         future = self._change_state_async(call.node, call.transition)
         if future is None:
             self.get_logger().warning(
