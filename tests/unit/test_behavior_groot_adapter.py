@@ -180,6 +180,21 @@ def test_bf16_override_maps_to_the_sidecars_unquantized_mode(
     assert argv[argv.index("--quantization") + 1] == "none"
 
 
+def test_required_signatures_refuse_before_the_sidecar_loads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The sidecar loads the checkpoint itself, so the provenance gate runs in the adapter."""
+    from openral_sim._quantization import QUANTIZATION_DTYPE_ENV
+
+    monkeypatch.setenv(behavior_groot._CHECKPOINT_ENV, str(tmp_path))
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
+    monkeypatch.setenv("OPENRAL_REQUIRE_SIGNED_SKILLS", "1")
+    manifest = load_rskill_manifest(str(_RSKILL))
+    env_cfg = SimpleNamespace(vla=VLASpec(id="gr00t_b1k", weights_uri=str(_RSKILL)))
+    with pytest.raises(ROSConfigError, match="OPENRAL_REQUIRE_SIGNED_SKILLS"):
+        behavior_groot.build_behavior_groot_policy(env_cfg, manifest, {})
+
+
 def test_precision_the_sidecar_cannot_load_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """fp32 has no sidecar mode; it must fail loudly, not collapse to "none"."""
     from openral_sim._quantization import QUANTIZATION_DTYPE_ENV

@@ -186,16 +186,27 @@ def _build_diffuser_actor(env_cfg: SimEnvironment) -> _Diffuser3DActorAdapter:
     sidecar venv + 3DDA repo + checkpoint/instructions/bounds (externally
     provisioned); spawns the sidecar and connects.
     """
+    from openral_rskill.loader import rSkill
+
     from openral_sim.policies._policy_loading import load_manifest_for_spec
 
+    manifest = load_manifest_for_spec(env_cfg.vla)
     # The sidecar runs the checkpoint in fp32 and takes no precision flag.
     require_supported_dtype(
-        resolve_quant_plan(env_cfg.vla, load_manifest_for_spec(env_cfg.vla)),
+        resolve_quant_plan(env_cfg.vla, manifest),
         frozenset({"fp32"}),
         "diffuser_actor",
     )
     repo = _resolve_file(_REPO_ENV, _DEFAULT_REPO, "repo checkout")
     checkpoint = _resolve_file(_CKPT_ENV, _default_checkpoint(), "checkpoint")
+    # The sidecar loads the checkpoint itself, so the resolver's provenance gate
+    # (OPENRAL_REQUIRE_SIGNED_SKILLS) must run here.
+    if manifest is None:
+        raise ROSConfigError(
+            "diffuser_actor needs a bare rSkill reference in weights_uri, got "
+            f"{env_cfg.vla.weights_uri!r}."
+        )
+    rSkill._check_provenance(manifest, source=str(checkpoint))
     instructions = _resolve_file(
         _INSTR_ENV,
         Path.home()

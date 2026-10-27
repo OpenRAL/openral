@@ -175,6 +175,28 @@ def test_custom_code_detector_requires_immutable_revision() -> None:
         weights_source_from_manifest(manifest)
 
 
+@pytest.mark.parametrize(
+    "model_ref", ["OpenRAL/la", "OpenRAL/la@", "OpenRAL/la@main", "OpenRAL/la@25a9bec"]
+)
+def test_sidecar_server_refuses_a_movable_revision(model_ref: str) -> None:
+    """The server runs checkpoint code; only a full commit sha pins what it runs."""
+    import importlib.util
+
+    pytest.importorskip("transformers")
+    pytest.importorskip("zmq")
+    spec = importlib.util.spec_from_file_location(
+        "_locateanything_server", _REPO / "tools" / "_locateanything_server.py"
+    )
+    assert spec is not None and spec.loader is not None
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+
+    sha = "25a9bec53791029dfcc1badc727bbf80cecac9a1"
+    assert server._split_model_ref(f"OpenRAL/la@{sha}") == ("OpenRAL/la", sha)
+    with pytest.raises(ValueError, match="40-hex commit sha"):
+        server._split_model_ref(model_ref)
+
+
 def test_locate_in_view_tool_schema_round_trips() -> None:
     """LocateInViewTool parses via the ReasonerToolCall discriminated union."""
     from openral_core import LocateInViewTool, ReasonerToolCall

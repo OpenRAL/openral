@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_observability import inference_span
+from openral_rskill.loader import rSkill
 from openral_rskill.quantization_gate import sidecar_quantization_args
 
 from openral_sim import _behavior_wire
@@ -234,6 +235,9 @@ def build_behavior_groot_policy(
     nf4_min_params = _opt_int(plan.extra.get("nf4_min_params"), 4_000_000)
     host = os.environ.get(_HOST_ENV, str(extra.get("host", _DEFAULT_HOST)))
     checkpoint = _checkpoint_path(manifest)
+    # The sidecar loads the checkpoint itself, so the resolver's provenance gate
+    # (OPENRAL_REQUIRE_SIGNED_SKILLS) must run here.
+    rSkill._check_provenance(manifest, source=str(checkpoint))
     default_port = _policy_default_port(
         task, str(checkpoint), quantization, control_mode, nf4_min_params
     )

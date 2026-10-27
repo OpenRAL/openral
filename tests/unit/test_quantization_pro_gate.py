@@ -113,3 +113,49 @@ def test_a_sidecar_launcher_cannot_quantize_without_pro(token: str) -> None:
 def test_a_16_or_32_bit_sidecar_launch_needs_no_pro(token: str | None) -> None:
     """Open sidecars run fp16 / bf16 / fp32 with no config and no Pro."""
     assert sidecar_quantization_args(token, what="the XR-1 sidecar") == []
+
+
+def test_a_manifest_declaring_bf16_over_a_quantized_checkpoint_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A manifest's declared dtype cannot vouch for the checkpoint it points at.
+
+    The reward monitors, scene VLM and detector gate on ``require_pro_for_manifest``
+    alone, so it must also read the selected checkpoint's own ``config.json``.
+    """
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_vl",
+                "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True},
+            }
+        )
+    )
+    manifest = load_rskill_manifest("rskills/topreward-qwen3vl-4b-nf4")
+    assert manifest.quantization is not None
+    manifest = manifest.model_copy(
+        update={
+            "weights_uri": f"local://{tmp_path}",
+            "quantization": manifest.quantization.model_copy(update={"dtype": "bf16"}),
+        }
+    )
+    with pytest.raises(ROSConfigError, match="bitsandbytes"):
+        require_pro_for_manifest(manifest)
+
+
+def test_the_sim_plan_checks_the_manifest_checkpoint_not_just_the_package(
+    tmp_path: Path,
+) -> None:
+    """``spec.weights_uri`` names the rSkill package; the adapter loads the manifest's checkpoint.
+
+    A bf16 package with no ``config.json`` of its own must not wave through a
+    manifest ``weights_uri`` that is quantized upstream.
+    """
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True}})
+    )
+    manifest = load_rskill_manifest("rskills/smolvla-libero").model_copy(
+        update={"weights_uri": f"local://{tmp_path}"}
+    )
+    with pytest.raises(ROSConfigError, match="bitsandbytes"):
+        resolve_quant_plan(_spec("smolvla-libero"), manifest)

@@ -45,7 +45,7 @@ from openral_rskill._vla_core import (
 )
 
 from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
-from openral_sim.policies._policy_loading import load_manifest_for_spec
+from openral_sim.policies._policy_loading import is_commit_sha, load_manifest_for_spec
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
 
@@ -168,10 +168,11 @@ def _resolve_model_id(spec: VLASpec) -> str:
     from openral_rskill.loader import resolve_rskill_to_hf_with_revision
 
     target, revision = resolve_rskill_to_hf_with_revision(spec.weights_uri)
-    if revision is None:
+    if not is_commit_sha(revision):
         raise ROSConfigError(
             "XR-1 executes checkpoint-supplied Python under trust_remote_code; "
-            "weights_uri must pin an immutable Hugging Face revision with '@<sha>'."
+            "weights_uri must pin an immutable Hugging Face revision with "
+            f"'@<40-hex commit sha>', got {revision!r}."
         )
     return f"hf://{target}@{revision}"
 

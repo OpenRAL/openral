@@ -26,6 +26,7 @@ never pulls them transitively.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -42,6 +43,7 @@ from openral_rskill._vla_core import (
     resolve_rskill_repo_revision,
     run_inference,
     to_numpy_action,
+    validate_processor_steps,
 )
 
 from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
@@ -289,6 +291,10 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
     # files per-file. The snapshot fallback covers legacy
     # hf:// URIs that predate the per-file contract.
     pretrained_path = resolve_processor_dir(spec, repo_id)
+    # lerobot imports and calls whatever class a step names; refuse any step that
+    # is not a registry entry before it does (the shared loader does the same).
+    for name in ("policy_preprocessor.json", "policy_postprocessor.json"):
+        validate_processor_steps(str(Path(pretrained_path) / name))
     policy_pre = PolicyProcessorPipeline.from_pretrained(
         pretrained_model_name_or_path=pretrained_path,
         config_filename="policy_preprocessor.json",

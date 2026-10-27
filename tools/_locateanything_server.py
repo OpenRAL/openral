@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sys
 import time
 
@@ -44,11 +45,15 @@ from transformers import AutoConfig, AutoModel, AutoProcessor, AutoTokenizer, Bi
 
 def _split_model_ref(model_ref: str) -> tuple[str, str]:
     """Split the required ``repo@revision`` custom-code reference."""
-    repo_id, separator, revision = model_ref.partition("@")
-    if not separator or not revision:
+    repo_id, _, revision = model_ref.partition("@")
+    # A branch or tag can move to new checkpoint code; only a full commit sha is
+    # immutable. Same rule as openral_sim.policies._policy_loading.is_commit_sha,
+    # which this sidecar venv cannot import.
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
         raise ValueError(
             "LocateAnything executes checkpoint-supplied code; "
-            "--model must be an immutable 'repo@revision' reference."
+            "--model must be an immutable 'repo@<40-hex commit sha>' reference, "
+            f"got {model_ref!r}."
         )
     return repo_id, revision
 

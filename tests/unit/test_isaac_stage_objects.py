@@ -196,10 +196,14 @@ def test_a_completed_archive_extraction_is_reused(
     assert fetch_environment_archive(archive) == str(root / archive.usd)
 
 
-def _serve_zip(monkeypatch: pytest.MonkeyPatch, members: dict[str, str]) -> IsaacEnvironmentArchive:
+def _serve_zip(
+    monkeypatch: pytest.MonkeyPatch,
+    members: dict[str, str],
+    compression: int = zipfile.ZIP_STORED,
+) -> IsaacEnvironmentArchive:
     """A pinned archive whose download is served from memory (the network boundary)."""
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
+    with zipfile.ZipFile(buf, "w", compression=compression) as zf:
         for name, text in members.items():
             zf.writestr(name, text)
     blob = buf.getvalue()
@@ -229,6 +233,21 @@ def test_an_archive_without_its_usd_leaves_the_cache_untouched(
     monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
     archive = _serve_zip(monkeypatch, {"elsewhere/scene.usd": "#usda 1.0\n"})
     with pytest.raises(ROSConfigError, match="has no"):
+        fetch_environment_archive(archive)
+    assert list((tmp_path / "isaac-environments").iterdir()) == []
+
+
+def test_a_zip_bomb_archive_is_refused_before_extraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pinned digest does not bound what the zip expands to; the ratio cap does."""
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    archive = _serve_zip(
+        monkeypatch,
+        {"kitchen_with_orange/scene.usd": "#usda 1.0\n", "pad.bin": "\0" * (8 << 20)},
+        compression=zipfile.ZIP_DEFLATED,
+    )
+    with pytest.raises(ROSConfigError, match="zip bomb"):
         fetch_environment_archive(archive)
     assert list((tmp_path / "isaac-environments").iterdir()) == []
 

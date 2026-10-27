@@ -141,6 +141,7 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
     """
     server = Path(__file__).resolve().parent / "_internvla_n1_server.py"
     quant_args = sidecar_quantization_args(args.quantization, what="the InternVLA-N1 sidecar")
+    rev_args = ["--revision", args.revision] if args.revision else []
     wrapper = work / "boot_server.py"
     wrapper.write_text(
         textwrap.dedent(
@@ -152,9 +153,10 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
             sys.argv = [
                 "_internvla_n1_server",
                 "--model", {args.model!r},
-                "--host", "0.0.0.0",
+                "--host", "127.0.0.1",
                 "--port", str({args.port}),
                 "--quantization", {args.quantization!r},
+                *{rev_args!r},
                 *{quant_args!r},
             ]
             runpy.run_path({str(server)!r}, run_name="__main__")
@@ -175,6 +177,11 @@ def main() -> int:
         quant_help="Backbone quantization. NF4 is required to fit the 8.3B "
         "checkpoint on ≤ 8 GiB GPUs; the System-1 NavDP head stays bf16 "
         "(default nf4).",
+    )
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Hub revision (commit sha) of --model, passed to the model and processor loaders.",
     )
     args = parser.parse_args()
     return run_sidecar(

@@ -460,9 +460,21 @@ def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None
                 ignore_patterns=["model*.safetensors"],
             )
         )
+    # Every copied file must live in the checkpoint: a planted symlink to, say,
+    # ~/.ssh/id_ed25519 would otherwise land in the bundle and be uploaded. An HF
+    # cache snapshot legitimately links into its sibling ``blobs`` dir.
+    roots = [snapshot.resolve()]
+    if snapshot.parent.name == "snapshots":
+        roots.append((snapshot.parent.parent / "blobs").resolve())
     for src in snapshot.iterdir():
         if not src.is_file():
             continue
+        target = src.resolve()
+        if not any(target.is_relative_to(root) for root in roots):
+            raise ValueError(
+                f"{src} links outside the checkpoint (to {target}); refusing to copy it "
+                "into the bundle."
+            )
         # ignore_patterns only suppresses re-downloads; a prior snapshot_download
         # may have already pulled the full repo, so weight files can still be
         # symlinked here and would clobber/shadow the nf4 blob _save_state wrote.

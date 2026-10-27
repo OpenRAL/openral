@@ -51,6 +51,18 @@ def test_remote_code_requires_immutable_revision(monkeypatch: pytest.MonkeyPatch
         _require_remote_code_ack("owner/model", None)
 
 
+@pytest.mark.parametrize(
+    "revision", ["main", "v1.0", "3697bf8", "3697BF84EAA7A7C6072E07B9451CA4C780CF7BED"]
+)
+def test_remote_code_rejects_mutable_or_short_revision(
+    monkeypatch: pytest.MonkeyPatch, revision: str
+) -> None:
+    """A branch, tag or short sha can move to new checkpoint code; only a full commit pins it."""
+    monkeypatch.setenv("OPENRAL_ALLOW_REMOTE_CODE", "1")
+    with pytest.raises(ROSConfigError, match="40-hex commit sha"):
+        _require_remote_code_ack("owner/model", revision)
+
+
 def test_remote_code_requires_explicit_ack(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENRAL_ALLOW_REMOTE_CODE", raising=False)
     with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_REMOTE_CODE"):

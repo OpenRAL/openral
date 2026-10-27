@@ -687,8 +687,8 @@ def resolve_quant_plan(
     :func:`plan_quantization` (precedence: ``$OPENRAL_QUANTIZATION_DTYPE``,
     ``spec.quantization``, ``spec.extra["dtype"]``, the manifest, ``default``),
     then the ADR-0123 checks: a resolved dtype of 8 bits or fewer, or a
-    ``spec.weights_uri`` checkpoint carrying a ``quantization_config``, needs the
-    OpenRAL Pro quantization package.
+    ``spec.weights_uri`` or manifest checkpoint carrying a ``quantization_config``,
+    needs the OpenRAL Pro quantization package.
 
     Args:
         spec: The ``VLASpec`` for this run.
@@ -709,9 +709,14 @@ def resolve_quant_plan(
         else f"policy {getattr(spec, 'id', '?')!r}"
     )
     require_pro_for_dtype(plan.dtype, what=what)
-    weights_uri = getattr(spec, "weights_uri", None)
-    if isinstance(weights_uri, str) and weights_uri:
-        require_pro_for_checkpoint(weights_uri, what=what)
+    # ``spec.weights_uri`` is often only the rSkill package; the checkpoint the
+    # adapter actually loads is the manifest's ``weights_uri`` / ``source_repo``.
+    for source in (
+        getattr(spec, "weights_uri", None),
+        getattr(manifest, "weights_uri", None) or getattr(manifest, "source_repo", None),
+    ):
+        if isinstance(source, str) and source:
+            require_pro_for_checkpoint(source, what=what)
     return plan
 
 
