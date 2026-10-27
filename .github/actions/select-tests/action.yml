@@ -64,6 +64,9 @@ runs:
         # head_ref on pull_request; the dispatched branch on workflow_dispatch
         # (heavy-lanes.yml), so a release-please branch short-circuits there too.
         HEAD_REF: ${{ github.head_ref || github.ref_name }}
+        # The PR's head repo (empty on workflow_dispatch, which needs write access).
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        REPO: ${{ github.repository }}
         BASE: ${{ steps.range.outputs.base }}
         HEAD: ${{ steps.range.outputs.head }}
       run: |
@@ -89,15 +92,31 @@ runs:
         # Prefix per release-please's RELEASE_PLEASE_BRANCH_PREFIX
         # ("release-please--branches"); the glob also covers the
         # --components-- variant if separate-pull-requests is ever enabled.
+        #
+        # The branch name alone is contributor-chosen (a fork can name its
+        # branch release-please--x), so the short-circuit also requires a
+        # same-repo branch (push access) AND a diff limited to the files a
+        # release PR rewrites (incl. the uv.lock refresh in release-please.yml).
+        # Anything else selects tests normally.
         case "${HEAD_REF:-}" in
           release-please--*)
-            echo "::notice::release-please PR — lockstep version churn only, no tests selected."
-            {
-              echo "any=false"
-              echo "full_run=false"
-              echo "lanes=[]"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
+            if [ -n "${HEAD_REPO:-}" ] && [ "$HEAD_REPO" != "$REPO" ]; then
+              echo "::warning::release-please--* branch from fork $HEAD_REPO — selecting tests normally."
+            else
+              changed="$(git diff --name-only "$BASE...$HEAD")"
+              other="$(printf '%s\n' "$changed" | grep -Ev '^(CHANGELOG\.md|uv\.lock|\.release-please-manifest\.json|pyproject\.toml|python/[^/]+/pyproject\.toml)?$' || true)"
+              if [ -z "$other" ]; then
+                echo "::notice::release-please PR — lockstep version churn only, no tests selected."
+                {
+                  echo "any=false"
+                  echo "full_run=false"
+                  echo "lanes=[]"
+                } >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "::warning::release-please--* branch touches non-release files — selecting tests normally:"
+              printf '%s\n' "$other"
+            fi
             ;;
         esac
         uv run --isolated --with pydantic --python 3.12 \
