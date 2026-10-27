@@ -222,3 +222,13 @@ def test_resolve_view_explicit_view_leaves_other_mujoco_gl_alone(
     _resolve_view(True)
     # osmesa was not the magic value, so it should be untouched.
     assert os.environ["MUJOCO_GL"] == "osmesa"
+
+
+def test_suite_config_runs_the_task_it_names() -> None:
+    """A suite ``--config`` loads the ``--task`` entry: the robot guard then names its robot."""
+    suite = REPO_ROOT / "benchmarks" / "libero_spatial.yaml"
+    args = _args(config=suite, rskill=LIBERO_RSKILL, task="libero_spatial/3", robot="ur5e")
+    with pytest.raises(ROSConfigError, match="contradicts `robot_id: franka_panda`"):
+        _load_or_build_env(args)
+    with pytest.raises(ROSConfigError, match="pick one with --task"):
+        _load_or_build_env(_args(config=suite, rskill=LIBERO_RSKILL))

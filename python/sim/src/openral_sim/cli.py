@@ -8,7 +8,8 @@ Canonical invocation::
 The YAML carries the scene + task (and an optional robot_id for free-axis
 scenes); the policy is supplied entirely via ``--rskill``. The CLI loads
 the YAML as a `SimScene` (strict — `openral sim run` accepts SimScene only;
-DeployScene and BenchmarkScene YAMLs are rejected with a redirect message),
+DeployScene and BenchmarkScene YAMLs are rejected with a redirect message;
+a benchmark suite YAML runs the one task `--task` names),
 the manifest via `openral_rskill.loader.load_rskill_manifest`, and composes
 them into the runtime `SimEnvironment` that's driven by `SimRunner`
 (sim and hardware share the same `InferenceRunner`
@@ -44,6 +45,7 @@ from openral_core import (
     SimScene,
     VLASpec,
     load_scene_strict,
+    load_suite_task,
     scene_control_rate_hz,
 )
 from openral_core.exceptions import ROSConfigError, ROSError
@@ -83,9 +85,11 @@ def _sim_run_callback(
         None,
         "--config",
         help=(
-            "Path to a SimScene YAML (scene + task + optional robot_id). "
-            "Strict: DeployScene / BenchmarkScene YAMLs are rejected with "
-            "a redirect to `openral deploy sim` / `openral benchmark scene`."
+            "Path to a SimScene YAML (scene + task + optional robot_id), or a "
+            "benchmark suite YAML (benchmarks/<id>.yaml) with --task naming one "
+            "of its tasks. Strict: DeployScene / BenchmarkScene YAMLs are "
+            "rejected with a redirect to `openral deploy sim` / `openral "
+            "benchmark scene`."
         ),
     ),
     rskill: str | None = typer.Option(
@@ -114,9 +118,9 @@ def _sim_run_callback(
         None,
         "--task",
         help=(
-            "Override the YAML's task.id (preserves instruction / max_steps "
-            "/ success_key). Useful for sweeping a task suite without "
-            "editing the YAML."
+            "With a suite --config, the task to run. Otherwise overrides the "
+            "YAML's task.id (preserves instruction / max_steps / success_key), "
+            "for sweeping a task suite without editing the YAML."
         ),
     ),
     instruction: str | None = typer.Option(
@@ -354,7 +358,13 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
             "in-tree rSkill catalogue."
         )
 
-    scene_env = load_scene_strict(str(args.config), SimScene)
+    import yaml  # only to tell a suite (a bare list) from one scene
+
+    # A benchmark suite runs one of its tasks, picked by --task; one scene runs as is.
+    if isinstance(yaml.safe_load(Path(args.config).read_text(encoding="utf-8")), list):
+        scene_env = load_suite_task(str(args.config), args.task)
+    else:
+        scene_env = load_scene_strict(str(args.config), SimScene)
 
     # Robot guard runs FIRST -- it depends only on the scene, not on the
     # manifest, so a robot the scene cannot instantiate fails fast, before

@@ -220,3 +220,55 @@ def test_real_deploy_yaml_loads_strict() -> None:
         pytest.skip(f"{p} not present")
     out = load_scene_strict(str(p), DeployScene)
     assert isinstance(out, DeployScene)
+
+
+# ── One task of a benchmark suite (``openral sim run --config <suite> --task``) ──
+
+
+def _suite(tmp_path: Path) -> Path:
+    (tmp_path / "stage.usd").write_text("")
+    entries = []
+    for i in range(2):
+        entry = _yaml.safe_load(_yaml.safe_dump(_BENCHMARK_YAML))
+        entry["task"]["id"] = f"libero_spatial/{i}"
+        entry["scene"]["assets_uri"] = "stage.usd"
+        entries.append(entry)
+    p = tmp_path / "suite.yaml"
+    p.write_text(_yaml.safe_dump(entries), encoding="utf-8")
+    return p
+
+
+def test_suite_task_loads_as_sim_scene_with_paths_beside_the_suite(tmp_path: Path) -> None:
+    from openral_core import load_suite_task
+
+    out = load_suite_task(str(_suite(tmp_path)), "libero_spatial/1")
+    assert type(out) is SimScene
+    assert out.task.id == "libero_spatial/1"
+    assert out.metadata == {}
+    assert out.scene.assets_uri == str((tmp_path / "stage.usd").resolve())
+
+
+def test_suite_task_needs_a_known_task_id(tmp_path: Path) -> None:
+    from openral_core import load_suite_task
+
+    path = str(_suite(tmp_path))
+    with pytest.raises(ROSConfigError, match="pick one with --task: libero_spatial/0, libero_"):
+        load_suite_task(path, None)
+    with pytest.raises(ROSConfigError, match="no task 'libero_spatial/9'"):
+        load_suite_task(path, "libero_spatial/9")
+
+
+def test_suite_entries_resolve_paths_beside_the_suite(tmp_path: Path) -> None:
+    from openral_core import load_benchmark_suite
+
+    scenes = load_benchmark_suite(str(_suite(tmp_path)))
+    assert {s.scene.assets_uri for s in scenes} == {str((tmp_path / "stage.usd").resolve())}
+
+
+def test_real_suite_task_loads() -> None:
+    from openral_core import load_suite_task
+
+    p = Path("benchmarks/libero_10.yaml")
+    if not p.exists():
+        pytest.skip(f"{p} not present")
+    assert load_suite_task(str(p), "libero_10/3").task.id == "libero_10/3"
