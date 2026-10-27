@@ -48,6 +48,25 @@ def _pack_data(value: object) -> object:
     return value
 
 
+_WIRE_DTYPE_KINDS = frozenset("biufc")  # bool, int, uint, float, complex
+_WIRE_DTYPE_MAX_ITEMSIZE = 16  # complex128
+
+
+def _wire_dtype(spec: str) -> np.dtype[np.generic]:
+    """The numeric dtype a peer names; anything else is refused before allocating.
+
+    A peer-chosen ``V``/``S``/``U`` dtype sizes its storage by its itemsize, not by
+    the message: ``np.asarray(0, dtype="V2000000000")`` allocates 2 GB.
+    """
+    try:
+        dtype = np.dtype(spec)
+    except TypeError as exc:
+        raise ROSRuntimeError(f"BEHAVIOR wire dtype {spec!r} is not a NumPy dtype.") from exc
+    if dtype.kind not in _WIRE_DTYPE_KINDS or dtype.itemsize > _WIRE_DTYPE_MAX_ITEMSIZE:
+        raise ROSRuntimeError(f"BEHAVIOR wire dtype {spec!r} is not a numeric scalar dtype.")
+    return dtype
+
+
 def _unpack_data(value: dict[object, object]) -> object:
     """Decode NumPy values from BEHAVIOR's msgpack wire format."""
     if b"__ndarray__" in value:
@@ -60,12 +79,12 @@ def _unpack_data(value: dict[object, object]) -> object:
             and isinstance(shape, (list, tuple))
             and all(isinstance(size, int) for size in shape)
         ):
-            return np.frombuffer(data, dtype=np.dtype(dtype)).reshape(tuple(shape))
+            return np.frombuffer(data, dtype=_wire_dtype(dtype)).reshape(tuple(shape))
     if b"__npgeneric__" in value:
         data = value.get(b"data")
         dtype = value.get(b"dtype")
         if isinstance(dtype, str):
-            return np.asarray(data, dtype=np.dtype(dtype)).reshape(()).item()
+            return np.asarray(data, dtype=_wire_dtype(dtype)).reshape(()).item()
     return value
 
 

@@ -1648,6 +1648,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # handling in ``main.deploy_run`` so a committed calibration works from any CWD.
     if deploy_scene is not None and deploy_scene.hal is not None and config is not None:
         scene_hal = dict(deploy_scene.hal.defaults)
+        # The launch owns which HAL runs and which manifest it loads: a scene
+        # `hal.defaults` entry for either would outlive the setdefault below and run
+        # the real HAL under a `deploy sim` launch that skipped every real-only gate.
+        _launch_owned = sorted({"hal_mode", "robot_yaml"} & scene_hal.keys())
+        if _launch_owned:
+            raise ROSConfigError(
+                f"{config}: hal.defaults sets {_launch_owned}; these are launch-owned "
+                "(`deploy sim` / `deploy run` and the scene's robot pick them)."
+            )
         _scene_cal_dir = scene_hal.get("calibration_dir")
         if (
             isinstance(_scene_cal_dir, str)
@@ -1673,7 +1682,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # `deploy sim` → hal_mode="sim"; `deploy run` → hal_mode="real". The node
     # raises ROSCapabilityMismatch for a sim-only-vs-real mismatch.
     hal_params.setdefault("robot_yaml", str(robot_yaml))
-    hal_params.setdefault("hal_mode", hal_mode)
+    if hal_params.setdefault("hal_mode", hal_mode) != hal_mode:
+        raise ROSConfigError(
+            f"--hal hal_mode={hal_params['hal_mode']!r} contradicts this {hal_mode!r} deploy: "
+            f"every sim/real gate of this launch is judged for {hal_mode!r}. Pick the mode "
+            "with `openral deploy sim` or `openral deploy run`."
+        )
     if vision_leg is not None and vision_leg.enabled:
         # setdefault: an explicit ``--hal vision_attachment_*=`` still wins.
         for _va_key, _va_value in _vision_attachment_hal_params(vision_leg).items():

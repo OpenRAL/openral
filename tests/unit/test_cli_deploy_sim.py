@@ -774,6 +774,39 @@ def test_bh_deploy_sim_robot_yaml_override_wins() -> None:
     assert invocation.hal_params["robot_yaml"] == "/custom/robot.yaml"
 
 
+@pytest.mark.parametrize("key", ["hal_mode", "robot_yaml"])
+def test_scene_hal_defaults_cannot_set_launch_owned_params(tmp_path: Path, key: str) -> None:
+    """A scene's `hal.defaults` must not turn `deploy sim` into a real-HAL launch (CWE-807)."""
+    value = "real" if key == "hal_mode" else "/elsewhere/robot.yaml"
+    text = (_REPO_ROOT / "scenes" / "deploy" / "so101_bench.yaml").read_text(encoding="utf-8")
+    text = text.replace(
+        "    calibrate_on_connect: false\n",
+        f'    calibrate_on_connect: false\n    {key}: "{value}"\n',
+        1,
+    )
+    scene = tmp_path / "so101_bench.yaml"
+    scene.write_text(text, encoding="utf-8")
+    with pytest.raises(ROSConfigError, match="launch-owned"):
+        resolve_launch_invocation(
+            config=scene,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=None,
+        )
+
+
+def test_hal_override_cannot_contradict_the_deploy_mode() -> None:
+    with pytest.raises(ROSConfigError, match="contradicts this 'sim' deploy"):
+        resolve_launch_invocation(
+            config=_SO101_CONFIG,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides={"hal_mode": "real"},
+        )
+
+
 def test_bh_deploy_sim_hal_executables_have_main_entrypoint() -> None:
     """Every HAL node script a robot can resolve to actually calls ``main()``.
 

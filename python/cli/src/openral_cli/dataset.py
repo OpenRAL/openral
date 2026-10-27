@@ -182,6 +182,26 @@ and success rate. The HF Hub repo will mirror them.
 """.strip()
 
 
+def _refuse_links_and_special_files(root: Path) -> None:
+    """Refuse a dataset tree holding anything but plain directories and regular files.
+
+    ``HfApi.upload_folder`` follows file symlinks, so a link planted in the tree would
+    publish its out-of-root target. Ceiling: checked once before the upload; a tree
+    rewritten concurrently with the upload is not covered.
+
+    Raises:
+        ROSConfigError: On the first symlink or non-regular file found.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):  # never follows directory links
+        for name in (*dirnames, *filenames):
+            path = Path(dirpath) / name
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                raise ROSConfigError(
+                    f"{path} is a symlink or special file; `openral dataset push` uploads "
+                    "regular files only. Copy the real file into the dataset instead."
+                )
+
+
 def _read_info_json(root: Path) -> dict[str, object]:
     """Read ``meta/info.json`` from a local LeRobotDataset v3 root.
 
@@ -359,6 +379,7 @@ def push_command(
     """
     try:
         info = _read_info_json(root)
+        _refuse_links_and_special_files(root)
         resolved_repo_id = _resolve_repo_id(root, info, repo_id)
         _confirm_consent(resolved_repo_id, root, info, yes=yes)
     except ROSError as exc:
