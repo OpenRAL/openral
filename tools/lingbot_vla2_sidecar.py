@@ -387,7 +387,7 @@ def main() -> int:
     # CPU NF4 runs bf16 (no CPU 4-bit kernel; the server falls back), so only a
     # GPU sub-16-bit load needs Pro.
     effective = "none" if str(args.device) == "cpu" else str(args.quantization)
-    quant_args = sidecar_quantization_args(effective, what="the LingBot sidecar")
+    quant_args = sidecar_quantization_args(effective, what="the LingBot sidecar", rewrites=True)
     venv_py = _ensure_venv(home, source, install=install, venv_env=venv_env)
     venv = venv_py.parent.parent
 

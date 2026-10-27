@@ -1,4 +1,9 @@
-"""Pro's sidecar settings reach real bitsandbytes layers."""
+"""Pro's sidecar settings reach real bitsandbytes layers (ADR-0123 step 3).
+
+The LingBot and BEHAVIOR GR00T sidecars rewrite their Linears with OpenRAL
+Pro's sidecar file (``--pro-quant-module``); the layer tests need Pro installed
+and skip without it.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,14 @@ from types import ModuleType
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
+
+
+def _pro_module_path() -> str:
+    from openral_rskill.quantization_gate import pro_quantization, pro_quantization_installed
+
+    if not pro_quantization_installed():
+        pytest.skip("OpenRAL Pro (openral.pro_modules: quantization) is not installed")
+    return str(pro_quantization(what="the sidecar tests").sidecar_module_path())
 
 
 def _load(name: str) -> ModuleType:
@@ -50,11 +63,14 @@ def test_nf4_layers_use_pro_settings(name: str, skip_name: str) -> None:
         torch.nn.Linear(64, 64), torch.nn.Sequential(torch.nn.Linear(64, 64))
     )
     module = _load(name)
+    pro = module._load_pro_quant(_pro_module_path(), launcher="test")
     if name == "_lingbot_vla2_server":
-        module._nf4_backbone_in_place(model, torch=torch, config=config, min_params=1)
+        module._nf4_backbone_in_place(pro, model, torch=torch, config=config, min_params=1)
         model.cuda()
     else:
-        module._quantize_nf4(model, device="cuda", config=config, min_params=1)
+        module._quantize(
+            pro.nf4_linears_in_place, model, device="cuda", config=config, min_params=1
+        )
     layer = model[0]
     assert isinstance(layer, bnb.nn.Linear4bit)
     assert layer.compute_dtype == torch.float32
@@ -80,9 +96,9 @@ def test_int8_layers_use_pro_settings() -> None:
     model = torch.nn.Sequential(
         torch.nn.Linear(64, 64), torch.nn.Sequential(torch.nn.Linear(64, 64))
     )
-    _load("behavior_groot_sidecar")._quantize_int8(
-        model, device="cuda", config=config, min_params=1
-    )
+    module = _load("behavior_groot_sidecar")
+    pro = module._load_pro_quant(_pro_module_path(), launcher="test")
+    module._quantize(pro.int8_linears_in_place, model, device="cuda", config=config, min_params=1)
     layer = model[0]
     assert isinstance(layer, bnb.nn.Linear8bitLt)
     assert not isinstance(model[1][0], bnb.nn.Linear8bitLt)
@@ -101,6 +117,8 @@ def test_pack_rejects_invalid_config_before_loading_weights() -> None:
                 "/unused-pack-output",
                 "--quantization-config",
                 "invalid",
+                "--pro-quant-module",
+                "/unused-pro-module.py",
             ]
         )
 
@@ -159,7 +177,26 @@ def test_lingbot_skips_a_model_root_subtree() -> None:
     transformers = pytest.importorskip("transformers")
     config = transformers.BitsAndBytesConfig(load_in_4bit=True, llm_int8_skip_modules=["model"])
     model = torch.nn.Sequential(torch.nn.Linear(64, 64))
-    _load("_lingbot_vla2_server")._nf4_backbone_in_place(
-        model, torch=torch, config=config, min_params=1
-    )
+    module = _load("_lingbot_vla2_server")
+    pro = module._load_pro_quant(_pro_module_path(), launcher="test")
+    module._nf4_backbone_in_place(pro, model, torch=torch, config=config, min_params=1)
     assert type(model[0]) is torch.nn.Linear
+
+
+@pytest.mark.parametrize("name", ["_lingbot_vla2_server", "behavior_groot_sidecar"])
+@pytest.mark.parametrize("path", [None, "", "/no/such/pro_sidecar.py"])
+def test_sub_16_bit_needs_pro_rewrites_file(name: str, path: str | None) -> None:
+    with pytest.raises(SystemExit, match="--pro-quant-module"):
+        _load(name)._load_pro_quant(path, launcher="test")
+
+
+def test_gate_passes_pro_rewrites_file_only_when_asked() -> None:
+    from openral_rskill.quantization_gate import sidecar_quantization_args
+
+    path = _pro_module_path()
+    assert "--pro-quant-module" not in sidecar_quantization_args("nf4", what="test")
+    for dtype in ("nf4", "int8", "prequantized_nf4"):
+        args = sidecar_quantization_args(dtype, what="test", rewrites=True)
+        assert args[2:] == ["--pro-quant-module", path]
+        assert Path(path).is_file()
+    assert sidecar_quantization_args("none", what="test", rewrites=True) == []

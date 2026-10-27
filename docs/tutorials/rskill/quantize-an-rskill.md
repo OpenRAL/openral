@@ -205,6 +205,11 @@ and `tools/build_robometer_nf4_checkpoint.py` build that shape. Both, and
 `tools/quantize_lingbot_vla2.py`, need OpenRAL Pro: the sidecar-venv builders
 take its config as `--quantization-config` (from
 `openral_rskill.quantization_gate.sidecar_quantization_args`).
+The LingBot and BEHAVIOR GR00T sidecars rewrite their own Linears, so they also
+take `--pro-quant-module`: the path of Pro's sidecar rewrites file
+(`sidecar_quantization_args(..., rewrites=True)`), which they load by path
+because their venvs cannot install Pro. bf16 / fp16 / fp32 sidecar runs need
+neither.
 
 ---
 

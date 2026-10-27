@@ -21,16 +21,19 @@ one at a time (GPU peak stays a few hundred MB), and fp32 shards load one at
 a time (~5 GB each, vs. the upstream's merge-then-load ~51 GB peak); peak
 here is ~25.5 GB model + one ~5 GB shard ~= 30 GB.
 
-NF4 needs OpenRAL Pro (ADR-0123): take ``--quantization-config`` from Pro in
-the workspace venv, then run in the sidecar venv::
+NF4 needs OpenRAL Pro (ADR-0123): take ``--quantization-config`` and the path of
+Pro's sidecar rewrites file from Pro in the workspace venv, then run in the
+sidecar venv::
 
-    CFG=$(.venv/bin/python -c 'from openral_rskill.quantization_gate import \
-        sidecar_quantization_args as a; print(a("nf4", what="the LingBot NF4 pack")[1])')
+    PRO=$(.venv/bin/python -c 'from openral_rskill.quantization_gate import \
+        sidecar_quantization_args as a; \
+        print("\n".join(a("nf4", what="the LingBot NF4 pack", rewrites=True)))')
     /path/to/.sidecar_venv/bin/python tools/quantize_lingbot_vla2.py \
         --ckpt   /path/to/lingbot-vla-v2-6b        \
         --out    /path/to/lingbot-vla-v2-6b-nf4    \
         --qwen   /path/to/Qwen3-VL-4B-Instruct     \
-        --quantization-config "$CFG"
+        --quantization-config "$(sed -n 2p <<<"$PRO")" \
+        --pro-quant-module "$(sed -n 4p <<<"$PRO")"
 
 Upload to the Hub (``hf upload``) is a separate step; this only writes the
 local pack.
@@ -185,7 +188,12 @@ def _build_bf16_model_v1(ckpt_dir: str, qwen: str, attn: str) -> Any:
 
 
 def _stream_pack_backbone(
-    srv: Any, *, config: Any, min_params: int, skip_names: frozenset[str] = frozenset()
+    srv: Any,
+    *,
+    pro: Any,
+    config: Any,
+    min_params: int,
+    skip_names: frozenset[str] = frozenset(),
 ) -> int:
     """NF4-rewrite the backbone and pack each Linear GPU-frugally.
 
@@ -200,7 +208,7 @@ def _stream_pack_backbone(
 
     backbone = srv.vla.model.qwenvl_with_expert.qwenvl
     srv_mod._nf4_backbone_in_place(
-        backbone, torch=torch, config=config, min_params=min_params, skip_names=skip_names
+        pro, backbone, torch=torch, config=config, min_params=min_params, skip_names=skip_names
     )
 
     linears = [m for _, m in backbone.named_modules() if isinstance(m, bnb.nn.Linear4bit)]
@@ -356,10 +364,17 @@ def main(argv: list[str]) -> int:
         help="OpenRAL Pro's BitsAndBytesConfig kwargs as JSON (see the module docstring); "
         "the pack is not built without it (ADR-0123).",
     )
+    p.add_argument(
+        "--pro-quant-module",
+        required=True,
+        help="Path of OpenRAL Pro's sidecar rewrites file (see the module docstring); "
+        "the pack is not built without it (ADR-0123).",
+    )
     args = p.parse_args(argv)
     kwargs = srv_mod._check_pro_config(
         "nf4", args.quantization_config, launcher="the module docstring's recipe"
     )
+    pro = srv_mod._load_pro_quant(args.pro_quant_module, launcher="the module docstring's recipe")
     BitsAndBytesConfig = importlib.import_module("transformers").BitsAndBytesConfig
 
     config = BitsAndBytesConfig(**kwargs)
@@ -392,7 +407,7 @@ def main(argv: list[str]) -> int:
         skip_names = frozenset()
         srv = _build_bf16_model(ckpt_dir, qwen, attn)
     n_packed = _stream_pack_backbone(
-        srv, config=config, min_params=args.min_params, skip_names=skip_names
+        srv, pro=pro, config=config, min_params=args.min_params, skip_names=skip_names
     )
     _save_pack(
         srv,
