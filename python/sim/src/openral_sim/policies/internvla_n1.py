@@ -171,7 +171,7 @@ class _InternVLAN1Adapter:
     required_imports=("zmq", "msgpack"),
     install_note=(
         "The policy runs in tools/internvla_n1_sidecar.py's own auto-provisioned "
-        "Python 3.11 venv (transformers 4.51 pin)."
+        "Python 3.12 venv (3.11 on aarch64; transformers 4.51 pin)."
     ),
 )
 def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:

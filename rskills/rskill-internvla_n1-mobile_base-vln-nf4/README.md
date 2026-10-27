@@ -129,7 +129,7 @@ sidecar (SLAM's) via a ping when present, else auto-spawns its own (~0.27 GB,
 
 - `model_family: internvla_n1`, `runtime: pytorch`, `quantization: int4` (NF4).
 - **Out-of-process:** upstream InternNav pins `transformers==4.51.0`, so the
-  model runs in an auto-provisioned py3.11 ZMQ **sidecar**
+  model runs in an auto-provisioned py3.12 (py3.11 on aarch64) ZMQ **sidecar**
   (`tools/internvla_n1_sidecar.py` → `tools/_internvla_n1_server.py`); the
   `openral_sim.policies.internvla_n1` adapter is the client. First boot clones
   InternNav and builds the venv (several minutes); the 8.3B checkpoint is
@@ -153,10 +153,19 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   loads in ~26 s at **6.02 GB VRAM**; a real RGB frame + navigation instruction
   runs through both System-2 (Qwen2.5-VL-7B) and System-1 (NextDiT) and the
   adapter returns a finite 6-D `BODY_TWIST` (a 15°/s turn on the test frame).
-  The sidecar auto-provisions its py3.11 venv; loading the released DualVLN
+  The sidecar auto-provisioned its py3.11 venv at the time; loading the released DualVLN
   checkpoint required pinning **`diffusers==0.32.2`** (0.33.1's `LuminaFeedForward`
   dropped the SwiGLU 2/3 inner-dim reduction the checkpoint's NextDiT was trained
   with) — an upstream repo↔checkpoint drift, handled in the boot helper.
+- **Python 3.12 sidecar (x86_64, RTX 5070 8 GB, 2026-10-27): PASSED for System-2.**
+  Same pin set on py3.12: loads at 6.07 GB through OpenRAL Pro's NF4 config; 12
+  adapter steps over this rSkill's four recorded frames give the same finite
+  `BODY_TWIST` (15°/s yaw) and the same 0.7–3.2 s timings as an identical py3.11
+  venv. Feeding one frame three times takes the System-1 (`step_s1`) path:
+  that failed on py3.11 and py3.12 alike with "self and mat2 must have the same
+  dtype" because the memory encoder and RGB QFormer (torch.nn.Transformer
+  stacks) were NF4-packed; they now stay bf16. That path then exceeds 8 GB
+  (CUDA OOM) on this card. **Open:** System-1 on an 8 GB GPU.
 - **aarch64 CUDA (NVIDIA GB10 / DGX Spark): PASSED.** From a fresh sidecar home:
   torch 2.9.1+cu128 on py3.11, model on the GPU at **6.06 GB** (8499 MiB
   process), 106.5 s load, 21 real steps over the ZMQ wire from this rSkill's own

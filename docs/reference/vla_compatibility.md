@@ -279,4 +279,4 @@ Which families run in the workspace interpreter and which run out-of-process in 
 - **3D Diffuser Actor** (`diffuser_actor`): out-of-process RLBench/CoppeliaSim sidecar (§3.2).
 - **LingBot-VA** (`lingbot_va_a1`, Galaxea A1): driven over a local socket through the Galaxea A1 runtime's policy gateway.
 - **In-process** under the workspace Python 3.12: `smolvla`, `pi05`, `xvla`, `act`, `diffusion`, `molmoact2` and `openvla` (the last two are transformers custom-code models).
-- **InternVLA-N1 / DualVLN** (arXiv:2512.08186): dual-system (Qwen2.5-VL-7B S2 planner + NavDP DiT S1); Py3.11 ZMQ sidecar (upstream pins transformers 4.51) through the `internvla_n1` adapter; consumes RGB-D + instruction, emits `BODY_TWIST`.
+- **InternVLA-N1 / DualVLN** (arXiv:2512.08186): dual-system (Qwen2.5-VL-7B S2 planner + NavDP DiT S1); Py3.12 ZMQ sidecar, py3.11 on aarch64 (upstream pins transformers 4.51) through the `internvla_n1` adapter; consumes RGB-D + instruction, emits `BODY_TWIST`.
