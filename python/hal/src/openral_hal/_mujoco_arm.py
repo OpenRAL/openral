@@ -234,6 +234,15 @@ class MujocoArmHAL(HALBase):
                 f"RobotDescription '{description.name}' has no joints; "
                 "cannot initialise MujocoArmHAL."
             )
+        # connect() writes ``<name>_camrig.xml`` beside the source MJCF; a
+        # separator in the name would pick a different directory for that write.
+        if os.path.basename(description.name) != description.name or (
+            os.altsep and os.altsep in description.name
+        ):
+            raise ROSConfigError(
+                f"RobotDescription name {description.name!r} contains a path separator; "
+                "MujocoArmHAL uses it as a file name."
+            )
 
         self.description = description
         self._mjcf_path = mjcf_path

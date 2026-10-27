@@ -74,7 +74,7 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from launch import LaunchDescriptionEntity
     from launch.actions import IncludeLaunchDescription
-    from openral_core import RobotDescription, SensorSpec
+    from openral_core import RobotDescription, SafetyEnvelope, SensorSpec
     from openral_hal.resolver import UrdfJointMap
 from lifecycle_msgs.msg import Transition
 from openral_core import (
@@ -468,6 +468,35 @@ def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
         ((2.0, 2.0), 1.5)
     """
     return DeployRuntime.model_validate({k: float(v) for k, v in raw.items() if v.strip()})
+
+
+def _effective_self_collision_margin(
+    description: RobotDescription, workcell_safety: SafetyEnvelope | None
+) -> float:
+    """The kernel's ``self_collision_margin_m``: the robot's, raised by a workcell's.
+
+    A workcell may only tighten (a larger margin trips earlier); a smaller value
+    it sets explicitly is ignored, loudly, like any other loosening attempt is
+    refused. Both collision lowerings must receive this one value.
+
+    Example:
+        >>> from openral_core import RobotDescription, SafetyEnvelope
+        >>> d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> _effective_self_collision_margin(d, SafetyEnvelope(self_collision_margin_m=0.02))
+        0.02
+    """
+    margin = float(description.safety.self_collision_margin_m)
+    if workcell_safety is None or "self_collision_margin_m" not in workcell_safety.model_fields_set:
+        return margin
+    requested = float(workcell_safety.self_collision_margin_m)
+    if requested < margin:
+        print(
+            f"[deploy_e2e] workcell self_collision_margin_m={requested} is looser than the "
+            f"robot's {margin}; keeping the robot's",
+            flush=True,
+        )
+        return margin
+    return requested
 
 
 # Where the filtered cloud is published for octomap_server. Not a camera topic
@@ -2626,7 +2655,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # when no geometry is available, so the kernel runs the scalar envelope
     # check exactly as before. A lowering error falls back loudly so a geometry
     # hiccup never blocks the boot.
-    collision_params: dict[str, object] = collision_params_from_description(description)
+    margin_m = _effective_self_collision_margin(
+        description, workcell.safety if workcell is not None else None
+    )
+    collision_params: dict[str, object] = collision_params_from_description(
+        description, margin_m=margin_m
+    )
     if description.assets.mjcf:
         try:
             import mujoco
@@ -2637,7 +2671,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 description.assets.mjcf, "mjcf", manifest_dir=pathlib.Path(robot_yaml).parent
             )
             model = mujoco.MjModel.from_xml_path(str(_mjcf_path))
-            mjcf_params = lower_collision_params(model, [j.name for j in description.joints])
+            # Floor at 0.0, this branch's margin before it honoured the
+            # workcell: a negative robot margin (so101's grazing exception) was
+            # signed off for the manifest geometry, not for an MJCF lowering.
+            mjcf_params = lower_collision_params(
+                model, [j.name for j in description.joints], margin_m=max(margin_m, 0.0)
+            )
             # Only override the manifest model when the MJCF actually yields a
             # self-collision model. MJCFs whose collision geoms are meshes (e.g.
             # bimanual openarm) lower to {"self_collision_enabled": False}; using

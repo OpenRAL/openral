@@ -89,13 +89,12 @@ _SO100_JOINT_NAMES: list[str] = [
 
 # ── reset_to_pose ramp tuning ─────────────────────────────────────────────────
 # The real-arm starting-pose ramp (see ``reset_to_pose``). 0.5 rad/s is well
-# under teleop speeds on these servos; the [min, max] duration clamp keeps
-# micro-moves from finishing instantly and giant moves from taking forever.
+# under teleop speeds on these servos; the minimum duration keeps micro-moves
+# from finishing instantly. There is no maximum: a giant move stays slow.
 # ponytail: module constants, promote to HAL params if a robot ever needs
 # per-deploy tuning.
 _RESET_MAX_RAD_S = 0.5
 _RESET_MIN_S = 1.0
-_RESET_MAX_S = 6.0
 _RESET_STEP_HZ = 30.0
 # Below this max joint delta (rad) the arm counts as already at the target
 # and the ramp is skipped entirely.
@@ -596,8 +595,8 @@ class SO100FollowerHAL(HALBase):
         on real Feetech servos an instantaneous position command is a violent
         full-speed move, so this interpolates current → target at
         ``_RESET_STEP_HZ`` with the per-joint speed capped by
-        ``_RESET_MAX_RAD_S`` (duration clamped to
-        [``_RESET_MIN_S``, ``_RESET_MAX_S``]).
+        ``_RESET_MAX_RAD_S`` (never shorter than ``_RESET_MIN_S``; a large
+        move takes as long as the speed cap needs, it is never sped up).
 
         Args:
             pose: Target joint positions in manifest order — radians for the
@@ -606,7 +605,9 @@ class SO100FollowerHAL(HALBase):
 
         Raises:
             ROSRuntimeError: If not connected (or a bus write fails mid-ramp).
-            ROSConfigError: If ``pose`` length doesn't match the joint count.
+            ROSConfigError: If ``pose`` length doesn't match the joint count,
+                or a value is non-finite or outside the active manifest's
+                ``position_limits`` (checked before the first bus write).
 
         Example:
             >>> # hal.connect()
@@ -618,6 +619,16 @@ class SO100FollowerHAL(HALBase):
             raise ROSConfigError(
                 f"reset_to_pose expects {n} values (SO-100 joint order); got {len(pose)}."
             )
+        # The ResetToPose contract promises joint-limit protection; refuse
+        # (never clip) against the loaded manifest, so so101 gets its own limits.
+        limits = {j.name: j.position_limits for j in self.description.joints}
+        for name, value in zip(_SO100_JOINT_NAMES, pose, strict=True):
+            lim = limits.get(name)
+            if lim is None or not math.isfinite(value) or not lim[0] <= value <= lim[1]:
+                raise ROSConfigError(
+                    f"reset_to_pose: {name}={value} outside position_limits {lim} "
+                    f"of {self.description.name!r}; refusing to move."
+                )
 
         current = self.read_state().position
         deltas = [t - c for t, c in zip(pose, current, strict=True)]
@@ -629,8 +640,8 @@ class SO100FollowerHAL(HALBase):
         # ever needs smoother-than-gentle. The gripper channel is [0, 1] not
         # radians, so the shared speed cap treats a full gripper stroke like
         # a 1-rad joint move — conservative, never fast.
-        duration_s = min(max(max_delta / _RESET_MAX_RAD_S, _RESET_MIN_S), _RESET_MAX_S)
-        steps = max(int(duration_s * _RESET_STEP_HZ), 1)
+        duration_s = max(max_delta / _RESET_MAX_RAD_S, _RESET_MIN_S)
+        steps = max(math.ceil(duration_s * _RESET_STEP_HZ), 1)
         log.info(
             "hal.reset_to_pose.ramp",
             robot="so100_follower",

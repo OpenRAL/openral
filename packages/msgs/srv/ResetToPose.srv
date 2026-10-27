@@ -12,7 +12,10 @@
 # Request:
 #   pose — joint positions in the HAL's robot.yaml joint order,
 #          radians for arm joints. The HAL validates the length
-#          against its declared DoF count and clips per joint limit.
+#          against its declared DoF count. A real HAL (SO-100/101) also
+#          refuses — never clips — a non-finite value or one outside the
+#          manifest's position_limits; the MuJoCo sim HAL snaps qpos
+#          without a limit check.
 #
 # Response:
 #   success         — true iff every joint was set without violation.
