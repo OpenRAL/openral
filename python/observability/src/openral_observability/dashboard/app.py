@@ -25,20 +25,22 @@ import asyncio
 import base64
 import binascii
 import contextlib
-import gzip
 import http
 import io
+import itertools
 import json
 import mimetypes
 import os
 import re
 import shutil
-from collections.abc import AsyncIterator
+import zlib
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from google.protobuf.message import DecodeError
@@ -92,8 +94,32 @@ _SAFETY_PARAM_DENYLIST = (
     "safety",
     "safe",  # catches safe_mode, safe_zone_radius, safe_dist, … (and safety)
     "watchdog",
+    "deadline",  # deadman first_chunk_deadline_s / safe_action_deadline_s, …
+    "timeout",  # staleness / heartbeat timeouts gate brakes
 )
 _MJPEG_BOUNDARY = "frame"
+
+# Request-body budget, raw AND gzip-decoded (OTLP batches carry camera
+# thumbnails, so this is generous; it exists to stop a gzip bomb, not to tune).
+_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _cross_origin(request: Request) -> bool:
+    """True when a browser marked ``request`` as coming from another origin.
+
+    Browsers send ``Origin`` on every cross-origin POST (form or fetch, CORS or
+    not), so an ``Origin`` whose host:port differs from ``Host`` is a page on
+    another site driving the operator's browser (CSRF). No ``Origin`` means a
+    non-browser client (curl, ``openral``, an OTLP exporter) and is allowed;
+    ``Origin: null`` (sandboxed iframe, file://) is refused.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
+
 
 # Background drain tasks created by _skill_execute_response are stored here so
 # the event loop does not GC them before they finish.  Each task removes itself
@@ -196,11 +222,52 @@ mimetypes.add_type("application/wasm", ".wasm")
 # this works out of the box; the endpoint still degrades to a 503 (rather than
 # crashing the dashboard) on the off chance the dependency is ever stripped.
 _STT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB guard — a 30 s 16 kHz mono WAV is ~1 MB.
+# Decoded budget: a compressed clip under _STT_MAX_BYTES can still expand to
+# hours of PCM, so decoding stops at this many seconds instead of buffering it.
+_STT_MAX_SECONDS = 120
+_STT_SAMPLE_RATE = 16_000  # Whisper's input rate.
 _STT_MODEL_CACHE: dict[str, Any] = {}  # name → WhisperModel; loaded once, reused.
 
 
 class _STTUnavailableError(RuntimeError):
     """Raised when faster-whisper is not importable in this environment."""
+
+
+class _STTAudioTooLongError(ValueError):
+    """Raised when the decoded clip exceeds ``_STT_MAX_SECONDS``."""
+
+
+def _decode_audio_bounded(audio: bytes) -> Any:
+    """Decode ``audio`` to 16 kHz mono float32, stopping at ``_STT_MAX_SECONDS``.
+
+    Mirrors ``faster_whisper.decode_audio`` (PyAV + s16 resample) but counts
+    samples as frames arrive, so a highly compressed upload cannot make the
+    decoder buffer its full expansion.
+
+    Raises:
+        _STTAudioTooLongError: the decoded clip exceeds the duration budget.
+    """
+    import av  # faster-whisper's own decoder dependency
+    import numpy as np
+
+    max_samples = _STT_MAX_SECONDS * _STT_SAMPLE_RATE
+    resampler = av.audio.resampler.AudioResampler(
+        format="s16", layout="mono", rate=_STT_SAMPLE_RATE
+    )
+    chunks: list[Any] = []
+    n = 0
+    with av.open(io.BytesIO(audio), mode="r", metadata_errors="ignore") as container:
+        # Trailing None flushes the resampler.
+        for frame in itertools.chain(container.decode(audio=0), [None]):
+            for out in resampler.resample(frame):
+                pcm = out.to_ndarray().reshape(-1)
+                n += pcm.size
+                if n > max_samples:
+                    raise _STTAudioTooLongError
+                chunks.append(pcm)
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks).astype(np.float32) / 32768.0
 
 
 def _transcribe_sync(audio: bytes) -> tuple[str, str]:
@@ -216,12 +283,14 @@ def _transcribe_sync(audio: bytes) -> tuple[str, str]:
     Raises:
         _STTUnavailableError: faster-whisper is not importable (it ships with the
             dashboard extra, so this only fires if the dependency was stripped).
+        _STTAudioTooLongError: the decoded clip exceeds ``_STT_MAX_SECONDS``.
     """
     try:
         # ships with the dashboard extra — untyped when present, ImportError if stripped.
         import faster_whisper  # type: ignore[import-not-found,import-untyped,unused-ignore]
     except ImportError as exc:  # ModuleNotFoundError + a shadowed/None sys.modules entry
         raise _STTUnavailableError from exc
+    pcm = _decode_audio_bounded(audio)  # before the model load: refuse long clips cheaply
     name = os.environ.get("OPENRAL_STT_MODEL", "base.en")
     model = _STT_MODEL_CACHE.get(name)
     if model is None:
@@ -230,7 +299,7 @@ def _transcribe_sync(audio: bytes) -> tuple[str, str]:
         _logger.info("stt.model_load", model=name, device=device, compute_type=compute)
         model = faster_whisper.WhisperModel(name, device=device, compute_type=compute)
         _STT_MODEL_CACHE[name] = model
-    segments, _info = model.transcribe(io.BytesIO(audio), beam_size=1)
+    segments, _info = model.transcribe(pcm, beam_size=1)
     return " ".join(seg.text.strip() for seg in segments).strip(), name
 
 
@@ -249,6 +318,10 @@ async def _transcribe_response(audio: bytes) -> JSONResponse:
         return JSONResponse(
             {"error": "speech-to-text unavailable — faster-whisper is not importable"},
             status_code=503,
+        )
+    except _STTAudioTooLongError:
+        return JSONResponse(
+            {"error": f"audio too long (> {_STT_MAX_SECONDS} s decoded)"}, status_code=413
         )
     except Exception as exc:  # decode/runtime errors surface as 422 — logged, never swallowed
         _logger.warning("stt.transcribe_failed", error=str(exc))
@@ -704,12 +777,15 @@ async def _param_set_from_request(request: Request) -> JSONResponse:
 async def _param_set_response(node: str, name: str, value: str, operator_ip: str) -> JSONResponse:
     """Set a NON-safety ROS param via ``ros2 param set`` (guarded write-control).
 
-    Checks ``name`` case-insensitively against ``_SAFETY_PARAM_DENYLIST`` before
-    any shell-out. A matching name is refused with 403 and a paper-trail audit
-    log (CLAUDE.md §1.1). Permitted calls are also audit-logged before the
-    subprocess is spawned so there is no fire-and-forget gap.
+    Checks ``node`` and ``name`` case-insensitively against
+    ``_SAFETY_PARAM_DENYLIST`` before any shell-out — every param on a safety
+    node (``openral_deadman_watchdog``, ``openral_safety_kernel``,
+    ``openral_hardware_estop``, …) is refused, whatever its name. A match is
+    refused with 403 and a paper-trail audit log (CLAUDE.md §1.1). Permitted
+    calls are also audit-logged before the subprocess is spawned so there is no
+    fire-and-forget gap.
     """
-    low = name.lower()
+    low = f"{node} {name}".lower()
     refused = next((tok for tok in _SAFETY_PARAM_DENYLIST if tok in low), None)
     if refused is not None:
         _logger.warning(
@@ -724,7 +800,7 @@ async def _param_set_response(node: str, name: str, value: str, operator_ip: str
         return JSONResponse(
             {
                 "error": (
-                    f"refused: param {name!r} looks safety-relevant (matched {refused!r}); "
+                    f"refused: param {node}:{name} looks safety-relevant (matched {refused!r}); "
                     "change it via a reviewed config/manifest, not the dashboard "
                     "(CLAUDE.md §1.1)"
                 )
@@ -795,6 +871,25 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
     # /openral/perception/objects overlay subscriber (set by run_dashboard).
     # None without ROS; the camera tiles then simply carry no overlays.
     app.state.perception_overlay = None
+
+    @app.middleware("http")
+    async def refuse_cross_origin_writes(  # pyright: ignore[reportUnusedFunction]
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # CSRF guard for every state-changing route (e-stop reset, prompt, skill
+        # execute, param set, OTLP ingest). ponytail: Origin check only — a DNS-
+        # rebinding page is same-origin by construction; that needs an operator
+        # token (auth scheme = design decision, issue #44).
+        if request.method not in _SAFE_METHODS and _cross_origin(request):
+            _logger.warning(
+                "dashboard_write_attempt",
+                operation=request.url.path,
+                outcome="denied_cross_origin",
+                origin=request.headers.get("origin"),
+                operator_ip=request.client.host if request.client else "unknown",
+            )
+            return JSONResponse({"error": "cross-origin request refused"}, status_code=403)
+        return await call_next(request)
 
     @app.post(
         "/v1/traces",
@@ -1003,12 +1098,36 @@ async def _read_body(request: Request) -> bytes:
 
     The OTel HTTP exporter compresses by default when ``--insecure`` is
     set; we honour both gzip and identity. Anything else is read as-is.
+    Both the raw and the decoded size are capped at ``_MAX_BODY_BYTES`` while
+    reading, so neither a huge upload nor a gzip bomb is buffered whole.
+
+    Raises:
+        HTTPException: 413 when the raw or decoded body exceeds the budget,
+            400 when the gzip stream is corrupt.
     """
-    body = await request.body()
-    encoding = request.headers.get("content-encoding", "").lower()
-    if encoding == "gzip":
-        return gzip.decompress(body)
-    return body
+    limit = _MAX_BODY_BYTES
+    too_large = HTTPException(status_code=413, detail=f"request body exceeds {limit} bytes")
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > limit:
+            raise too_large
+    if request.headers.get("content-encoding", "").lower() != "gzip":
+        return bytes(body)
+    out = bytearray()
+    data = bytes(body)
+    try:
+        while data:  # gzip allows concatenated members
+            d = zlib.decompressobj(wbits=31)
+            out += d.decompress(data, limit + 1 - len(out))
+            if len(out) > limit or d.unconsumed_tail:
+                raise too_large
+            if not d.eof:
+                raise HTTPException(status_code=400, detail="truncated gzip body")
+            data = d.unused_data
+    except zlib.error as exc:
+        raise HTTPException(status_code=400, detail=f"gzip decode failed: {exc}") from exc
+    return bytes(out)
 
 
 def _protobuf_response(message: Any) -> Response:

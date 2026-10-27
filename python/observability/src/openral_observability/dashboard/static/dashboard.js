@@ -11,6 +11,10 @@
     return Math.floor(dt / 3600) + "h";
   };
   const fmtTime = (ts) => ts ? new Date(ts * 1000).toTimeString().slice(0, 8) : "";
+  // Telemetry strings (joint names, camera ids, log bodies, ...) come from any
+  // OTLP sender; escape every one that is interpolated into innerHTML markup.
+  const _ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => _ESC[c]);
 
   function setId(el, value, kind) {
     el.classList.remove("accent", "info");
@@ -185,7 +189,7 @@
       const row = document.createElement("div");
       row.className = "joint-row";
       row.innerHTML = `
-        <span class="name">${name}</span>
+        <span class="name">${esc(name)}</span>
         <div class="bar">
           <div class="track"></div>
           ${cmdPct != null ? `<div class="cmd" style="left: ${cmdPct}%"></div>` : ""}
@@ -464,9 +468,9 @@
     div.innerHTML = `
       <div class="image-wrap">
         ${hasFrame
-          ? `<img alt="${name}" onerror="this.replaceWith(Object.assign(document.createElement('div'),
+          ? `<img alt="${esc(name)}" onerror="this.replaceWith(Object.assign(document.createElement('div'),
                {className:'camera-placeholder',textContent:'stream unavailable'}))" />`
-          : `<div class="camera-placeholder">no frames · ${cam.modality || "?"}</div>`}
+          : `<div class="camera-placeholder">no frames · ${esc(cam.modality || "?")}</div>`}
         <canvas class="overlay"></canvas>
         <span class="corner tl"></span><span class="corner tr"></span>
         <span class="corner bl"></span><span class="corner br"></span>
@@ -478,7 +482,7 @@
         <div class="overlay-src"></div>
       </div>
       <div class="footer">
-        <span class="name">${name}</span>
+        <span class="name">${esc(name)}</span>
         <span class="lat"></span>
         <span class="meta-sub dims"></span>
         <span class="meta-sub right fps"></span>
@@ -756,7 +760,7 @@
       if (o.x == null || o.y == null) continue;
       if (o.frame_id && slam.frame_id && o.frame_id !== slam.frame_id) continue;
       const { px, py } = worldToPixel(o.x, o.y, ox, oy, res, H);
-      const text = String(o.label || o.id || "?").replace(/[<>&]/g, "");
+      const text = esc(o.label || o.id || "?");
       markup +=
         `<circle cx="${px}" cy="${py}" r="${r}" fill="${accent}" fill-opacity="0.9" ` +
         `stroke="#1a1a1a" stroke-width="${Math.max(0.3, r * 0.18)}"/>` +
@@ -1144,9 +1148,9 @@
       const meta = metaFromAttrs(ev);
       row.innerHTML = `
         <span class="ts">${fmtTime(ev.ts_unix)}</span>
-        <span class="lvl">${sev}</span>
-        <span class="body">${body}</span>
-        <span class="meta">${meta}</span>
+        <span class="lvl">${esc(sev)}</span>
+        <span class="body">${esc(body)}</span>
+        <span class="meta">${esc(meta)}</span>
       `;
       el.appendChild(row);
     }
@@ -1235,8 +1239,8 @@
     if (events && events.length) {
       evMarks = events.filter((ev) => ev.ts >= tMin && ev.ts <= tMax).map((ev) => {
         const x = xOf(ev.ts).toFixed(1);
-        return `<line class="spark-event sev-${ev.sev}" x1="${x}" y1="0" x2="${x}" y2="${h}">` +
-          `<title>${ev.sev}: ${ev.kind} @ ${fmtTime(ev.ts)}</title></line>`;
+        return `<line class="spark-event sev-${esc(ev.sev)}" x1="${x}" y1="0" x2="${x}" y2="${h}">` +
+          `<title>${esc(ev.sev)}: ${esc(ev.kind)} @ ${fmtTime(ev.ts)}</title></line>`;
       }).join("");
     }
     let focus = "";
@@ -1564,7 +1568,7 @@
       ? _lastMetrics
       : _lastMetrics.filter((m) => metricNamespace(m.name) === metricGroup);
     if (shown.length === 0) {
-      el.innerHTML = '<div class="empty-state">No ' + metricGroup + ' metrics ingested yet.</div>';
+      el.innerHTML = '<div class="empty-state">No ' + esc(metricGroup) + ' metrics ingested yet.</div>';
       return;
     }
     el.innerHTML = "";

@@ -34,6 +34,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,7 +151,11 @@ def _resolve_backend() -> Any:
     except Exception as exc:  # reason: lttngust raises a moving target
         kind = exc.__class__.__name__
         _warn_fallback(f"lttngust unavailable ({kind}: {exc})")
-        _BACKEND = _JsonFallbackBackend.from_env()
+        try:
+            _BACKEND = _JsonFallbackBackend.from_env()
+        except OSError as os_exc:  # e.g. ELOOP on a planted symlink: tracing off, logged
+            _LOG.error("JSON tracing fallback unavailable, tracepoints disabled: %s", os_exc)
+            _BACKEND = None
         return _BACKEND
     _BACKEND = backend
     return _BACKEND
@@ -163,7 +168,7 @@ def _warn_fallback(reason: str) -> None:
         return
     _LOG.warning(
         "%s=1 but %s; tracepoints will append to the JSON fallback under $%s "
-        "(or /tmp/openral-lttng-fallback).",
+        "(or a private mkdtemp dir).",
         ENV_TRACING_GATE,
         reason,
         ENV_TRACING_FALLBACK_DIR,
@@ -256,16 +261,22 @@ class _JsonFallbackBackend:
         self._path = fallback_path
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # Open append-mode; one process == one file == no inter-process
-        # lock needed for line-buffered writes on POSIX.
+        # lock needed for line-buffered writes on POSIX. O_NOFOLLOW: a symlink
+        # planted at this path by another user is refused (ELOOP), never
+        # followed to a file this process can write.
         # Long-lived backend handle; close on interpreter shutdown is best-effort.
-        self._fp = self._path.open("a", encoding="utf-8")
+        fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        self._fp = os.fdopen(fd, "a", encoding="utf-8")
 
     @classmethod
     def from_env(cls) -> _JsonFallbackBackend:
-        # Opt-in profiling fallback only; users override via env when the
-        # default /tmp directory is not appropriate.
-        base = os.environ.get(ENV_TRACING_FALLBACK_DIR, "/tmp/openral-lttng-fallback")
+        # Opt-in profiling fallback only. Default is a fresh owner-only (0700)
+        # mkdtemp dir, never a fixed shared /tmp path another user could precreate.
+        base = os.environ.get(ENV_TRACING_FALLBACK_DIR) or tempfile.mkdtemp(
+            prefix="openral-lttng-fallback-"
+        )
         path = Path(base) / f"openral-{os.getpid()}.jsonl"
+        _LOG.info("JSON tracing fallback writing to %s", path)
         return cls(path)
 
     def emit(self, name: str, attrs: dict[str, Any]) -> None:

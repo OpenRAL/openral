@@ -881,3 +881,103 @@ async def test_api_config_reports_write_controls_flag(monkeypatch: pytest.Monkey
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         body = (await client.get("/api/config")).json()
     assert body["write_controls_enabled"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("node", "name"),
+    [
+        # Deadman watchdog params whose names carry no denylisted token; the node
+        # name is what marks them safety-relevant.
+        ("/openral_deadman_watchdog", "first_chunk_deadline_s"),
+        ("openral_deadman_watchdog", "check_period_s"),
+        ("/openral_safety_kernel", "hal_mode"),
+        ("/openral_hardware_estop", "topic"),
+    ],
+)
+async def test_param_set_refuses_params_on_safety_nodes(
+    monkeypatch: pytest.MonkeyPatch, node: str, name: str
+) -> None:
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/param/set", json={"node": node, "name": name, "value": "99"})
+    assert resp.status_code == 403, resp.text
+
+
+# ── Cross-site request forgery (state-changing POSTs) ─────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/estop_reset", "/api/prompt", "/api/param/set"])
+async def test_cross_origin_post_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
+) -> None:
+    # A page on another origin POSTing through the operator's browser must be
+    # refused before anything shells out (no ros2/openral on PATH → would be 503).
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:4318") as client:
+        resp = await client.post(
+            path,
+            content=b'{"text": "go", "node": "/n", "name": "rate_hz", "value": "1"}',
+            headers={"origin": "http://evil.example", "content-type": "text/plain"},
+        )
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_same_origin_estop_reset_passes_origin_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:4318") as client:
+        same = await client.post("/api/estop_reset", headers={"origin": "http://127.0.0.1:4318"})
+        no_origin = await client.post("/api/estop_reset")  # curl / CLI clients
+    assert same.status_code == 503  # reached the handler: no ros2 on PATH
+    assert no_origin.status_code == 503
+
+
+# ── Decoded-size budgets ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gzip_body_over_decoded_budget_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_observability.dashboard import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_MAX_BODY_BYTES", 1024)
+    bomb = gzip.compress(b"\0" * 100_000)
+    assert len(bomb) < 1024
+    store = TelemetryStore()
+    transport = httpx.ASGITransport(app=create_app(store))
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post(
+            "/v1/traces",
+            content=bomb,
+            headers={"content-type": "application/x-protobuf", "content-encoding": "gzip"},
+        )
+    assert resp.status_code == 413, resp.text
+
+
+@pytest.mark.asyncio
+async def test_post_transcribe_refuses_audio_over_duration_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A compressed clip can decode to far more samples than its byte size
+    # suggests; the decoder must stop at the duration budget, not buffer it all.
+    pytest.importorskip("faster_whisper")
+    from openral_observability.dashboard import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_STT_MAX_SECONDS", 2)
+    monkeypatch.setenv("OPENRAL_STT_MODEL", "tiny.en")
+    transport = httpx.ASGITransport(app=create_app(TelemetryStore()))
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", timeout=120.0) as c:
+        resp = await c.post(
+            "/api/transcribe", content=_JFK_WAV.read_bytes(), headers={"content-type": "audio/wav"}
+        )
+    assert resp.status_code == 413, resp.text

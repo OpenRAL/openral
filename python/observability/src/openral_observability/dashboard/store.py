@@ -63,6 +63,10 @@ _ERROR_EVENT_RING_SIZE = 64
 _HEADLINE_EVENT_RING_SIZE = 64
 _ERROR_SEVERITIES = ("error", "fatal")
 _METRIC_SAMPLE_RING_SIZE = 600  # ~5 min at one sample per 500 ms
+# Distinct (name, labels) series kept; the least recently updated is evicted.
+# Labels are sender-chosen, so without a cap the map — and the snapshot built
+# on every ingest — grows without bound.
+_METRIC_SERIES_MAX = 512
 _SUBSCRIBER_QUEUE_SIZE = 256
 # OTLP Status.code values per opentelemetry-proto: 0=UNSET, 1=OK, 2=ERROR.
 _STATUS_ERROR = 2
@@ -1303,10 +1307,12 @@ class TelemetryStore:
 
     def _series(self, name: str, kind: str, unit: str, labels: dict[str, Any]) -> _MetricSeries:
         key = f"{name}|" + ",".join(f"{k}={labels[k]}" for k in sorted(labels))
-        series = self._metrics.get(key)
+        series = self._metrics.pop(key, None)  # re-insert last: dict order is LRU order
         if series is None:
             series = _MetricSeries(name=name, kind=kind, unit=unit, labels=labels)
-            self._metrics[key] = series
+            if len(self._metrics) >= _METRIC_SERIES_MAX:
+                self._metrics.pop(next(iter(self._metrics)))
+        self._metrics[key] = series
         return series
 
     def _primary_service(self) -> str:

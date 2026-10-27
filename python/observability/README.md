@@ -225,11 +225,19 @@ flag is on. The flag is also surfaced in `GET /api/config`:
 **Safety posture:**
 
 - Both endpoints return `403` when the flag is off (default).
-- `POST /api/param/set` also refuses any param name that matches a substring in
-  a hard-coded safety denylist (`velocity`, `accel`, `force`, `torque`,
-  `limit`, `workspace`, `estop`, `e_stop`, `deadman`, `dead_man`, `safety`,
-  `safe`, `watchdog`) — these must be changed via a reviewed config or manifest,
-  never the dashboard (CLAUDE.md §1.1).
+- `POST /api/param/set` also refuses any param whose node name or param name
+  matches a substring in a hard-coded safety denylist (`velocity`, `accel`,
+  `force`, `torque`, `limit`, `workspace`, `estop`, `e_stop`, `deadman`,
+  `dead_man`, `safety`, `safe`, `watchdog`, `deadline`, `timeout`) — so every
+  param on a safety node (`openral_deadman_watchdog`, `openral_safety_kernel`,
+  …) is refused whatever its name. These must be changed via a reviewed config
+  or manifest, never the dashboard (CLAUDE.md §1.1).
+- Every state-changing request (any method but GET/HEAD/OPTIONS — e-stop reset,
+  prompt, skill execute, param set, OTLP ingest) carrying an `Origin` header
+  whose host:port differs from `Host` is refused with `403` and audit-logged
+  (CSRF guard). Requests without `Origin` (curl, the `openral` CLI, OTLP
+  exporters) pass; `Origin: null` is refused. This does not stop DNS
+  rebinding — keep the dashboard on loopback until operator auth lands (#44).
 - Every attempt (permitted or denied) is audit-logged at WARNING level before
   any subprocess is spawned, providing a paper trail.
 - The safety kernel (`cpp/openral_safety_kernel`) remains the sole authority on
