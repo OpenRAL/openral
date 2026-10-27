@@ -88,7 +88,7 @@ def test_ral_replay_frame_pivots_into_dataset_trace(tmp_path: Path) -> None:
     pytest.importorskip(
         "lerobot",
         reason=(
-            "lerobot>=0.6.0 not installed; install via `uv pip install 'openral-dataset[lerobot]'`"
+            "lerobot>=0.6.1 not installed; install via `uv pip install 'openral-dataset[lerobot]'`"
         ),
     )
     pytest.importorskip(
