@@ -496,10 +496,13 @@ private:
     std::size_t zo = 0;
     const std::size_t n_points = static_cast<std::size_t>(msg->width) * msg->height;
     if (!float_field(*msg, "x", xo) || !float_field(*msg, "y", yo) || !float_field(*msg, "z", zo) ||
-        msg->point_step < 12 || msg->data.size() < n_points * msg->point_step) {
+        msg->point_step < 12 ||
+        !xyz_cloud_layout_valid(msg->data.size(), n_points, msg->point_step, xo, yo, zo)) {
       ++totals_.dropped_bad_cloud;
-      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                            "cloud has no FLOAT32 x/y/z or a short data buffer: dropping it");
+      RCLCPP_ERROR_THROTTLE(
+          this->get_logger(), *this->get_clock(), 5000,
+          "cloud has no FLOAT32 x/y/z, a coordinate outside its record or a short "
+          "data buffer: dropping it");
       return;
     }
     auto out = std::make_unique<sensor_msgs::msg::PointCloud2>();

@@ -50,6 +50,14 @@ bool is_unit_quaternion(const Quaternion& q) noexcept {
   return std::isfinite(norm2) && std::fabs(norm2 - 1.0) <= 1e-6;
 }
 
+/// Every rotation entry and translation component finite. A wire pose with a
+/// non-finite translation or quaternion component decodes to NaN entries here,
+/// and NaN geometry yields NaN distances, which a `d <= margin` reads as clear.
+bool transform_is_finite(const Transform& x) noexcept {
+  return std::all_of(std::begin(x.r), std::end(x.r), [](double v) { return std::isfinite(v); }) &&
+         std::isfinite(x.t.x) && std::isfinite(x.t.y) && std::isfinite(x.t.z);
+}
+
 /// Escape a string for a JSON string literal (quotes, backslashes, control chars).
 std::string json_escape(std::string_view in) {
   std::string out;
@@ -302,6 +310,9 @@ bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimiti
       prim.pose_in_object.position.z, prim.pose_in_object.orientation.x,
       prim.pose_in_object.orientation.y, prim.pose_in_object.orientation.z,
       prim.pose_in_object.orientation.w);
+  if (!transform_is_finite(out.pose_in_object)) {
+    return false;
+  }
   decode_tight_geometry(prim, out);
   // Issue #418 OT-10 amendment: the evidence behind the primitive. 0 and every code this kernel
   // does not know is FALLBACK, which explains nothing.
@@ -1346,7 +1357,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     // make a robot resting a payload on a shelf crawl for as long as it
     // holds it.
     double collision_min_slack_m = std::numeric_limits<double>::infinity();
-    const bool is_position = (mode == ControlMode::kJointPosition);
+    // JOINT_TRAJECTORY waypoints are joint configurations with JOINT_POSITION's
+    // exact wire shape (validator.cpp, the HAL decoders): same check, never a
+    // mode that skips it.
+    const bool is_position =
+        mode == ControlMode::kJointPosition || mode == ControlMode::kJointTrajectory;
     // Non-position chunks carry velocities / EE deltas, not joint
     // configs FK can place; reconstruct from the latest measured joint state.
     // Active only once the joint-name map is plumbed (`collision_joint_names`),
@@ -2248,6 +2263,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
               return true;
             }
+            // ... and, ungrouped, also as published: only a HAL staging a slot group
+            // (tick_group_size > 1) composes by name; RosControlHAL and an ungrouped
+            // OpenArmRealHAL action execute the full row, zero padding included. Only
+            // ever an extra check: it can refuse, never accept.
+            if (msg->tick_group_size <= 1 &&
+                check_config(row, static_cast<int>(s), 0.0, ws_plain)) {
+              return true;
+            }
             // ... and, additionally, at this tick's other committed targets.
             if (partner_trips(static_cast<int>(s))) {
               return true;
@@ -2792,7 +2815,10 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
   // a finite velocity entry forgets its last one, so the workspace speed bound
   // falls back to the commanded speed rather than trusting an old reading.
   const std::int64_t now_ns = this->now().nanoseconds();
-  const std::int64_t src_ns = rclcpp::Time(msg->header.stamp).nanoseconds();
+  // rclcpp::Time throws on negative seconds; such a stamp reads as unstamped
+  // (0) instead of throwing out of the executor and taking the kernel down.
+  const std::int64_t src_ns =
+      msg->header.stamp.sec < 0 ? 0 : rclcpp::Time(msg->header.stamp).nanoseconds();
   const std::size_t n = std::min(msg->name.size(), msg->position.size());
   for (std::size_t i = 0; i < n; ++i) {
     const auto it = joint_name_to_dof_.find(msg->name[i]);
@@ -2801,6 +2827,13 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
     }
     const std::size_t d = static_cast<std::size_t>(it->second);
     if (d < q_meas_.size()) {
+      // A non-finite position is no measurement: the joint has no seed until a
+      // finite one lands (FK on it would place NaN geometry, which reads clear).
+      if (!std::isfinite(msg->position[i])) {
+        q_meas_seen_[d] = false;
+        dq_meas_seen_[d] = 0;
+        continue;
+      }
       const bool has_v = i < msg->velocity.size() && std::isfinite(msg->velocity[i]);
       double v = has_v ? msg->velocity[i] : 0.0;
       // A reported velocity is capped at the rate its own measured position moved since
@@ -2860,9 +2893,18 @@ bool SafetyKernelLifecycleNode::measured_state_fresh() const noexcept {
   if ((this->now() - q_meas_stamp_).seconds() > collision_state_deadline_s_) {
     return false;
   }
+  // Per joint, not per message: a stream naming only some joints (or none)
+  // must not keep the others' old positions fresh. `dq_meas_stamp_ns_` is the
+  // receipt time of each joint's last accepted (finite) position.
+  const std::int64_t now_ns = this->now().nanoseconds();
+  const double deadline_ns = collision_state_deadline_s_ * 1e9;
   for (const int d : collision_fk_dofs_) {
-    if (static_cast<std::size_t>(d) >= q_meas_seen_.size() ||
-        !q_meas_seen_[static_cast<std::size_t>(d)]) {
+    const auto i = static_cast<std::size_t>(d);
+    if (i >= q_meas_seen_.size() || !q_meas_seen_[i] || i >= dq_meas_stamp_ns_.size()) {
+      return false;
+    }
+    const std::int64_t age_ns = now_ns - dq_meas_stamp_ns_[i];
+    if (age_ns < 0 || static_cast<double>(age_ns) > deadline_ns) {
       return false;
     }
   }
@@ -4091,13 +4133,25 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   }
   tracked_cover_dirty_ = true;  // #418: the cover check runs once per grid
   ++voxel_grid_seq_;            // ADR-0121: a provider caches per grid on this
-  const std::size_t cells = static_cast<std::size_t>(msg->size_x) * msg->size_y * msg->size_z;
+  // The cell count must not wrap: 2^22 * 2^21 * 2^21 is 0 in size_t, and an
+  // empty occupancy would then "match" a grid the collision check indexes far
+  // past its storage. Each dimension is also bounded by the cell cap, so the
+  // retained int dimensions stay representable whatever the other two are.
+  std::size_t cells = 0;
+  const bool shape_ok =
+      msg->size_x <= world_voxel_max_cells_ && msg->size_y <= world_voxel_max_cells_ &&
+      msg->size_z <= world_voxel_max_cells_ &&
+      !__builtin_mul_overflow(static_cast<std::size_t>(msg->size_x), msg->size_y, &cells) &&
+      !__builtin_mul_overflow(cells, msg->size_z, &cells);
   // The grid's lattice is the source map's, so `orientation` is load-bearing
   // geometry, not metadata. An unset field is the all-zero quaternion, which is
   // not a rotation: reading it as identity would place every obstacle somewhere
   // the robot is not, and a world check against a misplaced map is fail-OPEN.
-  // Refuse it exactly as an over-large or malformed grid is refused.
-  if (msg->occupancy.size() != cells || cells > world_voxel_max_cells_ || msg->resolution <= 0.0 ||
+  // Refuse it exactly as an over-large or malformed grid is refused, and a NaN
+  // resolution or non-finite origin too (`<= 0.0` reads NaN as positive).
+  if (!shape_ok || msg->occupancy.size() != cells || cells > world_voxel_max_cells_ ||
+      !(std::isfinite(msg->resolution) && msg->resolution > 0.0) || !std::isfinite(msg->origin.x) ||
+      !std::isfinite(msg->origin.y) || !std::isfinite(msg->origin.z) ||
       !is_unit_quaternion(msg->orientation)) {
     voxel_overflow_ = true;
     voxel_received_ = true;
@@ -4133,8 +4187,11 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   }
   voxel_received_ = true;
   voxel_stamp_ = this->now();
-  // Zero = the producer said nothing about when its world was captured.
-  voxel_source_known_ = msg->source_stamp.sec != 0 || msg->source_stamp.nanosec != 0;
+  // Zero = the producer said nothing about when its world was captured. A
+  // negative stamp says nothing usable either (and rclcpp::Time throws on it):
+  // unknown, which the data-age gate refuses.
+  voxel_source_known_ =
+      msg->source_stamp.sec > 0 || (msg->source_stamp.sec == 0 && msg->source_stamp.nanosec != 0);
   if (voxel_source_known_) {
     voxel_source_stamp_ = rclcpp::Time(msg->source_stamp, this->get_clock()->get_clock_type());
   }
@@ -4210,6 +4267,10 @@ void SafetyKernelLifecycleNode::on_world_state(
         obj.pose_in_link.position.x, obj.pose_in_link.position.y, obj.pose_in_link.position.z,
         obj.pose_in_link.orientation.x, obj.pose_in_link.orientation.y,
         obj.pose_in_link.orientation.z, obj.pose_in_link.orientation.w);
+    if (!transform_is_finite(in.pose_in_link)) {
+      fail_closed("non_finite_pose");
+      return;
+    }
     in.attach_link = obj.attach_link;
     in.touch_links.assign(obj.touch_links.begin(), obj.touch_links.end());
     // Support-contact attestation (ADR-0092 D6). World State may attest that

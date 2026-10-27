@@ -675,6 +675,351 @@ TEST_F(LifecycleKernelTest, VelocityChunkReactiveCheckCatchesCollision) {
       << node->chunks_dropped() << " chunks_passed=" << node->chunks_passed();
 }
 
+namespace {
+
+// A configured + active kernel, a helper node with the candidate / joint-state /
+// voxel / world-state publishers, and a safe_action counter. `offer` keeps the
+// inputs `feed` publishes fresh while it offers `chunk`, until the chunk passes,
+// the kernel latches, or `ms` elapses; it returns whether the chunk passed.
+struct OfferRig {
+  std::shared_ptr<osk::SafetyKernelLifecycleNode> node;
+  std::shared_ptr<rclcpp::Node> helper;
+  rclcpp::Publisher<openral_msgs::msg::ActionChunk>::SharedPtr cand_pub;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr js_pub;
+  rclcpp::Publisher<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_pub;
+  rclcpp::Publisher<openral_msgs::msg::WorldStateStamped>::SharedPtr ws_pub;
+  rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr safe_sub;
+  std::atomic<int> safe_count{0};
+  rclcpp::executors::SingleThreadedExecutor exec;
+
+  OfferRig(const std::string& name, const std::vector<rclcpp::Parameter>& params) {
+    rclcpp::NodeOptions opts;
+    opts.parameter_overrides(params);
+    node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
+    helper = std::make_shared<rclcpp::Node>(name + "_helper");
+    rclcpp::QoS reliable(rclcpp::KeepLast(1));
+    reliable.reliable();
+    rclcpp::QoS best_effort(rclcpp::KeepLast(1));
+    best_effort.best_effort();
+    cand_pub = helper->create_publisher<openral_msgs::msg::ActionChunk>("/openral/candidate_action",
+                                                                        reliable);
+    js_pub = helper->create_publisher<sensor_msgs::msg::JointState>("/joint_states", best_effort);
+    voxel_pub = helper->create_publisher<openral_msgs::msg::OccupancyVoxels>(
+        "/openral/world_voxels", reliable);
+    ws_pub = helper->create_publisher<openral_msgs::msg::WorldStateStamped>(
+        "/openral/world_state_fast", reliable);
+    safe_sub = helper->create_subscription<openral_msgs::msg::ActionChunk>(
+        "/openral/safe_action", reliable,
+        [this](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+    exec.add_node(node->get_node_base_interface());
+    exec.add_node(helper);
+  }
+
+  bool activate() {
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+    rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+    return node->on_configure(unconf) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS &&
+           node->on_activate(inactive) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+  }
+
+  void feed_for(const std::function<void()>& feed, int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < until) {
+      feed();
+      exec.spin_some(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  bool offer(const openral_msgs::msg::ActionChunk& chunk, const std::function<void()>& feed,
+             int ms = 800) {
+    const int before = safe_count.load();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (safe_count.load() == before && !node->fault_latched() &&
+           std::chrono::steady_clock::now() < until) {
+      feed();
+      exec.spin_some(std::chrono::milliseconds(10));
+      cand_pub->publish(chunk);
+      exec.spin_some(std::chrono::milliseconds(10));
+    }
+    return safe_count.load() != before;
+  }
+};
+
+openral_msgs::msg::ActionChunk zero_velocity_chunk() {
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY: reactive check at the measured seed
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.0, 0.0};
+  return vel;
+}
+
+sensor_msgs::msg::JointState two_joint_state(double q0, double q1) {
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0", "j1"};
+  js.position = {q0, q1};
+  return js;
+}
+
+// velocity_capable_params plus the world-voxel check.
+std::vector<rclcpp::Parameter> velocity_voxel_params() {
+  auto p = velocity_capable_params();
+  p.emplace_back("world_voxel_enabled", true);
+  p.emplace_back("world_voxel_margin_m", 0.0);
+  p.emplace_back("world_voxel_deadline_ms", 2000.0);
+  p.emplace_back("world_voxel_max_cells", std::int64_t{4096});
+  return p;
+}
+
+// A valid, empty 8x8x8 grid at 0.1 m whose origin sits +10 m in y and z: every
+// link index clamps to (ix, 0, 0), so only the first row of cells is ever read.
+openral_msgs::msg::OccupancyVoxels empty_far_grid() {
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.resolution = 0.1;
+  vox.size_x = 8;
+  vox.size_y = 8;
+  vox.size_z = 8;
+  vox.origin.x = -0.4;
+  vox.origin.y = 10.0;
+  vox.origin.z = 10.0;
+  vox.occupancy.assign(512, 0);
+  return vox;
+}
+
+}  // namespace
+
+// A non-finite measured position is no measurement: it must not become the
+// seed the reactive check runs FK on (a NaN pose reads as clear everywhere).
+TEST_F(LifecycleKernelTest, ANonFiniteMeasuredPositionIsNoSeed) {
+  OfferRig rig("kernel_nan_seed", velocity_capable_params());
+  ASSERT_TRUE(rig.activate());
+  const auto js = two_joint_state(std::numeric_limits<double>::quiet_NaN(), 0.0);
+  const auto feed = [&] { rig.js_pub->publish(js); };
+  rig.feed_for(feed, 200);
+  const std::uint64_t dropped_before = rig.node->chunks_dropped();
+  EXPECT_FALSE(rig.offer(zero_velocity_chunk(), feed))
+      << "a chunk checked at a NaN seed must not reach /openral/safe_action";
+  EXPECT_GT(rig.node->chunks_dropped(), dropped_before);
+  // A finite reading of the same joint restores the seed.
+  const auto good = two_joint_state(0.0, 0.0);
+  const auto feed_good = [&] { rig.js_pub->publish(good); };
+  rig.feed_for(feed_good, 200);
+  EXPECT_TRUE(rig.offer(zero_velocity_chunk(), feed_good));
+}
+
+// Each FK joint's position must itself be fresh: a stream that keeps naming
+// only j0 must not keep a j1 reading from long ago alive.
+TEST_F(LifecycleKernelTest, APartialJointStateDoesNotRefreshTheJointsItOmits) {
+  OfferRig rig("kernel_partial_js", velocity_capable_params());  // 500 ms state deadline
+  ASSERT_TRUE(rig.activate());
+  const auto full = two_joint_state(0.0, 0.0);
+  rig.feed_for([&] { rig.js_pub->publish(full); }, 200);
+  sensor_msgs::msg::JointState only_j0;
+  only_j0.name = {"j0"};
+  only_j0.position = {0.0};
+  const auto feed_partial = [&] { rig.js_pub->publish(only_j0); };
+  rig.feed_for(feed_partial, 800);  // j1 is now older than the deadline
+  const std::uint64_t dropped_before = rig.node->chunks_dropped();
+  EXPECT_FALSE(rig.offer(zero_velocity_chunk(), feed_partial))
+      << "j1's position is stale; the reactive check must not run on it";
+  EXPECT_GT(rig.node->chunks_dropped(), dropped_before);
+}
+
+// rclcpp::Time throws on negative seconds. A sensor message stamped before the
+// epoch must not throw out of the callback (and the executor, and the kernel):
+// the joint state reads as unstamped, and a grid with an unrepresentable source
+// stamp has an unknown data age, which is refused.
+TEST_F(LifecycleKernelTest, ANegativeSensorStampNeitherKillsTheKernelNorPassesAGrid) {
+  OfferRig rig("kernel_negative_stamp", velocity_voxel_params());
+  ASSERT_TRUE(rig.activate());
+  auto js = two_joint_state(0.0, 0.0);
+  js.header.stamp.sec = -1;
+  auto vox = empty_far_grid();
+  vox.source_stamp.sec = -5;
+  const auto feed = [&] {
+    rig.js_pub->publish(js);
+    rig.voxel_pub->publish(vox);
+  };
+  bool passed = true;
+  EXPECT_NO_THROW({
+    rig.feed_for(feed, 200);
+    passed = rig.offer(zero_velocity_chunk(), feed);
+  });
+  EXPECT_FALSE(passed) << "a grid whose world age cannot be known must not certify motion";
+  // The same grid with a real source stamp does pass: the refusal was the stamp.
+  const auto feed_good = [&] {
+    rig.js_pub->publish(js);
+    vox.source_stamp = rig.helper->now();
+    rig.voxel_pub->publish(vox);
+  };
+  EXPECT_NO_THROW(rig.feed_for(feed_good, 200));
+  EXPECT_TRUE(rig.offer(zero_velocity_chunk(), feed_good));
+}
+
+// size_x * size_y * size_z must not wrap: 2^22 * 2^21 * 2^21 is 2^64, which is 0
+// in size_t, so an empty occupancy once "matched" a grid of 2^64 cells. And a
+// NaN resolution is not a lattice.
+TEST_F(LifecycleKernelTest, AVoxelGridWhoseShapeCannotBeRepresentedIsRefused) {
+  auto overflow = empty_far_grid();
+  overflow.size_x = 1U << 22;
+  overflow.size_y = 1U << 21;
+  overflow.size_z = 1U << 21;
+  overflow.occupancy.clear();
+  auto nan_res = empty_far_grid();
+  nan_res.resolution = std::numeric_limits<double>::quiet_NaN();
+  auto inf_origin = empty_far_grid();
+  inf_origin.origin.x = std::numeric_limits<double>::infinity();
+  int i = 0;
+  for (auto* bad : {&overflow, &nan_res, &inf_origin}) {
+    OfferRig rig("kernel_bad_grid_" + std::to_string(i++), velocity_voxel_params());
+    ASSERT_TRUE(rig.activate());
+    const auto js = two_joint_state(0.0, 0.0);
+    const auto feed = [&] {
+      rig.js_pub->publish(js);
+      bad->source_stamp = rig.helper->now();
+      rig.voxel_pub->publish(*bad);
+    };
+    rig.feed_for(feed, 200);
+    const std::uint64_t dropped_before = rig.node->chunks_dropped();
+    EXPECT_FALSE(rig.offer(zero_velocity_chunk(), feed)) << "grid " << i;
+    EXPECT_GT(rig.node->chunks_dropped(), dropped_before) << "grid " << i;
+  }
+}
+
+namespace {
+
+// Two prismatic-x links in a chain: link1 sits at x = q0 + q1. Both carry a
+// 0.1 m-radius capsule and the pair is checked, so the configuration collides
+// exactly when |q1| < 0.2.
+std::vector<rclcpp::Parameter> prismatic_pair_params() {
+  return {
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-3.0, -3.0}},
+      {"joint_position_max", std::vector<double>{3.0, 3.0}},
+      {"joint_velocity_max", std::vector<double>{3.15, 3.15}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", true},
+      {"self_collision_margin_m", 0.0},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 2}},  // prismatic, prismatic
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 1, 0, 0}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.1, 0.1}},
+      {"collision_capsule_half_length", std::vector<double>{0.0, 0.0}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"l0", "l1"}},
+      {"collision_joint_names", std::vector<std::string>{"j0", "j1"}},
+      {"collision_state_deadline_ms", 2000.0},
+  };
+}
+
+}  // namespace
+
+// JOINT_TRAJECTORY waypoints are joint configurations exactly as JOINT_POSITION
+// rows are (same wire shape, same HAL decoding); they get the same geometric
+// check instead of passing it by mode.
+TEST_F(LifecycleKernelTest, AJointTrajectoryChunkIsCollisionChecked) {
+  OfferRig rig("kernel_trajectory_geom", prismatic_pair_params());
+  ASSERT_TRUE(rig.activate());
+  const auto js = two_joint_state(0.0, 0.5);  // measured: clear
+  const auto feed = [&] { rig.js_pub->publish(js); };
+  rig.feed_for(feed, 100);
+  openral_msgs::msg::ActionChunk traj;
+  traj.control_mode = 3;  // JOINT_TRAJECTORY
+  traj.horizon = 2;
+  traj.n_dof = 2;
+  traj.flat = {0.0, 0.5, 0.0, 0.05};  // second waypoint: the links 0.05 m apart
+  EXPECT_FALSE(rig.offer(traj, feed)) << "a colliding trajectory waypoint must not pass";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+// ADR-0102 slot rows are checked with the joints they do not command at the
+// measured pose, because a HAL composing the tick by name leaves those joints
+// where they are. An UNGROUPED chunk (tick_group_size <= 1) is composed by no
+// HAL: RosControlHAL and OpenArmRealHAL execute its full vector, zero padding
+// included. So it is also checked as published, which can only refuse more.
+TEST_F(LifecycleKernelTest, AnUngroupedSlotRowIsAlsoCheckedAsPublished) {
+  OfferRig rig("kernel_ungrouped_slot", prismatic_pair_params());
+  ASSERT_TRUE(rig.activate());
+  const auto js = two_joint_state(0.0, 0.5);  // measured: clear
+  const auto feed = [&] { rig.js_pub->publish(js); };
+  rig.feed_for(feed, 100);
+  openral_msgs::msg::ActionChunk slot;
+  slot.control_mode = 0;  // JOINT_POSITION
+  slot.horizon = 1;
+  slot.n_dof = 2;
+  slot.flat = {0.1, 0.0};  // commands j0; j1 is zero padding
+  slot.joint_names = {"j0"};
+  // Grouped: composed by name, j1 stays at 0.5 -> clear, as before.
+  slot.tick_group_size = 2;
+  EXPECT_TRUE(rig.offer(slot, feed)) << "a grouped slot row is still checked at the measured j1";
+  rig.feed_for(feed, 100);  // drain the grouped phase's in-flight safe_actions
+  // Ungrouped: executed as published, j1 at 0.0 -> the links overlap.
+  slot.tick_group_size = 1;
+  EXPECT_FALSE(rig.offer(slot, feed));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+// An attachment whose pose is not finite is not a payload model the kernel can
+// check: the whole snapshot is refused, like any other malformed attachment.
+TEST_F(LifecycleKernelTest, ANonFiniteAttachmentPoseRefusesTheSnapshot) {
+  auto params = velocity_voxel_params();
+  params.emplace_back("attached_collision_enabled", true);
+  params.emplace_back("attached_collision_margin_m", 0.01);
+  params.emplace_back("attached_collision_deadline_ms", 2000.0);
+  params.emplace_back("attached_max_objects", std::int64_t{1});
+  params.emplace_back("attached_max_primitives", std::int64_t{1});
+  params.emplace_back("attached_max_touch_links", std::int64_t{1});
+  for (const char* field : {"pose_in_link", "pose_in_object"}) {
+    OfferRig rig(std::string("kernel_nan_attach_") + field, params);
+    ASSERT_TRUE(rig.activate());
+    const auto js = two_joint_state(0.0, 0.0);
+    auto vox = empty_far_grid();
+    openral_msgs::msg::WorldStateStamped ws;
+    openral_msgs::msg::AttachedCollisionObject obj;
+    obj.object_id = "sim:obj_main";
+    obj.attach_link = "link1";
+    obj.pose_in_link.position.z = 1.0;  // well clear of both links
+    obj.pose_in_link.orientation.w = 1.0;
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.02, 0.02, 0.02};
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+    ws.attached_objects.push_back(obj);
+    const auto feed = [&] {
+      rig.js_pub->publish(js);
+      vox.source_stamp = rig.helper->now();
+      rig.voxel_pub->publish(vox);
+      ws.attachment_stamp_ns = rig.node->now().nanoseconds();
+      rig.ws_pub->publish(ws);
+    };
+    // The well-formed payload passes ...
+    rig.feed_for(feed, 200);
+    EXPECT_TRUE(rig.offer(zero_velocity_chunk(), feed)) << field;
+    // ... the same payload posed by a NaN does not.
+    if (std::string(field) == "pose_in_link") {
+      ws.attached_objects[0].pose_in_link.position.y = std::numeric_limits<double>::quiet_NaN();
+    } else {
+      ws.attached_objects[0].primitives[0].pose_in_object.orientation.z =
+          std::numeric_limits<double>::quiet_NaN();
+    }
+    rig.feed_for(feed, 200);
+    const std::uint64_t dropped_before = rig.node->chunks_dropped();
+    EXPECT_FALSE(rig.offer(zero_velocity_chunk(), feed)) << field;
+    EXPECT_GT(rig.node->chunks_dropped(), dropped_before) << field;
+    // Refused as malformed input, not by whatever the NaN arithmetic happened
+    // to produce in a distance (here a spurious -0.05 m hit and an E-stop).
+    EXPECT_FALSE(rig.node->fault_latched()) << field;
+  }
+}
+
 // DETERMINISTIC proof of the mobile-base world (voxel) path: panda_mobile
 // "arm hits the table". Model: planar base (prismatic-x, dof 0) carrying a
 // one-link arm (revolute-z, dof 1), capsule 0.3 m ahead of base_link. Seed
@@ -5458,9 +5803,11 @@ TEST_F(LifecycleKernelTest, ASlotRowIsNotStoppedByThePaddingsPhantomPose) {
   ASSERT_TRUE(rig.configured());
   // Right arm measured at x = 1.5. The left slot drives the left arm to 0.95,
   // 0.55 m clear of it, but 0.05 m from where the zero padding puts the right
-  // arm (x = 1.0) — a false stop against a pose nobody commanded.
+  // arm (x = 1.0) — a false stop against a pose nobody commanded. Grouped
+  // (tick_group_size 2): only a HAL staging the group composes it by name; an
+  // ungrouped row's padding IS executed, see AnUngroupedSlotRowIsAlsoCheckedAsPublished.
   rig.measure(0.0, 0.5);
-  EXPECT_TRUE(rig.send(position_chunk(0.95, 0.0, {"left_j"})));
+  EXPECT_TRUE(rig.send(position_chunk(0.95, 0.0, {"left_j"}, /*tick=*/1)));
   EXPECT_FALSE(rig.node().fault_latched());
 }
 

@@ -1065,6 +1065,13 @@ void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int
   if (d < sweep_min) {
     sweep_min = d;
   }
+  // A NaN distance is geometry the kernel could not evaluate (a non-finite
+  // pose or seed), not clearance: every caller's `d <= margin` reads it as
+  // clear and unexempted, so it trips here, as a hard (never advisory) hit.
+  if (std::isnan(d)) {
+    tripped = true;
+    advisory = false;
+  }
   if (!tripped) {
     return;
   }
