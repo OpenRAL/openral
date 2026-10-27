@@ -189,10 +189,13 @@ def _build_agent(args: argparse.Namespace) -> Any:
     if args.quantization in {"nf4", "int8"}:
         from transformers import BitsAndBytesConfig
 
-        # Keep the System-1 head (NavDP DiT + latent/traj projections) and
-        # the token embeddings at bf16 — only the Qwen2.5-VL backbone
-        # linears are worth quantizing, and bnb-packed uint8 weights inside
-        # the DiT would break its dtype-inference paths.
+        # Keep the System-1 head (NavDP DiT + latent/traj projections, the
+        # memory encoder and the RGB QFormer) and the token embeddings at bf16
+        # — only the Qwen2.5-VL backbone linears are worth quantizing.
+        # bnb-packed uint8 weights inside the DiT would break its dtype-inference
+        # paths, and the memory encoder / QFormer are torch.nn.Transformer
+        # stacks whose attention reads ``out_proj.weight`` directly (a packed
+        # weight there fails with "self and mat2 must have the same dtype").
         skip = [
             "lm_head",
             "embed_tokens",
@@ -200,6 +203,8 @@ def _build_agent(args: argparse.Namespace) -> Any:
             "navdp",
             "action_encoder",
             "action_decoder",
+            "memory_encoder",
+            "rgb_resampler",
         ]
         # OpenRAL Pro chose the config; this venv has no Pro, so
         # tools/internvla_n1_sidecar.py passes it as --quantization-config (ADR-0123).
