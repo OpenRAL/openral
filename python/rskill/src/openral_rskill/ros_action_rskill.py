@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import time
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +43,7 @@ from openral_core.exceptions import (
     ROSConfigError,
     ROSDeadlineMissed,
     ROSError,
+    ROSPerceptionStale,
     ROSRskillGoalSatisfied,
     ROSRuntimeError,
 )
@@ -425,6 +426,14 @@ class ROSActionRskill(rSkillBase):
         # (test-only path).
         n_target = len(robot_description.joints) if robot_description is not None else 0
         self._unmoved_joint_padding: list[float] = [0.0] * n_target
+        # Robot-order slots the live snapshot did not measure; holding one of
+        # them as an unmoved joint is refused rather than commanded to 0.0.
+        self._unmeasured_slots: set[int] = set()
+        # Set by the runner: returns why the enclosing ExecuteRskill goal ended
+        # (cancel, its execution budget) or ``None``. A wrapped wait blocks inside
+        # one ``step()``, where the runner cannot interrupt it, so ``_poll_future``
+        # polls this and gives up (cancelling the wrapped goal) when it fires.
+        self.stop_check: Callable[[], str | None] | None = None
         # Result-only deadline budget (s) — sourced from latency budget.
         budget_ms = (
             manifest.latency_budget.per_chunk_ms if manifest.latency_budget is not None else None
@@ -445,10 +454,6 @@ class ROSActionRskill(rSkillBase):
         ROS imports happen here so the schema-only test surface can
         construct ``ROSActionRskill`` without ``rclpy`` on the path.
         """
-        type_obj, kind = _import_action_or_service(self._integration)
-        self._interface_type = type_obj
-        self._interface_kind = kind
-
         try:
             self._goal_dict = json.loads(self._integration.default_goal_json)
         except json.JSONDecodeError as exc:
@@ -489,6 +494,11 @@ class ROSActionRskill(rSkillBase):
             if self._description is not None
             else None,
         )
+        self._require_plan_only_for_replay()
+
+        type_obj, kind = _import_action_or_service(self._integration)
+        self._interface_type = type_obj
+        self._interface_kind = kind
 
         if kind == "action":
             try:
@@ -528,6 +538,30 @@ class ROSActionRskill(rSkillBase):
             interface_type=self._integration.interface_type,
             trajectory_field=self._integration.result_trajectory_field,
         )
+
+    def _require_plan_only_for_replay(self) -> None:
+        """Refuse a MoveGroup replay goal whose merged goal lets MoveIt execute.
+
+        In trajectory mode OpenRAL replays the planned waypoints through its own
+        safety-checked actuation path; ``planning_options.plan_only: false`` would
+        have ``move_group`` drive the controllers directly, before OpenRAL sees the
+        plan. A per-dispatch ``goal_params_json`` must not be able to flip that.
+
+        Raises:
+            ROSConfigError: The merged goal's ``planning_options.plan_only`` is not ``true``.
+        """
+        if (
+            self._integration.interface_type != "MoveGroup"
+            or self._integration.result_trajectory_field is None
+        ):
+            return
+        options = self._goal_dict.get("planning_options")
+        if not isinstance(options, dict) or options.get("plan_only") is not True:
+            raise ROSConfigError(
+                f"ROSActionRskill({self.name!r}): a MoveGroup replay goal must keep "
+                "planning_options.plan_only = true (OpenRAL executes the plan, not "
+                f"move_group); got planning_options={options!r}."
+            )
 
     def _activate_impl(self) -> None:
         """No-op — the wrapped action is dispatched on the first ``step``."""
@@ -642,28 +676,36 @@ class ROSActionRskill(rSkillBase):
     def _capture_unmoved_joint_padding(self, world_state: Any) -> None:  # noqa: ANN401
         """Snapshot current joint positions for slots the wrapped planner won't move.
 
-        Reads ``world_state.joint_state.position`` (a list of floats in
-        ``RobotDescription.joints`` order) when available; falls
-        back to all-zeroes when ``world_state`` is ``None`` (test path
-        only — production always supplies a live snapshot).
+        Reads ``world_state.joint_state`` **by joint name** — ``/joint_states``
+        arrives in the publisher's order, not ``RobotDescription.joints`` order —
+        into robot order. Description joints absent from the snapshot are
+        recorded in ``_unmeasured_slots``; ``_dispatch_and_cache_result`` refuses
+        to hold one of them. Keeps the all-zero padding when ``world_state`` is
+        ``None`` (test path only — production always supplies a live snapshot).
+
+        Raises:
+            ROSPerceptionStale: The snapshot's ``name`` / ``position`` lengths
+                differ or a joint name repeats, so no name→position map exists.
         """
         if self._description is None or world_state is None:
             return  # init-time zeros already in place
-        try:
-            positions = list(world_state.joint_state.position)
-        except AttributeError:
+        joint_state = getattr(world_state, "joint_state", None)
+        if joint_state is None:
             return
-        if len(positions) != len(self._description.joints):
-            log.warning(
-                "ros_action_rskill.padding_size_mismatch",
-                name=self.name,
-                got=len(positions),
-                expected=len(self._description.joints),
+        names = list(joint_state.name)
+        positions = list(joint_state.position)
+        if len(names) != len(positions) or len(set(names)) != len(names):
+            raise ROSPerceptionStale(
+                f"ROSActionRskill({self.name!r}): joint_state has {len(names)} names "
+                f"({len(set(names))} distinct) for {len(positions)} positions; cannot map "
+                "measured positions to robot joints."
             )
-            return
-        self._unmoved_joint_padding = [float(v) for v in positions]
+        measured = dict(zip(names, positions, strict=True))
+        target_names = [j.name for j in self._description.joints]
+        self._unmoved_joint_padding = [float(measured.get(n, 0.0)) for n in target_names]
+        self._unmeasured_slots = {i for i, n in enumerate(target_names) if n not in measured}
 
-    def _dispatch_and_cache_result(self) -> None:
+    def _dispatch_and_cache_result(self) -> None:  # noqa: PLR0912  # reason: linear validate → reorder → pace sequence over one wrapped result
         """Send the wrapped goal and block on the result.
 
         Trajectory mode caches the reordered waypoint list in
@@ -728,6 +770,12 @@ class ROSActionRskill(rSkillBase):
             # motion for them, so we MUST NOT command motion either,
             # or the safety supervisor's per-row check sees a spurious
             # delta on those joints.
+            blind = [target_names[i] for i in unmoved_indices if i in self._unmeasured_slots]
+            if blind:
+                raise ROSPerceptionStale(
+                    f"ROSActionRskill({self.name!r}): the plan holds {blind} at their "
+                    "current position, but the live joint_state does not measure them."
+                )
             self._waypoints = []
             for p in points:
                 wp = list(self._unmoved_joint_padding)
@@ -794,6 +842,10 @@ class ROSActionRskill(rSkillBase):
             deadline_s=_WAIT_FOR_SERVER_TIMEOUT_S,
             what="goal-accept",
             graph_clock=False,
+            # Not stoppable: abandoning the accept wait would leave a goal that is
+            # accepted later running with no handle to cancel it. The result wait
+            # below stops (and cancels) instead.
+            stoppable=False,
         )
         goal_handle = goal_future.result()
         if goal_handle is None or not getattr(goal_handle, "accepted", False):
@@ -907,6 +959,7 @@ class ROSActionRskill(rSkillBase):
         deadline_s: float,
         what: str,
         graph_clock: bool = True,
+        stoppable: bool = True,
     ) -> None:
         """Block (without spinning) until ``future.done()`` or deadline.
 
@@ -922,13 +975,20 @@ class ROSActionRskill(rSkillBase):
         ``execution_wall_cap_factor`` / ``graph_clock_stall_s`` parameters.
 
         Raises:
-            ROSDeadlineMissed: The wait lapsed (``deadline_exceeded`` or
+            ROSDeadlineMissed: ``stop_check`` reported that the enclosing goal
+                ended (cancel or its budget), or the wait lapsed (``deadline_exceeded`` or
                 ``clock_stalled`` in the message) — ``FAILURE_DEADLINE_MISSED`` on the
                 goal, like the runner's own budget. A non-positive ``deadline_s``
                 lapses at once (fail closed) unless the future is already done.
         """
         budget = node_execution_budget(self._node, deadline_s, graph_clock=graph_clock)
         while not future.done():
+            stopped = self.stop_check() if stoppable and self.stop_check is not None else None
+            if stopped is not None:
+                raise ROSDeadlineMissed(
+                    f"ROSActionRskill({self.name!r}): stopped waiting for the wrapped "
+                    f"{what}: the enclosing goal ended ({stopped})."
+                )
             miss = budget.check()
             if not deadline_s > 0.0:
                 miss = BudgetMiss(

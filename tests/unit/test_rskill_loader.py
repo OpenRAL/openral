@@ -240,6 +240,22 @@ class TestProvenanceGuard:
         pkg = rSkill.from_yaml(p)  # must not raise
         assert pkg.manifest.name == "test/rskill-alpha"
 
+    def test_require_signed_fails_closed_on_adapter_weight_resolution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sim/behavior adapters resolve weights without ``from_pretrained``.
+
+        ``resolve_rskill_to_hf_with_revision`` is the shared boundary every
+        adapter (ACT, SmolVLA, XR-1, ``behavior serve``…) routes through before
+        loading a checkpoint, so it must honour the same fail-closed switch —
+        including on a manifest already in the in-process cache.
+        """
+        ref = str(Path(__file__).resolve().parents[2] / "rskills" / "act-libero")
+        resolve_rskill_to_hf_with_revision(ref)  # warm the manifest cache
+        monkeypatch.setenv("OPENRAL_REQUIRE_SIGNED_SKILLS", "1")
+        with pytest.raises(ROSConfigError, match="signature verification is not yet"):
+            resolve_rskill_to_hf_with_revision(ref)
+
 
 # ── resolve_rskill_to_hf_with_revision (H4) ───────────────────────────────────
 

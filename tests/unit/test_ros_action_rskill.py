@@ -681,3 +681,126 @@ def test_replay_paces_by_time_from_start_and_completes_once_reached() -> None:
         assert elapsed >= times_s[waypoints.index(target)], "waypoint sent before it was due"
     # Held, not streamed: ~0.6 s of plan at 30 Hz is far more than 3 ticks.
     assert len(emitted) >= 10
+
+
+# ── unmoved-joint padding is read by joint name ──────────────────────────────
+
+
+def test_unmoved_joint_padding_is_read_by_name_not_index() -> None:
+    """``/joint_states`` order is the publisher's, not ``RobotDescription.joints``.
+
+    The planner moves only ``j_a``; ``j_b`` must be held at *its* measured value
+    even when the measurement lists the joints in another order.
+    """
+    skill = _make_skill(_trajectory_manifest(), _two_dof_robot())
+    skill._interface_kind = "action"
+    reordered = WorldState(
+        stamp_ns=0, joint_state=JointState(name=["j_b", "j_a"], position=[0.7, 0.1], stamp_ns=0)
+    )
+    skill._capture_unmoved_joint_padding(reordered)
+    plan = _FakeMoveGroupResult(
+        planned_trajectory=_FakePlannedTrajectory(
+            joint_trajectory=_FakeJointTrajectory(
+                joint_names=["j_a"], points=[_FakeJointTrajectoryPoint(positions=[0.3])]
+            )
+        )
+    )
+    skill._send_action_goal_and_await_result = lambda: plan  # type: ignore[method-assign]
+    skill._dispatch_and_cache_result()
+    assert skill._waypoints == [[0.3, 0.7]]
+
+
+def test_unmeasured_unmoved_joint_is_refused_not_zero_filled() -> None:
+    """A held joint with no measurement must not be commanded to a made-up 0.0."""
+    from openral_core import ROSPerceptionStale
+
+    skill = _make_skill(_trajectory_manifest(), _two_dof_robot())
+    skill._interface_kind = "action"
+    skill._capture_unmoved_joint_padding(
+        WorldState(stamp_ns=0, joint_state=JointState(name=["j_a"], position=[0.1], stamp_ns=0))
+    )
+    plan = _FakeMoveGroupResult(
+        planned_trajectory=_FakePlannedTrajectory(
+            joint_trajectory=_FakeJointTrajectory(
+                joint_names=["j_a"], points=[_FakeJointTrajectoryPoint(positions=[0.3])]
+            )
+        )
+    )
+    skill._send_action_goal_and_await_result = lambda: plan  # type: ignore[method-assign]
+    with pytest.raises(ROSPerceptionStale, match="j_b"):
+        skill._dispatch_and_cache_result()
+
+
+# ── a MoveGroup replay goal stays plan_only ──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"planning_options": {"plan_only": False}},
+        {"planning_options": {"plan_only": 0}},
+        {"planning_options": None},
+    ],
+)
+def test_goal_params_cannot_turn_off_plan_only(override: dict[str, Any]) -> None:
+    """``goal_params_json`` must not let move_group execute a plan OpenRAL replays."""
+    manifest = RSkillManifest.from_yaml(
+        str(_REPO_ROOT / "rskills/rskill-moveit-joints/rskill.yaml")
+    )
+    skill = ROSActionRskill(
+        manifest=manifest,
+        ros_node=None,
+        robot_description=None,
+        prompt="move",
+        prompt_metadata_json="",
+        goal_params_json=json.dumps(override),
+    )
+    with pytest.raises(ROSConfigError, match="plan_only"):
+        skill._configure_impl()
+
+
+# ── a blocking wrapped wait sees the enclosing goal's cancel / deadline ──────
+
+
+class _PendingFuture:
+    def done(self) -> bool:
+        return False
+
+    def result(self) -> Any:
+        return None
+
+
+class _PendingGoalHandle:
+    """An accepted goal whose result never arrives (Nav2 still driving)."""
+
+    accepted = True
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def get_result_async(self) -> Any:
+        return _PendingFuture()
+
+    def cancel_goal_async(self) -> Any:
+        self.cancelled = True
+        return _DoneFuture(None)
+
+
+def test_result_wait_stops_and_cancels_when_the_enclosing_goal_ends() -> None:
+    """The runner cannot interrupt a blocking ``step()``; the adapter must poll ``stop_check``.
+
+    Without it a cancelled / timed-out ``ExecuteRskill`` left Nav2 driving until the
+    adapter's own result deadline.
+    """
+    handle = _PendingGoalHandle()
+    skill = _make_skill_with_fake_action(
+        _result_only_manifest(), _FakeResultWrapper(status=4, result=None)
+    )
+    skill._client = type("_C", (), {"send_goal_async": lambda self, g: _DoneFuture(handle)})()
+    skill._result_deadline_s = 3.0
+    skill.stop_check = lambda: "cancel requested"
+    t0 = time.monotonic()
+    with pytest.raises(ROSDeadlineMissed, match="cancel requested"):
+        skill._send_action_goal_and_await_result()
+    assert time.monotonic() - t0 < 1.0
+    assert handle.cancelled, "the wrapped goal must be cancelled, not left running"
