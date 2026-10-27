@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 
 lerobot = pytest.importorskip(
     "lerobot",
+    minversion="0.6.1",
     reason=(
         "lerobot>=0.6.1 not installed; install via `uv pip install 'openral-dataset[lerobot]'`"
     ),
