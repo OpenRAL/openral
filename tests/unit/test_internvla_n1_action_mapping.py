@@ -203,6 +203,7 @@ def test_adapter_passes_the_manifest_revision_to_the_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pinned manifest's revision lands in the sidecar argv (seen in the no-spawn error)."""
+    pytest.importorskip("zmq", reason="sidecar-wire group (pyzmq) not installed")
     import shutil
     import socket
 
