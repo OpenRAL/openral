@@ -207,6 +207,13 @@ class LeRobotDatasetSink(DatasetSink):
         for key, spec in feature_specs.items():
             if spec.dtype != "video":
                 continue
+            # LeRobot writes each frame under images/{key}/…: a separator in the key
+            # (from RobotDescription.sensors[*].vla_feature_key) walks out of `root`.
+            if "/" in key or "\\" in key:
+                raise ROSConfigError(
+                    f"LeRobotDatasetSink: camera feature {key!r} contains a path separator; "
+                    "a vla_feature_key must be a single path component"
+                )
             if not spec.shape or 0 in spec.shape:
                 raise ROSConfigError(
                     f"LeRobotDatasetSink: camera feature {key!r} has shape "

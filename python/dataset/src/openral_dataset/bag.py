@@ -372,7 +372,16 @@ class Rosbag2Sink(DatasetSink):
         """Open the mcap file + register Tick / Episode schemas and channels."""
         from mcap.writer import CompressionType, Writer
 
-        self._file_handle = self._bag_path.open("wb")
+        # "xb": the constructor's exists() check ran long before this first
+        # open_episode(); exclusive create keeps the no-overwrite guarantee against a
+        # file or symlink placed at the path since (O_EXCL does not follow symlinks).
+        try:
+            self._file_handle = self._bag_path.open("xb")
+        except FileExistsError as exc:
+            raise ROSConfigError(
+                f"Rosbag2Sink: bag_path {self._bag_path} appeared after the sink was "
+                "created; refusing to overwrite it"
+            ) from exc
         compression_enum = self._compression_enum(CompressionType)
         self._writer = Writer(self._file_handle, compression=compression_enum)
         self._writer.start(profile="openral", library="openral_dataset.bag")
