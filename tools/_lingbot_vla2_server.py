@@ -382,7 +382,7 @@ def _check_pack_config(ckpt_dir: str, config: dict[str, Any]) -> None:
         raise SystemExit("Pro's llm_int8_skip_modules differs from the NF4 pack configuration.")
 
 
-def _overlay_prequantized(vla: Any, ckpt_dir: str, *, pro: Any) -> None:
+def _overlay_prequantized(vla: Any, ckpt_dir: str, *, pro: Any, torch: Any) -> None:
     """Load ``model.safetensors`` from ``ckpt_dir`` into the nf4 shells + bf16 rest.
 
     The backbone ``Linear4bit`` modules get their packed weights via
@@ -402,7 +402,7 @@ def _overlay_prequantized(vla: Any, ckpt_dir: str, *, pro: Any) -> None:
             "but the packed weights are missing."
         )
     state = load_file(str(weights_path), device="cpu")
-    loaded, consumed = pro.install_prequantized_linear4bit(vla, state, device="cuda")
+    loaded, consumed = pro.install_prequantized_linear4bit(vla, state, device="cuda", torch=torch)
     leftover = {k: v for k, v in state.items() if k not in consumed}
     missing, unexpected = vla.load_state_dict(leftover, strict=False)
     print(
@@ -594,7 +594,7 @@ class _LingBotPolicy:
             _nf4_backbone_in_place(
                 pro, srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch, config=config
             )
-            _overlay_prequantized(srv.vla, ckpt_dir, pro=pro)
+            _overlay_prequantized(srv.vla, ckpt_dir, pro=pro, torch=torch)
             srv.vla = srv.vla.to(device).eval()
         else:
             srv.vla = srv.load_vla(ckpt_dir)  # CPU build + strict load_state_dict
@@ -836,7 +836,7 @@ class _LingBotV1Policy:
                 config=config,
                 skip_names=frozenset({"o_proj"}),
             )
-            _overlay_prequantized(srv.vla, ckpt_dir, pro=pro)
+            _overlay_prequantized(srv.vla, ckpt_dir, pro=pro, torch=torch)
             srv.vla = srv.vla.to(device).eval()
         else:
             if quant == "nf4":
