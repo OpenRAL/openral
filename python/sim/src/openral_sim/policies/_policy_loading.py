@@ -31,12 +31,31 @@ Deliberately small: the pi05 quantization branch is not wrapped here
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from openral_core import RSkillManifest
+
+
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def is_commit_sha(revision: str | None) -> bool:
+    """True when ``revision`` is a full 40-hex Hub commit id, the only immutable revision.
+
+    A branch or tag can be moved to new checkpoint code after it was approved, so
+    every ``trust_remote_code`` load requires this form.
+
+    Example:
+        >>> is_commit_sha("3697bf84eaa7a7c6072e07b9451ca4c780cf7bed")
+        True
+        >>> is_commit_sha("main")
+        False
+    """
+    return revision is not None and _COMMIT_SHA_RE.fullmatch(revision) is not None
 
 
 def load_manifest_for_spec(spec: Any) -> RSkillManifest | None:

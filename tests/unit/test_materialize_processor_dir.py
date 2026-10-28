@@ -19,6 +19,7 @@ Mocks are scoped to the ``huggingface_hub`` network boundary (CLAUDE.md
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import patch
 
@@ -316,3 +317,59 @@ class TestMaterializeProcessorDir:
         assert manifest.processors is None
         with pytest.raises(ROSConfigError, match="processors"):
             materialize_processor_dir(manifest)
+
+
+class TestUntrustedProcessorJson:
+    """A downloaded processor JSON is publisher data: it must not pick a link
+    target outside the staging dir, nor a Python symbol for lerobot to import."""
+
+    @staticmethod
+    def _materialize_with(tmp_path: Path, step: Mapping[str, object]) -> list[str]:
+        import json
+
+        pipeline = tmp_path / "pipeline.json"
+        pipeline.write_text(json.dumps({"name": "policy_preprocessor", "steps": [step]}))
+        empty = tmp_path / "empty.json"
+        empty.write_text(json.dumps({"name": "policy_postprocessor", "steps": []}))
+        blob = tmp_path / "blob.safetensors"
+        blob.write_bytes(b"\x00")
+        seen: list[str] = []
+
+        def _fake_download(
+            *, repo_id: str, filename: str, revision: str | None = None, **kw: object
+        ) -> str:
+            seen.append(filename)
+            if filename == "policy_preprocessor.json":
+                return str(pipeline)
+            return str(empty) if filename.endswith(".json") else str(blob)
+
+        with patch("huggingface_hub.hf_hub_download", side_effect=_fake_download):
+            materialize_processor_dir(_modern_manifest())
+        return seen
+
+    @pytest.mark.parametrize(
+        "state_file",
+        ["<absolute>", "../escape.safetensors", "sub/../../x.safetensors"],
+    )
+    def test_state_file_outside_staging_is_refused(self, tmp_path: Path, state_file: str) -> None:
+        escape = tmp_path / "escape.safetensors"
+        if state_file == "<absolute>":
+            state_file = str(escape)
+        step = {"registry_name": "normalizer_processor", "config": {}, "state_file": state_file}
+        with pytest.raises(ROSConfigError, match="state_file"):
+            self._materialize_with(tmp_path, step)
+        assert not escape.is_symlink()
+
+    def test_unregistered_class_step_is_refused(self, tmp_path: Path) -> None:
+        """``steps[].class`` makes lerobot import and call any symbol: refuse it."""
+        step = {"class": "subprocess.Popen", "config": {"args": ["true"]}}
+        with pytest.raises(ROSConfigError, match="registry_name"):
+            self._materialize_with(tmp_path, step)
+
+    def test_registered_step_passes(self, tmp_path: Path) -> None:
+        step = {
+            "registry_name": "normalizer_processor",
+            "config": {},
+            "state_file": "n.safetensors",
+        }
+        assert "n.safetensors" in self._materialize_with(tmp_path, step)

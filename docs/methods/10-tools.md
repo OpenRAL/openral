@@ -630,9 +630,9 @@ _Boot helper + server for the Qwen3.5-4B scene-VLM sidecar, companion to `QwenSc
 - `_NVRTC_OVERRIDE: Path` (L63) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
 - `ensure_venv(home, *, override=None) -> Path` (L68) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded); honours `$OPENRAL_QWEN_VLM_SIDECAR_VENV`.
 - `main() -> int` (L112) — argparse (`--model`, `--host`, `--port`, `--max-side`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME` and `os.execvpe`s into `_qwen_vlm_server.py`.
-- `_load(model_id) -> (processor, model)` (_qwen_vlm_server.py L76) — dual-path NF4 load: auto-detects a pre-quantized checkpoint via its embedded config and loads 4-bit directly, else quantizes at load — with the `--quantization-config` its launcher took from OpenRAL Pro, refusing without it — with serial materialization for 8 GB.
-- `_query(processor, model, *, image, question, max_side, max_new_tokens) -> str` (_qwen_vlm_server.py L116) — one scene-question→answer generate via the canonical Qwen-VL recipe (strips the `<think>` trace).
-- `main() -> int` (_qwen_vlm_server.py L185) — ZMQ REP loop (`ping`/`query`/`shutdown`) that replies with an error object rather than dying on exception. Validated live against real hardware.
+- `_load(model_id) -> (processor, model)` (_qwen_vlm_server.py L76) — splits an `org/repo@rev` pin (not for a local dir) and passes `revision=` to config, processor and model loads; dual-path NF4 load: auto-detects a pre-quantized checkpoint via its embedded config and loads 4-bit directly, else quantizes at load — with the `--quantization-config` its launcher took from OpenRAL Pro, refusing without it — with serial materialization for 8 GB.
+- `_query(processor, model, *, image, question, max_side, max_new_tokens) -> str` (_qwen_vlm_server.py L123) — one scene-question→answer generate via the canonical Qwen-VL recipe (strips the `<think>` trace).
+- `main() -> int` (_qwen_vlm_server.py L192) — ZMQ REP loop (`ping`/`query`/`shutdown`) that replies with an error object rather than dying on exception. Validated live against real hardware.
 
 ### `tools/locateanything_sidecar.py` + `tools/_locateanything_server.py`
 _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detector sidecar, companion to `LocateAnythingDetector`. Runs out-of-process over the same ZMQ pattern as `rldx_sidecar` because its pinned transformers version conflicts with the workspace's. No upstream repo to clone — the model is custom-code on the Hub._
@@ -644,10 +644,10 @@ _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detecto
 - `_NVRTC_OVERRIDE: Path` (L60) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
 - `ensure_venv(home, *, override=None) -> Path` (L65) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded, keyed on `_LOCK` + `_NVRTC_OVERRIDE`); honours `$OPENRAL_LOCATEANYTHING_SIDECAR_VENV`.
 - `main() -> int` (L110) — argparse (`--model` required, `--host`, `--port`, `--max-side`, `--home`, `--venv`); sets `OPENRAL_ALLOW_REMOTE_CODE=1` (the operator opted in by launching this sidecar) and execs into `_locateanything_server.py`.
-- `_split_model_ref(model_ref) -> tuple[str, str]` (_locateanything_server.py L45) — Split a `repo@revision` reference into `(repo, revision)`.
-- `_load(model_ref) -> (processor, model)` (_locateanything_server.py L70) — NF4 bitsandbytes load of the pinned custom-code checkpoint; a non-prequantized source takes its `BitsAndBytesConfig` from the launcher's `--quantization-config` (OpenRAL Pro, ADR-0123).
-- `_detect(processor, model, image, query, *, max_side, mode, max_new_tokens) -> str` (_locateanything_server.py L112) — One detection request → the model's raw generated text; `<ref>`/`<box>` parsing stays in the main-env backend.
-- `main() -> int` (_locateanything_server.py L159) — ZMQ REP loop (`ping`/`detect`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
+- `_split_model_ref(model_ref) -> tuple[str, str]` (_locateanything_server.py L46) — Split a `repo@revision` reference into `(repo, revision)`; the revision must be a full 40-hex commit sha (same rule as `openral_sim.policies._policy_loading.is_commit_sha`, which the sidecar venv cannot import).
+- `_load(model_ref) -> (processor, model)` (_locateanything_server.py L75) — NF4 bitsandbytes load of the pinned custom-code checkpoint; a non-prequantized source takes its `BitsAndBytesConfig` from the launcher's `--quantization-config` (OpenRAL Pro, ADR-0123).
+- `_detect(processor, model, image, query, *, max_side, mode, max_new_tokens) -> str` (_locateanything_server.py L117) — One detection request → the model's raw generated text; `<ref>`/`<box>` parsing stays in the main-env backend.
+- `main() -> int` (_locateanything_server.py L164) — ZMQ REP loop (`ping`/`detect`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
 
 ### `tools/da3_depth_sidecar.py` + `tools/_da3_depth_server.py`
 _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, companion to `openral_perception_ros`'s depth-provider node. Runs in its own Python 3.12 venv behind a ZMQ REQ/REP + msgpack wire, since the model ships outside transformers; the provider republishes the reply as a depth image for nvblox. Loaded by file path so the deploy launch can autostart it under a plain interpreter._
@@ -678,7 +678,7 @@ _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.polici
 - `_PINNED_DEPS: list[str]` (L54) — Inference-only pin set mirroring upstream, minus flash-attn (sdpa instead); torch 2.9.1 on the `torch_backend()` index (cu130 on aarch64) for aarch64 support, and `diffusers==0.32.2` specifically since a later release changed the architecture the checkpoint was trained against.
 - `_DIFFUSION_POLICY_PIN: str` (L80) — Pins `diffusion_policy` to one commit installed with `--no-deps`, since System-1's NavDP imports only `SinusoidalPosEmb` from it.
 - `_NVRTC_OVERRIDE: Path` (L89) — aarch64 nvrtc override; without it transformers 4.51's Qwen2.5-VL vision stack's `.prod()` dies past the sm_121 ceiling on every System-2 replan.
-- `main() -> int` (L169) — argparse via the shared `build_parser`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
+- `main() -> int` (L171) — argparse via the shared `build_parser` plus `--revision` (forwarded to the server); the wrapper binds the server to `127.0.0.1`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_internvla_n1_server.py L56) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_ACTION_STOP = 0` (_internvla_n1_server.py L61) — Discrete VLN-CE action ids emitted by System-2 (upstream `InternVLAN1AsyncAgent.actions2idx`): STOP.
 - `_ACTION_FORWARD = 1` (_internvla_n1_server.py L62) — forward 0.25 m.
@@ -688,7 +688,7 @@ _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.polici
 - `_DEFAULT_FORWARD_MPS = 0.25` (_internvla_n1_server.py L70) — forward speed magnitude for `_ACTION_FORWARD`, held for ~1 s of wall time between S2 replans.
 - `_DEFAULT_TURN_RADPS = float(np.deg2rad(15.0))` (_internvla_n1_server.py L71) — turn speed magnitude for `_ACTION_LEFT`/`_ACTION_RIGHT`.
 - `discrete_action_to_twist(actions, *, forward_mps, turn_radps) -> tuple[float, float, bool]` (_internvla_n1_server.py L74) — Maps a VLN-CE discrete action sequence to `(v_forward, w_yaw, stop)`; only the first action drives motion this step, STOP anywhere latches `stop=True`. Pure/side-effect-free (`tests/unit/test_internvla_n1_action_mapping.py`).
-- `main() -> int` (_internvla_n1_server.py L320) — argparse (`--model`, `--host`, `--port`, `--device`, `--quantization`, `--quantization-config` (Pro's `BitsAndBytesConfig` kwargs from the launcher, required for `nf4` / `int8`), `--resize`, `--num-history`, `--plan-step-gap`, `--forward-mps`, `--turn-radps`, `--work-dir`); boots the ZMQ server.
+- `main() -> int` (_internvla_n1_server.py L323) — argparse (`--model`, `--revision` (commit sha passed to the model and processor loaders), `--host` (default `127.0.0.1`), `--port`, `--device`, `--quantization`, `--quantization-config` (Pro's `BitsAndBytesConfig` kwargs from the launcher, required for `nf4` / `int8`), `--resize`, `--num-history`, `--plan-step-gap`, `--forward-mps`, `--turn-radps`, `--work-dir`); boots the ZMQ server.
 
 ### `tools/lingbot_vla2_sidecar.py` + `tools/_lingbot_vla2_server.py`
 _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.policies.lingbot_vla2`. v2 (6B Qwen3-VL MoE) is the default; `--variant v1` selects the 4B Qwen2.5-VL dense RoboTwin post-train, which is x86_64-only. Runs out-of-process because upstream pins a torch/kernel stack incompatible with the workspace._
@@ -825,7 +825,7 @@ _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time 
 ### `tools/quantize_rskill.py`
 _Quantize a lerobot policy and upload the result to the HuggingFace Hub. Policy-agnostic counterpart to the in-process fast-path in `openral_sim._quantization`. Loads any lerobot policy via `from_pretrained`, quantizes in place, saves `model.safetensors` + `quantization_metadata.json`, and uploads to a target rSkill repo — the adapter's `load_prequantized_state_for_rskill` detects the metadata sentinel and skips the on-line nf4 conversion on every subsequent launch. Not part of CI — a one-shot Hub-mutating tool gated on `HF_TOKEN`._
 
-- `main() -> int` (L543) — CLI entry; `--repo-id`/`--out-repo-id`/`--quantization`/`--trust-remote-code`; loads, quantizes in place, uploads.
+- `main() -> int` (L557) — CLI entry; `--repo-id`/`--out-repo-id`/`--quantization`/`--trust-remote-code`; loads, quantizes in place, uploads. The source-config copy refuses a file it would copy that symlinks outside the checkpoint snapshot (or its HF-cache `blobs` dir), so a planted link cannot ride into the upload; skipped weight shards may link to other storage.
 
 ### `tools/verify_test_envs.py`
 _Verifies selected optional test environments locally: syncs the matching dependency group declared in `tools/test_selection.toml`, runs its selected targets, and fails if any test skips. Hardware and externally-provisioned sidecars are opt-in since this script cannot create physical devices or proprietary simulator installs._
@@ -875,17 +875,21 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
 - `STAGED_COMMAND_TOPIC = "/openral/arm_joint_command_staged"` (L41) — Topic the HAL publishes staged joint targets on.
 - `HOST_COMMAND_TOPIC = "/arm_joint_command_host"` (L42) — Topic the sidecar forwards accepted commands to on the host driver side.
 - `TRACKER_ALLOWED_MODES = (0,)` (L43) — Tracker control-mode values the relay accepts as safe to arm on.
-- `class Stack` (L92) — Owns and tears down the ROS 1 process group in reverse start order.
-  - `Stack.start(argv)` (L100) — Launch a child in its own session, tracked for teardown.
-  - `Stack.stop()` (L105) — SIGINT every child (reverse order), wait, escalate to SIGKILL on timeout.
-- `class Bridge` (L125) — ROS 1 topic relay: buffers joint/gripper/status feedback, gates a staged command through the tracker's activation handshake, and republishes to the host driver.
-  - `Bridge.configure(config)` (L170) — Install the validated client contract while keeping motion locked.
-  - `Bridge.ready() -> bool` (L373) — Whether joint, gripper and status feedback have all arrived at least once.
-  - `Bridge.command_paths_ready() -> bool` (L381) — Whether staged and host command topic consumers/publishers are all connected.
-  - `Bridge.relay_state() -> str` (L390) — Current relay state (`LOCKED`/`ARMING`/…).
-  - `Bridge.state(config)` (L394) — Assemble the current feedback+relay JSON state, raising `RuntimeError` on stale feedback, a latched fault, or an out-of-limits reading.
-  - `Bridge.apply(packet, config, first_joint_command)` (L457) — Validate and forward one command packet (`joint_targets` / gripper) to the host driver after re-checking state and motor status.
-- `main() -> int` (L709) — argparse (`--bind`, `--port`, `--serial`, `--startup-timeout-s`); starts roscore + the vendor serial driver + tracker via `Stack`, wires `Bridge`, serves the sidecar's TCP/JSON protocol.
+- `HELLO_CEILINGS: dict[str, float]` (L47) — The sidecar's own limits (`max_step` 0.08 rad, `alignment`, `lease`, `state_timeout`, `status_timeout`, `feedback_limit_tolerance`); any local process can reach the loopback port, so `_hello_config` lets a hello tighten them but refuses one that widens any.
+- `GRIPPER_STROKE_MM = (0.0, 104.0)` (L55) — Gripper stroke a hello's `gripper_min`/`gripper_max` must stay within.
+- `MAX_RECORD_BYTES = 64 * 1024` (L57) — Ceiling on one JSON record, complete or unterminated; a longer one is refused.
+- `_take_records(buffer) -> tuple[list[bytes], bytes]` (L653) — Split the newline-framed records off `_serve`'s receive buffer; refuses (`ValueError`) any complete record or unfinished remainder over `MAX_RECORD_BYTES` before anything is parsed.
+- `class Stack` (L106) — Owns and tears down the ROS 1 process group in reverse start order.
+  - `Stack.start(argv)` (L114) — Launch a child in its own session, tracked for teardown.
+  - `Stack.stop()` (L119) — SIGINT every child (reverse order), wait, escalate to SIGKILL on timeout.
+- `class Bridge` (L139) — ROS 1 topic relay: buffers joint/gripper/status feedback, gates a staged command through the tracker's activation handshake, and republishes to the host driver.
+  - `Bridge.configure(config)` (L184) — Install the validated client contract while keeping motion locked.
+  - `Bridge.ready() -> bool` (L387) — Whether joint, gripper and status feedback have all arrived at least once.
+  - `Bridge.command_paths_ready() -> bool` (L395) — Whether staged and host command topic consumers/publishers are all connected.
+  - `Bridge.relay_state() -> str` (L404) — Current relay state (`LOCKED`/`ARMING`/…).
+  - `Bridge.state(config)` (L408) — Assemble the current feedback+relay JSON state, raising `RuntimeError` on stale feedback, a latched fault, or an out-of-limits reading.
+  - `Bridge.apply(packet, config, first_joint_command)` (L471) — Validate and forward one command packet (`joint_targets` / gripper) to the host driver after re-checking state and motor status.
+- `main() -> int` (L740) — argparse (`--bind`, `--port`, `--serial`, `--startup-timeout-s`); starts roscore + the vendor serial driver + tracker via `Stack`, wires `Bridge`, serves the sidecar's TCP/JSON protocol.
 
 ### `tools/joint_state_staleness_probe.py`
 

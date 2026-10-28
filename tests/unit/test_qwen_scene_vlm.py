@@ -133,6 +133,21 @@ def test_build_scene_vlm_from_qwen_manifest() -> None:
     assert vlm._child is None
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
+def test_build_scene_vlm_keeps_revision_pin() -> None:
+    """An ``@rev`` pin on ``weights_uri`` reaches the sidecar ``--model`` argument."""
+    from openral_runner.backends.gstreamer.qwen_scene_vlm import build_scene_vlm
+
+    m = RSkillManifest.from_yaml(str(_MANIFEST))
+    pinned = m.model_copy(
+        update={"weights_uri": "hf://OpenRAL/rskill-qwen35_4b-any-general-nf4@0123abcd"}
+    )
+    vlm = build_scene_vlm(pinned)
+    assert vlm._weights_source == "OpenRAL/rskill-qwen35_4b-any-general-nf4@0123abcd"
+
+
 def test_query_empty_question_raises_before_connect() -> None:
     """An empty question fails fast without touching the sidecar."""
     from openral_runner.backends.gstreamer.qwen_scene_vlm import QwenSceneVlm

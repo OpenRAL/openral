@@ -219,9 +219,11 @@ def _build_agent(args: argparse.Namespace) -> Any:
             self.device = torch.device(a.device)
             self.save_dir = "test_data/" + time.strftime("%Y%m%d_%H%M%S")
             os.makedirs(self.save_dir, exist_ok=True)
-            self.model = InternVLAN1ForCausalLM.from_pretrained(a.model_path, **load_kwargs)
+            self.model = InternVLAN1ForCausalLM.from_pretrained(
+                a.model_path, revision=a.revision, **load_kwargs
+            )
             self.model.eval()
-            self.processor = AutoProcessor.from_pretrained(a.model_path)
+            self.processor = AutoProcessor.from_pretrained(a.model_path, revision=a.revision)
             self.processor.tokenizer.padding_side = "left"
             self.resize_w = a.resize_w
             self.resize_h = a.resize_h
@@ -266,6 +268,7 @@ def _build_agent(args: argparse.Namespace) -> Any:
     agent_args = SimpleNamespace(
         device=args.device,
         model_path=args.model,
+        revision=args.revision,
         resize_w=args.resize,
         resize_h=args.resize,
         num_history=args.num_history,
@@ -320,7 +323,10 @@ def _step_agent(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True, help="HF id or local path of the checkpoint.")
-    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument(
+        "--revision", default=None, help="Hub revision (commit sha) for model and processor."
+    )
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5781)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--quantization", choices=("none", "nf4", "int8"), default="nf4")
@@ -374,6 +380,7 @@ def main() -> int:
                 reply: dict[str, Any] = {
                     "ok": True,
                     "model": args.model,
+                    "revision": args.revision,
                     "family": "internvla_n1",
                     "quantization": args.quantization,
                 }

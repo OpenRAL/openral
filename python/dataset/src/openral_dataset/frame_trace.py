@@ -60,18 +60,22 @@ def read_frame_trace(*, root: Path | str, episode_idx: int, frame_idx: int) -> t
         )
 
     for parquet_path in files:
-        table = pq.read_table(parquet_path)
-        columns = set(table.column_names)
+        columns = set(pq.read_schema(parquet_path).names)
         if "trace_id" not in columns or "span_id" not in columns:
             raise ROSConfigError(
                 f"read_frame_trace: dataset at {root} has no trace_id/span_id columns; "
                 "it predates the ISSUE-109 per-frame correlation fields and cannot be "
                 "pivoted. Re-record with a current LeRobotDatasetSink."
             )
-        rows = table.to_pylist()
-        for row in rows:
-            if int(row["episode_index"]) == episode_idx and int(row["frame_index"]) == frame_idx:
-                return str(row["trace_id"]), str(row["span_id"])
+        # Decode only the four columns the pivot needs, and only the matching rows:
+        # a shard's image/state columns can be far larger than the lookup.
+        match = pq.read_table(
+            parquet_path,
+            columns=["episode_index", "frame_index", "trace_id", "span_id"],
+            filters=[("episode_index", "==", episode_idx), ("frame_index", "==", frame_idx)],
+        )
+        if match.num_rows:
+            return str(match["trace_id"][0].as_py()), str(match["span_id"][0].as_py())
 
     raise ROSConfigError(
         f"read_frame_trace: no frame at episode_idx={episode_idx} frame_idx={frame_idx} "

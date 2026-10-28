@@ -486,6 +486,13 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         flat = list(getattr(msg, "flat", []) or [])
         n_dof = int(getattr(msg, "n_dof", 0) or 0)
 
+        # NaN fails every ordered comparison and poisons every norm, so a
+        # non-finite value anywhere in the payload would slip past the
+        # per-mode bounds below. Refuse it before any of them run.
+        for i, value in enumerate(flat):
+            if not math.isfinite(value):
+                return ("nonfinite", f"flat[{i}]={value} is not finite")
+
         # ── Joint modes — Day-1 path (unchanged) ─────────────────────
         if mode in (
             ControlMode.JOINT_POSITION,

@@ -24,6 +24,7 @@ VRAM: inference peaks ~0.43 GB (8 GB-host friendly); runs under ``no_grad``
 from __future__ import annotations
 
 import argparse
+import collections
 import importlib.metadata
 import io
 import json
@@ -69,6 +70,30 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+class _TensorPickleLoader(pickle.Unpickler):
+    """Unpickle ``instructions.pkl`` (nested dicts of CLIP-embedding tensors) only.
+
+    The file is a plain ``pickle.dump``; a tensor in it reduces to exactly
+    ``_rebuild_tensor_v2`` + ``_load_from_bytes`` (+ an empty ``OrderedDict`` of
+    hooks). Any other global is refused, and the storage bytes go through
+    ``torch.load(weights_only=True)``, so the file cannot run code (CWE-502).
+    """
+
+    def __init__(self, fh: Any, torch: Any) -> None:
+        super().__init__(fh)
+        self._torch = torch
+
+    def find_class(self, module: str, name: str) -> Any:
+        torch = self._torch
+        if (module, name) == ("torch._utils", "_rebuild_tensor_v2"):
+            return torch._utils._rebuild_tensor_v2
+        if (module, name) == ("torch.storage", "_load_from_bytes"):
+            return lambda b: torch.load(io.BytesIO(b), map_location="cpu", weights_only=True)
+        if (module, name) == ("collections", "OrderedDict"):
+            return collections.OrderedDict
+        raise pickle.UnpicklingError(f"instructions.pkl may not reference {module}.{name}")
+
+
 class _Diffuser3DActor:
     """Loads the model + instruction embedding; keeps per-episode obs history."""
 
@@ -106,7 +131,9 @@ class _Diffuser3DActor:
             nhist=_NUM_HISTORY,
         ).to(self._device)
         ck = self._args.checkpoint
-        sd = torch.load(ck, map_location="cpu", weights_only=False)
+        # weights_only: the released checkpoint is a plain dict of tensors/ints, so
+        # nothing in it needs pickle's code execution (CWE-502).
+        sd = torch.load(ck, map_location="cpu", weights_only=True)
         sd = sd.get("weight", sd)
         sd = {(k[7:] if k.startswith("module.") else k): v for k, v in sd.items()}
         model.load_state_dict(sd, strict=False)
@@ -114,7 +141,7 @@ class _Diffuser3DActor:
         self._model = model
 
         with open(self._args.instructions, "rb") as fh:
-            instructions = pickle.load(fh)
+            instructions = _TensorPickleLoader(fh, torch).load()
         task = self._args.rlbench_task
         var = self._args.variation
         instrs = list(instructions[task][var])

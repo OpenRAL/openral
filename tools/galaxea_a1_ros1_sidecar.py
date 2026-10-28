@@ -41,6 +41,20 @@ TRACKER_NODE = "openral_a1_joint_tracker"
 STAGED_COMMAND_TOPIC = "/openral/arm_joint_command_staged"
 HOST_COMMAND_TOPIC = "/arm_joint_command_host"
 TRACKER_ALLOWED_MODES = (0,)
+# The sidecar's own ceilings: any local process can reach the loopback port, so
+# the hello may tighten these but never widen them (the documented independent
+# sidecar live limit is 0.08 rad; the rest match GalaxeaA1HAL's defaults).
+HELLO_CEILINGS = {
+    "max_step": 0.08,
+    "alignment": 0.05,
+    "lease": 0.5,
+    "state_timeout": 0.5,
+    "status_timeout": 1.0,
+    "feedback_limit_tolerance": 0.01,
+}
+GRIPPER_STROKE_MM = (0.0, 104.0)
+# One JSON record is a few hundred bytes; an unterminated stream past this is refused.
+MAX_RECORD_BYTES = 64 * 1024
 
 
 def _driver_argv(serial: str) -> list[str]:
@@ -623,12 +637,32 @@ def _hello_config(packet: dict[str, Any]) -> dict[str, Any]:
         or config["gripper_max"] <= config["gripper_min"]
     ):
         raise ValueError("invalid gripper range")
+    widened = [key for key, ceiling in HELLO_CEILINGS.items() if config[key] > ceiling]
+    if config["gripper_min"] < GRIPPER_STROKE_MM[0] or config["gripper_max"] > GRIPPER_STROKE_MM[1]:
+        widened.append("gripper_stroke")
+    if widened:
+        raise ValueError(f"hello widens the sidecar's safety ceilings: {widened}")
     if any(
         isinstance(config[key], bool) or not 0 <= config[key] <= MAX_STATUS_MASK
         for key in ("idle_mask", "gripper_mask")
     ):
         raise ValueError("motor status masks must be uint32 values")
     return config
+
+
+def _take_records(buffer: bytes) -> tuple[list[bytes], bytes]:
+    """Split newline-framed records off ``buffer``; return them and the unfinished rest.
+
+    Every complete record and the unfinished remainder are checked against
+    ``MAX_RECORD_BYTES`` before anything is parsed: one recv chunk can carry the
+    newline that completes an already-oversized record.
+    """
+    *lines, rest = buffer.split(b"\n")
+    if any(len(line) > MAX_RECORD_BYTES for line in lines):
+        raise ValueError(f"record exceeds {MAX_RECORD_BYTES} bytes")
+    if len(rest) > MAX_RECORD_BYTES:
+        raise ValueError(f"unterminated record exceeds {MAX_RECORD_BYTES} bytes")
+    return [line for line in lines if line], rest
 
 
 def _serve(
@@ -651,11 +685,8 @@ def _serve(
             chunk = conn.recv(65536)
             if not chunk:
                 return
-            buffer += chunk
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                if not line:
-                    continue
+            lines, buffer = _take_records(buffer + chunk)
+            for line in lines:
                 packet = json.loads(line)
                 if config is None:
                     config = _hello_config(packet)

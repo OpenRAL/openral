@@ -1435,6 +1435,11 @@ def _decode_tool_payload(
             f"LLM picked rskill_id={call.rskill_id!r} which is not in the palette "
             f"(allowed: {sorted(palette.execute_rskill_ids)!r})",
         )
+    if call.tool == "lifecycle_transition" and call.node not in palette.node_ids:
+        raise ROSReasonerInvalidPlan(
+            f"LLM picked lifecycle node={call.node!r} which is not in the palette "
+            f"(allowed: {sorted(palette.node_ids)!r})",
+        )
     return call
 
 

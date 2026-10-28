@@ -86,6 +86,21 @@ def test_constructor_rejects_empty_joints() -> None:
         )
 
 
+@pytest.mark.parametrize("name", ["../escaped", "/tmp/abs", "sub/dir"])
+def test_constructor_rejects_a_name_that_would_pick_the_camrig_directory(name: str) -> None:
+    """connect() writes ``<name>_camrig.xml`` beside the source MJCF; a separator
+    in the robot name must not move that write elsewhere.
+    """
+    desc = _arm_description().model_copy(update={"name": name})
+    with pytest.raises(ROSConfigError, match="path separator"):
+        MujocoArmHAL(
+            desc,
+            mjcf_path="/nonexistent/path.xml",
+            joint_qpos_addr={f"j{i}": i for i in range(3)},
+            actuator_index={f"j{i}": i for i in range(3)},
+        )
+
+
 def test_constructor_rejects_gripper_pointing_at_unknown_joint() -> None:
     """A ``SimGripperDescription`` referring to a joint not in
     ``description.joints`` must be rejected at HAL construction time.

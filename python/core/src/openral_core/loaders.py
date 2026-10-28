@@ -19,9 +19,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import overload
 
-import yaml as _yaml
 from pydantic import ValidationError
 
+from openral_core._safe_yaml import safe_load
 from openral_core.exceptions import ROSConfigError
 from openral_core.scene_paths import anchor_scene_paths
 from openral_core.schemas import BenchmarkScene, DeployScene, SimScene
@@ -66,7 +66,7 @@ def load_scene_strict(
         >>> scene.scene.id  # scene_id is the @SCENES.register("…") key, not the filename
         'tabletop_push'
     """
-    raw_obj = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw_obj = safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw_obj, dict):
         raise ROSConfigError(f"{path}: YAML root must be a mapping, got {type(raw_obj).__name__}")
     raw: dict[str, object] = anchor_scene_paths(raw_obj, Path(path).parent)
@@ -183,7 +183,7 @@ def load_benchmark_suite(path: str) -> list[BenchmarkScene]:
         >>> len(scenes)
         10
     """
-    raw_obj = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw_obj = safe_load(Path(path).read_text(encoding="utf-8"))
 
     if isinstance(raw_obj, dict):
         raise ROSConfigError(
@@ -250,7 +250,7 @@ def load_suite_task(path: str, task_id: str | None) -> SimScene:
         >>> scene.task.id
         'libero_10/3'
     """
-    raw_obj = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw_obj = safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw_obj, list):
         raise ROSConfigError(
             f"{path}: YAML root must be a list of BenchmarkScene mappings, "

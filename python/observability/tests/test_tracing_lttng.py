@@ -108,6 +108,32 @@ def test_tracepoint_falls_back_to_jsonl_when_lttngust_missing(
     assert decoded[0]["attrs"]["tick_idx"] == 42
 
 
+def test_json_fallback_default_dir_is_private(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default fallback dir is a fresh owner-only dir, never a shared /tmp path."""
+    monkeypatch.delenv(ttng.ENV_TRACING_FALLBACK_DIR, raising=False)
+    backend = ttng._JsonFallbackBackend.from_env()
+    try:
+        parent = backend._path.parent
+        assert parent != Path("/tmp/openral-lttng-fallback")
+        st = parent.stat()
+        assert st.st_uid == os.getuid()
+        assert st.st_mode & 0o077 == 0
+    finally:
+        backend._fp.close()
+        shutil.rmtree(backend._path.parent)
+
+
+def test_json_fallback_refuses_planted_symlink(tmp_path: Path) -> None:
+    """A pre-planted symlink at the trace path is never followed."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep\n", encoding="utf-8")
+    trace_path = tmp_path / f"openral-{os.getpid()}.jsonl"
+    trace_path.symlink_to(victim)
+    with pytest.raises(OSError):
+        ttng._JsonFallbackBackend(trace_path)
+    assert victim.read_text(encoding="utf-8") == "keep\n"
+
+
 def test_lttng_session_helpers_error_cleanly_without_lttng_on_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -123,3 +149,29 @@ def test_lttng_session_helpers_error_cleanly_without_lttng_on_path(
         ttng.start_session(name="openral", output_dir=tmp_path)
     with pytest.raises(ttng.LttngSessionError, match="lttng-tools not found on PATH"):
         ttng.stop_session(name="openral")
+
+
+def test_json_fallback_refuses_preexisting_non_regular_file(tmp_path: Path) -> None:
+    """A pre-created non-regular file (here a FIFO) in the fallback dir is refused."""
+    trace_path = tmp_path / f"openral-{os.getpid()}.jsonl"
+    os.mkfifo(trace_path)
+    reader = os.open(trace_path, os.O_RDONLY | os.O_NONBLOCK)  # lets the O_WRONLY open return
+    try:
+        with pytest.raises(PermissionError, match="not a regular file owned by this user"):
+            ttng._JsonFallbackBackend(trace_path)
+    finally:
+        os.close(reader)
+
+
+def test_json_fallback_appends_to_own_preexisting_file(tmp_path: Path) -> None:
+    """A regular file this user already owns is appended to, not refused."""
+    trace_path = tmp_path / f"openral-{os.getpid()}.jsonl"
+    trace_path.write_text('{"name": "earlier"}\n', encoding="utf-8")
+    backend = ttng._JsonFallbackBackend(trace_path)
+    try:
+        backend.emit("openral:test", {"otel_trace_id": "abc"})
+    finally:
+        backend._fp.close()
+    lines = trace_path.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0]) == {"name": "earlier"}
+    assert json.loads(lines[1])["name"] == "openral:test"

@@ -558,3 +558,41 @@ def test_ingest_logs_shares_the_bounded_event_ring(
         )
     )
     assert len(store.snapshot()["events"]) == 200  # _EVENT_RING_SIZE
+
+
+def test_metric_series_cardinality_is_bounded(
+    _resource: Callable[[dict[str, object]], Resource],
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> None:
+    # A sender choosing fresh label values must not grow the series map (and the
+    # per-ingest snapshot cost) without bound; the least recently updated go first.
+    from openral_observability.dashboard.store import _METRIC_SERIES_MAX
+
+    store = TelemetryStore()
+    points = [
+        NumberDataPoint(as_int=i, attributes=_attrs({"k": str(i)}))
+        for i in range(_METRIC_SERIES_MAX + 50)
+    ]
+    rm = ResourceMetrics(
+        resource=_resource({"service.name": "ral"}),
+        scope_metrics=[
+            ScopeMetrics(
+                metrics=[
+                    Metric(
+                        name="openral.flood",
+                        unit="1",
+                        sum=SumProto(
+                            aggregation_temporality=AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE,
+                            is_monotonic=True,
+                            data_points=points,
+                        ),
+                    )
+                ]
+            )
+        ],
+    )
+    store.ingest_metrics([rm])
+    labels = [m["labels"].get("k") for m in store.snapshot()["metrics"]]
+    assert len(labels) == _METRIC_SERIES_MAX
+    assert "0" not in labels  # oldest evicted
+    assert str(_METRIC_SERIES_MAX + 49) in labels

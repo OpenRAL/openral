@@ -41,7 +41,7 @@ import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
-from openral_rskill._vla_core import resolve_rskill_repo_id
+from openral_rskill._vla_core import resolve_rskill_repo_revision
 
 from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim.da3_depth import DEFAULT_DA3_PORT, Da3DepthClient
@@ -190,7 +190,12 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
             "(e.g. rskills/internvla-n1-mobile-vln-nf4) — raw URIs carry no "
             "action contract."
         )
-    repo = resolve_rskill_repo_id(str(env_cfg.vla.weights_uri), adapter_name="InternVLA-N1")
+    # The manifest's ``@<sha>`` pin must reach both loaders in the sidecar; HF
+    # ignores one glued onto the repo id.
+    repo, revision = resolve_rskill_repo_revision(
+        str(env_cfg.vla.weights_uri), adapter_name="InternVLA-N1"
+    )
+    model_ref = f"{repo}@{revision}" if revision else repo
 
     quantization = sidecar_quant_token(
         resolve_quant_plan(env_cfg.vla, manifest, default="nf4"),
@@ -214,7 +219,7 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
         camera_key = "head"
 
     port_env = os.environ.get(_PORT_ENV)
-    port = int(port_env) if port_env else _derive_port(repo, quantization)
+    port = int(port_env) if port_env else _derive_port(model_ref, quantization)
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
 
     launch_argv = [
@@ -226,6 +231,7 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
         str(port),
         "--quantization",
         quantization,
+        *(["--revision", revision] if revision else []),
     ]
     client = SidecarClient(
         name="internvla-n1",
@@ -238,6 +244,7 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
         expected_identity={
             "family": "internvla_n1",
             "model": repo,
+            "revision": revision,
             "quantization": quantization,
         },
     )

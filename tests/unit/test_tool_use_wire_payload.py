@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from typing import cast
 
-from openral_core import RSkillAction, WaitTool
+import pytest
+from openral_core import LifecycleTransitionTool, RSkillAction, WaitTool
+from openral_core.exceptions import ROSReasonerInvalidPlan
 from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 from openral_reasoner.tool_use import (
     _decode_tool_payload,
@@ -114,3 +116,25 @@ def test_non_colliding_ids_also_get_a_hash_suffix() -> None:
     name = _skill_id_to_tool_name("OpenRAL/rskill-smolvla-so100-pick-fp16")
     assert name.startswith("execute_rskill__OpenRAL__rskill-smolvla-so100-p")
     assert len(name.rsplit("_", 1)[-1]) == 8
+
+
+# ── 4. Lifecycle targets are bounded by the palette ──────────────────────────
+
+
+def test_lifecycle_transition_outside_palette_node_ids_is_refused() -> None:
+    """A model-chosen lifecycle target not in ``node_ids`` (e.g. the deadman) is refused."""
+    palette = ToolPalette(
+        execute_rskill_ids=frozenset(), node_ids=frozenset({"/openral_slam_toolbox"})
+    )
+    ok = _decode_tool_payload(
+        tool_name="lifecycle_transition",
+        arguments={"node": "/openral_slam_toolbox", "transition": "deactivate"},
+        palette=palette,
+    )
+    assert isinstance(ok, LifecycleTransitionTool)
+    with pytest.raises(ROSReasonerInvalidPlan, match="not in the palette"):
+        _decode_tool_payload(
+            tool_name="lifecycle_transition",
+            arguments={"node": "/openral_deadman_watchdog", "transition": "deactivate"},
+            palette=palette,
+        )

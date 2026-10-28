@@ -1305,10 +1305,14 @@ def resolve_rskill_to_hf_with_revision(uri: str) -> tuple[str, str | None]:
 
     Raises:
         ROSConfigError: If the manifest cannot be resolved, has no
-            ``weights_uri``, the scheme is unsupported, or a ``local://`` target
-            doesn't exist.
+            ``weights_uri``, the scheme is unsupported, a ``local://`` target
+            doesn't exist, or ``OPENRAL_REQUIRE_SIGNED_SKILLS=1`` is set.
     """
     manifest = load_rskill_manifest(uri)
+    # Every policy adapter (sim, ``behavior serve``) resolves its weights here
+    # without going through ``rSkill.from_pretrained``, so the provenance guard
+    # runs here too — on every call, cached manifest or not.
+    rSkill._check_provenance(manifest, source=uri)
     # A directory that already holds the weights resolves to itself. This is
     # exactly the shape ``rSkill.from_pretrained`` leaves behind — a snapshot
     # carrying ``rskill.yaml`` next to ``model.safetensors`` (or, for a sharded

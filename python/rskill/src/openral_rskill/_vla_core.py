@@ -1518,6 +1518,64 @@ def parse_hf_file_uri(uri: str) -> tuple[str, str | None, str]:
     return repo_id, revision, filename
 
 
+def validate_processor_steps(json_path: str) -> list[str]:
+    """Check a lerobot processor-pipeline JSON before lerobot instantiates it.
+
+    The JSON comes from the skill publisher, and lerobot trusts it twice over: a
+    step's ``class`` is imported and called with the step's ``config`` as
+    keyword arguments (any installed symbol, so arbitrary code), and its
+    ``state_file`` names a file joined onto the load directory. Only steps that
+    name a ``registry_name`` (a ``ProcessorStepRegistry`` entry, which lerobot
+    resolves without importing anything) and whose ``state_file`` is a bare file
+    name are accepted.
+
+    Args:
+        json_path: Path to ``policy_preprocessor.json`` / ``policy_postprocessor.json``.
+
+    Returns:
+        The steps' ``state_file`` names, in order.
+
+    Raises:
+        ROSConfigError: The JSON is malformed, a step has no ``registry_name``,
+            or a ``state_file`` is not a plain file name.
+    """
+    import json
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    try:
+        with open(json_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ROSConfigError(f"processor JSON {json_path} is unreadable: {exc}") from exc
+    steps = data.get("steps", []) if isinstance(data, dict) else None
+    if not isinstance(steps, list):
+        raise ROSConfigError(f"processor JSON {json_path} has no `steps` list")
+    state_files: list[str] = []
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict) or not isinstance(step.get("registry_name"), str):
+            what = step.get("class") if isinstance(step, dict) else step
+            raise ROSConfigError(
+                f"processor JSON {json_path} step {i} ({what!r}) has no `registry_name`. "
+                "OpenRAL loads only registered lerobot processor steps; a `class` path "
+                "would make lerobot import and call an arbitrary symbol."
+            )
+        state_file = step.get("state_file")
+        if state_file is None:
+            continue
+        if (
+            not isinstance(state_file, str)
+            or state_file in ("", ".", "..")
+            or PurePosixPath(state_file).name != state_file
+            or PureWindowsPath(state_file).name != state_file
+        ):
+            raise ROSConfigError(
+                f"processor JSON {json_path} step {i} has state_file {state_file!r}; "
+                "it must be a plain file name inside the processor directory."
+            )
+        state_files.append(state_file)
+    return state_files
+
+
 def materialize_processor_dir(manifest: RSkillManifest) -> str:
     """Download the manifest's per-file processor artefacts into a single directory.
 
@@ -1542,8 +1600,9 @@ def materialize_processor_dir(manifest: RSkillManifest) -> str:
         symlinks pointing at the downloaded files.
 
     Raises:
-        ROSConfigError: The manifest has no ``processors`` block, or
-            ``huggingface_hub`` is not installed.
+        ROSConfigError: The manifest has no ``processors`` block,
+            ``huggingface_hub`` is not installed, or a processor JSON fails
+            :func:`validate_processor_steps`.
     """
     if manifest.processors is None:
         raise ROSConfigError(
@@ -1561,7 +1620,6 @@ def materialize_processor_dir(manifest: RSkillManifest) -> str:
             "Install it: uv add huggingface_hub --package openral-rskill"
         ) from exc
 
-    import json
     import os
     import tempfile
 
@@ -1593,14 +1651,10 @@ def materialize_processor_dir(manifest: RSkillManifest) -> str:
     staging = tempfile.mkdtemp(prefix="openral-processors-")
 
     def _materialize(json_local_path: str, canonical_name: str, repo: str, rev: str | None) -> None:
+        state_files = validate_processor_steps(json_local_path)
         link = os.path.join(staging, canonical_name)
         os.symlink(json_local_path, link)
-        with open(json_local_path) as f:
-            data = json.load(f)
-        for step in data.get("steps", []):
-            state_file = step.get("state_file")
-            if not state_file:
-                continue
+        for state_file in state_files:
             state_local = hf_download_cached_first(
                 hf_hub_download,
                 LocalEntryNotFoundError,
@@ -1723,7 +1777,21 @@ def call_make_processors_cached_first(
 
     Returns:
         ``(preprocessor, postprocessor)`` — whatever lerobot returns.
+
+    Raises:
+        ROSConfigError: ``pretrained_path`` is not an existing directory.
     """
+    if pretrained_path is not None:
+        from pathlib import Path
+
+        path = Path(pretrained_path)
+        if not path.is_dir():
+            raise ROSConfigError(
+                f"pretrained_path must be a processor directory, got {pretrained_path!r}"
+            )
+        for name in ("policy_preprocessor.json", "policy_postprocessor.json"):
+            if (path / name).is_file():
+                validate_processor_steps(str(path / name))
     tokenizer_repo = _read_tokenizer_repo_from_preprocessor(pretrained_path)
     if tokenizer_repo is None or not _hf_tokenizer_is_cached(tokenizer_repo):
         result: tuple[Any, Any] = make_pre_post_processors(
@@ -1805,6 +1873,7 @@ __all__ = [
     "resolve_state_dim",
     "run_inference",
     "to_numpy_action",
+    "validate_processor_steps",
 ]
 
 

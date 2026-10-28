@@ -824,6 +824,8 @@ private:
   std::vector<bool> q_meas_seen_;  ///< per-dof: a measurement has landed
   /// Latest measured joint velocity per dof (dof order), whether the last
   /// message naming that joint carried a finite one, and when it landed (ns).
+  /// The stamp is also the receipt time of the joint's last accepted (finite)
+  /// position: `measured_state_fresh` holds every FK joint to the deadline by it.
   std::vector<double> dq_meas_;
   std::vector<std::uint8_t> dq_meas_seen_;
   std::vector<std::int64_t> dq_meas_stamp_ns_;

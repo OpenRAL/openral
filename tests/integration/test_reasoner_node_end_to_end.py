@@ -1309,7 +1309,10 @@ def test_lifecycle_transition_calls_change_state() -> None:
         )
         reasoner = ReasonerNode(
             client=client,
-            palette=ToolPalette(execute_rskill_ids=frozenset()),
+            palette=ToolPalette(
+                execute_rskill_ids=frozenset(),
+                node_ids=frozenset({"/openral_test_lifecycle_peer"}),
+            ),
             tick_hz=2.0,
         )
         reasoner.trigger_configure()
@@ -1354,6 +1357,139 @@ def test_lifecycle_transition_calls_change_state() -> None:
         "Reasoner did not drive /openral_test_lifecycle_peer through configure "
         "within 5 s — LifecycleTransitionTool dispatch broken."
     )
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_lifecycle_transition_outside_palette_is_refused() -> None:
+    """A lifecycle target not in ``ToolPalette.node_ids`` never reaches ``change_state``.
+
+    The fake client bypasses the provider decoder, so this exercises the
+    dispatch-time re-check: a real lifecycle peer that is NOT a listed peer of
+    the deployment must stay unconfigured.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import LifecycleTransitionTool
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    class RecordingLifecycleNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
+        def __init__(self) -> None:
+            super().__init__("openral_test_unlisted_lifecycle_peer")
+            self.configured = threading.Event()
+
+        def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+            del state
+            self.configured.set()
+            return TransitionCallbackReturn.SUCCESS
+
+    rclpy.init()
+    try:
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[]),
+            palette=ToolPalette(
+                execute_rskill_ids=frozenset(),
+                node_ids=frozenset({"/openral_some_other_peer"}),
+            ),
+            tick_hz=2.0,
+        )
+        reasoner.trigger_configure()
+        peer = RecordingLifecycleNode()
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(peer)
+        reasoner._dispatch_lifecycle_transition(
+            LifecycleTransitionTool(
+                node="/openral_test_unlisted_lifecycle_peer", transition="configure"
+            )
+        )
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not peer.configured.is_set():
+            executor.spin_once(timeout_sec=0.1)
+        executor.remove_node(reasoner)
+        executor.remove_node(peer)
+        peer.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert not peer.configured.is_set(), (
+        "Reasoner drove an unlisted lifecycle peer — ToolPalette.node_ids not enforced."
+    )
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_deactivated_reasoner_does_not_tick_on_a_prompt() -> None:
+    """After ``deactivate`` an operator prompt is kept but starts no LLM tick / dispatch."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import EmitPromptTool
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    rclpy.init()
+    try:
+        client = FakeToolUseClient(
+            responses=[
+                EmitPromptTool(target_topic="/openral/prompt_in/test", text="should not fire")
+            ],
+        )
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+            tick_hz=2.0,
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+        reasoner.trigger_deactivate()
+
+        prompt_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        pub_node = rclpy.create_node("openral_test_publisher_prompt_inactive")
+        prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", prompt_qos)
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(pub_node)
+
+        prompt = PromptStamped()
+        prompt.header.stamp = pub_node.get_clock().now().to_msg()
+        prompt.header.frame_id = "openral_test_publisher_prompt_inactive"
+        prompt.text = "pick the cube"
+        prompt.metadata_json = "{}"
+        received = False
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not received:
+            prompt_pub.publish(prompt)
+            executor.spin_once(timeout_sec=0.1)
+            received = any(p.text == "pick the cube" for p in reasoner.renderer.prompts)
+        for _ in range(10):
+            executor.spin_once(timeout_sec=0.05)
+
+        executor.remove_node(reasoner)
+        executor.remove_node(pub_node)
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert received, "prompt never reached the deactivated reasoner (test setup)"
+    assert client.calls == 0, "a deactivated reasoner started an LLM tick on a prompt"
 
 
 def _spin_reasoner_with_action_server(

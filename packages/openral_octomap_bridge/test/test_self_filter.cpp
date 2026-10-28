@@ -259,6 +259,21 @@ TEST(SelfFilterMask, RemovesTheSurfaceAndThePaddingShellKeepsWhatIsOutside) {
   EXPECT_FLOAT_EQ(first[0], 1.081F) << "kept records are copied whole, in order";
 }
 
+// PointField offsets are sender data: each FLOAT32 coordinate must lie inside
+// its point record, and the record array inside the buffer, with arithmetic
+// that cannot wrap, before either reader dereferences them.
+TEST(SelfFilterCloudLayout, OffsetsAndSizesAreCheckedBeforeAnyRead) {
+  // 2 points of 16 bytes, x/y/z at 0/4/8: valid, and exactly full.
+  EXPECT_TRUE(bridge::xyz_cloud_layout_valid(32, 2, 16, 0, 4, 8));
+  EXPECT_TRUE(bridge::xyz_cloud_layout_valid(32, 2, 16, 12, 4, 8));   // x: the record's last float
+  EXPECT_FALSE(bridge::xyz_cloud_layout_valid(31, 2, 16, 0, 4, 8));   // short buffer
+  EXPECT_FALSE(bridge::xyz_cloud_layout_valid(32, 2, 16, 13, 4, 8));  // x straddles the record end
+  EXPECT_FALSE(bridge::xyz_cloud_layout_valid(32, 2, 16, 0, 4, 0xFFFFFFFFU));  // far outside
+  EXPECT_FALSE(bridge::xyz_cloud_layout_valid(64, 2, 3, 0, 0, 0));  // record smaller than a float
+  // n_points * point_step wraps to 0 in size_t: must not read as "fits".
+  EXPECT_FALSE(bridge::xyz_cloud_layout_valid(0, std::size_t{1} << 62, 16, 0, 4, 8));
+}
+
 TEST(SelfFilterPlacement, PrimitivesFollowTheArmAndTheCameraFrame) {
   // The sphere on link 3 must be removed where FK puts it at this q, seen from
   // a camera frame rotated and offset from the root, and nowhere else.

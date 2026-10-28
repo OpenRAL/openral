@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,6 +16,7 @@ from openral_sim.policies.xr1 import (
     _quantization_mode,
     _rc365_state,
     _require_remote_code_ack,
+    _resolve_model_id,
     _vlabench_targets,
 )
 
@@ -22,6 +25,27 @@ def test_remote_code_requires_explicit_ack(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.delenv("OPENRAL_ALLOW_REMOTE_CODE", raising=False)
     with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_REMOTE_CODE=1"):
         _require_remote_code_ack()
+
+
+def test_model_id_requires_a_full_commit_sha(tmp_path: Path) -> None:
+    """XR-1 runs checkpoint Python, so a movable branch/tag revision is refused."""
+    from openral_core import VLASpec
+
+    src = Path(__file__).parents[2] / "rskills" / "xr1-vlabench"
+    pinned = _resolve_model_id(VLASpec(id="xr1", weights_uri=str(src)))
+    assert (
+        pinned
+        == "hf://OpenRAL/rskill-xr1-franka_panda-vlabench-nf4@b41e564376d57b3edf4be14a5ec439b7bcfbfd28"
+    )
+
+    skill = tmp_path / "xr1-vlabench"
+    shutil.copytree(src, skill)
+    manifest = skill / "rskill.yaml"
+    manifest.write_text(
+        manifest.read_text().replace("@b41e564376d57b3edf4be14a5ec439b7bcfbfd28", "@main")
+    )
+    with pytest.raises(ROSConfigError, match="40-hex commit sha"):
+        _resolve_model_id(VLASpec(id="xr1", weights_uri=str(skill)))
 
 
 @pytest.mark.skipif(

@@ -377,7 +377,9 @@ def decode_action_chunk(msg: object) -> object | None:
     republishes the clamped chunk on ``/openral/safe_action``.
 
     Returns ``None`` when the chunk is degenerate (empty flat, n_dof
-    ≤ 0) or carries a ``control_mode`` not on the F1/F5 wire
+    ≤ 0), malformed (``len(flat) != horizon * n_dof``, a non-finite
+    value, an unknown ``control_mode`` byte) or carries a
+    ``control_mode`` not on the F1/F5 wire
     (``CARTESIAN_POSE``, ``FOOT_PLACEMENT``, ``DEX_HAND_JOINT``). The
     caller can drop or log; the kernel won't have produced one of
     those modes because the publisher rejects them at the encode side.
@@ -395,7 +397,13 @@ def decode_action_chunk(msg: object) -> object | None:
         return None
     horizon = max(int(getattr(msg, "horizon", 1) or 1), 1)
     mode_uint = int(getattr(msg, "control_mode", 0) or 0)
-    mode = UINT8_TO_CONTROL_MODE.get(mode_uint, ControlMode.JOINT_POSITION)
+    mode = UINT8_TO_CONTROL_MODE.get(mode_uint)
+    # Same wire invariants the C++ kernel's validator enforces (exact
+    # ``horizon * n_dof`` length, every value finite): check them before
+    # building any row, so a malformed chunk cannot size the allocation or
+    # carry NaN into a HAL that discards the axis it sits in.
+    if mode is None or len(flat) != horizon * n_dof or not all(math.isfinite(v) for v in flat):
+        return None
 
     rows: list[list[float]] = [flat[s * n_dof : (s + 1) * n_dof] for s in range(horizon)]
     kwargs: dict[str, Any] = {"control_mode": mode, "horizon": horizon}
@@ -1661,8 +1669,22 @@ if _ROS2_AVAILABLE:
             """
             if self._hal is None or self._estopped:
                 return
-            action = decode_action_chunk(msg)
+            try:
+                action = decode_action_chunk(msg)
+            except ValueError as exc:  # pydantic ValidationError: the typed Action refused it
+                action = None
+                reason = f": {exc}"
+            else:
+                reason = ""
             if action is None:
+                # Drop, never actuate: an exception here would escape the
+                # executor and take the HAL node down mid-run.
+                self.get_logger().error(
+                    "hal.safe_action_malformed: dropped an undecodable chunk "
+                    f"(control_mode={getattr(msg, 'control_mode', None)} "
+                    f"n_dof={getattr(msg, 'n_dof', None)} horizon={getattr(msg, 'horizon', None)} "
+                    f"flat_len={len(getattr(msg, 'flat', []) or [])}){reason}"
+                )
                 return
             if not self._send_action_traced(action, source="safe_action"):
                 return

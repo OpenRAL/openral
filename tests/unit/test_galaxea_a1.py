@@ -249,6 +249,22 @@ def test_runtime_local_client_closes_a_broken_transport() -> None:
     assert client._socket is None
 
 
+def test_runtime_local_client_accepts_a_same_user_peer(tmp_path: Path) -> None:
+    """``connect`` checks the peer's uid (SO_PEERCRED); a Runtime run as this user passes."""
+    path = tmp_path / "runtime.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(1)
+    client = RuntimeLocalClient("runtime.sock", label="test Runtime", max_response_bytes=1024)
+    client.path = path
+    try:
+        client.connect(timeout_s=1.0)
+        assert client._socket is not None
+    finally:
+        client.close()
+        server.close()
+
+
 def test_camera_bridge_batch_shares_one_paired_session() -> None:
     configs = [
         SensorReaderConfig(
@@ -308,6 +324,58 @@ def test_sidecar_cross_checks_identity_limits_and_mask_types() -> None:
         )
     with pytest.raises(ValueError, match="integers"):
         decode_hello({**hello, "idle_timeout_error_mask": True})
+    # The hello may tighten the sidecar's own ceilings, never widen them.
+    assert decode_hello({**hello, "max_target_step_rad": 0.04})["max_step"] == 0.04
+    for key, value in (
+        ("max_target_step_rad", 0.5),
+        ("command_lease_s", 5.0),
+        ("initial_alignment_tolerance_rad", 0.2),
+        ("state_timeout_s", 10.0),
+        ("gripper_stroke_max_mm", 200.0),
+    ):
+        with pytest.raises(ValueError, match="widens the sidecar's safety ceilings"):
+            decode_hello({**hello, key: value})
+
+
+def _framed(stream: bytes, chunk_size: int) -> list[bytes]:
+    """Push ``stream`` through a real socket pair and frame it as ``_serve`` does."""
+    take = _SIDECAR["_take_records"]
+    sender, receiver = socket.socketpair()
+    records: list[bytes] = []
+    buffer = b""
+    try:
+
+        def send() -> None:
+            with sender:
+                sender.sendall(stream)
+
+        threading.Thread(target=send).start()
+        while chunk := receiver.recv(chunk_size):
+            lines, buffer = take(buffer + chunk)
+            records.extend(lines)
+    finally:
+        receiver.close()
+    return records
+
+
+def test_sidecar_frames_newline_records_across_chunks() -> None:
+    assert _framed(b'{"op": "a"}\n\n{"op": "b"}\n{"op"', 5) == [b'{"op": "a"}', b'{"op": "b"}']
+
+
+def test_sidecar_refuses_an_unterminated_oversized_record() -> None:
+    """A newline-free stream is refused at the record cap instead of growing forever."""
+    cap = _SIDECAR["MAX_RECORD_BYTES"]
+    with pytest.raises(ValueError, match="unterminated record"):
+        _framed(b"x" * (cap + 1), 65536)
+
+
+def test_sidecar_refuses_an_oversized_record_completed_in_one_chunk() -> None:
+    """The chunk that supplies the newline must not slip an oversized record past the cap."""
+    cap = _SIDECAR["MAX_RECORD_BYTES"]
+    with pytest.raises(ValueError, match="record exceeds"):
+        _SIDECAR["_take_records"](b"x" * (cap + 1) + b"\n")
+    with pytest.raises(ValueError, match="record exceeds"):
+        _framed(b"x" * (cap + 1) + b"\n", 4 * cap)
 
 
 def test_sidecar_pins_every_vendor_topic_in_launch_commands() -> None:

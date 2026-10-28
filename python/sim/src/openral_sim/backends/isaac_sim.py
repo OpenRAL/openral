@@ -2003,9 +2003,9 @@ def _isaac_importable_urdf(urdf_path: Path) -> Path:
 
     Isaac's URDF importer knows absolute, relative and ``package://`` mesh refs;
     a vendored URDF's ``rd:`` refs (``openral_core.assets.expand_rd_mesh_refs``)
-    would import as missing meshes. The copy lives in a content-addressed temp
-    dir, so its relative refs are made absolute too. A URDF without ``rd:`` refs
-    is returned as is.
+    would import as missing meshes. The copy lives in a content-addressed dir of
+    the per-user openral cache, so its relative refs are made absolute too. A URDF
+    without ``rd:`` refs is returned as is.
 
     Raises:
         ROSConfigError: an ``rd:`` mesh does not resolve.
@@ -2029,7 +2029,9 @@ def _isaac_importable_urdf(urdf_path: Path) -> Path:
 
     text = re.sub(r'filename="([^"]+)"', absolute, text)
     digest = hashlib.sha256(text.encode()).hexdigest()[:16]
-    out = Path(tempfile.gettempdir()) / "openral_isaac_urdf" / digest / urdf_path.name
+    # The per-user openral cache, not the shared temp dir: another local user could
+    # pre-plant this predictable path there with a URDF or a symlink of their own.
+    out = _openral_cache_dir() / "isaac-urdf" / digest / urdf_path.name
     if not out.is_file():
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(f".{out.name}.{os.getpid()}")
@@ -2711,10 +2713,22 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
     )
 
 
+# ponytail: a flat ratio cap; LeIsaac's kitchen zip expands 1.5x, a zip bomb 1000x+.
+# Add a byte budget if a legitimate archive ever needs more than 100x.
+_ARCHIVE_MAX_EXPANSION = 100
+# Absolute ceiling on the expanded bytes: a large pinned zip under the ratio cap
+# (1 GiB declaring 90 GiB) must not fill the simulator host's disk either.
+_ARCHIVE_MAX_EXPANDED_BYTES = 32 << 30
+
+
+def _openral_cache_dir() -> Path:
+    """The per-user openral cache (``$OPENRAL_CACHE_DIR``, else ``~/.cache/openral``)."""
+    return Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
+
+
 def _environment_cache_root() -> Path:
     """Where pinned environment archives are extracted (``$OPENRAL_CACHE_DIR`` honoured)."""
-    base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
-    return base / "isaac-environments"
+    return _openral_cache_dir() / "isaac-environments"
 
 
 def fetch_environment_archive(archive: IsaacEnvironmentArchive) -> str:
@@ -2768,6 +2782,19 @@ def fetch_environment_archive(archive: IsaacEnvironmentArchive) -> str:
                 f"the pinned {archive.sha256}."
             )
         with zipfile.ZipFile(part) as zf:
+            # zipfile writes no more than each member's declared size, so the sum
+            # bounds the extraction; refuse a zip bomb before writing anything.
+            expanded = sum(info.file_size for info in zf.infolist())
+            if expanded > _ARCHIVE_MAX_EXPANSION * part.stat().st_size:
+                raise ROSConfigError(
+                    f"environment_archive {archive.url} expands to {expanded} bytes, over "
+                    f"{_ARCHIVE_MAX_EXPANSION}x its download; refusing a likely zip bomb."
+                )
+            if expanded > _ARCHIVE_MAX_EXPANDED_BYTES:
+                raise ROSConfigError(
+                    f"environment_archive {archive.url} expands to {expanded} bytes, over the "
+                    f"{_ARCHIVE_MAX_EXPANDED_BYTES}-byte extraction ceiling."
+                )
             zf.extractall(staging)  # zipfile drops absolute and ".." member paths
         if not (staging / archive.usd).is_file():
             raise ROSConfigError(

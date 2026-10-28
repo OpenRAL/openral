@@ -199,6 +199,40 @@ class TestDecodeActionChunk:
         assert decode_action_chunk(FakeChunk(flat=[1.0], n_dof=0)) is None
 
     @pytest.mark.parametrize(
+        ("flat_len", "n_dof", "horizon"),
+        [(6, 6, 50_000), (6, 6, 2), (7, 6, 1), (5, 6, 1)],
+    )
+    def test_flat_length_must_equal_horizon_times_n_dof(
+        self, flat_len: int, n_dof: int, horizon: int
+    ) -> None:
+        """A declared horizon the payload does not carry is refused before any
+        row is built (it used to allocate ``horizon`` empty rows and raise a
+        ValidationError out of the subscription callback).
+        """
+        chunk = FakeChunk(
+            flat=[0.0] * flat_len,
+            n_dof=n_dof,
+            horizon=horizon,
+            control_mode=CONTROL_MODE_TO_UINT8[ControlMode.JOINT_POSITION],
+        )
+        assert decode_action_chunk(chunk) is None
+
+    def test_unknown_control_mode_is_refused_not_read_as_joint_position(self) -> None:
+        chunk = FakeChunk(flat=[0.0, 0.1], n_dof=2, horizon=1, control_mode=250)
+        assert decode_action_chunk(chunk) is None
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_nonfinite_payload_is_refused(self, bad: float) -> None:
+        """NaN in an unused planar axis must not reach a HAL that drops that axis."""
+        chunk = FakeChunk(
+            flat=[5.0, 0.0, bad, 0.0, 0.0, 0.0],
+            n_dof=6,
+            horizon=1,
+            control_mode=CONTROL_MODE_TO_UINT8[ControlMode.BODY_TWIST],
+        )
+        assert decode_action_chunk(chunk) is None
+
+    @pytest.mark.parametrize(
         "unwired_mode",
         [ControlMode.CARTESIAN_POSE, ControlMode.FOOT_PLACEMENT],
     )

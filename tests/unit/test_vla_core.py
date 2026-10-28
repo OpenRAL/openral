@@ -430,6 +430,27 @@ def test_call_make_processors_cached_first_forwards_kwargs(tmp_path: Any) -> Non
     assert captured["kwargs"] == {"preprocessor_overrides": {"device_processor": {"device": "cpu"}}}
 
 
+@pytest.mark.parametrize("kind", ["file", "missing"])
+def test_call_make_processors_cached_first_rejects_a_non_directory_path(
+    tmp_path: Any, kind: str
+) -> None:
+    """A ``local://`` URI resolving to a file (or nothing) must not reach lerobot."""
+    from openral_rskill import _vla_core
+
+    target = tmp_path / "policy_preprocessor.json"
+    if kind == "file":
+        target.write_text("{}")
+    called: list[str] = []
+
+    def fake_make(policy_config: Any, *, pretrained_path: str, **_kwargs: Any) -> Any:
+        called.append(pretrained_path)
+        return (None, None)
+
+    with pytest.raises(ROSConfigError, match="processor directory"):
+        _vla_core.call_make_processors_cached_first(fake_make, "CFG", pretrained_path=str(target))
+    assert called == []
+
+
 def test_read_tokenizer_repo_handles_missing_and_malformed(tmp_path: Any) -> None:
     from openral_rskill._vla_core import _read_tokenizer_repo_from_preprocessor
 

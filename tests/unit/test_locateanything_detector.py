@@ -175,6 +175,36 @@ def test_custom_code_detector_requires_immutable_revision() -> None:
         weights_source_from_manifest(manifest)
 
 
+@pytest.mark.parametrize(
+    "model_ref", ["OpenRAL/la", "OpenRAL/la@", "OpenRAL/la@main", "OpenRAL/la@25a9bec"]
+)
+def test_sidecar_server_refuses_a_movable_revision(model_ref: str) -> None:
+    """The server runs checkpoint code; only a full commit sha pins what it runs.
+
+    The server module imports torch/transformers at the top (it runs in its own
+    sidecar venv, which the ``locateanything`` lane does not install), so this
+    compiles only the real ``_split_model_ref`` definition from the file.
+    """
+    import ast
+    import re
+
+    path = _REPO / "tools" / "_locateanything_server.py"
+    fn = next(
+        node
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_split_model_ref"
+    )
+    namespace: dict[str, object] = {"re": re}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), namespace)
+    split_model_ref = namespace["_split_model_ref"]
+    assert callable(split_model_ref)
+
+    sha = "25a9bec53791029dfcc1badc727bbf80cecac9a1"
+    assert split_model_ref(f"OpenRAL/la@{sha}") == ("OpenRAL/la", sha)
+    with pytest.raises(ValueError, match="40-hex commit sha"):
+        split_model_ref(model_ref)
+
+
 def test_locate_in_view_tool_schema_round_trips() -> None:
     """LocateInViewTool parses via the ReasonerToolCall discriminated union."""
     from openral_core import LocateInViewTool, ReasonerToolCall

@@ -151,6 +151,14 @@ The main page stays focused on telemetry. Discovery (`GET /api/robots`) and the
 guarded write endpoints (`POST /api/skill/execute`, `POST /api/param/set`) stay
 available for operator tooling, but they are not surfaced as dashboard cards.
 
+Every state-changing request (e-stop reset, prompt, skill execute, param set,
+OTLP ingest) whose `Origin` header names another host:port than `Host` is
+refused with `403`, so a page on another site cannot drive your browser into
+them (CSRF). Non-browser clients send no `Origin` and are unaffected. A
+DNS-rebinding page is same-origin by construction and is **not** stopped by
+this check; there is no operator auth yet (#44), so keep the dashboard bound
+to `127.0.0.1` (the default) on any host that browses untrusted sites.
+
 ## Endpoints
 
 | Path           | What it serves                                       |

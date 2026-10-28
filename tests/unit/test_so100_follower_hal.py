@@ -261,6 +261,20 @@ class TestSO100FollowerHALReadState:
         assert state.stamp_ns > 0
 
 
+def _record_sends(twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record every ``twin.send_action`` call while keeping the twin's real behavior."""
+    calls: list[object] = []
+    original = twin.send_action
+
+    def _recording(action: dict[str, float]) -> dict[str, float]:
+        calls.append(action)
+        sent_back: dict[str, float] = original(action)
+        return sent_back
+
+    monkeypatch.setattr(twin, "send_action", _recording)
+    return calls
+
+
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
@@ -449,13 +463,7 @@ class TestSO100FollowerHALResetToPose:
         self, hal: SO100FollowerHAL, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         current = hal.read_state().position
-        calls: list[object] = []
-
-        def _record(a: dict[str, float]) -> dict[str, float]:
-            calls.append(a)
-            return a
-
-        monkeypatch.setattr(twin, "send_action", _record)
+        calls = _record_sends(twin, monkeypatch)
         hal.reset_to_pose(current)
         assert calls == []
 
@@ -467,6 +475,67 @@ class TestSO100FollowerHALResetToPose:
         h = SO100FollowerHAL(robot=twin)
         with pytest.raises(ROSRuntimeError, match="reset_to_pose"):
             h.reset_to_pose([0.0] * 6)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.5],  # gripper above [0, 1]
+            [0.0, 0.0, 0.0, 0.0, 0.0, -0.1],  # gripper below [0, 1]
+            [4.0, 0.0, 0.0, 0.0, 0.0, 0.5],  # shoulder_pan beyond pi
+            [float("nan"), 0.0, 0.0, 0.0, 0.0, 0.5],
+            [0.0, float("inf"), 0.0, 0.0, 0.0, 0.5],
+        ],
+    )
+    def test_out_of_limit_or_nonfinite_pose_refused_before_any_write(
+        self,
+        hal: SO100FollowerHAL,
+        twin: SO100DigitalTwin,
+        monkeypatch: pytest.MonkeyPatch,
+        bad: list[float],
+    ) -> None:
+        """The ResetToPose contract promises joint-limit protection."""
+        calls = _record_sends(twin, monkeypatch)
+        with pytest.raises(ROSConfigError, match="reset_to_pose"):
+            hal.reset_to_pose(bad)
+        assert calls == []
+
+    def test_limits_come_from_the_loaded_manifest(
+        self, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """so101_follower reuses this class: its tighter manifest limits apply."""
+        from pathlib import Path
+
+        from openral_core import RobotDescription
+
+        repo = Path(__file__).resolve().parents[2]
+        desc = RobotDescription.from_yaml(str(repo / "robots/so101_follower/robot.yaml"))
+        h = SO100FollowerHAL(robot=twin, description=desc)
+        h.connect()
+        calls = _record_sends(twin, monkeypatch)
+        with pytest.raises(ROSConfigError, match="shoulder_pan"):
+            h.reset_to_pose([2.0, 0.0, 0.0, 0.0, 0.0, 0.5])  # inside pi, outside 1.9199
+        assert calls == []
+
+    def test_large_move_keeps_the_ramp_speed_bound(
+        self, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 6 rad move used to be squeezed into the 6 s cap (1 rad/s)."""
+        monkeypatch.setattr(time, "sleep", lambda _s: None)
+        hal = SO100FollowerHAL(robot=twin)
+        hal.connect()
+        hal.reset_to_pose([-3.0, 0.0, 0.0, 0.0, 0.0, 0.5])
+        seen: list[float] = []
+        original = twin.send_action
+
+        def _recording(action: dict[str, float]) -> dict[str, float]:
+            seen.append(action["shoulder_pan.pos"])
+            sent_back: dict[str, float] = original(action)
+            return sent_back
+
+        monkeypatch.setattr(twin, "send_action", _recording)
+        hal.reset_to_pose([3.0, 0.0, 0.0, 0.0, 0.0, 0.5])
+        # 6 rad at <= 0.5 rad/s needs >= 12 s, i.e. >= 360 steps at 30 Hz.
+        assert len(seen) >= 360
 
 
 class TestJointValuesToLerobot:

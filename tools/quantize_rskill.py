@@ -460,6 +460,12 @@ def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None
                 ignore_patterns=["model*.safetensors"],
             )
         )
+    # Every copied file must live in the checkpoint: a planted symlink to, say,
+    # ~/.ssh/id_ed25519 would otherwise land in the bundle and be uploaded. An HF
+    # cache snapshot legitimately links into its sibling ``blobs`` dir.
+    roots = [snapshot.resolve()]
+    if snapshot.parent.name == "snapshots":
+        roots.append((snapshot.parent.parent / "blobs").resolve())
     for src in snapshot.iterdir():
         if not src.is_file():
             continue
@@ -472,6 +478,14 @@ def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None
         if src.name.startswith("model-") and src.suffix == ".safetensors":
             continue
         if src.suffix in {".json", ".md", ".safetensors", ".py"} or src.name == ".gitattributes":
+            # Checked only on files that are copied: weight shards symlinked to other
+            # storage are skipped above and never reach the bundle.
+            target = src.resolve()
+            if not any(target.is_relative_to(root) for root in roots):
+                raise ValueError(
+                    f"{src} links outside the checkpoint (to {target}); refusing to copy it "
+                    "into the bundle."
+                )
             shutil.copy(src, out_dir / src.name)
 
 

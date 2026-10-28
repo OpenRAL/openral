@@ -182,6 +182,24 @@ TEST(SelfCollision, DetectsOverlapBetweenNonAdjacentLinks) {
   EXPECT_NEAR(hit.min_distance, -0.15, 1e-9);
 }
 
+// A non-finite link pose (a NaN seed, a NaN attachment transform) yields a NaN
+// distance, which every `d <= margin` reads as clear. It must trip instead.
+TEST(SelfCollision, NonFiniteLinkPoseTripsInsteadOfReadingClear) {
+  const auto m = three_capsule_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), translate(5.0, 0.0, 0.0),
+                  translate(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0)};
+  const auto hit = osk::check_self_collision(m, s, 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_FALSE(hit.advisory);
+  // The evidence distance stays finite (JSON / CollisionEvidence reject NaN)
+  // and ranks deepest: the NaN pair is the reported one, not the clear pair.
+  EXPECT_TRUE(std::isfinite(hit.min_distance));
+  EXPECT_EQ(hit.min_distance, std::numeric_limits<double>::lowest());
+  EXPECT_EQ(hit.sweep_min_distance, std::numeric_limits<double>::lowest());
+  EXPECT_EQ(hit.link_b, 2);
+}
+
 TEST(SelfCollision, IgnoresAllowedPair) {
   auto m = three_capsule_model();
   m.allowed_pairs = {{0, 1}, {1, 2}, {0, 2}};  // overlap of (0,2) is now allowed

@@ -126,15 +126,16 @@ stays the only RealSense owner._
 _Shared native transport for public A1 Runtime local services._
 
 - module constant `_PACKET_LENGTH = struct.Struct("!I")` — the length-prefix codec shared by send/receive. (L16)
-- `runtime_socket_path(name) -> Path` (L19) — Resolves a private per-user Runtime
+- module constant `_PEER_CREDENTIALS = struct.Struct("3i")` — Linux `struct ucred` (pid, uid, gid) for the `SO_PEERCRED` check in `connect`. (L17)
+- `runtime_socket_path(name) -> Path` (L20) — Resolves a private per-user Runtime
   endpoint from `A1_PROCESS_STATE_ROOT` or the standard runtime directory.
-- `class RuntimeLocalClient` (L32) — Bounded, synchronous length-prefixed MessagePack
+- `class RuntimeLocalClient` (L33) — Bounded, synchronous length-prefixed MessagePack
   client with typed connect-time and request-time failures.
-  - `connect(*, timeout_s: float) -> None` — Connect to the Runtime-owned Unix socket. (L50)
-  - `call(request: dict[str, Any], *, timeout_s: float) -> dict[str, Any]` — Perform one bounded request and require an explicit success reply. (L68)
-  - `close() -> None` — Close the local connection idempotently. (L99)
-- `encode_array(value) -> dict[str, Any]` (L106) — Encode one contiguous ndarray with an explicit shape and dtype.
-- `decode_array(value, *, shape, dtype, label) -> NDArray` (L116) — Decode an exact ndarray payload and reject protocol drift.
+  - `connect(*, timeout_s: float) -> None` — Connect to the Runtime-owned Unix socket; refuses (`ROSConfigError`) a peer whose `SO_PEERCRED` uid is not this user's, since the `/tmp` fallback directory is predictable. (L51)
+  - `call(request: dict[str, Any], *, timeout_s: float) -> dict[str, Any]` — Perform one bounded request and require an explicit success reply. (L82)
+  - `close() -> None` — Close the local connection idempotently. (L113)
+- `encode_array(value) -> dict[str, Any]` (L120) — Encode one contiguous ndarray with an explicit shape and dtype.
+- `decode_array(value, *, shape, dtype, label) -> NDArray` (L130) — Decode an exact ndarray payload and reject protocol drift.
 
 ### `python/runner/src/openral_runner/backends/__init__.py`
 _Per-backend `SensorReader` implementations. Default `OpenCVThreadSensorReader` is always available; `GStreamerSensorReader` gates on PyGObject and `Ros2ImageSensorReader` on a ROS 2 install (both lazy-imported at `open()`)._
@@ -154,21 +155,21 @@ _GStreamer pipeline-string builder + platform detection. Pure-Python — does **
 - module constant `_NVVIDCONV: Final[str] = "nvvidconv"` (L98) — the Tegra / L4T multimedia-stack NVMM colour-convert element.
 - module constant `_VIDEOCONVERT: Final[str] = "videoconvert"` (L99) — the stock system-memory / CPU colour-convert element.
 - module constant `_NVVIDCONV_BGR_BRIDGE_FORMAT: Final[str] = "BGRx"` (L103) — the closest packed format `nvvidconv` advertises; bridged to `BGR` via `bgr_convert_chain`.
-- `class PipelineSpec(BaseModel)` (L163) — Validated description of a GStreamer ingest pipeline; `jpeg` (MJPG UVC, USB-only) is exclusive with `encoded`, and `event_appsink_name` is validated as a legal GStreamer element name.
+- `class PipelineSpec(BaseModel)` (L163) — Validated description of a GStreamer ingest pipeline; `jpeg` (MJPG UVC, USB-only) is exclusive with `encoded`, and `event_appsink_name` is validated as a legal GStreamer element name. `_validate_device` refuses a string `device` that is empty or holds whitespace, `!`, quotes or backslashes (it is spliced into `parse_launch` syntax); a CSI `device` must be an integer sensor-id.
 - `class Platform(str, Enum)` (L106) — GStreamer platform tier: `TEGRA` / `NVIDIA_DEEPSTREAM` / `NVIDIA_DESKTOP` / `CPU_ONLY`. `NVIDIA_DEEPSTREAM` is the x86 `ds-on` image, decoding and converting NVMM-native on GPU.
 - `class Source(str, Enum)` (L139) — `USB | CSI | RTSP | FILE | TESTSRC`.
-- `detect_platform() -> Platform` (L268) — Cached; detects the platform via `openral_core.is_tegra_host()` then probing `gst-inspect-1.0` for DeepStream/nvcodec elements.
-- `inspect_element_present(element_name) -> bool` (L303) — Generic `gst-inspect-1.0 --exists` probe with timeout.
-- `nvmm_convert_element() -> str | None` (L333) — Probes for the host's NVMM colour-convert element: `nvvideoconvert` (DeepStream/x86) preferred, else `nvvidconv` (Tegra/L4T), else `None`.
-- `bgr_convert_chain(convert) -> str` (L353) — Bridges a converter element to system-memory `BGR`: passthrough for `nvvideoconvert`/`videoconvert`, but `nvvidconv` needs a `BGRx`→`videoconvert` bridge since pinning `format=BGR` on it fails to link on a plain-L4T Jetson.
-- `ensure_appsink_name(pipeline, name) -> str` (L397) — Rewrites a trailing `appsink` to carry `name=<name>`.
-- `build_pipeline_string(spec, platform=None) -> str` (L449) — Builds the pipeline string, adding a `tee` leg per enabled `ros`/`event` branch via `leaky_branch` so a stalled observability or detector branch never backpressures the policy leg.
-- `_build_event_tee_branch(spec, platform) -> str` (L722) — Returns the event leg of the `tee`: lifts NVMM to system memory, pins `format=BGR`, rate-caps via `videorate` to `event_rate_hz`, terminates in `appsink name=event_sink`.
-- `_build_ros_tee_branch(spec, platform) -> str` (L706) — Returns the observability leg (system memory BGR `appsink name=ros_sink`).
-- `_platform_convert_element(platform) -> str` (L609) — The bare colour-convert element for a platform: `nvvidconv` (Tegra) / `nvvideoconvert` (DeepStream) / `videoconvert` (else). Shared by the policy leg and the tee legs.
-- `_use_nvmm(spec, platform) -> bool` (L633) — Single definition of "does the policy leg negotiate `memory:NVMM`", shared by `_build_convert` and `_build_caps` so converter and caps can never disagree.
-- `_build_convert(spec, platform) -> str` (L644) — The policy leg's conversion stage: the bare element on the NVMM path (`NV12`/`RGBA` are on its own src template), `bgr_convert_chain(...)` on the system-memory `BGR` path.
-- `_lift_convert(platform) -> str` (L747) — The chain a tee leg uses to lift NVMM → system-memory BGR: `_platform_convert_element` passed through `bgr_convert_chain`, so Tegra legs bridge via `BGRx` while DeepStream legs stay direct-to-`BGR`.
+- `detect_platform() -> Platform` (L283) — Cached; detects the platform via `openral_core.is_tegra_host()` then probing `gst-inspect-1.0` for DeepStream/nvcodec elements.
+- `inspect_element_present(element_name) -> bool` (L318) — Generic `gst-inspect-1.0 --exists` probe with timeout.
+- `nvmm_convert_element() -> str | None` (L348) — Probes for the host's NVMM colour-convert element: `nvvideoconvert` (DeepStream/x86) preferred, else `nvvidconv` (Tegra/L4T), else `None`.
+- `bgr_convert_chain(convert) -> str` (L368) — Bridges a converter element to system-memory `BGR`: passthrough for `nvvideoconvert`/`videoconvert`, but `nvvidconv` needs a `BGRx`→`videoconvert` bridge since pinning `format=BGR` on it fails to link on a plain-L4T Jetson.
+- `ensure_appsink_name(pipeline, name) -> str` (L412) — Rewrites a trailing `appsink` to carry `name=<name>`.
+- `build_pipeline_string(spec, platform=None) -> str` (L464) — Builds the pipeline string, adding a `tee` leg per enabled `ros`/`event` branch via `leaky_branch` so a stalled observability or detector branch never backpressures the policy leg.
+- `_build_event_tee_branch(spec, platform) -> str` (L739) — Returns the event leg of the `tee`: lifts NVMM to system memory, pins `format=BGR`, rate-caps via `videorate` to `event_rate_hz`, terminates in `appsink name=event_sink`.
+- `_build_ros_tee_branch(spec, platform) -> str` (L723) — Returns the observability leg (system memory BGR `appsink name=ros_sink`).
+- `_platform_convert_element(platform) -> str` (L626) — The bare colour-convert element for a platform: `nvvidconv` (Tegra) / `nvvideoconvert` (DeepStream) / `videoconvert` (else). Shared by the policy leg and the tee legs.
+- `_use_nvmm(spec, platform) -> bool` (L650) — Single definition of "does the policy leg negotiate `memory:NVMM`", shared by `_build_convert` and `_build_caps` so converter and caps can never disagree.
+- `_build_convert(spec, platform) -> str` (L661) — The policy leg's conversion stage: the bare element on the NVMM path (`NV12`/`RGBA` are on its own src template), `bgr_convert_chain(...)` on the system-memory `BGR` path.
+- `_lift_convert(platform) -> str` (L764) — The chain a tee leg uses to lift NVMM → system-memory BGR: `_platform_convert_element` passed through `bgr_convert_chain`, so Tegra legs bridge via `BGRx` while DeepStream legs stay direct-to-`BGR`.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/reader.py`
 _GStreamer-backed `SensorReader` (CPU appsink path + NVMM zero-copy path). Mirrors the latest-only contract of `OpenCVThreadSensorReader`. `Gst.init` runs immediately after the `gi` import, before anything else, to avoid a Fast-DDS/GStreamer thread-init SIGSEGV._
@@ -320,7 +321,7 @@ _Scene-VLM backend backed by the Qwen3.5-4B sidecar — the scene-reasoning coun
   - `warm_up() -> None` (L87) — Connects to (or spawns) the sidecar now (a spawned sidecar that never answers within `boot_timeout_s` is closed before the `ROSConfigError`); `scene_vlm_node` calls it at configure (Spark R225: the first query's spawn + load outlasted the completion check's hold). `max_new_tokens=None` leaves the sidecar's own 1024 budget (thinking on; a fixed 256 truncated every answer, R230).
   - `query(frame_bgr, width, height, question) -> str` (L153) — Encode BGR→PNG, RPC `{"op":"query",...}`, return the whitespace-stripped answer; raises `ROSConfigError` on empty question or sidecar error.
   - `close() -> None` (L197) — Closes the socket + terminates the spawned sidecar; idempotent.
-- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` (L213) — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://`/`@rev`. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
+- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` (L213) — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://` but keeping any `@rev` pin, which `_qwen_vlm_server._load` passes as `revision=` to every loader. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
 
 ### `python/runner/src/openral_runner/backends/reward/frame_source.py`
 _Transport-agnostic rolling frame buffer for the reward monitor. Pure Python + stdlib only (no numpy/torch), so it unit-tests without ROS, torch, or a GPU._
@@ -346,7 +347,7 @@ _Robometer reward-monitor backend — loads lerobot 0.6.0's native Robometer mod
   - `score(frames, task) -> (progress, success)` (L188) — Validates empty task/clip + frame sizes, evenly subsamples to `max_frames`, converts BGR→RGB, returns per-frame normalized arrays.
   - `assess(frames, task) -> dict` (L200) — Scores `frames` and summarizes the window for the Reasoner; mirrors the reasoner contract.
   - `close() -> None` (L209) — Releases the model + `cuda.empty_cache()` if loaded on GPU.
-- `build_reward_monitor(manifest) -> RobometerInProcessReward | TOPRewardMonitor` (L218) — build from a `kind:"reward"` manifest; dispatches `reward.backend=="topreward"` to `TOPRewardMonitor` and defaults Robometer to `RobometerInProcessReward`. Raises `ROSConfigError` if `manifest.kind != "reward"`. Lazy.
+- `build_reward_monitor(manifest) -> RobometerInProcessReward | TOPRewardMonitor` (L218) — build from a `kind:"reward"` manifest; dispatches `reward.backend=="topreward"` to `TOPRewardMonitor` and defaults Robometer to `RobometerInProcessReward`; an `hf://org/repo@rev` `weights_uri` keeps its pin (the scorer splits it off for `snapshot_download`). Raises `ROSConfigError` if `manifest.kind != "reward"`. Lazy.
 
 ### `python/runner/src/openral_runner/backends/reward/topreward_reward.py`
 _In-process TOPReward (arXiv 2602.19313) reward monitor — a zero-shot reward reading `P("True" | video, instruction)` from an off-the-shelf Qwen3-VL VLM, no fine-tuned checkpoint and no ZMQ sidecar. Nothing here imports torch / transformers at module load._

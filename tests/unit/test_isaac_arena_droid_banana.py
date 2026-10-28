@@ -70,12 +70,17 @@ def test_every_droid_mesh_resolves_through_its_rd_ref() -> None:
     assert not missing, f"meshes that do not resolve: {missing}"
 
 
-def test_isaac_imports_a_copy_with_absolute_meshes() -> None:
+def test_isaac_imports_a_copy_with_absolute_meshes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
     try:
         copy = _isaac_importable_urdf(_URDF)
     except ROSConfigError as exc:
         pytest.skip(f"robot_descriptions clones unavailable: {exc}")
     assert copy != _URDF and copy.name == _URDF.name
+    # In the per-user cache, never the shared temp dir another user can pre-plant.
+    assert copy.is_relative_to(tmp_path / "isaac-urdf")
     refs = _mesh_refs(copy.read_text(encoding="utf-8"))
     assert len(refs) == len(_mesh_refs(_URDF.read_text(encoding="utf-8")))
     assert all(Path(r).is_absolute() and Path(r).is_file() for r in refs)

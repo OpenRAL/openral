@@ -107,3 +107,50 @@ def test_verify_noop_when_no_auto_map(tmp_path: Path) -> None:
     # A plain (non-trust_remote_code) checkpoint has no auto_map → nothing to check.
     _write(tmp_path, "config.json", {"model_type": "smolvla"})
     quantize_rskill._verify_auto_map_complete(tmp_path)  # must not raise
+
+
+def test_copy_source_config_refuses_a_link_out_of_the_checkpoint(tmp_path: Path) -> None:
+    """A checkpoint symlink to a host file must never reach the uploaded bundle."""
+    secret = tmp_path / "secret.txt"
+    secret.write_text("operator-only")
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    _write(ckpt, "config.json", {"model_type": "x"})
+    (ckpt / "README.md").symlink_to(secret)
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(ValueError, match="links outside the checkpoint"):
+        quantize_rskill._copy_source_config(str(ckpt), out, loader="lerobot")
+    assert not (out / "README.md").exists()
+
+
+def test_copy_source_config_skips_weight_shards_linked_to_other_storage(tmp_path: Path) -> None:
+    """Weight shards are never copied, so a shard symlinked elsewhere is not a refusal."""
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    (storage / "shard").write_bytes(b"weights")
+    (storage / "notes.bin").write_bytes(b"other")
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    _write(ckpt, "config.json", {"model_type": "x"})
+    (ckpt / "model-00001-of-00002.safetensors").symlink_to(storage / "shard")
+    (ckpt / "model.safetensors").symlink_to(storage / "shard")
+    (ckpt / "notes.bin").symlink_to(storage / "notes.bin")  # suffix never copied
+    out = tmp_path / "out"
+    out.mkdir()
+    quantize_rskill._copy_source_config(str(ckpt), out, loader="lerobot")
+    assert sorted(p.name for p in out.iterdir()) == ["config.json"]
+
+
+def test_copy_source_config_follows_hf_cache_blob_links(tmp_path: Path) -> None:
+    """An HF cache snapshot's links into its own ``blobs`` dir are copied as before."""
+    repo = tmp_path / "models--org--x"
+    (repo / "blobs").mkdir(parents=True)
+    (repo / "blobs" / "abc123").write_text(json.dumps({"model_type": "x"}))
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").symlink_to(repo / "blobs" / "abc123")
+    out = tmp_path / "out"
+    out.mkdir()
+    quantize_rskill._copy_source_config(str(snapshot), out, loader="lerobot")
+    assert json.loads((out / "config.json").read_text()) == {"model_type": "x"}

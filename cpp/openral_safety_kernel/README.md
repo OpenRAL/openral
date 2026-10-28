@@ -1549,6 +1549,31 @@ The symbols a provider links against (`apply`, `compose`, `inverse_rigid`, `poin
     reset.
 - `NoAlloc.TheExemptionProviderQueryIsAllocationFree`.
 
+## Non-finite and malformed inputs fail closed
+
+NaN fails every ordered comparison, so a `d <= margin` reads a NaN distance as
+clear. The kernel therefore refuses non-finite geometry at every input and
+treats any NaN that still reaches a distance as a hit:
+
+* **`JOINT_TRAJECTORY` is collision-checked** exactly like `JOINT_POSITION`
+  (same wire shape: each waypoint row is a joint configuration), never as a
+  non-position mode.
+* **NaN distance trips.** `fold_pair` marks a NaN pair distance as a hard
+  (never advisory, never exempted) collision.
+* **Measured state:** a non-finite `/joint_states` position is no measurement
+  (see the per-joint freshness rule under slot rows below).
+* **Attachments:** a non-finite `pose_in_link` or primitive `pose_in_object`
+  refuses the whole attachment message (`safety.attachment_fail_closed
+  reason=non_finite_pose`, `DROP_ATTACHED_UNAVAILABLE`).
+* **World voxels:** a grid whose `size_x * size_y * size_z` overflows `size_t`
+  or any dimension exceeds `world_voxel_max_cells`, a non-finite or
+  non-positive `resolution`, or a non-finite `origin` is refused like an
+  over-large grid (`voxel_overflow`).
+* **Negative stamps:** a `/joint_states` header stamp with negative seconds
+  reads as unstamped (0), and a negative voxel `source_stamp` as unknown (which
+  the data-age gate refuses), instead of `rclcpp::Time` throwing out of the
+  executor.
+
 ## Slot rows: uncommanded joints at their measured pose (ADR-0102)
 
 A multi-slot rSkill (the real OpenArm: left arm, left gripper, right arm,
@@ -1564,7 +1589,11 @@ therefore checked as:
 1. **measured fill** — the row's commanded joints (at their
    `collision_joint_names` index), every other joint from the latest
    `/joint_states`. This requires the same fresh, complete measured state as the
-   velocity/Cartesian paths: without it the chunk is dropped fail-closed
+   velocity/Cartesian paths — fresh **per FK joint**: each joint's last finite
+   position must be within `collision_state_deadline_ms`, so a stream naming
+   only some joints cannot keep the others' old positions fresh, and a
+   non-finite position un-seeds its joint until a finite one lands. Without it
+   the chunk is dropped fail-closed
    (`state_unavailable`, `DROP_STATE_UNAVAILABLE`, **not latched**). A name the
    kernel cannot place drops the same way (`slot_joints_unmapped`).
 2. **same-tick targets, additionally** — the HAL commits a tick's slots as one
@@ -1574,6 +1603,10 @@ therefore checked as:
    This only ever adds a check (it can refuse, never accept); it catches two
    arms whose targets collide with each other while each is clear of the
    other's measured pose. A chunk with `tick_index == 0` gets check 1 only.
+3. **ungrouped, also as published** — when `tick_group_size <= 1` no HAL
+   composes the slot by name (`RosControlHAL` and an ungrouped `OpenArmRealHAL`
+   action execute the full row, zero padding included), so the row is also
+   checked exactly as published. Like check 2 it can only refuse.
 
 A row whose `joint_names` is empty or covers every FK dof is the full
 configuration and is checked exactly as before (no measured state consulted).

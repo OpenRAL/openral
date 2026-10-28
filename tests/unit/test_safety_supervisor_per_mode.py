@@ -268,3 +268,39 @@ def test_unknown_control_mode_rejected(node: Any) -> None:
     kind, reason = node._envelope_violation(msg)
     assert kind == "control_mode"
     assert "uint8 42" in reason
+
+
+# ─── Non-finite payloads ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_joint_nonfinite_target_rejected(node: Any, bad: float) -> None:
+    """NaN fails every ordered comparison, so a NaN joint target used to pass
+    the per-joint bounds check and be published on /openral/safe_action.
+    """
+    from rclpy.parameter import Parameter
+
+    node.set_parameters(
+        [
+            Parameter("min_joint", Parameter.Type.DOUBLE_ARRAY, [-1.0, -1.0]),
+            Parameter("max_joint", Parameter.Type.DOUBLE_ARRAY, [1.0, 1.0]),
+        ]
+    )
+    msg = _chunk(ControlMode.JOINT_POSITION, n_dof=2, flat=[0.0, bad])
+    kind, _ = node._envelope_violation(msg)
+    assert kind == "nonfinite"
+
+
+def test_joint_nonfinite_in_later_row_rejected_without_bounds(node: Any) -> None:
+    """Every row is checked, even with no envelope declared."""
+    msg = _chunk(ControlMode.JOINT_POSITION, n_dof=2, flat=[0.0, 0.0, float("nan"), 0.0])
+    kind, _ = node._envelope_violation(msg)
+    assert kind == "nonfinite"
+
+
+def test_body_twist_nan_in_unused_axis_cannot_mask_overspeed(node: Any) -> None:
+    """NaN in vz made |v| NaN, so an excessive finite vx passed the bound."""
+    _set(node, "max_base_linear_speed_m_s", 1.0)
+    msg = _chunk(ControlMode.BODY_TWIST, n_dof=6, flat=[50.0, 0.0, float("nan"), 0.0, 0.0, 0.0])
+    kind, _ = node._envelope_violation(msg)
+    assert kind == "nonfinite"

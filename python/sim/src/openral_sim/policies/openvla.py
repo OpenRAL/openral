@@ -74,7 +74,7 @@ from openral_sim._quantization import (
     resolve_quant_plan,
 )
 from openral_sim._sidecar_common import default_expandable_segments
-from openral_sim.policies._policy_loading import load_manifest_for_spec
+from openral_sim.policies._policy_loading import is_commit_sha, load_manifest_for_spec
 from openral_sim.registry import POLICIES
 
 if TYPE_CHECKING:
@@ -497,10 +497,11 @@ def _require_remote_code_ack(source_repo: str, revision: str | None) -> None:
     Raises:
         ROSConfigError: If the revision is unpinned or acknowledgement is absent.
     """
-    if revision is None:
+    if not is_commit_sha(revision):
         raise ROSConfigError(
             f"OpenVLA executes checkpoint-supplied code from {source_repo!r}; "
-            "the rSkill weights_uri must pin an immutable '@<sha>' revision."
+            "the rSkill weights_uri must pin an immutable '@<40-hex commit sha>' "
+            f"revision, got {revision!r}."
         )
     if os.environ.get(_ALLOW_REMOTE_CODE_ENV, "0") != "1":
         raise ROSConfigError(

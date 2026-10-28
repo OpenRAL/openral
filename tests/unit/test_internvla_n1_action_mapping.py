@@ -174,3 +174,59 @@ def test_adapter_sends_unit_depth_placeholder_when_da3_disabled() -> None:
     depth = step_data["depth"]
     assert depth.shape == (224, 224)
     assert float(depth.min()) == 1.0 and float(depth.max()) == 1.0
+
+
+_SKILL = _REPO_ROOT / "rskills" / "rskill-internvla_n1-mobile_base-vln-nf4"
+_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_launcher_threads_the_revision_into_the_server_argv(tmp_path: Path) -> None:
+    """The ``@<sha>`` pin reaches the server, which hands it to both loaders."""
+    import argparse
+
+    spec = importlib.util.spec_from_file_location(
+        "internvla_n1_sidecar", _REPO_ROOT / "tools" / "internvla_n1_sidecar.py"
+    )
+    assert spec is not None and spec.loader is not None
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    args = argparse.Namespace(
+        model="InternRobotics/InternVLA-N1-DualVLN", port=5781, quantization="none", revision=_SHA
+    )
+    wrapper = launcher._make_wrapper(work=tmp_path, source=tmp_path, args=args)
+    assert repr(["--revision", _SHA]) in wrapper.read_text()
+    server = (_REPO_ROOT / "tools" / "_internvla_n1_server.py").read_text()
+    assert server.count("revision=a.revision") == 2  # model and processor loaders
+
+
+def test_adapter_passes_the_manifest_revision_to_the_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pinned manifest's revision lands in the sidecar argv (seen in the no-spawn error)."""
+    pytest.importorskip("zmq", reason="sidecar-wire group (pyzmq) not installed")
+    import shutil
+    import socket
+
+    from openral_core import VLASpec
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.policies.internvla_n1 import _build_internvla_n1
+
+    skill = tmp_path / _SKILL.name
+    shutil.copytree(_SKILL, skill)
+    manifest = skill / "rskill.yaml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "hf://InternRobotics/InternVLA-N1-DualVLN",
+            f"hf://InternRobotics/InternVLA-N1-DualVLN@{_SHA}",
+        )
+    )
+    with socket.socket() as probe:  # a port nothing listens on
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setenv("OPENRAL_INTERNVLA_N1_SIDECAR_PORT", str(port))
+    monkeypatch.setenv("OPENRAL_INTERNVLA_N1_AUTO_SPAWN", "0")
+    monkeypatch.setenv("OPENRAL_QUANTIZATION_DTYPE", "bf16")  # open run, no Pro
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    env = type("Env", (), {"vla": VLASpec(id="internvla_n1", weights_uri=str(skill))})()
+    with pytest.raises(ROSConfigError, match=f"--revision {_SHA}"):
+        _build_internvla_n1(env)  # only .vla is read before connect

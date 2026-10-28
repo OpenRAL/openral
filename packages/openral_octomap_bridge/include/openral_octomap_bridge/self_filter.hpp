@@ -371,6 +371,14 @@ std::vector<std::uint8_t> xyz_records(const std::vector<std::uint8_t>& data, std
                                       std::size_t x_offset, std::size_t y_offset,
                                       std::size_t z_offset);
 
+/// Whether a packed cloud of `n_points` records of `point_step` bytes fits in
+/// `data_size` bytes and every FLOAT32 coordinate offset lies wholly inside a
+/// record, overflow-checked. `filter_xyz_points` and `xyz_records` trust exactly
+/// this; a cloud failing it is dropped before either runs.
+bool xyz_cloud_layout_valid(std::size_t data_size, std::size_t n_points, std::size_t point_step,
+                            std::size_t x_offset, std::size_t y_offset,
+                            std::size_t z_offset) noexcept;
+
 /// Counts from one `filter_xyz_points` call.
 struct SelfFilterStats {
   std::size_t points_in{0};   ///< points in the input buffer

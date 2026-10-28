@@ -251,12 +251,13 @@ def build_reward_monitor(
         or manifest.source_repo
         or "OpenRAL/rskill-robometer_4b-any-general-nf4"
     )
-    # hf://org/repo[@rev] -> "org/repo"; local:///path
-    # -> "/path" (a pre-quantized checkpoint dir loaded directly as 4-bit).
+    # hf://org/repo[@rev] -> "org/repo[@rev]" (the scorer splits the pin off for
+    # snapshot_download; dropping it would load the repo's moving default branch);
+    # local:///path -> "/path" (a pre-quantized checkpoint dir loaded directly as 4-bit).
     if raw.startswith("local://"):
         weights_source = raw.removeprefix("local://")
     else:
-        weights_source = raw.removeprefix("hf://").split("@", 1)[0]
+        weights_source = raw.removeprefix("hf://")
     return RobometerInProcessReward(
         model_id=manifest.name,
         weights_source=weights_source,

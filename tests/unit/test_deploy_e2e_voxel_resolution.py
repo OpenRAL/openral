@@ -326,3 +326,26 @@ def test_octomap_only_integrates_the_reach_box(launch_module: ModuleType) -> Non
         "point_cloud_max_y": 0.82,
         "point_cloud_max_z": 0.7,
     }
+
+
+def test_workcell_self_collision_margin_tightens_but_never_loosens(
+    launch_module: ModuleType,
+) -> None:
+    """The kernel's self-collision margin honours an explicit workcell clearance.
+
+    It used to come from the robot manifest alone (and the MJCF lowering got
+    0.0), so a workcell's requested clearance never reached the kernel.
+    """
+    from openral_core import RobotDescription, SafetyEnvelope
+
+    description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/so101_follower/robot.yaml"))
+    robot_margin = description.safety.self_collision_margin_m
+    effective = launch_module._effective_self_collision_margin
+    assert effective(description, None) == robot_margin
+    assert effective(description, SafetyEnvelope()) == robot_margin  # nothing set explicitly
+    assert effective(description, SafetyEnvelope(self_collision_margin_m=0.02)) == 0.02
+    looser = SafetyEnvelope(self_collision_margin_m=robot_margin - 0.01)
+    assert effective(description, looser) == robot_margin
+    # A NaN reads False on ``<``; it (and inf) must not pass as a tightening.
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        assert effective(description, SafetyEnvelope(self_collision_margin_m=bad)) == robot_margin

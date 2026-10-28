@@ -13,9 +13,10 @@ benchmarks describe its declared dtype (CLAUDE.md §1.4).
 
 - :func:`require_pro_for_dtype`: a resolved dtype token (the policy adapters,
   through ``openral_sim._quantization.resolve_quant_plan``).
-- :func:`require_pro_for_manifest`: an rSkill manifest's declared dtype (the
-  reward monitors, the scene VLM and the manifest detector, which load their
-  checkpoint without the policy resolver).
+- :func:`require_pro_for_manifest`: an rSkill manifest's declared dtype and the
+  ``config.json`` of the checkpoint it selects (the reward monitors, the scene VLM
+  and the manifest detector, which load their checkpoint without the policy
+  resolver).
 - :func:`require_pro_for_checkpoint`: a checkpoint's own ``config.json``.
 """
 
@@ -161,18 +162,26 @@ def sidecar_quantization_args(dtype: str | None, *, what: str, rewrites: bool = 
 
 
 def require_pro_for_manifest(manifest: RSkillManifest) -> None:
-    """Refuse an rSkill whose declared dtype is sub-16-bit, unless Pro is installed.
+    """Refuse a sub-16-bit rSkill, declared or actual, unless Pro is installed.
+
+    The declared dtype alone cannot vouch for the checkpoint: a manifest may say
+    ``bf16`` while its ``weights_uri`` (or ``source_repo``) is quantized upstream,
+    so the selected checkpoint's ``config.json`` is checked too.
 
     Args:
-        manifest: The rSkill manifest. One without a quantization block passes.
+        manifest: The rSkill manifest. One without a quantization block or a
+            checkpoint reference passes.
 
     Raises:
-        ROSConfigError: As :func:`require_pro_for_dtype`.
+        ROSConfigError: As :func:`require_pro_for_dtype` and
+            :func:`require_pro_for_checkpoint`.
     """
     quant = getattr(manifest, "quantization", None)
-    require_pro_for_dtype(
-        getattr(quant, "dtype", None), what=f"rSkill {getattr(manifest, 'name', '?')!r}"
-    )
+    what = f"rSkill {getattr(manifest, 'name', '?')!r}"
+    require_pro_for_dtype(getattr(quant, "dtype", None), what=what)
+    source = getattr(manifest, "weights_uri", None) or getattr(manifest, "source_repo", None)
+    if source:
+        require_pro_for_checkpoint(source, what=what)
 
 
 def _checkpoint_config(source: str) -> dict[str, Any] | None:
@@ -182,6 +191,8 @@ def _checkpoint_config(source: str) -> dict[str, Any] | None:
     if local.is_dir():
         config = local / "config.json"
         return dict(json.loads(config.read_text())) if config.is_file() else None
+    if source.startswith("local://"):
+        return None  # not a dir here (a file, or relative to another cwd): no config to read
     repo, _, revision = raw.removeprefix("hf://").partition("@")
     try:
         from huggingface_hub import hf_hub_download  # noqa: PLC0415  # reason: optional at import

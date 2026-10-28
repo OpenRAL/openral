@@ -61,6 +61,19 @@ def test_build_reward_monitor_local_scheme() -> None:
     assert mon._weights_source == "/tmp/robometer-nf4-ckpt"
 
 
+@pytest.mark.skipif(
+    not pro_quantization_installed(), reason="needs OpenRAL Pro quantization (ADR-0123)"
+)
+def test_build_reward_monitor_keeps_revision_pin() -> None:
+    """An ``@rev`` pin on ``weights_uri`` reaches the scorer, which splits it off."""
+    manifest = _load_manifest()
+    pinned = manifest.model_copy(
+        update={"weights_uri": "hf://OpenRAL/rskill-robometer_4b-any-general-nf4@0123abcd"}
+    )
+    mon = build_reward_monitor(pinned)
+    assert mon._weights_source == "OpenRAL/rskill-robometer_4b-any-general-nf4@0123abcd"
+
+
 def test_evenly_spaced_indices_bounds_frames() -> None:
     """Subsampling a frame window keeps a bounded, end-inclusive, unique set."""
     from openral_runner.backends.reward.robometer_reward import _evenly_spaced_indices

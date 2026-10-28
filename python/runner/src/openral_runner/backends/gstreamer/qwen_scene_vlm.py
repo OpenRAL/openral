@@ -240,7 +240,8 @@ def build_scene_vlm(
     # provenance (the raw upstream model it was quantized from). The sidecar
     # server auto-detects a pre-quantized config and loads it directly.
     raw = manifest.weights_uri or manifest.source_repo or "Qwen/Qwen3.5-4B"
-    weights_source = raw.removeprefix("hf://").split("@", 1)[0]
+    # Keep any ``@rev`` pin: the sidecar server passes it as ``revision=`` to every loader.
+    weights_source = raw.removeprefix("hf://")
     return QwenSceneVlm(
         model_id=manifest.name,
         weights_source=weights_source,

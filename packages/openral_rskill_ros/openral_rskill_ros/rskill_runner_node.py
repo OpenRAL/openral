@@ -1405,6 +1405,13 @@ if _ROS2_AVAILABLE:
                         # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
                         raise
                     except ROSError as exc:
+                        if self._cancel_requested or goal_handle.is_cancel_requested:
+                            # A wrapped wait that gave up because the goal was
+                            # cancelled (``ROSActionRskill.stop_check``) ends as a
+                            # cancel, not an abort.
+                            self._drain_and_idle_hold(skill)
+                            self._end_cancelled(goal_handle, result, span)
+                            return result
                         # A typed runtime failure during execution (e.g. a wrapped
                         # ros_action skill whose goal could not be built from
                         # malformed goal_params_json, an inference timeout, a planning
@@ -1642,7 +1649,7 @@ if _ROS2_AVAILABLE:
             self._last_deadline_miss = miss
             return True
 
-        def _run_until_done_or_deadline(
+        def _run_until_done_or_deadline(  # noqa: PLR0915  # reason: one tick loop — safety/cancel/deadline gates, inference span, dispatch, feedback, pacing
             self,
             *,
             goal_handle: ServerGoalHandle,
@@ -1678,6 +1685,18 @@ if _ROS2_AVAILABLE:
             rate_hz = self._control_rate_hz()
             period_s = 1.0 / max(rate_hz, 1.0)
             budget = self._new_execution_budget(deadline_s)
+            from openral_rskill.ros_action_rskill import ROSActionRskill
+
+            if isinstance(skill, ROSActionRskill):
+                # A wrapped result-only goal (Nav2) blocks inside one ``step()``,
+                # where this loop cannot check cancel or the budget; hand both in.
+                def _goal_ended() -> str | None:
+                    if self._cancel_requested or goal_handle.is_cancel_requested:
+                        return "cancel requested"
+                    miss = budget.check()
+                    return None if miss is None else f"{miss.kind}: {miss.detail}"
+
+                skill.stop_check = _goal_ended
             # Absolute deadlines absorb tick work into the configured period.
             chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)

@@ -212,6 +212,23 @@ class TestGenerateLaunchPy:
         src = generate_launch_py(realsense_d435_bundle())
         assert "def generate_launch_description" in src
 
+    def test_bundle_name_is_a_literal_not_code(self) -> None:
+        """A hostile bundle name stays inside its string literals (no injected statements)."""
+        hostile = 'x",)\nimport os; os.system("id")\n#'
+        bundle = realsense_d435_bundle().model_copy(update={"bundle_name": hostile})
+        tree = ast.parse(generate_launch_py(bundle))
+        assert not any(
+            isinstance(node, ast.Import) and node.names[0].name == "os" for node in ast.walk(tree)
+        )
+        names = {
+            kw.value.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+            if kw.arg in {"name", "namespace"} and isinstance(kw.value, ast.Constant)
+        }
+        assert {hostile, f"{hostile}_container", f"/{hostile}"} <= names
+
     def test_serial_no_in_output(self) -> None:
         src = generate_launch_py(realsense_d435_bundle(), serial_no="SN999")
         assert "SN999" in src

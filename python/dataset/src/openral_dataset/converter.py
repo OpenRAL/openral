@@ -341,6 +341,14 @@ class Rosbag2ToLeRobotConverter:
         height = int(payload["height"])
         width = int(payload["width"])
         channels = int(payload["channels"])
+        # All three positive and matching the pixel bytes: a zero dimension would let
+        # an empty payload declare any height/width, which then sizes the zero frames
+        # of every camera missing from a tick (_shape_overrides_from_bag).
+        if min(height, width, channels) <= 0 or len(raw) != height * width * channels:
+            raise ROSConfigError(
+                f"Rosbag2ToLeRobotConverter: image {height}x{width}x{channels} on camera "
+                f"{payload.get('camera')!r} does not match its {len(raw)} pixel bytes"
+            )
         return np.frombuffer(raw, dtype=np.uint8).reshape(height, width, channels)
 
     @staticmethod

@@ -681,3 +681,228 @@ def test_replay_paces_by_time_from_start_and_completes_once_reached() -> None:
         assert elapsed >= times_s[waypoints.index(target)], "waypoint sent before it was due"
     # Held, not streamed: ~0.6 s of plan at 30 Hz is far more than 3 ticks.
     assert len(emitted) >= 10
+
+
+# ── unmoved-joint padding is read by joint name ──────────────────────────────
+
+
+def test_unmoved_joint_padding_is_read_by_name_not_index() -> None:
+    """``/joint_states`` order is the publisher's, not ``RobotDescription.joints``.
+
+    The planner moves only ``j_a``; ``j_b`` must be held at *its* measured value
+    even when the measurement lists the joints in another order.
+    """
+    skill = _make_skill(_trajectory_manifest(), _two_dof_robot())
+    skill._interface_kind = "action"
+    reordered = WorldState(
+        stamp_ns=0, joint_state=JointState(name=["j_b", "j_a"], position=[0.7, 0.1], stamp_ns=0)
+    )
+    skill._capture_unmoved_joint_padding(reordered)
+    plan = _FakeMoveGroupResult(
+        planned_trajectory=_FakePlannedTrajectory(
+            joint_trajectory=_FakeJointTrajectory(
+                joint_names=["j_a"], points=[_FakeJointTrajectoryPoint(positions=[0.3])]
+            )
+        )
+    )
+    skill._send_action_goal_and_await_result = lambda: plan  # type: ignore[method-assign]
+    skill._dispatch_and_cache_result()
+    assert skill._waypoints == [[0.3, 0.7]]
+
+
+def test_unmeasured_unmoved_joint_is_refused_not_zero_filled() -> None:
+    """A held joint with no measurement must not be commanded to a made-up 0.0."""
+    from openral_core import ROSPerceptionStale
+
+    skill = _make_skill(_trajectory_manifest(), _two_dof_robot())
+    skill._interface_kind = "action"
+    skill._capture_unmoved_joint_padding(
+        WorldState(stamp_ns=0, joint_state=JointState(name=["j_a"], position=[0.1], stamp_ns=0))
+    )
+    plan = _FakeMoveGroupResult(
+        planned_trajectory=_FakePlannedTrajectory(
+            joint_trajectory=_FakeJointTrajectory(
+                joint_names=["j_a"], points=[_FakeJointTrajectoryPoint(positions=[0.3])]
+            )
+        )
+    )
+    skill._send_action_goal_and_await_result = lambda: plan  # type: ignore[method-assign]
+    with pytest.raises(ROSPerceptionStale, match="j_b"):
+        skill._dispatch_and_cache_result()
+
+
+@pytest.mark.parametrize("status", ["stale", "error"])
+def test_stale_joint_state_snapshot_is_refused(status: str) -> None:
+    """The aggregator zero-fills a missing joint_state and flags it; never replay on it."""
+    from openral_core import ROSPerceptionStale
+
+    skill = _make_skill(_trajectory_manifest(), _two_dof_robot())
+    stale = WorldState(
+        stamp_ns=0,
+        joint_state=JointState(name=["j_a", "j_b"], position=[0.0, 0.0], stamp_ns=0),
+        diagnostics={"joint_state": status},
+    )
+    with pytest.raises(ROSPerceptionStale, match=status):
+        skill._capture_unmoved_joint_padding(stale)
+
+
+# ── a MoveGroup replay goal stays plan_only ──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"planning_options": {"plan_only": False}},
+        {"planning_options": {"plan_only": 0}},
+        {"planning_options": None},
+    ],
+)
+def test_goal_params_cannot_turn_off_plan_only(override: dict[str, Any]) -> None:
+    """``goal_params_json`` must not let move_group execute a plan OpenRAL replays."""
+    manifest = RSkillManifest.from_yaml(
+        str(_REPO_ROOT / "rskills/rskill-moveit-joints/rskill.yaml")
+    )
+    skill = ROSActionRskill(
+        manifest=manifest,
+        ros_node=None,
+        robot_description=None,
+        prompt="move",
+        prompt_metadata_json="",
+        goal_params_json=json.dumps(override),
+    )
+    with pytest.raises(ROSConfigError, match="plan_only"):
+        skill._configure_impl()
+
+
+# ── a blocking wrapped wait sees the enclosing goal's cancel / deadline ──────
+
+
+_CancelPolicy = str  # "accept" | "reject" | "ignore"
+
+
+@pytest.fixture
+def fibonacci_server() -> Any:
+    """A real ``rclpy`` Fibonacci ``ActionServer`` whose goals run until cancelled.
+
+    Yields ``start(policy) -> (node, action_name, terminal)``; ``terminal`` records
+    the status the server finalized each goal with. Skips when ROS is not sourced.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    fibonacci = pytest.importorskip("example_interfaces.action").Fibonacci
+    import threading
+    import uuid
+
+    from rclpy.action import ActionServer, CancelResponse
+    from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.context import Context
+    from rclpy.executors import MultiThreadedExecutor
+
+    ctx = Context()
+    rclpy.init(context=ctx)
+    node = rclpy.create_node(f"cancel_test_{uuid.uuid4().hex[:8]}", context=ctx)
+    executor = MultiThreadedExecutor(context=ctx)
+    executor.add_node(node)
+    stop = threading.Event()
+    terminal: list[str] = []
+    servers: list[Any] = []
+
+    def start(policy: _CancelPolicy) -> tuple[Any, str, list[str]]:
+        name = f"fib_{uuid.uuid4().hex[:8]}"
+
+        def execute(goal_handle: Any) -> Any:
+            while not stop.is_set():
+                if goal_handle.is_cancel_requested and policy == "accept":
+                    goal_handle.canceled()
+                    terminal.append("canceled")
+                    return fibonacci.Result()
+                time.sleep(0.01)
+            goal_handle.abort()
+            terminal.append("aborted")
+            return fibonacci.Result()
+
+        def on_cancel(_req: Any) -> Any:
+            return CancelResponse.REJECT if policy == "reject" else CancelResponse.ACCEPT
+
+        servers.append(
+            ActionServer(
+                node,
+                fibonacci,
+                name,
+                execute_callback=execute,
+                cancel_callback=on_cancel,
+                callback_group=ReentrantCallbackGroup(),
+            )
+        )
+        return node, name, terminal
+
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
+    try:
+        yield start
+    finally:
+        stop.set()
+        executor.shutdown(timeout_sec=2.0)
+        spin.join(timeout=2.0)
+        for server in servers:
+            server.destroy()
+        node.destroy_node()
+        rclpy.shutdown(context=ctx)
+
+
+def _skill_on_real_server(node: Any, name: str) -> ROSActionRskill:
+    fibonacci = pytest.importorskip("example_interfaces.action").Fibonacci
+    from rclpy.action import ActionClient
+
+    skill = _make_skill(_result_only_manifest(), description=None)
+    skill._interface_kind = "action"
+    skill._interface_type = fibonacci
+    skill._client = ActionClient(node, fibonacci, name)
+    assert skill._client.wait_for_server(timeout_sec=5.0)
+    skill._goal_dict = {"order": 3}
+    skill._result_deadline_s = 30.0
+    skill.stop_check = lambda: "cancel requested"
+    return skill
+
+
+def test_result_wait_stops_and_cancels_when_the_enclosing_goal_ends(
+    fibonacci_server: Any,
+) -> None:
+    """The runner cannot interrupt a blocking ``step()``; the adapter must poll ``stop_check``.
+
+    Without it a cancelled / timed-out ``ExecuteRskill`` left Nav2 driving until the
+    adapter's own result deadline. The adapter keeps the goal until the wrapped server
+    reports it terminal, so the runner never accepts a new goal over a running one.
+    """
+    node, name, terminal = fibonacci_server("accept")
+    skill = _skill_on_real_server(node, name)
+    t0 = time.monotonic()
+    with pytest.raises(ROSDeadlineMissed, match="cancel requested"):
+        skill._send_action_goal_and_await_result()
+    assert time.monotonic() - t0 < 5.0
+    assert terminal == ["canceled"], "the wrapped goal must have ended before we returned"
+
+
+def test_rejected_cancel_fails_the_goal_loudly(fibonacci_server: Any) -> None:
+    from openral_core.exceptions import ROSRuntimeError
+
+    node, name, terminal = fibonacci_server("reject")
+    skill = _skill_on_real_server(node, name)
+    with pytest.raises(ROSRuntimeError, match="rejected the cancel"):
+        skill._send_action_goal_and_await_result()
+    assert terminal == []
+
+
+def test_cancel_without_a_terminal_result_is_bounded(
+    fibonacci_server: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server that accepts the cancel but keeps running fails the goal within the bound."""
+    from openral_core.exceptions import ROSRuntimeError
+    from openral_rskill import ros_action_rskill
+
+    monkeypatch.setattr(ros_action_rskill, "_CANCEL_CONFIRM_TIMEOUT_S", 0.5)
+    node, name, _terminal = fibonacci_server("ignore")
+    skill = _skill_on_real_server(node, name)
+    t0 = time.monotonic()
+    with pytest.raises(ROSRuntimeError, match="not confirmed terminated"):
+        skill._send_action_goal_and_await_result()
+    assert time.monotonic() - t0 < 3.0

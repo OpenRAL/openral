@@ -395,6 +395,12 @@ class CompletionTrigger:
         return reason
 
 
+# Canvas budget for ``tiled_jpeg``: a few 1080p views fit with room; a short, very wide
+# frame upscaled to the first view's height (e.g. 10000x1 next to 1080p -> 10.8 Mpx wide)
+# is refused before anything is allocated.
+_MAX_TILED_PIXELS = 32_000_000
+
+
 def tiled_jpeg(images: list[tuple[bytes, int, int, str]], *, flip_180: bool = False) -> bytes:
     """Raw camera images ``(data, height, width, encoding)`` side by side as one JPEG.
 
@@ -410,9 +416,21 @@ def tiled_jpeg(images: list[tuple[bytes, int, int, str]], *, flip_180: bool = Fa
         >>> blue = (bytes([0, 0, 255]) * 16, 4, 4, "rgb8")
         >>> Image.open(io.BytesIO(tiled_jpeg([red, blue]))).size
         (4, 2)
+
+    Raises:
+        ValueError: When the tiled canvas would exceed ``_MAX_TILED_PIXELS``
+            (checked from the message dimensions, before any decode or resize).
     """
     from PIL import Image  # noqa: PLC0415 — lazy, as image_msg_to_jpeg: PIL stays optional
 
+    first_h = max(1, images[0][1]) if images else 1
+    canvas_w = sum(max(1, round(w * first_h / max(1, h))) for _, h, w, _ in images)
+    if canvas_w * first_h > _MAX_TILED_PIXELS:
+        raise ValueError(
+            f"tiled_jpeg: {canvas_w}x{first_h} canvas exceeds the "
+            f"{_MAX_TILED_PIXELS}-pixel budget (h, w per view: "
+            f"{[(h, w) for _, h, w, _ in images]})"
+        )
     tiles = [
         Image.open(
             io.BytesIO(

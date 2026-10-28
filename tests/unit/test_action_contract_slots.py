@@ -220,6 +220,29 @@ def test_slots_must_not_overlap() -> None:
         )
 
 
+def test_coverage_check_does_not_scale_with_declared_dim() -> None:
+    """A huge manifest dim must not allocate a dim-sized coverage table (CWE-789)."""
+    huge = 10**12
+    with pytest.raises(ValidationError, match=r"\(1, 999999999999\)\] are not covered"):
+        ActionContract(
+            dim=huge,
+            slots=[ActionSlot(range=(0, 0), control_mode=ControlMode.JOINT_POSITION)],
+        )
+    whole = ActionContract(dim=huge, slots=[ActionSlot(range=(0, huge - 1), discard=True)])
+    assert whole.dim == huge
+
+
+def test_overlap_reports_the_shared_range() -> None:
+    with pytest.raises(ValidationError, match=r"\[\(2, 3\)\] are covered by multiple"):
+        ActionContract(
+            dim=6,
+            slots=[
+                ActionSlot(range=(0, 3), control_mode=ControlMode.JOINT_POSITION),
+                ActionSlot(range=(2, 5), control_mode=ControlMode.JOINT_POSITION),
+            ],
+        )
+
+
 def test_slot_range_must_fit_within_dim() -> None:
     with pytest.raises(ValidationError, match="exceeds"):
         ActionContract(

@@ -28,6 +28,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import io
+import ipaddress
 import os
 import signal
 import socket
@@ -72,6 +73,16 @@ _spawned_children: list[subprocess.Popen[bytes]] = []
 # Non-empty once the process-exit reaper has been installed (a set, not a bool,
 # so the install guard needs no `global` statement).
 _exit_reaper_installed: set[str] = set()
+
+
+def _is_loopback(host: str) -> bool:
+    """True when ``host`` names this machine's loopback interface."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _reap_spawned_children() -> None:
@@ -252,9 +263,11 @@ class SidecarClient:
                     "sidecar_connected", sidecar=self.name, endpoint=endpoint, mode="existing"
                 )
                 return
-            if not self.auto_spawn:
+            if not self.auto_spawn or not _is_loopback(self.host):
                 # Can't restart a sidecar we were told not to spawn — surface
-                # the explicit "stop it / use a distinct port" error.
+                # the explicit "stop it / use a distinct port" error. Nor one on
+                # another host: the reap below signals a LOCAL pid recorded for
+                # this port, which says nothing about a remote endpoint.
                 self._assert_identity(existing, endpoint)
             # auto_spawn: a reused sidecar is serving a DIFFERENT scene (a stale
             # one left bound to this port by a prior run). Reuse only ever helps

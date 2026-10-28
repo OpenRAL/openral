@@ -938,6 +938,18 @@ void render_robot_mask(const std::vector<PayloadPrimitive>& primitives,
   }
 }
 
+bool xyz_cloud_layout_valid(std::size_t data_size, std::size_t n_points, std::size_t point_step,
+                            std::size_t x_offset, std::size_t y_offset,
+                            std::size_t z_offset) noexcept {
+  std::size_t bytes = 0;
+  if (__builtin_mul_overflow(n_points, point_step, &bytes) || bytes > data_size ||
+      point_step < sizeof(float)) {
+    return false;
+  }
+  const std::size_t last = point_step - sizeof(float);  // no wrap: checked above
+  return x_offset <= last && y_offset <= last && z_offset <= last;
+}
+
 SelfFilterStats filter_xyz_points(const std::uint8_t* data, std::size_t n_points,
                                   std::size_t point_step, std::size_t x_offset,
                                   std::size_t y_offset, std::size_t z_offset, const SelfMask& mask,

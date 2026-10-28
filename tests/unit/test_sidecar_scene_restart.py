@@ -95,6 +95,21 @@ def test_connect_raises_on_mismatch_when_not_auto_spawn(
         c.connect()
 
 
+def test_connect_never_reaps_locally_for_a_remote_sidecar(
+    _fake_zmq: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote peer's mismatched identity must not make us signal a local pid."""
+    c = _client(auto_spawn=True)
+    c.host = "192.0.2.10"
+    monkeypatch.setattr(c, "_init_socket", lambda: None)
+    monkeypatch.setattr(c, "_ping_reply", lambda: {"task": "isaac_sim/lift_cube"})
+    reaped: list[str] = []
+    monkeypatch.setattr(c, "_reap_stale_sidecar", reaped.append)
+    with pytest.raises(ROSConfigError, match="already serving a different"):
+        c.connect()
+    assert reaped == []
+
+
 def test_reap_stale_kills_recorded_pid_and_returns_when_port_frees(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

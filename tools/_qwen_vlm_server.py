@@ -86,8 +86,13 @@ def _load(model_id: str, quantization_config: str | None) -> tuple[object, objec
     ``Qwen/Qwen3.5-4B``) quantizes NF4 at load, forcing serial materialization
     since transformers 5.x's concurrent bf16 loader OOMs a tight 8 GB card.
     """
-    cfg = AutoConfig.from_pretrained(model_id)
-    processor = AutoProcessor.from_pretrained(model_id)
+    # ``org/repo@rev`` pins every artifact to one commit (the manifest's weights_uri pin);
+    # a local directory or a bare repo id loads as is.
+    revision = None
+    if "@" in model_id and not os.path.isdir(model_id):
+        model_id, revision = model_id.rsplit("@", 1)
+    cfg = AutoConfig.from_pretrained(model_id, revision=revision)
+    processor = AutoProcessor.from_pretrained(model_id, revision=revision)
 
     # Both paths are NF4, so both need Pro's config; a packed checkpoint keeps
     # its own embedded quantization settings.
@@ -95,6 +100,7 @@ def _load(model_id: str, quantization_config: str | None) -> tuple[object, objec
     if getattr(cfg, "quantization_config", None) is not None:
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
+            revision=revision,
             device_map={"": 0},
         ).eval()
         return processor, model
@@ -105,6 +111,7 @@ def _load(model_id: str, quantization_config: str | None) -> tuple[object, objec
     bnb = BitsAndBytesConfig(**bnb_kwargs)
     model = AutoModelForImageTextToText.from_pretrained(
         model_id,
+        revision=revision,
         quantization_config=bnb,
         dtype=torch.bfloat16,
         device_map={"": 0},

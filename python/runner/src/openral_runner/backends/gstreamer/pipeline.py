@@ -252,6 +252,21 @@ class PipelineSpec(BaseModel):
             )
         return value
 
+    @field_validator("device")
+    @classmethod
+    def _validate_device(cls, value: int | str | None) -> int | str | None:
+        """The locator is spliced into ``parse_launch`` syntax; keep it one plain token.
+
+        Whitespace, ``!``, quotes and backslashes would let a locator end its
+        property and add properties or elements (e.g. a ``filesink``) to the graph.
+        """
+        if isinstance(value, str) and (not value or re.search(r"[\s!\"'\\]", value)):
+            raise ValueError(
+                f"device {value!r} must be one token without whitespace, '!', quotes "
+                "or backslashes (it is a GStreamer launch-syntax property value)"
+            )
+        return value
+
     @model_validator(mode="after")
     def _validate_jpeg(self) -> PipelineSpec:
         """``jpeg`` describes a UVC MJPG mode — USB only, and not also H.264."""
@@ -546,6 +561,8 @@ def _build_head(spec: PipelineSpec, platform: Platform) -> str:
             )
         # nvarguscamerasrc takes a bare integer sensor-id (0, 1, …), not a /dev path.
         sensor_id = str(spec.device) if spec.device is not None else "0"
+        if not sensor_id.isdigit():
+            raise ValueError(f"Source.CSI device must be an integer sensor-id, got {sensor_id!r}")
         return f"nvarguscamerasrc sensor-id={sensor_id}"
     if spec.source is Source.RTSP:
         location = _coerce_device_str(spec.device, default=None)

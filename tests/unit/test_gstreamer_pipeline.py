@@ -155,6 +155,36 @@ def test_pipeline_spec_rejects_invalid_appsink_name() -> None:
         PipelineSpec(source=Source.TESTSRC, appsink_name="bad name with spaces")
 
 
+@pytest.mark.parametrize(
+    "device",
+    [
+        "/tmp/in.mp4 ! filesink location=/tmp/out",  # appends an element
+        "/dev/video0 num-buffers=1",  # appends a property
+        '/tmp/a"b',
+        "",
+    ],
+)
+def test_pipeline_spec_rejects_launch_syntax_in_device(device: str) -> None:
+    """A locator is one launch-syntax token; it cannot add properties or elements."""
+    with pytest.raises(ValueError, match="must be one token"):
+        PipelineSpec(source=Source.FILE, device=device)
+
+
+def test_pipeline_spec_accepts_plain_locators() -> None:
+    """Paths and RTSP URLs with query strings stay valid."""
+    spec = PipelineSpec(source=Source.RTSP, device="rtsp://10.0.0.5:8554/cam?transport=tcp")
+    assert "location=rtsp://10.0.0.5:8554/cam?transport=tcp " in build_pipeline_string(
+        spec, platform=Platform.CPU_ONLY
+    )
+
+
+def test_build_pipeline_string_csi_requires_integer_sensor_id() -> None:
+    """``nvarguscamerasrc sensor-id`` is an integer; anything else is refused."""
+    spec = PipelineSpec(source=Source.CSI, device="0,1")
+    with pytest.raises(ValueError, match="integer sensor-id"):
+        build_pipeline_string(spec, platform=Platform.TEGRA)
+
+
 def test_pipeline_spec_rejects_non_positive_fps() -> None:
     """``fps`` must be a positive integer."""
     with pytest.raises(ValueError):
