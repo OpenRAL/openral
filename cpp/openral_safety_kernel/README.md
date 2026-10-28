@@ -48,6 +48,17 @@ Published on **every transition**:
 | external `/openral/estop` | `true` | `DROP_EXTERNAL_ESTOP` |
 | `envelope_unconfigured` drop | `false` | `DROP_ENVELOPE_UNCONFIGURED` |
 | voxel/state unavailable or overflow | `false` | `DROP_{VOXEL,STATE}_UNAVAILABLE`, `DROP_VOXEL_OVERFLOW` |
+
+Every non-latching drop also publishes a `FailureTrigger` (`SEVERITY_ABORT`) on
+`/openral/failure/safety`. A drop because a kernel input was too old or never
+arrived (`voxel_unavailable`, `voxel_stale`, `attached_unavailable`,
+`state_unavailable`) is `KIND_PERCEPTION` with `PerceptionStaleEvidence`:
+`sensor_id` is the input's topic (`/openral/world_voxels`,
+`/openral/world_state_fast`, `/joint_states`), `staleness_ms` its age (for the
+voxel data-age budget, the age of the world in the grid; for an input never
+received, the time since activation), `threshold_ms` the limit it crossed. An
+overflow, an unstamped grid or an unmapped slot stays `KIND_CONTROLLER` with
+`ControllerEvidence`. Reporting only: which chunks drop is unchanged.
 | attached payload unverifiable (ADR-0092) | `false` | `DROP_ATTACHED_UNAVAILABLE`, `DROP_ATTACHED_OVERFLOW` |
 | chunk accepted after a drop | `false` | `DROP_NONE` |
 | `/openral/estop_reset` succeeded | `false` | `DROP_NONE` |

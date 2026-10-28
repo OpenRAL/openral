@@ -833,6 +833,208 @@ def test_safety_latch_during_apply_wait_is_named_in_the_result() -> None:
     assert elapsed < 4.0, f"safety abort took {elapsed:.2f}s — the apply-wait ran to its timeout"
 
 
+def test_an_accepted_chunk_does_not_mask_the_drop_that_stalled_the_apply_wait() -> None:
+    """A later ``DROP_NONE`` ("chunk accepted") must not replace a fail-closed drop's cause.
+
+    Spark restock seed 16 (2026-10-28): the kernel dropped one slot on
+    ``attached_unavailable``, accepted the other, and the timeout named ``drop_none``.
+    """
+    import time
+
+    from openral_msgs.msg import SafetyStatus
+
+    def _status(code: int, detail: str) -> SafetyStatus:
+        msg = SafetyStatus()
+        msg.drop_reason = code
+        msg.detail = detail
+        msg.latched = False
+        return msg
+
+    with _compose_harness(resolver=lambda **_k: _make_constant_skill()) as (_e, runtime, _s, _o):
+        runner = runtime.skill_runner_node
+        since = time.monotonic()
+        runner._on_safety_status(_status(SafetyStatus.DROP_ATTACHED_UNAVAILABLE, "stale"))
+        runner._on_safety_status(_status(SafetyStatus.DROP_NONE, "chunk accepted"))
+        reason = runner._safety_drop_reason(since)
+
+    assert reason is not None and "drop_attached_unavailable" in reason[0], reason
+    from openral_core.exceptions import ROSPerceptionStale
+
+    assert reason[1] is ROSPerceptionStale, reason
+
+
+def test_a_failed_goal_carries_the_kernel_evidence_that_explains_it() -> None:
+    """``Result.evidence_json`` carries the kernel report matching the failure, and only it.
+
+    A stale-input stall gets the kernel's ``PerceptionStaleEvidence``; a safety stop gets
+    its stop report; a runtime fault, a report from before the goal, and a success get
+    nothing; the goal's own ``TimeoutEvidence`` explains a missed deadline and nothing else.
+    """
+    import time
+
+    from openral_core import ForceEvidence, PerceptionStaleEvidence, TimeoutEvidence
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import FailureTrigger
+
+    stale = PerceptionStaleEvidence(
+        sensor_id="/openral/world_state_fast", staleness_ms=7000.0, threshold_ms=500.0
+    ).model_dump_json()
+    stop = ForceEvidence(
+        joint_or_ee="left_joint4", measured_n=40.0, limit_n=30.0, unit="Nm"
+    ).model_dump_json()
+    r = ExecuteRskill.Result
+
+    def _trigger(evidence_json: str) -> FailureTrigger:
+        msg = FailureTrigger()
+        msg.kind = (
+            FailureTrigger.KIND_PERCEPTION if evidence_json == stale else FailureTrigger.KIND_FORCE
+        )
+        msg.evidence_json = evidence_json
+        return msg
+
+    def _failed(kind: int) -> Any:
+        result = ExecuteRskill.Result()
+        result.success = False
+        result.failure_kind = kind
+        return result
+
+    with _compose_harness(resolver=lambda **_k: _make_constant_skill()) as (_e, runtime, _s, _o):
+        runner = runtime.skill_runner_node
+        runner._on_safety_failure(_trigger(stale))  # before the goal: never attached
+        runner._goal_started_monotonic = time.monotonic()
+        runner._goal_evidence = None
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json == ""
+        )
+
+        runner._on_safety_failure(_trigger(stale))
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json
+            == stale
+        )
+        assert runner._attach_failure_evidence(_failed(r.FAILURE_RUNTIME_ERROR)).evidence_json == ""
+        assert runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == ""
+
+        runner._on_safety_failure(_trigger(stop))
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == stop
+        )
+        # Kept per kind: a later stop report does not erase the perception report.
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json
+            == stale
+        )
+
+        ok = ExecuteRskill.Result()
+        ok.success = True
+        assert runner._attach_failure_evidence(ok).evidence_json == ""
+
+        # A runtime fault with a known cause carries it as ControllerEvidence: the
+        # skill's own typed GPU OOM, or the non-stale kernel drop the apply-wait raised on.
+        oom = _failed(r.FAILURE_RUNTIME_ERROR)
+        oom.failure_reason = "ROSGPUMemoryError: CUDA out of memory"
+        assert '"state":"gpu_out_of_memory"' in runner._attach_failure_evidence(oom).evidence_json
+        from openral_msgs.msg import SafetyStatus
+
+        since = time.monotonic()
+        overflow = SafetyStatus()
+        overflow.drop_reason = SafetyStatus.DROP_VOXEL_OVERFLOW
+        overflow.latched = False
+        runner._on_safety_status(overflow)
+        assert runner._safety_drop_reason(since) is not None
+        dropped = _failed(r.FAILURE_RUNTIME_ERROR)
+        dropped.failure_reason = "ROSRuntimeError: tick 3 was not applied within 5 s"
+        assert '"state":"drop_voxel_overflow"' in (
+            runner._attach_failure_evidence(dropped).evidence_json
+        )
+
+        timeout = TimeoutEvidence(
+            operation="rskill.execute:deadline_exceeded", deadline_s=30.0, elapsed_s=30.0
+        ).model_dump_json()
+        runner._goal_evidence = (int(r.FAILURE_DEADLINE_MISSED), timeout)
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_DEADLINE_MISSED)).evidence_json
+            == timeout
+        )
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == stop
+        )
+
+
+def test_a_collision_stop_keeps_its_evidence_when_the_report_arrives_after_the_latch() -> None:
+    """The kernel publishes the report, then the latch, on two topics: either can land first.
+
+    The latch (or ``/openral/estop``) waking the goal first used to build the Result before
+    the report's callback ran, dropping the ``CollisionEvidence`` (1 stop in 15 on an idle
+    host). Here the report is published 0.3 s AFTER the latch and the estop, over the wire:
+    the Result must still carry it, and a later report of another kind (the deadman firing
+    after the stop) must not replace the one the latched status names.
+    """
+    import rclpy
+    from openral_core import CollisionEvidence, TimeoutEvidence
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import FailureTrigger, SafetyStatus
+    from rclpy.action import ActionClient
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import Empty
+
+    collision = CollisionEvidence(
+        collision_kind="world",
+        link_a="openarm_left_finger_pair",
+        link_b_or_object="voxel_285184",
+        min_distance_m=-0.0167,
+        horizon_step=0,
+    ).model_dump_json()
+    deadman = TimeoutEvidence(
+        operation="deadman.heartbeat", deadline_s=0.5, elapsed_s=0.9
+    ).model_dump_json()
+
+    with _compose_harness() as (executor, runtime, safety, _observed):
+        runner = runtime.skill_runner_node
+        # The passthrough node would re-latch on /openral/estop with its own status; the
+        # C++ kernel it stands in for here publishes the status below and nothing else.
+        executor.remove_node(safety)
+        helper = rclpy.create_node("openral_skill_runner_late_report_test")
+        executor.add_node(helper)
+        reliable = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
+        latched = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
+        report_pub = helper.create_publisher(FailureTrigger, "/openral/failure/safety", reliable)
+        status_pub = helper.create_publisher(SafetyStatus, "/openral/safety_status", latched)
+        estop_pub = helper.create_publisher(Empty, "/openral/estop", reliable)
+        client = ActionClient(runner, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.3)
+        assert client.wait_for_server(timeout_sec=2.0)
+        handle = _send_goal(client, executor, prompt="late report", deadline_s=10.0)
+        _spin_for(executor, 0.4)
+
+        status = SafetyStatus()
+        status.latched = True
+        status.drop_reason = SafetyStatus.KIND_COLLISION
+        status.detail = "world"
+        status_pub.publish(status)
+        estop_pub.publish(Empty())
+        _spin_for(executor, 0.3)
+        report = FailureTrigger()
+        report.kind = FailureTrigger.KIND_COLLISION
+        report.severity = FailureTrigger.SEVERITY_ABORT
+        report.evidence_json = collision
+        report_pub.publish(report)
+        late = FailureTrigger()
+        late.kind = FailureTrigger.KIND_TIMEOUT
+        late.severity = FailureTrigger.SEVERITY_ABORT
+        late.evidence_json = deadman
+        report_pub.publish(late)
+        result = _await_result(handle, executor).result
+        helper.destroy_node()
+
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP, result.failure_reason
+    assert result.evidence_json == collision, result.evidence_json
+
+
 def _send_goal(client: Any, executor: Any, *, prompt: str, deadline_s: float) -> Any:
     """Send an ExecuteRskill goal and spin until accepted; return the goal handle."""
     from openral_msgs.action import ExecuteRskill

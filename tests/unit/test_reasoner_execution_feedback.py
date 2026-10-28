@@ -18,7 +18,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from openral_core import GraspOutcomeEvidence, RobotDescription, RSkillAction
+from openral_core import (
+    CollisionEvidence,
+    ControllerEvidence,
+    GraspOutcomeEvidence,
+    HumanEvidence,
+    PerceptionStaleEvidence,
+    RobotDescription,
+    RSkillAction,
+    TimeoutEvidence,
+)
 from openral_observability.failure_bus import (
     KIND_GRASP_OUTCOME,
     SEVERITY_FAIL,
@@ -60,6 +69,139 @@ def test_reflect_on_failure_prefers_the_typed_timed_out_flag() -> None:
     hint = reflect_on_failure("aborted", "deadline for the grasp was tight", timed_out=False)
     assert "timed out" not in hint
     assert "infeasible" in hint
+
+
+def test_reflect_on_failure_picks_the_hint_from_the_typed_kind_and_evidence() -> None:
+    """The typed ``failure_kind`` (and, for a stop, its evidence) decides the next step.
+
+    A stale-perception abort is transient: retry the same skill, not "infeasible here".
+    A collision stop says change the approach; a stop with no kernel report is an
+    operator e-stop, which a human must reset.
+    """
+    stale = reflect_on_failure(
+        "aborted", "tick 441 was not applied", failure_kind="FAILURE_PERCEPTION_STALE"
+    )
+    assert "retry the same skill" in stale and "infeasible" not in stale
+    collision = CollisionEvidence(
+        collision_kind="world",
+        link_a="openarm_left_finger_pair",
+        link_b_or_object="voxel_285184",
+        min_distance_m=-0.0167,
+        horizon_step=0,
+    ).model_dump_json()
+    stop = reflect_on_failure(
+        "aborted", "safety_estop:...", failure_kind="FAILURE_SAFETY_ESTOP", evidence_json=collision
+    )
+    assert "collision" in stop and "change the approach" in stop
+    # A kernel latch is sticky: nothing runs until an operator resets it.
+    assert "until an operator resets it" in stop
+    operator = reflect_on_failure(
+        "aborted", "safety_estop:...", failure_kind="FAILURE_SAFETY_ESTOP"
+    )
+    assert "human resets it" in operator
+    assert "different skill" in reflect_on_failure(
+        "aborted", "bad manifest", failure_kind="FAILURE_CONFIG_ERROR"
+    )
+    # A kind with no hint of its own keeps the outcome-state default.
+    assert "re-check" in reflect_on_failure(
+        "canceled", "operator cancel", failure_kind="FAILURE_CANCELLED"
+    )
+
+
+def test_a_stop_by_a_human_or_the_deadman_asks_for_a_human_not_a_new_motion() -> None:
+    """Operator, hardware e-stop and deadman reports also arrive on /openral/failure/safety.
+
+    Their stops are not the commanded motion's fault: the hint must not say "change
+    what was commanded", and a self-collision must not say "clear the obstacle".
+    """
+
+    def stop(evidence: str) -> str:
+        return reflect_on_failure(
+            "aborted",
+            "safety_estop:...",
+            failure_kind="FAILURE_SAFETY_ESTOP",
+            evidence_json=evidence,
+        )
+
+    human = stop(HumanEvidence(actor="hardware_estop", reason="button").model_dump_json())
+    assert "human resets it" in human and "change what was commanded" not in human
+    deadman = stop(
+        TimeoutEvidence(
+            operation="deadman.heartbeat", deadline_s=0.5, elapsed_s=0.9
+        ).model_dump_json()
+    )
+    assert "re-arm" in deadman and "change what was commanded" not in deadman
+    own = stop(
+        CollisionEvidence(
+            collision_kind="self",
+            link_a="openarm_left_link5",
+            link_b_or_object="openarm_body_link0",
+            min_distance_m=-0.004,
+            horizon_step=0,
+        ).model_dump_json()
+    )
+    assert "self-collision" in own and "clear the obstacle" not in own
+
+
+def test_a_stalled_clock_is_not_reported_as_a_stuck_skill() -> None:
+    """A ``clock_stalled`` deadline miss means the stack stopped, not the skill."""
+    stalled = TimeoutEvidence(
+        operation="rskill.execute:clock_stalled", deadline_s=120.0, elapsed_s=31.0
+    ).model_dump_json()
+    hint = reflect_on_failure(
+        "aborted", "clock_stalled: ...", timed_out=True, evidence_json=stalled
+    )
+    assert "clock stopped" in hint and "different skill" not in hint
+    exceeded = TimeoutEvidence(
+        operation="rskill.execute:deadline_exceeded", deadline_s=120.0, elapsed_s=121.0
+    ).model_dump_json()
+    assert "timed out" in reflect_on_failure(
+        "aborted", "deadline_exceeded: ...", timed_out=True, evidence_json=exceeded
+    )
+
+
+def test_a_runtime_fault_with_a_known_cause_does_not_say_retry() -> None:
+    """``ControllerEvidence.state`` names a cause no retry fixes: OOM, a kernel overflow, ..."""
+
+    def runtime(state: str) -> str:
+        evidence = ControllerEvidence(controller_name="safety_kernel", state=state)
+        return reflect_on_failure(
+            "aborted",
+            "...",
+            failure_kind="FAILURE_RUNTIME_ERROR",
+            evidence_json=evidence.model_dump_json(),
+        )
+
+    assert "ran out of memory" in runtime("gpu_out_of_memory")
+    assert "not armed" in runtime("drop_envelope_unconfigured")
+    assert "capacity" in runtime("drop_voxel_overflow")
+    for state in ("gpu_out_of_memory", "drop_envelope_unconfigured", "drop_voxel_overflow"):
+        assert "retry once" not in runtime(state), state
+    # An unknown state, or no evidence, keeps the kind's own hint.
+    assert "retry once" in runtime("some_new_state")
+    assert "retry once" in reflect_on_failure(
+        "aborted", "...", failure_kind="FAILURE_RUNTIME_ERROR"
+    )
+
+
+def test_a_failed_skill_line_shows_its_evidence() -> None:
+    """``ExecutionEventRecord.evidence_json`` renders as an ``evidence=…`` summary."""
+    evidence = PerceptionStaleEvidence(
+        sensor_id="/openral/world_state_fast", staleness_ms=7012.0, threshold_ms=500.0
+    ).model_dump_json()
+    r = ContextRenderer()
+    r.append_execution(
+        ExecutionEventRecord(
+            rskill_id="openral/restock",
+            outcome="failed",
+            summary="ROSPerceptionStale: tick 441 was not applied within 8 s",
+            reflection="retry",
+            stamp_ns=1,
+            evidence_json=evidence,
+        )
+    )
+    out = r.render(world_state=None)
+    assert '"sensor_id": "/openral/world_state_fast"' in out and '"staleness_ms": 7012.0' in out
 
 
 def test_reflect_on_reward_plateau_says_change_approach_not_shorten() -> None:

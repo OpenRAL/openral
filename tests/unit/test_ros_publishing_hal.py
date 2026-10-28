@@ -370,16 +370,19 @@ def test_single_action_ack_timeout_is_bounded() -> None:
 
 
 def test_ack_timeout_names_the_kernel_drop_seen_during_the_wait() -> None:
-    """A fail-closed drop latches nothing, so the apply-wait times out: say why (r10dr_on1)."""
+    """A fail-closed drop latches nothing, so the apply-wait times out: say why (r10dr_on1).
+
+    A stale kernel input raises ``ROSPerceptionStale``, the type the runner's getter names.
+    """
 
     class _StubNode:
         pass
 
     seen: list[float] = []
 
-    def _drop(since: float) -> str | None:
+    def _drop(since: float) -> tuple[str, type[Exception]] | None:
         seen.append(since)
-        return "/openral/safety_status:drop_voxel_unavailable (voxel_stale)"
+        return "/openral/safety_status:drop_voxel_unavailable (voxel_stale)", ROSPerceptionStale
 
     hal = ROSPublishingHAL(
         node=_StubNode(),
@@ -391,7 +394,7 @@ def test_ack_timeout_names_the_kernel_drop_seen_during_the_wait() -> None:
         control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0] * 6], tick_index=73
     )
     with pytest.raises(
-        ROSRuntimeError, match=r"tick 73 was not applied within 0.01 s.*voxel_stale"
+        ROSPerceptionStale, match=r"tick 73 was not applied within 0.01 s.*voxel_stale"
     ):
         hal._wait_for_group_applied(action)
     assert len(seen) == 1 and seen[0] > 0.0

@@ -204,6 +204,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         drain = time.monotonic() + 1.5
         while time.monotonic() < drain:
             executor.spin_once(timeout_sec=0.05)
+        rendered = reasoner._renderer.render(world_state=None)
 
         executor.remove_node(reasoner)
         executor.remove_node(server_node)
@@ -219,6 +220,10 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         "no FailureTrigger published; the VRAM pair check did not refuse the "
         "over-budget VLA dispatch."
     )
+    # The LLM reads the refusal with a hint, not just a failure-buffer line: re-sending
+    # the same skill is refused again, so it must pick a smaller one.
+    assert f"skill={_VLA_ID}: not run: vram_insufficient" in rendered, rendered
+    assert "pick a smaller skill" in rendered, rendered
     vram_failures = [m for m in failures if "vram_insufficient" in m.evidence_json]
     assert vram_failures, (
         f"a FailureTrigger fired but none was vram_insufficient; "

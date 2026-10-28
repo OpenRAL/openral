@@ -159,6 +159,8 @@ const char* violation_kind_field(ViolationKind k) {
     return "force";
   case ViolationKind::kWorkspace:
     return "workspace";
+  case ViolationKind::kPerception:
+    return "perception";
   case ViolationKind::kController:
     return "controller";
   case ViolationKind::kCollision:
@@ -174,6 +176,8 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
     return 1;  // KIND_FORCE
   case ViolationKind::kWorkspace:
     return 2;  // KIND_WORKSPACE
+  case ViolationKind::kPerception:
+    return 3;  // KIND_PERCEPTION
   case ViolationKind::kController:
     return 5;  // KIND_CONTROLLER
   case ViolationKind::kCollision:
@@ -1063,6 +1067,9 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/diagnostics", rclcpp::QoS(rclcpp::KeepLast(1)));
 
+  // The candidate subscription is live from here, before on_activate: age a
+  // never-received input from configure until activation restamps it.
+  activated_stamp_ = this->now();
   candidate_sub_ = this->create_subscription<openral_msgs::msg::ActionChunk>(
       "/openral/candidate_action", chunk_qos(),
       std::bind(&SafetyKernelLifecycleNode::on_candidate_action, this, std::placeholders::_1));
@@ -1136,6 +1143,7 @@ SafetyKernelLifecycleNode::on_activate(const rclcpp_lifecycle::State& state) {
   // rclcpp_lifecycle::LifecycleNode::on_activate() default activates all
   // registered managed publishers; we still call it via the base.
   clear_workspace_commands(ResetReason::kActivate);
+  activated_stamp_ = this->now();
   safe_pub_->on_activate();
   estop_pub_->on_activate();
   failure_pub_->on_activate();
@@ -1388,12 +1396,19 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // world model — or, for a seed-requiring mode, a fresh+complete measured
       // state — is dropped (fail-closed) but NOT latched; motion resumes once a
       // fresh input lands.
-      const auto unavailable = [&](const char* reason, std::uint8_t drop_code) {
+      // `stale_input` set → the drop is reported as PerceptionStaleEvidence
+      // (which input, its age, the limit it crossed); unset → ControllerEvidence
+      // naming `reason` (an overflow is a capacity fault, not staleness).
+      const auto unavailable = [&](const char* reason, std::uint8_t drop_code,
+                                   const char* stale_input = nullptr, double age_ms = 0.0,
+                                   double limit_ms = 0.0) {
         ++chunks_dropped_;
         last_drop_reason_ = reason;
         Violation v;
-        v.kind = ViolationKind::kController;
-        v.set_field(reason);
+        v.kind = stale_input != nullptr ? ViolationKind::kPerception : ViolationKind::kController;
+        v.set_field(stale_input != nullptr ? stale_input : reason);
+        v.offending_value = age_ms;
+        v.limit_value = limit_ms;
         publish_failure_trigger(*msg, v);
         // ADR-0096 — the FailureTrigger above is VOLATILE, so a subscriber
         // that connects after the fact misses it entirely and it carries no
@@ -1410,7 +1425,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // Velocity/Cartesian reconstruction needs a fresh, complete
       // measured seed; fail-closed otherwise.
       if ((is_velocity || is_cartesian) && !measured_state_fresh()) {
-        unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
+        unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE,
+                    "/joint_states", measured_state_age_ms(), collision_state_deadline_s_ * 1e3);
         return;
       }
       // ADR-0102 slot row. A slot-dispatched JOINT_POSITION chunk (the real
@@ -1444,7 +1460,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           }
         }
         if (slot_row && !measured_state_fresh()) {
-          unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
+          unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE,
+                      "/joint_states", measured_state_age_ms(), collision_state_deadline_s_ * 1e3);
           return;
         }
         // The HAL commits a tick's slots as ONE configuration, so a row is also
@@ -1471,9 +1488,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         const bool fresh = voxel_received_ && !voxel_overflow_ &&
                            (this->now() - voxel_stamp_).seconds() <= world_voxel_deadline_s_;
         if (!fresh) {
-          unavailable(voxel_overflow_ ? "voxel_overflow" : "voxel_unavailable",
-                      voxel_overflow_ ? openral_msgs::msg::SafetyStatus::DROP_VOXEL_OVERFLOW
-                                      : openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+          if (voxel_overflow_) {
+            unavailable("voxel_overflow", openral_msgs::msg::SafetyStatus::DROP_VOXEL_OVERFLOW);
+          } else {
+            unavailable("voxel_unavailable",
+                        openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
+                        "/openral/world_voxels", input_age_ms(voxel_received_, voxel_stamp_),
+                        world_voxel_deadline_s_ * 1e3);
+          }
           return;
         }
         // Data age: how old the WORLD in the grid is, not how long ago the grid
@@ -1486,10 +1508,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                                  "safety.voxel_stale data_age_ms=%.0f budget_ms=%.0f", data_age_ms,
                                  world_voxel_data_age_budget_s_ * 1e3);
-            unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+            unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
+                        "/openral/world_voxels", data_age_ms, world_voxel_data_age_budget_s_ * 1e3);
             return;
           }
         } else {
+          // An unstamped grid is a producer wiring fault, not a stale world:
+          // ControllerEvidence, as before.
           unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
           return;
         }
@@ -1503,15 +1528,21 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         const bool fresh = attached_received_ && !attached_overflow_ && attached_age_s >= 0.0 &&
                            attached_age_s <= attached_collision_deadline_s_;
         if (!fresh) {
-          unavailable(attached_overflow_ ? "attached_overflow" : "attached_unavailable",
-                      attached_overflow_
-                          ? openral_msgs::msg::SafetyStatus::DROP_ATTACHED_OVERFLOW
-                          : openral_msgs::msg::SafetyStatus::DROP_ATTACHED_UNAVAILABLE);
+          if (attached_overflow_) {
+            unavailable("attached_overflow",
+                        openral_msgs::msg::SafetyStatus::DROP_ATTACHED_OVERFLOW);
+          } else {
+            unavailable(
+                "attached_unavailable", openral_msgs::msg::SafetyStatus::DROP_ATTACHED_UNAVAILABLE,
+                "/openral/world_state_fast", input_age_ms(attached_received_, attached_stamp_),
+                attached_collision_deadline_s_ * 1e3);
+          }
           return;
         }
         if ((attached_contact_snapshot_pending_ || attached_contact_active_) &&
             !measured_state_fresh()) {
-          unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
+          unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE,
+                      "/joint_states", measured_state_age_ms(), collision_state_deadline_s_ * 1e3);
           return;
         }
       }
@@ -2887,6 +2918,23 @@ bool SafetyKernelLifecycleNode::measured_velocity_fresh(std::int64_t now_ns) con
   return !collision_fk_dofs_.empty();
 }
 
+double SafetyKernelLifecycleNode::input_age_ms(bool received, const rclcpp::Time& stamp) const {
+  return (this->now() - (received ? stamp : activated_stamp_)).seconds() * 1e3;
+}
+
+double SafetyKernelLifecycleNode::measured_state_age_ms() const {
+  double age_ms = input_age_ms(q_meas_received_, q_meas_stamp_);
+  const std::int64_t now_ns = this->now().nanoseconds();
+  for (const int d : collision_fk_dofs_) {
+    const auto i = static_cast<std::size_t>(d);
+    const bool seen = i < q_meas_seen_.size() && q_meas_seen_[i] && i < dq_meas_stamp_ns_.size();
+    const double dof_age_ms = seen ? static_cast<double>(now_ns - dq_meas_stamp_ns_[i]) / 1e6
+                                   : input_age_ms(false, activated_stamp_);
+    age_ms = std::max(age_ms, dof_age_ms);
+  }
+  return age_ms;
+}
+
 bool SafetyKernelLifecycleNode::measured_state_fresh() const noexcept {
   if (!q_meas_received_) {
     return false;
@@ -3387,6 +3435,14 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
     oss << R"({"kind":"workspace","ee_name":")" << json_escape(ee_name) << R"(","measured_xyz":[)"
         << mx << "," << my << "," << mz << R"(],"box_min":[)" << box_min_x
         << R"(,0.0,0.0],"box_max":[)" << box_max_x << R"(,0.0,0.0]})";
+    break;
+  }
+  case ViolationKind::kPerception: {
+    // PerceptionStaleEvidence: sensor_id (the stale input's topic), staleness_ms,
+    // threshold_ms (schema requires > 0; every caller passes a configured limit).
+    const double threshold = v.limit_value > 0.0 ? v.limit_value : 1e-9;
+    oss << R"({"kind":"perception","sensor_id":")" << json_escape(v.field) << R"(","staleness_ms":)"
+        << std::max(v.offending_value, 0.0) << R"(,"threshold_ms":)" << threshold << "}";
     break;
   }
   case ViolationKind::kController:

@@ -116,6 +116,14 @@ _FALLBACK_CONTROL_RATE_HZ = 30.0
 # ADR-0096 — the latched safety-state topic both the C++ kernel and
 # SafetyPassthroughNode publish on.
 _SAFETY_STATUS_TOPIC = "/openral/safety_status"
+_SAFETY_FAILURE_TOPIC = "/openral/failure/safety"
+# How long a failed goal's Result waits for the /openral/failure/safety report that
+# explains its safety stop. The kernel publishes that report just before the latch, but
+# on another topic: the latch (or /openral/estop) can wake the goal first, and a result
+# built then lost its CollisionEvidence (1 stop in 15 on an idle host). Only a stop
+# whose report has not arrived waits; the robot is already stopped, only the result
+# is delayed.
+_SAFETY_EVIDENCE_WAIT_S = 1.0
 
 # How old a ``SafetyStatus`` may be before this node stops believing it says
 # anything about *now*. Publishers re-stamp at 1 Hz, so three missed
@@ -158,6 +166,38 @@ def _drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS messag
         if getattr(status_cls, name, None) == code:
             return name.lower()
     return f"drop_reason_{code}"
+
+
+def _drop_exception_type(
+    code: int, status_cls: Any
+) -> type[Exception]:  # reason: ROS message class is untyped
+    """The exception a timed-out apply-wait raises for a kernel drop ``code``.
+
+    A drop because a kernel input was too old or never arrived (``DROP_VOXEL_UNAVAILABLE``,
+    ``DROP_ATTACHED_UNAVAILABLE``, ``DROP_STATE_UNAVAILABLE``) is stale perception: the
+    same skill can succeed once the input is fresh again. Anything else (an overflow, an
+    unconfigured envelope) stays a runtime error.
+
+    Example:
+        >>> class _S:
+        ...     DROP_VOXEL_UNAVAILABLE = 102
+        ...     DROP_VOXEL_OVERFLOW = 105
+        >>> _drop_exception_type(102, _S).__name__
+        'ROSPerceptionStale'
+        >>> _drop_exception_type(105, _S).__name__
+        'ROSRuntimeError'
+    """
+    from openral_core.exceptions import ROSPerceptionStale, ROSRuntimeError
+
+    stale = {
+        int(getattr(status_cls, name, -1))
+        for name in (
+            "DROP_VOXEL_UNAVAILABLE",
+            "DROP_ATTACHED_UNAVAILABLE",
+            "DROP_STATE_UNAVAILABLE",
+        )
+    }
+    return ROSPerceptionStale if code in stale else ROSRuntimeError
 
 
 def _commercial_deployment() -> bool:
@@ -426,7 +466,21 @@ if _ROS2_AVAILABLE:
             self._safety_status: Any = None
             self._safety_status_recv_monotonic: float = 0.0
             # Newest NON-latching kernel drop (DROP_* + detail) and when it arrived.
-            self._last_drop: tuple[float, str] | None = None
+            # (receipt monotonic, label, exception type) of the newest kernel drop.
+            self._last_drop: tuple[float, str, type[Exception], str] | None = None
+            # (bare drop label, reason) of the drop the last apply-wait timeout raised on
+            # (``_safety_drop_reason``): a non-stale drop's ControllerEvidence.
+            self._explained_drop: tuple[str, str] | None = None
+            # Evidence for ExecuteRskill.Result.evidence_json: the newest
+            # /openral/failure/safety report per FailureTrigger kind (receipt monotonic,
+            # json), signalled on _safety_evidence_cv; and the evidence this goal's own
+            # failure path recorded, keyed by the failure_kind it explains
+            # (TimeoutEvidence: deadline; ObjectQueryEvidence: not found).
+            self._safety_evidence: dict[int, tuple[float, str]] = {}
+            self._safety_evidence_cv = threading.Condition()
+            self._goal_evidence: tuple[int, str] | None = None
+            self._goal_started_monotonic = 0.0
+            self._safety_failure_sub: Any = None
             self._episode_pub: Any = None
             self._episode_counter: int = 0
             # Set once a goal-end publish found the context already shut down.
@@ -673,6 +727,26 @@ if _ROS2_AVAILABLE:
             )
             self._safety_status_sub = self.create_subscription(
                 SafetyStatus, _SAFETY_STATUS_TOPIC, self._on_safety_status, status_qos
+            )
+            # The kernel's FailureTrigger evidence (CollisionEvidence on a stop,
+            # PerceptionStaleEvidence on a freshness drop), forwarded into the
+            # failed goal's Result.evidence_json. Safety-class QoS, read-only.
+            from openral_msgs.msg import FailureTrigger as _SafetyFailureMsg
+
+            # Its own callback group: in the node-default group it queued behind the
+            # /openral/estop and safety_status callbacks of the very stop it explains.
+            from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
+            self._safety_failure_sub = self.create_subscription(
+                _SafetyFailureMsg,
+                _SAFETY_FAILURE_TOPIC,
+                self._on_safety_failure,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=10,
+                ),
+                callback_group=MutuallyExclusiveCallbackGroup(),
             )
 
             # Episode boundary markers on the bus. A dataset
@@ -1020,6 +1094,11 @@ if _ROS2_AVAILABLE:
                 self._safety_status_sub = None
                 self._safety_status = None
                 self._safety_status_recv_monotonic = 0.0
+            if self._safety_failure_sub is not None:
+                self.destroy_subscription(self._safety_failure_sub)
+                self._safety_failure_sub = None
+                with self._safety_evidence_cv:
+                    self._safety_evidence.clear()
             if self._episode_pub is not None:
                 self.destroy_publisher(self._episode_pub)
                 self._episode_pub = None
@@ -1219,7 +1298,7 @@ if _ROS2_AVAILABLE:
             """
             with self._execute_serial:
                 try:
-                    return self._execute_locked(goal_handle)
+                    return self._attach_failure_evidence(self._execute_locked(goal_handle))
                 finally:
                     # HZ-0097-3 — the place declaration dies with the goal on
                     # EVERY exit, including one that never reaches
@@ -1257,6 +1336,9 @@ if _ROS2_AVAILABLE:
                 self._cancel_requested = False
                 self._object_not_found = None
                 self._last_deadline_miss = None
+                self._goal_evidence = None
+                self._explained_drop = None
+                self._goal_started_monotonic = time.monotonic()
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
 
@@ -1647,6 +1729,17 @@ if _ROS2_AVAILABLE:
                 },
             )
             self._last_deadline_miss = miss
+            from openral_core import TimeoutEvidence
+            from openral_msgs.action import ExecuteRskill
+
+            self._goal_evidence = (
+                int(ExecuteRskill.Result.FAILURE_DEADLINE_MISSED),
+                TimeoutEvidence(
+                    operation=f"rskill.execute:{miss.kind}",
+                    deadline_s=budget.budget_s,
+                    elapsed_s=max(miss.elapsed_s, 0.0),
+                ).model_dump_json(),
+            )
             return True
 
         def _run_until_done_or_deadline(  # noqa: PLR0915  # reason: one tick loop — safety/cancel/deadline gates, inference span, dispatch, feedback, pacing
@@ -2597,6 +2690,12 @@ if _ROS2_AVAILABLE:
                 if self._active_goal is None:
                     return
                 self._object_not_found = evidence.to_exception()
+                from openral_msgs.action import ExecuteRskill
+
+                self._goal_evidence = (
+                    int(ExecuteRskill.Result.FAILURE_OBJECT_NOT_FOUND),
+                    evidence.model_dump_json(),
+                )
                 self._cancel_requested = True
             self.get_logger().error(
                 f"rskill_runner.object_not_found goal={evidence.goal_id} "
@@ -2933,23 +3032,168 @@ if _ROS2_AVAILABLE:
             self._safety_status = msg
             self._safety_status_recv_monotonic = time.monotonic()
             code = int(getattr(msg, "drop_reason", 0))
-            if code >= 100 and not bool(getattr(msg, "latched", False)):  # SafetyStatus DROP_*
+            # DROP_NONE (255, "chunk accepted") is in the DROP_* range but drops nothing:
+            # recorded, it overwrote the real cause of a timed-out apply-wait (Spark restock
+            # seed 16, 2026-10-28: attached_unavailable reported as "drop_none").
+            if (
+                code >= 100
+                and code != int(getattr(type(msg), "DROP_NONE", 255))
+                and not bool(getattr(msg, "latched", False))
+            ):  # SafetyStatus DROP_*
                 detail = str(getattr(msg, "detail", "") or "")
                 label = _drop_reason_label(code, type(msg))
                 self._last_drop = (
                     self._safety_status_recv_monotonic,
                     f"{_SAFETY_STATUS_TOPIC}:{label}" + (f" ({detail})" if detail else ""),
+                    _drop_exception_type(code, type(msg)),
+                    label,
                 )
 
-        def _safety_drop_reason(self, since_monotonic: float) -> str | None:
+        def _safety_drop_reason(self, since_monotonic: float) -> tuple[str, type[Exception]] | None:
             """The newest non-latching kernel drop received at or after ``since_monotonic``.
 
             Injected into ``ROSPublishingHAL`` as ``drop_reason_getter``: a fail-closed drop
             (``voxel_stale``, ``state_unavailable``, ...) latches nothing, so the apply-wait
-            times out; this names the typed cause in the timeout error. Non-blocking.
+            times out; this names the cause and the exception type the timeout raises
+            (``_drop_exception_type``), and records it for the goal's ``ControllerEvidence``
+            (``_attach_failure_evidence``). Non-blocking.
             """
             drop = self._last_drop
-            return drop[1] if drop is not None and drop[0] >= since_monotonic else None
+            if drop is None or drop[0] < since_monotonic:
+                return None
+            self._explained_drop = (drop[3], drop[1])
+            return drop[1], drop[2]
+
+        def _on_safety_failure(self, msg: Any) -> None:  # reason: ROS message untyped
+            """Cache the newest ``/openral/failure/safety`` evidence per kind (store-only).
+
+            Not only the kernel publishes there: the operator / hardware e-stop
+            (``HumanEvidence``) and the deadman watchdog (``TimeoutEvidence``) do too, so a
+            stop's evidence names who stopped it.
+            """
+            with self._safety_evidence_cv:
+                self._safety_evidence[int(msg.kind)] = (
+                    time.monotonic(),
+                    str(msg.evidence_json or ""),
+                )
+                self._safety_evidence_cv.notify_all()
+
+        def _stop_evidence(self, wait_s: float) -> str | None:
+            """The ``/openral/failure/safety`` report that explains this goal's safety stop.
+
+            Received during this goal and not a perception drop. When the latched
+            ``SafetyStatus`` names a ``FailureTrigger`` kind (its ``drop_reason`` below the
+            ``DROP_*`` range), the report of that kind; otherwise, or when none of that
+            kind arrives within ``wait_s``, the newest stop report. Waits up to ``wait_s``
+            for it (``_SAFETY_EVIDENCE_WAIT_S``); ``None`` when nothing explains the stop.
+            """
+            from openral_msgs.msg import FailureTrigger
+
+            status = self._safety_status
+            code = int(getattr(status, "drop_reason", 255))
+            want = code if status is not None and bool(status.latched) and code < 100 else None
+
+            def stops() -> list[tuple[float, int, str]]:
+                return sorted(
+                    (stamp, kind, payload)
+                    for kind, (stamp, payload) in self._safety_evidence.items()
+                    if stamp >= self._goal_started_monotonic
+                    and kind != int(FailureTrigger.KIND_PERCEPTION)
+                )
+
+            deadline = time.monotonic() + wait_s
+            with self._safety_evidence_cv:
+                self._safety_evidence_cv.wait_for(
+                    lambda: (
+                        any(k == want if want is not None else True for _t, k, _p in stops())
+                        or time.monotonic() >= deadline
+                    ),
+                    timeout=wait_s,
+                )
+                found = stops()
+            exact = [p for _t, k, p in found if k == want]
+            if exact or found:
+                return exact[-1] if exact else found[-1][2]
+            self.get_logger().warning(
+                f"rskill_runner.safety_evidence_missing: no /openral/failure/safety report "
+                f"explained the stop within {wait_s:g} s (latched drop_reason={code})"
+            )
+            return None
+
+        def _runtime_evidence(self, failure_reason: str) -> str | None:
+            """``ControllerEvidence`` for a runtime fault whose cause is known, else ``None``.
+
+            The skill's own typed faults (``ROSGPUMemoryError``, ``ROSQuantizationError``,
+            named first in ``failure_reason`` by this node) and a kernel drop that left the
+            action unapplied (``_explained_drop``: an unconfigured envelope, a voxel or
+            attachment overflow). Their states pick the reasoner's hint: none of them is
+            fixed by retrying the same skill.
+            """
+            from openral_core import ControllerEvidence
+
+            states = {
+                "ROSGPUMemoryError": "gpu_out_of_memory",
+                "ROSQuantizationError": "quantization_mismatch",
+            }
+            name = failure_reason.split(":", 1)[0]
+            if name in states:
+                evidence = ControllerEvidence(
+                    controller_name="rskill_runner",
+                    state=states[name],
+                    detail=failure_reason[:480],
+                )
+            elif self._explained_drop is not None:
+                evidence = ControllerEvidence(
+                    controller_name="safety_kernel",
+                    state=self._explained_drop[0],
+                    detail=self._explained_drop[1][:480],
+                )
+            else:
+                return None
+            return evidence.model_dump_json()
+
+        def _attach_failure_evidence(self, result: Any) -> Any:  # reason: ROS message untyped
+            """Stamp ``result.evidence_json`` on a failed goal; returns ``result``.
+
+            The goal's own record explains its own kind (``TimeoutEvidence`` a
+            ``FAILURE_DEADLINE_MISSED``, ``ObjectQueryEvidence`` a
+            ``FAILURE_OBJECT_NOT_FOUND``). A safety stop carries the report that explains
+            it (``_stop_evidence``: ``CollisionEvidence`` & co., waiting briefly for it); a
+            stale-perception failure the newest ``PerceptionStaleEvidence`` received during
+            this goal. Anything else (a cancel, a config or runtime fault) carries none:
+            ``failure_reason`` already says it all.
+            """
+            from openral_core import FailureEvidence
+            from openral_msgs.action import ExecuteRskill
+            from openral_msgs.msg import FailureTrigger
+            from pydantic import TypeAdapter, ValidationError
+
+            if result is None or bool(result.success) or result.evidence_json:
+                return result
+            kind = int(result.failure_kind)
+            if self._goal_evidence is not None and self._goal_evidence[0] == kind:
+                result.evidence_json = self._goal_evidence[1]
+                return result
+            payload: str | None = None
+            if kind == int(ExecuteRskill.Result.FAILURE_RUNTIME_ERROR):
+                payload = self._runtime_evidence(str(result.failure_reason))
+            elif kind == int(ExecuteRskill.Result.FAILURE_SAFETY_ESTOP):
+                payload = self._stop_evidence(_SAFETY_EVIDENCE_WAIT_S)
+            elif kind == int(ExecuteRskill.Result.FAILURE_PERCEPTION_STALE):
+                with self._safety_evidence_cv:
+                    stale = self._safety_evidence.get(int(FailureTrigger.KIND_PERCEPTION))
+                if stale is not None and stale[0] >= self._goal_started_monotonic:
+                    payload = stale[1]
+            if not payload:
+                return result
+            try:
+                adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+                adapter.validate_json(payload)
+            except ValidationError as exc:
+                self.get_logger().error(f"rskill_runner.safety_evidence_undecodable: {exc!s}")
+                return result
+            result.evidence_json = payload
+            return result
 
         def _safety_abort_reason(self) -> str | None:
             """Return why a safety stop is in effect here, or ``None``.

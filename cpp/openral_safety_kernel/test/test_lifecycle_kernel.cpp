@@ -381,6 +381,31 @@ TEST_F(LifecycleKernelTest, ResetServiceRespectsCooldown) {
 // collision report path publishes `SafetyStatus::KIND_COLLISION` with the
 // E-stop. This test pins the number, not the emission — the emission itself is
 // covered by the collision tests below and in test_collision.cpp.
+namespace {
+
+// Pull a "key":"value" / "key":number field out of the kernel's evidence_json
+// (a flat FailureEvidence object — no nesting, so no JSON parser needed;
+// nlohmann_json is an optional dependency of this package).
+std::string evidence_field(const std::string& json, const std::string& key) {
+  const std::string needle = "\"" + key + "\":";
+  const std::size_t at = json.find(needle);
+  if (at == std::string::npos) {
+    return {};
+  }
+  std::size_t begin = at + needle.size();
+  const bool quoted = begin < json.size() && json[begin] == '"';
+  if (quoted) {
+    ++begin;
+  }
+  const std::size_t end = quoted ? json.find('"', begin) : json.find_first_of(",}", begin);
+  if (end == std::string::npos) {
+    return {};
+  }
+  return json.substr(begin, end - begin);
+}
+
+}  // namespace
+
 TEST(ViolationKindMapping, EnumValuesMatchFailureTriggerConstants) {
   using openral_msgs::msg::FailureTrigger;
   EXPECT_EQ(static_cast<std::uint8_t>(osk::ViolationKind::kForce), FailureTrigger::KIND_FORCE);
@@ -388,6 +413,8 @@ TEST(ViolationKindMapping, EnumValuesMatchFailureTriggerConstants) {
             FailureTrigger::KIND_WORKSPACE);
   EXPECT_EQ(static_cast<std::uint8_t>(osk::ViolationKind::kController),
             FailureTrigger::KIND_CONTROLLER);
+  EXPECT_EQ(static_cast<std::uint8_t>(osk::ViolationKind::kPerception),
+            FailureTrigger::KIND_PERCEPTION);
   EXPECT_EQ(static_cast<std::uint8_t>(osk::ViolationKind::kCollision),
             FailureTrigger::KIND_COLLISION);
 }
@@ -1186,6 +1213,143 @@ TEST_F(LifecycleKernelTest, MobileBaseArmCaughtAgainstVoxelWall) {
 // (fail-closed, no latch) even though the grid itself just arrived; the same
 // wall with a fresh `source_stamp` trips the collision. The receipt deadline
 // alone cannot tell the two apart: both grids are milliseconds old on arrival.
+// The candidate subscription exists from on_configure. A chunk that arrives
+// before on_activate with a required input missing is dropped and aged; the
+// age used to subtract a default system-time stamp from the ROS clock, which
+// throws and would take the kernel down.
+TEST_F(LifecycleKernelTest, ACandidateBeforeActivationWithAMissingInputIsDroppedNotFatal) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-10.0, -3.14}},
+      {"joint_position_max", std::vector<double>{10.0, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{4096}},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 1}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{0, 1}},
+      {"collision_link_names", std::vector<std::string>{"base", "arm"}},
+      {"collision_joint_names", std::vector<std::string>{"j_base", "j_arm"}},
+      {"collision_base_dofs", std::vector<std::int64_t>{0}},
+      {"collision_state_deadline_ms", 2000.0},
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_pre_activate", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("pre_activate_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  // No /joint_states and no grid ever: a velocity chunk needs the measured seed.
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.0, 0.0};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  while (node->chunks_dropped() == 0U && std::chrono::steady_clock::now() < deadline) {
+    cand_pub->publish(vel);
+    EXPECT_NO_THROW(exec.spin_some(std::chrono::milliseconds(10)));
+  }
+  EXPECT_GT(node->chunks_dropped(), 0U) << "the chunk must reach the freshness check and drop";
+  EXPECT_EQ(node->chunks_passed(), 0U);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  node->on_cleanup(inactive);
+}
+
+// Before the first /openral/world_state_fast message the attachment stamp was
+// a default (system-time) rclcpp::Time, and every age check subtracted it from
+// the ROS clock before looking at attached_received_: a candidate in that
+// window threw out of the subscriber (and out of a noexcept freshness check).
+TEST_F(LifecycleKernelTest, ACandidateBeforeTheFirstWorldStateIsDroppedNotFatal) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-10.0, -3.14}},
+      {"joint_position_max", std::vector<double>{10.0, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", false},
+      {"attached_collision_enabled", true},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 1}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{0, 1}},
+      {"collision_link_names", std::vector<std::string>{"base", "arm"}},
+      {"collision_joint_names", std::vector<std::string>{"j_base", "j_arm"}},
+      {"collision_base_dofs", std::vector<std::int64_t>{0}},
+      {"collision_state_deadline_ms", 2000.0},
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_no_world_state", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("no_world_state_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"j_base", "j_arm"};
+  js.position = {0.0, 0.0};
+  js.velocity = {0.0, 0.0};
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.0, 0.0};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+  while (node->chunks_dropped() == 0U && std::chrono::steady_clock::now() < deadline) {
+    js.header.stamp = helper.now();
+    js_pub->publish(js);
+    EXPECT_NO_THROW(exec.spin_some(std::chrono::milliseconds(10)));
+    cand_pub->publish(vel);
+    EXPECT_NO_THROW(exec.spin_some(std::chrono::milliseconds(10)));
+  }
+  EXPECT_GT(node->chunks_dropped(), 0U) << "no world state yet: the chunk must drop";
+  EXPECT_EQ(node->chunks_passed(), 0U);
+  EXPECT_FALSE(node->fault_latched());
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+}
+
 TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
   rclcpp::NodeOptions opts;
   opts.parameter_overrides({
@@ -1287,9 +1451,14 @@ TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
   EXPECT_GT(node->chunks_dropped(), 0U) << "chunks against a stale world must be dropped";
   EXPECT_EQ(node->chunks_passed(), 0U) << "no chunk may pass on a world older than the budget";
 
+  // The drop is reported as stale perception (PerceptionStaleEvidence): which
+  // input, how old the world in it was, and the budget it crossed.
   ASSERT_FALSE(failure_evidence.empty());
-  EXPECT_NE(failure_evidence.back().find("voxel_stale"), std::string::npos);
-  EXPECT_EQ(failure_evidence.back().find("joint=65535"), std::string::npos);
+  const std::string& stale = failure_evidence.back();
+  EXPECT_EQ(evidence_field(stale, "kind"), "perception") << stale;
+  EXPECT_EQ(evidence_field(stale, "sensor_id"), "/openral/world_voxels") << stale;
+  EXPECT_DOUBLE_EQ(std::stod(evidence_field(stale, "threshold_ms")), 300.0) << stale;
+  EXPECT_GT(std::stod(evidence_field(stale, "staleness_ms")), 300.0) << stale;
 
   // Phase 2: the same wall, captured just now: the collision is adjudicated.
   const auto fresh_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
@@ -1307,31 +1476,6 @@ TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
   node->on_deactivate(active);
   node->on_cleanup(inactive);
 }
-
-namespace {
-
-// Pull a "key":"value" / "key":number field out of the kernel's evidence_json
-// (a flat CollisionEvidence object — no nesting, so no JSON parser needed;
-// nlohmann_json is an optional dependency of this package).
-std::string evidence_field(const std::string& json, const std::string& key) {
-  const std::string needle = "\"" + key + "\":";
-  const std::size_t at = json.find(needle);
-  if (at == std::string::npos) {
-    return {};
-  }
-  std::size_t begin = at + needle.size();
-  const bool quoted = begin < json.size() && json[begin] == '"';
-  if (quoted) {
-    ++begin;
-  }
-  const std::size_t end = quoted ? json.find('"', begin) : json.find_first_of(",}", begin);
-  if (end == std::string::npos) {
-    return {};
-  }
-  return json.substr(begin, end - begin);
-}
-
-}  // namespace
 
 // E-stop evidence must describe ONE cell: `link_b_or_object` names the voxel
 // `min_distance_m` measures — never a shallow-graze identity paired with a
@@ -2665,6 +2809,12 @@ TEST_F(LifecycleKernelTest, StateUnavailableDropAndRecoveryPublishSafetyStatus) 
   rclcpp::QoS js_qos(rclcpp::KeepLast(1));
   js_qos.best_effort();
   auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  std::string evidence_json;
+  auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", rclcpp::QoS(10).reliable(),
+      [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr m) {
+        evidence_json = m->evidence_json;
+      });
   rclcpp::executors::SingleThreadedExecutor exec;
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
@@ -2683,6 +2833,14 @@ TEST_F(LifecycleKernelTest, StateUnavailableDropAndRecoveryPublishSafetyStatus) 
   EXPECT_FALSE(spy.latest().latched)
       << "an unavailable upstream input drops the chunk; it must not read as a latch";
   EXPECT_FALSE(node->fault_latched());
+  // Never received: reported as stale perception on /joint_states, aged from
+  // the kernel's activation, against the measured-state deadline (500 ms).
+  spin_until(exec, [&] { return !evidence_json.empty(); });
+  EXPECT_EQ(evidence_field(evidence_json, "kind"), "perception") << evidence_json;
+  EXPECT_EQ(evidence_field(evidence_json, "sensor_id"), "/joint_states") << evidence_json;
+  EXPECT_DOUBLE_EQ(std::stod(evidence_field(evidence_json, "threshold_ms")), 500.0)
+      << evidence_json;
+  EXPECT_GE(std::stod(evidence_field(evidence_json, "staleness_ms")), 0.0) << evidence_json;
 
   // Seed the state and re-send: the chunk now passes, and the recovery
   // transition must clear the drop reason on the latched topic.
@@ -3109,9 +3267,12 @@ TEST_F(LifecycleKernelTest, StalledAttachmentStreamRefusesEveryCandidateEvenWith
       << "not one candidate may reach /openral/safe_action on a stalled attachment stream — an "
          "armed place region must not outlive the freshness gate that vouches for the payload";
   ASSERT_FALSE(evidence_json.empty()) << "a fail-closed drop must publish a FailureTrigger";
-  EXPECT_NE(evidence_field(evidence_json, "detail").find("field=attached_unavailable"),
-            std::string::npos)
+  EXPECT_EQ(evidence_field(evidence_json, "kind"), "perception") << evidence_json;
+  EXPECT_EQ(evidence_field(evidence_json, "sensor_id"), "/openral/world_state_fast")
       << "the refusal must name the stale attachment stream, not something downstream of it: "
+      << evidence_json;
+  EXPECT_GT(std::stod(evidence_field(evidence_json, "staleness_ms")),
+            std::stod(evidence_field(evidence_json, "threshold_ms")))
       << evidence_json;
   EXPECT_FALSE(node->fault_latched())
       << "a stale input is fail-closed, not a latched fault: motion resumes when the stream does";

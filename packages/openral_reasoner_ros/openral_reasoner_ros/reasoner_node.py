@@ -321,6 +321,12 @@ _KIND_TIMEOUT: int = 0
 _KIND_CONTROLLER: int = 5
 _KIND_OBJECT_QUERY: int = 11  # issue #418: the object tracker's query escalations
 _SEVERITY_WARN: int = 1
+# ControllerEvidence states of an ExecuteRskill goal that never ran: refused before
+# dispatch (VRAM, runner not on the graph), lost (dispatch watchdog), rejected, or a
+# transport error. ``_publish_skill_failure`` gives each an execution line + hint.
+_DISPATCH_FAILURE_STATES = frozenset(
+    {"vram_insufficient", "unavailable", "dispatch_timeout", "rejected", "error"}
+)
 _SEVERITY_FAIL: int = 2
 
 # Fallback failure-state names for the dashboard EVENT_SKILL_FAILURE event when
@@ -549,6 +555,20 @@ def _failure_kind_value(name: str) -> int:
     if IDLExecuteRskill is None:  # pragma: no cover — no colcon overlay
         return 0
     return int(getattr(IDLExecuteRskill.Result, name))
+
+
+def _failure_kind_name(value: int) -> str | None:
+    """The ``ExecuteRskill.Result`` ``FAILURE_*`` constant name for ``value``, or ``None``."""
+    if IDLExecuteRskill is None:  # pragma: no cover — no colcon overlay
+        return None
+    return next(
+        (
+            name
+            for name in dir(IDLExecuteRskill.Result)
+            if name.startswith("FAILURE_") and getattr(IDLExecuteRskill.Result, name) == value
+        ),
+        None,
+    )
 
 
 def _rskill_failure_kind(result: Any) -> int:
@@ -5537,8 +5557,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     detail,
                     timed_out=failure_kind
                     in {_failure_kind_value(n) for n in _TIMED_OUT_FAILURE_KIND_NAMES},
+                    failure_kind=_failure_kind_name(failure_kind),
+                    evidence_json=str(getattr(result, "evidence_json", "") or ""),
                 ),
                 stamp_ns=now_ns,
+                evidence_json=str(getattr(result, "evidence_json", "") or ""),
             )
         )
         updated_palette = _palette_after_rskill_failure(self._palette, call.rskill_id, failure_kind)
@@ -5739,6 +5762,24 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         msg.rskill_id = rskill_id
         msg.trace_id = trace_id or traceparent or ""
         self._failure_pub.publish(msg)
+        # A goal that never ran (refused before dispatch, rejected, lost) has no result to
+        # carry a hint: give the LLM the execution line and hint here, picked from the state.
+        if isinstance(evidence, ControllerEvidence) and evidence.state in _DISPATCH_FAILURE_STATES:
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=rskill_id,
+                    outcome="failed",
+                    summary=f"not run: {evidence.state}",
+                    reflection=reflect_on_failure(
+                        "failed",
+                        evidence.detail,
+                        timed_out=False,
+                        evidence_json=msg.evidence_json,
+                    ),
+                    stamp_ns=self.get_clock().now().nanoseconds,
+                    evidence_json=msg.evidence_json,
+                )
+            )
         # Mirror the failure onto the OTLP span path so the dashboard tallies it
         # on the "skill failures" counter + surfaces the state.
         # The ROS FailureTrigger bus is invisible to the dashboard (it ingests
