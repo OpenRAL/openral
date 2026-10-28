@@ -55,7 +55,7 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    hosted runner cannot provision) for a diff that cannot change behaviour.
    Every commit the release covers already passed on its own PR. The branch
    name alone does not earn the skip: the branch must live in this repo, and
-   [`tools/check_release_diff.py`](../../tools/check_release_diff.py) must find
+   [`tools/check_release_diff.py`](https://github.com/OpenRAL/openral/blob/master/tools/check_release_diff.py) must find
    that the release files differ only in OpenRAL's own versions and
    `openral-*==` pins (a dependency edit in a `pyproject.toml` or `uv.lock`
    selects tests normally). The job still
