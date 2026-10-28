@@ -238,6 +238,7 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
         [
             Parameter("robot_yaml", value=_ROBOT),
             Parameter("mode", value="tracking"),
+            Parameter("hal_mode", value="sim"),
             Parameter("cameras", value=["top"]),
             Parameter("grounding_wait_s", value=5.0),
             Parameter("cell_m", value=float(grid.resolution)),
@@ -509,6 +510,7 @@ def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
         [
             Parameter("robot_yaml", value=_ROBOT),
             Parameter("mode", value="tracking"),
+            Parameter("hal_mode", value="sim"),
             Parameter("cameras", value=["top"]),
             Parameter("grounding_wait_s", value=5.0),
             Parameter("cell_m", value=float(grid.resolution)),

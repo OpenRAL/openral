@@ -180,6 +180,7 @@ class TrackerRig:
             [
                 Parameter("robot_yaml", value=ROBOT),
                 Parameter("mode", value=mode),
+                Parameter("hal_mode", value="sim"),
                 Parameter("cameras", value=["top"]),
                 Parameter("grounding_wait_s", value=5.0),
                 Parameter("cell_m", value=float(self.grid.resolution)),

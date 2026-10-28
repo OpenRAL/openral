@@ -97,6 +97,33 @@ def test_tracker_node_grounds_relays_binds_and_never_regresses() -> None:
                 first.destroy_node()
 
 
+def test_a_tracker_without_hal_mode_refuses_to_configure() -> None:
+    """Unset ``hal_mode`` means a real cell: the node must not track (fail closed)."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_world_state_ros.object_tracker_node import make_object_tracker_node
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.parameter import Parameter
+
+    from tests.integration._tracker_rig import ROBOT
+
+    with tracker_rig():
+        node = make_object_tracker_node()
+        try:
+            assert node.get_parameter("hal_mode").value == "real"
+            node.set_parameters(
+                [
+                    Parameter("robot_yaml", value=ROBOT),
+                    Parameter("mode", value="tracking"),
+                    Parameter("cameras", value=["top"]),
+                    Parameter("grounding_wait_s", value=5.0),
+                ]
+            )
+            assert node.trigger_configure() != TransitionCallbackReturn.SUCCESS
+        finally:
+            node.destroy_node()
+
+
 def test_on_publishes_no_grasp_region() -> None:
     """``on``: the exemption provider keys on track ids; the declaration carries no region."""
     pytest.importorskip("rclpy")
