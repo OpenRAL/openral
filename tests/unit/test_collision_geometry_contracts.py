@@ -499,9 +499,12 @@ def test_a_world_voxel_stop_says_where_the_cell_is() -> None:
     wire = (
         '{"kind":"collision","collision_kind":"world","link_a":"attached:pinch:left_gripper@1",'
         '"link_b_or_object":"voxel_467357","horizon_step":0,"min_distance_m":-0.01,'
-        '"world_grid_origin_m":[-0.825,-0.825,-0.825],"world_cell_center_m":[0.33,0.2,-0.25]}'
+        '"world_grid_origin_m":[-0.825,-0.825,-0.825],"world_cell_center_m":[0.33,0.2,-0.25],'
+        '"workspace_contact_active":false,"workspace_declaration_live":true}'
     )
-    assert CollisionEvidence.model_validate_json(wire).world_cell_center_m == (0.33, 0.2, -0.25)
+    decoded = CollisionEvidence.model_validate_json(wire)
+    assert decoded.world_cell_center_m == (0.33, 0.2, -0.25)
+    assert decoded.workspace_declaration_live is True
     older = CollisionEvidence(
         collision_kind="world",
         link_a="ee",
@@ -510,6 +513,7 @@ def test_a_world_voxel_stop_says_where_the_cell_is() -> None:
         min_distance_m=-0.05,
     )
     assert older.world_cell_center_m is None
+    assert older.workspace_declaration_live is None
 
 
 def test_a_provider_stop_still_decodes_with_its_exemption_source() -> None:
