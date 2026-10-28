@@ -221,7 +221,9 @@ class _SmolVLAAdapter:
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         from openral_sim.policies._video_capture import materialize_input_frame
 
-        return materialize_input_frame(self._last_input_frame)
+        # Stored back: replayed steps share one tiled array until the next inference.
+        self._last_input_frame = materialize_input_frame(self._last_input_frame)
+        return self._last_input_frame
 
     def reset(self) -> None:
         if self._chunk_executor is not None:

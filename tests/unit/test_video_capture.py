@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib
+
 import numpy as np
+import pytest
 from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
 
@@ -28,3 +31,24 @@ def test_tile_input_frames_arranges_multiple_cameras_into_square_grid() -> None:
     assert int(tiled[1:5, 3:5].mean()) == 10
     assert int(tiled[1:5, 7:9].mean()) == 200
     assert int(tiled[7:11, 3:5].mean()) == 120
+
+
+@pytest.mark.parametrize(
+    ("module", "cls"),
+    [
+        ("act", "_ACTAdapter"),
+        ("gr00t", "_GrootAdapter"),
+        ("molmoact2", "_MolmoAct2Adapter"),
+        ("pi05", "_PI05Adapter"),
+        ("smolvla", "_SmolVLAAdapter"),
+    ],
+)
+def test_replayed_steps_share_one_tiled_preview(module: str, cls: str) -> None:
+    """``sim run`` keeps every step's preview: a chunk's replayed steps must not tile anew."""
+    adapter_cls = getattr(importlib.import_module(f"openral_sim.policies.{module}"), cls)
+    adapter = object.__new__(adapter_cls)
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    object.__setattr__(adapter, "_last_input_frame", [frame, frame])
+    first = adapter.last_input_frame()
+    assert first is not None and first.shape == (8, 8, 3)
+    assert adapter.last_input_frame() is first
