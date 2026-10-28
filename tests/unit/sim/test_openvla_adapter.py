@@ -313,20 +313,28 @@ def test_legacy_openvla_model_compat_leaves_transformers_base_classes_alone() ->
 
     before = {name: PreTrainedModel.__dict__[name] for name in ("_init_weights", "tie_weights")}
 
-    class RemoteModel(PreTrainedModel):
-        def _init_weights(self, module: object) -> None:
-            raise AssertionError("remote init must not run")
+    def _remote_init(self: object, module: object) -> None:
+        raise AssertionError("remote init must not run")
 
-        def tie_weights(self) -> None:
-            return None
+    def _remote_tie(self: object) -> None:
+        return None
 
-    RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
+    # Built with type(): transformers is typed in some mypy environments and Any in others.
+    remote_model = type(
+        "RemoteModel",
+        (PreTrainedModel,),
+        {
+            "__module__": "transformers_modules.RLinf.modeling_prismatic",
+            "_init_weights": _remote_init,
+            "tie_weights": _remote_tie,
+        },
+    )
     try:
-        _install_legacy_openvla_model_compat(RemoteModel)
+        _install_legacy_openvla_model_compat(remote_model)
 
         for name, original in before.items():
             assert PreTrainedModel.__dict__[name] is original
-        assert getattr(RemoteModel.__dict__["_init_weights"], "_openral_compat", False)
+        assert getattr(remote_model.__dict__["_init_weights"], "_openral_compat", False)
     finally:
         for name, original in before.items():
             setattr(PreTrainedModel, name, original)
@@ -341,7 +349,7 @@ def test_legacy_openvla_model_compat_still_computes_rope_buffers() -> None:
     from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 
     class RemoteModel:
-        config = LlamaConfig(hidden_size=64, num_attention_heads=4)
+        config = LlamaConfig.from_dict({"hidden_size": 64, "num_attention_heads": 4})
 
         def _init_weights(self, module: object) -> None:
             raise AssertionError("remote init must not run")
