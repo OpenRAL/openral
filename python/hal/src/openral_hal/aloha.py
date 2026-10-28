@@ -81,6 +81,7 @@ from openral_core.schemas import (
     GripperReadMode,
     GripperWriteMode,
     HalEntrypoints,
+    HalParameters,
     Hand,
     JointSpec,
     JointState,
@@ -272,7 +273,20 @@ ALOHA_DESCRIPTION = RobotDescription(
         representation=ActionRepresentation.JOINT_POSITIONS,
         control_freq_hz=50.0,
     ),
-    hal=HalEntrypoints(sim=None, real="openral_hal.aloha:AlohaHAL"),
+    hal=HalEntrypoints(
+        sim=None,
+        real="openral_hal.aloha:AlohaHAL",
+        # xs_sdk wire contract (#250) — mirrors hal.parameters.defaults in
+        # robots/aloha_bimanual/robot.yaml (test_robot_manifests_match_hal_
+        # constants keeps the two in lockstep).
+        parameters=HalParameters(
+            defaults={
+                "arm_namespaces": ["follower_left", "follower_right"],
+                "arm_group": "arm",
+                "gripper_group": "gripper",
+            }
+        ),
+    ),
     # MuJoCo wiring for the gym-aloha sim twin.  Two normalised grippers
     # with mirror_actuator_index (positive finger + mirror to negative
     # finger).  keyframe_index=0 seeds the fingers inside their
