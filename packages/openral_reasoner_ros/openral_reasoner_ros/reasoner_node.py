@@ -551,6 +551,20 @@ def _failure_kind_value(name: str) -> int:
     return int(getattr(IDLExecuteRskill.Result, name))
 
 
+def _failure_kind_name(value: int) -> str | None:
+    """The ``ExecuteRskill.Result`` ``FAILURE_*`` constant name for ``value``, or ``None``."""
+    if IDLExecuteRskill is None:  # pragma: no cover — no colcon overlay
+        return None
+    return next(
+        (
+            name
+            for name in dir(IDLExecuteRskill.Result)
+            if name.startswith("FAILURE_") and getattr(IDLExecuteRskill.Result, name) == value
+        ),
+        None,
+    )
+
+
 def _rskill_failure_kind(result: Any) -> int:
     """Typed failure kind for a terminal ``ExecuteRskill`` result.
 
@@ -5537,8 +5551,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     detail,
                     timed_out=failure_kind
                     in {_failure_kind_value(n) for n in _TIMED_OUT_FAILURE_KIND_NAMES},
+                    failure_kind=_failure_kind_name(failure_kind),
+                    evidence_json=str(getattr(result, "evidence_json", "") or ""),
                 ),
                 stamp_ns=now_ns,
+                evidence_json=str(getattr(result, "evidence_json", "") or ""),
             )
         )
         updated_palette = _palette_after_rskill_failure(self._palette, call.rskill_id, failure_kind)

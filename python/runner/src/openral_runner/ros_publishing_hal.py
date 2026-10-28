@@ -154,9 +154,11 @@ class ROSPublishingHAL:
             called while the adapter's applied-condition lock is held.
         drop_reason_getter: Called with the monotonic time the apply-wait started; returns the
             newest NON-latching kernel drop (``/openral/safety_status`` ``DROP_*``, e.g.
-            ``voxel_stale``) seen since then, or ``None``. A fail-closed drop is not a latch, so
-            the wait runs out its timeout; the reason is appended to the timeout error so the
-            goal's ``failure_reason`` names the typed cause. Non-blocking.
+            ``voxel_stale``) seen since then as ``(reason, exception type)``, or ``None``. A
+            fail-closed drop is not a latch, so the wait runs out its timeout; the timeout
+            raises that type (``ROSPerceptionStale`` for a stale kernel input) with the reason
+            appended, so the goal's ``failure_kind`` and ``failure_reason`` name the typed
+            cause. ``None`` raises ``ROSRuntimeError``. Non-blocking.
         action_applied_timeout_s: Maximum time to wait for the HAL's
             application acknowledgement for an active tick.
         joint_state_staleness_limit_s: Maximum age of the last received
@@ -178,7 +180,9 @@ class ROSPublishingHAL:
         candidate_action_topic: str = "/openral/candidate_action",
         action_applied_topic: str = "/openral/action_applied",
         safety_abort_getter: Callable[[], str | None] = lambda: None,
-        drop_reason_getter: Callable[[float], str | None] = lambda _since: None,
+        drop_reason_getter: Callable[[float], tuple[str, type[Exception]] | None] = (
+            lambda _since: None
+        ),
         action_applied_timeout_s: float = 5.0,
         joint_state_staleness_limit_s: float = 0.5,
     ) -> None:
@@ -339,8 +343,10 @@ class ROSPublishingHAL:
                 simply goes silent — waiting out the full timeout and
                 reporting it as one would bury the safety stop behind a
                 generic apply-timeout (CLAUDE.md §1.4).
+            ROSPerceptionStale: When the tick is still unapplied at the deadline
+                because the kernel dropped it for a stale input (``drop_reason_getter``).
             ROSRuntimeError: When the tick is still unapplied at the
-                deadline and no safety stop is latched.
+                deadline, no safety stop is latched and no stale-input drop explains it.
         """
         group_size = int(action.tick_group_size)
         tick = int(action.tick_index if tick_index is None else tick_index)
@@ -388,10 +394,11 @@ class ROSPublishingHAL:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
                     dropped = self._drop_reason_getter(wait_started)
-                    raise ROSRuntimeError(
+                    reason, exc_type = dropped or ("", ROSRuntimeError)
+                    raise exc_type(
                         f"ROSPublishingHAL: {tick_label} {tick} was not applied within "
                         f"{self._action_applied_timeout_s:g} s"
-                        + (f" (kernel dropped it: {dropped})" if dropped else "")
+                        + (f" (kernel dropped it: {reason})" if reason else "")
                     )
                 self._applied_condition.wait(timeout=min(remaining, _SAFETY_ABORT_POLL_S))
 

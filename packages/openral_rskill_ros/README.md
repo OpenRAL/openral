@@ -245,6 +245,31 @@ must therefore read `failure_kind == FAILURE_NONE` on a failed result as
 it is re-raised to the safety supervisor, never folded into a Result
 (CLAUDE.md §1.1).
 
+An action the kernel never applied (the apply-wait times out) is typed by
+the kernel's drop: a stale or missing kernel input (`DROP_VOXEL_UNAVAILABLE`,
+`DROP_ATTACHED_UNAVAILABLE`, `DROP_STATE_UNAVAILABLE`) raises
+`ROSPerceptionStale` → `FAILURE_PERCEPTION_STALE`; any other drop, or none,
+stays `FAILURE_RUNTIME_ERROR`.
+
+### `evidence_json` — the typed detail behind the kind
+
+`ExecuteRskill.Result.evidence_json` carries one
+`openral_core.FailureEvidence` variant, so the reasoner reads *what* failed,
+not just the kind (`_attach_failure_evidence`, stamped on every failed
+result):
+
+| Kind | `evidence_json` |
+| --- | --- |
+| `FAILURE_SAFETY_ESTOP` | The kernel's report on `/openral/failure/safety` during this goal (`CollisionEvidence`: which link, against what, how deep). Empty for an operator e-stop |
+| `FAILURE_PERCEPTION_STALE` | The kernel's `PerceptionStaleEvidence` (which input, its age, the limit) when a stale input stalled the action |
+| `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, budget, elapsed) |
+| `FAILURE_OBJECT_NOT_FOUND` | The tracker's exhausted `ObjectQueryEvidence` |
+| anything else | Empty: `failure_reason` says it all |
+
+Additive like `failure_kind`: an older producer's Result decodes as `""`.
+The reasoner renders it on the skill's execution line and picks its
+strategy hint from the kind and the evidence (`reflect_on_failure`).
+
 Production deployments override the skill resolver via
 `compose_so100_runtime(skill_resolver=...)`; the default resolver
 calls `openral_rskill.rSkill.from_pretrained` (HF Hub fetch).

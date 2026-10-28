@@ -53,6 +53,20 @@ uint8 FAILURE_CANCELLED           = 8    # cancel honoured (no exception)
 uint8 FAILURE_OBJECT_NOT_FOUND    = 9    # ROSObjectNotInMemory: the goal's object search was exhausted (issue #418)
 uint8 FAILURE_UNKNOWN             = 255  # untyped non-ROSError escape
 uint8 failure_kind
+
+# evidence_json — the typed detail behind failure_kind: one
+# `openral_core.FailureEvidence` variant (decode with
+# `TypeAdapter(FailureEvidence).validate_json`). Empty on success and when the
+# failure has no structured detail beyond failure_reason (a cancel, a config or
+# runtime fault). Producer: `rskill_runner_node._attach_failure_evidence`:
+#   FAILURE_SAFETY_ESTOP      the kernel's report (CollisionEvidence, ...); empty
+#                             for an operator e-stop, which the kernel did not cause
+#   FAILURE_PERCEPTION_STALE  PerceptionStaleEvidence (which kernel input, its age,
+#                             the limit) when a stale input stalled the action
+#   FAILURE_DEADLINE_MISSED   TimeoutEvidence (budget vs elapsed)
+#   FAILURE_OBJECT_NOT_FOUND  ObjectQueryEvidence (the exhausted query)
+# Additive (CLAUDE.md §1.6): an older producer's Result decodes as "".
+string evidence_json
 ---
 # Feedback
 float32 progress           # 0..1

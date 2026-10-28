@@ -857,7 +857,84 @@ def test_an_accepted_chunk_does_not_mask_the_drop_that_stalled_the_apply_wait() 
         runner._on_safety_status(_status(SafetyStatus.DROP_NONE, "chunk accepted"))
         reason = runner._safety_drop_reason(since)
 
-    assert reason is not None and "drop_attached_unavailable" in reason, reason
+    assert reason is not None and "drop_attached_unavailable" in reason[0], reason
+    from openral_core.exceptions import ROSPerceptionStale
+
+    assert reason[1] is ROSPerceptionStale, reason
+
+
+def test_a_failed_goal_carries_the_kernel_evidence_that_explains_it() -> None:
+    """``Result.evidence_json`` carries the kernel report matching the failure, and only it.
+
+    A stale-input stall gets the kernel's ``PerceptionStaleEvidence``; a safety stop gets
+    its stop report; a runtime fault, a report from before the goal, and a success get
+    nothing; the goal's own ``TimeoutEvidence`` explains a missed deadline and nothing else.
+    """
+    import time
+
+    from openral_core import ForceEvidence, PerceptionStaleEvidence, TimeoutEvidence
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import FailureTrigger
+
+    stale = PerceptionStaleEvidence(
+        sensor_id="/openral/world_state_fast", staleness_ms=7000.0, threshold_ms=500.0
+    ).model_dump_json()
+    stop = ForceEvidence(
+        joint_or_ee="left_joint4", measured_n=40.0, limit_n=30.0, unit="Nm"
+    ).model_dump_json()
+    r = ExecuteRskill.Result
+
+    def _trigger(evidence_json: str) -> FailureTrigger:
+        msg = FailureTrigger()
+        msg.evidence_json = evidence_json
+        return msg
+
+    def _failed(kind: int) -> Any:
+        result = ExecuteRskill.Result()
+        result.success = False
+        result.failure_kind = kind
+        return result
+
+    with _compose_harness(resolver=lambda **_k: _make_constant_skill()) as (_e, runtime, _s, _o):
+        runner = runtime.skill_runner_node
+        runner._on_safety_failure(_trigger(stale))  # before the goal: never attached
+        runner._goal_started_monotonic = time.monotonic()
+        runner._goal_evidence = None
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json == ""
+        )
+
+        runner._on_safety_failure(_trigger(stale))
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json
+            == stale
+        )
+        assert runner._attach_failure_evidence(_failed(r.FAILURE_RUNTIME_ERROR)).evidence_json == ""
+        assert runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == ""
+
+        runner._on_safety_failure(_trigger(stop))
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == stop
+        )
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json == ""
+        )
+
+        ok = ExecuteRskill.Result()
+        ok.success = True
+        assert runner._attach_failure_evidence(ok).evidence_json == ""
+
+        timeout = TimeoutEvidence(
+            operation="rskill.execute:deadline_exceeded", deadline_s=30.0, elapsed_s=30.0
+        ).model_dump_json()
+        runner._goal_evidence = (int(r.FAILURE_DEADLINE_MISSED), timeout)
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_DEADLINE_MISSED)).evidence_json
+            == timeout
+        )
+        assert (
+            runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == stop
+        )
 
 
 def _send_goal(client: Any, executor: Any, *, prompt: str, deadline_s: float) -> Any:

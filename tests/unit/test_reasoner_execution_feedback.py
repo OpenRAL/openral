@@ -18,7 +18,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from openral_core import GraspOutcomeEvidence, RobotDescription, RSkillAction
+from openral_core import (
+    CollisionEvidence,
+    GraspOutcomeEvidence,
+    PerceptionStaleEvidence,
+    RobotDescription,
+    RSkillAction,
+)
 from openral_observability.failure_bus import (
     KIND_GRASP_OUTCOME,
     SEVERITY_FAIL,
@@ -60,6 +66,61 @@ def test_reflect_on_failure_prefers_the_typed_timed_out_flag() -> None:
     hint = reflect_on_failure("aborted", "deadline for the grasp was tight", timed_out=False)
     assert "timed out" not in hint
     assert "infeasible" in hint
+
+
+def test_reflect_on_failure_picks_the_hint_from_the_typed_kind_and_evidence() -> None:
+    """The typed ``failure_kind`` (and, for a stop, its evidence) decides the next step.
+
+    A stale-perception abort is transient: retry the same skill, not "infeasible here".
+    A collision stop says change the approach; a stop with no kernel report is an
+    operator e-stop, which a human must reset.
+    """
+    stale = reflect_on_failure(
+        "aborted", "tick 441 was not applied", failure_kind="FAILURE_PERCEPTION_STALE"
+    )
+    assert "retry the same skill" in stale and "infeasible" not in stale
+    collision = CollisionEvidence(
+        collision_kind="world",
+        link_a="openarm_left_finger_pair",
+        link_b_or_object="voxel_285184",
+        min_distance_m=-0.0167,
+        horizon_step=0,
+    ).model_dump_json()
+    stop = reflect_on_failure(
+        "aborted", "safety_estop:...", failure_kind="FAILURE_SAFETY_ESTOP", evidence_json=collision
+    )
+    assert "collision" in stop and "change the approach" in stop
+    operator = reflect_on_failure(
+        "aborted", "safety_estop:...", failure_kind="FAILURE_SAFETY_ESTOP"
+    )
+    assert "human resets it" in operator
+    assert "different skill" in reflect_on_failure(
+        "aborted", "bad manifest", failure_kind="FAILURE_CONFIG_ERROR"
+    )
+    # A kind with no hint of its own keeps the outcome-state default.
+    assert "re-check" in reflect_on_failure(
+        "canceled", "operator cancel", failure_kind="FAILURE_CANCELLED"
+    )
+
+
+def test_a_failed_skill_line_shows_its_evidence() -> None:
+    """``ExecutionEventRecord.evidence_json`` renders as an ``evidence=…`` summary."""
+    evidence = PerceptionStaleEvidence(
+        sensor_id="/openral/world_state_fast", staleness_ms=7012.0, threshold_ms=500.0
+    ).model_dump_json()
+    r = ContextRenderer()
+    r.append_execution(
+        ExecutionEventRecord(
+            rskill_id="openral/restock",
+            outcome="failed",
+            summary="ROSPerceptionStale: tick 441 was not applied within 8 s",
+            reflection="retry",
+            stamp_ns=1,
+            evidence_json=evidence,
+        )
+    )
+    out = r.render(world_state=None)
+    assert '"sensor_id": "/openral/world_state_fast"' in out and '"staleness_ms": 7012.0' in out
 
 
 def test_reflect_on_reward_plateau_says_change_approach_not_shorten() -> None:

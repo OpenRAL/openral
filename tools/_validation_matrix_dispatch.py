@@ -173,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
                 "status": int(response.status),
                 "success": bool(result.success),
                 "failure_reason": result.failure_reason,
+                "failure_kind": int(result.failure_kind),
+                "evidence_json": str(getattr(result, "evidence_json", "") or ""),
                 "rskill_id": args.rskill_id,
             },
             sort_keys=True,

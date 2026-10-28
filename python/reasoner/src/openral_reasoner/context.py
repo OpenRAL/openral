@@ -141,6 +141,9 @@ class ExecutionEventRecord:
     summary: str  # short NL outcome ("trace=abc12345", "object not in gripper")
     reflection: str | None  # Decision 2.3 strategy hint (failures only)
     stamp_ns: int
+    # ExecuteRskill.Result.evidence_json — one FailureEvidence variant, rendered as an
+    # ``evidence=…`` summary after the outcome ("" = none).
+    evidence_json: str = ""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -178,11 +181,60 @@ class RewardStateRecord:
     stamp_ns: int
 
 
+# Strategy hint per ExecuteRskill.Result.failure_kind name, for the kinds whose right
+# next step differs from the outcome-state default ("aborted → infeasible here").
+_FAILURE_KIND_REFLECTIONS: dict[str, str] = {
+    "FAILURE_PERCEPTION_STALE": (
+        "a perception input was too old to act on (see evidence) — usually transient; "
+        "retry the same skill once it is fresh rather than substituting it."
+    ),
+    "FAILURE_OBJECT_NOT_FOUND": (
+        "the object was not found — locate it (look around, recall, or ask the operator) "
+        "before dispatching a skill that needs it."
+    ),
+    "FAILURE_RUNTIME_ERROR": (
+        "a runtime fault in the skill or the stack — retry once; if it repeats, substitute "
+        "a different skill."
+    ),
+    "FAILURE_CONFIG_ERROR": (
+        "this skill cannot run here as configured — use a different skill; retrying will not help."
+    ),
+    "FAILURE_CAPABILITY_MISMATCH": (
+        "this robot lacks a capability the skill needs — use a different skill."
+    ),
+    "FAILURE_PLANNING_ERROR": (
+        "no motion plan was found — reposition or choose a different approach."
+    ),
+}
+
+
+def _reflect_on_safety_stop(evidence_json: str) -> str:
+    """Strategy hint for a ``FAILURE_SAFETY_ESTOP``, picked by the stop's evidence."""
+    evidence = _decode_evidence(evidence_json)
+    if evidence is None:
+        return (
+            "an e-stop with no kernel report behind it (operator or external) — do not "
+            "retry anything until a human resets it."
+        )
+    if evidence.kind == "collision":
+        return (
+            "the safety kernel stopped a collision (see evidence: which link, against "
+            "what) — change the approach or clear the obstacle; repeating the same "
+            "motion will stop again."
+        )
+    return (
+        "the safety kernel stopped the robot (see evidence) — change what was "
+        "commanded before retrying."
+    )
+
+
 def reflect_on_failure(
     outcome_state: str,
     detail: str,
     *,
     timed_out: bool | None = None,
+    failure_kind: str | None = None,
+    evidence_json: str = "",
 ) -> str:
     """One-line strategy hint from a terminal skill outcome.
 
@@ -201,11 +253,20 @@ def reflect_on_failure(
             **deprecated** substring probe over ``detail`` for callers that
             hold no typed kind (the ``FailureTrigger``/critic legs, and a
             result from a pre-``failure_kind`` runner).
+        failure_kind: The ``ExecuteRskill.Result`` ``FAILURE_*`` constant name. When it
+            has its own hint (``_FAILURE_KIND_REFLECTIONS``) that hint is returned
+            instead of the outcome-state default; a safety stop picks its hint from
+            ``evidence_json``.
+        evidence_json: ``ExecuteRskill.Result.evidence_json`` (one ``FailureEvidence``).
 
     Example:
         >>> "infeasible" in reflect_on_failure("aborted", "joint limit")
         True
         >>> "timed out" in reflect_on_failure("aborted", "joint limit", timed_out=True)
+        True
+        >>> "transient" in reflect_on_failure(
+        ...     "aborted", "not applied", failure_kind="FAILURE_PERCEPTION_STALE"
+        ... )
         True
     """
     state = outcome_state.lower()
@@ -216,6 +277,10 @@ def reflect_on_failure(
             "the skill timed out — it may be stuck; try a shorter-horizon step "
             "or a different skill."
         )
+    if failure_kind == "FAILURE_SAFETY_ESTOP":
+        return _reflect_on_safety_stop(evidence_json)
+    if failure_kind in _FAILURE_KIND_REFLECTIONS:
+        return _FAILURE_KIND_REFLECTIONS[failure_kind]
     if state == "aborted":
         return (
             "the controller aborted mid-execution — the action is likely infeasible from "
@@ -1109,6 +1174,8 @@ class ContextRenderer:
             )
         for rec in self._executions:
             line = f"[{rec.outcome}] skill={rec.rskill_id or '-'}: {rec.summary}"
+            if rec.evidence_json:
+                line += f" {_summarise_evidence_json(rec.evidence_json)}"
             if rec.reflection:
                 line += f" — reflect: {rec.reflection}"
             lines.append(line)
