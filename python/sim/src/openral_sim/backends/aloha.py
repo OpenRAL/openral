@@ -220,10 +220,10 @@ def _render_only_top_camera(env: Any) -> None:
     task = env.unwrapped._env.task  # dm_control control.Environment's task
     cameras: list[Camera] = []
 
-    def get_observation(physics: Any) -> collections.OrderedDict[str, Any]:
+    def get_observation(physics: Any) -> collections.OrderedDict[str, object]:
         if not cameras:
             cameras.append(Camera(physics=physics, height=480, width=640, camera_id="top"))
-        obs: collections.OrderedDict[str, Any] = collections.OrderedDict()
+        obs: collections.OrderedDict[str, object] = collections.OrderedDict()
         obs["qpos"] = task.get_qpos(physics)
         obs["qvel"] = task.get_qvel(physics)
         obs["env_state"] = task.get_env_state(physics)
