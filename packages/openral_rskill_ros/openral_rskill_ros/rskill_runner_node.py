@@ -1167,7 +1167,7 @@ if _ROS2_AVAILABLE:
                 # An unpinned goal accepts any revision, so a preload pinned by
                 # the deploy profile satisfies it; the key keeps the pin, which
                 # is what the trace records as loaded.
-                revision = cast("str", self._resident_key[1])
+                revision = self._resident_key[1]
             req_key = (rskill_id, revision, prompt, prompt_metadata_json, goal_params_json)
             resident = cast("rSkillBase | None", self._resident_skill)
             set_goal_prompt = getattr(resident, "set_goal_prompt", None)
