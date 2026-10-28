@@ -34,7 +34,7 @@ import os
 import re
 import shutil
 import zlib
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -237,6 +237,19 @@ class _STTAudioTooLongError(ValueError):
     """Raised when the decoded clip exceeds ``_STT_MAX_SECONDS``."""
 
 
+def _skip_invalid_frames(frames: Iterator[Any]) -> Iterator[Any]:
+    """Yield decoded frames, skipping corrupt ones as ``faster_whisper.decode_audio`` does."""
+    import av
+
+    while True:
+        try:
+            yield next(frames)
+        except StopIteration:
+            return
+        except av.error.InvalidDataError:
+            continue
+
+
 def _decode_audio_bounded(audio: bytes) -> Any:
     """Decode ``audio`` to 16 kHz mono float32, stopping at ``_STT_MAX_SECONDS``.
 
@@ -258,7 +271,7 @@ def _decode_audio_bounded(audio: bytes) -> Any:
     n = 0
     with av.open(io.BytesIO(audio), mode="r", metadata_errors="ignore") as container:
         # Trailing None flushes the resampler.
-        for frame in itertools.chain(container.decode(audio=0), [None]):
+        for frame in itertools.chain(_skip_invalid_frames(container.decode(audio=0)), [None]):
             for out in resampler.resample(frame):
                 pcm = out.to_ndarray().reshape(-1)
                 n += pcm.size

@@ -33,6 +33,7 @@ import contextlib
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -266,6 +267,16 @@ class _JsonFallbackBackend:
         # followed to a file this process can write.
         # Long-lived backend handle; close on interpreter shutdown is best-effort.
         fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        # O_NOFOLLOW does not refuse a regular file another user pre-created in a shared
+        # OPENRAL_ROS2_TRACING_FALLBACK_DIR, and 0o600 only applies on creation — so check
+        # the opened file itself before appending trace records to it.
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            os.close(fd)
+            raise PermissionError(
+                f"tracing fallback file {self._path} is not a regular file owned by this "
+                "user; refusing to append trace records to it"
+            )
         self._fp = os.fdopen(fd, "a", encoding="utf-8")
 
     @classmethod

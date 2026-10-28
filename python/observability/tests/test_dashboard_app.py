@@ -981,3 +981,37 @@ async def test_post_transcribe_refuses_audio_over_duration_budget(
             "/api/transcribe", content=_JFK_WAV.read_bytes(), headers={"content-type": "audio/wav"}
         )
     assert resp.status_code == 413, resp.text
+
+
+def test_bounded_decode_skips_corrupt_frames() -> None:
+    # Like faster_whisper.decode_audio, a corrupt frame must not fail the decode (→ 422):
+    # a real MP3 with a stomped mid-stream frame still yields the audio before it.
+    import io
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    from openral_observability.dashboard import app as app_mod
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="mp3") as out:
+        stream = out.add_stream("mp3", rate=16_000)
+        t = np.arange(16_000 * 3) / 16_000
+        pcm = (np.sin(2 * np.pi * 440 * t) * 10_000).astype(np.int16).reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
+        frame.sample_rate = 16_000
+        for packet in [*stream.encode(frame), *stream.encode(None)]:
+            out.mux(packet)
+    data = bytearray(buf.getvalue())
+    off = len(data) // 4
+    data[off : off + 64] = b"\xff" * 64
+
+    # The raw PyAV iterator aborts on the stomped frame.
+    with pytest.raises(av.error.InvalidDataError), av.open(io.BytesIO(bytes(data))) as c:
+        for _ in c.decode(audio=0):
+            pass
+    # Same outcome as faster-whisper's own decoder: the frames before the corruption,
+    # no exception (PyAV ends its decode generator once it has raised).
+    pcm_out = app_mod._decode_audio_bounded(bytes(data))
+    assert pcm_out.size > 0
+    faster_whisper = pytest.importorskip("faster_whisper")
+    assert pcm_out.size == faster_whisper.decode_audio(io.BytesIO(bytes(data))).size
