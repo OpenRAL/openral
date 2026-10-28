@@ -21,7 +21,7 @@ Skip policy
 Same shape as the v2 test: skips unless the openral-side wire (pyzmq/msgpack) is
 importable AND the V1 sidecar interpreter + upstream checkout + a local checkpoint
 are resolvable via env overrides (``OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON`` /
-``OPENRAL_LINGBOT_VLA_REPO`` / ``OPENRAL_LINGBOT_VLA2_CKPT``) or their cache
+``OPENRAL_LINGBOT_VLA_REPO`` / ``OPENRAL_LINGBOT_VLA_CKPT``) or their cache
 defaults. A GPU-less CI runner is the legitimate skip path.
 """
 
@@ -62,7 +62,7 @@ def _repo_checkout() -> Path | None:
 
 def _checkpoint() -> str | None:
     """Local checkpoint dir. HF auto-download is not a skip-free path (16.8 GB)."""
-    ckpt = os.environ.get("OPENRAL_LINGBOT_VLA2_CKPT")
+    ckpt = os.environ.get("OPENRAL_LINGBOT_VLA_CKPT")
     return ckpt if ckpt and Path(ckpt).is_dir() else None
 
 
@@ -109,7 +109,7 @@ pytestmark = [
         _SIDECAR_PY is None or _REPO is None or _CKPT is None,
         reason=(
             "LingBot V1 sidecar not provisioned: set OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON, "
-            "OPENRAL_LINGBOT_VLA_REPO, OPENRAL_LINGBOT_VLA2_CKPT (or their cache defaults)"
+            "OPENRAL_LINGBOT_VLA_REPO, OPENRAL_LINGBOT_VLA_CKPT (or their cache defaults)"
         ),
     ),
 ]
