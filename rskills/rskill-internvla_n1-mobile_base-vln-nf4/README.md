@@ -129,7 +129,7 @@ sidecar (SLAM's) via a ping when present, else auto-spawns its own (~0.27 GB,
 
 - `model_family: internvla_n1`, `runtime: pytorch`, `quantization: int4` (NF4).
 - **Out-of-process:** upstream InternNav pins `transformers==4.51.0`, so the
-  model runs in an auto-provisioned py3.12 (py3.11 on aarch64) ZMQ **sidecar**
+  model runs in an auto-provisioned py3.12 ZMQ **sidecar**
   (`tools/internvla_n1_sidecar.py` → `tools/_internvla_n1_server.py`); the
   `openral_sim.policies.internvla_n1` adapter is the client. First boot clones
   InternNav and builds the venv (several minutes); the 8.3B checkpoint is

@@ -7,7 +7,7 @@ policy adapter (python/sim/src/openral_sim/policies/internvla_n1.py); served
 by ``tools/_internvla_n1_server.py``.
 
 InternNav's setup.py drags the full eval stack (habitat/isaac extras), so
-this provisions a py3.12 venv (py3.11 on aarch64) with the explicit inference-only pin set from
+this provisions a py3.12 venv with the explicit inference-only pin set from
 upstream's ``requirements/internvla_n1.txt`` instead, installs ``internnav``
 and ``diffusion_policy`` with ``--no-deps`` (System-1's NavDP needs only
 ``SinusoidalPosEmb`` from the latter), and skips flash-attn — the server
@@ -30,7 +30,6 @@ CLAUDE.md compliance:
 from __future__ import annotations
 
 import argparse
-import platform
 import sys
 import textwrap
 from pathlib import Path
@@ -42,10 +41,9 @@ _LABEL = "internvla-n1-sidecar"
 _REPO_URL = "https://github.com/InternRobotics/InternNav.git"
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "internvla-n1-sidecar"
 # py3.12 matches the workspace; nothing in the inference pin set needs 3.11.
-# Validated on x86_64 (RTX 5070, 2026-10-27: same twists and timings as 3.11).
-# aarch64 (GB10 / Thor) stays on the py3.11 it was validated with until a run
-# there confirms 3.12.
-_PYTHON = "3.11" if platform.machine() == "aarch64" else "3.12"
+# Validated 2026-10-28 on x86_64 (RTX 5070: same twists and timings as 3.11)
+# and aarch64 (Jetson Thor), System-1 included.
+_PYTHON = "3.12"
 
 # Inference-only pin set, mirroring upstream requirements/internvla_n1.txt
 # (transformers/diffusers/accelerate) minus flash-attn (sdpa instead) and
