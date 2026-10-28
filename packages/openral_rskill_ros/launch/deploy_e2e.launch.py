@@ -346,9 +346,11 @@ def _static_points_file(
     only on that lattice. Thousands of times smaller than the bridge's file, which the kernel
     would otherwise have to hold in memory.
 
-    Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a
-    ``/tmp`` file named by the source and a digest of every input (the geometry YAML, each mesh
-    it names, the sampling code, the resolution and the mode): the same geometry reuses one
+    Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a file
+    in the user's private cache (``$OPENRAL_CACHE_DIR`` or ``~/.cache/openral``, under
+    ``static_geometry/``, mode 0700, so no other local user can plant a file there) named by the
+    source and a digest of every input (the geometry YAML, each mesh it names, the sampling code,
+    this file's cell reduction, the resolution and the mode): the same geometry reuses one
     file without sampling again (sampling + the cell reduction cost ~14 s per call on a
     15 M-point restock scene, three calls a launch), instead of leaving one per launch (each
     is hundreds of MB, and nothing can delete it at exit while the bridge may still be
@@ -357,7 +359,6 @@ def _static_points_file(
     or a mesh that is malformed.
     """
     import hashlib
-    import tempfile
 
     from openral_core.exceptions import ROSConfigError
     from openral_safety import static_geometry as sg
@@ -366,6 +367,7 @@ def _static_points_file(
     key = hashlib.sha256(f"{resolution_m!r}:{kernel_cells}".encode())
     key.update(pathlib.Path(static_geometry_file).read_bytes())
     key.update(pathlib.Path(sg.__file__).read_bytes())  # a sampling change is a new file
+    key.update(pathlib.Path(__file__).read_bytes())  # so is a change to the cell reduction
     for entry in geometry.static_geometry:
         if isinstance(entry, sg.StaticMesh):
             mesh = base_dir / entry.file
@@ -374,7 +376,12 @@ def _static_points_file(
             except OSError as exc:
                 raise ROSConfigError(f"static mesh {mesh}: {exc}") from exc
     kind = "cells" if kernel_cells else "points"
-    out = pathlib.Path(tempfile.gettempdir()) / (
+    cache = (
+        pathlib.Path(os.environ.get("OPENRAL_CACHE_DIR") or pathlib.Path.home() / ".cache/openral")
+        / "static_geometry"
+    )
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    out = cache / (
         f"openral_static_{kind}_{pathlib.Path(static_geometry_file).stem}_"
         f"{key.hexdigest()[:16]}.txt"
     )

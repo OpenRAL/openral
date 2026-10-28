@@ -262,3 +262,13 @@ def test_the_kernels_cells_file_names_exactly_the_cells_the_bridge_marks(
     finally:
         bridge.unlink(missing_ok=True)
         cells.unlink(missing_ok=True)
+
+
+def test_the_cache_lives_in_a_directory_only_the_user_can_write(
+    launch_module: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A predictable name in shared /tmp let another local user plant the geometry."""
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    out = Path(launch_module._static_points_file(str(_cell_geometry(tmp_path)), 0.015))
+    assert out.parent == tmp_path / "cache" / "static_geometry"
+    assert out.parent.stat().st_mode & 0o777 == 0o700
