@@ -30,6 +30,7 @@ CLAUDE.md compliance:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import textwrap
 from pathlib import Path
@@ -94,6 +95,23 @@ _NVRTC_OVERRIDE = (
 )
 
 
+def _venv_python(venv: Path) -> str | None:
+    """``major.minor`` of the interpreter a venv was created with, from its ``pyvenv.cfg``.
+
+    Example:
+        >>> _venv_python(Path("/nonexistent")) is None
+        True
+    """
+    cfg = venv / "pyvenv.cfg"
+    if not cfg.is_file():
+        return None
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() in ("version_info", "version"):
+            return ".".join(value.strip().split(".")[:2])
+    return None
+
+
 def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
     """Provision ``<source>/.venv`` (``_PYTHON``) with the inference pin set."""
     # The shallow clone skips submodules; the encoder package eagerly imports
@@ -107,6 +125,10 @@ def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
     )
     venv = source / ".venv"
     py = venv / "bin" / "python"
+    if py.exists() and _venv_python(venv) != _PYTHON:
+        # A cached venv from an older pin (py3.11 before 2026-10-28) is rebuilt;
+        # installing into it would keep the old interpreter.
+        shutil.rmtree(venv)
     if not py.exists():
         run_cmd(_LABEL, [uv, "venv", str(venv), "--python", _PYTHON], cwd=source)
     # Both flags ride on EVERY pass: uv re-resolves the whole env on each
