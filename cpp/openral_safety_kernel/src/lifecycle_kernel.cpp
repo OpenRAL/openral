@@ -4182,6 +4182,19 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   if (link_b.rfind("voxel_", 0) == 0) {
     oss << R"(,"world_grid_origin_m":[)" << voxel_grid_.pose.t.x << ',' << voxel_grid_.pose.t.y
         << ',' << voxel_grid_.pose.t.z << ']';
+    // WHERE that cell is, in base_frame. The grid's dimensions are not in the evidence,
+    // so the index alone cannot be decoded: a stop read "hit voxel_467357" and gave the
+    // reasoner and an operator no place to look.
+    const long long sx = voxel_grid_.sx;
+    const long long sxy = sx * voxel_grid_.sy;
+    const char* digits = link_b.c_str() + 6;
+    char* end = nullptr;
+    const long long idx = std::strtoll(digits, &end, 10);
+    if (end != digits && *end == '\0' && idx >= 0 && idx < sxy * voxel_grid_.sz) {
+      const Vec3 c = voxel_center(voxel_grid_, static_cast<int>(idx % sx),
+                                  static_cast<int>((idx % sxy) / sx), static_cast<int>(idx / sxy));
+      oss << R"(,"world_cell_center_m":[)" << c.x << ',' << c.y << ',' << c.z << ']';
+    }
   }
   oss << '}';
   trigger.evidence_json = oss.str();
