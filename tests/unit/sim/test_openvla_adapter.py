@@ -2,9 +2,8 @@
 
 These cover the action de-normalization (BOUNDS_Q99) and the OpenVLA prompt
 template — the parts that need no GPU / weights, so they run in the unit tier.
-The full ``predict_action`` chunk path has no in-tree live test: the RLinf
-OpenVLA remote code needs ``transformers<5``, which the workspace lock cannot
-provide.
+The full ``predict_action`` chunk path has no in-tree live test; it was run
+by hand with ``openral sim run`` on SimplerEnv (see vla_compatibility.md).
 """
 
 from __future__ import annotations
@@ -24,9 +23,11 @@ from openral_sim.policies.openvla import (
     _install_prismatic_oft_compat,
     _install_tokenization_compat,
     _legacy_openvla_timm_version_guard,
+    _OpenVLAAdapter,
     _postprocess_action_chunk,
     _require_remote_code_ack,
     _unnormalize_action,
+    _unpack_timm1_featurizer_lists,
 )
 
 # RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood embedded ``bridge_orig`` action
@@ -216,6 +217,18 @@ def test_prismatic_oft_compat_installs_constants_and_masks(
     )
 
 
+def test_prismatic_oft_compat_reinstall_keeps_existing_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A second load in one process must not hit find_spec on the spec-less shim.
+    shim = ModuleType("prismatic")
+    monkeypatch.setitem(sys.modules, "prismatic", shim)
+
+    _install_prismatic_oft_compat()
+
+    assert sys.modules["prismatic"] is shim
+
+
 def test_legacy_openvla_timm_version_guard_restores_modern_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -239,8 +252,128 @@ def test_legacy_openvla_model_compat_ignores_new_tie_weights_kwargs() -> None:
     class RemoteModel(LegacyBase):
         pass
 
+    LegacyBase.__module__ = RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
     _install_legacy_openvla_model_compat(RemoteModel)
     model = RemoteModel()
     model.tie_weights(recompute_mapping=False)  # type: ignore[call-arg]  # reason: compat shim widens the signature at runtime
 
     assert model.tied is True
+
+
+def test_timm1_featurizer_list_is_unpacked() -> None:
+    # timm 1.x get_intermediate_layers returns a list; the remote unpack_tuple
+    # only unpacks tuples.
+    featurizer = SimpleNamespace(forward=lambda x: [x * 2])
+    fused = SimpleNamespace(forward=lambda x: x + 1)
+    model = SimpleNamespace(
+        vision_backbone=SimpleNamespace(featurizer=featurizer, fused_featurizer=fused)
+    )
+
+    _unpack_timm1_featurizer_lists(model)
+
+    assert featurizer.forward(3) == 6
+    assert fused.forward(3) == 4
+
+
+def test_collect_image_applies_manifest_flip_180() -> None:
+    # LIBERO renders upside down; OpenVLA's LIBERO checkpoints expect the rotated view.
+    frame = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
+    adapter = _OpenVLAAdapter(
+        spec=None,  # type: ignore[arg-type]  # reason: _collect_image reads no spec field
+        device="cpu",
+        _model=None,
+        _processor=None,
+        _torch=None,
+        _flip_images_180=True,
+    )
+
+    adapter._collect_image({"images": {"camera1": frame}})
+
+    np.testing.assert_array_equal(adapter._last_input_frame, frame[::-1, ::-1])
+
+
+def test_legacy_openvla_model_compat_disables_remote_init_weights() -> None:
+    # Transformers 5 runs _init_weights after loading; the remote one re-randomized
+    # the vision patch-embedding convs.
+    class RemoteModel:
+        def _init_weights(self, module: object) -> None:
+            raise AssertionError("remote init must not run")
+
+    RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
+    _install_legacy_openvla_model_compat(RemoteModel)
+
+    RemoteModel()._init_weights(object())
+
+
+def test_legacy_openvla_model_compat_leaves_transformers_base_classes_alone() -> None:
+    # A remote class inherits from PreTrainedModel; patching that base would change every
+    # model in the process.
+    pytest.importorskip("transformers")
+    from transformers import PreTrainedModel
+
+    before = {name: PreTrainedModel.__dict__[name] for name in ("_init_weights", "tie_weights")}
+
+    def _remote_init(self: object, module: object) -> None:
+        raise AssertionError("remote init must not run")
+
+    def _remote_tie(self: object) -> None:
+        return None
+
+    # Built with type(): transformers is typed in some mypy environments and Any in others.
+    remote_model = type(
+        "RemoteModel",
+        (PreTrainedModel,),
+        {
+            "__module__": "transformers_modules.RLinf.modeling_prismatic",
+            "_init_weights": _remote_init,
+            "tie_weights": _remote_tie,
+        },
+    )
+    try:
+        _install_legacy_openvla_model_compat(remote_model)
+
+        for name, original in before.items():
+            assert PreTrainedModel.__dict__[name] is original
+        assert getattr(remote_model.__dict__["_init_weights"], "_openral_compat", False)
+    finally:
+        for name, original in before.items():
+            setattr(PreTrainedModel, name, original)
+
+
+def test_legacy_openvla_model_compat_still_computes_rope_buffers() -> None:
+    # RoPE inv_freq is a non-persistent buffer only the base _init_weights fills.
+    import torch
+
+    pytest.importorskip("transformers")
+    from transformers import LlamaConfig
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+
+    class RemoteModel:
+        config = LlamaConfig.from_dict({"hidden_size": 64, "num_attention_heads": 4})
+
+        def _init_weights(self, module: object) -> None:
+            raise AssertionError("remote init must not run")
+
+    RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
+    _install_legacy_openvla_model_compat(RemoteModel)
+    rotary = LlamaRotaryEmbedding(RemoteModel.config)
+    expected = rotary.inv_freq.clone()
+    rotary.inv_freq.fill_(-1.0)
+
+    RemoteModel()._init_weights(rotary)
+
+    torch.testing.assert_close(rotary.inv_freq, expected)
+
+
+def test_postprocess_action_chunk_inverts_gripper_after_binarizing() -> None:
+    chunk = np.array([[0.0] * 6 + [0.9], [0.0] * 6 + [0.1]], dtype=np.float32)
+
+    out = _postprocess_action_chunk(
+        chunk,
+        action_scale=1.0,
+        binarize_gripper=True,
+        gripper_threshold=0.5,
+        invert_gripper=True,
+    )
+
+    np.testing.assert_array_equal(out[:, 6], np.array([-1.0, 1.0], dtype=np.float32))

@@ -45,8 +45,8 @@ from openral_sim.backends.maniskill3 import (
     _extract_rgb,
     _extract_state,
     _sapien_sim_time_ns,
+    _step_info,
     _unbatch,
-    _unbatch_info,
     _unbatch_obs,
 )
 from openral_sim.registry import SCENES
@@ -295,7 +295,7 @@ class _SimplerEnvSim:
             reward=float(_unbatch(reward)),
             terminated=bool(_unbatch(terminated)),
             truncated=bool(_unbatch(truncated)),
-            info=_unbatch_info(info),
+            info=_step_info(info),
         )
 
     @property

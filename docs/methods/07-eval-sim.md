@@ -297,10 +297,10 @@ _ManiSkill3 (SAPIEN-backed) free-axis scene adapter. Opt-in via the `maniskill3`
 - `_reconcile_robot_uids(env_id, robot_uids) -> None` — Validates a scene's `robot_uids` against the task's `SUPPORTED_ROBOTS`, accepting a registered camera-variant subclass of a supported base; raises `ROSCapabilityMismatch` for a genuinely unsupported robot instead of MS3's vague warning + downstream crash. (L66)
 - `class _DropUnsupportedRobotWarning(logging.Filter)` / `_suppress_unsupported_robot_warning()` — Context manager that drops MS3's false “not in the task's list of supported robots” log record around `gym.make`, after `_reconcile_robot_uids` has already validated the variant. (L113 / L1)
 - `_unbatch(value)`, `_unbatch_info(info)`, `_unbatch_obs(obs)` — recursive numpy / torch unbatch helpers shared with the SimplerEnv adapter. (L106 / L114 / L1)
-- `_extract_rgb(flat)` — Returns the first MS3 `sensor_data.<camera>.rgb` stream as `NDArray[uint8]`. (L360)
-- `_extract_state(flat)` — Concatenates `agent.qpos` + `agent.qvel` into a 1-D float32 vector (returns 0-D when the obs mode doesn't expose the nested `agent` block). (L403)
-- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L428)
-- Module side effect: `SCENES.register("maniskill3", fixed_robot="franka_panda", sequential_init=True, sim_clock=True)(_build_maniskill3_scene)` at import (L428).
+- `_extract_rgb(flat)` — Returns the first MS3 `sensor_data.<camera>.rgb` stream as `NDArray[uint8]`. (L373)
+- `_extract_state(flat)` — Concatenates `agent.qpos` + `agent.qvel` into a 1-D float32 vector (returns 0-D when the obs mode doesn't expose the nested `agent` block). (L416)
+- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L441)
+- Module side effect: `SCENES.register("maniskill3", fixed_robot="franka_panda", sequential_init=True, sim_clock=True)(_build_maniskill3_scene)` at import (L441).
 - `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L47)
 - `const _DEPLOY_NOOP_SUFFIX = '/_hal_deploy_noop'` (L41)
 - `const _UNSUPPORTED_ROBOT_WARNING = "not in the task's list of supported robots"` — The false MS3 log-record text `_suppress_unsupported_robot_warning` filters. (L124)
