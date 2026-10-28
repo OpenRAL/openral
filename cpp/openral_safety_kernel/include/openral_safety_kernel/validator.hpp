@@ -20,8 +20,13 @@ namespace openral_safety_kernel {
 /// constants so the lifecycle node can publish the violation without
 /// translation. CLAUDE.md §1.3 — schemas are the contract.
 enum class ViolationKind : std::uint8_t {
-  kForce = 1,       ///< openral_msgs::FailureTrigger::KIND_FORCE
-  kWorkspace = 2,   ///< openral_msgs::FailureTrigger::KIND_WORKSPACE
+  kForce = 1,      ///< openral_msgs::FailureTrigger::KIND_FORCE
+  kWorkspace = 2,  ///< openral_msgs::FailureTrigger::KIND_WORKSPACE
+  /// A kernel input (world voxels, attachment state, joint states) was too old
+  /// to certify a chunk: the fail-closed drop is reported as
+  /// PerceptionStaleEvidence. The validator never returns it; the lifecycle
+  /// node stamps it on its input-freshness drops.
+  kPerception = 3,  ///< openral_msgs::FailureTrigger::KIND_PERCEPTION
   kController = 5,  ///< openral_msgs::FailureTrigger::KIND_CONTROLLER
   // Geometric self/world collision. The value must exist so the enum stays
   // 1:1 with the IDL. It is no longer only a reservation: the lifecycle node

@@ -13248,8 +13248,11 @@ class PerceptionStaleEvidence(_FailureEvidenceBase):
 
     Attributes:
         kind: Discriminator (always ``"perception"``).
-        sensor_id: ``SensorSpec.name`` of the stale sensor.
-        staleness_ms: Observed age of the last frame, in milliseconds.
+        sensor_id: ``SensorSpec.name`` of the stale sensor, or the topic of a stale
+            safety-kernel input (``/openral/world_voxels``,
+            ``/openral/world_state_fast``, ``/joint_states``).
+        staleness_ms: Observed age of the last frame, in milliseconds (for an input
+            never received, the kernel reports the time since its activation).
         threshold_ms: Staleness threshold that was crossed, in milliseconds.
     """
 

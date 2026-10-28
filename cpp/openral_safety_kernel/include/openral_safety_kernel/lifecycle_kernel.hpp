@@ -374,6 +374,12 @@ private:
   // seed-requiring modes: an incomplete/stale seed must reject, never check a
   // wrong (zero-filled) configuration.
   bool measured_state_fresh() const noexcept;
+  // Age in ms of an input last received at `stamp`; never received → age since
+  // activation. Feeds the PerceptionStaleEvidence of a freshness drop.
+  double input_age_ms(bool received, const rclcpp::Time& stamp) const;
+  // Age in ms of the oldest FK-relevant dof in the measured state (same
+  // never-received rule as input_age_ms).
+  double measured_state_age_ms() const;
   // True iff every FK-relevant dof has a finite measured velocity from a
   // /joint_states message at most `collision_state_deadline_s_` old at
   // `now_ns`. A message naming a joint without a velocity entry forgets it.
@@ -866,6 +872,7 @@ private:
   std::uint32_t tick_target_tick_{0};
   bool q_meas_received_{false};
   rclcpp::Time q_meas_stamp_{};
+  rclcpp::Time activated_stamp_{};          ///< last on_activate; ages never-received inputs
   double collision_seed_dt_s_{0.0};         ///< velocity-integration step (s); 0 → reactive only
   double collision_state_deadline_s_{0.2};  ///< max measured-state age for seed-modes
 
