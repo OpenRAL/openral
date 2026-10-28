@@ -96,16 +96,18 @@ runs:
         # The branch name alone is contributor-chosen (a fork can name its
         # branch release-please--x), so the short-circuit also requires a
         # same-repo branch (push access) AND a diff limited to the files a
-        # release PR rewrites (incl. the uv.lock refresh in release-please.yml).
-        # Anything else selects tests normally.
+        # release PR rewrites (incl. the uv.lock refresh in release-please.yml),
+        # where those files differ only in OpenRAL's own versions and
+        # `openral-*==` pins (tools/check_release_diff.py parses both sides, so
+        # a dependency edit in pyproject.toml / uv.lock is caught). Anything
+        # else selects tests normally.
         case "${HEAD_REF:-}" in
           release-please--*)
             if [ -n "${HEAD_REPO:-}" ] && [ "$HEAD_REPO" != "$REPO" ]; then
               echo "::warning::release-please--* branch from fork $HEAD_REPO — selecting tests normally."
             else
-              changed="$(git diff --name-only "$BASE...$HEAD")"
-              other="$(printf '%s\n' "$changed" | grep -Ev '^(CHANGELOG\.md|uv\.lock|\.release-please-manifest\.json|pyproject\.toml|python/[^/]+/pyproject\.toml)?$' || true)"
-              if [ -z "$other" ]; then
+              if other="$(uv run --isolated --no-project --python 3.12 \
+                  python tools/check_release_diff.py "$BASE" "$HEAD")"; then
                 echo "::notice::release-please PR — lockstep version churn only, no tests selected."
                 {
                   echo "any=false"
@@ -114,7 +116,7 @@ runs:
                 } >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              echo "::warning::release-please--* branch touches non-release files — selecting tests normally:"
+              echo "::warning::release-please--* branch goes beyond version churn — selecting tests normally:"
               printf '%s\n' "$other"
             fi
             ;;
