@@ -455,13 +455,15 @@ private:
   std::size_t world_voxel_max_cells_{0};
   bool voxel_received_{false};
   bool voxel_overflow_{false};
-  rclcpp::Time voxel_stamp_{};
+  // ROS clock type, like this->now(): every age check subtracts before it
+  // looks at the received flag, and a default (system-time) stamp throws.
+  rclcpp::Time voxel_stamp_{0, 0, RCL_ROS_TIME};
   /// `world_voxel_data_age_budget_ms` in seconds; in (0, 3] s whenever the
   /// world check is enabled (configure refuses anything else).
   double world_voxel_data_age_budget_s_{kDefaultWorldVoxelDataAgeBudgetMs / 1000.0};
   /// The grid's `source_stamp` (capture of the newest cloud in it), when set.
   bool voxel_source_known_{false};
-  rclcpp::Time voxel_source_stamp_{};
+  rclcpp::Time voxel_source_stamp_{0, 0, RCL_ROS_TIME};
   /// Frame the occupancy grid is published in. A place region declared in any
   /// other frame is refused: a region measured in one frame and applied in
   /// another is a relaxation aimed at the wrong volume.
@@ -484,7 +486,9 @@ private:
   std::size_t attached_max_touch_links_{0};
   bool attached_received_{false};
   bool attached_overflow_{false};
-  rclcpp::Time attached_stamp_{};
+  // ROS clock type, like this->now(): every age check subtracts before it
+  // looks at the received flag, and a default (system-time) stamp throws.
+  rclcpp::Time attached_stamp_{0, 0, RCL_ROS_TIME};
   std::uint64_t attached_revision_{0};
   bool attached_contact_snapshot_pending_{false};
   bool attached_contact_active_{false};
@@ -871,7 +875,7 @@ private:
   std::uint64_t tick_target_session_{0};       ///< (session, tick) tick_target_ belongs to
   std::uint32_t tick_target_tick_{0};
   bool q_meas_received_{false};
-  rclcpp::Time q_meas_stamp_{};
+  rclcpp::Time q_meas_stamp_{0, 0, RCL_ROS_TIME};
   /// Last on_configure / on_activate; ages never-received inputs. ROS clock type, like
   /// this->now(): a default (system-time) stamp made the subtraction throw for a
   /// candidate between configure and activate.

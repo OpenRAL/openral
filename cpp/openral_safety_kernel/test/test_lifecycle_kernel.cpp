@@ -1276,6 +1276,80 @@ TEST_F(LifecycleKernelTest, ACandidateBeforeActivationWithAMissingInputIsDropped
   node->on_cleanup(inactive);
 }
 
+// Before the first /openral/world_state_fast message the attachment stamp was
+// a default (system-time) rclcpp::Time, and every age check subtracted it from
+// the ROS clock before looking at attached_received_: a candidate in that
+// window threw out of the subscriber (and out of a noexcept freshness check).
+TEST_F(LifecycleKernelTest, ACandidateBeforeTheFirstWorldStateIsDroppedNotFatal) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-10.0, -3.14}},
+      {"joint_position_max", std::vector<double>{10.0, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", false},
+      {"attached_collision_enabled", true},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 1}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{0, 1}},
+      {"collision_link_names", std::vector<std::string>{"base", "arm"}},
+      {"collision_joint_names", std::vector<std::string>{"j_base", "j_arm"}},
+      {"collision_base_dofs", std::vector<std::int64_t>{0}},
+      {"collision_state_deadline_ms", 2000.0},
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_no_world_state", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("no_world_state_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"j_base", "j_arm"};
+  js.position = {0.0, 0.0};
+  js.velocity = {0.0, 0.0};
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.0, 0.0};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+  while (node->chunks_dropped() == 0U && std::chrono::steady_clock::now() < deadline) {
+    js.header.stamp = helper.now();
+    js_pub->publish(js);
+    EXPECT_NO_THROW(exec.spin_some(std::chrono::milliseconds(10)));
+    cand_pub->publish(vel);
+    EXPECT_NO_THROW(exec.spin_some(std::chrono::milliseconds(10)));
+  }
+  EXPECT_GT(node->chunks_dropped(), 0U) << "no world state yet: the chunk must drop";
+  EXPECT_EQ(node->chunks_passed(), 0U);
+  EXPECT_FALSE(node->fault_latched());
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+}
+
 TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
   rclcpp::NodeOptions opts;
   opts.parameter_overrides({
