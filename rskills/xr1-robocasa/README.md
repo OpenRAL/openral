@@ -106,6 +106,9 @@ OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run \
 The command above validates the OpenRAL observation/action wiring. It is not a
 reproduction of Xiaomi's published RoboCasa score because Xiaomi evaluates
 RoboCasa v0.2 while OpenRAL currently provisions its own pinned kitchen stack.
+On that stack (2026-10-28, RTX 8 GB laptop, NF4 through OpenRAL Pro, 500-step
+horizon, seeds 0–2) the policy placed the baguette in the cabinet in 2/3
+episodes, at 270 and 330 steps.
 
 ## Evaluation
 
