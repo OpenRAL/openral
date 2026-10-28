@@ -2492,6 +2492,24 @@ TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
   // against. Matches `vox.origin` published above.
   EXPECT_NE(evidence.find(R"("world_grid_origin_m":[0,0,-0.14999999999999999])"), std::string::npos)
       << "a world-voxel stop must disclose the grid its index addresses: " << evidence;
+  // ...and where the named cell is: the index decoded on this grid (20 x 20, 0.1 m).
+  {
+    long idx = -1;
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    const auto at_voxel = evidence.find(R"("link_b_or_object":"voxel_)");
+    const auto at_centre = evidence.find(R"("world_cell_center_m":[)");
+    ASSERT_NE(at_voxel, std::string::npos) << evidence;
+    ASSERT_NE(at_centre, std::string::npos) << "a world-voxel stop must say where: " << evidence;
+    ASSERT_EQ(std::sscanf(evidence.c_str() + at_voxel, R"("link_b_or_object":"voxel_%ld")", &idx),
+              1);
+    ASSERT_EQ(std::sscanf(evidence.c_str() + at_centre, R"("world_cell_center_m":[%lf,%lf,%lf])",
+                          &cx, &cy, &cz),
+              3);
+    EXPECT_NEAR(cx, (static_cast<double>(idx % 20) + 0.5) * 0.1, 1e-9) << evidence;
+    EXPECT_NEAR(cy, (static_cast<double>(idx / 20 % 20) + 0.5) * 0.1, 1e-9) << evidence;
+    EXPECT_NEAR(cz, -0.15 + (static_cast<double>(idx / 400) + 0.5) * 0.1, 1e-9) << evidence;
+    EXPECT_GE(cy, 0.95) << "the named cell must be one of the wall's: " << evidence;
+  }
   EXPECT_NE(evidence.find(R"("horizon_step":-1)"), std::string::npos)
       << "the reactive (measured-state) check must report the -1 sentinel, not a "
          "predicted-horizon index: "

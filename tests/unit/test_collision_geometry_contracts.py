@@ -490,6 +490,28 @@ def test_collision_evidence_without_a_grid_origin_is_still_valid() -> None:
     ).world_grid_origin_m == (0.0, 0.0, -0.15)
 
 
+def test_a_world_voxel_stop_says_where_the_cell_is() -> None:
+    """The kernel's `voxel_<n>` names no place without the grid's dimensions, which the
+    evidence does not carry; `world_cell_center_m` is that cell in base_frame. Optional,
+    like the origin: a kernel that predates it still decodes."""
+    from openral_core import CollisionEvidence
+
+    wire = (
+        '{"kind":"collision","collision_kind":"world","link_a":"attached:pinch:left_gripper@1",'
+        '"link_b_or_object":"voxel_467357","horizon_step":0,"min_distance_m":-0.01,'
+        '"world_grid_origin_m":[-0.825,-0.825,-0.825],"world_cell_center_m":[0.33,0.2,-0.25]}'
+    )
+    assert CollisionEvidence.model_validate_json(wire).world_cell_center_m == (0.33, 0.2, -0.25)
+    older = CollisionEvidence(
+        collision_kind="world",
+        link_a="ee",
+        link_b_or_object="voxel_189",
+        horizon_step=-1,
+        min_distance_m=-0.05,
+    )
+    assert older.world_cell_center_m is None
+
+
 def test_a_provider_stop_still_decodes_with_its_exemption_source() -> None:
     """Spark r4 (02d54f9d7): the kernel added grasp_exemption_source / _provider and the HAL's
     extra-forbidding decode dropped every provider stop's evidence (pro review)."""
