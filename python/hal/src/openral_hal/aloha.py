@@ -506,10 +506,7 @@ class AlohaHAL(HALBase):
         # xs_sdk namespaces — with one namespace both arms would publish
         # different targets to the same /<ns>/commands/joint_group topic and
         # the later publish would silently replace the earlier.
-        if (
-            len(arm_namespaces) != _ALOHA_ARM_COUNT
-            or len(set(arm_namespaces)) != _ALOHA_ARM_COUNT
-        ):
+        if len(arm_namespaces) != _ALOHA_ARM_COUNT or len(set(arm_namespaces)) != _ALOHA_ARM_COUNT:
             raise ROSConfigError(
                 "AlohaHAL needs exactly two distinct arm namespaces "
                 f"(follower_left/follower_right); got {list(arm_namespaces)!r}."
