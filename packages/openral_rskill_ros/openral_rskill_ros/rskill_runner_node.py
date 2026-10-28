@@ -2933,7 +2933,14 @@ if _ROS2_AVAILABLE:
             self._safety_status = msg
             self._safety_status_recv_monotonic = time.monotonic()
             code = int(getattr(msg, "drop_reason", 0))
-            if code >= 100 and not bool(getattr(msg, "latched", False)):  # SafetyStatus DROP_*
+            # DROP_NONE (255, "chunk accepted") is in the DROP_* range but drops nothing:
+            # recorded, it overwrote the real cause of a timed-out apply-wait (Spark restock
+            # seed 16, 2026-10-28: attached_unavailable reported as "drop_none").
+            if (
+                code >= 100
+                and code != int(getattr(type(msg), "DROP_NONE", 255))
+                and not bool(getattr(msg, "latched", False))
+            ):  # SafetyStatus DROP_*
                 detail = str(getattr(msg, "detail", "") or "")
                 label = _drop_reason_label(code, type(msg))
                 self._last_drop = (

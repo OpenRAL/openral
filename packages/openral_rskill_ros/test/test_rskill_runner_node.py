@@ -833,6 +833,33 @@ def test_safety_latch_during_apply_wait_is_named_in_the_result() -> None:
     assert elapsed < 4.0, f"safety abort took {elapsed:.2f}s — the apply-wait ran to its timeout"
 
 
+def test_an_accepted_chunk_does_not_mask_the_drop_that_stalled_the_apply_wait() -> None:
+    """A later ``DROP_NONE`` ("chunk accepted") must not replace a fail-closed drop's cause.
+
+    Spark restock seed 16 (2026-10-28): the kernel dropped one slot on
+    ``attached_unavailable``, accepted the other, and the timeout named ``drop_none``.
+    """
+    import time
+
+    from openral_msgs.msg import SafetyStatus
+
+    def _status(code: int, detail: str) -> SafetyStatus:
+        msg = SafetyStatus()
+        msg.drop_reason = code
+        msg.detail = detail
+        msg.latched = False
+        return msg
+
+    with _compose_harness(resolver=lambda **_k: _make_constant_skill()) as (_e, runtime, _s, _o):
+        runner = runtime.skill_runner_node
+        since = time.monotonic()
+        runner._on_safety_status(_status(SafetyStatus.DROP_ATTACHED_UNAVAILABLE, "stale"))
+        runner._on_safety_status(_status(SafetyStatus.DROP_NONE, "chunk accepted"))
+        reason = runner._safety_drop_reason(since)
+
+    assert reason is not None and "drop_attached_unavailable" in reason, reason
+
+
 def _send_goal(client: Any, executor: Any, *, prompt: str, deadline_s: float) -> Any:
     """Send an ExecuteRskill goal and spin until accepted; return the goal handle."""
     from openral_msgs.action import ExecuteRskill
