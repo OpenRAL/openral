@@ -886,6 +886,9 @@ def test_a_failed_goal_carries_the_kernel_evidence_that_explains_it() -> None:
 
     def _trigger(evidence_json: str) -> FailureTrigger:
         msg = FailureTrigger()
+        msg.kind = (
+            FailureTrigger.KIND_PERCEPTION if evidence_json == stale else FailureTrigger.KIND_FORCE
+        )
         msg.evidence_json = evidence_json
         return msg
 
@@ -916,13 +919,34 @@ def test_a_failed_goal_carries_the_kernel_evidence_that_explains_it() -> None:
         assert (
             runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == stop
         )
+        # Kept per kind: a later stop report does not erase the perception report.
         assert (
-            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json == ""
+            runner._attach_failure_evidence(_failed(r.FAILURE_PERCEPTION_STALE)).evidence_json
+            == stale
         )
 
         ok = ExecuteRskill.Result()
         ok.success = True
         assert runner._attach_failure_evidence(ok).evidence_json == ""
+
+        # A runtime fault with a known cause carries it as ControllerEvidence: the
+        # skill's own typed GPU OOM, or the non-stale kernel drop the apply-wait raised on.
+        oom = _failed(r.FAILURE_RUNTIME_ERROR)
+        oom.failure_reason = "ROSGPUMemoryError: CUDA out of memory"
+        assert '"state":"gpu_out_of_memory"' in runner._attach_failure_evidence(oom).evidence_json
+        from openral_msgs.msg import SafetyStatus
+
+        since = time.monotonic()
+        overflow = SafetyStatus()
+        overflow.drop_reason = SafetyStatus.DROP_VOXEL_OVERFLOW
+        overflow.latched = False
+        runner._on_safety_status(overflow)
+        assert runner._safety_drop_reason(since) is not None
+        dropped = _failed(r.FAILURE_RUNTIME_ERROR)
+        dropped.failure_reason = "ROSRuntimeError: tick 3 was not applied within 5 s"
+        assert '"state":"drop_voxel_overflow"' in (
+            runner._attach_failure_evidence(dropped).evidence_json
+        )
 
         timeout = TimeoutEvidence(
             operation="rskill.execute:deadline_exceeded", deadline_s=30.0, elapsed_s=30.0
@@ -935,6 +959,80 @@ def test_a_failed_goal_carries_the_kernel_evidence_that_explains_it() -> None:
         assert (
             runner._attach_failure_evidence(_failed(r.FAILURE_SAFETY_ESTOP)).evidence_json == stop
         )
+
+
+def test_a_collision_stop_keeps_its_evidence_when_the_report_arrives_after_the_latch() -> None:
+    """The kernel publishes the report, then the latch, on two topics: either can land first.
+
+    The latch (or ``/openral/estop``) waking the goal first used to build the Result before
+    the report's callback ran, dropping the ``CollisionEvidence`` (1 stop in 15 on an idle
+    host). Here the report is published 0.3 s AFTER the latch and the estop, over the wire:
+    the Result must still carry it, and a later report of another kind (the deadman firing
+    after the stop) must not replace the one the latched status names.
+    """
+    import rclpy
+    from openral_core import CollisionEvidence, TimeoutEvidence
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import FailureTrigger, SafetyStatus
+    from rclpy.action import ActionClient
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import Empty
+
+    collision = CollisionEvidence(
+        collision_kind="world",
+        link_a="openarm_left_finger_pair",
+        link_b_or_object="voxel_285184",
+        min_distance_m=-0.0167,
+        horizon_step=0,
+    ).model_dump_json()
+    deadman = TimeoutEvidence(
+        operation="deadman.heartbeat", deadline_s=0.5, elapsed_s=0.9
+    ).model_dump_json()
+
+    with _compose_harness() as (executor, runtime, safety, _observed):
+        runner = runtime.skill_runner_node
+        # The passthrough node would re-latch on /openral/estop with its own status; the
+        # C++ kernel it stands in for here publishes the status below and nothing else.
+        executor.remove_node(safety)
+        helper = rclpy.create_node("openral_skill_runner_late_report_test")
+        executor.add_node(helper)
+        reliable = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
+        latched = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
+        report_pub = helper.create_publisher(FailureTrigger, "/openral/failure/safety", reliable)
+        status_pub = helper.create_publisher(SafetyStatus, "/openral/safety_status", latched)
+        estop_pub = helper.create_publisher(Empty, "/openral/estop", reliable)
+        client = ActionClient(runner, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.3)
+        assert client.wait_for_server(timeout_sec=2.0)
+        handle = _send_goal(client, executor, prompt="late report", deadline_s=10.0)
+        _spin_for(executor, 0.4)
+
+        status = SafetyStatus()
+        status.latched = True
+        status.drop_reason = SafetyStatus.KIND_COLLISION
+        status.detail = "world"
+        status_pub.publish(status)
+        estop_pub.publish(Empty())
+        _spin_for(executor, 0.3)
+        report = FailureTrigger()
+        report.kind = FailureTrigger.KIND_COLLISION
+        report.severity = FailureTrigger.SEVERITY_ABORT
+        report.evidence_json = collision
+        report_pub.publish(report)
+        late = FailureTrigger()
+        late.kind = FailureTrigger.KIND_TIMEOUT
+        late.severity = FailureTrigger.SEVERITY_ABORT
+        late.evidence_json = deadman
+        report_pub.publish(late)
+        result = _await_result(handle, executor).result
+        helper.destroy_node()
+
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP, result.failure_reason
+    assert result.evidence_json == collision, result.evidence_json
 
 
 def _send_goal(client: Any, executor: Any, *, prompt: str, deadline_s: float) -> Any:

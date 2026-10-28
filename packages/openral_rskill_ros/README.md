@@ -264,7 +264,10 @@ result):
 | `FAILURE_PERCEPTION_STALE` | The kernel's `PerceptionStaleEvidence` (which input, its age, the limit) when a stale input stalled the action |
 | `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, budget, elapsed) |
 | `FAILURE_OBJECT_NOT_FOUND` | The tracker's exhausted `ObjectQueryEvidence` |
+| `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when the cause is known: `state=gpu_out_of_memory` / `quantization_mismatch` (the skill's own typed fault), or the kernel drop that left the action unapplied (`drop_envelope_unconfigured`, `drop_voxel_overflow`, `drop_attached_overflow`). Empty otherwise |
 | anything else | Empty: `failure_reason` says it all |
+
+A safety stop's report and its latch travel on two topics, so the latch can wake the goal first. The failed Result waits up to 1 s (`_SAFETY_EVIDENCE_WAIT_S`) for the report of the kind the latched `SafetyStatus` names, and logs `rskill_runner.safety_evidence_missing` when none arrives. The robot is already stopped; only the Result is delayed. The `/openral/failure/safety` subscription has its own callback group, so it never queues behind the stop's own `/openral/estop` callback.
 
 Additive like `failure_kind`: an older producer's Result decodes as `""`.
 The reasoner renders it on the skill's execution line and picks its

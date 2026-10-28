@@ -26,6 +26,7 @@ from collections import Counter, deque
 
 from openral_core import (
     CollisionEvidence,
+    ControllerEvidence,
     FailureEvidence,
     GraspOutcomeEvidence,
     ObjectDetection2D,
@@ -187,8 +188,9 @@ class RewardStateRecord:
 # next step differs from the outcome-state default ("aborted → infeasible here").
 _FAILURE_KIND_REFLECTIONS: dict[str, str] = {
     "FAILURE_PERCEPTION_STALE": (
-        "a perception input was too old to act on (see evidence) — usually transient; "
-        "retry the same skill once it is fresh rather than substituting it."
+        "a perception input was missing or too old to act on (a stale sensor or world "
+        "model, or a target not grounded yet) — usually transient; look at the target or "
+        "wait, then retry the same skill rather than substituting it."
     ),
     "FAILURE_OBJECT_NOT_FOUND": (
         "the object was not found — locate it (look around, recall, or ask the operator) "
@@ -208,6 +210,60 @@ _FAILURE_KIND_REFLECTIONS: dict[str, str] = {
         "no motion plan was found — reposition or choose a different approach."
     ),
 }
+
+
+# Strategy hint per ControllerEvidence.state, for a runtime fault (or a dispatch refusal)
+# whose cause is known. None of them is fixed by retrying the same skill.
+_CONTROLLER_STATE_REFLECTIONS: dict[str, str] = {
+    "gpu_out_of_memory": (
+        "the GPU ran out of memory running this skill — retrying it will fail the same way; "
+        "pick a smaller or quantized skill, or wait for other models to free VRAM."
+    ),
+    "vram_insufficient": (
+        "not enough free GPU memory to load this skill — re-dispatching it will be refused "
+        "again; pick a smaller skill or wait for VRAM to free."
+    ),
+    "quantization_mismatch": (
+        "the skill's weights and runtime disagree (dtype / quantization) — a configuration "
+        "fault; use a different skill, retrying will not help."
+    ),
+    "unavailable": (
+        "the skill runner is not up yet — the stack is not ready; wait and retry, a "
+        "different skill will fail the same way."
+    ),
+    "dispatch_timeout": (
+        "the skill runner stopped answering (it, or a model sharing its GPU, likely died) "
+        "— wait for it to come back before dispatching again."
+    ),
+    "rejected": ("the skill runner refused the goal (busy or not active) — wait, then retry."),
+    "error": (
+        "a transport error talking to the skill runner — retry once; if it repeats, the "
+        "runner is down."
+    ),
+    "drop_envelope_unconfigured": (
+        "the safety kernel is not armed (no envelope loaded), so nothing can move — report "
+        "it to the operator; retrying or substituting skills will not help."
+    ),
+    "drop_voxel_overflow": (
+        "the scene exceeds the safety kernel's capacity (too many occupied voxels), so it "
+        "refuses every motion here — report it to the operator; retrying will not help."
+    ),
+    "drop_attached_overflow": (
+        "the safety kernel cannot track what the robot is carrying (attachment over "
+        "capacity), so it refuses every motion — report it to the operator; retrying will "
+        "not help."
+    ),
+}
+
+
+def _reflect_on_kind(failure_kind: str | None, evidence_json: str) -> str | None:
+    """The hint a typed ``failure_kind`` (and its evidence) decides, or ``None``."""
+    if failure_kind == "FAILURE_SAFETY_ESTOP":
+        return _reflect_on_safety_stop(evidence_json)
+    evidence = _decode_evidence(evidence_json)
+    if isinstance(evidence, ControllerEvidence) and evidence.state in _CONTROLLER_STATE_REFLECTIONS:
+        return _CONTROLLER_STATE_REFLECTIONS[evidence.state]
+    return _FAILURE_KIND_REFLECTIONS.get(failure_kind or "")
 
 
 def _is_clock_stall(evidence_json: str) -> bool:
@@ -284,7 +340,8 @@ def reflect_on_failure(
         failure_kind: The ``ExecuteRskill.Result`` ``FAILURE_*`` constant name. When it
             has its own hint (``_FAILURE_KIND_REFLECTIONS``) that hint is returned
             instead of the outcome-state default; a safety stop picks its hint from
-            ``evidence_json``.
+            ``evidence_json``, and so does any ``ControllerEvidence`` whose state has one
+            (``_CONTROLLER_STATE_REFLECTIONS``: out of GPU memory, a kernel overflow, ...).
         evidence_json: ``ExecuteRskill.Result.evidence_json`` (one ``FailureEvidence``).
 
     Example:
@@ -308,10 +365,9 @@ def reflect_on_failure(
             else "the skill timed out — it may be stuck; try a shorter-horizon step "
             "or a different skill."
         )
-    if failure_kind == "FAILURE_SAFETY_ESTOP":
-        return _reflect_on_safety_stop(evidence_json)
-    if failure_kind in _FAILURE_KIND_REFLECTIONS:
-        return _FAILURE_KIND_REFLECTIONS[failure_kind]
+    typed = _reflect_on_kind(failure_kind, evidence_json)
+    if typed is not None:
+        return typed
     if state == "aborted":
         return (
             "the controller aborted mid-execution — the action is likely infeasible from "

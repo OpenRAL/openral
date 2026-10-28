@@ -20,6 +20,7 @@ from typing import Literal
 
 from openral_core import (
     CollisionEvidence,
+    ControllerEvidence,
     GraspOutcomeEvidence,
     HumanEvidence,
     PerceptionStaleEvidence,
@@ -154,6 +155,30 @@ def test_a_stalled_clock_is_not_reported_as_a_stuck_skill() -> None:
     ).model_dump_json()
     assert "timed out" in reflect_on_failure(
         "aborted", "deadline_exceeded: ...", timed_out=True, evidence_json=exceeded
+    )
+
+
+def test_a_runtime_fault_with_a_known_cause_does_not_say_retry() -> None:
+    """``ControllerEvidence.state`` names a cause no retry fixes: OOM, a kernel overflow, ..."""
+
+    def runtime(state: str) -> str:
+        evidence = ControllerEvidence(controller_name="safety_kernel", state=state)
+        return reflect_on_failure(
+            "aborted",
+            "...",
+            failure_kind="FAILURE_RUNTIME_ERROR",
+            evidence_json=evidence.model_dump_json(),
+        )
+
+    assert "ran out of memory" in runtime("gpu_out_of_memory")
+    assert "not armed" in runtime("drop_envelope_unconfigured")
+    assert "capacity" in runtime("drop_voxel_overflow")
+    for state in ("gpu_out_of_memory", "drop_envelope_unconfigured", "drop_voxel_overflow"):
+        assert "retry once" not in runtime(state), state
+    # An unknown state, or no evidence, keeps the kind's own hint.
+    assert "retry once" in runtime("some_new_state")
+    assert "retry once" in reflect_on_failure(
+        "aborted", "...", failure_kind="FAILURE_RUNTIME_ERROR"
     )
 
 

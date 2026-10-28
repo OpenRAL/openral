@@ -321,6 +321,12 @@ _KIND_TIMEOUT: int = 0
 _KIND_CONTROLLER: int = 5
 _KIND_OBJECT_QUERY: int = 11  # issue #418: the object tracker's query escalations
 _SEVERITY_WARN: int = 1
+# ControllerEvidence states of an ExecuteRskill goal that never ran: refused before
+# dispatch (VRAM, runner not on the graph), lost (dispatch watchdog), rejected, or a
+# transport error. ``_publish_skill_failure`` gives each an execution line + hint.
+_DISPATCH_FAILURE_STATES = frozenset(
+    {"vram_insufficient", "unavailable", "dispatch_timeout", "rejected", "error"}
+)
 _SEVERITY_FAIL: int = 2
 
 # Fallback failure-state names for the dashboard EVENT_SKILL_FAILURE event when
@@ -5756,6 +5762,24 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         msg.rskill_id = rskill_id
         msg.trace_id = trace_id or traceparent or ""
         self._failure_pub.publish(msg)
+        # A goal that never ran (refused before dispatch, rejected, lost) has no result to
+        # carry a hint: give the LLM the execution line and hint here, picked from the state.
+        if isinstance(evidence, ControllerEvidence) and evidence.state in _DISPATCH_FAILURE_STATES:
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=rskill_id,
+                    outcome="failed",
+                    summary=f"not run: {evidence.state}",
+                    reflection=reflect_on_failure(
+                        "failed",
+                        evidence.detail,
+                        timed_out=False,
+                        evidence_json=msg.evidence_json,
+                    ),
+                    stamp_ns=self.get_clock().now().nanoseconds,
+                    evidence_json=msg.evidence_json,
+                )
+            )
         # Mirror the failure onto the OTLP span path so the dashboard tallies it
         # on the "skill failures" counter + surfaces the state.
         # The ROS FailureTrigger bus is invisible to the dashboard (it ingests
