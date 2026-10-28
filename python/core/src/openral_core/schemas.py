@@ -13410,7 +13410,13 @@ class CollisionEvidence(_FailureEvidenceBase):
         workspace_denial_reason: Readable reason the workspace rule did not
             tolerate the reported pair, mapped from the kernel's existing code.
         workspace_contact_active: Whether a live workspace contact region was
-            active during the check, when reported by the producer.
+            active during the check, when reported by the producer. This is the
+            kernel's in-tree rule, which is off when an exemption provider applies
+            workspace contact (ADR-0121), so it reads ``False`` on every provider stop.
+        workspace_declaration_live: Whether the grasp declaration's workspace was live
+            at the stop, whoever applies it (the in-tree rule or a provider). ``False``
+            with a declared workspace means it had lapsed or been dropped. ``None`` from
+            a producer that predates the field.
         grasp_exemption_active: Whether a live grasp exemption was active during
             the check, when reported by the producer.
         grasp_exemption_source: Which grasp exemption the check ran under (ADR-0121):
@@ -13466,6 +13472,7 @@ class CollisionEvidence(_FailureEvidenceBase):
         | None
     ) = None
     workspace_contact_active: bool | None = None
+    workspace_declaration_live: bool | None = None
     grasp_exemption_active: bool | None = None
     grasp_exemption_source: Literal["region", "tracked", "provider", "none"] | None = None
     grasp_exemption_provider: str | None = Field(

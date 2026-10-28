@@ -4143,6 +4143,10 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   }
   oss << R"(,"workspace_contact_active":)"
       << (voxel_grid_.workspace_region.valid ? "true" : "false");
+  // The declaration itself, whoever applies it: with an exemption provider the in-tree rule
+  // above is off (ADR-0121), so `workspace_contact_active` read false on every provider stop,
+  // a live workspace and a lapsed one alike.
+  oss << R"(,"workspace_declaration_live":)" << (workspace_live() ? "true" : "false");
   const char* grasp_source = grasp_exemption_source();
   const bool grasp_active = std::strcmp(grasp_source, "none") != 0;
   oss << R"(,"grasp_exemption_active":)" << (grasp_active ? "true" : "false")
