@@ -245,11 +245,11 @@ def _import_transformers() -> tuple[Any, Any]:
     NOT a lerobot policy. An NF4 load takes its ``quantization_config`` from
     OpenRAL Pro (ADR-0123).
 
-    OpenVLA's ``auto_map`` keys the model on ``AutoModelForVision2Seq``. Newer
-    Transformers releases may remove that auto class without migrating legacy
-    OpenVLA repos to ``AutoModelForImageTextToText``. Prefer the real legacy class
-    when present; otherwise use a compatibility shim that reads the repo's legacy
-    auto map and loads the referenced dynamic class directly.
+    OpenVLA's ``auto_map`` keys the model on ``AutoModelForVision2Seq``, which
+    Transformers 5 removed. Every load goes through a compatibility loader that
+    reads the repo's legacy auto map and loads the referenced dynamic class
+    directly, so the ``prismatic`` shim and the timm patches apply on either
+    Transformers major.
 
     Returns ``(auto_model_cls, AutoProcessor)``, untyped
     (transformers has no strict stubs in this workspace).
@@ -268,11 +268,8 @@ def _import_transformers() -> tuple[Any, Any]:
             "AutoModelForVision2Seq + trust_remote_code). "
             f"{model_family_install_hint('openvla')} (underlying: {exc!r})"
         ) from exc
-    auto_model_cls: Any = getattr(transformers, "AutoModelForVision2Seq", None)
-    if auto_model_cls is None:
-        auto_model_cls = _AutoModelForVision2SeqCompat
     _install_tokenization_compat(transformers)
-    return auto_model_cls, AutoProcessor
+    return _AutoModelForVision2SeqCompat, AutoProcessor
 
 
 class _AutoModelForVision2SeqCompat:
@@ -311,7 +308,30 @@ class _AutoModelForVision2SeqCompat:
         )
         _install_legacy_openvla_model_compat(model_cls)
         with _legacy_openvla_timm_version_guard():
-            return model_cls.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        _unpack_timm1_featurizer_lists(model)
+        return model
+
+
+def _unpack_timm1_featurizer_lists(model: Any) -> None:
+    """Make the vision featurizers return a tensor under timm 1.x.
+
+    The remote code sets ``featurizer.forward = unpack_tuple(get_intermediate_layers)``,
+    which unpacks only a ``tuple``; timm 1.x returns a ``list``, so the forward
+    pass hands ``torch.cat`` a list.
+    """
+    backbone = getattr(model, "vision_backbone", None)
+    for name in ("featurizer", "fused_featurizer"):
+        featurizer: Any = getattr(backbone, name, None)
+        forward = getattr(featurizer, "forward", None)
+        if forward is None:
+            continue
+
+        def _first_of_list(*args: Any, __forward: Any = forward, **kwargs: Any) -> Any:
+            result = __forward(*args, **kwargs)
+            return result[0] if isinstance(result, list) else result
+
+        featurizer.forward = _first_of_list
 
 
 def _install_legacy_openvla_model_compat(model_cls: type[Any]) -> None:

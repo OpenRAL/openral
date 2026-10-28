@@ -2,9 +2,8 @@
 
 These cover the action de-normalization (BOUNDS_Q99) and the OpenVLA prompt
 template — the parts that need no GPU / weights, so they run in the unit tier.
-The full ``predict_action`` chunk path has no in-tree live test: the RLinf
-OpenVLA remote code needs ``transformers<5``, which the workspace lock cannot
-provide.
+The full ``predict_action`` chunk path has no in-tree live test; it was run
+by hand with ``openral sim run`` on SimplerEnv (see vla_compatibility.md).
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from openral_sim.policies.openvla import (
     _postprocess_action_chunk,
     _require_remote_code_ack,
     _unnormalize_action,
+    _unpack_timm1_featurizer_lists,
 )
 
 # RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood embedded ``bridge_orig`` action
@@ -244,3 +244,18 @@ def test_legacy_openvla_model_compat_ignores_new_tie_weights_kwargs() -> None:
     model.tie_weights(recompute_mapping=False)  # type: ignore[call-arg]  # reason: compat shim widens the signature at runtime
 
     assert model.tied is True
+
+
+def test_timm1_featurizer_list_is_unpacked() -> None:
+    # timm 1.x get_intermediate_layers returns a list; the remote unpack_tuple
+    # only unpacks tuples.
+    featurizer = SimpleNamespace(forward=lambda x: [x * 2])
+    fused = SimpleNamespace(forward=lambda x: x + 1)
+    model = SimpleNamespace(
+        vision_backbone=SimpleNamespace(featurizer=featurizer, fused_featurizer=fused)
+    )
+
+    _unpack_timm1_featurizer_lists(model)
+
+    assert featurizer.forward(3) == 6
+    assert fused.forward(3) == 4
