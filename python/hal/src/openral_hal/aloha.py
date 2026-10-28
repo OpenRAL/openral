@@ -361,6 +361,9 @@ ALOHA_REAL_DESCRIPTION = make_real_description(
 # JointGroupCommand on /<robot_name>/commands/joint_group — the group name
 # selects the motor group ("arm" = 6 joints, "gripper" = 1). Group names come
 # from the cell's motor_config; these defaults match stock Interbotix ALOHA.
+# A real ALOHA is bimanual: exactly two follower arms, each its own xs_sdk
+# namespace and its own /<ns>/commands/joint_group topic.
+_ALOHA_ARM_COUNT: int = 2
 _DEFAULT_ARM_GROUP: str = "arm"
 _DEFAULT_GRIPPER_GROUP: str = "gripper"
 
@@ -503,7 +506,8 @@ class AlohaHAL(HALBase):
         # xs_sdk namespaces — with one namespace both arms would publish
         # different targets to the same /<ns>/commands/joint_group topic and
         # the later publish would silently replace the earlier.
-        if len(set(arm_namespaces)) != 2 or len(arm_namespaces) != 2:
+        if len(arm_namespaces) != _ALOHA_ARM_COUNT
+            or len(set(arm_namespaces)) != _ALOHA_ARM_COUNT:
             raise ROSConfigError(
                 "AlohaHAL needs exactly two distinct arm namespaces "
                 f"(follower_left/follower_right); got {list(arm_namespaces)!r}."
