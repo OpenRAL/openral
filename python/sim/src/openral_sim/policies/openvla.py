@@ -389,7 +389,8 @@ class _OpenVLANormalizationType(str, enum.Enum):
 
 def _install_prismatic_oft_compat() -> None:
     """Install minimal OpenVLA-OFT ``prismatic`` symbols when the package is absent."""
-    if importlib.util.find_spec("prismatic") is not None:
+    # A shim from an earlier load has ``__spec__ = None``, on which find_spec raises.
+    if "prismatic" in sys.modules or importlib.util.find_spec("prismatic") is not None:
         return
     import torch
 

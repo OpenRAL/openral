@@ -216,6 +216,18 @@ def test_prismatic_oft_compat_installs_constants_and_masks(
     )
 
 
+def test_prismatic_oft_compat_reinstall_keeps_existing_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A second load in one process must not hit find_spec on the spec-less shim.
+    shim = ModuleType("prismatic")
+    monkeypatch.setitem(sys.modules, "prismatic", shim)
+
+    _install_prismatic_oft_compat()
+
+    assert sys.modules["prismatic"] is shim
+
+
 def test_legacy_openvla_timm_version_guard_restores_modern_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
