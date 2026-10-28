@@ -17,7 +17,7 @@ dependencies = [
     # the HAL's on_configure. The extra is small pure-Python, and the `so100`
     # optional-extra is never activated by `just sync` (nothing pulls
     # openral-hal[so100]), so the feetech deps belong in the base. Min 3.12+.
-    "lerobot[feetech]>=0.6.0",
+    "lerobot[feetech]>=0.6.1",
     "structlog>=24.0", # reason: structured logging per CLAUDE.md §2
     # torchcodec (pulled transitively via lerobot) ships per-torch-minor ABI
     # builds: 0.9.x↔torch2.9, 0.10.x↔torch2.10. The dev workspace locks torch
@@ -37,7 +37,7 @@ so100 = [
     # SO-100/SO-101 servo bus. feetech-servo-sdk + deepdiff are already in the
     # base deps above (real hardware needs them at connect()); kept here so the
     # extra stays a self-documenting opt-in surface.
-    "lerobot[feetech]>=0.6.0",
+    "lerobot[feetech]>=0.6.1",
 ]
 arm-sim = [
     "mujoco>=3.0",  # reason: MuJoCo physics engine for UR5e / UR10e / Franka Panda HAL sim adapters

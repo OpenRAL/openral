@@ -609,8 +609,7 @@ def _try_load_act_norm_stats(
 
     out: dict[str, Any] = {"image_mean": {}, "image_std": {}}
     try:
-        # reason: safetensors ships no type stubs for safe_open
-        with safe_open(weights, framework="pt") as f:  # type: ignore[no-untyped-call]
+        with safe_open(weights, framework="pt") as f:
             available = set(f.keys())
 
             def _maybe(key: str) -> Any | None:

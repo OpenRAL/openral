@@ -42,8 +42,8 @@ def _preprocess(pre: Any, state: torch.Tensor) -> dict[str, Any]:
 
 
 def _postprocess(post: Any) -> Any:
+    from lerobot.lerobot_types import TransitionKey
     from lerobot.processor.converters import create_transition
-    from lerobot.types import TransitionKey
 
     return lambda a: post(create_transition(action=a))[TransitionKey.ACTION]
 

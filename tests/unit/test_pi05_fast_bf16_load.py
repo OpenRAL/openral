@@ -363,7 +363,7 @@ def test_direct_reader_matches_safe_open_bit_for_bit(path: Path) -> None:
     """Every tensor of a real in-tree checkpoint lands identical to ``safe_open``'s."""
     from safetensors import safe_open
 
-    with safe_open(str(path), framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
+    with safe_open(str(path), framework="pt", device="cpu") as f:
         expected = {k: f.get_tensor(k) for k in f.keys()}  # noqa: SIM118
     assert expected, path
     targets = {k: torch.empty_like(v) for k, v in expected.items()}
