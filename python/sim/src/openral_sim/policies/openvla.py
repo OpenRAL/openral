@@ -343,16 +343,18 @@ def _install_legacy_openvla_model_compat(model_cls: type[Any]) -> None:
     """Patch legacy OpenVLA remote classes for newer Transformers init hooks."""
     cls: Any  # Any: monkey-patching attributes onto dynamically-loaded remote classes
     for cls in model_cls.__mro__:
+        # Only the repo's remote-code classes: patching a Transformers base class here
+        # would change every model in the process.
+        if not str(cls.__module__).startswith("transformers_modules"):
+            continue
         # The remote ``_init_weights`` re-randomizes every Linear / Conv2d. Transformers 5
         # runs it after loading on modules it does not mark as loaded, which wiped the
         # timm patch-embedding convs of both vision backbones (the policy went blind).
         # The remote code itself says it is for inference / fine-tuning only. Transformers 5
         # also computes the RoPE ``inv_freq`` buffers (non-persistent, not in the checkpoint)
         # only in the base ``_init_weights``; skipping it left them as uninitialized memory.
-        if (
-            str(cls.__module__).startswith("transformers_modules")
-            and "_init_weights" in cls.__dict__
-            and not getattr(cls.__dict__["_init_weights"], "_openral_compat", False)
+        if "_init_weights" in cls.__dict__ and not getattr(
+            cls.__dict__["_init_weights"], "_openral_compat", False
         ):
 
             def _init_rotary_only(self: Any, module: Any) -> None:

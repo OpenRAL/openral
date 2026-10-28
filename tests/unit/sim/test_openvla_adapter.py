@@ -252,6 +252,7 @@ def test_legacy_openvla_model_compat_ignores_new_tie_weights_kwargs() -> None:
     class RemoteModel(LegacyBase):
         pass
 
+    LegacyBase.__module__ = RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
     _install_legacy_openvla_model_compat(RemoteModel)
     model = RemoteModel()
     model.tie_weights(recompute_mapping=False)  # type: ignore[call-arg]  # reason: compat shim widens the signature at runtime
@@ -302,6 +303,33 @@ def test_legacy_openvla_model_compat_disables_remote_init_weights() -> None:
     _install_legacy_openvla_model_compat(RemoteModel)
 
     RemoteModel()._init_weights(object())
+
+
+def test_legacy_openvla_model_compat_leaves_transformers_base_classes_alone() -> None:
+    # A remote class inherits from PreTrainedModel; patching that base would change every
+    # model in the process.
+    pytest.importorskip("transformers")
+    from transformers import PreTrainedModel
+
+    before = {name: PreTrainedModel.__dict__[name] for name in ("_init_weights", "tie_weights")}
+
+    class RemoteModel(PreTrainedModel):
+        def _init_weights(self, module: object) -> None:
+            raise AssertionError("remote init must not run")
+
+        def tie_weights(self) -> None:
+            return None
+
+    RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
+    try:
+        _install_legacy_openvla_model_compat(RemoteModel)
+
+        for name, original in before.items():
+            assert PreTrainedModel.__dict__[name] is original
+        assert getattr(RemoteModel.__dict__["_init_weights"], "_openral_compat", False)
+    finally:
+        for name, original in before.items():
+            setattr(PreTrainedModel, name, original)
 
 
 def test_legacy_openvla_model_compat_still_computes_rope_buffers() -> None:
