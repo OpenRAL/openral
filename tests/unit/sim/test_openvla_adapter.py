@@ -307,6 +307,8 @@ def test_legacy_openvla_model_compat_disables_remote_init_weights() -> None:
 def test_legacy_openvla_model_compat_still_computes_rope_buffers() -> None:
     # RoPE inv_freq is a non-persistent buffer only the base _init_weights fills.
     import torch
+
+    pytest.importorskip("transformers")
     from transformers import LlamaConfig
     from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 

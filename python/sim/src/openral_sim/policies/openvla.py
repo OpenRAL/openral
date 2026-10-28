@@ -359,7 +359,7 @@ def _install_legacy_openvla_model_compat(model_cls: type[Any]) -> None:
                 if "RotaryEmbedding" in type(module).__name__:
                     from transformers import PreTrainedModel
 
-                    PreTrainedModel._init_weights(self, module)  # type: ignore[no-untyped-call]  # reason: transformers ships it untyped
+                    PreTrainedModel._init_weights(self, module)  # type: ignore[no-untyped-call,unused-ignore]  # reason: untyped in some transformers installs
 
             _init_rotary_only._openral_compat = True  # type: ignore[attr-defined]
             cls._init_weights = _init_rotary_only
