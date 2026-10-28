@@ -1763,6 +1763,39 @@ def test_vla_style_skill_stays_resident_across_goal_params() -> None:
     assert len(built) == 1
 
 
+def test_unpinned_goal_reuses_a_pinned_preload() -> None:
+    """A goal with no revision must not evict the same skill preloaded at a pinned revision.
+
+    Deploy profiles pin ``preload_rskill_revision`` while dispatchers send an empty revision;
+    a reload there cost ~7 s (8 GB pi0.5) inside the goal's watchdog window. A goal pinning a
+    different revision still reloads.
+    """
+    built: list[Any] = []
+
+    def _resolver(**_k: Any) -> Any:
+        skill = _make_constant_skill()
+        skill.set_goal_prompt = lambda _p: None
+        built.append(skill)
+        return skill
+
+    with _compose_harness(resolver=_resolver) as (_executor, runtime, _safety, _observed):
+        runner = runtime.skill_runner_node
+        kwargs = {
+            "rskill_id": "openral/test-constant-skill",
+            "prompt": "go",
+            "prompt_metadata_json": "",
+            "goal_params_json": "",
+        }
+        preloaded = runner._acquire_skill(**kwargs, revision="c3d195e")
+        unpinned = runner._acquire_skill(**kwargs, revision="")
+        assert runner._resident_key[1] == "c3d195e"
+        other = runner._acquire_skill(**kwargs, revision="v2")
+
+    assert unpinned is preloaded
+    assert other is not preloaded
+    assert len(built) == 2
+
+
 def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() -> None:
     """The runner runs ``rSkill.check_gripper_conventions`` when it resolves a skill.
 
