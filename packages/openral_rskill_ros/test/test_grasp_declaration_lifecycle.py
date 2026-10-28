@@ -581,6 +581,39 @@ def test_without_grounding_required_the_goal_proceeds_after_the_wait() -> None:
     assert waited >= 0.5, "the goal never waited grounding_wait_s"
 
 
+def test_an_ungrounded_context_query_holds_the_wait_only_grounding_context_wait_s() -> None:
+    """A grounded TARGET plus a never-seen neighbour: the goal starts after the short
+    context wait, not the full ``grounding_wait_s``, and is not refused (Spark restock,
+    2026-10-28: a hidden carton held every episode at the full 20 s)."""
+    import time
+
+    from openral_msgs.action import ExecuteRskill
+
+    params = {
+        **_TRACKING_ON,
+        "object_queries_json": (
+            '[{"label": "orange", "count": "all", "role": "target"},'
+            ' {"label": "carton", "count": "all", "role": "context", "min_instances": 3}]'
+        ),
+        "grounding_wait_s": 6.0,
+        "grounding_context_wait_s": 0.3,
+        "grounding_required": True,
+    }
+    with _harness(_scene_json(contact_links=("gripper_finger",)), params=params) as (
+        executor,
+        runtime,
+        _seen,
+    ):
+        _tracker_stand_in(executor, status="confirmed")
+        t0 = time.monotonic()
+        response = _run_goal(executor, runtime.skill_runner_node, deadline_s=0.4)
+        waited = time.monotonic() - t0
+    assert response.result.failure_kind != ExecuteRskill.Result.FAILURE_PERCEPTION_STALE, (
+        response.result.failure_reason
+    )
+    assert waited < 4.0, f"the context query held the goal {waited:.1f} s"
+
+
 def test_tracking_on_without_a_grounding_wait_refuses_to_configure() -> None:
     import rclpy
     from openral_rskill_ros.compose import compose_so100_runtime
