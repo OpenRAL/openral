@@ -676,16 +676,17 @@ _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, c
 - `main() -> int` (_da3_depth_server.py L70) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
 
 ### `tools/internvla_n1_sidecar.py` + `tools/_internvla_n1_server.py`
-_Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.policies.internvla_n1`. Runs out-of-process over ZMQ because upstream's pinned transformers version conflicts with the workspace's; provisions a py3.11 venv from an inference-only pin set and serves the Qwen2.5-VL-7B S2 planner + NavDP DiT S1 policy, mapping discrete VLN-CE actions to a `BODY_TWIST`._
+_Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.policies.internvla_n1`. Runs out-of-process over ZMQ because upstream's pinned transformers version conflicts with the workspace's; provisions a py3.12 venv from an inference-only pin set (a cached venv on another Python is rebuilt) and serves the Qwen2.5-VL-7B S2 planner + NavDP DiT S1 policy, mapping discrete VLN-CE actions to a `BODY_TWIST`._
 
-- `_LABEL = "internvla-n1-sidecar"` (L40) — sidecar identity.
-- `_REPO_URL = "https://github.com/InternRobotics/InternNav.git"` (L41) — upstream clone URL.
-- `_DEFAULT_HOME: Path` (L42) — cache dir.
-- `_PYTHON = "3.11"` (L43) — venv Python version.
-- `_PINNED_DEPS: list[str]` (L54) — Inference-only pin set mirroring upstream, minus flash-attn (sdpa instead); torch 2.9.1 on the `torch_backend()` index (cu130 on aarch64) for aarch64 support, and `diffusers==0.32.2` specifically since a later release changed the architecture the checkpoint was trained against.
-- `_DIFFUSION_POLICY_PIN: str` (L80) — Pins `diffusion_policy` to one commit installed with `--no-deps`, since System-1's NavDP imports only `SinusoidalPosEmb` from it.
-- `_NVRTC_OVERRIDE: Path` (L89) — aarch64 nvrtc override; without it transformers 4.51's Qwen2.5-VL vision stack's `.prod()` dies past the sm_121 ceiling on every System-2 replan.
-- `main() -> int` (L171) — argparse via the shared `build_parser` plus `--revision` (forwarded to the server); the wrapper binds the server to `127.0.0.1`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
+- `_LABEL = "internvla-n1-sidecar"` (L41) — sidecar identity.
+- `_REPO_URL = "https://github.com/InternRobotics/InternNav.git"` (L42) — upstream clone URL.
+- `_DEFAULT_HOME: Path` (L43) — cache dir.
+- `_PYTHON = "3.12"` (L47) — venv Python version (both arches; validated on x86_64 and Jetson Thor).
+- `_venv_python(venv) -> str | None` (L98) — `major.minor` of the interpreter a cached venv was created with, read from its `pyvenv.cfg`; `_install_deps` rebuilds the venv when it differs from `_PYTHON`.
+- `_PINNED_DEPS: list[str]` (L58) — Inference-only pin set mirroring upstream, minus flash-attn (sdpa instead); torch 2.9.1 on the `torch_backend()` index (cu130 on aarch64) for aarch64 support, and `diffusers==0.32.2` specifically since a later release changed the architecture the checkpoint was trained against.
+- `_DIFFUSION_POLICY_PIN: str` (L84) — Pins `diffusion_policy` to one commit installed with `--no-deps`, since System-1's NavDP imports only `SinusoidalPosEmb` from it.
+- `_NVRTC_OVERRIDE: Path` (L93) — aarch64 nvrtc override; without it transformers 4.51's Qwen2.5-VL vision stack's `.prod()` dies past the sm_121 ceiling on every System-2 replan.
+- `main() -> int` (L196) — argparse via the shared `build_parser` plus `--revision` (forwarded to the server); the wrapper binds the server to `127.0.0.1`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_internvla_n1_server.py L56) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_ACTION_STOP = 0` (_internvla_n1_server.py L61) — Discrete VLN-CE action ids emitted by System-2 (upstream `InternVLAN1AsyncAgent.actions2idx`): STOP.
 - `_ACTION_FORWARD = 1` (_internvla_n1_server.py L62) — forward 0.25 m.
@@ -695,7 +696,7 @@ _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.polici
 - `_DEFAULT_FORWARD_MPS = 0.25` (_internvla_n1_server.py L70) — forward speed magnitude for `_ACTION_FORWARD`, held for ~1 s of wall time between S2 replans.
 - `_DEFAULT_TURN_RADPS = float(np.deg2rad(15.0))` (_internvla_n1_server.py L71) — turn speed magnitude for `_ACTION_LEFT`/`_ACTION_RIGHT`.
 - `discrete_action_to_twist(actions, *, forward_mps, turn_radps) -> tuple[float, float, bool]` (_internvla_n1_server.py L74) — Maps a VLN-CE discrete action sequence to `(v_forward, w_yaw, stop)`; only the first action drives motion this step, STOP anywhere latches `stop=True`. Pure/side-effect-free (`tests/unit/test_internvla_n1_action_mapping.py`).
-- `main() -> int` (_internvla_n1_server.py L323) — argparse (`--model`, `--revision` (commit sha passed to the model and processor loaders), `--host` (default `127.0.0.1`), `--port`, `--device`, `--quantization`, `--quantization-config` (Pro's `BitsAndBytesConfig` kwargs from the launcher, required for `nf4` / `int8`), `--resize`, `--num-history`, `--plan-step-gap`, `--forward-mps`, `--turn-radps`, `--work-dir`); boots the ZMQ server.
+- `main() -> int` (_internvla_n1_server.py L335) — argparse (`--model`, `--revision` (commit sha passed to the model and processor loaders), `--host` (default `127.0.0.1`), `--port`, `--device`, `--quantization`, `--quantization-config` (Pro's `BitsAndBytesConfig` kwargs from the launcher, required for `nf4` / `int8`), `--resize`, `--num-history`, `--plan-step-gap`, `--forward-mps`, `--turn-radps`, `--work-dir`); boots the ZMQ server.
 
 ### `tools/lingbot_vla2_sidecar.py` + `tools/_lingbot_vla2_server.py`
 _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.policies.lingbot_vla2`. v2 (6B Qwen3-VL MoE) is the default; `--variant v1` selects the 4B Qwen2.5-VL dense RoboTwin post-train, which is x86_64-only. Runs out-of-process because upstream pins a torch/kernel stack incompatible with the workspace._

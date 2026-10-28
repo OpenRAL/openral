@@ -189,10 +189,13 @@ def _build_agent(args: argparse.Namespace) -> Any:
     if args.quantization in {"nf4", "int8"}:
         from transformers import BitsAndBytesConfig
 
-        # Keep the System-1 head (NavDP DiT + latent/traj projections) and
-        # the token embeddings at bf16 — only the Qwen2.5-VL backbone
-        # linears are worth quantizing, and bnb-packed uint8 weights inside
-        # the DiT would break its dtype-inference paths.
+        # Keep the System-1 head (NavDP DiT + latent/traj projections, the
+        # memory encoder and the RGB QFormer) and the token embeddings at bf16
+        # — only the Qwen2.5-VL backbone linears are worth quantizing.
+        # bnb-packed uint8 weights inside the DiT would break its dtype-inference
+        # paths, and the memory encoder / QFormer are torch.nn.Transformer
+        # stacks whose attention reads ``out_proj.weight`` directly (a packed
+        # weight there fails with "self and mat2 must have the same dtype").
         skip = [
             "lm_head",
             "embed_tokens",
@@ -200,6 +203,8 @@ def _build_agent(args: argparse.Namespace) -> Any:
             "navdp",
             "action_encoder",
             "action_decoder",
+            "memory_encoder",
+            "rgb_resampler",
         ]
         # OpenRAL Pro chose the config; this venv has no Pro, so
         # tools/internvla_n1_sidecar.py passes it as --quantization-config (ADR-0123).
@@ -287,10 +292,17 @@ def _step_agent(
     turn_radps: float,
 ) -> dict[str, Any]:
     """One dual-system step → uniform reply dict with a twist command."""
+    import torch
+
     pose = np.eye(4)  # upstream realworld loop feeds identity — pose is logged, unused
-    out = agent.step(rgb, depth, pose, instruction, intrinsic=None)
-    if out.output_action is not None and list(out.output_action) == [_ACTION_LOOK_DOWN]:
-        out = agent.step(rgb, depth, pose, instruction, intrinsic=None, look_down=True)
+    # Upstream's System-1 (``step_s1`` → ``generate_traj``) runs outside
+    # ``no_grad``: autograd then records the whole NextDiT sampler (memory the
+    # 8 GB card does not have) and the trajectory's ``.numpy()`` raises
+    # "Can't call numpy() on Tensor that requires grad".
+    with torch.no_grad():
+        out = agent.step(rgb, depth, pose, instruction, intrinsic=None)
+        if out.output_action is not None and list(out.output_action) == [_ACTION_LOOK_DOWN]:
+            out = agent.step(rgb, depth, pose, instruction, intrinsic=None, look_down=True)
 
     if out.output_action is not None:
         actions = [int(a) for a in out.output_action]

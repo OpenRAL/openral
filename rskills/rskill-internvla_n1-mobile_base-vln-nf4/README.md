@@ -129,7 +129,7 @@ sidecar (SLAM's) via a ping when present, else auto-spawns its own (~0.27 GB,
 
 - `model_family: internvla_n1`, `runtime: pytorch`, `quantization: int4` (NF4).
 - **Out-of-process:** upstream InternNav pins `transformers==4.51.0`, so the
-  model runs in an auto-provisioned py3.11 ZMQ **sidecar**
+  model runs in an auto-provisioned py3.12 ZMQ **sidecar**
   (`tools/internvla_n1_sidecar.py` → `tools/_internvla_n1_server.py`); the
   `openral_sim.policies.internvla_n1` adapter is the client. First boot clones
   InternNav and builds the venv (several minutes); the 8.3B checkpoint is
@@ -153,10 +153,21 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   loads in ~26 s at **6.02 GB VRAM**; a real RGB frame + navigation instruction
   runs through both System-2 (Qwen2.5-VL-7B) and System-1 (NextDiT) and the
   adapter returns a finite 6-D `BODY_TWIST` (a 15°/s turn on the test frame).
-  The sidecar auto-provisions its py3.11 venv; loading the released DualVLN
+  The sidecar auto-provisioned its py3.11 venv at the time; loading the released DualVLN
   checkpoint required pinning **`diffusers==0.32.2`** (0.33.1's `LuminaFeedForward`
   dropped the SwiGLU 2/3 inner-dim reduction the checkpoint's NextDiT was trained
   with) — an upstream repo↔checkpoint drift, handled in the boot helper.
+- **Python 3.12 sidecar, System-1 included (2026-10-28): PASSED.** Same pin set
+  on py3.12, NF4 through OpenRAL Pro. Over this rSkill's four recorded frames,
+  System-2 gives the same finite `BODY_TWIST` (15°/s yaw) and 0.7–3.2 s timings as
+  an identical py3.11 venv. Feeding one frame three times takes the System-1
+  (`step_s1`, NextDiT trajectory) path, which had never run here: it needed the
+  memory encoder and RGB QFormer kept bf16 (their `torch.nn.Transformer`
+  attention reads `out_proj.weight` directly) and `torch.no_grad()` around the
+  agent step (upstream records autograd through the sampler). With both,
+  System-1 returns trajectory twists (0.5 m/s forward, varying yaw):
+  0.12 s/step at 7.57 GB peak on an 8 GB RTX 5070 (x86_64), 0.21 s/step on
+  Jetson Thor (aarch64, py3.12).
 - **aarch64 CUDA (NVIDIA GB10 / DGX Spark): PASSED.** From a fresh sidecar home:
   torch 2.9.1+cu128 on py3.11, model on the GPU at **6.06 GB** (8499 MiB
   process), 106.5 s load, 21 real steps over the ZMQ wire from this rSkill's own

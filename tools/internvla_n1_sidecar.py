@@ -7,7 +7,7 @@ policy adapter (python/sim/src/openral_sim/policies/internvla_n1.py); served
 by ``tools/_internvla_n1_server.py``.
 
 InternNav's setup.py drags the full eval stack (habitat/isaac extras), so
-this provisions a py3.11 venv with the explicit inference-only pin set from
+this provisions a py3.12 venv with the explicit inference-only pin set from
 upstream's ``requirements/internvla_n1.txt`` instead, installs ``internnav``
 and ``diffusion_policy`` with ``--no-deps`` (System-1's NavDP needs only
 ``SinusoidalPosEmb`` from the latter), and skips flash-attn — the server
@@ -30,6 +30,7 @@ CLAUDE.md compliance:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import textwrap
 from pathlib import Path
@@ -40,7 +41,10 @@ from openral_sim._sidecar_common import build_parser, run_cmd, run_sidecar, torc
 _LABEL = "internvla-n1-sidecar"
 _REPO_URL = "https://github.com/InternRobotics/InternNav.git"
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "internvla-n1-sidecar"
-_PYTHON = "3.11"
+# py3.12 matches the workspace; nothing in the inference pin set needs 3.11.
+# Validated 2026-10-28 on x86_64 (RTX 5070: same twists and timings as 3.11)
+# and aarch64 (Jetson Thor), System-1 included.
+_PYTHON = "3.12"
 
 # Inference-only pin set, mirroring upstream requirements/internvla_n1.txt
 # (transformers/diffusers/accelerate) minus flash-attn (sdpa instead) and
@@ -91,8 +95,25 @@ _NVRTC_OVERRIDE = (
 )
 
 
+def _venv_python(venv: Path) -> str | None:
+    """``major.minor`` of the interpreter a venv was created with, from its ``pyvenv.cfg``.
+
+    Example:
+        >>> _venv_python(Path("/nonexistent")) is None
+        True
+    """
+    cfg = venv / "pyvenv.cfg"
+    if not cfg.is_file():
+        return None
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() in ("version_info", "version"):
+            return ".".join(value.strip().split(".")[:2])
+    return None
+
+
 def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
-    """Provision ``<source>/.venv`` (py3.11) with the inference pin set."""
+    """Provision ``<source>/.venv`` (``_PYTHON``) with the inference pin set."""
     # The shallow clone skips submodules; the encoder package eagerly imports
     # LongCLIP (a submodule), so fetch it. DualVLN's System-1 uses the
     # DepthAnythingV2 encoder, not LongCLIP, but the package __init__ imports
@@ -104,6 +125,10 @@ def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
     )
     venv = source / ".venv"
     py = venv / "bin" / "python"
+    if py.exists() and _venv_python(venv) != _PYTHON:
+        # A cached venv from an older pin (py3.11 before 2026-10-28) is rebuilt;
+        # installing into it would keep the old interpreter.
+        shutil.rmtree(venv)
     if not py.exists():
         run_cmd(_LABEL, [uv, "venv", str(venv), "--python", _PYTHON], cwd=source)
     # Both flags ride on EVERY pass: uv re-resolves the whole env on each
