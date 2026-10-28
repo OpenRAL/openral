@@ -425,19 +425,20 @@ class AlohaHAL(HALBase):
     reach a real ALOHA: see the module docstring and issue #250.
 
     Args:
-        left_arm_controller: Topic prefix for the left ViperX. Defaults to
-            ``"left_arm/arm_controller"`` — a ros2_control name no real
-            ALOHA exposes (#250).
-        right_arm_controller: same for the right arm.
-        left_gripper_controller: Topic prefix for the left gripper.
-            Defaults to ``"left_arm/gripper_controller"``, which matches no
-            ros2_control convention either (#250).
-        right_gripper_controller: same for the right gripper.
-        joint_state_topic: ROS 2 topic publishing aggregated joint state.
-            No real ALOHA publishes one — each arm publishes under its own
-            namespace (#250).
+        arm_group: ``xs_sdk`` motor group name receiving the 6-DoF arm
+            commands (``JointGroupCommand.name``). Defaults to ``"arm"``,
+            matching stock Interbotix ``motor_config``.
+        gripper_group: motor group name receiving the 1-DoF gripper
+            command. Defaults to ``"gripper"``; if a rig drives the gripper
+            via ``commands/joint_single`` instead, change this with the
+            motor_config (open design point in #250).
+        joint_state_topic: where the lifecycle node sources merged joint
+            state for ``state_fn``. No real ALOHA publishes an aggregated
+            topic — each arm publishes under its own namespace (#250), so
+            the merge happens at subscription time.
         arm_namespaces: The ``xs_sdk`` robot namespaces of the two follower
-            arms; ``estop()`` calls ``/<namespace>/torque_enable`` on each.
+            arms; commands go to ``/<namespace>/commands/joint_group`` and
+            ``estop()`` calls ``/<namespace>/torque_enable`` on each.
             Defaults to ``("follower_left", "follower_right")``.
         stop_timeout_s: How long ``estop`` waits for each torque-off call.
         publish_fn: Callable forwarding messages to ROS 2 topics.
