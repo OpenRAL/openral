@@ -157,15 +157,17 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   checkpoint required pinning **`diffusers==0.32.2`** (0.33.1's `LuminaFeedForward`
   dropped the SwiGLU 2/3 inner-dim reduction the checkpoint's NextDiT was trained
   with) — an upstream repo↔checkpoint drift, handled in the boot helper.
-- **Python 3.12 sidecar (x86_64, RTX 5070 8 GB, 2026-10-27): PASSED for System-2.**
-  Same pin set on py3.12: loads at 6.07 GB through OpenRAL Pro's NF4 config; 12
-  adapter steps over this rSkill's four recorded frames give the same finite
-  `BODY_TWIST` (15°/s yaw) and the same 0.7–3.2 s timings as an identical py3.11
-  venv. Feeding one frame three times takes the System-1 (`step_s1`) path:
-  that failed on py3.11 and py3.12 alike with "self and mat2 must have the same
-  dtype" because the memory encoder and RGB QFormer (torch.nn.Transformer
-  stacks) were NF4-packed; they now stay bf16. That path then exceeds 8 GB
-  (CUDA OOM) on this card. **Open:** System-1 on an 8 GB GPU.
+- **Python 3.12 sidecar, System-1 included (2026-10-28): PASSED.** Same pin set
+  on py3.12, NF4 through OpenRAL Pro. Over this rSkill's four recorded frames,
+  System-2 gives the same finite `BODY_TWIST` (15°/s yaw) and 0.7–3.2 s timings as
+  an identical py3.11 venv. Feeding one frame three times takes the System-1
+  (`step_s1`, NextDiT trajectory) path, which had never run here: it needed the
+  memory encoder and RGB QFormer kept bf16 (their `torch.nn.Transformer`
+  attention reads `out_proj.weight` directly) and `torch.no_grad()` around the
+  agent step (upstream records autograd through the sampler). With both,
+  System-1 returns trajectory twists (0.5 m/s forward, varying yaw):
+  0.12 s/step at 7.57 GB peak on an 8 GB RTX 5070 (x86_64), 0.21 s/step on
+  Jetson Thor (aarch64, py3.12).
 - **aarch64 CUDA (NVIDIA GB10 / DGX Spark): PASSED.** From a fresh sidecar home:
   torch 2.9.1+cu128 on py3.11, model on the GPU at **6.06 GB** (8499 MiB
   process), 106.5 s load, 21 real steps over the ZMQ wire from this rSkill's own

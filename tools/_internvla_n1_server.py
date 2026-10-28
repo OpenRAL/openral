@@ -292,10 +292,17 @@ def _step_agent(
     turn_radps: float,
 ) -> dict[str, Any]:
     """One dual-system step → uniform reply dict with a twist command."""
+    import torch
+
     pose = np.eye(4)  # upstream realworld loop feeds identity — pose is logged, unused
-    out = agent.step(rgb, depth, pose, instruction, intrinsic=None)
-    if out.output_action is not None and list(out.output_action) == [_ACTION_LOOK_DOWN]:
-        out = agent.step(rgb, depth, pose, instruction, intrinsic=None, look_down=True)
+    # Upstream's System-1 (``step_s1`` → ``generate_traj``) runs outside
+    # ``no_grad``: autograd then records the whole NextDiT sampler (memory the
+    # 8 GB card does not have) and the trajectory's ``.numpy()`` raises
+    # "Can't call numpy() on Tensor that requires grad".
+    with torch.no_grad():
+        out = agent.step(rgb, depth, pose, instruction, intrinsic=None)
+        if out.output_action is not None and list(out.output_action) == [_ACTION_LOOK_DOWN]:
+            out = agent.step(rgb, depth, pose, instruction, intrinsic=None, look_down=True)
 
     if out.output_action is not None:
         actions = [int(a) for a in out.output_action]
