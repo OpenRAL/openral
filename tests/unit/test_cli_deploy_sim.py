@@ -762,16 +762,31 @@ def test_g1_vln_scene_enables_walking_controller() -> None:
     assert invocation.hal_params["walking_enabled"] is True
 
 
-def test_bh_deploy_sim_robot_yaml_override_wins() -> None:
-    """An explicit `--hal robot_yaml=…` overrides the injected manifest default."""
+def test_hal_robot_yaml_cannot_diverge_from_the_safety_manifest() -> None:
+    """`--hal robot_yaml=…` must not drive one robot under another's safety config."""
+    with pytest.raises(ROSConfigError, match="safety kernel is configured"):
+        resolve_launch_invocation(
+            config=_SO101_CONFIG,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides={"robot_yaml": str(_REPO_ROOT / "robots/franka_panda/robot.yaml")},
+        )
+    same = resolve_launch_invocation(
+        config=_SO101_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    ).hal_params["robot_yaml"]
     invocation = resolve_launch_invocation(
         config=_SO101_CONFIG,
         robot_override=None,
         dashboard_port=4318,
         reset_to_pose_service=None,
-        hal_param_overrides={"robot_yaml": "/custom/robot.yaml"},
+        hal_param_overrides={"robot_yaml": same},
     )
-    assert invocation.hal_params["robot_yaml"] == "/custom/robot.yaml"
+    assert invocation.hal_params["robot_yaml"] == same
 
 
 @pytest.mark.parametrize("key", ["hal_mode", "robot_yaml"])

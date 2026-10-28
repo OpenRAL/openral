@@ -1666,6 +1666,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             scene_hal["calibration_dir"] = str((config.parent / _scene_cal_dir).resolve())
         hal_params.update(scene_hal)
     if hal_param_overrides:
+        # The kernel's limits and collision model come from `robot_yaml`; a HAL reading
+        # another manifest would drive one robot under another's safety config.
+        _hal_robot = hal_param_overrides.get("robot_yaml")
+        if _hal_robot is not None and Path(str(_hal_robot)).resolve() != Path(robot_yaml).resolve():
+            raise ROSConfigError(
+                f"--hal robot_yaml={_hal_robot!r} differs from the launch's {str(robot_yaml)!r}: "
+                "the safety kernel is configured from the launch's manifest. Pick the robot "
+                "with `--robot` or the scene's `robot:` instead."
+            )
         hal_params.update(hal_param_overrides)
     # Snapshot before the node-level knobs below are added: these are the HAL
     # constructor kwargs forwarded verbatim as `hal_transport_json`.

@@ -16,6 +16,7 @@ short-circuit (no token resolution needed).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -263,3 +264,20 @@ def test_push_refuses_symlinks_in_the_tree(tmp_path: Path, kind: str) -> None:
     result = CliRunner().invoke(app, ["dataset", "push", str(root), "--dry-run", "--yes"])
     assert result.exit_code == 1, result.output
     assert "symlink or special file" in " ".join(result.output.split())
+
+
+def test_push_refuses_a_directory_it_cannot_scan(tmp_path: Path) -> None:
+    """os.walk skips unreadable dirs silently; the push would publish a partial dataset."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 directory anyway")
+    root = tmp_path / "ds"
+    _write_info_json(root)
+    locked = root / "data" / "chunk-000"
+    locked.mkdir(parents=True)
+    locked.chmod(0)
+    try:
+        result = CliRunner().invoke(app, ["dataset", "push", str(root), "--dry-run", "--yes"])
+    finally:
+        locked.chmod(0o755)
+    assert result.exit_code == 1, result.output
+    assert "cannot scan" in " ".join(result.output.split())

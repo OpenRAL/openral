@@ -186,13 +186,24 @@ def _refuse_links_and_special_files(root: Path) -> None:
     """Refuse a dataset tree holding anything but plain directories and regular files.
 
     ``HfApi.upload_folder`` follows file symlinks, so a link planted in the tree would
-    publish its out-of-root target. Ceiling: checked once before the upload; a tree
-    rewritten concurrently with the upload is not covered.
+    publish its out-of-root target. Run before the consent prompt and again right
+    before the upload, so a link planted while the prompt waits is caught too.
+    ponytail: still a check-then-use on paths; a tree rewritten during the upload
+    itself is not covered (that needs an upload from a no-follow snapshot).
 
     Raises:
-        ROSConfigError: On the first symlink or non-regular file found.
+        ROSConfigError: On the first symlink or non-regular file found, or a
+            directory that cannot be listed (its files would be silently skipped).
     """
-    for dirpath, dirnames, filenames in os.walk(root):  # never follows directory links
+
+    def _unreadable(exc: OSError) -> None:
+        raise ROSConfigError(
+            f"cannot scan {exc.filename}: {exc.strerror}; `openral dataset push` would "
+            "skip it and publish an incomplete dataset."
+        ) from exc
+
+    # never follows directory links
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_unreadable):
         for name in (*dirnames, *filenames):
             path = Path(dirpath) / name
             if path.is_symlink() or not (path.is_dir() or path.is_file()):
@@ -439,6 +450,11 @@ def push_command(
         f"({info.get('total_episodes', '?')} episodes, "
         f"{info.get('total_frames', '?')} frames)"
     )
+    try:
+        _refuse_links_and_special_files(root)
+    except ROSError as exc:
+        _console.print(f"[red]config error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     try:
         api.upload_folder(
             folder_path=str(root),
