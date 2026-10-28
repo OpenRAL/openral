@@ -256,6 +256,11 @@ _CONTROLLER_STATE_REFLECTIONS: dict[str, str] = {
 }
 
 
+#: Payload sources that are a conservative stand-in, not a measured shape
+#: (``AttachmentEvidenceKind``): a stop against one may be the bound, not the object.
+_UNMEASURED_PAYLOAD_KINDS = frozenset({"pinch_fallback", "gripper_closure"})
+
+
 def _reflect_on_kind(failure_kind: str | None, evidence_json: str) -> str | None:
     """The hint a typed ``failure_kind`` (and its evidence) decides, or ``None``."""
     if failure_kind == "FAILURE_SAFETY_ESTOP":
@@ -294,23 +299,37 @@ def _reflect_on_safety_stop(evidence_json: str) -> str:
             "signal lapsed (see evidence) — wait for the operator to re-arm it; a "
             "different skill will stop the same way."
         )
-    if isinstance(evidence, CollisionEvidence) and evidence.collision_kind == "self":
+    if isinstance(evidence, CollisionEvidence):
+        return _reflect_on_collision(evidence)
+    return (
+        "the safety kernel stopped the robot (see evidence) — the stop stays latched until "
+        "an operator resets it, so no goal runs before that; then change what is commanded."
+    )
+
+
+def _reflect_on_collision(evidence: CollisionEvidence) -> str:
+    """Strategy hint for a kernel collision stop: a carried stand-in, the robot, the world."""
+    if evidence.payload_evidence_kind in _UNMEASURED_PAYLOAD_KINDS:
+        return (
+            "the safety kernel stopped what the hand carries, but perception never measured "
+            "it: the kernel checked a conservative stand-in (see evidence: "
+            "payload_evidence_kind), so the real object may have touched nothing — the stop "
+            "stays latched until an operator resets it; then release and re-grasp so the "
+            "object is tracked, or carry it with more clearance, since repeating the same "
+            "carry will stop again."
+        )
+    if evidence.collision_kind == "self":
         return (
             "the safety kernel stopped a self-collision (see evidence: which links) — the "
             "stop stays latched until an operator resets it, so no goal runs before that; "
             "then change the approach or start pose, the commanded arm configuration hits "
             "the robot itself and repeating it will stop again."
         )
-    if evidence.kind == "collision":
-        return (
-            "the safety kernel stopped a collision (see evidence: which link, against "
-            "what) — the stop stays latched until an operator resets it, so no goal runs "
-            "before that; then change the approach or clear the obstacle, repeating the "
-            "same motion will stop again."
-        )
     return (
-        "the safety kernel stopped the robot (see evidence) — the stop stays latched until "
-        "an operator resets it, so no goal runs before that; then change what is commanded."
+        "the safety kernel stopped a collision (see evidence: which link, against "
+        "what) — the stop stays latched until an operator resets it, so no goal runs "
+        "before that; then change the approach or clear the obstacle, repeating the "
+        "same motion will stop again."
     )
 
 
