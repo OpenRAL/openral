@@ -1777,13 +1777,21 @@ def call_make_processors_cached_first(
 
     Returns:
         ``(preprocessor, postprocessor)`` — whatever lerobot returns.
+
+    Raises:
+        ROSConfigError: ``pretrained_path`` is not an existing directory.
     """
     if pretrained_path is not None:
         from pathlib import Path
 
+        path = Path(pretrained_path)
+        if not path.is_dir():
+            raise ROSConfigError(
+                f"pretrained_path must be a processor directory, got {pretrained_path!r}"
+            )
         for name in ("policy_preprocessor.json", "policy_postprocessor.json"):
-            if (Path(pretrained_path) / name).is_file():
-                validate_processor_steps(str(Path(pretrained_path) / name))
+            if (path / name).is_file():
+                validate_processor_steps(str(path / name))
     tokenizer_repo = _read_tokenizer_repo_from_preprocessor(pretrained_path)
     if tokenizer_repo is None or not _hf_tokenizer_is_cached(tokenizer_repo):
         result: tuple[Any, Any] = make_pre_post_processors(

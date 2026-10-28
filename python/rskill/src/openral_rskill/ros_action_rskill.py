@@ -93,6 +93,15 @@ _MIN_RESULT_DEADLINE_S = 2.0
 # Matches the runner's bounded polling cadence.
 _FUTURE_POLL_INTERVAL_S = 0.02
 
+# Wall-clock bound on each leg of confirming a cancelled wrapped goal ended (the
+# cancel response, then the terminal result). Past it the enclosing goal fails with
+# ROSRuntimeError naming the possibly still-running wrapped goal, never silently.
+_CANCEL_CONFIRM_TIMEOUT_S = 5.0
+
+# action_msgs/srv/CancelGoal.Response return codes.
+_CANCEL_ERROR_NONE = 0
+_CANCEL_ERROR_REJECTED = 1
+
 # Trajectory replay. The runner ticks ``step()`` at its control rate and sends each
 # returned waypoint as one JOINT_POSITION chunk. The replay used to advance one
 # waypoint per call and report success one call after the last waypoint was *sent*,
@@ -684,7 +693,8 @@ class ROSActionRskill(rSkillBase):
         ``None`` (test path only — production always supplies a live snapshot).
 
         Raises:
-            ROSPerceptionStale: The snapshot's ``name`` / ``position`` lengths
+            ROSPerceptionStale: ``diagnostics["joint_state"]`` is ``"stale"`` /
+                ``"error"``, or the snapshot's ``name`` / ``position`` lengths
                 differ or a joint name repeats, so no name→position map exists.
         """
         if self._description is None or world_state is None:
@@ -692,6 +702,14 @@ class ROSActionRskill(rSkillBase):
         joint_state = getattr(world_state, "joint_state", None)
         if joint_state is None:
             return
+        # The aggregator fills a missing/aged joint_state with zero positions and
+        # flags it here; holding unmoved joints at those zeros would be a made-up target.
+        status = (getattr(world_state, "diagnostics", None) or {}).get("joint_state")
+        if status in ("stale", "error"):
+            raise ROSPerceptionStale(
+                f"ROSActionRskill({self.name!r}): joint_state diagnostics is {status!r}; "
+                "refusing to hold unmoved joints at an unmeasured position."
+            )
         names = list(joint_state.name)
         positions = list(joint_state.position)
         if len(names) != len(positions) or len(set(names)) != len(names):
@@ -869,7 +887,7 @@ class ROSActionRskill(rSkillBase):
             # Giving up on the wait must not leave the wrapped server driving the
             # robot toward a goal nobody is tracking any more.
             log.warning("ros_action_rskill.cancelling_wrapped_goal", name=self.name)
-            goal_handle.cancel_goal_async()
+            self._cancel_and_confirm_terminated(goal_handle, result_future)
             raise
         wrapper = result_future.result()
         if wrapper is None:
@@ -929,6 +947,54 @@ class ROSActionRskill(rSkillBase):
                 + hint
             )
         return wrapper.result
+
+    def _cancel_and_confirm_terminated(
+        self,
+        goal_handle: Any,  # noqa: ANN401  # reason: rclpy ClientGoalHandle is untyped
+        result_future: Any,  # noqa: ANN401  # reason: rclpy.task.Future is untyped
+    ) -> None:
+        """Cancel the wrapped goal and wait (bounded) until it reports a terminal result.
+
+        The enclosing goal keeps ownership until the wrapped server confirms the
+        goal ended, so the runner cannot accept a new goal while the old one still
+        drives the robot. Both waits are wall clock, not stoppable, and bounded by
+        ``_CANCEL_CONFIRM_TIMEOUT_S``.
+
+        Raises:
+            ROSRuntimeError: The server rejected the cancel, or no terminal result
+                arrived within the bound — the wrapped goal may still be running.
+        """
+        try:
+            cancel_future = goal_handle.cancel_goal_async()
+            self._poll_future(
+                cancel_future,
+                deadline_s=_CANCEL_CONFIRM_TIMEOUT_S,
+                what="cancel-response",
+                graph_clock=False,
+                stoppable=False,
+            )
+            response = cancel_future.result()
+            code = getattr(response, "return_code", None)
+            # rclpy reports a cancel_callback REJECT as ERROR_NONE with the goal
+            # missing from goals_canceling, not as ERROR_REJECTED.
+            dropped = code == _CANCEL_ERROR_NONE and not getattr(response, "goals_canceling", [])
+            if code == _CANCEL_ERROR_REJECTED or dropped:
+                raise ROSRuntimeError(
+                    f"ROSActionRskill({self.name!r}): wrapped server rejected the cancel; "
+                    "the wrapped goal may still be running."
+                )
+            self._poll_future(
+                result_future,
+                deadline_s=_CANCEL_CONFIRM_TIMEOUT_S,
+                what="cancelled-goal result",
+                graph_clock=False,
+                stoppable=False,
+            )
+        except ROSDeadlineMissed as exc:
+            raise ROSRuntimeError(
+                f"ROSActionRskill({self.name!r}): wrapped goal not confirmed terminated "
+                f"after cancel ({exc}); it may still be running."
+            ) from exc
 
     def _call_service_and_await_response(self) -> Any:  # noqa: ANN401  # reason: arbitrary IDL response
         """Send the cached service request, poll the response future."""

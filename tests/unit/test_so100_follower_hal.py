@@ -261,6 +261,20 @@ class TestSO100FollowerHALReadState:
         assert state.stamp_ns > 0
 
 
+def _record_sends(twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record every ``twin.send_action`` call while keeping the twin's real behavior."""
+    calls: list[object] = []
+    original = twin.send_action
+
+    def _recording(action: dict[str, float]) -> dict[str, float]:
+        calls.append(action)
+        sent_back: dict[str, float] = original(action)
+        return sent_back
+
+    monkeypatch.setattr(twin, "send_action", _recording)
+    return calls
+
+
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
@@ -449,13 +463,7 @@ class TestSO100FollowerHALResetToPose:
         self, hal: SO100FollowerHAL, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         current = hal.read_state().position
-        calls: list[object] = []
-
-        def _record(a: dict[str, float]) -> dict[str, float]:
-            calls.append(a)
-            return a
-
-        monkeypatch.setattr(twin, "send_action", _record)
+        calls = _record_sends(twin, monkeypatch)
         hal.reset_to_pose(current)
         assert calls == []
 
@@ -486,8 +494,7 @@ class TestSO100FollowerHALResetToPose:
         bad: list[float],
     ) -> None:
         """The ResetToPose contract promises joint-limit protection."""
-        calls: list[object] = []
-        monkeypatch.setattr(twin, "send_action", calls.append)
+        calls = _record_sends(twin, monkeypatch)
         with pytest.raises(ROSConfigError, match="reset_to_pose"):
             hal.reset_to_pose(bad)
         assert calls == []
@@ -504,8 +511,7 @@ class TestSO100FollowerHALResetToPose:
         desc = RobotDescription.from_yaml(str(repo / "robots/so101_follower/robot.yaml"))
         h = SO100FollowerHAL(robot=twin, description=desc)
         h.connect()
-        calls: list[object] = []
-        monkeypatch.setattr(twin, "send_action", calls.append)
+        calls = _record_sends(twin, monkeypatch)
         with pytest.raises(ROSConfigError, match="shoulder_pan"):
             h.reset_to_pose([2.0, 0.0, 0.0, 0.0, 0.0, 0.5])  # inside pi, outside 1.9199
         assert calls == []
