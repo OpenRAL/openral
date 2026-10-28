@@ -124,6 +124,24 @@ def test_copy_source_config_refuses_a_link_out_of_the_checkpoint(tmp_path: Path)
     assert not (out / "README.md").exists()
 
 
+def test_copy_source_config_skips_weight_shards_linked_to_other_storage(tmp_path: Path) -> None:
+    """Weight shards are never copied, so a shard symlinked elsewhere is not a refusal."""
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    (storage / "shard").write_bytes(b"weights")
+    (storage / "notes.bin").write_bytes(b"other")
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    _write(ckpt, "config.json", {"model_type": "x"})
+    (ckpt / "model-00001-of-00002.safetensors").symlink_to(storage / "shard")
+    (ckpt / "model.safetensors").symlink_to(storage / "shard")
+    (ckpt / "notes.bin").symlink_to(storage / "notes.bin")  # suffix never copied
+    out = tmp_path / "out"
+    out.mkdir()
+    quantize_rskill._copy_source_config(str(ckpt), out, loader="lerobot")
+    assert sorted(p.name for p in out.iterdir()) == ["config.json"]
+
+
 def test_copy_source_config_follows_hf_cache_blob_links(tmp_path: Path) -> None:
     """An HF cache snapshot's links into its own ``blobs`` dir are copied as before."""
     repo = tmp_path / "models--org--x"

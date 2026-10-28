@@ -337,39 +337,45 @@ def test_sidecar_cross_checks_identity_limits_and_mask_types() -> None:
             decode_hello({**hello, key: value})
 
 
+def _framed(stream: bytes, chunk_size: int) -> list[bytes]:
+    """Push ``stream`` through a real socket pair and frame it as ``_serve`` does."""
+    take = _SIDECAR["_take_records"]
+    sender, receiver = socket.socketpair()
+    records: list[bytes] = []
+    buffer = b""
+    try:
+
+        def send() -> None:
+            with sender:
+                sender.sendall(stream)
+
+        threading.Thread(target=send).start()
+        while chunk := receiver.recv(chunk_size):
+            lines, buffer = take(buffer + chunk)
+            records.extend(lines)
+    finally:
+        receiver.close()
+    return records
+
+
+def test_sidecar_frames_newline_records_across_chunks() -> None:
+    assert _framed(b'{"op": "a"}\n\n{"op": "b"}\n{"op"', 5) == [b'{"op": "a"}', b'{"op": "b"}']
+
+
 def test_sidecar_refuses_an_unterminated_oversized_record() -> None:
     """A newline-free stream is refused at the record cap instead of growing forever."""
+    cap = _SIDECAR["MAX_RECORD_BYTES"]
+    with pytest.raises(ValueError, match="unterminated record"):
+        _framed(b"x" * (cap + 1), 65536)
 
-    class FakeRospy:
-        def loginfo(self, *_args: object) -> None:
-            pass
 
-        def is_shutdown(self) -> bool:
-            return False
-
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    client = socket.create_connection(listener.getsockname(), timeout=1.0)
-    failures: list[BaseException] = []
-
-    def serve() -> None:
-        try:
-            _SIDECAR["_serve"](listener, object(), FakeRospy(), lambda: None)
-        except BaseException as exc:
-            failures.append(exc)
-
-    server = threading.Thread(target=serve, daemon=True)
-    server.start()
-    try:
-        client.sendall(b"x" * (_SIDECAR["MAX_RECORD_BYTES"] + 1))
-    except OSError:
-        pass  # the server may close first
-    server.join(2.0)
-    client.close()
-    listener.close()
-    assert not server.is_alive()
-    assert len(failures) == 1 and "unterminated record" in str(failures[0])
+def test_sidecar_refuses_an_oversized_record_completed_in_one_chunk() -> None:
+    """The chunk that supplies the newline must not slip an oversized record past the cap."""
+    cap = _SIDECAR["MAX_RECORD_BYTES"]
+    with pytest.raises(ValueError, match="record exceeds"):
+        _SIDECAR["_take_records"](b"x" * (cap + 1) + b"\n")
+    with pytest.raises(ValueError, match="record exceeds"):
+        _framed(b"x" * (cap + 1) + b"\n", 4 * cap)
 
 
 def test_sidecar_pins_every_vendor_topic_in_launch_commands() -> None:

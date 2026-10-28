@@ -650,6 +650,21 @@ def _hello_config(packet: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def _take_records(buffer: bytes) -> tuple[list[bytes], bytes]:
+    """Split newline-framed records off ``buffer``; return them and the unfinished rest.
+
+    Every complete record and the unfinished remainder are checked against
+    ``MAX_RECORD_BYTES`` before anything is parsed: one recv chunk can carry the
+    newline that completes an already-oversized record.
+    """
+    *lines, rest = buffer.split(b"\n")
+    if any(len(line) > MAX_RECORD_BYTES for line in lines):
+        raise ValueError(f"record exceeds {MAX_RECORD_BYTES} bytes")
+    if len(rest) > MAX_RECORD_BYTES:
+        raise ValueError(f"unterminated record exceeds {MAX_RECORD_BYTES} bytes")
+    return [line for line in lines if line], rest
+
+
 def _serve(
     listener: socket.socket,
     bridge: Bridge,
@@ -670,11 +685,8 @@ def _serve(
             chunk = conn.recv(65536)
             if not chunk:
                 return
-            buffer += chunk
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                if not line:
-                    continue
+            lines, buffer = _take_records(buffer + chunk)
+            for line in lines:
                 packet = json.loads(line)
                 if config is None:
                     config = _hello_config(packet)
@@ -692,8 +704,6 @@ def _serve(
                     return
                 else:
                     raise ValueError(f"unsupported operation {packet.get('op')!r}")
-            if len(buffer) > MAX_RECORD_BYTES:
-                raise ValueError(f"unterminated record exceeds {MAX_RECORD_BYTES} bytes")
         # Drain a readable packet before evaluating the lease. The ROS tracker
         # callback may briefly starve this thread while the relay transitions
         # ARMING -> ACTIVE; current actions or an e-stop can already be buffered

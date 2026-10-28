@@ -623,11 +623,11 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_on_lifecycle_response(call, future)` — Log the `ChangeState` result; lifecycle failures surface in the target node's own logs (no `FailureTrigger` re-emission).
   - `_publish_skill_failure(*, kind, rskill_id, evidence, traceparent, trace_id=None)` — Build + publish a `FailureTrigger` on `/openral/failure/rskill`, then mirror it onto the OTLP span path via `_emit_skill_failure_event` so the OTLP-only dashboard can tally it.
   - `_emit_skill_failure_event(*, kind, rskill_id, evidence)` — Stamp an `openral.event.skill_failure` span event carrying the failure state, on the active tick span when recording or a transient span otherwise. Drives the dashboard "skill failures" counter.
-  - `renderer(self) -> ContextRenderer` (L5777) — Direct read access for tests asserting buffer state.
-  - `dispatched_calls(self) -> tuple[Any, ...]` (L5782) — Snapshot of tool calls the reasoner has dispatched (in order).
-  - `set_palette(self, palette) -> None` (L5786) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
+  - `renderer(self) -> ContextRenderer` (L5785) — Direct read access for tests asserting buffer state.
+  - `dispatched_calls(self) -> tuple[Any, ...]` (L5790) — Snapshot of tool calls the reasoner has dispatched (in order).
+  - `set_palette(self, palette) -> None` (L5794) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
 - `_QOS_REGISTRY_CHANGED` (L255) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
-- `main(args=None) -> int` (L5791) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
+- `main(args=None) -> int` (L5799) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
 
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack are out of scope._
@@ -1082,7 +1082,7 @@ _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` e
   - `stop(self) -> None` (L151) — Unregister the advertised service, cancel the browser, and close Zeroconf.
 
 ### `python/observability/src/openral_observability/dashboard/app.py`
-- `create_app(store: TelemetryStore | None = None) -> FastAPI` — Build the dashboard ASGI app: the SSE/state routes, the OTLP/HTTP receivers, operator write endpoints (`/api/prompt`, `/api/estop_reset`), a live MJPEG camera stream, mDNS robot discovery, and the guarded write-controls (`/api/skill/execute`, `/api/param/set`, both OFF by default). A middleware refuses (403, audit-logged) any non-GET/HEAD/OPTIONS request whose `Origin` host:port differs from `Host` (CSRF; no `Origin` = non-browser client, allowed; `Origin: null` refused) — DNS rebinding is same-origin and stays open (#44). `/api/param/set` matches `_SAFETY_PARAM_DENYLIST` (now incl. `deadline`, `timeout`) against `"<node> <name>"`, so every param on a safety node is refused. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413; corrupt gzip 400); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413). (L851)
+- `create_app(store: TelemetryStore | None = None) -> FastAPI` — Build the dashboard ASGI app: the SSE/state routes, the OTLP/HTTP receivers, operator write endpoints (`/api/prompt`, `/api/estop_reset`), a live MJPEG camera stream, mDNS robot discovery, and the guarded write-controls (`/api/skill/execute`, `/api/param/set`, both OFF by default). A middleware refuses (403, audit-logged) any non-GET/HEAD/OPTIONS request whose `Origin` host:port differs from `Host` (CSRF; no `Origin` = non-browser client, allowed; `Origin: null` refused) — DNS rebinding is same-origin and stays open (#44). `/api/param/set` matches `_SAFETY_PARAM_DENYLIST` (now incl. `deadline`, `timeout`) against `"<node> <name>"`, so every param on a safety node is refused. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413; corrupt gzip 400); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413). (L864)
 
 ### `python/observability/src/openral_observability/dashboard/vad_assets.py`
 - `class PinnedAsset(NamedTuple)` (L52) — `url: str`, `sha256: str`, `size: int` for one pinned binary asset.
@@ -1123,28 +1123,28 @@ _Bounded per-trace_id span index for query-time bag↔OTel join._
 ### `python/observability/src/openral_observability/tracing_lttng.py`
 _Opt-in LTTng tracepoints around the realtime hot path. No-op when `OPENRAL_ROS2_TRACING` is unset; falls back to JSONL when `lttngust` is missing._
 
-- `ENV_TRACING_GATE = "OPENRAL_ROS2_TRACING"` (L61) — Truthy values (`1`/`true`/`yes`/`on`) enable the backend; anything else leaves every tracepoint a no-op.
-- `ENV_TRACING_FALLBACK_DIR = "OPENRAL_ROS2_TRACING_FALLBACK_DIR"` (L67) — Override for the JSONL fallback directory (default: a fresh owner-only `tempfile.mkdtemp(prefix="openral-lttng-fallback-")` dir, logged at INFO; never a fixed shared `/tmp` path). The JSONL file opens with `O_NOFOLLOW`; a planted symlink (`ELOOP`) disables tracing with an error log.
-- `TP_RUNNER_TICK = "openral:runner_tick"` (L75)
-- `TP_HAL_READ_STATE = "openral:hal_read_state"` (L76)
-- `TP_HAL_SEND_ACTION = "openral:hal_send_action"` (L77)
-- `TP_SENSORS_READ_LATEST = "openral:sensors_read_latest"` (L78)
-- `TP_WORLD_STATE_SNAPSHOT = "openral:world_state_snapshot"` (L79)
-- `TP_SKILL_STEP = "openral:skill_step"` (L80)
-- `TP_ACTION_PUBLISH = "openral:action_publish"` (L81)
-- `TP_SAFETY_VALIDATE = "openral:safety_validate"` (L82) — Tracepoint base names; `lttng_tracepoint` appends `_begin` / `_end` suffixes.
-- `is_enabled() -> bool` (L113) — Single source of truth for the gate.
-- `lttng_tracepoint(name, **attrs) -> Iterator[None]` (L180) — Context manager that fires `<name>_begin` / `<name>_end` around the block. Attaches the active OTel `trace_id` as `otel_trace_id` so CTF traces can join back to OTel.
-- `class LttngSession(name, output_dir)` (L94) — Identity of an active session.
-- `class LttngSessionError(RuntimeError)` (L89) — Raised by the subprocess wrappers.
-- module constant `_BACKEND_RESOLVED: bool = False` (L108) — whether `_resolve_backend` has run yet (cached-resolution guard).
-- module constant `_BACKEND: Any = None` (L109) — the cached resolved tracer backend (`_LttngUstBackend` / `_JsonFallbackBackend` / `None`).
-- module constant `_WARNED_ONCE: bool = False` (L110) — one-time fallback-warning latch consumed by `_warn_fallback`.
-- module constant `_TRACEPARENT_PART_COUNT: int = 4` (L86) — expected `traceparent` dash-separated part count.
-- module constant `_LOG` (L56) — `logging.getLogger(__name__)`.
-- `start_session(*, name, output_dir) -> LttngSession` (L332) — `lttng create / enable-event openral:* / add-context / start`.
-- `stop_session(*, name) -> None` (L357) — `lttng stop` + `destroy` (flush + teardown).
-- `view_session(*, output_dir) -> None` (L369) — `babeltrace2 OUTPUT_DIR`; falls back to listing files when `babeltrace2` is absent.
+- `ENV_TRACING_GATE = "OPENRAL_ROS2_TRACING"` (L62) — Truthy values (`1`/`true`/`yes`/`on`) enable the backend; anything else leaves every tracepoint a no-op.
+- `ENV_TRACING_FALLBACK_DIR = "OPENRAL_ROS2_TRACING_FALLBACK_DIR"` (L68) — Override for the JSONL fallback directory (default: a fresh owner-only `tempfile.mkdtemp(prefix="openral-lttng-fallback-")` dir, logged at INFO; never a fixed shared `/tmp` path). The JSONL file opens with `O_NOFOLLOW`; a planted symlink (`ELOOP`) disables tracing with an error log.
+- `TP_RUNNER_TICK = "openral:runner_tick"` (L76)
+- `TP_HAL_READ_STATE = "openral:hal_read_state"` (L77)
+- `TP_HAL_SEND_ACTION = "openral:hal_send_action"` (L78)
+- `TP_SENSORS_READ_LATEST = "openral:sensors_read_latest"` (L79)
+- `TP_WORLD_STATE_SNAPSHOT = "openral:world_state_snapshot"` (L80)
+- `TP_SKILL_STEP = "openral:skill_step"` (L81)
+- `TP_ACTION_PUBLISH = "openral:action_publish"` (L82)
+- `TP_SAFETY_VALIDATE = "openral:safety_validate"` (L83) — Tracepoint base names; `lttng_tracepoint` appends `_begin` / `_end` suffixes.
+- `is_enabled() -> bool` (L114) — Single source of truth for the gate.
+- `lttng_tracepoint(name, **attrs) -> Iterator[None]` (L181) — Context manager that fires `<name>_begin` / `<name>_end` around the block. Attaches the active OTel `trace_id` as `otel_trace_id` so CTF traces can join back to OTel.
+- `class LttngSession(name, output_dir)` (L95) — Identity of an active session.
+- `class LttngSessionError(RuntimeError)` (L90) — Raised by the subprocess wrappers.
+- module constant `_BACKEND_RESOLVED: bool = False` (L109) — whether `_resolve_backend` has run yet (cached-resolution guard).
+- module constant `_BACKEND: Any = None` (L110) — the cached resolved tracer backend (`_LttngUstBackend` / `_JsonFallbackBackend` / `None`).
+- module constant `_WARNED_ONCE: bool = False` (L111) — one-time fallback-warning latch consumed by `_warn_fallback`.
+- module constant `_TRACEPARENT_PART_COUNT: int = 4` (L87) — expected `traceparent` dash-separated part count.
+- module constant `_LOG` (L57) — `logging.getLogger(__name__)`.
+- `start_session(*, name, output_dir) -> LttngSession` (L343) — `lttng create / enable-event openral:* / add-context / start`.
+- `stop_session(*, name) -> None` (L368) — `lttng stop` + `destroy` (flush + teardown).
+- `view_session(*, output_dir) -> None` (L380) — `babeltrace2 OUTPUT_DIR`; falls back to listing files when `babeltrace2` is absent.
 
 ### `python/dataset/src/openral_dataset/recorder.py`
 _In-memory per-rollout accumulator with multi-sink fan-out._

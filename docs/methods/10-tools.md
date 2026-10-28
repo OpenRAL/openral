@@ -825,7 +825,7 @@ _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time 
 ### `tools/quantize_rskill.py`
 _Quantize a lerobot policy and upload the result to the HuggingFace Hub. Policy-agnostic counterpart to the in-process fast-path in `openral_sim._quantization`. Loads any lerobot policy via `from_pretrained`, quantizes in place, saves `model.safetensors` + `quantization_metadata.json`, and uploads to a target rSkill repo — the adapter's `load_prequantized_state_for_rskill` detects the metadata sentinel and skips the on-line nf4 conversion on every subsequent launch. Not part of CI — a one-shot Hub-mutating tool gated on `HF_TOKEN`._
 
-- `main() -> int` (L555) — CLI entry; `--repo-id`/`--out-repo-id`/`--quantization`/`--trust-remote-code`; loads, quantizes in place, uploads. The source-config copy refuses a file that symlinks outside the checkpoint snapshot (or its HF-cache `blobs` dir), so a planted link cannot ride into the upload.
+- `main() -> int` (L557) — CLI entry; `--repo-id`/`--out-repo-id`/`--quantization`/`--trust-remote-code`; loads, quantizes in place, uploads. The source-config copy refuses a file it would copy that symlinks outside the checkpoint snapshot (or its HF-cache `blobs` dir), so a planted link cannot ride into the upload; skipped weight shards may link to other storage.
 
 ### `tools/verify_test_envs.py`
 _Verifies selected optional test environments locally: syncs the matching dependency group declared in `tools/test_selection.toml`, runs its selected targets, and fails if any test skips. Hardware and externally-provisioned sidecars are opt-in since this script cannot create physical devices or proprietary simulator installs._
@@ -877,7 +877,8 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
 - `TRACKER_ALLOWED_MODES = (0,)` (L43) — Tracker control-mode values the relay accepts as safe to arm on.
 - `HELLO_CEILINGS: dict[str, float]` (L47) — The sidecar's own limits (`max_step` 0.08 rad, `alignment`, `lease`, `state_timeout`, `status_timeout`, `feedback_limit_tolerance`); any local process can reach the loopback port, so `_hello_config` lets a hello tighten them but refuses one that widens any.
 - `GRIPPER_STROKE_MM = (0.0, 104.0)` (L55) — Gripper stroke a hello's `gripper_min`/`gripper_max` must stay within.
-- `MAX_RECORD_BYTES = 64 * 1024` (L57) — Ceiling on one unterminated JSON record in `_serve`; a longer stream is refused.
+- `MAX_RECORD_BYTES = 64 * 1024` (L57) — Ceiling on one JSON record, complete or unterminated; a longer one is refused.
+- `_take_records(buffer) -> tuple[list[bytes], bytes]` (L653) — Split the newline-framed records off `_serve`'s receive buffer; refuses (`ValueError`) any complete record or unfinished remainder over `MAX_RECORD_BYTES` before anything is parsed.
 - `class Stack` (L106) — Owns and tears down the ROS 1 process group in reverse start order.
   - `Stack.start(argv)` (L114) — Launch a child in its own session, tracked for teardown.
   - `Stack.stop()` (L119) — SIGINT every child (reverse order), wait, escalate to SIGKILL on timeout.
@@ -888,7 +889,7 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
   - `Bridge.relay_state() -> str` (L404) — Current relay state (`LOCKED`/`ARMING`/…).
   - `Bridge.state(config)` (L408) — Assemble the current feedback+relay JSON state, raising `RuntimeError` on stale feedback, a latched fault, or an out-of-limits reading.
   - `Bridge.apply(packet, config, first_joint_command)` (L471) — Validate and forward one command packet (`joint_targets` / gripper) to the host driver after re-checking state and motor status.
-- `main() -> int` (L730) — argparse (`--bind`, `--port`, `--serial`, `--startup-timeout-s`); starts roscore + the vendor serial driver + tracker via `Stack`, wires `Bridge`, serves the sidecar's TCP/JSON protocol.
+- `main() -> int` (L740) — argparse (`--bind`, `--port`, `--serial`, `--startup-timeout-s`); starts roscore + the vendor serial driver + tracker via `Stack`, wires `Bridge`, serves the sidecar's TCP/JSON protocol.
 
 ### `tools/joint_state_staleness_probe.py`
 

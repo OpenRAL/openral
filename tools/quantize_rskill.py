@@ -469,12 +469,6 @@ def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None
     for src in snapshot.iterdir():
         if not src.is_file():
             continue
-        target = src.resolve()
-        if not any(target.is_relative_to(root) for root in roots):
-            raise ValueError(
-                f"{src} links outside the checkpoint (to {target}); refusing to copy it "
-                "into the bundle."
-            )
         # ignore_patterns only suppresses re-downloads; a prior snapshot_download
         # may have already pulled the full repo, so weight files can still be
         # symlinked here and would clobber/shadow the nf4 blob _save_state wrote.
@@ -484,6 +478,14 @@ def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None
         if src.name.startswith("model-") and src.suffix == ".safetensors":
             continue
         if src.suffix in {".json", ".md", ".safetensors", ".py"} or src.name == ".gitattributes":
+            # Checked only on files that are copied: weight shards symlinked to other
+            # storage are skipped above and never reach the bundle.
+            target = src.resolve()
+            if not any(target.is_relative_to(root) for root in roots):
+                raise ValueError(
+                    f"{src} links outside the checkpoint (to {target}); refusing to copy it "
+                    "into the bundle."
+                )
             shutil.copy(src, out_dir / src.name)
 
 
