@@ -33,6 +33,8 @@ TARGETS=(
     tests/integration/test_reasoner_vram_eviction.py
     tests/integration/test_reasoner_palette_primes_vram_gate.py
     tests/integration/test_reasoner_palette_preserves_detector_coverage.py
+    # Configured lifecycle peers reach the palette without a skill seed.
+    tests/integration/test_reasoner_lifecycle_peers_without_seed.py
     tests/integration/test_critic_producer_node.py
     # The scene-VLM node ends the sidecar its warm-up spawned (fake sidecar, no GPU).
     tests/integration/test_scene_vlm_node_teardown_live.py
