@@ -11,7 +11,7 @@ is driven through ``configure → activate``, attaches to a real MuJoCo scene, a
   catches the GL/display failure and continues headless.
 
 **Test A** — native tabletop_push scene (always runs, no LIBERO).
-**Test B** — LIBERO milk scene, camera frames; guarded on ``libero`` import.
+**Test B** — LIBERO-Object scene, camera frames; guarded on ``libero`` import.
 
 Per CLAUDE.md §1.11: no mocks. Real franka manifest, real MuJoCo scene,
 real lifecycle node, real ROS IDL.
@@ -55,10 +55,10 @@ pytestmark = pytest.mark.skipif(
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROBOT_YAML = str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml")
 _TABLETOP_YAML = str(_REPO_ROOT / "scenes" / "sim" / "franka_tabletop_push.yaml")
-_LIBERO_MILK_YAML = str(_REPO_ROOT / "scenes" / "sim" / "libero_spatial.yaml")
+_LIBERO_OBJECT_YAML = str(_REPO_ROOT / "scenes" / "deploy" / "libero_object.yaml")
 
 _FRANKA_DOF = 8  # 7 arm + 1 gripper, per FRANKA_PANDA_DESCRIPTION
-_CAMERA_HW = 256  # agentview / wrist intrinsics declared in robot.yaml
+_CAMERA_HW = 256  # top / wrist / front intrinsics declared in robot.yaml
 _JOINT_STATE_TIMEOUT_S = 5.0
 _CAMERA_TIMEOUT_S = 10.0
 
@@ -190,35 +190,19 @@ def test_franka_tabletop_push_joint_states() -> None:
         rclpy.shutdown()
 
 
-# ── Test B — LIBERO milk scene, camera frames (guarded on libero import) ─────
+# ── Test B — LIBERO-Object scene, camera frames (guarded on libero import) ──
 
 
-def test_franka_libero_milk_camera_image() -> None:
-    """Deploy-sim scene-attach: franka+LIBERO milk scene → /openral/cameras/agentview/image 256×256.
+def test_franka_libero_object_camera_image() -> None:
+    """Deploy-sim scene-attach: franka+LIBERO-Object → /openral/cameras/top/image 256×256.
 
-    Guarded: skips cleanly if:
-    * ``libero`` is not installed.
-    * The BDDL asset ``pick_milk_in_basket.bddl`` is absent.
-    * ``franka_libero_custom_bddl`` is not registered in ``openral_sim.SCENES``.
-    * Scene configure fails (robosuite asset path not set up).
+    Uses the committed ``scenes/deploy/libero_object.yaml`` deploy scene (milk and a
+    basket among its groceries; its ``backend_options.control_freq_hz`` matches the
+    franka rate). Skips only when ``libero`` is not installed.
     """
     # Guard 1: probe for the libero package before touching rclpy.
     if importlib.util.find_spec("libero") is None:
         pytest.skip("libero not installed — Test B requires the LIBERO benchmark package")
-
-    # Guard 2: BDDL asset on disk.
-    bddl_path = _REPO_ROOT / "scenes" / "native" / "pick_milk_in_basket.bddl"
-    if not bddl_path.is_file():
-        pytest.skip(f"BDDL asset not found: {bddl_path}")
-
-    # Guard 3: scene registered.
-    try:
-        from openral_sim.registry import SCENES  # reason: optional dep
-
-        if "franka_libero_custom_bddl" not in SCENES:
-            pytest.skip("franka_libero_custom_bddl not registered in openral_sim.SCENES")
-    except ImportError:
-        pytest.skip("openral_sim.registry not importable")
 
     import rclpy
     from openral_hal.lifecycle import _ManifestHALLifecycleNode
@@ -234,7 +218,7 @@ def test_franka_libero_milk_camera_image() -> None:
             [
                 Parameter("robot_yaml", Parameter.Type.STRING, _ROBOT_YAML),
                 Parameter("hal_mode", Parameter.Type.STRING, "sim"),
-                Parameter("sim_env_yaml", Parameter.Type.STRING, _LIBERO_MILK_YAML),
+                Parameter("sim_env_yaml", Parameter.Type.STRING, _LIBERO_OBJECT_YAML),
                 Parameter("viewer_enabled", Parameter.Type.BOOL, True),
             ]
         )
@@ -243,17 +227,15 @@ def test_franka_libero_milk_camera_image() -> None:
         executor.add_node(node)
 
         try:
+            # No skip on a configure failure: that skip hid a 20 Hz LIBERO step
+            # against the 30 Hz franka rate (issue #358) behind a missing BDDL guard.
             result = node.trigger_configure()
-            if result != TransitionCallbackReturn.SUCCESS:
-                pytest.skip(
-                    f"configure failed ({result!r}) — LIBERO scene init requires "
-                    "robosuite + LIBERO BDDL assets on PATH; skip on missing assets."
-                )
+            assert result == TransitionCallbackReturn.SUCCESS, f"configure failed: {result!r}"
 
             result = node.trigger_activate()
             assert result == TransitionCallbackReturn.SUCCESS, f"activate failed: {result!r}"
 
-            helper = rclpy.create_node("test_franka_libero_milk_helper")
+            helper = rclpy.create_node("test_franka_libero_object_helper")
             executor.add_node(helper)
             received_images: list[RosImage] = []
 
@@ -264,16 +246,14 @@ def test_franka_libero_milk_camera_image() -> None:
             )
             helper.create_subscription(
                 RosImage,
-                "/openral/cameras/agentview/image",
+                "/openral/cameras/top/image",
                 received_images.append,
                 qos,
             )
 
             got_img = _spin_until(executor, lambda: bool(received_images), _CAMERA_TIMEOUT_S)
 
-            assert got_img, (
-                f"no Image on /openral/cameras/agentview/image within {_CAMERA_TIMEOUT_S} s"
-            )
+            assert got_img, f"no Image on /openral/cameras/top/image within {_CAMERA_TIMEOUT_S} s"
             img = received_images[-1]
             assert img.height == _CAMERA_HW, f"expected height={_CAMERA_HW}, got {img.height}"
             assert img.width == _CAMERA_HW, f"expected width={_CAMERA_HW}, got {img.width}"
