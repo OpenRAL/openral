@@ -13436,6 +13436,10 @@ class CollisionEvidence(_FailureEvidenceBase):
             names a different cell. Matching on a stamp cannot separate two
             grids inside one clock tick (`/clock` quantises every stamp in the
             graph to the tick); matching on this origin is exact.
+        world_cell_center_m: Base-frame centre of that world voxel, when the other
+            party is one; ``None`` otherwise and on any producer that predates the
+            field. The grid's dimensions are not in the evidence, so without it the
+            index names no place a reasoner or an operator can look at.
     """
 
     #: Sentinel ``horizon_step`` for a reactive (measured-state) collision.
@@ -13475,6 +13479,7 @@ class CollisionEvidence(_FailureEvidenceBase):
         default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
     )
     world_grid_origin_m: tuple[float, float, float] | None = None
+    world_cell_center_m: tuple[float, float, float] | None = None
 
     @field_validator("joint_positions_rad")
     @classmethod
