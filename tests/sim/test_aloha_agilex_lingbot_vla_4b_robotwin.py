@@ -89,6 +89,7 @@ def _gpu_mem_used_mib() -> int:
 
 
 _SIDECAR_PY = _sidecar_python()
+_RSKILL_DIR = Path(__file__).resolve().parents[2] / "rskills" / "lingbot-vla-4b-robotwin"
 _REPO = _repo_checkout()
 _CKPT = _checkpoint()
 
@@ -144,7 +145,13 @@ def lingbot_adapter():
         robot_id="aloha_agilex",
         scene=scene,
         task=task,
-        vla=VLASpec(id="lingbot_vla", weights_uri=str(_CKPT), extra={"model_id": str(_CKPT)}),
+        # weights_uri names the in-tree rSkill (its manifest loads); extra.model_id wins for
+        # the weights, so the sidecar still loads the local checkpoint.
+        vla=VLASpec(
+            id="lingbot_vla",
+            weights_uri=str(_RSKILL_DIR),
+            extra={"model_id": str(_CKPT)},
+        ),
     )
     adapter = POLICIES.get("lingbot_vla")(env_cfg)  # connect() -> ping
     yield adapter
