@@ -2716,6 +2716,9 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
 # ponytail: a flat ratio cap; LeIsaac's kitchen zip expands 1.5x, a zip bomb 1000x+.
 # Add a byte budget if a legitimate archive ever needs more than 100x.
 _ARCHIVE_MAX_EXPANSION = 100
+# Absolute ceiling on the expanded bytes: a large pinned zip under the ratio cap
+# (1 GiB declaring 90 GiB) must not fill the simulator host's disk either.
+_ARCHIVE_MAX_EXPANDED_BYTES = 32 << 30
 
 
 def _openral_cache_dir() -> Path:
@@ -2786,6 +2789,11 @@ def fetch_environment_archive(archive: IsaacEnvironmentArchive) -> str:
                 raise ROSConfigError(
                     f"environment_archive {archive.url} expands to {expanded} bytes, over "
                     f"{_ARCHIVE_MAX_EXPANSION}x its download; refusing a likely zip bomb."
+                )
+            if expanded > _ARCHIVE_MAX_EXPANDED_BYTES:
+                raise ROSConfigError(
+                    f"environment_archive {archive.url} expands to {expanded} bytes, over the "
+                    f"{_ARCHIVE_MAX_EXPANDED_BYTES}-byte extraction ceiling."
                 )
             zf.extractall(staging)  # zipfile drops absolute and ".." member paths
         if not (staging / archive.usd).is_file():

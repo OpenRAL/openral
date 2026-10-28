@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import http.server
 import io
 import sys
-import urllib.request
+import threading
 import zipfile
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import openral_sim.backends.isaac_sim as isaac_sim_mod
 import pytest
 import yaml
 from hypothesis import given
@@ -196,28 +199,56 @@ def test_a_completed_archive_extraction_is_reused(
     assert fetch_environment_archive(archive) == str(root / archive.usd)
 
 
-def _serve_zip(
-    monkeypatch: pytest.MonkeyPatch,
-    members: dict[str, str],
-    compression: int = zipfile.ZIP_STORED,
-) -> IsaacEnvironmentArchive:
-    """A pinned archive whose download is served from memory (the network boundary)."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=compression) as zf:
-        for name, text in members.items():
-            zf.writestr(name, text)
-    blob = buf.getvalue()
-    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: io.BytesIO(blob))
-    pinned = IsaacEnvironmentArchive.model_validate(_options()["environment_archive"])
-    return pinned.model_copy(update={"sha256": hashlib.sha256(blob).hexdigest()})
+@pytest.fixture
+def serve_zip() -> Iterator[Callable[..., IsaacEnvironmentArchive]]:
+    """Serve pinned archives from a real HTTP server on 127.0.0.1 (no urlopen stub)."""
+    servers: list[http.server.ThreadingHTTPServer] = []
+
+    def serve(
+        members: dict[str, str], compression: int = zipfile.ZIP_STORED
+    ) -> IsaacEnvironmentArchive:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=compression) as zf:
+            for name, text in members.items():
+                zf.writestr(name, text)
+        blob = buf.getvalue()
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(blob)))
+                self.end_headers()
+                self.wfile.write(blob)
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        pinned = IsaacEnvironmentArchive.model_validate(_options()["environment_archive"])
+        # model_copy skips the https-only pattern: the local server speaks plain http.
+        return pinned.model_copy(
+            update={
+                "url": f"http://127.0.0.1:{server.server_address[1]}/env.zip",
+                "sha256": hashlib.sha256(blob).hexdigest(),
+            }
+        )
+
+    yield serve
+    for server in servers:
+        server.shutdown()
+        server.server_close()
 
 
 def test_an_archive_is_extracted_beside_the_cache_and_swapped_in(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    serve_zip: Callable[..., IsaacEnvironmentArchive],
 ) -> None:
     """A stale partial tree is replaced whole; no staging dir or part file is left behind."""
     monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
-    archive = _serve_zip(monkeypatch, {"kitchen_with_orange/scene.usd": "#usda 1.0\n"})
+    archive = serve_zip({"kitchen_with_orange/scene.usd": "#usda 1.0\n"})
     cache = tmp_path / "isaac-environments"
     root = cache / archive.sha256[:16]
     (root / "half_written").mkdir(parents=True)  # a crashed run's leftovers, no marker
@@ -228,26 +259,44 @@ def test_an_archive_is_extracted_beside_the_cache_and_swapped_in(
 
 
 def test_an_archive_without_its_usd_leaves_the_cache_untouched(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    serve_zip: Callable[..., IsaacEnvironmentArchive],
 ) -> None:
     monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
-    archive = _serve_zip(monkeypatch, {"elsewhere/scene.usd": "#usda 1.0\n"})
+    archive = serve_zip({"elsewhere/scene.usd": "#usda 1.0\n"})
     with pytest.raises(ROSConfigError, match="has no"):
         fetch_environment_archive(archive)
     assert list((tmp_path / "isaac-environments").iterdir()) == []
 
 
 def test_a_zip_bomb_archive_is_refused_before_extraction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    serve_zip: Callable[..., IsaacEnvironmentArchive],
 ) -> None:
     """A pinned digest does not bound what the zip expands to; the ratio cap does."""
     monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
-    archive = _serve_zip(
-        monkeypatch,
+    archive = serve_zip(
         {"kitchen_with_orange/scene.usd": "#usda 1.0\n", "pad.bin": "\0" * (8 << 20)},
         compression=zipfile.ZIP_DEFLATED,
     )
     with pytest.raises(ROSConfigError, match="zip bomb"):
+        fetch_environment_archive(archive)
+    assert list((tmp_path / "isaac-environments").iterdir()) == []
+
+
+def test_an_archive_over_the_absolute_ceiling_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    serve_zip: Callable[..., IsaacEnvironmentArchive],
+) -> None:
+    """Under the ratio cap is not enough: the expanded total has a byte ceiling too."""
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(isaac_sim_mod, "_ARCHIVE_MAX_EXPANDED_BYTES", 1024)
+    # Stored (1x expansion) and 4 KiB: passes the ratio cap, over the lowered ceiling.
+    archive = serve_zip({"kitchen_with_orange/scene.usd": "#usda 1.0\n" + "x" * 4096})
+    with pytest.raises(ROSConfigError, match="extraction ceiling"):
         fetch_environment_archive(archive)
     assert list((tmp_path / "isaac-environments").iterdir()) == []
 
