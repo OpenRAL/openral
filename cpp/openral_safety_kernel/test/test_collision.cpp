@@ -192,6 +192,12 @@ TEST(SelfCollision, NonFiniteLinkPoseTripsInsteadOfReadingClear) {
   const auto hit = osk::check_self_collision(m, s, 0.0);
   EXPECT_TRUE(hit.hit);
   EXPECT_FALSE(hit.advisory);
+  // The evidence distance stays finite (JSON / CollisionEvidence reject NaN)
+  // and ranks deepest: the NaN pair is the reported one, not the clear pair.
+  EXPECT_TRUE(std::isfinite(hit.min_distance));
+  EXPECT_EQ(hit.min_distance, std::numeric_limits<double>::lowest());
+  EXPECT_EQ(hit.sweep_min_distance, std::numeric_limits<double>::lowest());
+  EXPECT_EQ(hit.link_b, 2);
 }
 
 TEST(SelfCollision, IgnoresAllowedPair) {

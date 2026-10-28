@@ -1062,15 +1062,20 @@ void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int
                bool allowance_active = false, bool advisory = false,
                bool place_target_adjudicated = false, bool depth_is_box_bound = false,
                int workspace_denied = 0) noexcept {
-  if (d < sweep_min) {
-    sweep_min = d;
-  }
   // A NaN distance is geometry the kernel could not evaluate (a non-finite
   // pose or seed), not clearance: every caller's `d <= margin` reads it as
   // clear and unexempted, so it trips here, as a hard (never advisory) hit.
+  // It is recorded as the most negative finite double: the evidence JSON
+  // and CollisionEvidence (allow_inf_nan=False) stay valid, the pair ranks
+  // deepest within its severity (a NaN would lose every `d < min` compare),
+  // and the sweep minimum reads as deepest penetration, not clearance.
   if (std::isnan(d)) {
     tripped = true;
     advisory = false;
+    d = std::numeric_limits<double>::lowest();
+  }
+  if (d < sweep_min) {
+    sweep_min = d;
   }
   if (!tripped) {
     return;

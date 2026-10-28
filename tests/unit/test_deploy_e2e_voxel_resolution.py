@@ -346,3 +346,6 @@ def test_workcell_self_collision_margin_tightens_but_never_loosens(
     assert effective(description, SafetyEnvelope(self_collision_margin_m=0.02)) == 0.02
     looser = SafetyEnvelope(self_collision_margin_m=robot_margin - 0.01)
     assert effective(description, looser) == robot_margin
+    # A NaN reads False on ``<``; it (and inf) must not pass as a tightening.
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        assert effective(description, SafetyEnvelope(self_collision_margin_m=bad)) == robot_margin

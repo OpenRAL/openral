@@ -715,11 +715,31 @@ struct OfferRig {
     exec.add_node(helper);
   }
 
+  // Same teardown as GraspRig/SlotRig: dropping an active node leaves its span
+  // processor racing process teardown (a segfault after the last test's OK).
+  ~OfferRig() {
+    exec.remove_node(node->get_node_base_interface());
+    exec.remove_node(helper);
+    if (active_) {
+      rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+      node->on_deactivate(active);
+    }
+    if (configured_) {
+      rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+      node->on_cleanup(inactive);
+    }
+  }
+  OfferRig(const OfferRig&) = delete;
+  OfferRig& operator=(const OfferRig&) = delete;
+
   bool activate() {
     rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
     rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
-    return node->on_configure(unconf) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS &&
-           node->on_activate(inactive) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+    configured_ =
+        node->on_configure(unconf) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+    active_ = configured_ && node->on_activate(inactive) ==
+                                 osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+    return active_;
   }
 
   void feed_for(const std::function<void()>& feed, int ms) {
@@ -744,6 +764,10 @@ struct OfferRig {
     }
     return safe_count.load() != before;
   }
+
+private:
+  bool configured_{false};
+  bool active_{false};
 };
 
 openral_msgs::msg::ActionChunk zero_velocity_chunk() {
@@ -964,6 +988,23 @@ TEST_F(LifecycleKernelTest, AnUngroupedSlotRowIsAlsoCheckedAsPublished) {
   slot.tick_group_size = 1;
   EXPECT_FALSE(rig.offer(slot, feed));
   EXPECT_TRUE(rig.node->fault_latched());
+}
+
+// A NaN self-collision margin reads every `d <= margin` false, so the self
+// check would never trip: configure refuses a non-finite margin outright.
+TEST_F(LifecycleKernelTest, ANonFiniteSelfCollisionMarginRefusesConfigure) {
+  int i = 0;
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    auto params = prismatic_pair_params();
+    for (auto& p : params) {
+      if (p.get_name() == "self_collision_margin_m") {
+        p = rclcpp::Parameter("self_collision_margin_m", bad);
+      }
+    }
+    OfferRig rig("kernel_nonfinite_self_margin_" + std::to_string(i++), params);
+    EXPECT_FALSE(rig.activate()) << "margin " << bad;
+  }
 }
 
 // An attachment whose pose is not finite is not a payload model the kernel can

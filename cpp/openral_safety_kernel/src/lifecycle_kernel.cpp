@@ -2266,9 +2266,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             // ... and, ungrouped, also as published: only a HAL staging a slot group
             // (tick_group_size > 1) composes by name; RosControlHAL and an ungrouped
             // OpenArmRealHAL action execute the full row, zero padding included. Only
-            // ever an extra check: it can refuse, never accept.
-            if (msg->tick_group_size <= 1 &&
-                check_config(row, static_cast<int>(s), 0.0, ws_plain)) {
+            // ever an extra check: it can refuse, never accept. Speed and lead unknown
+            // (nullptr): `ws_plain` belongs to the composed rows, and advancing it to this
+            // zero-padded pose would make the next row's speed read from the padding.
+            if (msg->tick_group_size <= 1 && check_config(row, static_cast<int>(s), 0.0, nullptr)) {
               return true;
             }
             // ... and, additionally, at this tick's other committed targets.
@@ -3837,6 +3838,11 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   }
 
   self_collision_margin_m_ = this->get_parameter("self_collision_margin_m").as_double();
+  // A NaN margin reads every `d <= margin` false: the self check would never trip.
+  if (!std::isfinite(self_collision_margin_m_)) {
+    error = "self_collision_margin_m must be finite";
+    return false;
+  }
   const auto n_links = static_cast<std::size_t>(this->get_parameter("collision_n_links").as_int());
   if (n_links == 0) {
     error = "self_collision_enabled but collision_n_links == 0";

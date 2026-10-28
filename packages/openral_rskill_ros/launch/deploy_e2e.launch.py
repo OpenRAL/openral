@@ -489,10 +489,11 @@ def _effective_self_collision_margin(
     if workcell_safety is None or "self_collision_margin_m" not in workcell_safety.model_fields_set:
         return margin
     requested = float(workcell_safety.self_collision_margin_m)
-    if requested < margin:
+    # ``not isfinite`` first: a NaN reads False on ``<`` and would pass as a tightening.
+    if not math.isfinite(requested) or requested < margin:
         print(
-            f"[deploy_e2e] workcell self_collision_margin_m={requested} is looser than the "
-            f"robot's {margin}; keeping the robot's",
+            f"[deploy_e2e] workcell self_collision_margin_m={requested} is non-finite or looser "
+            f"than the robot's {margin}; keeping the robot's",
             flush=True,
         )
         return margin
