@@ -2549,6 +2549,22 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_parameter("rskill_search_paths").get_parameter_value().string_array_value,
         )
         search_paths = [p for p in search_paths_raw if p]
+
+        # Reasoner-managed background services — merge any deploy-time lifecycle peer node ids
+        # (e.g. /openral_slam_toolbox when --enable-slam was passed) into
+        # the palette's `node_ids` set so the Reasoner's LLM can target
+        # them via LifecycleTransitionTool. The seed list comes from the
+        # `lifecycle_peer_node_ids` ROS parameter; empty entries skipped. Merged BEFORE the
+        # skill-seed early returns: `_dispatch_lifecycle_transition` and the decoder both
+        # refuse a node outside `node_ids`, so a deploy without `robot_yaml` /
+        # `rskill_search_paths` must still be able to transition its configured peers.
+        peer_ids: list[str] = list(
+            self.get_parameter("lifecycle_peer_node_ids").get_parameter_value().string_array_value
+        )
+        self._palette = self._palette.model_copy(
+            update={"node_ids": self._palette.node_ids | frozenset(p for p in peer_ids if p)},
+        )
+
         if not robot_yaml or not search_paths:
             return
 
@@ -2603,15 +2619,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # palette); they reach the LLM as authored decision-procedure *content*.
         self._playbooks_block = self._collect_playbooks_block(manifests, loaded_paths)
 
-        # Reasoner-managed background services — merge any deploy-time lifecycle peer node ids
-        # (e.g. /openral_slam_toolbox when --enable-slam was passed) into
-        # the palette's `node_ids` set so the Reasoner's LLM can target
-        # them via LifecycleTransitionTool. The seed list comes from the
-        # `lifecycle_peer_node_ids` ROS parameter; empty entries skipped.
-        peer_ids: list[str] = list(
-            self.get_parameter("lifecycle_peer_node_ids").get_parameter_value().string_array_value
-        )
-        merged_node_ids = self._palette.node_ids | frozenset(p for p in peer_ids if p)
+        merged_node_ids = self._palette.node_ids
 
         # Capability-filter FIRST: drop manifests whose embodiment_tags / sensors_required /
         # actuators_required / role / license don't match this robot; only then probe
