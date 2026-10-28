@@ -133,6 +133,9 @@ VLABench `select_fruit` environment. The sidecar used 3.66 GiB process VRAM;
 the first synthetic chunk took 1.35 s and the warmed real-scene chunk took
 0.81 s. One finite `(10, 7)` chunk was integrated and applied successfully.
 This validates execution, not task success or Xiaomi's benchmark score.
+A 2026-10-28 closed-loop run on Jetson Thor (NF4 through OpenRAL Pro,
+`xr1_vlabench_select_fruit.yaml`, 400 steps, seeds 0–4) completed the task in
+3/5 episodes at ~150 steps each; this is a local check, not a benchmark score.
 
 ## License
 

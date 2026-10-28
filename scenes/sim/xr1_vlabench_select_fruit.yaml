@@ -10,7 +10,7 @@ task:
   scene_id: vlabench
   instruction: "select the fruit"
   success_key: is_success
-  max_steps: 100
+  max_steps: 400
 
 seed: 0
 n_episodes: 1
@@ -19,3 +19,5 @@ metadata:
   honest_scope: >
     Short XR-1 wiring validation using Xiaomi's front/base/wrist camera order
     and the local persistently packed NF4 rSkill. Not a benchmark score.
+    Successful episodes finish at ~150 steps, so 100 steps can never succeed
+    (2026-10-28 on Jetson Thor: 3/5 at 400 steps, seeds 0-4).
