@@ -1,7 +1,7 @@
 # SimplerEnv WidowX — single-run carrot-on-plate scene.
 # Run: openral sim run --config scenes/sim/widowx_carrot_on_plate.yaml \
 #                       --rskill rskills/openvla-oft-simpler-widowx-nf4
-# Setup: use a dedicated OpenVLA runtime (transformers<5) plus SimplerEnv.
+# Setup: the workspace lock plus SimplerEnv (`simpler-env` group).
 
 robot_id: widowx
 

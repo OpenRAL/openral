@@ -29,7 +29,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult
+from openral_sim.rollout import DEFAULT_SUCCESS_KEY, StepResult
 
 if TYPE_CHECKING:
     from openral_core import SceneSpec, SimEnvironment, TaskSpec
@@ -245,7 +245,7 @@ class _ManiSkill3Sim:
             reward=reward_f,
             terminated=bool(_unbatch(terminated)),
             truncated=bool(_unbatch(truncated)),
-            info=_unbatch_info(info),
+            info=_step_info(info),
         )
 
     @property
@@ -322,6 +322,19 @@ def _action_dim_from_space(action_space: Any) -> int:
     if not shape:
         raise ROSConfigError("ManiSkill action_space has no shape; cannot resolve action_dim.")
     return int(shape[-1])
+
+
+def _step_info(info: dict[str, Any]) -> dict[str, Any]:
+    """Unbatch a ManiSkill3 step info and expose its ``success`` as ``is_success``.
+
+    ManiSkill3 (and SimplerEnv on top of it) reports task success as ``success``;
+    OpenRAL scenes score ``info[task.success_key]`` with the standard ``is_success``,
+    and the runner reads a missing key as "not yet", so real successes scored 0.
+    """
+    out = _unbatch_info(info)
+    if "success" in out and DEFAULT_SUCCESS_KEY not in out:
+        out[DEFAULT_SUCCESS_KEY] = bool(out["success"])
+    return out
 
 
 def _unbatch_info(info: dict[str, Any]) -> dict[str, Any]:
