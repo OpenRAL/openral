@@ -1067,6 +1067,9 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/diagnostics", rclcpp::QoS(rclcpp::KeepLast(1)));
 
+  // The candidate subscription is live from here, before on_activate: age a
+  // never-received input from configure until activation restamps it.
+  activated_stamp_ = this->now();
   candidate_sub_ = this->create_subscription<openral_msgs::msg::ActionChunk>(
       "/openral/candidate_action", chunk_qos(),
       std::bind(&SafetyKernelLifecycleNode::on_candidate_action, this, std::placeholders::_1));

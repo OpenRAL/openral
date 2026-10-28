@@ -297,18 +297,20 @@ def _reflect_on_safety_stop(evidence_json: str) -> str:
     if isinstance(evidence, CollisionEvidence) and evidence.collision_kind == "self":
         return (
             "the safety kernel stopped a self-collision (see evidence: which links) — the "
-            "commanded arm configuration hits the robot itself; change the approach or "
-            "start pose, repeating the same motion will stop again."
+            "stop stays latched until an operator resets it, so no goal runs before that; "
+            "then change the approach or start pose, the commanded arm configuration hits "
+            "the robot itself and repeating it will stop again."
         )
     if evidence.kind == "collision":
         return (
             "the safety kernel stopped a collision (see evidence: which link, against "
-            "what) — change the approach or clear the obstacle; repeating the same "
-            "motion will stop again."
+            "what) — the stop stays latched until an operator resets it, so no goal runs "
+            "before that; then change the approach or clear the obstacle, repeating the "
+            "same motion will stop again."
         )
     return (
-        "the safety kernel stopped the robot (see evidence) — change what was "
-        "commanded before retrying."
+        "the safety kernel stopped the robot (see evidence) — the stop stays latched until "
+        "an operator resets it, so no goal runs before that; then change what is commanded."
     )
 
 

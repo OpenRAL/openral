@@ -872,7 +872,10 @@ private:
   std::uint32_t tick_target_tick_{0};
   bool q_meas_received_{false};
   rclcpp::Time q_meas_stamp_{};
-  rclcpp::Time activated_stamp_{};          ///< last on_activate; ages never-received inputs
+  /// Last on_configure / on_activate; ages never-received inputs. ROS clock type, like
+  /// this->now(): a default (system-time) stamp made the subtraction throw for a
+  /// candidate between configure and activate.
+  rclcpp::Time activated_stamp_{0, 0, RCL_ROS_TIME};
   double collision_seed_dt_s_{0.0};         ///< velocity-integration step (s); 0 → reactive only
   double collision_state_deadline_s_{0.2};  ///< max measured-state age for seed-modes
 

@@ -1213,6 +1213,69 @@ TEST_F(LifecycleKernelTest, MobileBaseArmCaughtAgainstVoxelWall) {
 // (fail-closed, no latch) even though the grid itself just arrived; the same
 // wall with a fresh `source_stamp` trips the collision. The receipt deadline
 // alone cannot tell the two apart: both grids are milliseconds old on arrival.
+// The candidate subscription exists from on_configure. A chunk that arrives
+// before on_activate with a required input missing is dropped and aged; the
+// age used to subtract a default system-time stamp from the ROS clock, which
+// throws and would take the kernel down.
+TEST_F(LifecycleKernelTest, ACandidateBeforeActivationWithAMissingInputIsDroppedNotFatal) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-10.0, -3.14}},
+      {"joint_position_max", std::vector<double>{10.0, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{4096}},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 1}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{0, 1}},
+      {"collision_link_names", std::vector<std::string>{"base", "arm"}},
+      {"collision_joint_names", std::vector<std::string>{"j_base", "j_arm"}},
+      {"collision_base_dofs", std::vector<std::int64_t>{0}},
+      {"collision_state_deadline_ms", 2000.0},
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_pre_activate", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("pre_activate_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  // No /joint_states and no grid ever: a velocity chunk needs the measured seed.
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.0, 0.0};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  while (node->chunks_dropped() == 0U && std::chrono::steady_clock::now() < deadline) {
+    cand_pub->publish(vel);
+    EXPECT_NO_THROW(exec.spin_some(std::chrono::milliseconds(10)));
+  }
+  EXPECT_GT(node->chunks_dropped(), 0U) << "the chunk must reach the freshness check and drop";
+  EXPECT_EQ(node->chunks_passed(), 0U);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  node->on_cleanup(inactive);
+}
+
 TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
   rclcpp::NodeOptions opts;
   opts.parameter_overrides({
