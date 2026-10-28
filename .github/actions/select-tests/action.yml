@@ -64,8 +64,10 @@ runs:
         # head_ref on pull_request; the dispatched branch on workflow_dispatch
         # (heavy-lanes.yml), so a release-please branch short-circuits there too.
         HEAD_REF: ${{ github.head_ref || github.ref_name }}
-        # The PR's head repo (empty on workflow_dispatch, which needs write access).
+        # The PR's head repo (empty on workflow_dispatch, which needs write access,
+        # and on a pull_request whose fork was deleted, which must not count).
         HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        EVENT_NAME: ${{ github.event_name }}
         REPO: ${{ github.repository }}
         BASE: ${{ steps.range.outputs.base }}
         HEAD: ${{ steps.range.outputs.head }}
@@ -103,8 +105,9 @@ runs:
         # else selects tests normally.
         case "${HEAD_REF:-}" in
           release-please--*)
-            if [ -n "${HEAD_REPO:-}" ] && [ "$HEAD_REPO" != "$REPO" ]; then
-              echo "::warning::release-please--* branch from fork $HEAD_REPO — selecting tests normally."
+            if { [ "$EVENT_NAME" = pull_request ] && [ "${HEAD_REPO:-}" != "$REPO" ]; } \
+                || { [ -n "${HEAD_REPO:-}" ] && [ "$HEAD_REPO" != "$REPO" ]; }; then
+              echo "::warning::release-please--* branch from fork '${HEAD_REPO:-<deleted>}' — selecting tests normally."
             else
               if other="$(uv run --isolated --no-project --python 3.12 \
                   python tools/check_release_diff.py "$BASE" "$HEAD")"; then

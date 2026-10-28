@@ -24,8 +24,13 @@ _PIN = re.compile(r"^(openral-[A-Za-z0-9_.-]+(?:\[[^\]]*\])?)==\S+$")
 _PYPROJECT = re.compile(r"^(?:python/[^/]+/)?pyproject\.toml$")
 
 
-def _blank_pins(deps: list[str]) -> list[str]:
-    return [_PIN.sub(r"\1==X", d.strip()) for d in deps]
+def _blank_pins(deps: list[str], version: str | None) -> list[str]:
+    # Lockstep: every `openral-*==` pin equals its file's own project.version, so
+    # only a pin at that version is release churn; any other pin stays comparable.
+    return [
+        _PIN.sub(r"\1==X", d.strip()) if version and d.strip().endswith(f"=={version}") else d
+        for d in deps
+    ]
 
 
 def normalize(path: str, text: str) -> Any:
@@ -57,12 +62,13 @@ def normalize(path: str, text: str) -> Any:
                 pkg["version"] = "X"
         return data
     project = data.get("project", {})
+    version = project.get("version")
     if "version" in project:
         project["version"] = "X"
     if "dependencies" in project:
-        project["dependencies"] = _blank_pins(project["dependencies"])
+        project["dependencies"] = _blank_pins(project["dependencies"], version)
     for extra, deps in project.get("optional-dependencies", {}).items():
-        project["optional-dependencies"][extra] = _blank_pins(deps)
+        project["optional-dependencies"][extra] = _blank_pins(deps, version)
     return data
 
 

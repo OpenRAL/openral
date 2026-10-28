@@ -102,11 +102,11 @@ _Lint guard for the Apache-2.0 / OpenRAL Pro boundary: fails when any tracked `.
 - `main(argv: list[str] | None = None) -> int` — Scan the given files (default: every git-tracked `.py`), print each hit, return 1 on any. (L92)
 
 ### `tools/check_release_diff.py`
-_Gate for the release-please test short-circuit in `.github/actions/select-tests`: a `release-please--*` branch skips tests only when every changed release file (`pyproject.toml`s, `uv.lock`, `.release-please-manifest.json`; `CHANGELOG.md` free) parses equal at both revisions once OpenRAL's own versions and `openral-*==` pins are blanked, so a smuggled dependency edit selects tests normally._
+_Gate for the release-please test short-circuit in `.github/actions/select-tests`: a `release-please--*` branch skips tests only when every changed release file (`pyproject.toml`s, `uv.lock`, `.release-please-manifest.json`; `CHANGELOG.md` free) parses equal at both revisions once OpenRAL's own versions and the `openral-*==` pins at the file's own `project.version` are blanked, so a smuggled dependency edit or an off-release pin selects tests normally._
 
-- `normalize(path: str, text: str) -> Any` — Parse a release file and blank the fields a release bump may rewrite. (L31)
-- `violations(base: str, head: str) -> list[str]` — Every way the `base...head` diff goes beyond a release bump. (L76)
-- `main(argv: list[str] | None = None) -> int` — CLI `BASE HEAD`; print each violation, return 1 on any. (L102)
+- `normalize(path: str, text: str) -> Any` — Parse a release file and blank the fields a release bump may rewrite. (L36)
+- `violations(base: str, head: str) -> list[str]` — Every way the `base...head` diff goes beyond a release bump. (L82)
+- `main(argv: list[str] | None = None) -> int` — CLI `BASE HEAD`; print each violation, return 1 on any. (L108)
 
 ### `tools/audit_sim_configs.py`
 _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven, one episode per config; writes `outputs/audit_sim_configs.json` and prints a Markdown table (`just sim-audit`). Two modes: a full rollout, or `--check-compatibility` for a cheap in-process gate with no subprocess or GPU._

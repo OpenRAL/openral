@@ -57,8 +57,10 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    name alone does not earn the skip: the branch must live in this repo, and
    [`tools/check_release_diff.py`](https://github.com/OpenRAL/openral/blob/master/tools/check_release_diff.py) must find
    that the release files differ only in OpenRAL's own versions and
-   `openral-*==` pins (a dependency edit in a `pyproject.toml` or `uv.lock`
-   selects tests normally). The job still
+   `openral-*==` pins moved in lockstep with them (a dependency edit in a
+   `pyproject.toml` or `uv.lock`, or a pin off the release version, selects
+   tests normally; so does a pull request whose head repository is a fork or
+   was deleted). The job still
    *runs* and reports green, because it is a required check and a skipped
    required check is never reported. `quality` and `DCO` are
    unaffected, and `release-pypi.yml` re-runs the full `precheck` gate against

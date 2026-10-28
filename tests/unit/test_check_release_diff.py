@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -25,7 +26,13 @@ check_release_diff = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = check_release_diff
 _spec.loader.exec_module(check_release_diff)
 
-_VERSION = '"0.3.1"'
+# The fixture is the live pyproject, so read its version: release-please bumps it.
+_CURRENT = tomllib.loads((REPO_ROOT / "python/cli/pyproject.toml").read_text())["project"][
+    "version"
+]
+_MAJOR, _MINOR, _ = _CURRENT.split(".")
+_NEXT = f"{_MAJOR}.{int(_MINOR) + 1}.0"
+_VERSION = f'"{_CURRENT}"'
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -60,11 +67,11 @@ def _bump(repo: Path, rel: str, edit: Callable[[str], str]) -> list[str]:
 
 
 def _release(text: str) -> str:
-    return text.replace(_VERSION, '"0.4.0"').replace("==0.3.1", "==0.4.0")
+    return text.replace(_VERSION, f'"{_NEXT}"').replace(f"=={_CURRENT}", f"=={_NEXT}")
 
 
 def test_a_lockstep_version_bump_passes(release_repo: Path) -> None:
-    (release_repo / "CHANGELOG.md").write_text("## 0.4.0\n")
+    (release_repo / "CHANGELOG.md").write_text(f"## {_NEXT}\n")
     _git(release_repo, "add", "CHANGELOG.md")
     assert _bump(release_repo, "python/cli/pyproject.toml", _release) == []
     assert _bump(release_repo, "uv.lock", _release) == []
@@ -95,4 +102,15 @@ def test_a_non_release_file_is_refused(release_repo: Path) -> None:
     _git(release_repo, "add", "tools.py")
     assert _bump(release_repo, "python/cli/pyproject.toml", _release) == [
         "tools.py: not a release file"
+    ]
+
+
+def test_an_openral_pin_off_the_release_version_is_refused(release_repo: Path) -> None:
+    """Only a pin that moves in lockstep with ``project.version`` is release churn."""
+
+    def smuggle(text: str) -> str:
+        return text.replace(f'"openral-core=={_CURRENT}"', '"openral-core==999.0"')
+
+    assert _bump(release_repo, "python/cli/pyproject.toml", smuggle) == [
+        "python/cli/pyproject.toml: changes more than OpenRAL versions and pins"
     ]
