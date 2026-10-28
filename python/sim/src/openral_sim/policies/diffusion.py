@@ -266,7 +266,7 @@ def _try_load_norm_stats(repo_id: str, device: str, torch: Any) -> dict[str, Any
         "action_max": "unnormalize_outputs.buffer_action.max",
     }
     try:
-        with safe_open(weights, framework="pt") as f:  # type: ignore[no-untyped-call]  # reason: safetensors lacks py.typed
+        with safe_open(weights, framework="pt") as f:
             available = set(f.keys())
             for short, long in key_map.items():
                 if long in available:

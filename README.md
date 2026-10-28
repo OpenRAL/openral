@@ -11,7 +11,7 @@
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](pyproject.toml)
-[![lerobot](https://img.shields.io/badge/lerobot-0.6.0-FF6F00)](https://github.com/huggingface/lerobot)
+[![lerobot](https://img.shields.io/badge/lerobot-0.6.1-FF6F00)](https://github.com/huggingface/lerobot)
 [![CUDA](https://img.shields.io/badge/CUDA-supported-76B900?logo=nvidia&logoColor=white)](docker/inference/Dockerfile.x86)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](docker/inference/Dockerfile.x86)
 [![Docs](https://img.shields.io/badge/📖%20Docs-developing-2088FF)](https://docs.openral.com/)

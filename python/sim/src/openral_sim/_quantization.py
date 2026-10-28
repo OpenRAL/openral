@@ -135,8 +135,7 @@ def peek_safetensors_keys(repo_id: str, *, revision: str | None = None) -> set[s
     keys: set[str] = set()
     try:
         for path in paths:
-            # reason: safetensors ships no type stubs for safe_open
-            with safe_open(path, framework="pt") as f:  # type: ignore[no-untyped-call]
+            with safe_open(path, framework="pt") as f:
                 keys.update(f.keys())
     except (OSError, ValueError):
         return None

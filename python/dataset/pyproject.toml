@@ -21,7 +21,7 @@ dependencies = [
 # RolloutRecorder + Rosbag2Sink (PR3) without paying the lerobot tax. The
 # sink raises ROSConfigError with this install hint when lerobot is absent.
 lerobot = [
-    "lerobot[dataset]>=0.6.0",                # reason: LeRobotDataset (lerobot 0.6.0 moved `datasets`/pandas/pyarrow behind the `dataset` extra) — LeRobotDataset v3.0 writer (codebase_version="3.0")
+    "lerobot[dataset]>=0.6.1",                # reason: LeRobotDataset (lerobot 0.6.0 moved `datasets`/pandas/pyarrow behind the `dataset` extra) — LeRobotDataset v3.0 writer (codebase_version="3.0")
     "pyarrow>=17",                   # reason: meta/episodes/*.parquet writes (lerobot dep but declared explicitly)
 ]
 # PR3 ROS-side deps (mcap is PyPI; rosbag2_py + rclpy are system-installed
