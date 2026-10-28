@@ -121,7 +121,7 @@ class TOPRewardMonitor:
     def _score_clip(self, video: object, task: str) -> float:
         """One raw ``log P("True")`` for a clip tensor ``(1, T, H, W, 3)`` uint8."""
         import torch  # noqa: PLC0415
-        from lerobot.types import TransitionKey  # noqa: PLC0415
+        from lerobot.lerobot_types import TransitionKey  # noqa: PLC0415
 
         transition = {
             TransitionKey.OBSERVATION: {self._encoder.image_key: video},
