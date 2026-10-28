@@ -1406,6 +1406,11 @@ if _ROS2_AVAILABLE:
                         # the LLM to populate it).
                         goal_params_json=getattr(req, "goal_params_json", ""),
                     )
+                    if self._resident_key[:1] == (rskill_id,):
+                        # An unpinned goal may reuse a pinned preload: chunks carry the
+                        # revision that runs, not the empty request.
+                        with self._goal_lock:
+                            self._active_skill_revision = self._resident_key[1]
                     self._check_skill_control_rate(skill, span)
                 except (ROSConfigError, ROSCapabilityMismatch, ROSPerceptionStale) as exc:
                     span.record_exception(exc)
