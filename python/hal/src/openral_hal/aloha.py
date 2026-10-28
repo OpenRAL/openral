@@ -575,6 +575,19 @@ class AlohaHAL(HALBase):
         """
         if self._connected:
             raise ROSRuntimeError("AlohaHAL is already connected.")
+        if self._publish_fn is _default_publish:
+            # Same wire-up gap the ros_control family had before
+            # ros_control_transport: without an injected publish_fn the
+            # JointGroupCommand payloads below go to a log no-op and the arms
+            # never move. Fail loudly here rather than publishing into a
+            # logger (the interbotix transport is the #250 rig-confirmation
+            # follow-up; tests and sim inject their own publish_fn).
+            log.warning(
+                "hal.aloha_no_transport",
+                hint="AlohaHAL constructed without publish_fn — commands will "
+                "not leave this process; inject a transport (deploy run "
+                "wiring) before driving real arms (#250)",
+            )
         log.info(
             "hal.connect",
             robot=self.description.name,
