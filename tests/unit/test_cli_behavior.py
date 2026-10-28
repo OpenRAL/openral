@@ -6,10 +6,12 @@ from typing import cast
 
 import msgpack
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
-from openral_cli.behavior import _create_behavior_app
+from openral_cli.behavior import _create_behavior_app, _unpackb
 from openral_cli.main import app
 from openral_core import PhysicsBackend, SceneSpec, SimEnvironment, TaskSpec, VLASpec
+from openral_core.exceptions import ROSRuntimeError
 from openral_sim import make_policy
 from openral_sim.policy import PolicyAdapter
 from typer.testing import CliRunner
@@ -104,3 +106,13 @@ def test_behavior_websocket_protocol_round_trip() -> None:
             np.testing.assert_array_equal(reply["action"], np.zeros(23, dtype=np.float32))
 
     policy.close()
+
+
+def test_wire_decoder_refuses_dtypes_sized_by_the_peer() -> None:
+    """A 30-byte scalar naming ``V2000000000`` must not allocate 2 GB (CWE-770)."""
+    for dtype in ("V2000000000", "S1000000000", "U500000000", "O", "not-a-dtype"):
+        bomb = msgpack.packb({"x": {b"__npgeneric__": True, b"data": 0, b"dtype": dtype}})
+        with pytest.raises(ROSRuntimeError, match="BEHAVIOR wire dtype"):
+            _unpackb(bomb)
+    ok = msgpack.packb({"x": {b"__npgeneric__": True, b"data": 1.5, b"dtype": "<f4"}})
+    assert _unpackb(ok) == {"x": 1.5}

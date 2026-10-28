@@ -16,6 +16,7 @@ short-circuit (no token resolution needed).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -244,3 +245,39 @@ def test_push_non_dry_run_without_token_fails_fast(
     result = runner.invoke(app, ["dataset", "push", str(root), "--yes"])
     assert result.exit_code == 1, result.output
     assert "HF_TOKEN" in result.output or "HF token" in result.output
+
+
+# ── Tree contents (CWE-59) ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("kind", ["file_link", "dir_link"])
+def test_push_refuses_symlinks_in_the_tree(tmp_path: Path, kind: str) -> None:
+    """upload_folder follows file links: a planted link would publish an outside file."""
+    secret = tmp_path / "outside"
+    secret.mkdir()
+    (secret / "id_rsa").write_text("not for the hub")
+    root = tmp_path / "ds"
+    _write_info_json(root)
+    (root / "data").mkdir()
+    link = root / "data" / "leak"
+    link.symlink_to(secret / "id_rsa" if kind == "file_link" else secret)
+    result = CliRunner().invoke(app, ["dataset", "push", str(root), "--dry-run", "--yes"])
+    assert result.exit_code == 1, result.output
+    assert "symlink or special file" in " ".join(result.output.split())
+
+
+def test_push_refuses_a_directory_it_cannot_scan(tmp_path: Path) -> None:
+    """os.walk skips unreadable dirs silently; the push would publish a partial dataset."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 directory anyway")
+    root = tmp_path / "ds"
+    _write_info_json(root)
+    locked = root / "data" / "chunk-000"
+    locked.mkdir(parents=True)
+    locked.chmod(0)
+    try:
+        result = CliRunner().invoke(app, ["dataset", "push", str(root), "--dry-run", "--yes"])
+    finally:
+        locked.chmod(0o755)
+    assert result.exit_code == 1, result.output
+    assert "cannot scan" in " ".join(result.output.split())

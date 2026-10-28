@@ -97,14 +97,17 @@ if probe_port localhost 11434; then
   echo "==> ollama daemon already serving on localhost:11434"
 else
   echo "==> starting ollama serve in the background"
-  nohup ollama serve >/tmp/ollama.log 2>&1 &
+  # A private mktemp file, not a fixed /tmp name another local user could pre-create.
+  OLLAMA_LOG="$(mktemp -t ollama-serve.XXXXXX.log)"
+  nohup ollama serve >"${OLLAMA_LOG}" 2>&1 &
+  echo "    log: ${OLLAMA_LOG}"
   # Wait up to ~5 s for the listener to come up before giving up.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.5
     if probe_port localhost 11434; then break; fi
   done
   if ! probe_port localhost 11434; then
-    echo "ollama serve failed to bind on localhost:11434 — see /tmp/ollama.log" >&2
+    echo "ollama serve failed to bind on localhost:11434 — see ${OLLAMA_LOG}" >&2
     exit 1
   fi
 fi
