@@ -261,6 +261,14 @@ hal:
   # from the `sim:` block below; no per-robot Python class is involved.
   sim: null
   real: "openral_hal.aloha:AlohaHAL"
+  # Constructor kwargs threaded by build_hal (merged under explicit
+  # `deploy run` transport overrides). The xs_sdk wire contract lives here,
+  # not under onboard_compute, so it actually reaches AlohaHAL (#250).
+  parameters:
+    defaults:
+      arm_namespaces: ["follower_left", "follower_right"]
+      arm_group: "arm"
+      gripper_group: "gripper"
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``
 # for the gym-aloha sim twin.  Source:
@@ -328,12 +336,8 @@ onboard_compute:
   driver_repo: "https://github.com/Interbotix/interbotix_ros_manipulators"
   # xs_sdk wire contract (#250): interbotix_xs_msgs/JointGroupCommand on
   # /<ns>/commands/joint_group, per-namespace /<ns>/joint_states — no
-  # controller_manager. Namespaces follow stock aloha_bringup; group names
-  # follow stock motor_config (arm = 6 joints, gripper = 1). Confirm both on
-  # the rig before trusting defaults (issue #250).
-  arm_namespaces: ["follower_left", "follower_right"]
-  arm_group: "arm"
-  gripper_group: "gripper"
+  # controller_manager. The live values are under hal.parameters.defaults
+  # above (threaded by build_hal); this block stays documentation-only.
   estop_topic: "/aloha/estop"
 
 observation_spec:

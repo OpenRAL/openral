@@ -436,9 +436,10 @@ class AlohaHAL(HALBase):
             state for ``state_fn``. No real ALOHA publishes an aggregated
             topic — each arm publishes under its own namespace (#250), so
             the merge happens at subscription time.
-        arm_namespaces: The ``xs_sdk`` robot namespaces of the two follower
-            arms; commands go to ``/<namespace>/commands/joint_group`` and
-            ``estop()`` calls ``/<namespace>/torque_enable`` on each.
+        arm_namespaces: The two distinct ``xs_sdk`` robot namespaces of the
+            follower arms (left, right); commands go to
+            ``/<namespace>/commands/joint_group`` and ``estop()`` calls
+            ``/<namespace>/torque_enable`` on each.
             Defaults to ``("follower_left", "follower_right")``.
         stop_timeout_s: How long ``estop`` waits for each torque-off call.
         publish_fn: Callable forwarding messages to ROS 2 topics.
@@ -498,8 +499,15 @@ class AlohaHAL(HALBase):
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; no transport is opened until ``connect()``."""
-        if not arm_namespaces:
-            raise ROSConfigError("AlohaHAL needs at least one arm namespace to stop.")
+        # Bimanual contract (#250): the two follower arms must be distinct
+        # xs_sdk namespaces — with one namespace both arms would publish
+        # different targets to the same /<ns>/commands/joint_group topic and
+        # the later publish would silently replace the earlier.
+        if len(set(arm_namespaces)) != 2 or len(arm_namespaces) != 2:
+            raise ROSConfigError(
+                "AlohaHAL needs exactly two distinct arm namespaces "
+                f"(follower_left/follower_right); got {list(arm_namespaces)!r}."
+            )
         self.description: RobotDescription = description or ALOHA_REAL_DESCRIPTION
         self._arm_group = arm_group
         self._gripper_group = gripper_group
@@ -623,7 +631,7 @@ class AlohaHAL(HALBase):
         # /<ns>/commands/joint_group carries ONE command set ({name, cmd}) —
         # no trajectory/horizon — so each publish forwards the final step of
         # the chunk, per motor group, per arm.
-        left_ns, right_ns = self._arm_namespaces[0], self._arm_namespaces[-1]
+        left_ns, right_ns = self._arm_namespaces  # validated distinct pair
         self._publish_fn(
             f"/{left_ns}/commands/joint_group",
             {"name": self._arm_group, "cmd": list(left_arm_chunk[-1])},

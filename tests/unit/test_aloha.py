@@ -255,6 +255,12 @@ class TestSendActionSplit:
         assert gripper_msgs[("/follower_left/commands/joint_group", "gripper")] == [6.0]
         assert gripper_msgs[("/follower_right/commands/joint_group", "gripper")] == [13.0]
 
+    def test_single_namespace_rejected(self) -> None:
+        """One namespace would collide both arms onto one command topic."""
+        for bad in (["follower_left"], ["follower_left", "follower_left"], []):
+            with pytest.raises(ROSConfigError, match="two distinct"):
+                AlohaHAL(arm_namespaces=bad)
+
     def test_wrong_action_dim_rejected(self, hal: AlohaHAL) -> None:
         bad = Action(
             control_mode=ControlMode.JOINT_POSITION,
