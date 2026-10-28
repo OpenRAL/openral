@@ -357,10 +357,12 @@ ALOHA_REAL_DESCRIPTION = make_real_description(
 # ALOHA exposes — `aloha_bringup.launch.py` starts `xs_sdk`, which has no
 # controller_manager at all (issue #250). Unchanged pending the on-rig
 # check that issue asks for.
-_DEFAULT_LEFT_ARM_CONTROLLER: str = "left_arm/arm_controller"
-_DEFAULT_RIGHT_ARM_CONTROLLER: str = "right_arm/arm_controller"
-_DEFAULT_LEFT_GRIPPER_CONTROLLER: str = "left_arm/gripper_controller"
-_DEFAULT_RIGHT_GRIPPER_CONTROLLER: str = "right_arm/gripper_controller"
+# xs_sdk command contract (#250): every command is an interbotix_xs_msgs
+# JointGroupCommand on /<robot_name>/commands/joint_group — the group name
+# selects the motor group ("arm" = 6 joints, "gripper" = 1). Group names come
+# from the cell's motor_config; these defaults match stock Interbotix ALOHA.
+_DEFAULT_ARM_GROUP: str = "arm"
+_DEFAULT_GRIPPER_GROUP: str = "gripper"
 
 # Default joint state topic — Interbotix XS aggregates each arm's joint
 # states under its own namespace, then a top-level remap gathers them.
@@ -484,10 +486,8 @@ class AlohaHAL(HALBase):
     def __init__(
         self,
         *,
-        left_arm_controller: str = _DEFAULT_LEFT_ARM_CONTROLLER,
-        right_arm_controller: str = _DEFAULT_RIGHT_ARM_CONTROLLER,
-        left_gripper_controller: str = _DEFAULT_LEFT_GRIPPER_CONTROLLER,
-        right_gripper_controller: str = _DEFAULT_RIGHT_GRIPPER_CONTROLLER,
+        arm_group: str = _DEFAULT_ARM_GROUP,
+        gripper_group: str = _DEFAULT_GRIPPER_GROUP,
         joint_state_topic: str = _DEFAULT_ALOHA_JOINT_STATE_TOPIC,
         arm_namespaces: Sequence[str] = _DEFAULT_ALOHA_ARM_NAMESPACES,
         publish_fn: _PublishFn | None = None,
@@ -500,10 +500,8 @@ class AlohaHAL(HALBase):
         if not arm_namespaces:
             raise ROSConfigError("AlohaHAL needs at least one arm namespace to stop.")
         self.description: RobotDescription = description or ALOHA_REAL_DESCRIPTION
-        self._left_arm_controller = left_arm_controller
-        self._right_arm_controller = right_arm_controller
-        self._left_gripper_controller = left_gripper_controller
-        self._right_gripper_controller = right_gripper_controller
+        self._arm_group = arm_group
+        self._gripper_group = gripper_group
         self._joint_state_topic = joint_state_topic
         self._arm_namespaces = [str(ns) for ns in arm_namespaces]
         self._publish_fn: _PublishFn = publish_fn or _default_publish
@@ -554,8 +552,9 @@ class AlohaHAL(HALBase):
         log.info(
             "hal.connect",
             robot=self.description.name,
-            left_arm=self._left_arm_controller,
-            right_arm=self._right_arm_controller,
+            arm_namespaces=list(self._arm_namespaces),
+            arm_group=self._arm_group,
+            gripper_group=self._gripper_group,
         )
         self._connected = True
         self._last_state_time = time.monotonic()
@@ -587,10 +586,11 @@ class AlohaHAL(HALBase):
         )
 
     def send_action(self, action: Action) -> None:
-        """Forward an action chunk to the four Interbotix controllers.
+        """Forward an action chunk to the four xs_sdk motor groups.
 
-        The 14-D action is split four ways: each arm gets a 6-D joint
-        trajectory and each gripper gets a 1-D position command.
+        The 14-D action is split four ways: each arm's 6-D final-step target
+        and each gripper's 1-D final-step target go out as JointGroupCommand
+        messages on /<ns>/commands/joint_group (#250).
 
         Raises:
             ROSRuntimeError: If not connected.
@@ -618,31 +618,26 @@ class AlohaHAL(HALBase):
         left_gripper_targets = [step[6] for step in action.joint_targets]
         right_gripper_targets = [step[13] for step in action.joint_targets]
 
+        # xs_sdk wire contract (#250): interbotix_xs_msgs/JointGroupCommand on
+        # /<ns>/commands/joint_group carries ONE command set ({name, cmd}) —
+        # no trajectory/horizon — so each publish forwards the final step of
+        # the chunk, per motor group, per arm.
+        left_ns, right_ns = self._arm_namespaces[0], self._arm_namespaces[-1]
         self._publish_fn(
-            f"/{self._left_arm_controller}/joint_trajectory",
-            {
-                "control_mode": action.control_mode,
-                "horizon": action.horizon,
-                "joint_targets": left_arm_chunk,
-                "stamp_ns": action.stamp_ns,
-            },
+            f"/{left_ns}/commands/joint_group",
+            {"name": self._arm_group, "cmd": list(left_arm_chunk[-1])},
         )
         self._publish_fn(
-            f"/{self._right_arm_controller}/joint_trajectory",
-            {
-                "control_mode": action.control_mode,
-                "horizon": action.horizon,
-                "joint_targets": right_arm_chunk,
-                "stamp_ns": action.stamp_ns,
-            },
+            f"/{right_ns}/commands/joint_group",
+            {"name": self._arm_group, "cmd": list(right_arm_chunk[-1])},
         )
         self._publish_fn(
-            f"/{self._left_gripper_controller}/command",
-            {"position": left_gripper_targets[-1], "stamp_ns": action.stamp_ns},
+            f"/{left_ns}/commands/joint_group",
+            {"name": self._gripper_group, "cmd": [left_gripper_targets[-1]]},
         )
         self._publish_fn(
-            f"/{self._right_gripper_controller}/command",
-            {"position": right_gripper_targets[-1], "stamp_ns": action.stamp_ns},
+            f"/{right_ns}/commands/joint_group",
+            {"name": self._gripper_group, "cmd": [right_gripper_targets[-1]]},
         )
         log.debug(
             "hal.send_action",

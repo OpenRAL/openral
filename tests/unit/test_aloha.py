@@ -4,7 +4,7 @@ The ALOHA exposes a 14-DoF action vector (left arm 6 + left gripper 1 +
 right arm 6 + right gripper 1) split across four command topics. Those
 topic names are ros2_control names that no real ALOHA exposes (issue #250 —
 bring-up starts ``xs_sdk``); the assertions below pin what ``AlohaHAL``
-publishes today, not what the rig accepts, and move with the #250 fix.
+now assert the xs_sdk contract from #250 (joint_group on follower namespaces).
 This file pins:
 
 - the ``ALOHA_DESCRIPTION`` joint inventory + bimanual capability;
@@ -187,10 +187,13 @@ class TestSendActionSplit:
         finally:
             hal.disconnect()
         topics = [topic for topic, _ in transport.calls]
-        assert "/left_arm/arm_controller/joint_trajectory" in topics
-        assert "/right_arm/arm_controller/joint_trajectory" in topics
-        assert "/left_arm/gripper_controller/command" in topics
-        assert "/right_arm/gripper_controller/command" in topics
+        assert "/follower_left/commands/joint_group" in topics
+        assert "/follower_right/commands/joint_group" in topics
+        groups = {(topic, payload.get("name")) for topic, payload in transport.calls}
+        assert ("/follower_left/commands/joint_group", "arm") in groups
+        assert ("/follower_left/commands/joint_group", "gripper") in groups
+        assert ("/follower_right/commands/joint_group", "arm") in groups
+        assert ("/follower_right/commands/joint_group", "gripper") in groups
 
     def test_left_arm_gets_indices_0_to_5(self, hal: AlohaHAL, transport: SimTransport) -> None:
         action = Action(
@@ -205,12 +208,12 @@ class TestSendActionSplit:
         finally:
             hal.disconnect()
         for topic, msg in transport.calls:
-            if topic == "/left_arm/arm_controller/joint_trajectory":
-                targets = msg["joint_targets"]
-                assert isinstance(targets, list)
-                assert targets == [[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]]
+            if topic == "/follower_left/commands/joint_group" and msg["name"] == "arm":
+                cmd = msg["cmd"]
+                assert isinstance(cmd, list)
+                assert cmd == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
                 return
-        pytest.fail("left arm trajectory was not published")
+        pytest.fail("left arm joint_group command was not published")
 
     def test_right_arm_gets_indices_7_to_12(self, hal: AlohaHAL, transport: SimTransport) -> None:
         action = Action(
@@ -225,12 +228,12 @@ class TestSendActionSplit:
         finally:
             hal.disconnect()
         for topic, msg in transport.calls:
-            if topic == "/right_arm/arm_controller/joint_trajectory":
-                targets = msg["joint_targets"]
-                assert isinstance(targets, list)
-                assert targets == [[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]]
+            if topic == "/follower_right/commands/joint_group" and msg["name"] == "arm":
+                cmd = msg["cmd"]
+                assert isinstance(cmd, list)
+                assert cmd == [7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
                 return
-        pytest.fail("right arm trajectory was not published")
+        pytest.fail("right arm joint_group command was not published")
 
     def test_grippers_get_singleton_positions(self, hal: AlohaHAL, transport: SimTransport) -> None:
         action = Action(
@@ -245,12 +248,12 @@ class TestSendActionSplit:
         finally:
             hal.disconnect()
         gripper_msgs = {
-            topic: msg
+            (topic, msg["name"]): msg["cmd"]
             for topic, msg in transport.calls
-            if topic.endswith("/gripper_controller/command")
+            if topic.endswith("/commands/joint_group") and msg["name"] == "gripper"
         }
-        assert gripper_msgs["/left_arm/gripper_controller/command"]["position"] == 6.0
-        assert gripper_msgs["/right_arm/gripper_controller/command"]["position"] == 13.0
+        assert gripper_msgs[("/follower_left/commands/joint_group", "gripper")] == [6.0]
+        assert gripper_msgs[("/follower_right/commands/joint_group", "gripper")] == [13.0]
 
     def test_wrong_action_dim_rejected(self, hal: AlohaHAL) -> None:
         bad = Action(

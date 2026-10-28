@@ -326,15 +326,14 @@ sim:
 onboard_compute:
   driver_license: "BSD-3-Clause"             # interbotix_ros_manipulators
   driver_repo: "https://github.com/Interbotix/interbotix_ros_manipulators"
-  # NOT the rig's wire contract: a real ALOHA runs interbotix_xs_sdk's
-  # xs_sdk (commands/joint_group, per-namespace joint_states), with no
-  # controller_manager at all. Left as-is pending the on-rig namespace and
-  # motor_config check issue #250 asks for before these change.
-  left_arm_controller: "left_arm/arm_controller"
-  right_arm_controller: "right_arm/arm_controller"
-  left_gripper_controller: "left_arm/gripper_controller"
-  right_gripper_controller: "right_arm/gripper_controller"
-  joint_state_topic: "/joint_states"
+  # xs_sdk wire contract (#250): interbotix_xs_msgs/JointGroupCommand on
+  # /<ns>/commands/joint_group, per-namespace /<ns>/joint_states — no
+  # controller_manager. Namespaces follow stock aloha_bringup; group names
+  # follow stock motor_config (arm = 6 joints, gripper = 1). Confirm both on
+  # the rig before trusting defaults (issue #250).
+  arm_namespaces: ["follower_left", "follower_right"]
+  arm_group: "arm"
+  gripper_group: "gripper"
   estop_topic: "/aloha/estop"
 
 observation_spec:
