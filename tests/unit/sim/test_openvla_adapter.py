@@ -23,6 +23,7 @@ from openral_sim.policies.openvla import (
     _install_prismatic_oft_compat,
     _install_tokenization_compat,
     _legacy_openvla_timm_version_guard,
+    _OpenVLAAdapter,
     _postprocess_action_chunk,
     _require_remote_code_ack,
     _unnormalize_action,
@@ -271,3 +272,46 @@ def test_timm1_featurizer_list_is_unpacked() -> None:
 
     assert featurizer.forward(3) == 6
     assert fused.forward(3) == 4
+
+
+def test_collect_image_applies_manifest_flip_180() -> None:
+    # LIBERO renders upside down; OpenVLA's LIBERO checkpoints expect the rotated view.
+    frame = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
+    adapter = _OpenVLAAdapter(
+        spec=None,  # type: ignore[arg-type]  # reason: _collect_image reads no spec field
+        device="cpu",
+        _model=None,
+        _processor=None,
+        _torch=None,
+        _flip_images_180=True,
+    )
+
+    adapter._collect_image({"images": {"camera1": frame}})
+
+    np.testing.assert_array_equal(adapter._last_input_frame, frame[::-1, ::-1])
+
+
+def test_legacy_openvla_model_compat_disables_remote_init_weights() -> None:
+    # Transformers 5 runs _init_weights after loading; the remote one re-randomized
+    # the vision patch-embedding convs.
+    class RemoteModel:
+        def _init_weights(self, module: object) -> None:
+            raise AssertionError("remote init must not run")
+
+    _install_legacy_openvla_model_compat(RemoteModel)
+
+    RemoteModel()._init_weights(object())
+
+
+def test_postprocess_action_chunk_inverts_gripper_after_binarizing() -> None:
+    chunk = np.array([[0.0] * 6 + [0.9], [0.0] * 6 + [0.1]], dtype=np.float32)
+
+    out = _postprocess_action_chunk(
+        chunk,
+        action_scale=1.0,
+        binarize_gripper=True,
+        gripper_threshold=0.5,
+        invert_gripper=True,
+    )
+
+    np.testing.assert_array_equal(out[:, 6], np.array([-1.0, 1.0], dtype=np.float32))

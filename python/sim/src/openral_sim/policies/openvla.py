@@ -64,6 +64,7 @@ from openral_rskill._vla_core import (
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
+    resolve_image_preprocessing,
     resolve_n_action_steps,
     resolve_rskill_repo_id,
 )
@@ -167,6 +168,7 @@ def _postprocess_action_chunk(
     action_scale: float,
     binarize_gripper: bool,
     gripper_threshold: float,
+    invert_gripper: bool = False,
 ) -> NDArray[np.float32]:
     """Apply explicit env-side action transforms from ``policy_extras``."""
     out = np.asarray(arr, dtype=np.float32).copy()
@@ -174,6 +176,9 @@ def _postprocess_action_chunk(
         out[:, : min(6, out.shape[1])] *= np.float32(action_scale)
     if binarize_gripper and out.shape[1] >= _DEFAULT_ACTION_DIM:
         out[:, 6] = np.where(out[:, 6] > gripper_threshold, 1.0, -1.0).astype(np.float32)
+    if invert_gripper and out.shape[1] >= _DEFAULT_ACTION_DIM:
+        # OpenVLA emits +1 = open; LIBERO's env takes +1 = close.
+        out[:, 6] = -out[:, 6]
     return np.ascontiguousarray(out, dtype=np.float32)
 
 
@@ -338,6 +343,19 @@ def _install_legacy_openvla_model_compat(model_cls: type[Any]) -> None:
     """Patch legacy OpenVLA remote classes for newer Transformers init hooks."""
     cls: Any  # Any: monkey-patching attributes onto dynamically-loaded remote classes
     for cls in model_cls.__mro__:
+        # The remote ``_init_weights`` re-randomizes every Linear / Conv2d. Transformers 5
+        # runs it after loading on modules it does not mark as loaded, which wiped the
+        # timm patch-embedding convs of both vision backbones (the policy went blind).
+        # The remote code itself says it is for inference / fine-tuning only.
+        if "_init_weights" in cls.__dict__ and not getattr(
+            cls.__dict__["_init_weights"], "_openral_compat", False
+        ):
+
+            def _no_init_weights(self: Any, module: Any) -> None:
+                return None
+
+            _no_init_weights._openral_compat = True  # type: ignore[attr-defined]
+            cls._init_weights = _no_init_weights
         tie_weights = cls.__dict__.get("tie_weights")
         if tie_weights is None or getattr(tie_weights, "_openral_compat", False):
             continue
@@ -569,6 +587,8 @@ class _OpenVLAAdapter:
     _unnorm_key: str = _DEFAULT_UNNORM_KEY
     _action_dim: int = _DEFAULT_ACTION_DIM
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1",))
+    # LIBERO renders upside down; OpenVLA's LIBERO checkpoints train on the 180°-rotated view.
+    _flip_images_180: bool = False
     # Stock OpenVLA un-normalizes inside predict_action; set True for forks that
     # return normalized tokens (then the adapter applies _unnormalize_action).
     _actions_prenormalized: bool = False
@@ -579,6 +599,7 @@ class _OpenVLAAdapter:
     _padding_max_length: int | None = None
     _action_scale: float = 1.0
     _binarize_gripper: bool = False
+    _invert_gripper: bool = False
     _gripper_threshold: float = 0.5
     _torch_seed: int | None = None
     _last_input_frame: NDArray[np.uint8] | None = None
@@ -623,7 +644,10 @@ class _OpenVLAAdapter:
         for cam_key in self._camera_keys:
             img = raw.get(cam_key)
             if img is not None:
-                frame = np.ascontiguousarray(np.asarray(img), dtype=np.uint8)
+                frame = np.asarray(img)
+                if self._flip_images_180:
+                    frame = frame[::-1, ::-1]
+                frame = np.ascontiguousarray(frame, dtype=np.uint8)
                 self._last_input_frame = frame
                 return Image.fromarray(frame)
         raise ROSConfigError(
@@ -702,6 +726,7 @@ class _OpenVLAAdapter:
             arr,
             action_scale=self._action_scale,
             binarize_gripper=self._binarize_gripper,
+            invert_gripper=self._invert_gripper,
             gripper_threshold=self._gripper_threshold,
         )
         return [np.ascontiguousarray(row, dtype=np.float32) for row in arr]
@@ -864,6 +889,7 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         _unnorm_key=_resolve_unnorm_key(spec, model),
         _action_dim=action_dim,
         _camera_keys=cam_keys,
+        _flip_images_180=resolve_image_preprocessing(manifest, spec.extra).flip_180,
         _actions_prenormalized=bool(extra.get("openvla_actions_prenormalized", False)),
         _autocast_dtype=torch.bfloat16 if device.startswith("cuda") else None,
         _generation_method=generation_method,
@@ -872,6 +898,7 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         _padding_max_length=_extra_positive_int_or_none(extra, "openvla_padding_max_length"),
         _action_scale=_extra_float(extra, "openvla_action_scale", 1.0),
         _binarize_gripper=_extra_bool(extra, "openvla_binarize_gripper", False),
+        _invert_gripper=_extra_bool(extra, "openvla_invert_gripper", False),
         _gripper_threshold=_extra_float(extra, "openvla_gripper_threshold", 0.5),
         _torch_seed=torch_seed,
     )
