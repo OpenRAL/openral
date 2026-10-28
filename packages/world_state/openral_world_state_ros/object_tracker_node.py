@@ -37,8 +37,9 @@ owns the wire:
   refuses a regressing ``tracked_objects`` revision, and the aggregator a regressing
   attachment revision).
 
-``tracking`` / ``on`` are sim-only until Safety-WG review: the node refuses both with
-``hal_mode:=real`` (the CLI and the launch refuse first).
+``tracking`` / ``on`` are sim-only until Safety-WG review: the node refuses both unless
+``hal_mode:=sim`` is set explicitly; unset means ``real``, as in the kernel (the CLI and the
+launch refuse first).
 
 Usage::
 
@@ -556,7 +557,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             super().__init__("openral_object_tracker")
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("mode", "tracking")
-            self.declare_parameter("hal_mode", "sim")
+            # Fail closed: unset means a real cell (the kernel defaults the same way). Only an
+            # explicit ``hal_mode:=sim`` lets tracking feed the grasp exemption.
+            self.declare_parameter("hal_mode", "real")
             self.declare_parameter("cameras", [""])
             self.declare_parameter("cell_m", 0.015)
             self.declare_parameter("grounding_wait_s", 0.0)
