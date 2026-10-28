@@ -346,16 +346,23 @@ def _install_legacy_openvla_model_compat(model_cls: type[Any]) -> None:
         # The remote ``_init_weights`` re-randomizes every Linear / Conv2d. Transformers 5
         # runs it after loading on modules it does not mark as loaded, which wiped the
         # timm patch-embedding convs of both vision backbones (the policy went blind).
-        # The remote code itself says it is for inference / fine-tuning only.
-        if "_init_weights" in cls.__dict__ and not getattr(
-            cls.__dict__["_init_weights"], "_openral_compat", False
+        # The remote code itself says it is for inference / fine-tuning only. Transformers 5
+        # also computes the RoPE ``inv_freq`` buffers (non-persistent, not in the checkpoint)
+        # only in the base ``_init_weights``; skipping it left them as uninitialized memory.
+        if (
+            str(cls.__module__).startswith("transformers_modules")
+            and "_init_weights" in cls.__dict__
+            and not getattr(cls.__dict__["_init_weights"], "_openral_compat", False)
         ):
 
-            def _no_init_weights(self: Any, module: Any) -> None:
-                return None
+            def _init_rotary_only(self: Any, module: Any) -> None:
+                if "RotaryEmbedding" in type(module).__name__:
+                    from transformers import PreTrainedModel
 
-            _no_init_weights._openral_compat = True  # type: ignore[attr-defined]
-            cls._init_weights = _no_init_weights
+                    PreTrainedModel._init_weights(self, module)  # type: ignore[no-untyped-call]  # reason: transformers ships it untyped
+
+            _init_rotary_only._openral_compat = True  # type: ignore[attr-defined]
+            cls._init_weights = _init_rotary_only
         tie_weights = cls.__dict__.get("tie_weights")
         if tie_weights is None or getattr(tie_weights, "_openral_compat", False):
             continue

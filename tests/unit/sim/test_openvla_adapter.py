@@ -298,9 +298,33 @@ def test_legacy_openvla_model_compat_disables_remote_init_weights() -> None:
         def _init_weights(self, module: object) -> None:
             raise AssertionError("remote init must not run")
 
+    RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
     _install_legacy_openvla_model_compat(RemoteModel)
 
     RemoteModel()._init_weights(object())
+
+
+def test_legacy_openvla_model_compat_still_computes_rope_buffers() -> None:
+    # RoPE inv_freq is a non-persistent buffer only the base _init_weights fills.
+    import torch
+    from transformers import LlamaConfig
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+
+    class RemoteModel:
+        config = LlamaConfig(hidden_size=64, num_attention_heads=4)
+
+        def _init_weights(self, module: object) -> None:
+            raise AssertionError("remote init must not run")
+
+    RemoteModel.__module__ = "transformers_modules.RLinf.modeling_prismatic"
+    _install_legacy_openvla_model_compat(RemoteModel)
+    rotary = LlamaRotaryEmbedding(RemoteModel.config)
+    expected = rotary.inv_freq.clone()
+    rotary.inv_freq.fill_(-1.0)
+
+    RemoteModel()._init_weights(rotary)
+
+    torch.testing.assert_close(rotary.inv_freq, expected)
 
 
 def test_postprocess_action_chunk_inverts_gripper_after_binarizing() -> None:
