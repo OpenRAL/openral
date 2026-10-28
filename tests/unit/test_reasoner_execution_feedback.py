@@ -21,9 +21,11 @@ from typing import Literal
 from openral_core import (
     CollisionEvidence,
     GraspOutcomeEvidence,
+    HumanEvidence,
     PerceptionStaleEvidence,
     RobotDescription,
     RSkillAction,
+    TimeoutEvidence,
 )
 from openral_observability.failure_bus import (
     KIND_GRASP_OUTCOME,
@@ -100,6 +102,58 @@ def test_reflect_on_failure_picks_the_hint_from_the_typed_kind_and_evidence() ->
     # A kind with no hint of its own keeps the outcome-state default.
     assert "re-check" in reflect_on_failure(
         "canceled", "operator cancel", failure_kind="FAILURE_CANCELLED"
+    )
+
+
+def test_a_stop_by_a_human_or_the_deadman_asks_for_a_human_not_a_new_motion() -> None:
+    """Operator, hardware e-stop and deadman reports also arrive on /openral/failure/safety.
+
+    Their stops are not the commanded motion's fault: the hint must not say "change
+    what was commanded", and a self-collision must not say "clear the obstacle".
+    """
+
+    def stop(evidence: str) -> str:
+        return reflect_on_failure(
+            "aborted",
+            "safety_estop:...",
+            failure_kind="FAILURE_SAFETY_ESTOP",
+            evidence_json=evidence,
+        )
+
+    human = stop(HumanEvidence(actor="hardware_estop", reason="button").model_dump_json())
+    assert "human resets it" in human and "change what was commanded" not in human
+    deadman = stop(
+        TimeoutEvidence(
+            operation="deadman.heartbeat", deadline_s=0.5, elapsed_s=0.9
+        ).model_dump_json()
+    )
+    assert "re-arm" in deadman and "change what was commanded" not in deadman
+    own = stop(
+        CollisionEvidence(
+            collision_kind="self",
+            link_a="openarm_left_link5",
+            link_b_or_object="openarm_body_link0",
+            min_distance_m=-0.004,
+            horizon_step=0,
+        ).model_dump_json()
+    )
+    assert "self-collision" in own and "clear the obstacle" not in own
+
+
+def test_a_stalled_clock_is_not_reported_as_a_stuck_skill() -> None:
+    """A ``clock_stalled`` deadline miss means the stack stopped, not the skill."""
+    stalled = TimeoutEvidence(
+        operation="rskill.execute:clock_stalled", deadline_s=120.0, elapsed_s=31.0
+    ).model_dump_json()
+    hint = reflect_on_failure(
+        "aborted", "clock_stalled: ...", timed_out=True, evidence_json=stalled
+    )
+    assert "clock stopped" in hint and "different skill" not in hint
+    exceeded = TimeoutEvidence(
+        operation="rskill.execute:deadline_exceeded", deadline_s=120.0, elapsed_s=121.0
+    ).model_dump_json()
+    assert "timed out" in reflect_on_failure(
+        "aborted", "deadline_exceeded: ...", timed_out=True, evidence_json=exceeded
     )
 
 

@@ -1075,12 +1075,12 @@ if _ROS2_AVAILABLE:
             if self._safety_status_sub is not None:
                 self.destroy_subscription(self._safety_status_sub)
                 self._safety_status_sub = None
+                self._safety_status = None
+                self._safety_status_recv_monotonic = 0.0
             if self._safety_failure_sub is not None:
                 self.destroy_subscription(self._safety_failure_sub)
                 self._safety_failure_sub = None
                 self._kernel_evidence = None
-                self._safety_status = None
-                self._safety_status_recv_monotonic = 0.0
             if self._episode_pub is not None:
                 self.destroy_publisher(self._episode_pub)
                 self._episode_pub = None
@@ -3041,7 +3041,12 @@ if _ROS2_AVAILABLE:
             return (drop[1], drop[2]) if drop is not None and drop[0] >= since_monotonic else None
 
         def _on_safety_failure(self, msg: Any) -> None:  # reason: ROS message untyped
-            """Cache the newest kernel ``FailureTrigger`` evidence (store-only)."""
+            """Cache the newest ``/openral/failure/safety`` evidence (store-only).
+
+            Not only the kernel publishes there: the operator / hardware e-stop
+            (``HumanEvidence``) and the deadman watchdog (``TimeoutEvidence``) do too, so a
+            stop's evidence names who stopped it.
+            """
             self._kernel_evidence = (time.monotonic(), str(msg.evidence_json or ""))
 
         def _attach_failure_evidence(self, result: Any) -> Any:  # reason: ROS message untyped

@@ -59,8 +59,10 @@ uint8 failure_kind
 # `TypeAdapter(FailureEvidence).validate_json`). Empty on success and when the
 # failure has no structured detail beyond failure_reason (a cancel, a config or
 # runtime fault). Producer: `rskill_runner_node._attach_failure_evidence`:
-#   FAILURE_SAFETY_ESTOP      the kernel's report (CollisionEvidence, ...); empty
-#                             for an operator e-stop, which the kernel did not cause
+#   FAILURE_SAFETY_ESTOP      the newest /openral/failure/safety report: the kernel's
+#                             (CollisionEvidence, ...), the operator / hardware e-stop's
+#                             (HumanEvidence) or the deadman's (TimeoutEvidence); empty
+#                             when no publisher explained the stop
 #   FAILURE_PERCEPTION_STALE  PerceptionStaleEvidence (which kernel input, its age,
 #                             the limit) when a stale input stalled the action
 #   FAILURE_DEADLINE_MISSED   TimeoutEvidence (budget vs elapsed)

@@ -260,7 +260,7 @@ result):
 
 | Kind | `evidence_json` |
 | --- | --- |
-| `FAILURE_SAFETY_ESTOP` | The kernel's report on `/openral/failure/safety` during this goal (`CollisionEvidence`: which link, against what, how deep). Empty for an operator e-stop |
+| `FAILURE_SAFETY_ESTOP` | The newest report on `/openral/failure/safety` during this goal: the kernel's (`CollisionEvidence`: which link, against what, how deep), the operator / hardware e-stop's (`HumanEvidence`) or the deadman watchdog's (`TimeoutEvidence`). Empty when no publisher explained the stop |
 | `FAILURE_PERCEPTION_STALE` | The kernel's `PerceptionStaleEvidence` (which input, its age, the limit) when a stale input stalled the action |
 | `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, budget, elapsed) |
 | `FAILURE_OBJECT_NOT_FOUND` | The tracker's exhausted `ObjectQueryEvidence` |

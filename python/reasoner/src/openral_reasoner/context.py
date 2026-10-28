@@ -25,6 +25,7 @@ import json
 from collections import Counter, deque
 
 from openral_core import (
+    CollisionEvidence,
     FailureEvidence,
     GraspOutcomeEvidence,
     ObjectDetection2D,
@@ -33,6 +34,7 @@ from openral_core import (
     RobotDescription,
     SceneGraph,
     SpatialNodeKind,
+    TimeoutEvidence,
     WorldState,
 )
 from pydantic import TypeAdapter, ValidationError
@@ -208,6 +210,12 @@ _FAILURE_KIND_REFLECTIONS: dict[str, str] = {
 }
 
 
+def _is_clock_stall(evidence_json: str) -> bool:
+    """Whether a deadline miss is the runner's ``clock_stalled`` (the graph clock stopped)."""
+    evidence = _decode_evidence(evidence_json)
+    return isinstance(evidence, TimeoutEvidence) and evidence.operation.endswith(":clock_stalled")
+
+
 def _reflect_on_safety_stop(evidence_json: str) -> str:
     """Strategy hint for a ``FAILURE_SAFETY_ESTOP``, picked by the stop's evidence."""
     evidence = _decode_evidence(evidence_json)
@@ -215,6 +223,26 @@ def _reflect_on_safety_stop(evidence_json: str) -> str:
         return (
             "an e-stop with no kernel report behind it (operator or external) — do not "
             "retry anything until a human resets it."
+        )
+    # Every /openral/failure/safety publisher lands here, not only the kernel: the
+    # operator / hardware e-stop (HumanEvidence) and the deadman watchdog
+    # (TimeoutEvidence) need a human, not a different motion.
+    if evidence.kind == "human":
+        return (
+            "an operator or hardware e-stop stopped the robot (see evidence) — do not retry "
+            "anything until a human resets it."
+        )
+    if evidence.kind == "timeout":
+        return (
+            "the deadman watchdog stopped the robot: a heartbeat or operator-presence "
+            "signal lapsed (see evidence) — wait for the operator to re-arm it; a "
+            "different skill will stop the same way."
+        )
+    if isinstance(evidence, CollisionEvidence) and evidence.collision_kind == "self":
+        return (
+            "the safety kernel stopped a self-collision (see evidence: which links) — the "
+            "commanded arm configuration hits the robot itself; change the approach or "
+            "start pose, repeating the same motion will stop again."
         )
     if evidence.kind == "collision":
         return (
@@ -274,7 +302,10 @@ def reflect_on_failure(
         timed_out = "timeout" in detail.lower() or "deadline" in detail.lower()
     if timed_out:
         return (
-            "the skill timed out — it may be stuck; try a shorter-horizon step "
+            "the robot / simulation clock stopped advancing — the stack is stalled, not "
+            "the skill; do not substitute skills, report it and wait for the clock to resume."
+            if _is_clock_stall(evidence_json)
+            else "the skill timed out — it may be stuck; try a shorter-horizon step "
             "or a different skill."
         )
     if failure_kind == "FAILURE_SAFETY_ESTOP":
