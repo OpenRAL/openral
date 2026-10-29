@@ -1482,8 +1482,13 @@ class ObjectTracker:
             return True
         return False
 
+    @property
+    def static_centres(self) -> NDArray[np.float64]:
+        """The declared static cell centres (grid frame), as ``set_static_geometry`` set them."""
+        return self._static_centres
+
     def set_static_geometry(self, centres: NDArray[np.float64]) -> None:
-        """Declare static geometry for the ONE-BODY test only.
+        """Declare static geometry for the ONE-BODY test and the untracked payload's floor cut.
 
         ``centres`` are cell centres in the grid frame, one per cell the octomap bridge
         marks. A body wholly inside them, padded by ``static_pad_cells``, is the declared wall,
