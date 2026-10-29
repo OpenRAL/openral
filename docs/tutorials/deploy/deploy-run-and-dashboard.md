@@ -597,7 +597,10 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   deploy scenes (`scenes/deploy/isaac_leisaac_pick_orange.yaml`,
   `scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`) commit `tracking` with
   `grounding_required: true` and `grounding_wait_s` 8 s / 15 s, the values of their
-  successful Spark runs (which ran `on`); `--runtime object_tracking=off` runs them without
+  successful Spark runs (which ran `on`). That wait is for TARGET queries; a CONTEXT query
+  (a neighbour the hand may brush) holds the goal at most the runner's
+  `grounding_context_wait_s` (2 s graph time) and is searched for the rest of the goal;
+  `--runtime object_tracking=off` runs them without
   the tracker. `on` publishes no grasp region and requires `runtime.exemption_provider`
   (ADR-0121): it hands the exemption provider the tracked-object rules (issue #418 K2, the
   K5 release decision, K7 explained cells, payload-own cells) as `contact_exemptions.*`

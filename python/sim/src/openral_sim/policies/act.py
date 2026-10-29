@@ -29,6 +29,7 @@ from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     apply_chunk_replay,
     call_make_processors_cached_first,
+    image_to_chw_tensor,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
     release_torch_modules,
@@ -90,7 +91,7 @@ class _ACTAdapter:
     _image_input_template: str = "observation.images.{cam}"
     _flip_images_180: bool = False
     _state_dim: int | None = None
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
     # Normalization stats extracted from the checkpoint when the
     # underlying lerobot ACTPolicy class no longer carries
     # normalize_inputs / unnormalize_outputs modules. ACT uses
@@ -113,6 +114,10 @@ class _ACTAdapter:
     _nvmm_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        # Stored back: replayed steps share one tiled array until the next inference.
+        self._last_input_frame = materialize_input_frame(self._last_input_frame)
         return self._last_input_frame
 
     def reset(self) -> None:
@@ -213,7 +218,7 @@ class _ACTAdapter:
         batch: dict[str, Any] = {"task": [instruction or str(observation.get("task", ""))]}
 
         images = observation.get("images", {})
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         # Record every camera the policy consumed so the debug video does not
         # hide multi-camera setups behind a single wrist-only preview.
@@ -225,12 +230,12 @@ class _ACTAdapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
+            t = image_to_chw_tensor(img, torch=torch, device=self.device)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
             batch[self._image_input_template.format(cam=self._cam_alias.get(cam_key, cam_key))] = t
-        self._last_input_frame = tile_input_frames(preview_frames)
+        self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is not None:

@@ -11,7 +11,10 @@ legitimately calls ``snapshot_download`` — documented, out of scope here.
 Pins:
 
 - ``policies/smolvla.py``: no ``snapshot_download`` reference anywhere
-  (the only HF Hub call goes through ``materialize_processor_dir``).
+  (the skill's processors go through ``materialize_processor_dir``; the
+  third-party backbone's non-weight files — config, tokenizer, processor —
+  are fetched once via ``local_snapshot_dir`` in ``_config_with_local_backbone``
+  instead of per file by transformers).
 - ``policies/act.py``: at most one ``snapshot_download`` call site (the
   ACT-specific config+weights snapshot feeding ``_sanitize_act_config_json``
   + ``ACTPolicy.from_pretrained``), not inside the modern-processors branch.

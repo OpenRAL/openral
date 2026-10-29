@@ -91,6 +91,23 @@ def tile_input_frames(images: Sequence[object | None]) -> NDArray[np.uint8] | No
     return _pad_to_square(canvas)
 
 
+def materialize_input_frame(
+    frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None,
+) -> NDArray[np.uint8] | None:
+    """The debug-preview frame an adapter's ``last_input_frame`` returns.
+
+    Adapters keep the per-camera frames of their last step and tile them here, on
+    read: only ``sim run``'s debug video reads the preview, and tiling every step cost
+    ~2 ms of a ``deploy sim`` control tick that nothing consumed.
+
+    Example:
+        >>> f = np.zeros((2, 2, 3), dtype=np.uint8)
+        >>> materialize_input_frame([f, f]).shape, materialize_input_frame(None)
+        ((4, 4, 3), None)
+    """
+    return tile_input_frames(frame) if isinstance(frame, list) else frame
+
+
 def _fit_frame(
     frame: NDArray[np.uint8],
     *,

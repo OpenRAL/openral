@@ -24,6 +24,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import VLASpec
 from openral_observability import semconv
 from openral_rskill._vla_core import (
+    image_to_chw_tensor,
     resolve_device,
     resolve_inference_engine,
     resolve_rskill_repo_id,
@@ -278,6 +279,17 @@ class TestRunInference:
             _openral_inference_engine = "tensorrt"
 
         assert resolve_inference_engine(_Policy(), "pytorch") == "trt"
+
+
+# ── image_to_chw_tensor ───────────────────────────────────────────────────────
+
+
+def test_image_to_chw_tensor_matches_host_float_conversion() -> None:
+    img = np.random.default_rng(0).integers(0, 256, (48, 64, 3), dtype=np.uint8)
+    out = image_to_chw_tensor(img, torch=torch, device="cpu")
+    ref = torch.tensor(img, dtype=torch.float32).div(255.0).permute(2, 0, 1)
+    assert out.shape == (3, 48, 64) and out.dtype == torch.float32
+    assert torch.equal(out, ref)
 
 
 # ── to_numpy_action ───────────────────────────────────────────────────────────
@@ -735,6 +747,34 @@ class TestSuppressHfWeightInit:
         with suppress_hf_weight_init():
             PreTrainedModel._init_weights(None, layer)  # type: ignore[arg-type,no-untyped-call,unused-ignore]  # reason: transformers untyped when installed, Any when absent
         assert torch.allclose(layer.weight, torch.full_like(layer.weight, 1.5))
+
+    def test_torch_level_init_is_suppressed_and_restored(self) -> None:
+        """``nn.Linear``'s own ``reset_parameters`` init is skipped too, then restored."""
+        from openral_rskill._vla_core import suppress_hf_weight_init
+
+        before = torch.nn.init.kaiming_uniform_
+        with suppress_hf_weight_init():
+            assert torch.nn.init.kaiming_uniform_ is not before
+            weight = torch.full((4, 4), 1.5)
+            torch.nn.init.kaiming_uniform_(weight)
+            assert torch.equal(weight, torch.full((4, 4), 1.5))
+        assert torch.nn.init.kaiming_uniform_ is before
+
+    def test_missing_checkpoint_key_is_refused(self, tmp_path: Path) -> None:
+        """A key the checkpoint does not cover would keep uninitialised memory."""
+        pretrained = pytest.importorskip("lerobot.policies.pretrained")
+        from openral_rskill._vla_core import suppress_hf_weight_init
+        from safetensors.torch import save_file
+
+        ckpt = tmp_path / "model.safetensors"
+        save_file({"weight": torch.ones(4, 4)}, str(ckpt))  # no "bias"
+        with suppress_hf_weight_init():
+            with pytest.raises(ROSConfigError, match="bias"):
+                pretrained.load_model_as_safetensor(torch.nn.Linear(4, 4), str(ckpt), strict=False)
+            save_file({"weight": torch.ones(4, 4), "bias": torch.ones(4)}, str(ckpt))
+            layer = torch.nn.Linear(4, 4)
+            pretrained.load_model_as_safetensor(layer, str(ckpt), strict=False)
+            assert torch.equal(layer.bias, torch.ones(4))
 
 
 class TestAssertAllParametersFinite:

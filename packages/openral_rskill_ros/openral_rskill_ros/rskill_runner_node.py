@@ -451,6 +451,11 @@ if _ROS2_AVAILABLE:
             # 115 s of wall, past the deadman's 120 s first-chunk deadline (Spark restock
             # R290, 2026-10-23). Half that deadline by default.
             self.declare_parameter("grounding_wait_wall_s", 60.0)
+            # CONTEXT queries (neighbours) hold the wait at most this long (graph clock),
+            # capped by `grounding_wait_s`; the tracker keeps searching them all goal long.
+            # Spark restock 2026-10-28: a hidden neighbour pinned every episode at the full
+            # 20 s (~62 s wall) and the wait grounded one more carton in 1 of 6 episodes.
+            self.declare_parameter("grounding_context_wait_s", 2.0)
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -1158,6 +1163,11 @@ if _ROS2_AVAILABLE:
             from openral_core.schemas import RSkillState
             from openral_rskill.ros_action_rskill import ROSActionRskill
 
+            if not revision and self._resident_key[:1] == (rskill_id,):
+                # An unpinned goal accepts any revision, so a preload pinned by
+                # the deploy profile satisfies it; the key keeps the pin, which
+                # is what the trace records as loaded.
+                revision = self._resident_key[1]
             req_key = (rskill_id, revision, prompt, prompt_metadata_json, goal_params_json)
             resident = cast("rSkillBase | None", self._resident_skill)
             set_goal_prompt = getattr(resident, "set_goal_prompt", None)
@@ -1396,6 +1406,11 @@ if _ROS2_AVAILABLE:
                         # the LLM to populate it).
                         goal_params_json=getattr(req, "goal_params_json", ""),
                     )
+                    if self._resident_key[:1] == (rskill_id,):
+                        # An unpinned goal may reuse a pinned preload: chunks carry the
+                        # revision that runs, not the empty request.
+                        with self._goal_lock:
+                            self._active_skill_revision = self._resident_key[1]
                     self._check_skill_control_rate(skill, span)
                 except (ROSConfigError, ROSCapabilityMismatch, ROSPerceptionStale) as exc:
                     span.record_exception(exc)
@@ -2703,7 +2718,9 @@ if _ROS2_AVAILABLE:
             )
 
         def _await_grounding(self, goal_handle: Any) -> None:
-            """Wait up to ``grounding_wait_s`` for the armed TARGET and CONTEXT queries to ground.
+            """Wait for the armed TARGET (``grounding_wait_s``) and CONTEXT queries to ground.
+
+            CONTEXT queries hold the wait at most ``grounding_context_wait_s``.
 
             Only queries that rode the armed grasp declaration count (with none in force
             the tracker never got them, and nothing is waited for). A query is grounded
@@ -2738,6 +2755,11 @@ if _ROS2_AVAILABLE:
             wait_s = self.get_parameter("grounding_wait_s").get_parameter_value().double_value
             required = self.get_parameter("grounding_required").get_parameter_value().bool_value
             wall_s = self.get_parameter("grounding_wait_wall_s").get_parameter_value().double_value
+            context_s = min(
+                wait_s,
+                self.get_parameter("grounding_context_wait_s").get_parameter_value().double_value,
+            )
+            targets = tuple(q for q in queries if q.role is ObjectRole.TARGET)
             clock = self.get_clock()
             start_ns = clock.now().nanoseconds
             wall_start = time.monotonic()
@@ -2753,6 +2775,10 @@ if _ROS2_AVAILABLE:
                     return
                 if (
                     waited_s >= wait_s
+                    or (
+                        waited_s >= context_s
+                        and not ungrounded_target_queries(targets, self._tracked_set, key)
+                    )
                     or time.monotonic() - wall_start >= wall_s
                     or self._estop_latched
                     or self._cancel_requested
@@ -2762,10 +2788,10 @@ if _ROS2_AVAILABLE:
                 time.sleep(0.05)
             detail = (
                 f"grounding_incomplete: queries {missing} not grounded within "
-                f"grounding_wait_s={wait_s:g}s / grounding_wait_wall_s={wall_s:g}s wall "
+                f"grounding_wait_s={wait_s:g}s (context {context_s:g}s) / "
+                f"grounding_wait_wall_s={wall_s:g}s wall "
                 f"(waited {waited_s:.2f}s graph; declaration {key})"
             )
-            targets = tuple(q for q in queries if q.role is ObjectRole.TARGET)
             target_missing = ungrounded_target_queries(targets, self._tracked_set, key)
             stopping = self._estop_latched or self._cancel_requested
             if required and target_missing and not stopping:

@@ -346,37 +346,60 @@ def _static_points_file(
     only on that lattice. Thousands of times smaller than the bridge's file, which the kernel
     would otherwise have to hold in memory.
 
-    Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a
-    ``/tmp`` file named by the source and a digest of the points: the same geometry reuses one
-    file instead of leaving one per launch (each is hundreds of MB, and nothing can delete it
-    at exit while the bridge may still be reading it). Written to a temporary name and moved
-    into place, so a concurrent launch never reads a partial file. Raises ``ROSConfigError``
-    on a geometry that does not load or a mesh that is malformed.
+    Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a file
+    in the user's private cache (``$OPENRAL_CACHE_DIR`` or ``~/.cache/openral``, under
+    ``static_geometry/``, mode 0700, so no other local user can plant a file there) named by the
+    source and a digest of every input (the geometry YAML, each mesh it names, the sampling code,
+    this file's cell reduction, the resolution and the mode): the same geometry reuses one
+    file without sampling again (sampling + the cell reduction cost ~14 s per call on a
+    15 M-point restock scene, three calls a launch), instead of leaving one per launch (each
+    is hundreds of MB, and nothing can delete it at exit while the bridge may still be
+    reading it). Written to a temporary name and moved into place, so a concurrent launch
+    never reads a partial file. Raises ``ROSConfigError`` on a geometry that does not load
+    or a mesh that is malformed.
     """
     import hashlib
-    import tempfile
 
-    from openral_safety.static_geometry import (
-        load_static_geometry,
-        surface_points,
-        write_points_file,
-    )
+    from openral_core.exceptions import ROSConfigError
+    from openral_safety import static_geometry as sg
 
-    geometry, base_dir = load_static_geometry(static_geometry_file)
-    points = surface_points(geometry, base_dir, resolution_m / 4.0)
-    digest = hashlib.sha256(points.tobytes()).hexdigest()[:16]
-    out = pathlib.Path(tempfile.gettempdir()) / (
-        f"openral_static_points_{pathlib.Path(static_geometry_file).stem}_{digest}.txt"
+    geometry, base_dir = sg.load_static_geometry(static_geometry_file)
+    key = hashlib.sha256(f"{resolution_m!r}:{kernel_cells}".encode())
+    key.update(pathlib.Path(static_geometry_file).read_bytes())
+    key.update(pathlib.Path(sg.__file__).read_bytes())  # a sampling change is a new file
+    key.update(pathlib.Path(__file__).read_bytes())  # so is a change to the cell reduction
+    for entry in geometry.static_geometry:
+        if isinstance(entry, sg.StaticMesh):
+            mesh = base_dir / entry.file
+            try:
+                key.update(mesh.read_bytes())
+            except OSError as exc:
+                raise ROSConfigError(f"static mesh {mesh}: {exc}") from exc
+    kind = "cells" if kernel_cells else "points"
+    cache = (
+        pathlib.Path(os.environ.get("OPENRAL_CACHE_DIR") or pathlib.Path.home() / ".cache/openral")
+        / "static_geometry"
     )
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    out = cache / (
+        f"openral_static_{kind}_{pathlib.Path(static_geometry_file).stem}_"
+        f"{key.hexdigest()[:16]}.txt"
+    )
+    if out.exists():
+        print(
+            f"[deploy_e2e] declared static geometry: {len(geometry.static_geometry)} fixtures, "
+            f"cached {kind} -> {out}",
+            flush=True,
+        )
+        return str(out)
+    points = sg.surface_points(geometry, base_dir, resolution_m / 4.0)
     if kernel_cells:
         # One centre per cell the bridge marks, as the bridge reads the points (5 decimals).
         keys = np.unique(np.floor(np.round(points, 5) / resolution_m).astype(np.int64), axis=0)
         points = np.asarray((keys + 0.5) * resolution_m, dtype=np.float64)
-        out = out.with_name(out.name.replace("openral_static_points_", "openral_static_cells_"))
-    if not out.exists():
-        partial = out.with_name(f"{out.name}.{os.getpid()}.partial")
-        write_points_file(points, partial)
-        partial.replace(out)
+    partial = out.with_name(f"{out.name}.{os.getpid()}.partial")
+    sg.write_points_file(points, partial)
+    partial.replace(out)
     print(
         f"[deploy_e2e] declared static geometry: {len(geometry.static_geometry)} fixtures, "
         + (

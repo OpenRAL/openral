@@ -1357,7 +1357,7 @@ class _RoboCasaSim:
         return obs
 
     def _emit_panda_mobile_extras(self, obs: Observation) -> None:
-        """Attach ``robot0_base_vel`` + ``robot0_scan`` for panda_mobile envs.
+        """Attach ``robot0_base_vel`` for panda_mobile envs.
 
         Gated on ``"PandaMobile" in self._robots`` so other compositions
         (Panda fixed-base, GR1 humanoid, etc.) are untouched. Silently
@@ -1371,10 +1371,11 @@ class _RoboCasaSim:
           ``(vx, vy, wz)`` in m/s and rad/s. Matches the
           ``ControlMode.BODY_TWIST`` convention's first / second / sixth
           channels.
-        * ``obs["robot0_scan"]`` — ``(_LASER_DEFAULT_N_BEAMS,)`` float32
-          range array in metres, ``-π → +π`` body frame. Beams that
-          didn't hit anything within ``_LASER_DEFAULT_MAX_RANGE_M`` are
-          clamped to the max (never NaN, never inf).
+
+        No laser scan rides on the per-step observation: no policy reads one,
+        and ``synthesize_laser_scan_2d`` (360 ``mj_ray`` casts) was ~40 % of a
+        RoboCasa ``sim run``. The deploy HAL's ``/scan`` publisher ray-casts on
+        its own timer through ``SimSensorBridge._compute_scan_ranges``.
         """
         if not self._has_mobile_base_robot():
             return
@@ -1393,9 +1394,6 @@ class _RoboCasaSim:
         base_names: tuple[str, str, str] | None = self._resolve_base_joint_names()
         obs["robot0_base_vel"] = read_panda_mobile_base_velocity(
             model, data, base_joint_names=base_names
-        )
-        obs["robot0_scan"] = synthesize_laser_scan_2d(
-            model=model, data=data, base_joint_names=base_names
         )
 
     def _has_mobile_base_robot(self) -> bool:

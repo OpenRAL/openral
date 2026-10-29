@@ -208,6 +208,40 @@ def test_the_same_geometry_reuses_one_points_file(launch_module: Any, tmp_path: 
         first.unlink(missing_ok=True)
 
 
+def test_a_cached_file_is_reused_without_sampling_and_an_edit_is_not(
+    launch_module: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cache is keyed on the inputs: a hit samples nothing; an edited geometry re-samples.
+
+    Sampling a 15 M-point scene and reducing it to cells cost ~14 s per call, three calls per
+    launch, even when the file already existed (the key was a digest of the sampled points).
+    """
+    import openral_safety.static_geometry as sg
+
+    geometry = _cell_geometry(tmp_path)
+    first = Path(launch_module._static_points_file(str(geometry), 0.015, kernel_cells=True))
+    calls: list[float] = []
+    real = sg.surface_points
+
+    def counting(*a: Any, **k: Any) -> Any:
+        calls.append(1.0)
+        return real(*a, **k)
+
+    monkeypatch.setattr(sg, "surface_points", counting)
+    try:
+        assert (
+            Path(launch_module._static_points_file(str(geometry), 0.015, kernel_cells=True))
+            == first
+        )
+        assert not calls, "a cache hit must not sample"
+        geometry.write_text(geometry.read_text() + "\n# edited\n")
+        edited = Path(launch_module._static_points_file(str(geometry), 0.015, kernel_cells=True))
+        assert edited != first and calls, "an edited geometry is a new file"
+        edited.unlink()
+    finally:
+        first.unlink(missing_ok=True)
+
+
 def test_the_kernels_cells_file_names_exactly_the_cells_the_bridge_marks(
     launch_module: Any, tmp_path: Path
 ) -> None:
@@ -228,3 +262,13 @@ def test_the_kernels_cells_file_names_exactly_the_cells_the_bridge_marks(
     finally:
         bridge.unlink(missing_ok=True)
         cells.unlink(missing_ok=True)
+
+
+def test_the_cache_lives_in_a_directory_only_the_user_can_write(
+    launch_module: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A predictable name in shared /tmp let another local user plant the geometry."""
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    out = Path(launch_module._static_points_file(str(_cell_geometry(tmp_path)), 0.015))
+    assert out.parent == tmp_path / "cache" / "static_geometry"
+    assert out.parent.stat().st_mode & 0o777 == 0o700

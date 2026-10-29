@@ -3320,12 +3320,16 @@ class IsaacManifestScene(IsaacSceneBase):
         ``collider0``/``collider1`` (prim paths), ``separation`` (m, negative =
         penetration), ``impulse`` and ``position`` (``(x, y, z)``). Covers only the
         last physics step: a contact made and broken inside a control step's earlier
-        substeps is not reported.
+        substeps is not reported. Only contacts with an end under the robot prim are
+        expanded: every caller reads robot contacts, and expanding the world-world ones
+        (objects resting on the table) cost most of a ``frames="none"`` step.
         """
         from omni.physx import get_physx_simulation_interface
         from pxr import PhysicsSchemaTools
 
         headers, data = get_physx_simulation_interface().get_contact_report()[:2]
+        root = self._robot_prim.rstrip("/")
+        under = root + "/"
 
         def path(i: int) -> str:
             return str(PhysicsSchemaTools.intToSdfPath(i))
@@ -3336,6 +3340,8 @@ class IsaacManifestScene(IsaacSceneBase):
         points = []
         for h in headers:
             ends = (path(h.actor0), path(h.actor1), path(h.collider0), path(h.collider1))
+            if not any(e == root or e.startswith(under) for e in ends):
+                continue
             for d in data[h.contact_data_offset : h.contact_data_offset + h.num_contact_data]:
                 points.append(
                     {
@@ -3470,13 +3476,12 @@ class IsaacManifestScene(IsaacSceneBase):
             "robot_position": [float(v) for v in self._robot.get_world_pose()[0]]
         }
         if self._object_prims:
+            poses = {name: prim.get_world_pose() for name, prim in self._object_prims.items()}
             info["object_positions"] = {
-                name: [float(v) for v in prim.get_world_pose()[0]]
-                for name, prim in self._object_prims.items()
+                name: [float(v) for v in pose[0]] for name, pose in poses.items()
             }
             info["object_orientations_wxyz"] = {
-                name: [float(v) for v in prim.get_world_pose()[1]]
-                for name, prim in self._object_prims.items()
+                name: [float(v) for v in pose[1]] for name, pose in poses.items()
             }
         if self._placement_success is not None:
             info["placement_grade"] = self._placement_grade

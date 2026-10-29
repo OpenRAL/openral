@@ -117,6 +117,11 @@ class TestDiffusionPushTIOContract:
             assert cfg.output_features["action"].shape == (2,)
             assert cfg.n_action_steps == 8
             assert cfg.horizon == 16
+            # Config, weights and norm stats all come from one resolved
+            # snapshot; without the stats PushT actions stay in [-1, 1].
+            assert policy._action_min is not None
+            assert policy._action_max is not None
+            assert policy._state_min is not None
         finally:
             policy.close()
 

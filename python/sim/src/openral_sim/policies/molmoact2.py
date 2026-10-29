@@ -357,7 +357,7 @@ class _MolmoAct2Adapter:
     # gripper) so the chunk is trimmed to what the env's actuators accept.
     _action_dim: int | None = None
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
     # Wrap forward in ``torch.amp.autocast(device_type, dtype)`` when set — the
     # flow-matching expert materialises some intermediates in fp32 even with
     # bf16 / nf4 params, so autocast keeps mixed-precision matmuls valid.
@@ -365,6 +365,10 @@ class _MolmoAct2Adapter:
     _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        # Stored back: replayed steps share one tiled array until the next inference.
+        self._last_input_frame = materialize_input_frame(self._last_input_frame)
         return self._last_input_frame
 
     def reset(self) -> None:
@@ -459,8 +463,6 @@ class _MolmoAct2Adapter:
         ``[agentview_rgb, wrist_rgb]``); ``_camera_keys`` is already in the
         checkpoint's order (``_checkpoint_camera_order`` over the manifest aliases).
         """
-        from openral_sim.policies._video_capture import tile_input_frames
-
         raw = observation.get("images", {})
         images: list[NDArray[np.uint8]] = []
         preview_frames: list[NDArray[np.uint8]] = []
@@ -471,7 +473,7 @@ class _MolmoAct2Adapter:
             frame = self._orient(np.asarray(img))
             preview_frames.append(np.ascontiguousarray(frame, dtype=np.uint8))
             images.append(np.ascontiguousarray(frame, dtype=np.uint8))
-        self._last_input_frame = tile_input_frames(preview_frames)
+        self._last_input_frame = preview_frames
         if not images:
             raise ROSConfigError(
                 "MolmoAct2 adapter got no camera frames; expected observation "

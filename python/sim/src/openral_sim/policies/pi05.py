@@ -35,6 +35,7 @@ from openral_rskill._vla_core import (
     apply_chunk_replay,
     build_chunk_executor,
     call_make_processors_cached_first,
+    image_to_chw_tensor,
     relative_rtc_prefix_fn,
     release_torch_modules,
     resolve_camera_keys,
@@ -113,7 +114,7 @@ class _PI05Adapter:
     # robosuite's `robot0_agentview_left_image` -> `agentview` (and
     # `robot0_eye_in_hand_image` -> `wrist`).
     _camera_aliases: dict[str, str] = field(default_factory=dict)
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
     # Dtype to cast float inputs to before forward; None leaves the
     # preprocessor's dtype. Used by nf4 so PaliGemma's bf16 Linear
     # weights match the activation dtype.
@@ -136,6 +137,10 @@ class _PI05Adapter:
     _last_state: NDArray[np.float32] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        # Stored back: replayed steps share one tiled array until the next inference.
+        self._last_input_frame = materialize_input_frame(self._last_input_frame)
         return self._last_input_frame
 
     def reset(self) -> None:
@@ -262,7 +267,7 @@ class _PI05Adapter:
         images = observation.get("images", {})
         # Slot -> checkpoint view, from the manifest (LIBERO: camera1 -> image).
         cam_alias = self._camera_aliases
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         # Record a stitched preview of every camera handed to the policy so
         # the debug video shows the real multi-camera input, not only the last
@@ -281,14 +286,14 @@ class _PI05Adapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
+            t = image_to_chw_tensor(img, torch=torch, device=self.device)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
             batch_key = self._image_input_template.format(cam=cam_alias.get(cam_key, cam_key))
             batch[batch_key] = t
 
-        self._last_input_frame = tile_input_frames(preview_frames)
+        self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is not None:

@@ -61,6 +61,7 @@ from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     build_chunk_executor,
     checkpoint_image_keys,
+    image_to_chw_tensor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -246,9 +247,13 @@ class _GrootAdapter:
     # Declared proprio width (state_contract.dim): 8 = LIBERO, 6 = SO-101.
     _state_dim: int = _GR00T_LIBERO_STATE_DIM
     _chunk_executor: Any = None
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        # Stored back: replayed steps share one tiled array until the next inference.
+        self._last_input_frame = materialize_input_frame(self._last_input_frame)
         return self._last_input_frame
 
     def reset(self) -> None:
@@ -309,7 +314,7 @@ class _GrootAdapter:
         batch: dict[str, Any] = {"task": instruction or observation.get("task", "")}
 
         images = observation.get("images", {})
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         preview_frames: list[NDArray[np.uint8]] = []
         for cam_key, modality_key in zip(self._camera_keys, self._image_input_keys, strict=True):
@@ -319,13 +324,13 @@ class _GrootAdapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
+            t = image_to_chw_tensor(img, torch=torch, device=self.device)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             if self._flip_vertical:
                 t = torch.flip(t, dims=[1])
             batch[modality_key] = t.to(self.device)
-        self._last_input_frame = tile_input_frames(preview_frames)
+        self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is None:

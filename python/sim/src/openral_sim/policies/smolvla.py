@@ -17,6 +17,7 @@ lazily so installing ``openral-sim`` never pulls them transitively.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -28,6 +29,7 @@ from openral_rskill._vla_core import (
     apply_chunk_replay,
     build_chunk_executor,
     call_make_processors_cached_first,
+    image_to_chw_tensor,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
     relative_rtc_prefix_fn,
@@ -209,7 +211,7 @@ class _SmolVLAAdapter:
     _image_input_template: str = "observation.images.{cam}"
     # Last image fed to the policy, post-flip — populated by step() for the
     # eval-layer video helper. Not part of the public API.
-    _last_input_frame: NDArray[np.uint8] | None = None
+    _last_input_frame: NDArray[np.uint8] | list[NDArray[np.uint8]] | None = None
     # Zero-copy NVMM vision leg — lazily built on the first
     # observation carrying image_handles; shares the TRT runtime's cached
     # vision engine.
@@ -217,6 +219,10 @@ class _SmolVLAAdapter:
     _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
+        from openral_sim.policies._video_capture import materialize_input_frame
+
+        # Stored back: replayed steps share one tiled array until the next inference.
+        self._last_input_frame = materialize_input_frame(self._last_input_frame)
         return self._last_input_frame
 
     def reset(self) -> None:
@@ -410,7 +416,7 @@ class _SmolVLAAdapter:
         ``last_input_frame`` every env step — without this it would show
         one frozen frame per chunk.
         """
-        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+        from openral_sim.policies._video_capture import to_input_frame
 
         images = observation.get("images", {})
         preview_frames: list[NDArray[np.uint8]] = []
@@ -422,7 +428,7 @@ class _SmolVLAAdapter:
             if preview is not None:
                 preview_frames.append(preview)
         if preview_frames:
-            self._last_input_frame = tile_input_frames(preview_frames)
+            self._last_input_frame = preview_frames
 
     def _build_batch(
         self, observation: Observation, instruction: str, *, gpu_frames: bool = False
@@ -458,7 +464,7 @@ class _SmolVLAAdapter:
             images = observation.get("images", {})
             # Preserve the original LIBERO key naming so the stored preprocessor
             # rename step (image → camera1, image2 → camera2) lines up.
-            from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+            from openral_sim.policies._video_capture import to_input_frame
 
             # Record every camera the policy consumed so the debug video does not
             # collapse multi-camera input to only the last stream in the loop.
@@ -470,14 +476,14 @@ class _SmolVLAAdapter:
                 preview = to_input_frame(img, flip_180=self._flip_images_180)
                 if preview is not None:
                     preview_frames.append(preview)
-                t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
+                t = image_to_chw_tensor(img, torch=torch, device=self.device)
                 if self._flip_images_180:
                     t = torch.flip(t, dims=[1, 2])
                 t = t.unsqueeze(0).to(self.device)
                 batch[
                     self._image_input_template.format(cam=self._cam_alias.get(cam_key, cam_key))
                 ] = t
-            self._last_input_frame = tile_input_frames(preview_frames)
+            self._last_input_frame = preview_frames
 
         state = observation.get("state")
         if state is not None:
@@ -565,6 +571,37 @@ def _resolve_smolvla_processors(
         )
 
 
+# Every non-weight file of a backbone repo: config, tokenizer, processor, chat template.
+_BACKBONE_WEIGHT_PATTERNS = ("*.md", "*.safetensors", "*.bin", "*.pt", "*.pth", "*.onnx", "*.gguf")
+
+
+def _config_with_local_backbone(repo_id: str, revision: str | None) -> tuple[Any, str]:
+    """The checkpoint's ``SmolVLAConfig``, its backbone resolved to a local snapshot.
+
+    ``SmolVLMWithExpert`` builds the backbone from ``config.vlm_model_name`` (a Hub
+    id) with ``AutoConfig`` + ``AutoProcessor.from_pretrained``, which resolve
+    every config / tokenizer / template file over the network one at a time:
+    42 sequential Hub requests, ~3.4 s per load on a warm cache (SO-101
+    eraser-place, RTX 5070 Laptop host). One ``local_snapshot_dir`` fetch of the
+    backbone's non-weight files gives the same files (same revision the per-file
+    calls resolve; processor, tokenizer and chat template compared equal) in
+    ~0.6 s. Skipped when the checkpoint loads the backbone's own weights
+    (``load_vlm_weights=True``), where transformers needs the weight files too.
+    Returns ``(config, backbone_id)``: the caller puts the Hub id back after
+    construction.
+    """
+    from lerobot.configs.policies import PreTrainedConfig
+    from openral_rskill import local_snapshot_dir
+
+    config = PreTrainedConfig.from_pretrained(repo_id, revision=revision)
+    backbone = str(config.vlm_model_name)
+    if config.load_vlm_weights or Path(backbone).is_dir():
+        return config, backbone
+    config.vlm_model_name = local_snapshot_dir(backbone, ignore_patterns=_BACKBONE_WEIGHT_PATTERNS)
+    _log.info("smolvla.backbone_snapshot", backbone=backbone, path=config.vlm_model_name)
+    return config, backbone
+
+
 @POLICIES.register(
     "smolvla",
     install_groups=("sim",),
@@ -637,9 +674,12 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
                 suppress_hf_weight_init,
             )
 
+            config, backbone_id = _config_with_local_backbone(repo_id, revision)
             with suppress_hf_weight_init(), stage_safetensors_on_host():
-                policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
+                policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision, config=config)
             assert_all_parameters_finite(policy, repo_id=repo_id)
+            # Keep the Hub id in the live config (it is what a saved config records).
+            policy.config.vlm_model_name = backbone_id
         with _smolvla_phase("to_device", device=device):
             policy = policy.to(device)
     finally:
