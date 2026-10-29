@@ -1,0 +1,1419 @@
+{
+  "$defs": {
+    "AttachedCollisionPrimitive": {
+      "additionalProperties": false,
+      "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n    geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``\n        (the tracked or single provisional object's own fitted geometry), ``grown`` (cells\n        observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of\n        candidates that may not be the held object; the default, and what a reader treats an\n        unknown code as). Only measured and grown primitives can explain the payload's own\n        cells to the exemption provider's payload-own rule\n        (``contact_exemptions.payload_own_cells_enabled``, sim only; ADR-0121).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True\n    >>> p.geometry_source\n    'fallback'",
+      "properties": {
+        "shape": {
+          "discriminator": {
+            "mapping": {
+              "box": "#/$defs/BoxShape",
+              "capsule": "#/$defs/CapsuleShape",
+              "sphere": "#/$defs/SphereShape"
+            },
+            "propertyName": "shape"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CapsuleShape"
+            },
+            {
+              "$ref": "#/$defs/SphereShape"
+            },
+            {
+              "$ref": "#/$defs/BoxShape"
+            }
+          ],
+          "title": "Shape"
+        },
+        "pose_in_object": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "tight_geometry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TightCollisionGeometry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "geometry_source": {
+          "default": "fallback",
+          "enum": [
+            "fallback",
+            "measured",
+            "grown"
+          ],
+          "title": "Geometry Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "shape",
+        "pose_in_object"
+      ],
+      "title": "AttachedCollisionPrimitive",
+      "type": "object"
+    },
+    "BoxShape": {
+      "additionalProperties": false,
+      "description": "Oriented box (OBB) collision primitive \u2014 a rectangular convex block.\n\nAn axis-aligned box in the primitive's local frame (placed and oriented by\nthe owning frame's ``origin_xyz_rpy`` / ``pose``), spanning\n``[-half_extents_m[k], +half_extents_m[k]]`` along each local axis ``k``.\n\nA box fits a *blocky* link (a near-cubic housing, e.g. the SO-ARM100/101\n``base``) far tighter than a capsule: a capsule's circular cross-section\nmust bulge past the block's flat faces, so it over-reports clearance at\nposes where the flat faces are what actually face a neighbour. That bulge\nis what makes the manifest capsule model false-E-stop the SO-101 at its\nhome pose (base\u2194lower_arm / base\u2194wrist reported penetrating while the true\nmesh clearance is +0.16 m / +0.24 m). See issue #84.\n\nAttributes:\n    shape: Discriminator (always ``\"box\"``).\n    half_extents_m: Half-sizes ``(hx, hy, hz)`` along the local x/y/z axes\n        in metres (the full box is ``2*hx x 2*hy x 2*hz``).\n\nExample:\n    >>> BoxShape(half_extents_m=(0.055, 0.048, 0.036)).shape\n    'box'",
+      "properties": {
+        "shape": {
+          "const": "box",
+          "default": "box",
+          "title": "Shape",
+          "type": "string"
+        },
+        "half_extents_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Half Extents M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "half_extents_m"
+      ],
+      "title": "BoxShape",
+      "type": "object"
+    },
+    "CapsuleShape": {
+      "additionalProperties": false,
+      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (``LinkCollisionGeometry.origin_xyz_rpy``\nfor a link, ``AttachedCollisionPrimitive.pose_in_object`` for a payload).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+      "properties": {
+        "shape": {
+          "const": "capsule",
+          "default": "capsule",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "length_m": {
+          "minimum": 0.0,
+          "title": "Length M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m",
+        "length_m"
+      ],
+      "title": "CapsuleShape",
+      "type": "object"
+    },
+    "CollisionEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_COLLISION`` \u2014 a proposed motion would collide.\n\nAttributes:\n    kind: Discriminator (always ``\"collision\"``).\n    collision_kind: ``\"self\"`` (link vs link) or ``\"world\"`` (link vs\n        obstacle).\n    link_a: Robot link whose collision volume tripped the check.\n    link_b_or_object: The other robot link (self-collision) or the world\n        object / occupancy region (world-collision).\n    horizon_step: Chunk step (horizon index) where the collision was first\n        detected, or ``REACTIVE_HORIZON_STEP`` (``-1``) when the hit is a\n        REACTIVE one \u2014 the robot's *measured* configuration already\n        collides, so no prediction step is involved. The C++ safety kernel\n        emits ``-1`` for that check (``check_config(q_meas, -1)`` in\n        ``cpp/openral_safety_kernel/src/lifecycle_kernel.cpp``); it is the\n        common case for Cartesian control modes, whose reactive\n        measured-state check is the guaranteed floor.\n    min_distance_m: Signed minimum distance at detection, in metres\n        (negative means interpenetration).\n    joint_positions_rad: The configuration the kernel ran forward\n        kinematics on for ``horizon_step`` \u2014 the exact vector handed to\n        ``forward_kinematics``, in the envelope's dof order, with mobile-base\n        dofs zeroed (the kernel checks the arm in ``base_link``). This is\n        what makes a stop adjudicatable: a *predicted* step's configuration\n        exists in no other artifact, because it depends on the kernel's own\n        damped-least-squares Jacobian, its lambda and its seed dt \u2014 so\n        replaying such a stop against the measured joints reads geometry the\n        kernel never checked. Empty only on a record emitted before the field\n        existed: a kernel that reports a collision has a collision model by\n        construction, and its FK buffer is always ``n_dof`` long.\n    joint_names: Optional joint names in the exact same order as\n        ``joint_positions_rad``. Missing on older records or when the\n        producer cannot establish a same-length name vector.\n    sweep_min_distance_m: Minimum distance over all checked pairs, including\n        exempted pairs. It does not identify the pair named by the link fields.\n    workspace_denial_reason: Readable reason the workspace rule did not\n        tolerate the reported pair, mapped from the kernel's existing code.\n    workspace_contact_active: Whether a live workspace contact region was\n        active during the check, when reported by the producer.\n    grasp_exemption_active: Whether a live grasp exemption was active during\n        the check, when reported by the producer.\n    grasp_exemption_source: Which grasp exemption the check ran under (ADR-0121):\n        ``region`` (ADR-0115), ``tracked`` (in-tree K2), ``provider`` (an exemption\n        provider replacing the region) or ``none``; ``None`` from a producer that\n        predates it. Backward-compatible addition.\n    grasp_exemption_provider: The provider's name when ``grasp_exemption_source`` is\n        ``provider``. Backward-compatible addition.\n    depth_is_box_bound: Whether ``min_distance_m`` reports a bounding-box\n        lower bound instead of a tight-geometry distance.\n    payload_evidence_kind: Attached-payload source kind from the accepted\n        attachment wire, only when the reported pair is a carried payload.\n    payload_evidence_ref: Producer reference paired with\n        ``payload_evidence_kind``, when present and bounded.\n    world_grid_origin_m: Base-frame position of voxel ``(0,0,0)``'s minimum\n        corner in the occupancy grid **this check ran against**, when the\n        other party is a world voxel; ``None`` otherwise and on any\n        producer that predates the field. The kernel names its cell only\n        as ``voxel_<n>``, an index into a grid it does not republish, so a\n        consumer has to pair that index with a grid of its own \u2014 and the\n        published window is snapped to the source lattice, so a base drift\n        across one cell boundary shifts the whole window and the same index\n        names a different cell. Matching on a stamp cannot separate two\n        grids inside one clock tick (`/clock` quantises every stamp in the\n        graph to the tick); matching on this origin is exact.",
+      "properties": {
+        "kind": {
+          "const": "collision",
+          "default": "collision",
+          "title": "Kind",
+          "type": "string"
+        },
+        "collision_kind": {
+          "enum": [
+            "self",
+            "world"
+          ],
+          "title": "Collision Kind",
+          "type": "string"
+        },
+        "link_a": {
+          "title": "Link A",
+          "type": "string"
+        },
+        "link_b_or_object": {
+          "title": "Link B Or Object",
+          "type": "string"
+        },
+        "horizon_step": {
+          "minimum": -1,
+          "title": "Horizon Step",
+          "type": "integer"
+        },
+        "min_distance_m": {
+          "title": "Min Distance M",
+          "type": "number"
+        },
+        "joint_positions_rad": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Joint Positions Rad",
+          "type": "array"
+        },
+        "joint_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint Names"
+        },
+        "sweep_min_distance_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sweep Min Distance M"
+        },
+        "workspace_denial_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "not_applicable_or_exempt",
+                "not_hand_link",
+                "hand_speed_over_limit_or_unknown",
+                "hand_lead_over_limit_or_unknown",
+                "cell_center_outside_workspace",
+                "cell_unexplained"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Denial Reason"
+        },
+        "workspace_contact_active": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Contact Active"
+        },
+        "grasp_exemption_active": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grasp Exemption Active"
+        },
+        "grasp_exemption_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "region",
+                "tracked",
+                "provider",
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grasp Exemption Source"
+        },
+        "grasp_exemption_provider": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grasp Exemption Provider"
+        },
+        "depth_is_box_bound": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Is Box Bound"
+        },
+        "payload_evidence_kind": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payload Evidence Kind"
+        },
+        "payload_evidence_ref": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payload Evidence Ref"
+        },
+        "world_grid_origin_m": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "World Grid Origin M"
+        }
+      },
+      "required": [
+        "collision_kind",
+        "link_a",
+        "link_b_or_object",
+        "horizon_step",
+        "min_distance_m"
+      ],
+      "title": "CollisionEvidence",
+      "type": "object"
+    },
+    "ControllerEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_CONTROLLER`` \u2014 a ros2_control controller faulted.\n\nAttributes:\n    kind: Discriminator (always ``\"controller\"``).\n    controller_name: Failing controller (e.g. ``\"joint_trajectory_controller\"``).\n    state: Reported controller state (e.g. ``\"inactive\"``, ``\"error\"``).\n    detail: Free-form detail from the controller manager.",
+      "properties": {
+        "kind": {
+          "const": "controller",
+          "default": "controller",
+          "title": "Kind",
+          "type": "string"
+        },
+        "controller_name": {
+          "title": "Controller Name",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "controller_name",
+        "state"
+      ],
+      "title": "ControllerEvidence",
+      "type": "object"
+    },
+    "CriticEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_CRITIC`` \u2014 a critic flagged an action below threshold.\n\nAttributes:\n    kind: Discriminator (always ``\"critic\"``).\n    critic_id: Identifier of the critic that fired (model id or hand-rolled).\n    score: Critic output in the critic's native range.\n    threshold: Configured pass threshold.",
+      "properties": {
+        "kind": {
+          "const": "critic",
+          "default": "critic",
+          "title": "Kind",
+          "type": "string"
+        },
+        "critic_id": {
+          "title": "Critic Id",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "threshold": {
+          "title": "Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "critic_id",
+        "score",
+        "threshold"
+      ],
+      "title": "CriticEvidence",
+      "type": "object"
+    },
+    "ForceEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_FORCE`` \u2014 measured force exceeded a safety limit.\n\nAttributes:\n    kind: Discriminator (always ``\"force\"``).\n    joint_or_ee: Name of the joint or end-effector that tripped the limit.\n    measured_n: Measured (or estimated) value, in ``unit``.\n    limit_n: Configured ceiling, in ``unit``.\n    unit: ``\"N\"`` for a force, ``\"Nm\"`` for a joint torque \u2014 the safety\n        kernel's external-torque observer reports per-joint N\u00b7m (#373).",
+      "properties": {
+        "kind": {
+          "const": "force",
+          "default": "force",
+          "title": "Kind",
+          "type": "string"
+        },
+        "joint_or_ee": {
+          "title": "Joint Or Ee",
+          "type": "string"
+        },
+        "measured_n": {
+          "title": "Measured N",
+          "type": "number"
+        },
+        "limit_n": {
+          "exclusiveMinimum": 0,
+          "title": "Limit N",
+          "type": "number"
+        },
+        "unit": {
+          "default": "N",
+          "enum": [
+            "N",
+            "Nm"
+          ],
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "joint_or_ee",
+        "measured_n",
+        "limit_n"
+      ],
+      "title": "ForceEvidence",
+      "type": "object"
+    },
+    "GraspOutcomeEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_GRASP_OUTCOME`` \u2014 one hand's close ended without an ATTACH.\n\nIssue #353. The HAL vision attachment bridge publishes it on\n``/openral/failure/hal`` once per close whose command left the close band before the\ngripper trigger confirmed an ATTACH (``outcome=\"miss\"``), and once per hand whose run\nof misses an ATTACH ends (``outcome=\"attach\"``, the recovery): that hand's own ATTACH,\nor another hand attaching the same declared target. A first-try ATTACH that ends no\nrun publishes nothing. It is task evidence for the reasoner, never a\nsafety signal: the robot is safe, the task is not progressing. Nothing in the HAL acts\non it; the reasoner reflects on it (``openral_reasoner.context.reflect_on_grasp_miss``).\n\nAttributes:\n    kind: Discriminator (always ``\"grasp_outcome\"``).\n    outcome: ``\"miss\"`` (the close ended with nothing attached) or ``\"attach\"`` (this\n        hand's run of misses ended: it, or another hand, attached the target).\n    gripper_joint: The gripper joint whose trigger ran the close (manifest name).\n    jaw_link: That joint's child link, the name a ``GraspTargetRef.contact_links``\n        entry uses for this hand.\n    hand_link: The link the trigger measures the pinch on (the attach link).\n    consecutive_misses: This hand's run of misses on one target, this one included for\n        ``\"miss\"``; the run the ATTACH ended for ``\"attach\"``. A miss on a different\n        target (or an undeclared one after a declared one) starts a new run.\n    target_id: The live grasp declaration's ``target_id`` when it named this hand's\n        jaw link; ``\"\"`` when no declaration named it (an undeclared close).\n    region_armed: Whether that declaration carried a producer-measured region when\n        the close ended.\n    short_of_command: The trigger's last ``|q - closed| - |command - closed|``, in\n        the gripper joint's own units (how far the jaw stopped short of the command;\n        negative = past it); ``None`` before any classified sample.\n    settle_spread: The trigger's last settle-window position spread, in the joint's\n        units; ``None`` before any classified sample.\n\nExample:\n    >>> ev = GraspOutcomeEvidence(\n    ...     outcome=\"miss\",\n    ...     gripper_joint=\"left_gripper\",\n    ...     jaw_link=\"openarm_left_finger_pair\",\n    ...     hand_link=\"openarm_left_link7\",\n    ...     consecutive_misses=1,\n    ...     target_id=\"cell:pick_box\",\n    ...     short_of_command=0.031,\n    ... )\n    >>> ev.kind, ev.region_armed\n    ('grasp_outcome', False)",
+      "properties": {
+        "kind": {
+          "const": "grasp_outcome",
+          "default": "grasp_outcome",
+          "title": "Kind",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "miss",
+            "attach"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "gripper_joint": {
+          "title": "Gripper Joint",
+          "type": "string"
+        },
+        "jaw_link": {
+          "title": "Jaw Link",
+          "type": "string"
+        },
+        "hand_link": {
+          "title": "Hand Link",
+          "type": "string"
+        },
+        "consecutive_misses": {
+          "minimum": 1,
+          "title": "Consecutive Misses",
+          "type": "integer"
+        },
+        "target_id": {
+          "default": "",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "region_armed": {
+          "default": false,
+          "title": "Region Armed",
+          "type": "boolean"
+        },
+        "short_of_command": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Short Of Command"
+        },
+        "settle_spread": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Settle Spread"
+        }
+      },
+      "required": [
+        "outcome",
+        "gripper_joint",
+        "jaw_link",
+        "hand_link",
+        "consecutive_misses"
+      ],
+      "title": "GraspOutcomeEvidence",
+      "type": "object"
+    },
+    "HumanEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_HUMAN`` \u2014 a human triggered an intervention.\n\nAttributes:\n    kind: Discriminator (always ``\"human\"``).\n    actor: Identifier of the operator (e.g. ``\"slack:alice\"``, ``\"gui\"``).\n    reason: Free-form reason given by the actor.",
+      "properties": {
+        "kind": {
+          "const": "human",
+          "default": "human",
+          "title": "Kind",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor"
+      ],
+      "title": "HumanEvidence",
+      "type": "object"
+    },
+    "ObjectQueryEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_OBJECT_QUERY`` \u2014 a standing object query could not be resolved.\n\nIssue #418 Addendum G. The World State tracker publishes it on\n``/openral/failure/world_state`` when a query stays ``UNRESOLVED`` for its search\nstart or its search budget is spent. The reasoner uses the bounded dispatch-attempt\nbudget; exhaustion leaves the active task stopped without a human handoff. The typed\nfailure is ``ROSObjectNotInMemory`` (``to_exception``).\n\nAttributes:\n    kind: Discriminator (always ``\"object_query\"``).\n    escalation: ``\"unresolved\"`` or ``\"exhausted\"``.\n    goal_id: Tracker goal (``\"<grasp|place>:<target_id>@<stamp_ns>\"``), suffixed\n        with ``#<invocation_id>`` when received through the ExecuteRskill action.\n    query_id: The query's key within the goal.\n    label: The query's open-vocabulary label.\n    role: What the object is to the task.\n    waited_s: Source seconds the current search has run.\n    attempts: Detection requests the tracker spent on the query in this goal.\n    reason: Last geometry, workspace, or search failure reason.\n    invocation_id: ExecuteRskill action goal UUID that owns the declaration.\n    workspace: Declared grasp workspace, when present.\n    observations: Last bounded observation attempts with their refusal reasons.\n    last_seen: The last lost match's box, a search prior only (never kernel\n        geometry); ``None`` if never seen.\n\nExample:\n    >>> ev = ObjectQueryEvidence(\n    ...     escalation=\"exhausted\",\n    ...     goal_id=\"grasp:obj:orange@1\",\n    ...     query_id=\"0\",\n    ...     label=\"orange\",\n    ...     role=ObjectRole.TARGET,\n    ...     waited_s=60.0,\n    ...     attempts=9,\n    ... )\n    >>> type(ev.to_exception()).__name__\n    'ROSObjectNotInMemory'",
+      "properties": {
+        "kind": {
+          "const": "object_query",
+          "default": "object_query",
+          "title": "Kind",
+          "type": "string"
+        },
+        "escalation": {
+          "enum": [
+            "unresolved",
+            "exhausted"
+          ],
+          "title": "Escalation",
+          "type": "string"
+        },
+        "goal_id": {
+          "minLength": 1,
+          "title": "Goal Id",
+          "type": "string"
+        },
+        "query_id": {
+          "title": "Query Id",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ObjectRole"
+        },
+        "waited_s": {
+          "minimum": 0.0,
+          "title": "Waited S",
+          "type": "number"
+        },
+        "attempts": {
+          "minimum": 0,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "reason": {
+          "default": "object_not_found",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "invocation_id": {
+          "default": "",
+          "pattern": "^(?:[0-9a-f]{32})?$",
+          "title": "Invocation Id",
+          "type": "string"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observations": {
+          "items": {
+            "$ref": "#/$defs/ObjectQueryObservation"
+          },
+          "maxItems": 8,
+          "title": "Observations",
+          "type": "array"
+        },
+        "last_seen": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "escalation",
+        "goal_id",
+        "query_id",
+        "label",
+        "role",
+        "waited_s",
+        "attempts"
+      ],
+      "title": "ObjectQueryEvidence",
+      "type": "object"
+    },
+    "ObjectQueryObservation": {
+      "additionalProperties": false,
+      "description": "One refused observation attempt behind an object-query failure.\n\nAttributes:\n    camera: Camera that produced the observation.\n    stamp_ns: Source-clock stamp of the observation.\n    reason: Bounded tracker refusal code.",
+      "properties": {
+        "camera": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Camera",
+          "type": "string"
+        },
+        "stamp_ns": {
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        },
+        "reason": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "camera",
+        "stamp_ns",
+        "reason"
+      ],
+      "title": "ObjectQueryObservation",
+      "type": "object"
+    },
+    "ObjectRole": {
+      "description": "What a prompt-named object is to the task (issue #418).\n\n``CONTEXT`` covers neighbours and supports: tracked, never a target.",
+      "enum": [
+        "target",
+        "destination",
+        "context"
+      ],
+      "title": "ObjectRole",
+      "type": "string"
+    },
+    "PerceptionStaleEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_PERCEPTION`` \u2014 a sensor frame went stale.\n\nAttributes:\n    kind: Discriminator (always ``\"perception\"``).\n    sensor_id: ``SensorSpec.name`` of the stale sensor, or the topic of a stale\n        safety-kernel input (``/openral/world_voxels``,\n        ``/openral/world_state_fast``, ``/joint_states``).\n    staleness_ms: Observed age of the last frame, in milliseconds (for an input\n        never received, the kernel reports the time since its activation).\n    threshold_ms: Staleness threshold that was crossed, in milliseconds.",
+      "properties": {
+        "kind": {
+          "const": "perception",
+          "default": "perception",
+          "title": "Kind",
+          "type": "string"
+        },
+        "sensor_id": {
+          "title": "Sensor Id",
+          "type": "string"
+        },
+        "staleness_ms": {
+          "minimum": 0,
+          "title": "Staleness Ms",
+          "type": "number"
+        },
+        "threshold_ms": {
+          "exclusiveMinimum": 0,
+          "title": "Threshold Ms",
+          "type": "number"
+        }
+      },
+      "required": [
+        "sensor_id",
+        "staleness_ms",
+        "threshold_ms"
+      ],
+      "title": "PerceptionStaleEvidence",
+      "type": "object"
+    },
+    "PlaceRegion": {
+      "additionalProperties": false,
+      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware measures the support\nslab directly under the carried payload from the live voxel map\n(``openral_hal._place_target_leg``, default off, drafted ADR amendments\npending). The kernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+      "properties": {
+        "frame_id": {
+          "minLength": 1,
+          "title": "Frame Id",
+          "type": "string"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "half_extents": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Half Extents",
+          "type": "array"
+        },
+        "evidence_ref": {
+          "default": "",
+          "title": "Evidence Ref",
+          "type": "string"
+        },
+        "stamp_ns": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        },
+        "geometry": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AttachedCollisionPrimitive"
+          },
+          "title": "Geometry",
+          "type": "array"
+        }
+      },
+      "required": [
+        "frame_id",
+        "pose",
+        "half_extents"
+      ],
+      "title": "PlaceRegion",
+      "type": "object"
+    },
+    "Pose6D": {
+      "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+      "properties": {
+        "xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "xyz",
+        "quat_xyzw",
+        "frame_id"
+      ],
+      "title": "Pose6D",
+      "type": "object"
+    },
+    "ReasonerTimeoutEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_REASONER_TIMEOUT`` \u2014 the LLM call missed its deadline.\n\nAttributes:\n    kind: Discriminator (always ``\"reasoner_timeout\"``).\n    model: Model identifier (e.g. ``\"claude-opus-4-7\"``).\n    deadline_s: Configured deadline in seconds.\n    elapsed_s: Actual elapsed wall-clock time in seconds.",
+      "properties": {
+        "kind": {
+          "const": "reasoner_timeout",
+          "default": "reasoner_timeout",
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "deadline_s": {
+          "exclusiveMinimum": 0,
+          "title": "Deadline S",
+          "type": "number"
+        },
+        "elapsed_s": {
+          "minimum": 0,
+          "title": "Elapsed S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "model",
+        "deadline_s",
+        "elapsed_s"
+      ],
+      "title": "ReasonerTimeoutEvidence",
+      "type": "object"
+    },
+    "SelfVerifyEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_SELFVERIFY`` \u2014 a self-check failed.\n\nAttributes:\n    kind: Discriminator (always ``\"selfverify\"``).\n    check: Short check identifier (e.g. ``\"action_chunk.shape\"``).\n    expected: Expected value as a string.\n    observed: Observed value as a string.",
+      "properties": {
+        "kind": {
+          "const": "selfverify",
+          "default": "selfverify",
+          "title": "Kind",
+          "type": "string"
+        },
+        "check": {
+          "title": "Check",
+          "type": "string"
+        },
+        "expected": {
+          "title": "Expected",
+          "type": "string"
+        },
+        "observed": {
+          "title": "Observed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "check",
+        "expected",
+        "observed"
+      ],
+      "title": "SelfVerifyEvidence",
+      "type": "object"
+    },
+    "SphereShape": {
+      "additionalProperties": false,
+      "description": "Sphere collision primitive \u2014 the simplest convex link/obstacle volume.\n\nAttributes:\n    shape: Discriminator (always ``\"sphere\"``).\n    radius_m: Sphere radius in metres.\n\nExample:\n    >>> SphereShape(radius_m=0.05).shape\n    'sphere'",
+      "properties": {
+        "shape": {
+          "const": "sphere",
+          "default": "sphere",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m"
+      ],
+      "title": "SphereShape",
+      "type": "object"
+    },
+    "SuppressedSummaryEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_SUPPRESSED_SUMMARY`` \u2014 rolling rate-limit roll-up.\n\nEmitted at ~1 Hz by ``openral_observability.FailureBusPublisher``\nwhen one or more ``(kind, severity)`` buckets dropped events during\nthe past window.\n\nAttributes:\n    kind: Discriminator (always ``\"suppressed_summary\"``).\n    window_s: Length of the summarized window, in seconds.\n    kinds: Parallel array of suppressed ``KIND_*`` values.\n    severities: Parallel array of suppressed ``SEVERITY_*`` values.\n    counts: Parallel array of dropped-event counts per bucket.",
+      "properties": {
+        "kind": {
+          "const": "suppressed_summary",
+          "default": "suppressed_summary",
+          "title": "Kind",
+          "type": "string"
+        },
+        "window_s": {
+          "exclusiveMinimum": 0,
+          "title": "Window S",
+          "type": "number"
+        },
+        "kinds": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Kinds",
+          "type": "array"
+        },
+        "severities": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Severities",
+          "type": "array"
+        },
+        "counts": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Counts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "window_s"
+      ],
+      "title": "SuppressedSummaryEvidence",
+      "type": "object"
+    },
+    "TightCollisionGeometry": {
+      "additionalProperties": false,
+      "description": "Tight convex geometry refining a link's ``BoxShape`` for the kernel's narrow phases.\n\nThe safety kernel's arm-link-vs-world-voxel check runs a **staged** narrow\nphase when a link declares this: a 26-DOP separating-axis bound on every\noccupied cell, then GJK on the link's exact convex hull for the cells the\nDOP cannot clear. Self-collision does the same for a box pair the OBBs\ncannot separate, when *both* links declare a stage-2 hull \u2014 which retired\nthe ``panda_link5``/``panda_link7`` allowed-collision exemption (issue\n#191). Both stages are strict subsets of the box they refine, so the\nbroad-phase window (sized from ``half_extents_m`` alone) does not move.\nExpressed in the box's own local frame (``LinkCollisionGeometry.origin_xyz_rpy``).\n\nContainment is checked here, again by the kernel at ``on_configure``\n(``validate_tight_geometry``), and once more against the real source mesh\nby ``tests/unit/test_collision_tight_geometry.py`` \u2014 **definitional\nrather than fitted**: the slabs are tangent halfspaces ``u\u00b7x <= max over\nthe mesh of u\u00b7x``, the hull is ``conv(vertices)`` of the mesh, no\noptimiser tolerance anywhere.\n\nGenerated by ``tools/generate_tight_geometry.py``; not hand-authored.\n\nAttributes:\n    dop_lo_m: Per-axis lower slab bound along ``DOP_AXES``, 13 entries.\n    dop_hi_m: Per-axis upper slab bound, 13 entries.\n    hull_vertices_m: Exact convex-hull vertices in the box frame, at most\n        ``MAX_TIGHT_HULL_VERTICES`` of them. **Empty means stage 1\n        only** \u2014 the DOP still tightens the check, but no exact test runs.\n        That is the representation a link whose hull is over the ceiling\n        gets, and it is a cost decision, not a safety one: the DOP is a\n        containing solid either way.\n    hull_overhang_m: How far the hull's surface reaches past the real\n        source mesh it was built from, sampled by\n        ``tools/generate_tight_geometry.py`` (issue #221). Containment\n        (``mesh \u2286 hull``) is proved elsewhere; this is the *other*\n        direction, and it is what an offline adjudicator needs to charge a\n        hull-fidelity self-collision stop an admissible gap instead of\n        leaving it unscorable. ``None`` when ``hull_vertices_m`` is empty,\n        or when the hull has no source mesh on disk to measure against \u2014\n        never defaulted to ``0``, since that would silently claim a\n        perfect fit.\n\nExample:\n    >>> t = TightCollisionGeometry(\n    ...     dop_lo_m=(-0.05,) * 13,\n    ...     dop_hi_m=(0.05,) * 13,\n    ... )\n    >>> t.hull_vertices_m\n    ()",
+      "properties": {
+        "dop_lo_m": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Dop Lo M",
+          "type": "array"
+        },
+        "dop_hi_m": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Dop Hi M",
+          "type": "array"
+        },
+        "hull_vertices_m": {
+          "default": [],
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Hull Vertices M",
+          "type": "array"
+        },
+        "hull_overhang_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hull Overhang M"
+        }
+      },
+      "required": [
+        "dop_lo_m",
+        "dop_hi_m"
+      ],
+      "title": "TightCollisionGeometry",
+      "type": "object"
+    },
+    "TimeoutEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_TIMEOUT`` \u2014 an operation missed its deadline.\n\nAttributes:\n    kind: Discriminator (always ``\"timeout\"``).\n    operation: Short name of the operation that timed out (e.g.\n        ``\"skill.step\"``, ``\"hal.read_state\"``, ``\"reasoner.tick\"``).\n    deadline_s: Configured deadline in seconds.\n    elapsed_s: Actual elapsed wall-clock time in seconds.",
+      "properties": {
+        "kind": {
+          "const": "timeout",
+          "default": "timeout",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operation": {
+          "title": "Operation",
+          "type": "string"
+        },
+        "deadline_s": {
+          "exclusiveMinimum": 0,
+          "title": "Deadline S",
+          "type": "number"
+        },
+        "elapsed_s": {
+          "minimum": 0,
+          "title": "Elapsed S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "operation",
+        "deadline_s",
+        "elapsed_s"
+      ],
+      "title": "TimeoutEvidence",
+      "type": "object"
+    },
+    "WamEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_WAM`` \u2014 a world-action-model discrepancy.\n\nAttributes:\n    kind: Discriminator (always ``\"wam\"``).\n    horizon: Rollout horizon at which the discrepancy was measured.\n    discrepancy: Scalar discrepancy in the WAM's native units.\n    wam_id: Identifier of the WAM that fired.",
+      "properties": {
+        "kind": {
+          "const": "wam",
+          "default": "wam",
+          "title": "Kind",
+          "type": "string"
+        },
+        "horizon": {
+          "exclusiveMinimum": 0,
+          "title": "Horizon",
+          "type": "integer"
+        },
+        "discrepancy": {
+          "title": "Discrepancy",
+          "type": "number"
+        },
+        "wam_id": {
+          "title": "Wam Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "horizon",
+        "discrepancy",
+        "wam_id"
+      ],
+      "title": "WamEvidence",
+      "type": "object"
+    },
+    "WorkspaceEvidence": {
+      "additionalProperties": false,
+      "description": "Evidence for ``KIND_WORKSPACE`` \u2014 EE pose left the safety AABB.\n\nAttributes:\n    kind: Discriminator (always ``\"workspace\"``).\n    ee_name: End-effector that violated the box.\n    measured_xyz: Measured position in metres.\n    box_min: Box minimum corner (``x_min, y_min, z_min``).\n    box_max: Box maximum corner (``x_max, y_max, z_max``).",
+      "properties": {
+        "kind": {
+          "const": "workspace",
+          "default": "workspace",
+          "title": "Kind",
+          "type": "string"
+        },
+        "ee_name": {
+          "title": "Ee Name",
+          "type": "string"
+        },
+        "measured_xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Measured Xyz",
+          "type": "array"
+        },
+        "box_min": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Box Min",
+          "type": "array"
+        },
+        "box_max": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Box Max",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ee_name",
+        "measured_xyz",
+        "box_min",
+        "box_max"
+      ],
+      "title": "WorkspaceEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The machine was stopped by a safety function or a person.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_stop\"``).\n    trigger_source: What commanded the stop.\n    drop_reason: ``SafetyStatus.drop_reason`` code (a ``KIND_*`` or ``DROP_*``).\n    detail: Human-readable detail, as on ``SafetyStatus.detail``.\n    evidence: Typed evidence for the stop, when the producer sent it.\n    stop_cmd_ts_ns: When the stop was commanded.\n    halt_ts_ns: When motion was confirmed stopped, when known.\n    latched: Whether the stop latched (needs a reset to clear).\n    rskill_id: The rSkill running at the stop.\n    risk_ref: Hazard-log entry id this stop class maps to, when known.",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "record_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Record Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts_ns": {
+      "minimum": 0,
+      "title": "Ts Ns",
+      "type": "integer"
+    },
+    "clock_source": {
+      "enum": [
+        "ptp",
+        "ntp",
+        "monotonic_unsynced"
+      ],
+      "title": "Clock Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "parent_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Record Id"
+    },
+    "kind": {
+      "const": "safety_stop",
+      "default": "safety_stop",
+      "title": "Kind",
+      "type": "string"
+    },
+    "trigger_source": {
+      "enum": [
+        "kernel",
+        "human",
+        "hardware",
+        "deadman",
+        "watchdog",
+        "supervisor"
+      ],
+      "title": "Trigger Source",
+      "type": "string"
+    },
+    "drop_reason": {
+      "anyOf": [
+        {
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Drop Reason"
+    },
+    "detail": {
+      "default": "",
+      "title": "Detail",
+      "type": "string"
+    },
+    "evidence": {
+      "anyOf": [
+        {
+          "discriminator": {
+            "mapping": {
+              "collision": "#/$defs/CollisionEvidence",
+              "controller": "#/$defs/ControllerEvidence",
+              "critic": "#/$defs/CriticEvidence",
+              "force": "#/$defs/ForceEvidence",
+              "grasp_outcome": "#/$defs/GraspOutcomeEvidence",
+              "human": "#/$defs/HumanEvidence",
+              "object_query": "#/$defs/ObjectQueryEvidence",
+              "perception": "#/$defs/PerceptionStaleEvidence",
+              "reasoner_timeout": "#/$defs/ReasonerTimeoutEvidence",
+              "selfverify": "#/$defs/SelfVerifyEvidence",
+              "suppressed_summary": "#/$defs/SuppressedSummaryEvidence",
+              "timeout": "#/$defs/TimeoutEvidence",
+              "wam": "#/$defs/WamEvidence",
+              "workspace": "#/$defs/WorkspaceEvidence"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TimeoutEvidence"
+            },
+            {
+              "$ref": "#/$defs/ForceEvidence"
+            },
+            {
+              "$ref": "#/$defs/WorkspaceEvidence"
+            },
+            {
+              "$ref": "#/$defs/PerceptionStaleEvidence"
+            },
+            {
+              "$ref": "#/$defs/CriticEvidence"
+            },
+            {
+              "$ref": "#/$defs/ControllerEvidence"
+            },
+            {
+              "$ref": "#/$defs/SelfVerifyEvidence"
+            },
+            {
+              "$ref": "#/$defs/HumanEvidence"
+            },
+            {
+              "$ref": "#/$defs/WamEvidence"
+            },
+            {
+              "$ref": "#/$defs/ReasonerTimeoutEvidence"
+            },
+            {
+              "$ref": "#/$defs/CollisionEvidence"
+            },
+            {
+              "$ref": "#/$defs/ObjectQueryEvidence"
+            },
+            {
+              "$ref": "#/$defs/GraspOutcomeEvidence"
+            },
+            {
+              "$ref": "#/$defs/SuppressedSummaryEvidence"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evidence"
+    },
+    "stop_cmd_ts_ns": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stop Cmd Ts Ns"
+    },
+    "halt_ts_ns": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Halt Ts Ns"
+    },
+    "latched": {
+      "title": "Latched",
+      "type": "boolean"
+    },
+    "rskill_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rskill Id"
+    },
+    "risk_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Risk Ref"
+    }
+  },
+  "required": [
+    "record_id",
+    "seq",
+    "ts_ns",
+    "clock_source",
+    "trigger_source",
+    "latched"
+  ],
+  "title": "SafetyStopRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

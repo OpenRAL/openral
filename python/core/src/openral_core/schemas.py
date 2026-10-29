@@ -16,6 +16,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import Enum, StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import (
     Annotated,
     Any,
@@ -13720,6 +13721,354 @@ Producers serialize via ``evidence.model_dump_json()``.
 The union mirrors the ``KIND_*`` constants on
 ``openral_msgs/msg/FailureTrigger``. Adding a new
 variant requires adding a new ``KIND_*`` constant to the IDL.
+"""
+
+
+# ─── Compliance records ──────────────────────────────────────────
+#
+# The record kinds the compliance recorder writes to the on-robot log and
+# exports as OTLP log records (issue #467, ADR-0125). Retention floors carry
+# the EU Machinery Regulation 2023/1230 Annex III §1.1.9 / §1.2.1(f) duties
+# (5-year intervention and safety-software trace) and the AI Act Art. 19 /
+# 26(6) six-month log minimum. Unit and org identity ride on the OTel resource
+# (``openral.unit.serial``, ``openral.org.id``), not on each record.
+
+
+class RetentionClass(StrEnum):
+    """Retention class of a compliance record; its floor is ``RETENTION_FLOOR_DAYS``.
+
+    A record's class follows from its kind (``ComplianceRecord.retention_class``);
+    callers never set it. Org policy may keep records longer, never shorter.
+    """
+
+    AI_LOG_6M = "ai_log_6m"
+    """AI Act Art. 19(1) / 26(6): logs kept at least six months."""
+    MR_SAFETY_DECISION_1Y = "mr_safety_decision_1y"
+    """Safety-related decision data, one year (product policy, see ADR-0125)."""
+    MR_TRACE_5Y = "mr_trace_5y"
+    """MR Annex III §1.2.1(f): intervention and safety-software trace, five years."""
+    INCIDENT_10Y = "incident_10y"
+    """Incident records feeding technical documentation, ten years."""
+    TELEMETRY_RAW = "telemetry_raw"
+    """Raw telemetry; not a compliance record, no floor."""
+
+
+RETENTION_FLOOR_DAYS: Mapping[RetentionClass, int] = MappingProxyType(
+    {
+        RetentionClass.AI_LOG_6M: 183,
+        RetentionClass.MR_SAFETY_DECISION_1Y: 365,
+        RetentionClass.MR_TRACE_5Y: 1827,  # 5 * 365 + 2 leap days
+        RetentionClass.INCIDENT_10Y: 3653,
+        RetentionClass.TELEMETRY_RAW: 0,
+    }
+)
+"""Minimum days a record of each class is kept before it may be deleted.
+
+Example:
+    >>> RETENTION_FLOOR_DAYS[RetentionClass.MR_TRACE_5Y]
+    1827
+"""
+
+_HEX32 = r"^[0-9a-f]{32}$"
+_HEX64 = r"^[0-9a-f]{64}$"
+
+
+class Actor(BaseModel):
+    """Who performed an intervention, without naming them.
+
+    Attributes:
+        channel_label: The channel the action came through, as configured on
+            the producing node (``"pendant"``, ``"dashboard"``, ``"slack"``).
+        actor_id: Pseudonymous operator id: HMAC-SHA256 hex of the operator
+            identity under an org key the deployer holds. ``None`` when the
+            channel cannot identify the operator.
+
+    Example:
+        >>> Actor(channel_label="pendant").actor_id is None
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    channel_label: str = Field(min_length=1)
+    actor_id: str | None = Field(default=None, pattern=_HEX64)
+
+
+class SoftwareComponent(BaseModel):
+    """One installed software component, for MR Annex III §1.1.9 identification.
+
+    Attributes:
+        name: Component name (package, rSkill id, model id, firmware).
+        version: Version or revision string as installed.
+        sha256: Content digest, when the component is a file or weight set.
+        safety_relevant: True for software necessary for the machine to
+            operate safely (the safety kernel, its envelope, safety rSkills).
+        signature_ok: Signature verification result; ``None`` until signing
+            exists (CLAUDE.md §3 rSkill provenance).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    sha256: str | None = Field(default=None, pattern=_HEX64)
+    safety_relevant: bool = False
+    signature_ok: bool | None = None
+
+
+class _ComplianceRecordBase(BaseModel):
+    """Envelope shared by every ``ComplianceRecord`` kind.
+
+    Attributes:
+        schema_version: Version of this record kind's schema.
+        record_id: Unique record id, 32 lowercase hex (a UUID's hex form).
+        seq: Per-unit monotonic sequence number; gaps reveal lost records.
+        ts_ns: Event time, UTC nanoseconds since the Unix epoch.
+        clock_source: How the producing host's clock was disciplined.
+        trace_id: OTel trace id, 32 hex, when the event ran under a span.
+        span_id: OTel span id, 16 hex.
+        parent_record_id: The record this one was caused by (a kernel stop
+            caused by a plan decision, say).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    _retention: ClassVar[RetentionClass]
+
+    schema_version: Literal["0.1"] = "0.1"
+    record_id: str = Field(pattern=_HEX32)
+    seq: int = Field(ge=0)
+    ts_ns: int = Field(ge=0)
+    clock_source: Literal["ptp", "ntp", "monotonic_unsynced"]
+    trace_id: str | None = Field(default=None, pattern=_HEX32)
+    span_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+    parent_record_id: str | None = Field(default=None, pattern=_HEX32)
+
+    @property
+    def retention_class(self) -> RetentionClass:
+        """The retention class this record kind is kept under."""
+        return self._retention
+
+
+class FailureRecord(_ComplianceRecordBase):
+    """A ``FailureTrigger`` from the failure bus.
+
+    Attributes:
+        kind: Discriminator (always ``"failure"``).
+        source: Failure-bus topic suffix (``/openral/failure/<source>``).
+        failure_kind: ``FailureTrigger.KIND_*`` value.
+        severity: ``FailureTrigger.SEVERITY_*`` value (0 info … 3 abort).
+        evidence: Decoded ``evidence_json``; ``None`` when the producer sent none.
+        rskill_id: The rSkill running when the failure fired.
+    """
+
+    _retention = RetentionClass.AI_LOG_6M
+
+    kind: Literal["failure"] = "failure"
+    source: Literal["hal", "sensor", "rskill", "safety", "wam", "critic", "world_state"]
+    failure_kind: int = Field(ge=0, le=255)
+    severity: int = Field(ge=0, le=3)
+    evidence: FailureEvidence | None = Field(default=None, discriminator="kind")
+    rskill_id: str | None = None
+
+
+class SafetyStopRecord(_ComplianceRecordBase):
+    """The machine was stopped by a safety function or a person.
+
+    Attributes:
+        kind: Discriminator (always ``"safety_stop"``).
+        trigger_source: What commanded the stop.
+        drop_reason: ``SafetyStatus.drop_reason`` code (a ``KIND_*`` or ``DROP_*``).
+        detail: Human-readable detail, as on ``SafetyStatus.detail``.
+        evidence: Typed evidence for the stop, when the producer sent it.
+        stop_cmd_ts_ns: When the stop was commanded.
+        halt_ts_ns: When motion was confirmed stopped, when known.
+        latched: Whether the stop latched (needs a reset to clear).
+        rskill_id: The rSkill running at the stop.
+        risk_ref: Hazard-log entry id this stop class maps to, when known.
+    """
+
+    _retention = RetentionClass.MR_SAFETY_DECISION_1Y
+
+    kind: Literal["safety_stop"] = "safety_stop"
+    trigger_source: Literal["kernel", "human", "hardware", "deadman", "watchdog", "supervisor"]
+    drop_reason: int | None = Field(default=None, ge=0, le=255)
+    detail: str = ""
+    evidence: FailureEvidence | None = Field(default=None, discriminator="kind")
+    stop_cmd_ts_ns: int | None = Field(default=None, ge=0)
+    halt_ts_ns: int | None = Field(default=None, ge=0)
+    latched: bool
+    rskill_id: str | None = None
+    risk_ref: str | None = None
+
+
+class SafetyDecisionRecord(_ComplianceRecordBase):
+    """One safety-kernel verdict on an action chunk.
+
+    Every ``scale`` and ``drop`` is recorded; ``pass`` verdicts are sampled at 1 Hz.
+
+    Attributes:
+        kind: Discriminator (always ``"safety_decision"``).
+        decision: The verdict.
+        check_name: The check that decided (``"collision"``, ``"workspace"``…).
+        rskill_id: The rSkill whose chunk was checked.
+        chunk_index: Index of the checked chunk within the goal.
+        inputs_digest: SHA-256 hex over the verdict's inputs, when recorded.
+    """
+
+    _retention = RetentionClass.MR_SAFETY_DECISION_1Y
+
+    kind: Literal["safety_decision"] = "safety_decision"
+    decision: Literal["pass", "scale", "drop"]
+    check_name: str = Field(min_length=1)
+    rskill_id: str | None = None
+    chunk_index: int | None = Field(default=None, ge=0)
+    inputs_digest: str | None = Field(default=None, pattern=_HEX64)
+
+
+class PlanDecisionRecord(_ComplianceRecordBase):
+    """A reasoner tool call that led, or could lead, to motion.
+
+    Attributes:
+        kind: Discriminator (always ``"plan_decision"``).
+        model: Reasoner model id as served (``reasoner.model``).
+        tool: Tool name called.
+        rskill_id: rSkill the call dispatched, when it dispatched one.
+        ladder_rung: Replanning-ladder rung the call came from.
+        prompt_digest: SHA-256 hex of the prompt; the prompt itself stays in the trace.
+        mission_task_id: Mission task the call served.
+    """
+
+    _retention = RetentionClass.MR_SAFETY_DECISION_1Y
+
+    kind: Literal["plan_decision"] = "plan_decision"
+    model: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    rskill_id: str | None = None
+    ladder_rung: Literal[
+        "initial", "retry", "param_tweak", "substitute_skill", "goal_replan", "human_handoff"
+    ]
+    prompt_digest: str | None = Field(default=None, pattern=_HEX64)
+    mission_task_id: str | None = None
+
+
+class InterventionRecord(_ComplianceRecordBase):
+    """A software, configuration or operator intervention (MR Annex III §1.1.9).
+
+    Attributes:
+        kind: Discriminator (always ``"intervention"``).
+        intervention_kind: What was done.
+        actor: Who did it, pseudonymously.
+        channel: The path it came through.
+        legitimate: Whether the intervention was authorised; ``None`` when the
+            path cannot tell (a reset through a channel without identity).
+        before_digest: SHA-256 hex of the changed artefact before.
+        after_digest: SHA-256 hex after.
+        diff_ref: Where the full diff is kept, when it is kept elsewhere.
+    """
+
+    _retention = RetentionClass.MR_TRACE_5Y
+
+    kind: Literal["intervention"] = "intervention"
+    intervention_kind: Literal[
+        "estop_reset",
+        "override",
+        "reject_plan",
+        "config_change",
+        "software_update",
+        "weights_update",
+        "param_set",
+        "retention_delete",
+    ]
+    actor: Actor
+    channel: Literal["local", "remote", "ota", "dashboard", "pendant", "chatops", "system"]
+    legitimate: bool | None
+    before_digest: str | None = Field(default=None, pattern=_HEX64)
+    after_digest: str | None = Field(default=None, pattern=_HEX64)
+    diff_ref: str | None = None
+
+
+class SoftwareInventoryRecord(_ComplianceRecordBase):
+    """The software installed on the unit, written at bringup and on any change.
+
+    Attributes:
+        kind: Discriminator (always ``"software_inventory"``).
+        components: Every installed component.
+    """
+
+    _retention = RetentionClass.MR_TRACE_5Y
+
+    kind: Literal["software_inventory"] = "software_inventory"
+    components: list[SoftwareComponent] = Field(min_length=1)
+
+
+class SessionRecord(_ComplianceRecordBase):
+    """One period of use of the unit.
+
+    Attributes:
+        kind: Discriminator (always ``"session"``).
+        start_ts_ns: Session start.
+        end_ts_ns: Session end; ``None`` while open.
+        run_mode: ``openral.run.mode``.
+        site_id: Deployer site, when configured.
+        shift: Deployer shift label, when configured.
+    """
+
+    _retention = RetentionClass.AI_LOG_6M
+
+    kind: Literal["session"] = "session"
+    start_ts_ns: int = Field(ge=0)
+    end_ts_ns: int | None = Field(default=None, ge=0)
+    run_mode: Literal["sim", "hardware"]
+    site_id: str | None = None
+    shift: str | None = None
+
+
+class SecurityIncidentRecord(_ComplianceRecordBase):
+    """A security incident or exploited vulnerability (CRA Art. 14).
+
+    Attributes:
+        kind: Discriminator (always ``"security_incident"``).
+        actively_exploited: The vulnerability is known to be exploited.
+        malicious_suspected: The incident is suspected to be malicious.
+        summary: What happened, without personal data.
+    """
+
+    _retention = RetentionClass.INCIDENT_10Y
+
+    kind: Literal["security_incident"] = "security_incident"
+    actively_exploited: bool
+    malicious_suspected: bool
+    summary: str = Field(min_length=1)
+
+
+ComplianceRecord: TypeAlias = Annotated[
+    FailureRecord
+    | SafetyStopRecord
+    | SafetyDecisionRecord
+    | PlanDecisionRecord
+    | InterventionRecord
+    | SoftwareInventoryRecord
+    | SessionRecord
+    | SecurityIncidentRecord,
+    Field(discriminator="kind"),
+]
+"""Discriminated union of every compliance record kind, on ``kind``.
+
+Decode one line of the on-robot log or one OTLP log body with::
+
+    from pydantic import TypeAdapter
+    from openral_core import ComplianceRecord
+
+    record = TypeAdapter(ComplianceRecord).validate_json(line)
+
+Example:
+    >>> from pydantic import TypeAdapter
+    >>> r = TypeAdapter(ComplianceRecord).validate_python({
+    ...     "kind": "session", "record_id": "0" * 32, "seq": 0, "ts_ns": 0,
+    ...     "clock_source": "ntp", "start_ts_ns": 0, "run_mode": "sim"})
+    >>> r.retention_class
+    <RetentionClass.AI_LOG_6M: 'ai_log_6m'>
 """
 
 
