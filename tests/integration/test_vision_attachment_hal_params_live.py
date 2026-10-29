@@ -36,7 +36,7 @@ def test_scene_vision_params_are_declared_by_the_hal(
     from openral_cli.deploy_sim import resolve_launch_invocation
     from openral_hal.lifecycle import ManifestHALLifecycleNode
 
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     data = yaml.safe_load(
         (_REPO / "scenes" / "deploy" / "openarm_real_world_voxels.yaml").read_text()
     )

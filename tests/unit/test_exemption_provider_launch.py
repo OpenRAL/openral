@@ -129,7 +129,7 @@ def test_deploy_sim_forwards_the_runtime_provider_and_deploy_run_refuses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``DeployRuntime.exemption_provider`` is how ``openral deploy sim`` selects one."""
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     assert DeployRuntime().exemption_provider == ""
     off = _cell_invocation(tmp_path, {}, "sim").argv_template
     assert not any(a.startswith("exemption_provider") for a in off), "none: argv unchanged"

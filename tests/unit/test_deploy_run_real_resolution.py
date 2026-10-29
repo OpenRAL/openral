@@ -205,9 +205,10 @@ class TestDepthExtrinsicPreflight:
     """A real deploy with the world-voxel check on refuses an undeclared depth mount.
 
     OpenRAL does not measure a depth camera's extrinsic; the operator does, and declares
-    it in the unit overlay. Galaxea A1 is a real-HAL robot whose manifest ``wrist``
-    camera (on ``arm_seg6``) is RGB in-tree; it is made a depth camera here, in a copy
-    served via ``OPENRAL_ROBOTS_DIR``, which is how ``deploy run`` resolves manifests.
+    it in the manifest (``static_transform_calibrated``) or a unit overlay. Galaxea A1 is a
+    real-HAL robot whose manifest ``wrist`` camera (on ``arm_seg6``) is RGB in-tree; it is
+    made a depth camera here, in a copy served via ``OPENRAL_ROBOTS_DIR``, which is how
+    ``deploy run`` resolves manifests.
     """
 
     @pytest.fixture
@@ -258,17 +259,28 @@ class TestDepthExtrinsicPreflight:
         inv = _resolve_real("galaxea_a1")
         assert "enable_octomap_kernel_check:=true" in inv.argv_template
 
+    def test_launches_with_a_mount_the_manifest_marks_calibrated(self, robot_dir: Path) -> None:
+        """No unit: the manifest's own mount passes once it says it was measured."""
+        import yaml
+
+        path = robot_dir / "robot.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        (wrist,) = [s for s in data["sensors"] if s["name"] == "wrist"]
+        wrist["static_transform_calibrated"] = True
+        path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        inv = _resolve_real("galaxea_a1")
+        assert "enable_octomap_kernel_check:=true" in inv.argv_template
+
     def test_not_gated_when_the_world_voxel_check_is_off(self, robot_dir: Path) -> None:
         inv = _resolve_real("galaxea_a1", enable_octomap_kernel_check=False)
         assert "enable_octomap_kernel_check:=false" in inv.argv_template
 
-    def test_the_committed_openarm_units_gate_on_their_declared_mount(
+    def test_the_committed_openarm_manifest_gates_on_its_declared_mount(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Thor's and Orin's overlays declare head_zed's calibrated mount, so bare `deploy run`
-        with either unit passes the gate (its correctness is the operator's). The undeclared
-        refusal is pinned on a scratch robot above (`cell_a`)."""
-        for unit in ("thor", "orin"):
-            monkeypatch.setenv("OPENRAL_ROBOT_UNIT", unit)
-            inv = _resolve_real("openarm")
-            assert "enable_octomap_kernel_check:=true" in inv.argv_template
+        """robot.yaml declares head_zed's measured mount, so bare `deploy run` passes the gate
+        with no unit (its correctness is the operator's). The undeclared refusal is pinned on a
+        scratch robot above (`cell_a`)."""
+        monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
+        inv = _resolve_real("openarm")
+        assert "enable_octomap_kernel_check:=true" in inv.argv_template

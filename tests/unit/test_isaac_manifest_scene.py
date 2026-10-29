@@ -25,16 +25,14 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import pytest
-from openral_core import RobotDescription, apply_sensor_overlays, resolve_sensor_overlays
+from openral_core import RobotDescription
 from openral_sim.backends.isaac_sim import _build_robot_spec, _sensor_dict
 
 
-def test_thor_brown_calibration_survives_sidecar_serialization() -> None:
+def test_wrist_brown_calibration_survives_sidecar_serialization() -> None:
     path = _repo_root() / "robots/openarm/robot.yaml"
     robot = RobotDescription.from_yaml(str(path))
-    sensors = apply_sensor_overlays(
-        robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
-    )
+    sensors = robot.sensors
     for sensor in sensors:
         if sensor.name not in ("wrist_left", "wrist_right"):
             continue
@@ -781,13 +779,11 @@ def test_the_rational_extension_reaches_the_corners_and_keeps_the_brown_interior
     assert px.max() < 0.05
 
 
-def test_the_thor_wrist_calibrations_pass_the_corner_check(_manifest_scene_mod: object) -> None:
+def test_the_wrist_calibrations_pass_the_corner_check(_manifest_scene_mod: object) -> None:
     """Real fixtures: the committed wrist Arducam calibrations are monotonic to their corners."""
     path = _repo_root() / "robots/openarm/robot.yaml"
     robot = RobotDescription.from_yaml(str(path))
-    sensors = apply_sensor_overlays(
-        robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
-    )
+    sensors = robot.sensors
     for s in sensors:
         if s.name in ("wrist_left", "wrist_right"):
             assert s.intrinsics is not None
@@ -1086,13 +1082,7 @@ def test_render_desc_scales_rgb_rasters_and_can_drop_depth() -> None:
 
     path = _repo_root() / "robots/openarm/robot.yaml"
     desc = RobotDescription.from_yaml(str(path))
-    desc = desc.model_copy(
-        update={
-            "sensors": apply_sensor_overlays(
-                desc.sensors, resolve_sensor_overlays(path, "thor", required=True)
-            )
-        }
-    )
+    desc = desc.model_copy(update={"sensors": desc.sensors})
     before = {s.name: s for s in desc.sensors}
     out, scale = _render_desc(desc, {"wrist_left": 224, "wrist_right": 224}, depth_cameras=False)
     after = {s.name: s for s in out.sensors}

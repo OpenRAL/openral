@@ -12,7 +12,7 @@ against OpenCV's own forward models (``cv2.projectPoints`` / ``cv2.fisheye.proje
 * the camera's pixel aspect is kept (DA3 assumes square pixels);
 * a pinhole ``CameraInfo`` passes through untouched; anything it cannot rectify is named.
 
-The Arducam wrist calibration is the real one from ``robots/openarm/units/thor.yaml``.
+The Arducam wrist calibration is the real one from ``robots/openarm/robot.yaml``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from openral_core import load_robot_unit
+from openral_core import RobotDescription
 from openral_perception_ros.lens_rectify import (
     build_rectifier,
     distortion_problem,
@@ -41,9 +41,9 @@ _REPO = Path(__file__).resolve().parents[2]
 
 
 def _arducam() -> tuple[tuple[float, float, float, float], tuple[int, int], list[float]]:
-    """Thor's calibrated left wrist Arducam (plumb_bob, 960x600)."""
-    unit = load_robot_unit(str(_REPO / "robots/openarm/robot.yaml"), "thor")
-    k = next(o.intrinsics for o in unit.sensors if o.name == "wrist_left")
+    """The calibrated left wrist Arducam (plumb_bob, 960x600)."""
+    arm = RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml"))
+    k = next(s.intrinsics for s in arm.sensors if s.name == "wrist_left")
     assert k is not None and k.distortion_model == "plumb_bob"
     return (k.fx, k.fy, k.cx, k.cy), (k.width, k.height), list(k.distortion_coeffs)
 

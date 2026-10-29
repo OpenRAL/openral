@@ -113,10 +113,10 @@ anyway: they are the evidence the fix needs.
 
 ## Hosts
 
-The cell (ZED Mini, PEAK CAN adapter `openarm_left` / `openarm_right`) is attached to the
-lab **Orin**: on 2026-10-07 the robot and its cameras moved there from **Thor**
-(`robots/openarm/units/orin.yaml`; `thor.yaml` keeps the Thor cell's overlay). The ZED leg of
-this pipeline was verified on the Orin on 2026-09-07 (ZED SDK 5.4.1,
+The cell (ZED Mini, PEAK CAN adapter `openarm_left` / `openarm_right`) is attached to one
+lab Jetson; its cameras' bindings and calibration are in `robots/openarm/robot.yaml`, so
+whichever host drives it selects nothing. The ZED leg of this pipeline was verified on
+2026-09-07 (ZED SDK 5.4.1,
 `/octomap_point_cloud_centers` at about 5 Hz, `/openral/world_voxels` at about 10 Hz).
 Confirm each of these on the cell host before step 1:
 
@@ -215,27 +215,23 @@ standard route and works for any robot with a gripper. What OpenRAL fixes is the
   planar x/y within 15 mm, tilt within atan(10 mm / 1 m) ≈ 0.57°, yaw within
   atan(15 mm / 1 m) ≈ 0.86°, at the 1 m range the check covers. A hand-eye calibration
   reaches this; a tape measure does not.
-- **Where it goes.** The unit overlay, `robots/openarm/units/<unit>.yaml`, selected by
-  `OPENRAL_ROBOT_UNIT` or a scene's `robot_unit`: `static_transform_xyz_rpy` under its
+- **Where it goes.** `robots/openarm/robot.yaml`: `static_transform_xyz_rpy` under its
   `head_zed` entry, `[x, y, z, roll, pitch, yaw]` in metres and radians, fixed-axis XYZ
-  (`static_transform_publisher` convention). Each unit carries its own mount; a value
-  measured on one cell's camera is wrong on another's. The exception is the same robot and
-  camera moving between hosts: on 2026-10-07 the OpenArm and its ZED moved from Thor to
-  Orin, so `orin.yaml` carries Thor's measurement (checked on Orin against a fresh capture). The
+  (`static_transform_publisher` convention), with `static_transform_calibrated: true`. The
   camera is robot geometry: no scene may redefine it
-  (`openral_core.check_scene_sensor_overrides`), and a unit overlay may only set the
-  binding, driver topic, pose and intrinsics (`SensorOverlay`). Record how and when it was
-  measured in the file's header comment.
+  (`openral_core.check_scene_sensor_overrides`). Record how and when it was measured in the
+  comment above the entry. (A robot model run on several cells with different mounts would
+  put each cell's in a unit overlay, `robots/<id>/units/<unit>.yaml`; OpenArm has one.)
 - **The gate.** `openral deploy run` (any robot, whenever the world-voxel check is on) and
   `tools/openarm_world_voxel_run.sh` refuse to launch unless every cloud source's mount is
-  declared by the selected unit's overlay
+  declared as measured (`static_transform_calibrated: true`, or set by a unit overlay)
   (`openral_core.depth_extrinsic.depth_extrinsic_problems`). Every manifest ships a
-  nominal mount from CAD, so a value being present proves nothing; a unit overlay
-  exists only because someone set that cell up. The gate checks provenance, not
-  correctness: a wrong number in the unit file runs.
+  nominal mount from CAD, so a value being present proves nothing; the flag is the
+  operator's statement that it was measured. The gate checks provenance, not
+  correctness: a wrong number marked calibrated runs.
 
 If the camera is ever bumped, re-seated or re-mounted, measure again. Nothing in the stack
-notices a camera that moved: on Thor the ZED's view of the floor shifted by about 1°
+notices a camera that moved: the ZED's view of the floor shifted by about 1°
 between two days (2026-10-01/02) with nothing deliberately touched. A cheap check that
 needs no motion: with the arms at rest, the robot's own returns should end within the
 self-filter's padding of the kernel's collision primitives (step 3 reads this off the
@@ -307,12 +303,12 @@ the person at the cell:
 
 ```bash
 source /opt/ros/jazzy/setup.bash && source install/setup.bash && source <zed_ws>/install/setup.bash
-export OPENRAL_OPENARM_ALLOW_MOTION=1 OPENRAL_OPENARM_ATTENDED=1 OPENRAL_ROBOT_UNIT=orin  # this cell
+export OPENRAL_OPENARM_ALLOW_MOTION=1 OPENRAL_OPENARM_ATTENDED=1
 tools/openarm_world_voxel_run.sh --foxglove
 ```
 
-The script refuses without both gates, without `OPENRAL_ROBOT_UNIT`, without a declared
-head_zed mount in that unit's overlay (step 2), and without an
+The script refuses without both gates, without a measured
+head_zed mount in robots/openarm/robot.yaml (step 2), and without an
 interactive terminal. It asks you to type `ESTOP IN HAND`, then runs
 `openral deploy run --config scenes/deploy/openarm_real_world_voxels.yaml`, which brings up
 the vendor controllers (**arms snap to zero**), the ZED driver, octomap, the bridge and the
@@ -440,7 +436,7 @@ The criteria for making this check **default-on** for the OpenArm are ADR-0109's
 
 For the write-up, record:
 
-- the unit overlay's `head_zed` pose and how it was measured (its header comment);
+- `head_zed`'s pose in `robot.yaml` and how it was measured (its comment);
 - the twin-pass numbers: `/octomap_binary` rate, the `/openral/world_voxels` rate and
   frame, and self-occupancy observed yes or no;
 - for every attended dispatch: the rSkill id, the outcome, and each stop's `drop_reason`,
@@ -456,11 +452,9 @@ For the write-up, record:
 - `scenes/deploy/openarm_real_autonomous.yaml`: the same cell with the reasoner, the
   open-vocabulary detector and spatial-memory ingest on (`--autonomous`); the vision
   attachment leg stays off.
-- `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy` (sim twins
-  only; a real world-voxel deploy never runs on it).
-- `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and its calibrated ZED
-  pose, measured by the operator (step 2). The grippers' `closure_calibration` is a
-  robot-type constant in `robot.yaml`, not per unit. No furniture is surveyed: place surfaces are
+- `robots/openarm/robot.yaml`: the cameras' bindings and `head_zed`'s calibrated pose,
+  measured by the operator (step 2), and the grippers' `closure_calibration`. No furniture is
+  surveyed: place surfaces are
   measured live from the voxel map under the carried payload
   ([real pick-and-place design](../../reference/real-pick-place-design.md) §2.3).
 - `python/core/src/openral_core/depth_extrinsic.py`: the accuracy the pose needs and the

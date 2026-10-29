@@ -379,7 +379,7 @@ safety:
   contact_force_threshold_n: 30.0
   self_collision_margin_m: 0.0
   # Runner ramp to a skill's starting_pose. 0.5 rad/s / 0.05 rad are what
-  # every attended Thor run has used (the runner's former defaults); declared
+  # every attended real run has used (the runner's former defaults); declared
   # here so they are visible and reviewable. Not derived from velocity_limit:
   # that gave 2 rad/s (issue #303).
   starting_pose_max_joint_speed_rad_s: 0.5
@@ -387,7 +387,7 @@ safety:
   # Joint-state freshness window: the real HAL's read_state and the skill
   # runner's blocking waits refuse state older than this (one place; build_hal
   # and deploy_e2e.launch.py read it). Three control periods at 30 Hz.
-  # Measured on Thor 2026-09-23 with tools/joint_state_staleness_probe.py
+  # Measured on the real arm 2026-09-23 with tools/joint_state_staleness_probe.py
   # (750 Hz JointState over the production Fast-DDS path into
   # RosControlTransport): idle callback gap p99.9 2.6 ms / max 4.6 ms,
   # read-side age max 32 ms; under deliberate GIL starvation gap max 24 ms,
@@ -491,39 +491,27 @@ sensors:
   # cams, DeployScene.sensors for overhead/front); Enactic mounts it the same
   # way (openarm_zed_wrapper.xacro `mount_origin`, reference_points.yaml
   # `kind: sensor_mount`). The manifest owns this camera's identity and frames; a
-  # deploy scene never redefines it (check_scene_sensor_overrides). Its real-hardware
-  # `deploy_binding` and calibrated mount are per unit (units/<unit>.yaml). The
-  # binding is `ros2_image` because the
-  # pixels/cloud arrive on zed_wrapper's own topics: the ZED SDK computes depth
-  # on the host GPU and the device only emits a side-by-side UVC stream.
+  # deploy scene never redefines it (check_scene_sensor_overrides). The binding is
+  # `ros2_image` because the pixels/cloud arrive on zed_wrapper's own topics: the ZED SDK
+  # computes depth on the host GPU and the device only emits a side-by-side UVC stream.
   #
-  # POSE PARTLY MEASURED, INTRINSICS UNCALIBRATED (no vendor extrinsic
-  # exists; Stereolabs ship mount as a xacro param, Enactic leave theirs
-  # commented "tune before hardware"). Position is still the stated
-  # approximation: 0.20 m above the shoulder midpoint (= `openarm_base`, since
-  # both arm mounts sit at (0,+/-0.031,0)), x = y = 0. Roll/pitch are MEASURED
-  # (2026-09-24, Thor cell, arms unpowered): a level-surface fit on a real ZED
-  # cloud showed the old 45deg-down placeholder was 22.7deg off in pitch (24.9deg
-  # on the Orin cell); correcting to roll -0.7deg / pitch 67.7deg leaves 0.4deg of
-  # residual tilt. Height, x/y and yaw are NOT observable from one level plane
-  # and remain unmeasured, so the kernel's world-voxel check still requires the
-  # extrinsic check below to PASS before it is trusted. fx/fy from StereoLabs'
-  # published 90deg horizontal FOV at HD1080 depth (fx=(1920/2)/tan(45deg)=960,
-  # same basis a unit overlay's calibrated intrinsics would replace). Good
-  # enough to prove the pipeline, not to project anything geometric. What a
-  # geometric consumer (the kernel's world-voxel check) depends on is the
-  # EXTRINSIC below, not these intrinsics: the ZED SDK builds its cloud from
-  # its own factory calibration. `openral calibrate camera` measures
-  # intrinsics only (a monocular checkerboard fit) and cannot fix this pose.
-  # The pose below is the NOMINAL mount (the Thor cell's 2026-09-24 measurement),
-  # used by sim twins only. The Thor and Orin cells have different ZED mounts, so
-  # each unit's calibrated pose lives in its overlay, robots/openarm/units/<unit>.yaml
-  # (selected by $OPENRAL_ROBOT_UNIT or the scene's `robot_unit`); no scene may
-  # redefine this sensor (openral_core.check_scene_sensor_overrides). OpenRAL does
-  # not calibrate that pose: measure it yourself (a hand-eye calibration) to the
-  # accuracy in openral_core.depth_extrinsic and declare it in the unit overlay; a
-  # real deploy with the world-voxel check on refuses to run on this nominal value
-  # (runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 2).
+  # MOUNT MEASURED (2026-10-02; `static_transform_calibrated: true`): fitted from the ZED's
+  # depth returns of the arms, posed at their real joint readings over 13 poses, to the
+  # robot's own meshes (median arm residual 2.3 mm; held-out spread 0.6 mm height / 1.2 mm
+  # planar / 0.15 deg tilt / 0.07 deg yaw; its 65.6 deg downward pitch agrees with an
+  # inclinometer on the camera, and the ZED IMU's gravity reads 65.69 deg). That fitting tool
+  # is not part of OpenRAL (it took four pose designs and two days to constrain the tilt, and
+  # its accuracy is bounded by the arm's ~1 cm of joint play); the value is declared here as
+  # the operator's calibration, which a real deploy with the world-voxel check requires
+  # (openral_core.depth_extrinsic; runbook docs/tutorials/deploy/openarm-real-world-voxel-check.md,
+  # step 2). Measure again if the ZED head is touched (its view of the floor shifted ~1 deg
+  # between 2026-10-01 and 2026-10-02 with nothing deliberately moved), and set
+  # `static_transform_calibrated: false` on a robot whose mount was not measured.
+  # INTRINSICS UNCALIBRATED: fx/fy from StereoLabs' published 90deg horizontal FOV at HD1080
+  # depth (fx=(1920/2)/tan(45deg)=960). Good enough to prove the pipeline, not to project
+  # anything geometric: the ZED SDK builds its cloud from its own factory calibration, so
+  # what the world-voxel check depends on is the EXTRINSIC. `openral calibrate camera`
+  # measures intrinsics only (a monocular checkerboard fit) and cannot fix this pose.
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must
@@ -534,15 +522,15 @@ sensors:
   # IMAGE GEOMETRY — `frame_id` IS NOT THE IMAGE FRAME, AND THE INTRINSICS ARE
   # NOT THE CAMERA'S. `frame_id: zed_camera_link` is the ZED *body* frame
   # (x forward, REP-103 body), kept because the kernel's world-voxel mount
-  # (openarm_base -> zed_camera_link) and the unit overlays are keyed on it. The
+  # (openarm_base -> zed_camera_link) is keyed on it. The
   # driver publishes its depth (/zed/zed_node/depth/depth_registered) AND RGB
   # (/zed/zed_node/rgb/color/rect/image) in `zed_left_camera_frame_optical`, both
   # 1920x1080, with camera_info (/zed/zed_node/depth/camera_info,
   # .../rgb/color/rect/camera_info) K = [1498.18, 0, 936.11; 0, 1498.18, 541.81;
-  # 0, 0, 1] (Thor cell, 2026-10-02): that focal length is 56 % longer than the
-  # nominal fx = fy = 960 below. (That was a 1920x1080 grab; the bench override now grabs
-  # VGA 672x376, where rect K is fx = fy = 356.3 and raw K is fx 384.9 with Brown
-  # distortion, and the units bind `top` to the raw image — Orin cell, 2026-10-07.)
+  # 0, 0, 1] (2026-10-02): that focal length is 56 % longer than the nominal fx = fy = 960
+  # below. (That was a 1920x1080 grab; the bench override now grabs VGA 672x376, where rect
+  # K is fx = fy = 356.3 and raw K is fx 384.9 with Brown distortion, and `top` binds the
+  # raw image, 2026-10-07.)
   # Anything that projects or back-projects pixels
   # MUST use the image header's frame_id and the driver's camera_info, never this
   # frame_id or these intrinsics (segmenter_node: `camera_infos` parameter).
@@ -560,7 +548,8 @@ sensors:
     modality: "depth"
     frame_id: "zed_camera_link"
     parent_frame: "openarm_base"
-    static_transform_xyz_rpy: [0.0, 0.0, 0.20, -0.0123, 1.1823, 0.0]
+    static_transform_xyz_rpy: [0.06597, -0.004548, 0.094539, -0.055916, 1.145014, -0.036625]
+    static_transform_calibrated: true
     rate_hz: 10.0
     intrinsics:
       width: 1920
@@ -575,17 +564,23 @@ sensors:
     model: "ZED Mini"
     sim_placement:
       parent_body: "openarm_left_base_link"
-      pos: [0.0, -0.031, 0.20]
-      target: [0.3788, -0.031, -0.7255]
-      up: [0.9254, 0.0123, 0.3788]
-    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
+      pos: [0.06597, -0.035548, 0.094539]
+      target: [0.4787, -0.0507, -0.8162]
+      up: [0.9107, 0.0226, 0.4124]
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/depth/depth_registered
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 500
 
   - name: "top"
     modality: "rgb"
     frame_id: "world"
     rate_hz: 10.0
-    # The ZED-M left image at the pick-and-place rSkill's training raster (672x376): the Thor
-    # cell's live camera_info K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at
+    # The ZED-M left image at the pick-and-place rSkill's training raster (672x376): the
+    # real camera's live camera_info K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at
     # 1920x1080, 2026-10-02) scaled per axis, so a sim renders the policy's view at its
     # field of view (65.3 deg horizontal) and aspect.
     intrinsics:
@@ -606,10 +601,23 @@ sensors:
     # `observation.images.top`: the pick-and-place π0.5 rSkill aliases it onto its checkpoint's
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
-    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
-    # It is the same device as head_zed, so it rides head_zed's mount (unit calibration
-    # included): the Isaac scene renders both from that one pose.
+    # It is the same device as head_zed, so it rides head_zed's (measured) mount: the Isaac
+    # scene renders both from that one pose. Bound to the ZED's UNRECTIFIED left image (VGA,
+    # zedm_openarm_override.yaml): the pick-and-place policy was trained on raw frames, and
+    # the sim's `top` renders the raw Brown model too. Do not undistort it with the driver's
+    # raw CameraInfo: its factory D (k1 -0.103) is wrong for this lens; the SDK's own
+    # raw->rect mapping fits the 2026-10-02 model (k1 -0.358), 1.6 px vs 8.9 px RMS
+    # (2026-10-07). Consumers that back-project pixels through K alone (the detector's
+    # world-state lift is pinhole) lose accuracy toward the image edges; the segmenter scenes
+    # bind rect topics instead.
     shares_mount_with: "head_zed"
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/raw/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
     # Twin: the bimanual MJCF ships no head camera, so the generic camera rig splices one
     # in at head_zed's nominal mount. The MJCF world origin IS `openarm_base` (its
     # `openarm_left_base_link` sits at [0, 0.031, 0], the manifest's
@@ -623,13 +631,20 @@ sensors:
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"
     rate_hz: 10.0
+    # The Arducam B0495's intrinsics, calibrated 2026-10-02 (pinhole + Brown/plumb_bob,
+    # [k1, k2, p1, p2, k3]; validation RMS left 0.435 px, right 0.566 px). The calibration is
+    # at 960x600, so the capture is 960x600 too: a 4:3 capture would be a crop these cannot be
+    # rescaled to. Recalibrate if a lens or mount is touched.
     intrinsics:
-      width: 640
-      height: 480
-      fx: 640.0
-      fy: 640.0
-      cx: 320.0
-      cy: 240.0
+      width: 960
+      height: 600
+      fx: 614.255921
+      fy: 613.585651
+      cx: 502.490468
+      cy: 308.959123
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.072761672, -0.056848830, 0.002163274, 0.001326299, 0.035500496]
+    intrinsics_calibrated: true
     encoding: "rgb8"
     vla_feature_key: "observation.images.wrist_left"
     vendor: "sim"
@@ -637,24 +652,45 @@ sensors:
     # The twin's MJCF (openarm_v20_bimanual.xml) names its wrist cameras with a
     # `camera_` prefix; without this the sim HAL logs `camera_absent` and renders nothing.
     sim_camera_name: "camera_wrist_left"
-    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
+    # By-id path of the Arducam on the arm's host; re-check with `ls -l /dev/v4l/by-id`.
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
+        width: 960
+        height: 600
+        fps: 30
   - name: "wrist_right"
     modality: "rgb"
     frame_id: "openarm_right_ee_base_link"
     rate_hz: 10.0
+    # The Arducam B0495's intrinsics, calibrated 2026-10-02 (pinhole + Brown/plumb_bob,
+    # [k1, k2, p1, p2, k3]; validation RMS left 0.435 px, right 0.566 px). The calibration is
+    # at 960x600, so the capture is 960x600 too: a 4:3 capture would be a crop these cannot be
+    # rescaled to. Recalibrate if a lens or mount is touched.
     intrinsics:
-      width: 640
-      height: 480
-      fx: 640.0
-      fy: 640.0
-      cx: 320.0
-      cy: 240.0
+      width: 960
+      height: 600
+      fx: 616.019357
+      fy: 615.588168
+      cx: 483.154560
+      cy: 306.781145
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.085062635, -0.023430633, 0.000839384, -0.000490873, 0.001898197]
+    intrinsics_calibrated: true
     encoding: "rgb8"
     vla_feature_key: "observation.images.wrist_right"
     vendor: "sim"
     model: "mujoco_wrist"
     sim_camera_name: "camera_wrist_right"
-    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
+    # By-id path of the Arducam on the arm's host; re-check with `ls -l /dev/v4l/by-id`.
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
+        width: 960
+        height: 600
+        fps: 30
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
 # Source: ``enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`` fetched

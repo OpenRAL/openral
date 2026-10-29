@@ -819,16 +819,8 @@ def test_topic_native_opts_one_camera_out_of_the_resolution_cap() -> None:
 
 
 def _openarm_wrist(name: str = "wrist_left") -> SensorSpec:
-    """The real OpenArm wrist Arducam spec on the Orin unit (960x600 calibrated intrinsics).
-
-    Merged the way ``compose_runtime`` does: the unit's overlay laid over the manifest.
-    """
-    from openral_core import apply_sensor_overlays, load_robot_unit
-
-    robot = "robots/openarm/robot.yaml"
-    sensors = apply_sensor_overlays(
-        RobotDescription.from_yaml(robot).sensors, load_robot_unit(robot, "orin").sensors
-    )
+    """The real OpenArm wrist Arducam spec (960x600 calibrated intrinsics, from the manifest)."""
+    sensors = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
     return next(s for s in sensors if s.name == name)
 
 

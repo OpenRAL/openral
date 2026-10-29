@@ -189,7 +189,7 @@ def test_deploy_validate_ready_with_committed_calibration(tmp_path: Path) -> Non
     result = CliRunner().invoke(app, ["deploy", "validate", "--config", str(config)])
     assert result.exit_code == 0, result.output
     assert "ready" in result.output.lower()
-    # The cameras are the manifest's, bound in the unit overlay: the scene declares none.
+    # The cameras are the manifest's, bound there too: the scene declares none.
     assert "declare no sensors" not in result.output
     assert "no deploy_binding" not in result.output
 

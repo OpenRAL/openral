@@ -90,7 +90,7 @@ def _invoke(scene: Path, hal_mode: str) -> Any:
 def test_deploy_sim_forwards_it_and_deploy_run_refuses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     off = _invoke(_cell_scene(tmp_path, {}), "sim").argv_template
     assert not any(a.startswith("payload_sweep_clear") for a in off), "off: argv unchanged"
     scene = _cell_scene(tmp_path, {"payload_sweep_clear_enabled": True})

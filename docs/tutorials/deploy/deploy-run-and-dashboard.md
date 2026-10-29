@@ -198,22 +198,20 @@ The scene has **no `sensors:` block**. The ZED is bolted to the robot, so both o
 its streams are robot cameras, and a deploy scene never touches a camera the
 robot manifest defines (`check_scene_sensor_overrides` refuses a scene entry
 that reuses a manifest sensor's name). The manifest owns each camera's identity and frames
-(`robots/<robot>/robot.yaml`); its real-hardware `deploy_binding` and calibrated mount go
-in the unit overlay, `robots/<robot>/units/<unit>.yaml` — this is what
-`robots/openarm/units/thor.yaml` commits:
+(`robots/<robot>/robot.yaml`), and with them its real-hardware `deploy_binding` and
+calibrated mount. (A robot model that runs on several cells with different mounts can put
+those per cell in a unit overlay, `robots/<robot>/units/<unit>.yaml`, selected by the
+scene's `robot_unit`.) This is what `robots/openarm/robot.yaml` declares for the ZED,
+abridged:
 
 ```yaml
-schema_version: "0.1"
-robot_id: openarm
-unit: thor
 sensors:
   # Depth: SDK-computed, so it exists only as a topic. `32FC1` metres on the
   # wire (or `16UC1` millimetres with `openni_depth_mode: true`) — either way
-  # it reaches the world state as DEPTH16, uint16 millimetres. Modality,
-  # frame_id and parent_frame stay in robot.yaml; the unit adds the
-  # calibrated mount and the binding.
+  # it reaches the world state as DEPTH16, uint16 millimetres.
   - name: head_zed
     static_transform_xyz_rpy: [0.06597, -0.004548, 0.094539, -0.055916, 1.145014, -0.036625]
+    static_transform_calibrated: true  # measured, so a real world-voxel deploy accepts it
     deploy_binding:
       backend: ros2_image
       backend_params:
@@ -364,7 +362,7 @@ To let that map **stop** a real arm, not just draw it, see
 [`scenes/deploy/openarm_real_world_voxels.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_world_voxels.yaml)
 and its [attended runbook](openarm-real-world-voxel-check.md): it adds
 `enable_octomap_kernel_check: true` and a guarded launcher that refuses until the camera
-pose is declared for the selected unit in `robots/openarm/units/<unit>.yaml`. OpenRAL
+pose is declared as measured in `robots/openarm/robot.yaml`. OpenRAL
 does not calibrate that pose: the runbook's step 2 states the frames and the accuracy
 the check needs, and the operator measures it (typically a hand-eye calibration). The
 gate is robot-agnostic: any robot with a cloud source, not just OpenArm.

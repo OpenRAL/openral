@@ -128,7 +128,7 @@ def test_real_openarm_kernel_reads_the_manifest_named_republish(
     """
     from openral_core import RobotDescription
 
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "orin")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     remaps, params = _kernel("openarm", "real")
     assert remaps == {"/joint_states": "/openral_hal_openarm/joint_states"}
     desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
