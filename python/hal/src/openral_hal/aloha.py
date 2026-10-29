@@ -81,6 +81,7 @@ from openral_core.schemas import (
     GripperReadMode,
     GripperWriteMode,
     HalEntrypoints,
+    HalParameters,
     Hand,
     JointSpec,
     JointState,
@@ -272,7 +273,20 @@ ALOHA_DESCRIPTION = RobotDescription(
         representation=ActionRepresentation.JOINT_POSITIONS,
         control_freq_hz=50.0,
     ),
-    hal=HalEntrypoints(sim=None, real="openral_hal.aloha:AlohaHAL"),
+    hal=HalEntrypoints(
+        sim=None,
+        real="openral_hal.aloha:AlohaHAL",
+        # xs_sdk wire contract (#250) — mirrors hal.parameters.defaults in
+        # robots/aloha_bimanual/robot.yaml (test_robot_manifests_match_hal_
+        # constants keeps the two in lockstep).
+        parameters=HalParameters(
+            defaults={
+                "arm_namespaces": ["follower_left", "follower_right"],
+                "arm_group": "arm",
+                "gripper_group": "gripper",
+            }
+        ),
+    ),
     # MuJoCo wiring for the gym-aloha sim twin.  Two normalised grippers
     # with mirror_actuator_index (positive finger + mirror to negative
     # finger).  keyframe_index=0 seeds the fingers inside their
@@ -357,10 +371,15 @@ ALOHA_REAL_DESCRIPTION = make_real_description(
 # ALOHA exposes — `aloha_bringup.launch.py` starts `xs_sdk`, which has no
 # controller_manager at all (issue #250). Unchanged pending the on-rig
 # check that issue asks for.
-_DEFAULT_LEFT_ARM_CONTROLLER: str = "left_arm/arm_controller"
-_DEFAULT_RIGHT_ARM_CONTROLLER: str = "right_arm/arm_controller"
-_DEFAULT_LEFT_GRIPPER_CONTROLLER: str = "left_arm/gripper_controller"
-_DEFAULT_RIGHT_GRIPPER_CONTROLLER: str = "right_arm/gripper_controller"
+# xs_sdk command contract (#250): every command is an interbotix_xs_msgs
+# JointGroupCommand on /<robot_name>/commands/joint_group — the group name
+# selects the motor group ("arm" = 6 joints, "gripper" = 1). Group names come
+# from the cell's motor_config; these defaults match stock Interbotix ALOHA.
+# A real ALOHA is bimanual: exactly two follower arms, each its own xs_sdk
+# namespace and its own /<ns>/commands/joint_group topic.
+_ALOHA_ARM_COUNT: int = 2
+_DEFAULT_ARM_GROUP: str = "arm"
+_DEFAULT_GRIPPER_GROUP: str = "gripper"
 
 # Default joint state topic — Interbotix XS aggregates each arm's joint
 # states under its own namespace, then a top-level remap gathers them.
@@ -423,19 +442,21 @@ class AlohaHAL(HALBase):
     reach a real ALOHA: see the module docstring and issue #250.
 
     Args:
-        left_arm_controller: Topic prefix for the left ViperX. Defaults to
-            ``"left_arm/arm_controller"`` — a ros2_control name no real
-            ALOHA exposes (#250).
-        right_arm_controller: same for the right arm.
-        left_gripper_controller: Topic prefix for the left gripper.
-            Defaults to ``"left_arm/gripper_controller"``, which matches no
-            ros2_control convention either (#250).
-        right_gripper_controller: same for the right gripper.
-        joint_state_topic: ROS 2 topic publishing aggregated joint state.
-            No real ALOHA publishes one — each arm publishes under its own
-            namespace (#250).
-        arm_namespaces: The ``xs_sdk`` robot namespaces of the two follower
-            arms; ``estop()`` calls ``/<namespace>/torque_enable`` on each.
+        arm_group: ``xs_sdk`` motor group name receiving the 6-DoF arm
+            commands (``JointGroupCommand.name``). Defaults to ``"arm"``,
+            matching stock Interbotix ``motor_config``.
+        gripper_group: motor group name receiving the 1-DoF gripper
+            command. Defaults to ``"gripper"``; if a rig drives the gripper
+            via ``commands/joint_single`` instead, change this with the
+            motor_config (open design point in #250).
+        joint_state_topic: where the lifecycle node sources merged joint
+            state for ``state_fn``. No real ALOHA publishes an aggregated
+            topic — each arm publishes under its own namespace (#250), so
+            the merge happens at subscription time.
+        arm_namespaces: The two distinct ``xs_sdk`` robot namespaces of the
+            follower arms (left, right); commands go to
+            ``/<namespace>/commands/joint_group`` and ``estop()`` calls
+            ``/<namespace>/torque_enable`` on each.
             Defaults to ``("follower_left", "follower_right")``.
         stop_timeout_s: How long ``estop`` waits for each torque-off call.
         publish_fn: Callable forwarding messages to ROS 2 topics.
@@ -484,10 +505,8 @@ class AlohaHAL(HALBase):
     def __init__(
         self,
         *,
-        left_arm_controller: str = _DEFAULT_LEFT_ARM_CONTROLLER,
-        right_arm_controller: str = _DEFAULT_RIGHT_ARM_CONTROLLER,
-        left_gripper_controller: str = _DEFAULT_LEFT_GRIPPER_CONTROLLER,
-        right_gripper_controller: str = _DEFAULT_RIGHT_GRIPPER_CONTROLLER,
+        arm_group: str = _DEFAULT_ARM_GROUP,
+        gripper_group: str = _DEFAULT_GRIPPER_GROUP,
         joint_state_topic: str = _DEFAULT_ALOHA_JOINT_STATE_TOPIC,
         arm_namespaces: Sequence[str] = _DEFAULT_ALOHA_ARM_NAMESPACES,
         publish_fn: _PublishFn | None = None,
@@ -497,13 +516,18 @@ class AlohaHAL(HALBase):
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; no transport is opened until ``connect()``."""
-        if not arm_namespaces:
-            raise ROSConfigError("AlohaHAL needs at least one arm namespace to stop.")
+        # Bimanual contract (#250): the two follower arms must be distinct
+        # xs_sdk namespaces — with one namespace both arms would publish
+        # different targets to the same /<ns>/commands/joint_group topic and
+        # the later publish would silently replace the earlier.
+        if len(arm_namespaces) != _ALOHA_ARM_COUNT or len(set(arm_namespaces)) != _ALOHA_ARM_COUNT:
+            raise ROSConfigError(
+                "AlohaHAL needs exactly two distinct arm namespaces "
+                f"(follower_left/follower_right); got {list(arm_namespaces)!r}."
+            )
         self.description: RobotDescription = description or ALOHA_REAL_DESCRIPTION
-        self._left_arm_controller = left_arm_controller
-        self._right_arm_controller = right_arm_controller
-        self._left_gripper_controller = left_gripper_controller
-        self._right_gripper_controller = right_gripper_controller
+        self._arm_group = arm_group
+        self._gripper_group = gripper_group
         self._joint_state_topic = joint_state_topic
         self._arm_namespaces = [str(ns) for ns in arm_namespaces]
         self._publish_fn: _PublishFn = publish_fn or _default_publish
@@ -551,11 +575,25 @@ class AlohaHAL(HALBase):
         """
         if self._connected:
             raise ROSRuntimeError("AlohaHAL is already connected.")
+        if self._publish_fn is _default_publish:
+            # Same wire-up gap the ros_control family had before
+            # ros_control_transport: without an injected publish_fn the
+            # JointGroupCommand payloads below go to a log no-op and the arms
+            # never move. Fail loudly here rather than publishing into a
+            # logger (the interbotix transport is the #250 rig-confirmation
+            # follow-up; tests and sim inject their own publish_fn).
+            log.warning(
+                "hal.aloha_no_transport",
+                hint="AlohaHAL constructed without publish_fn — commands will "
+                "not leave this process; inject a transport (deploy run "
+                "wiring) before driving real arms (#250)",
+            )
         log.info(
             "hal.connect",
             robot=self.description.name,
-            left_arm=self._left_arm_controller,
-            right_arm=self._right_arm_controller,
+            arm_namespaces=list(self._arm_namespaces),
+            arm_group=self._arm_group,
+            gripper_group=self._gripper_group,
         )
         self._connected = True
         self._last_state_time = time.monotonic()
@@ -587,10 +625,11 @@ class AlohaHAL(HALBase):
         )
 
     def send_action(self, action: Action) -> None:
-        """Forward an action chunk to the four Interbotix controllers.
+        """Forward an action chunk to the four xs_sdk motor groups.
 
-        The 14-D action is split four ways: each arm gets a 6-D joint
-        trajectory and each gripper gets a 1-D position command.
+        The 14-D action is split four ways: each arm's 6-D final-step target
+        and each gripper's 1-D final-step target go out as JointGroupCommand
+        messages on /<ns>/commands/joint_group (#250).
 
         Raises:
             ROSRuntimeError: If not connected.
@@ -618,31 +657,26 @@ class AlohaHAL(HALBase):
         left_gripper_targets = [step[6] for step in action.joint_targets]
         right_gripper_targets = [step[13] for step in action.joint_targets]
 
+        # xs_sdk wire contract (#250): interbotix_xs_msgs/JointGroupCommand on
+        # /<ns>/commands/joint_group carries ONE command set ({name, cmd}) —
+        # no trajectory/horizon — so each publish forwards the final step of
+        # the chunk, per motor group, per arm.
+        left_ns, right_ns = self._arm_namespaces  # validated distinct pair
         self._publish_fn(
-            f"/{self._left_arm_controller}/joint_trajectory",
-            {
-                "control_mode": action.control_mode,
-                "horizon": action.horizon,
-                "joint_targets": left_arm_chunk,
-                "stamp_ns": action.stamp_ns,
-            },
+            f"/{left_ns}/commands/joint_group",
+            {"name": self._arm_group, "cmd": list(left_arm_chunk[-1])},
         )
         self._publish_fn(
-            f"/{self._right_arm_controller}/joint_trajectory",
-            {
-                "control_mode": action.control_mode,
-                "horizon": action.horizon,
-                "joint_targets": right_arm_chunk,
-                "stamp_ns": action.stamp_ns,
-            },
+            f"/{right_ns}/commands/joint_group",
+            {"name": self._arm_group, "cmd": list(right_arm_chunk[-1])},
         )
         self._publish_fn(
-            f"/{self._left_gripper_controller}/command",
-            {"position": left_gripper_targets[-1], "stamp_ns": action.stamp_ns},
+            f"/{left_ns}/commands/joint_group",
+            {"name": self._gripper_group, "cmd": [left_gripper_targets[-1]]},
         )
         self._publish_fn(
-            f"/{self._right_gripper_controller}/command",
-            {"position": right_gripper_targets[-1], "stamp_ns": action.stamp_ns},
+            f"/{right_ns}/commands/joint_group",
+            {"name": self._gripper_group, "cmd": [right_gripper_targets[-1]]},
         )
         log.debug(
             "hal.send_action",
