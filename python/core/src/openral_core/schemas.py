@@ -13410,7 +13410,13 @@ class CollisionEvidence(_FailureEvidenceBase):
         workspace_denial_reason: Readable reason the workspace rule did not
             tolerate the reported pair, mapped from the kernel's existing code.
         workspace_contact_active: Whether a live workspace contact region was
-            active during the check, when reported by the producer.
+            active during the check, when reported by the producer. This is the
+            kernel's in-tree rule, which is off when an exemption provider applies
+            workspace contact (ADR-0121), so it reads ``False`` on every provider stop.
+        workspace_declaration_live: Whether the grasp declaration's workspace was live
+            at the stop, whoever applies it (the in-tree rule or a provider). ``False``
+            with a declared workspace means it had lapsed or been dropped. ``None`` from
+            a producer that predates the field.
         grasp_exemption_active: Whether a live grasp exemption was active during
             the check, when reported by the producer.
         grasp_exemption_source: Which grasp exemption the check ran under (ADR-0121):
@@ -13436,6 +13442,10 @@ class CollisionEvidence(_FailureEvidenceBase):
             names a different cell. Matching on a stamp cannot separate two
             grids inside one clock tick (`/clock` quantises every stamp in the
             graph to the tick); matching on this origin is exact.
+        world_cell_center_m: Base-frame centre of that world voxel, when the other
+            party is one; ``None`` otherwise and on any producer that predates the
+            field. The grid's dimensions are not in the evidence, so without it the
+            index names no place a reasoner or an operator can look at.
     """
 
     #: Sentinel ``horizon_step`` for a reactive (measured-state) collision.
@@ -13462,6 +13472,7 @@ class CollisionEvidence(_FailureEvidenceBase):
         | None
     ) = None
     workspace_contact_active: bool | None = None
+    workspace_declaration_live: bool | None = None
     grasp_exemption_active: bool | None = None
     grasp_exemption_source: Literal["region", "tracked", "provider", "none"] | None = None
     grasp_exemption_provider: str | None = Field(
@@ -13475,6 +13486,7 @@ class CollisionEvidence(_FailureEvidenceBase):
         default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
     )
     world_grid_origin_m: tuple[float, float, float] | None = None
+    world_cell_center_m: tuple[float, float, float] | None = None
 
     @field_validator("joint_positions_rad")
     @classmethod
