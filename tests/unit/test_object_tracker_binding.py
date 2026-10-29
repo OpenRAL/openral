@@ -868,6 +868,42 @@ def test_an_untracked_payload_never_reaches_below_its_neighbours_support() -> No
     assert lowest(DictStore([beside])) >= beside.support_z - 1e-6
 
 
+def test_an_untracked_payload_never_reaches_into_a_declared_static_floor() -> None:
+    """Spark restock (pro#51, dep3 mix_08): the carton's track had gone provisional, its support
+    sat 2.6 cm under the tote floor, and the jaw-stroke box stopped on the floor's top cell at
+    the bind. A declared static cell under the pinch cuts the box at its top, and a track
+    support that is higher still wins."""
+    from openral_core.kinematics import bounding_half_extents
+    from openral_world_state.object_tracker.binding import _t
+
+    binder, q, centre = arm_at_hold("droid_franka_robotiq")
+    cell = binder.cell_m
+
+    def lowest(store: DictStore) -> float:
+        result = binder.on_attach(store, q, stamp_ns=10)
+        t_fo = binder.hand.t_frame_from_attach(binder.frame_id, q) @ _t(
+            result.attachment.pose_in_link
+        )
+        return min(
+            float(t[2, 3] - np.abs(t[2, :3]) @ np.asarray(bounding_half_extents(p.shape)))
+            for p in result.attachment.primitives
+            for t in [t_fo @ _t(p.pose_in_object)]
+        )
+
+    free = lowest(DictStore([]))
+    floor_top = free + 0.03  # a floor 3 cm above where the full stroke reaches
+    binder.static_centres = np.array([[centre[0], centre[1], floor_top - 0.5 * cell]])
+    assert lowest(DictStore([])) >= floor_top - 1e-6
+    low_support = track(
+        "trk:9", binder.frame_id, centre + np.array([0.08, 0.0, 0.0]), (0.02,) * 3
+    ).model_copy(update={"support_z": floor_top - 0.026})
+    assert lowest(DictStore([low_support])) >= floor_top - 1e-6, "the static floor wins"
+    high = low_support.model_copy(
+        update={"support_z": floor_top + 0.01, "floor_z": floor_top + 0.02}
+    )
+    assert lowest(DictStore([high])) >= floor_top + 0.01 - 1e-6, "a higher support still cuts"
+
+
 def test_a_support_cut_only_ever_shrinks_the_payload() -> None:
     """Spark restock R315 (2026-10-23): re-boxing the cut fallback in gravity's axes grew it
     sideways into the robot's own forearm. On a tilted hold (SO-101, ~20 deg) and a level

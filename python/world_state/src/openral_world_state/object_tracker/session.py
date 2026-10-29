@@ -508,6 +508,7 @@ class TrackerSession:
             return binder.held
         if binder.held is not None:  # a second ATTACH without a DETACH: the old hold ended
             self._release(gripper_joint, stamp_ns)
+        binder.static_centres = self.tracker.static_centres
         late = self._late_hold(gripper_joint, binder, positions, stamp_ns)
         binding = binder.on_attach(
             self.tracker.store,

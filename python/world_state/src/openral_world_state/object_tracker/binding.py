@@ -383,6 +383,26 @@ def _support_clipped(
     return out
 
 
+def _static_top(
+    centres: NDArray[np.float64], point: NDArray[np.float64], cell: float
+) -> float | None:
+    """Top of the highest declared static cell in the column under ``point``, or ``None``.
+
+    ``centres`` are the kernel's static cell centres (grid frame, one per cell). Example:
+
+    >>> c = np.array([[0.0, 0.0, -0.5925], [0.0, 0.0, -0.6075], [0.3, 0.0, -0.2]])
+    >>> _static_top(c, np.array([0.004, -0.003, -0.46]), 0.015)
+    -0.585
+    >>> _static_top(c, np.array([0.1, 0.0, -0.46]), 0.015) is None
+    True
+    """
+    if not len(centres):
+        return None
+    near = np.all(np.abs(centres[:, :2] - point[:2]) <= 0.5 * cell, axis=1)
+    below = centres[near & (centres[:, 2] < point[2])]
+    return round(float(below[:, 2].max()) + 0.5 * cell, 9) if len(below) else None
+
+
 def _rotation_about(
     axis: NDArray[np.float64], point: NDArray[np.float64], theta: float
 ) -> NDArray[np.float64]:
@@ -436,6 +456,8 @@ class GraspBinder:
         # The world at the hold's first growth call: occupied lattice cells that were neither
         # the payload's connected body nor the hand. None until that call.
         self._static: set[tuple[int, ...]] | None = None
+        # Declared static cell centres (grid frame); the session keeps it current.
+        self.static_centres: NDArray[np.float64] = np.zeros((0, 3))
 
     def observe_jaw(self, jaw: float) -> None:
         """Fold in a measured jaw; the most open one bounds the next fallback's width."""
@@ -653,6 +675,14 @@ class GraspBinder:
             prims += [_prim(t_of @ _frame(c, r), h, oid, src) for c, r, h in boxes]
         prims = prims[:1] + _palm_clipped(prims[1:], t_ao, fb, oid) if len(prims) > 1 else prims
         floor = min(t.support_z for t in cands) if cands else support_z
+        # A declared static surface under the pinch is exact; a track's support may come from a
+        # fit through the robot. Nothing held reaches into it, so it only ever cuts more (pro#51:
+        # a provisional carton's support sat 2.6 cm under the tote floor and the jaw-stroke box
+        # stopped on the floor's top cell at the bind). Safety-WG review owed.
+        t_fa = self.hand.t_frame_from_attach(self.frame_id, positions)
+        top = _static_top(self.static_centres, (t_fa @ t_ao)[:3, 3], self.cell_m)
+        if top is not None:
+            floor = top if floor is None else max(floor, top)
         if floor is not None:
             # Cut at the lowest support the candidates (else the tracked neighbours) stand on.
             t_fo = self.hand.t_frame_from_attach(self.frame_id, positions) @ t_ao
