@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "description": "Who performed an intervention, without naming them.\n\nAttributes:\n    channel_label: The channel the action came through, as configured on\n        the producing node (``\"pendant\"``, ``\"dashboard\"``, ``\"slack\"``).\n    actor_id: Pseudonymous operator id: HMAC-SHA256 hex of the operator\n        identity under an org key the deployer holds. ``None`` when the\n        channel cannot identify the operator.\n\nExample:\n    >>> Actor(channel_label=\"pendant\").actor_id is None\n    True",
+  "properties": {
+    "channel_label": {
+      "minLength": 1,
+      "title": "Channel Label",
+      "type": "string"
+    },
+    "actor_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actor Id"
+    }
+  },
+  "required": [
+    "channel_label"
+  ],
+  "title": "Actor",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

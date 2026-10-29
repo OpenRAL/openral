@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RetentionClass",
+  "description": "Retention class of a compliance record; its floor is ``RETENTION_FLOOR_DAYS``.",
+  "type": "string",
+  "enum": [
+    "ai_log_6m",
+    "mr_safety_decision_1y",
+    "mr_trace_5y",
+    "incident_10y",
+    "telemetry_raw"
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "additionalProperties": false,
+  "description": "One period of use of the unit.\n\nAttributes:\n    kind: Discriminator (always ``\"session\"``).\n    start_ts_ns: Session start.\n    end_ts_ns: Session end; ``None`` while open.\n    run_mode: ``openral.run.mode``.\n    site_id: Deployer site, when configured.\n    shift: Deployer shift label, when configured.",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "record_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Record Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts_ns": {
+      "minimum": 0,
+      "title": "Ts Ns",
+      "type": "integer"
+    },
+    "clock_source": {
+      "enum": [
+        "ptp",
+        "ntp",
+        "monotonic_unsynced"
+      ],
+      "title": "Clock Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "parent_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Record Id"
+    },
+    "kind": {
+      "const": "session",
+      "default": "session",
+      "title": "Kind",
+      "type": "string"
+    },
+    "start_ts_ns": {
+      "minimum": 0,
+      "title": "Start Ts Ns",
+      "type": "integer"
+    },
+    "end_ts_ns": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "End Ts Ns"
+    },
+    "run_mode": {
+      "enum": [
+        "sim",
+        "hardware"
+      ],
+      "title": "Run Mode",
+      "type": "string"
+    },
+    "site_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Site Id"
+    },
+    "shift": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Shift"
+    }
+  },
+  "required": [
+    "record_id",
+    "seq",
+    "ts_ns",
+    "clock_source",
+    "start_ts_ns",
+    "run_mode"
+  ],
+  "title": "SessionRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
