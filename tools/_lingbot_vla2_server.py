@@ -103,7 +103,7 @@ def _resolve_qwen() -> str:
     return _offline_snapshot("Qwen/Qwen3-VL-4B-Instruct")
 
 
-def _resolve_checkpoint(model: str) -> str:
+def _resolve_checkpoint(model: str, override_env: str = "OPENRAL_LINGBOT_VLA2_CKPT") -> str:
     """Return a local checkpoint dir (dir of ``*.safetensors``) for ``model``.
 
     A local path is used verbatim; an HF id is snapshot-downloaded. The id may be
@@ -115,8 +115,9 @@ def _resolve_checkpoint(model: str) -> str:
     """
     # A local checkpoint override wins over the passed id — lets an operator serve
     # a local fp32 checkout (skipping the HF download) regardless of the rskill's
-    # weights_uri, mirroring OPENRAL_LINGBOT_VLA2_REPO for the code checkout.
-    override = os.environ.get("OPENRAL_LINGBOT_VLA2_CKPT")
+    # weights_uri, mirroring the per-variant *_REPO override for the code checkout.
+    # Each variant has its own variable so a V2 checkpoint never feeds the V1 loader.
+    override = os.environ.get(override_env)
     if override and Path(override).expanduser().is_dir():
         return str(Path(override).expanduser())
     p = Path(model).expanduser()
@@ -745,7 +746,7 @@ class _LingBotV1Policy:
             sys.path.insert(0, str(repo))
         os.chdir(repo)  # configs/ + assets/ resolved relative to CWD
         os.environ["QWEN25_PATH"] = _resolve_qwen25()
-        ckpt_dir = _resolve_checkpoint(args.model)
+        ckpt_dir = _resolve_checkpoint(args.model, "OPENRAL_LINGBOT_VLA_CKPT")
 
         # V1 attention only registers eager/flash; flash is absent, so eager is the
         # only flash-free backend (sdpa raises KeyError in the custom vision/text
