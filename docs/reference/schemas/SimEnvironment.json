@@ -289,7 +289,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "A full sim configuration: the swappable (robot x scene x task x VLA) tuple.\n\nThe composed runtime form of a ``SimScene`` plus an\n``RSkillManifest``. ``openral_sim``'s CLI builds it; adapters\nconsume it. Not loaded from YAML directly \u2014 ``from_yaml`` raises.\n\nAttributes:\n    robot_id: ID into the eval ``ROBOTS`` registry. Matches a robot's\n        ``RobotDescription.name`` or an embodiment shortcut (e.g.\n        ``\"so100_follower\"``, ``\"franka_panda\"``).\n    scene: Scene the robot acts in.\n    task: Task to evaluate. ``task.scene_id`` MUST equal ``scene.id``.\n    vla: Policy that drives the robot.\n    base_pose: Optional per-episode mounting pose for the robot in the\n        scene's world frame. ``None`` means \"use the scene adapter's\n        default\" (e.g. an URDF's identity placement). Only honoured by\n        **free-axis** scene adapters; setting it on a scene that\n        registers with a ``fixed_robot=`` constraint (LIBERO,\n        MetaWorld, RoboCasa, PushT, ALOHA) is rejected at CLI\n        compose-time. The pose's ``frame_id`` is expected to be\n        ``\"world\"``; adapters anchor on the robot's\n        ``RobotDescription.base_frame``.\n    seed: Global random seed (env reset, action sampling, torch RNG).\n    n_episodes: Number of episodes to run.  ``1`` for a smoketest;\n        \u2265 50 for an honest single-task success rate.\n    record_video: Whether to ask the runner to record video frames.\n    save_dir: Optional directory to write artefacts (video, traces, json\n        summary). ``None`` means \"discard outputs\".\n    metadata: Free-form notes (commit SHA, run owner, etc.).\n\nExample:\n    >>> env = SimEnvironment(\n    ...     robot_id=\"franka_panda\",\n    ...     scene=SceneSpec(id=\"libero_spatial\"),\n    ...     task=TaskSpec(\n    ...         id=\"libero_spatial/task_0\",\n    ...         scene_id=\"libero_spatial\",\n    ...         instruction=\"pick up the cube\",\n    ...     ),\n    ...     vla=VLASpec(id=\"smolvla\", weights_uri=\"hf://lerobot/smolvla_libero\"),\n    ... )\n    >>> env.task.scene_id == env.scene.id\n    True",
+  "description": "A full sim configuration: the swappable (robot x scene x task x VLA) tuple.\n\nThe composed runtime form of a ``SimScene`` plus an\n``RSkillManifest``. ``openral_sim``'s CLI builds it; adapters\nconsume it. Not loaded from YAML directly \u2014 ``from_yaml`` raises.\n\nAttributes:\n    robot_id: ID into the eval ``ROBOTS`` registry. Matches a robot's\n        ``RobotDescription.name`` or an embodiment shortcut (e.g.\n        ``\"so100_follower\"``, ``\"franka_panda\"``).\n    scene: Scene the robot acts in.\n    task: Task to evaluate. ``task.scene_id`` MUST equal ``scene.id``.\n    vla: Policy that drives the robot.\n    base_pose: Optional per-episode mounting pose for the robot in the\n        scene's world frame. ``None`` means \"use the scene adapter's\n        default\" (e.g. an URDF's identity placement). Only honoured by\n        **free-axis** scene adapters; setting it on a scene that\n        registers with a ``fixed_robot=`` constraint (LIBERO,\n        MetaWorld, RoboCasa, PushT, ALOHA) is rejected at CLI\n        compose-time. The pose's ``frame_id`` is expected to be\n        ``\"world\"``; adapters anchor on the robot's\n        ``RobotDescription.base_frame``.\n    seed: Global random seed (env reset, action sampling, torch RNG).\n    n_episodes: Number of episodes to run.  ``1`` for a smoketest;\n        \u2265 50 for an honest single-task success rate.\n    record_video: Whether to ask the runner to record video frames.\n    save_dir: Optional directory to write artefacts (video, traces, json\n        summary). ``None`` means \"discard outputs\".\n    metadata: Free-form notes (commit SHA, run owner, etc.).\n    robot_unit: The scene's ``robot_unit`` (``DeployScene.robot_unit``): the\n        ``robots/<robot_id>/units/<unit>.yaml`` overlay whose calibrated sensors the\n        sim renders. ``$OPENRAL_ROBOT_UNIT`` overrides it, as on a deploy.\n\nExample:\n    >>> env = SimEnvironment(\n    ...     robot_id=\"franka_panda\",\n    ...     scene=SceneSpec(id=\"libero_spatial\"),\n    ...     task=TaskSpec(\n    ...         id=\"libero_spatial/task_0\",\n    ...         scene_id=\"libero_spatial\",\n    ...         instruction=\"pick up the cube\",\n    ...     ),\n    ...     vla=VLASpec(id=\"smolvla\", weights_uri=\"hf://lerobot/smolvla_libero\"),\n    ... )\n    >>> env.task.scene_id == env.scene.id\n    True",
   "properties": {
     "robot_id": {
       "title": "Robot Id",
@@ -347,6 +347,18 @@
       "additionalProperties": true,
       "title": "Metadata",
       "type": "object"
+    },
+    "robot_unit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Robot Unit"
     }
   },
   "required": [

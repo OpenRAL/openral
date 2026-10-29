@@ -571,3 +571,34 @@ def test_initial_joint_positions_reach_the_sidecar_within_limits(
     for bad in ({"left_gripper": -0.6}, {"no_such_joint": 0.0}):
         with pytest.raises(ROSConfigError, match="initial_joint_positions"):
             _write_robot_spec(env_cfg, None, bad)
+
+
+def test_the_scenes_robot_unit_calibrates_the_sim_without_the_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sim run` honours the scene's `robot_unit`, as deploy does; `$OPENRAL_ROBOT_UNIT` wins.
+
+    The backend passed no scene unit, so a scene declaring `robot_unit: thor` rendered from
+    the manifest's nominal cameras unless the env var was set. Pro's restock suite (which
+    declares it) lost its calibrated cameras: 0/4 complete on four tasks, 3/4 with the unit.
+    """
+    from openral_core import ROBOT_UNIT_ENV
+    from openral_sim.backends.isaac_sim import IsaacSimOptions, _write_robot_spec
+
+    def spec(env_cfg: Any) -> dict[str, Any]:
+        opts = IsaacSimOptions(**env_cfg.scene.backend_options)
+        path, _desc = _write_robot_spec(env_cfg, opts.camera_mounts)
+        try:
+            return dict(json.loads(Path(path).read_text()))
+        finally:
+            Path(path).unlink()
+
+    via_env = _openarm_spec(monkeypatch, "thor")["camera_mounts"]
+    nominal = _openarm_spec(monkeypatch, None)["camera_mounts"]
+    assert via_env != nominal, "the thor unit must change a camera for this test to mean anything"
+    monkeypatch.delenv(ROBOT_UNIT_ENV, raising=False)
+    scene_unit = _openarm_env_cfg().model_copy(update={"robot_unit": "thor"})
+    assert spec(scene_unit)["camera_mounts"] == via_env
+    monkeypatch.setenv(ROBOT_UNIT_ENV, "no_such_unit")
+    with pytest.raises(ROSConfigError):
+        spec(scene_unit)  # the env var overrides the scene, as on a deploy

@@ -11257,6 +11257,9 @@ class SimEnvironment(BaseModel):
         save_dir: Optional directory to write artefacts (video, traces, json
             summary). ``None`` means "discard outputs".
         metadata: Free-form notes (commit SHA, run owner, etc.).
+        robot_unit: The scene's ``robot_unit`` (``DeployScene.robot_unit``): the
+            ``robots/<robot_id>/units/<unit>.yaml`` overlay whose calibrated sensors the
+            sim renders. ``$OPENRAL_ROBOT_UNIT`` overrides it, as on a deploy.
 
     Example:
         >>> env = SimEnvironment(
@@ -11285,6 +11288,7 @@ class SimEnvironment(BaseModel):
     record_video: bool = False
     save_dir: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    robot_unit: str | None = None
 
     def model_post_init(self, _context: object) -> None:
         """Cross-field validation: task.scene_id must match scene.id."""

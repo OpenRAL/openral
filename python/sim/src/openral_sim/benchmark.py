@@ -298,6 +298,7 @@ def run_benchmark(
                 n_episodes=1,
                 save_dir=save_dir,
                 record_video=video_dir is not None,
+                robot_unit=scene.robot_unit,
             )
             runner = SimRunner(env_cfg, view=False, strict_view=False)
             try:
@@ -577,6 +578,7 @@ def run_benchmark_scene(
             n_episodes=1,
             save_dir=save_dir,
             record_video=record_video,
+            robot_unit=scene.robot_unit,
         )
         runner = SimRunner(env_cfg, view=view_flag, strict_view=strict_view)
         try:
