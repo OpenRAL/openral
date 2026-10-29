@@ -247,8 +247,7 @@ class TestCameraMount:
                 "static_transform_xyz_rpy": None,
             }
         )
-        args = (desc, [], [bench])
-        assert depth_extrinsic_problems(*args, estimated_camera="bench_cam") == []
+        assert depth_extrinsic_problems(desc, [], [bench], estimated_camera="bench_cam") == []
 
 
 class TestMetricDepth:

@@ -141,7 +141,7 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
     from std_msgs.msg import Empty
     from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
-    from tests.integration.test_grasp_target_leg_live import _thor_mount
+    from tests.integration.test_grasp_target_leg_live import _zed_mount
     from tests.integration.test_safety_kernel_grasp_target_band import _kernel_params
     from tests.integration.test_vision_attachment_optical_frame_live import _tf_msg
     from tests.sim.safety._kernel_subprocess import (
@@ -231,7 +231,7 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
             peer.create_subscription(FailureTrigger, "/openral/failure/safety", failures.append, 50)
             peer.create_subscription(Empty, "/openral/estop", estops.append, 10)
             StaticTransformBroadcaster(peer).sendTransform(
-                [_tf_msg(_BASE, "zed_camera_link", _thor_mount())]
+                [_tf_msg(_BASE, "zed_camera_link", _zed_mount())]
             )
             hand_broadcaster = TransformBroadcaster(peer)
             state: dict[str, Any] = {
