@@ -331,8 +331,8 @@ def test_a_partial_mask_never_shrinks_an_unmoved_objects_box() -> None:
     wall = _ground_mask(tr, rig, depth, half, stamp=2, wall=wall + 1.0)
     (track,) = tr.store.all()
     assert track.object_id == full.object_id
-    assert track.last_fit_stamp_ns == 1  # the partial refit was ignored
-    assert track.box == full.box
+    assert track.box == full.box  # the partial refit's geometry was ignored ...
+    assert track.last_fit_stamp_ns == 2  # ... but it re-dated the box it was measured inside
     _ground_mask(tr, rig, depth, labels == 1, stamp=3, wall=wall + 1.0)
     (track,) = tr.store.all()
     assert track.last_fit_stamp_ns == 3  # a full refit still replaces it

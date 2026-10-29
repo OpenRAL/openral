@@ -1124,7 +1124,16 @@ class ObjectTracker:
             # true tightening passes: the surface it drops is no longer occupied.
             left = uncovered_cells(grid, prior, fit.box)
             if left >= max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(prior)):
-                log.info("object_tracker.partial_refit_ignored", object_id=oid,
+                # Unmoved, so measured inside the kept box now: re-dated like the provisional
+                # refit above (Spark restock: every refit on the approach was partial, the
+                # kept box went 2-13 s stale and the grasp bound the pinch fallback).
+                # Safety-WG review owed.
+                self.store.replace(
+                    old.model_copy(
+                        update={"last_fit_stamp_ns": max(old.last_fit_stamp_ns, frame.stamp_ns)}
+                    )
+                )
+                log.info("object_tracker.partial_refit_ignored", object_id=oid, redated=True,
                          uncovered=left, cells=len(prior),
                          half_extents=[round(h, 3) for h in old.box.half_extents],
                          fit_half=[round(h, 3) for h in fit.box.half_extents])  # fmt: skip
