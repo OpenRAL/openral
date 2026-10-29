@@ -94,6 +94,16 @@ goal is rejected as `FAILURE_CONFIG_ERROR` rather than never lapsing:
 Every miss is logged (`rskill_runner.deadline_exceeded` / `rskill_runner.clock_stalled`)
 and recorded as the `deadline_missed` span event with `miss.kind`.
 
+The goal's grasp declaration is a second deadline. The kernel drops its contact exemption at
+`stamp_ns + timeout_s`, and the declaration is armed before the start-pose move, so it can
+expire inside the goal's own budget. A goal still running then has its fingers in contact
+with nothing exempting them, and it ends as an unexplained world-collision e-stop (pro#51:
+six of eight restock timeouts). The runner ends the goal
+`DECLARATION_EXPIRY_MARGIN_S` (2 s) before that expiry instead: `failure_reason=
+"deadline_exceeded: grasp declaration '<target>' expires (armed … ago, timeout_s=…)"`,
+`TimeoutEvidence.operation="rskill.execute:grasp_declaration:deadline_exceeded"`. It only
+ever ends a goal earlier.
+
 `_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period sleep wait on the
 clock, not the safety layer. `ROSActionRskill._poll_future` (a wrapped `ros_action`/
 `ros_service` skill blocking on its server's result — Nav2 will never arrive if the robot
@@ -262,7 +272,7 @@ result):
 | --- | --- |
 | `FAILURE_SAFETY_ESTOP` | The newest report on `/openral/failure/safety` during this goal: the kernel's (`CollisionEvidence`: which link, against what, how deep), the operator / hardware e-stop's (`HumanEvidence`) or the deadman watchdog's (`TimeoutEvidence`). Empty when no publisher explained the stop |
 | `FAILURE_PERCEPTION_STALE` | The kernel's `PerceptionStaleEvidence` (which input, its age, the limit) when a stale input stalled the action |
-| `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, budget, elapsed) |
+| `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, or `"rskill.execute:grasp_declaration:deadline_exceeded"` when the grasp declaration expires first; budget, elapsed) |
 | `FAILURE_OBJECT_NOT_FOUND` | The tracker's exhausted `ObjectQueryEvidence` |
 | `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when the cause is known: `state=gpu_out_of_memory` / `quantization_mismatch` (the skill's own typed fault), or the kernel drop that left the action unapplied (`drop_envelope_unconfigured`, `drop_voxel_overflow`, `drop_attached_overflow`). Empty otherwise |
 | anything else | Empty: `failure_reason` says it all |
