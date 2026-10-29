@@ -339,23 +339,19 @@ def test_the_extrinsic_preflight_refuses_a_cloud_source_with_no_declared_mount()
     and the kernel would place obstacles through a pose nobody declared.
     """
     from openral_cli.deploy_sim import _preflight_depth_extrinsics
-    from openral_core import apply_sensor_overlays, load_robot_unit
 
-    robot_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    thor = load_robot_unit(robot_yaml, "thor").sensors
-    robot = RobotDescription.from_yaml(str(robot_yaml))
-    robot = robot.model_copy(update={"sensors": apply_sensor_overlays(robot.sensors, thor)})
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
     workcell = SensorSpec(
         name="workcell_lidar", modality="point_cloud", frame_id="workcell_lidar", rate_hz=10.0
     )
     with pytest.raises(ROSConfigError) as err:
-        _preflight_depth_extrinsics(robot, thor, "thor", [workcell])
+        _preflight_depth_extrinsics(robot, [], None, [workcell])
     assert "workcell_lidar: a scene point_cloud sensor" in str(err.value)
-    assert "head_zed" not in str(err.value)  # declared by the unit overlay
+    assert "head_zed" not in str(err.value)  # declared calibrated in the manifest
     placed = workcell.model_copy(
         update={
             "parent_frame": robot.base_frame,
             "static_transform_xyz_rpy": (1.0, 0.0, 1.5, 0.0, 0.0, 0.0),
         }
     )
-    _preflight_depth_extrinsics(robot, thor, "thor", [placed])
+    _preflight_depth_extrinsics(robot, [], None, [placed])

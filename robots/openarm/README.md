@@ -180,19 +180,16 @@ openral rskill install <rskill_id> --non-commercial --yes
 openral rskill check <rskill_id> --robot robots/openarm/robot.yaml
 ```
 
-The cell's cameras are bound per unit in `units/<unit>.yaml` (`thor.yaml`,
-`orin.yaml`: each sensor's `deploy_binding`, used only by `deploy run`, plus the
-unit's calibrated `head_zed` mount and the wrist Arducams' calibrated intrinsics:
-pinhole + plumb_bob from the 2026-10-02 calibration at 960x600, so the wrists capture at
-960x600 too). The robot and its cameras moved from the Thor host to the Orin host on
-2026-10-07, so `orin.yaml` carries the Thor measurements. Select the unit with
-`OPENRAL_ROBOT_UNIT=<unit>` or the scene's `robot_unit`; a real deploy refuses when
-neither names one. `top` is the ZED's UNRECTIFIED left image at VGA — what the pick-and-place
+The cell's cameras are bound in `robot.yaml` itself (each sensor's `deploy_binding`, used
+only by `deploy run`), together with the calibrated `head_zed` mount
+(`static_transform_calibrated: true`) and the wrist Arducams' calibrated intrinsics: pinhole +
+plumb_bob from the 2026-10-02 calibration at 960x600, so the wrists capture at 960x600 too.
+There is one OpenArm and one manifest; no unit to select. `top` is the ZED's UNRECTIFIED left image at VGA — what the pick-and-place
 policy was trained on (the driver override grabs VGA and advertises the raw topic) —
 `head_zed` its SDK depth, the two Arducams are
 `wrist_left` / `wrist_right`. Their bus topic (`/openral/cameras/wrist_*/image`) is the
 sensor leg's 320x240 thumbnail at 3 Hz; for a calibration pass that needs the 960x600 capture
-on the bus, uncomment `topic_native: true` in the unit file (left off by default: each native
+on the bus, add `topic_native: true` to the wrist binding (left off by default: each native
 publish holds the GIL ~55 ms, which the Orin's policy thread cannot spare). `top` is already
 native on the driver's own `/zed/zed_node/rgb/color/raw/image`. To record what the policy saw, use
 `openral deploy run --dataset-out <file.mcap>`: it bags each tick's native frames straight
@@ -266,7 +263,7 @@ view**: the scene's `context` key reached the camera readers but not the
 runner, which kept the manifest's `top` → `base` slot, so lerobot fed a
 masked blank in its place. `compose_runtime` now merges the scene's
 `sensors:` (workcell cameras only, since the robot's own are bound in
-the unit overlay, `units/<unit>.yaml`) into the one description every consumer reads.
+`robot.yaml`) into the one description every consumer reads.
 
 ## Action layout (16 DoF)
 

@@ -328,14 +328,10 @@ def test_a_tracked_camera_on_real_projects_through_the_drivers_camera_info(
     """#421 review: on real, /openral/cameras/<cam>/camera_info is rebuilt from the
     manifest's (possibly nominal) intrinsics; the tracked cameras' locator and segmenter
     must read the driver's CameraInfo, as every other real consumer does."""
-    from openral_core import RobotDescription, apply_sensor_overlays, resolve_sensor_overlays
+    from openral_core import RobotDescription
 
     f = launch_module._tracked_camera_infos  # type: ignore[attr-defined]
-    robot = "robots/openarm/robot.yaml"
-    arm = RobotDescription.from_yaml(robot)
-    sensors = apply_sensor_overlays(
-        arm.sensors, resolve_sensor_overlays(robot, "thor", required=True)
-    )
+    sensors = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
     depth = next(s for s in sensors if s.modality == "depth" and s.deploy_binding is not None)
     live = launch_module._live_camera_info_topic(depth, "real")  # type: ignore[attr-defined]
     assert live and not live.startswith("/openral/cameras/")

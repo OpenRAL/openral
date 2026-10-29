@@ -58,76 +58,58 @@ def test_so101_bench_scene_binds_its_host_cameras_through_its_unit() -> None:
     assert [s.name for s in bound] == ["top", "wrist"]
 
 
-def _unit_mount(unit: str) -> tuple[float, ...] | None:
-    """``head_zed``'s mount in ``robots/openarm/units/<unit>.yaml``; ``None`` if undeclared."""
-    raw = yaml.safe_load((_OPENARM.parent / "units" / f"{unit}.yaml").read_text(encoding="utf-8"))
-    zed = next(s for s in raw["sensors"] if s["name"] == "head_zed")
-    value = zed.get("static_transform_xyz_rpy")
-    return tuple(value) if value is not None else None
+def test_openarm_declares_its_measured_zed_mount_in_the_manifest() -> None:
+    """One OpenArm, one manifest: the ZED's measured mount and bindings live in robot.yaml.
 
-
-def test_openarm_units_keep_frames_and_pin_the_thor_mount() -> None:
-    manifest = {s.name: s for s in RobotDescription.from_yaml(str(_OPENARM)).sensors}
-    nominal = manifest["head_zed"].static_transform_xyz_rpy
-    thor, orin = _effective(_OPENARM, "thor"), _effective(_OPENARM, "orin")
-    for unit in (thor, orin):
-        zed = unit["head_zed"]
-        assert zed.frame_id == manifest["head_zed"].frame_id  # type: ignore[attr-defined]
-        assert zed.parent_frame == "openarm_base"  # type: ignore[attr-defined]
-        assert zed.deploy_binding.backend_params["topic"] == (  # type: ignore[attr-defined]
-            "/zed/zed_node/depth/depth_registered"
-        )
-    # Each unit carries its own calibrated mount, read from its own unit file, so
-    # re-calibrating one cell's camera never moves the other's. Both are declared (they change
-    # with every re-calibration); on 2026-10-07 the robot and its ZED moved from Thor to Orin,
-    # so the two files currently hold the same measurement.
-    for name, unit in (("thor", thor), ("orin", orin)):
-        assert _unit_mount(name) is not None
-        assert unit["head_zed"].static_transform_xyz_rpy == _unit_mount(name)  # type: ignore[attr-defined]
-        assert unit["head_zed"].static_transform_xyz_rpy != nominal  # type: ignore[attr-defined]
+    There is no per-host unit to select, so a real deploy needs none and every scene renders
+    and deploys from the same calibrated cameras."""
+    assert not (_OPENARM.parent / "units").exists()
+    assert resolve_sensor_overlays(_OPENARM, None, required=True) == []
+    zed = _effective(_OPENARM, None)["head_zed"]
+    assert zed.parent_frame == "openarm_base"  # type: ignore[attr-defined]
+    assert zed.static_transform_calibrated  # type: ignore[attr-defined]
+    assert zed.static_transform_xyz_rpy == pytest.approx(  # type: ignore[attr-defined]
+        (0.06597, -0.004548, 0.094539, -0.055916, 1.145014, -0.036625)
+    )
+    assert zed.deploy_binding.backend_params["topic"] == (  # type: ignore[attr-defined]
+        "/zed/zed_node/depth/depth_registered"
+    )
     bench = DeployScene.from_yaml(str(_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"))
-    assert bench.robot_unit == "orin"
+    assert bench.robot_unit is None
 
 
-def test_thor_wrist_cameras_carry_their_calibration_at_the_captured_size() -> None:
-    """Thor's wrist Arducams were calibrated on the cell (2026-10-02, plumb_bob [k1, k2, p1,
-    p2, k3]) at 960x600: the overlay carries that K and distortion through the merge, and each
-    camera captures at the calibrated size — a 4:3 capture would be a crop the 16:10
-    intrinsics cannot be rescaled to. The same cameras moved to the Orin cell on 2026-10-07,
-    so Orin's overlay carries the same calibration."""
-    manifest = {s.name: s for s in RobotDescription.from_yaml(str(_OPENARM)).sensors}
-    thor, orin = _effective(_OPENARM, "thor"), _effective(_OPENARM, "orin")
+def test_openarm_wrist_cameras_carry_their_calibration_at_the_captured_size() -> None:
+    """The wrist Arducams were calibrated on the cell (2026-10-02, plumb_bob [k1, k2, p1, p2,
+    k3]) at 960x600, and each camera captures at the calibrated size: a 4:3 capture would be a
+    crop the 16:10 intrinsics cannot be rescaled to."""
+    arm = _effective(_OPENARM, None)
     expected = {
         "wrist_left": (614.255921, 613.585651, 502.490468, 308.959123, -0.072761672),
         "wrist_right": (616.019357, 615.588168, 483.154560, 306.781145, -0.085062635),
     }
     for name, (fx, fy, cx, cy, k1) in expected.items():
-        for unit in (thor, orin):
-            k = unit[name].intrinsics  # type: ignore[attr-defined]
-            assert (k.width, k.height) == (960, 600)
-            assert (k.fx, k.fy, k.cx, k.cy) == pytest.approx((fx, fy, cx, cy))
-            assert k.distortion_model == "plumb_bob"
-            assert len(k.distortion_coeffs) == 5 and k.distortion_coeffs[0] == pytest.approx(k1)
-            params = unit[name].deploy_binding.backend_params  # type: ignore[attr-defined]
-            assert (params["width"], params["height"]) == (k.width, k.height)
-            assert unit[name].frame_id == manifest[name].frame_id  # type: ignore[attr-defined]
-            assert unit[name].intrinsics != manifest[name].intrinsics  # type: ignore[attr-defined]
+        spec = arm[name]
+        k = spec.intrinsics  # type: ignore[attr-defined]
+        assert spec.intrinsics_calibrated  # type: ignore[attr-defined]
+        assert (k.width, k.height) == (960, 600)
+        assert (k.fx, k.fy, k.cx, k.cy) == pytest.approx((fx, fy, cx, cy))
+        assert k.distortion_model == "plumb_bob"
+        assert len(k.distortion_coeffs) == 5 and k.distortion_coeffs[0] == pytest.approx(k1)
+        params = spec.deploy_binding.backend_params  # type: ignore[attr-defined]
+        assert (params["width"], params["height"]) == (k.width, k.height)
 
 
 def test_a_real_deploy_of_a_robot_with_units_refuses_without_one() -> None:
     with pytest.raises(ROSConfigError, match="none is selected"):
-        resolve_sensor_overlays(_OPENARM, None, required=True)
-    assert resolve_sensor_overlays(_OPENARM, None, required=False) == []
+        resolve_sensor_overlays(_SO101, None, required=True)
+    assert resolve_sensor_overlays(_SO101, None, required=False) == []
 
 
 def test_the_env_var_wins_over_the_scene(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The scene names a unit with no overlay file; were it to win, no mount would resolve.
-    monkeypatch.setenv(ROBOT_UNIT_ENV, "thor")
-    overlays = resolve_sensor_overlays(_OPENARM, "no_such_cell", required=True)
-    zed = next(o for o in overlays if o.name == "head_zed")
-    assert zed.static_transform_xyz_rpy is not None
-    # The env var's unit, not the scene's.
-    assert zed.static_transform_xyz_rpy == _unit_mount("thor")
+    # The scene names a unit with no overlay file; were it to win, no overlay would resolve.
+    monkeypatch.setenv(ROBOT_UNIT_ENV, "bench_laptop")
+    overlays = resolve_sensor_overlays(_SO101, "no_such_cell", required=True)
+    assert {o.name for o in overlays} == {"top", "wrist"}
 
 
 def test_a_sim_robot_without_units_needs_none_and_takes_an_overlay() -> None:

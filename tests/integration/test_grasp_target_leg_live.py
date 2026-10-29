@@ -2,12 +2,12 @@
 """Live-ROS: the pre-grasp target producer leg measures the declared target's region.
 
 Real rclpy, real ``VisionAttachmentBridge`` on the bimanual OpenArm manifest with
-``grasp_target_enabled``, real tf2 with the Thor cell's measured ZED mount
-(``robots/openarm/units/thor.yaml``) and the driver's REP-103 optical hop, real
+``grasp_target_enabled``, real tf2 with the manifest's measured ZED mount
+(``robots/openarm/robot.yaml``) and the driver's REP-103 optical hop, real
 ``openral_msgs`` on the wire: a ``GraspDeclaration`` with a search box on
 ``/openral/grasp_declaration``, an ``OccupancyVoxels`` grid on
 ``/openral/world_voxels`` holding a box on a support plane, a depth ``Image`` +
-``CameraInfo`` (Thor K, 1920x1080) ray-cast from that same box, and a
+``CameraInfo`` (the ZED's K, 1920x1080) ray-cast from that same box, and a
 ``SegmentInView`` peer that masks a disc around the pixel it is prompted at — a
 real DDS service at a process boundary standing in for SAM 2.1 (CLAUDE.md §1.11),
 the same pattern as ``test_vision_attachment_optical_frame_live.py``.
@@ -59,11 +59,10 @@ pytestmark = pytest.mark.skipif(
 
 _REPO = Path(__file__).resolve().parents[2]
 _ROBOT_YAML = _REPO / "robots" / "openarm" / "robot.yaml"
-_THOR_YAML = _REPO / "robots" / "openarm" / "units" / "thor.yaml"
 _BASE = "openarm_base"
 _OPTICAL = "zed_left_camera_frame_optical"
-# The Thor ZED Mini's depth camera_info, measured 2026-10-02.
-_THOR_K = (1498.18, 1498.18, 936.11, 541.81)
+# The ZED Mini's depth camera_info, measured 2026-10-02.
+_ZED_K = (1498.18, 1498.18, 936.11, 541.81)
 _FULL = (1080, 1920)
 _SERVICE = "/openral/perception/segment_in_view_grasp_target_itest"
 _RES = 0.02
@@ -73,9 +72,10 @@ _MASK_RADIUS_PX = 400
 _FREEZE_S = 2.0
 
 
-def _thor_mount() -> NDArray[np.float64]:
-    unit = yaml.safe_load(_THOR_YAML.read_text())
-    xyzrpy = next(s for s in unit["sensors"] if s["name"] == "head_zed")["static_transform_xyz_rpy"]
+def _zed_mount() -> NDArray[np.float64]:
+    robot = yaml.safe_load(_ROBOT_YAML.read_text())
+    zed = next(s for s in robot["sensors"] if s["name"] == "head_zed")
+    xyzrpy = zed["static_transform_xyz_rpy"]
     return _homogeneous(_rot_rpy(*xyzrpy[3:]), xyzrpy[:3])
 
 
@@ -119,7 +119,7 @@ def _depth(
     t_base_opt: NDArray[np.float64], centres: list[NDArray[np.float64]]
 ) -> NDArray[np.float64]:
     """Ray-cast the boxes (only) into a 32FC1 z-depth raster; 0 = no return."""
-    fx, fy, cx, cy = _THOR_K
+    fx, fy, cx, cy = _ZED_K
     rows, cols = np.mgrid[0 : _FULL[0], 0 : _FULL[1]]
     rays_cam = np.stack(
         ((cols + 0.5 - cx) / fx, (rows + 0.5 - cy) / fy, np.ones(_FULL)), axis=-1
@@ -204,7 +204,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
     from tf2_ros import StaticTransformBroadcaster
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
-    t_base_body = _thor_mount()
+    t_base_body = _zed_mount()
     t_body_opt = _homogeneous(_rot_rpy(-math.pi / 2, 0.0, -math.pi / 2), (0.0, 0.0, 0.0))
     t_base_opt = t_base_body @ t_body_opt
     t_opt_base = np.linalg.inv(t_base_opt)
@@ -224,7 +224,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert request.frame_id == "" and list(request.negative_points) == []
         point = np.array([request.tcp_point.x, request.tcp_point.y, request.tcp_point.z])
         prompts.append(point)
-        fx, fy, cx, cy = _THOR_K
+        fx, fy, cx, cy = _ZED_K
         u, v = fx * point[0] / point[2] + cx, fy * point[1] / point[2] + cy
         rows, cols = np.mgrid[0 : _FULL[0], 0 : _FULL[1]]
         disc = (rows + 0.5 - v) ** 2 + (cols + 0.5 - u) ** 2 <= _MASK_RADIUS_PX**2
@@ -302,7 +302,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         joint_names=["left_gripper", "right_gripper"],
         joint_targets=[[0.0, 0.0]],
     )
-    info = _camera_info(_FULL, _THOR_K)
+    info = _camera_info(_FULL, _ZED_K)
 
     def feed() -> None:
         """Jaw-position evidence for the heartbeat; with ``close``, a left-hand stall."""
@@ -619,7 +619,7 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
     origin = {
         j.child_link: np.array(j.origin_xyz) for j in description.joints if j.role == "gripper"
     }
-    t_base_body = _thor_mount()
+    t_base_body = _zed_mount()
     t_body_opt = _homogeneous(_rot_rpy(-math.pi / 2, 0.0, -math.pi / 2), (0.0, 0.0, 0.0))
     t_base_opt = t_base_body @ t_body_opt
     (one,) = _box_centres(t_base_opt)
@@ -635,7 +635,7 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
 
     def segment(request: Any, response: Any) -> Any:
         point = np.array([request.tcp_point.x, request.tcp_point.y, request.tcp_point.z])
-        fx, fy, cx, cy = _THOR_K
+        fx, fy, cx, cy = _ZED_K
         u, v = fx * point[0] / point[2] + cx, fy * point[1] / point[2] + cy
         rows, cols = np.mgrid[0 : _FULL[0], 0 : _FULL[1]]
         disc = (rows + 0.5 - v) ** 2 + (cols + 0.5 - u) ** 2 <= _MASK_RADIUS_PX**2
@@ -706,7 +706,7 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
         ),
     )
     bridge.setup()
-    info = _camera_info(_FULL, _THOR_K)
+    info = _camera_info(_FULL, _ZED_K)
     # The left jaw: open and uncommanded until ``close`` (then commanded shut, read at
     # ``left_q``: 0.2 stalls on an object, 0.0 closes onto nothing).
     jaw: dict[str, Any] = {"close": False, "left_q": 0.5}

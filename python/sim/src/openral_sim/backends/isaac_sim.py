@@ -2239,8 +2239,9 @@ def _mjcf_camera_mounts(
     ``name``) on a body the sidecar can mount on rides it at the MJCF's compiled
     ``cam_pos`` / ``cam_quat`` — MuJoCo cameras look down ``-z`` with ``+y`` up, i.e.
     ``axes: usd`` — with the MJCF's vertical ``fovy`` at the sensor's raster aspect,
-    as the MuJoCo twin renders it; a sensor in ``calibrated`` (a unit overlay set its
-    intrinsics) keeps its measured field of view instead. Empty without an MJCF.
+    as the MuJoCo twin renders it; a sensor in ``calibrated`` (measured intrinsics: the
+    manifest's ``intrinsics_calibrated``, a unit overlay's or the scene's) keeps its
+    measured field of view instead. Empty without an MJCF.
     """
     if not desc.assets.mjcf:
         return {}
@@ -2641,6 +2642,7 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
                 manifest.parent,
                 urdf_links,
                 {o.name for o in overlays if o.intrinsics is not None}
+                | {s.name for s in desc.sensors if s.intrinsics_calibrated}
                 | set(camera_intrinsics or {}),
             ).items()
             if k in cameras

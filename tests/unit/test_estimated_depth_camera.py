@@ -23,8 +23,6 @@ import yaml
 from openral_core import (
     DeployRuntime,
     RobotDescription,
-    apply_sensor_overlays,
-    load_robot_unit,
 )
 from openral_core.depth_extrinsic import (
     depth_extrinsic_problems,
@@ -137,14 +135,12 @@ class TestCameraMount:
         """OpenArm's ``top`` rides ``head_zed``'s mount; with that ZED wired colour-only
         (no depth stream, so no measured cloud) the estimate is placed on its mount."""
         robot = str(_REPO / "robots/openarm/robot.yaml")
-        # Real: Thor's unit overlay gives `top` its ros2_image binding (the driver's K).
-        thor = apply_sensor_overlays(
-            RobotDescription.from_yaml(robot).sensors, load_robot_unit(robot, "thor").sensors
-        )
+        # Real: the manifest gives `top` its ros2_image binding (the driver's K).
+        sensors = RobotDescription.from_yaml(robot).sensors
         for mode in ("sim", "real"):
             arm = [
                 s.model_copy(update={"modality": "rgb"}) if s.name == "head_zed" else s
-                for s in (thor if mode == "real" else RobotDescription.from_yaml(robot).sensors)
+                for s in sensors
             ]
             mount = resolve_estimated_depth_camera(arm, "top", hal_mode=mode)
             assert mount == ("zed_camera_link_optical_frame", "zed_camera_link", "head_zed", [])
@@ -163,7 +159,10 @@ class TestCameraMount:
         ]
 
     def test_a_real_camera_needs_a_binding_to_publish(self) -> None:
-        arm = self._arm_rgb_only()
+        arm = [
+            s.model_copy(update={"deploy_binding": None}) if s.name == "top" else s
+            for s in self._arm_rgb_only()
+        ]
         assert resolve_estimated_depth_camera(arm, "top", hal_mode="sim").problems == []
         (problem,) = resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems
         assert "no deploy_binding" in problem
@@ -171,7 +170,7 @@ class TestCameraMount:
     def test_a_real_camera_needs_a_measured_calibration(self) -> None:
         """DA3's metres scale with the focal: OpenArm's `top` K is a sim stand-in, so the
         manifest's nominal intrinsics are refused; the driver's CameraInfo (ros2_image) or
-        this unit's calibrated intrinsics (an overlay) are accepted."""
+        measured intrinsics (a unit overlay's, or intrinsics_calibrated) are accepted."""
         opencv = self._bind(
             self._arm_rgb_only(), SensorDeployBinding(backend=SensorReaderBackend.OPENCV_THREAD)
         )
@@ -181,6 +180,11 @@ class TestCameraMount:
             opencv, "top", hal_mode="real", calibrated_intrinsics={"top"}
         )
         assert calibrated.problems == []
+        flagged = [
+            s.model_copy(update={"intrinsics_calibrated": True}) if s.name == "top" else s
+            for s in opencv
+        ]
+        assert resolve_estimated_depth_camera(flagged, "top", hal_mode="real").problems == []
         driver = self._bind(
             self._arm_rgb_only(),
             SensorDeployBinding(
@@ -218,18 +222,22 @@ class TestCameraMount:
 
     def test_a_real_deploy_checks_the_mount_the_camera_rides(self) -> None:
         robot = str(_REPO / "robots/openarm/robot.yaml")
-        desc = RobotDescription.from_yaml(robot)
-        nominal = depth_extrinsic_problems(desc, [], estimated_camera="top")
-        assert [p.split(":")[0] for p in nominal] == ["head_zed"]
-        thor = load_robot_unit(robot, "thor").sensors
-        calibrated = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, thor)})
-        assert depth_extrinsic_problems(calibrated, thor, estimated_camera="top") == []
+        calibrated = RobotDescription.from_yaml(robot)
+        nominal = calibrated.model_copy(
+            update={
+                "sensors": [
+                    s.model_copy(update={"static_transform_calibrated": False})
+                    for s in calibrated.sensors
+                ]
+            }
+        )
+        problems = depth_extrinsic_problems(nominal, [], estimated_camera="top")
+        assert [p.split(":")[0] for p in problems] == ["head_zed"]
+        assert depth_extrinsic_problems(calibrated, [], estimated_camera="top") == []
 
     def test_a_scene_camera_sharing_a_robot_mount_is_checked_at_that_mount(self) -> None:
         robot = str(_REPO / "robots/openarm/robot.yaml")
         desc = RobotDescription.from_yaml(robot)
-        thor = load_robot_unit(robot, "thor").sensors
-        calibrated = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, thor)})
         top = next(s for s in desc.sensors if s.name == "top")
         bench = top.model_copy(
             update={
@@ -239,8 +247,7 @@ class TestCameraMount:
                 "static_transform_xyz_rpy": None,
             }
         )
-        args = (calibrated, thor, [bench])
-        assert depth_extrinsic_problems(*args, estimated_camera="bench_cam") == []
+        assert depth_extrinsic_problems(desc, [], [bench], estimated_camera="bench_cam") == []
 
 
 class TestMetricDepth:

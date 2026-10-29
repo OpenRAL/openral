@@ -3060,11 +3060,11 @@ def _preflight_depth_extrinsics(
     """Refuse a real world-voxel deploy whose depth camera mount nobody has declared.
 
     The kernel's world-voxel check places every obstacle through each cloud source's
-    mount as this unit publishes it (``description`` already carries the unit's
-    ``SensorOverlay``), and OpenRAL does not measure that mount: the operator
-    calibrates it and declares it in ``robots/<id>/units/<unit>.yaml``
-    (``openral_core.depth_extrinsic.depth_extrinsic_problems``: a robot-mounted cloud
-    source must get its pose from the unit overlay, not the manifest's nominal value; a
+    mount as the robot publishes it (``description`` already carries any unit
+    ``SensorOverlay``), and OpenRAL does not measure that mount: the operator calibrates it
+    and declares it in ``robots/<id>/robot.yaml`` with ``static_transform_calibrated: true``
+    (or in a unit overlay) (``openral_core.depth_extrinsic.depth_extrinsic_problems``: a
+    robot-mounted cloud source must have a measured pose, not a nominal one; a
     scene-mounted one must declare it in the scene). There is no override flag: the only
     other way past is an explicit ``--no-enable-octomap-kernel-check`` (no world check at
     all).
@@ -3083,21 +3083,25 @@ def _preflight_depth_extrinsics(
     if problems:
         raise ROSConfigError(
             "the world-voxel check is on for a real deploy, but a depth camera's mount is not "
-            "declared for this unit — every obstacle would be placed through the manifest's "
-            "nominal pose:\n  "
+            "a measured calibration — every obstacle would be placed through a nominal "
+            "pose:\n  "
             + "\n  ".join(problems)
-            + "\nCalibrate it and set static_transform_xyz_rpy under that sensor in "
+            + "\nCalibrate it and set static_transform_xyz_rpy with "
+            + "static_transform_calibrated: true under that sensor in "
             + (
                 f"robots/<id>/units/{unit}.yaml"
                 if unit
-                else "robots/<id>/units/<unit>.yaml, and select that unit with "
-                f"{ROBOT_UNIT_ENV} or the scene's robot_unit"
+                else f"robots/<id>/robot.yaml (or a unit overlay selected with {ROBOT_UNIT_ENV} "
+                "or the scene's robot_unit)"
             )
             + " (docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 2)."
         )
     for spec in description.sensors:
         if spec.is_cloud_source:
-            _console.print(f"  mount declared by unit {unit!r}: {spec.name}")
+            _console.print(
+                f"  mount declared {'by unit ' + repr(unit) if unit else 'in the manifest'}: "
+                f"{spec.name}"
+            )
 
 
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:

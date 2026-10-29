@@ -1,8 +1,8 @@
 """``tools/openarm_world_voxel_run.sh``: the guarded launcher refuses in the documented order.
 
 The script moves real arms once it gets past its gates, so every test here must stop at a
-refusal: the motion gates, the unit, the manifest `deploy run` would load, the declared
-head_zed mount, and finally the interactive terminal (stdin is never a TTY under pytest).
+refusal: the motion gates, the manifest `deploy run` would load, the measured head_zed
+mount, and finally the interactive terminal (stdin is never a TTY under pytest).
 """
 
 from __future__ import annotations
@@ -37,17 +37,16 @@ def _run_script(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[
     )
 
 
-def _gated(unit: str) -> dict[str, str]:
+def _gated() -> dict[str, str]:
     return {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if k != "OPENRAL_ROBOT_UNIT"},
         "OPENRAL_OPENARM_ALLOW_MOTION": "1",
         "OPENRAL_OPENARM_ATTENDED": "1",
-        "OPENRAL_ROBOT_UNIT": unit,
     }
 
 
 def _skip_unless_ros_and_openral() -> None:
-    """The gates after the unit one need a sourced ROS 2 and ``openral`` on PATH."""
+    """The gates after the motion ones need a sourced ROS 2 and ``openral`` on PATH."""
     if (
         "ROS_DISTRO" not in os.environ
         or subprocess.run(
@@ -61,14 +60,6 @@ def test_the_run_script_refuses_without_both_motion_gates() -> None:
     proc = _run_script(_NO_GATES)
     assert proc.returncode == 2
     assert "OPENRAL_OPENARM_ALLOW_MOTION" in proc.stderr
-
-
-def test_the_run_script_refuses_without_a_robot_unit() -> None:
-    env = {k: v for k, v in os.environ.items() if k != "OPENRAL_ROBOT_UNIT"}
-    env |= {"OPENRAL_OPENARM_ALLOW_MOTION": "1", "OPENRAL_OPENARM_ATTENDED": "1"}
-    proc = _run_script(env)
-    assert proc.returncode == 2
-    assert "OPENRAL_ROBOT_UNIT is not set" in proc.stderr
 
 
 @pytest.mark.parametrize(
@@ -98,28 +89,19 @@ def test_the_run_script_refuses_when_deploy_would_load_another_manifest(tmp_path
     other = tmp_path / "robots" / "openarm"
     other.mkdir(parents=True)
     (other / "robot.yaml").write_text(_ROBOT.read_text(encoding="utf-8"), encoding="utf-8")
-    proc = _run_script({**_gated("thor"), "OPENRAL_ROBOTS_DIR": str(tmp_path / "robots")})
+    proc = _run_script({**_gated(), "OPENRAL_ROBOTS_DIR": str(tmp_path / "robots")})
     assert proc.returncode == 2, proc.stderr
     assert "openral deploy run would load" in proc.stderr
 
 
-def test_the_declared_unit_mounts_pass_the_gate() -> None:
-    """Thor's and Orin's overlays both declare head_zed's mount, so the script gets past the
-    mount gate and stops at the last refusal before motion (no interactive terminal). The
-    undeclared case is the next test's."""
+def test_the_manifests_measured_mount_passes_the_gate() -> None:
+    """robot.yaml declares head_zed's measured mount, so the script gets past the mount gate
+    and stops at the last refusal before motion (no interactive terminal). A nominal mount's
+    refusal is depth_extrinsic_problems' own (its doctest, test_estimated_depth_camera)."""
     _skip_unless_ros_and_openral()
-    for unit in ("thor", "orin"):
-        proc = _run_script(_gated(unit))
-        assert proc.returncode == 2, proc.stderr
-        assert "not an interactive terminal" in proc.stderr, proc.stderr
-
-
-def test_the_run_script_refuses_a_unit_that_does_not_exist() -> None:
-    """A unit nobody wrote declares nothing: the mount gate refuses before the prompt."""
-    _skip_unless_ros_and_openral()
-    proc = _run_script(_gated("no_such_cell"))
+    proc = _run_script(_gated())
     assert proc.returncode == 2, proc.stderr
-    assert "head_zed's mount is not declared for unit no_such_cell" in proc.stderr
+    assert "not an interactive terminal" in proc.stderr, proc.stderr
 
 
 def test_the_run_script_refuses_a_scene_outside_scenes_deploy_local(tmp_path: Path) -> None:
@@ -162,7 +144,7 @@ def _merge(doc: dict[str, object], patch: dict[str, object]) -> None:
     [
         ({"robot_id": "so101"}, "robot_id is 'so101'"),
         ({"runtime": {"enable_octomap_kernel_check": False}}, "is not true"),
-        ({"robot_unit": "orin"}, "robot_unit 'orin' is not OPENRAL_ROBOT_UNIT 'thor'"),
+        ({"robot_unit": "orin"}, "at robot_unit"),
         ({"runtime": {"enable_octomap": False}}, "at runtime.enable_octomap"),
         (
             {"runtime": {"robot_self_filter_padding_m": 0.10}},
@@ -197,7 +179,7 @@ def test_the_run_script_refuses_a_local_scene_that_weakens_the_graph(
     _merge(doc, patch)
     path = _local_scene("weak", doc)
     try:
-        proc = _run_script(_gated("thor"), "--scene", str(path))
+        proc = _run_script(_gated(), "--scene", str(path))
     finally:
         path.unlink()
     assert proc.returncode == 2, proc.stderr
@@ -227,7 +209,7 @@ def test_a_local_scene_with_a_grasp_declaration_reaches_the_last_gate() -> None:
     }
     path = _local_scene("grasp", doc)
     try:
-        proc = _run_script(_gated("thor"), "--scene", str(path))
+        proc = _run_script(_gated(), "--scene", str(path))
     finally:
         path.unlink()
     assert proc.returncode == 2, proc.stderr
@@ -236,7 +218,7 @@ def test_a_local_scene_with_a_grasp_declaration_reaches_the_last_gate() -> None:
 
 def test_autonomous_refuses_without_a_reasoner_model() -> None:
     """--autonomous selects the committed autonomous scene, whose reasoner needs a planner."""
-    env = {k: v for k, v in _gated("thor").items() if k != "OPENRAL_REASONER_MODEL"}
+    env = {k: v for k, v in _gated().items() if k != "OPENRAL_REASONER_MODEL"}
     proc = _run_script(env, "--autonomous")
     assert proc.returncode == 2, proc.stderr
     assert "OPENRAL_REASONER_MODEL is not set" in proc.stderr
@@ -245,9 +227,7 @@ def test_autonomous_refuses_without_a_reasoner_model() -> None:
 def test_autonomous_reaches_the_last_gate() -> None:
     """The committed autonomous scene passes every check up to the interactive terminal."""
     _skip_unless_ros_and_openral()
-    proc = _run_script(
-        {**_gated("thor"), "OPENRAL_REASONER_MODEL": "claude-opus-4-8"}, "--autonomous"
-    )
+    proc = _run_script({**_gated(), "OPENRAL_REASONER_MODEL": "claude-opus-4-8"}, "--autonomous")
     assert proc.returncode == 2, proc.stderr
     assert "not an interactive terminal" in proc.stderr, proc.stderr
 
@@ -258,7 +238,7 @@ def test_a_local_copy_is_judged_against_the_selected_committed_scene(flags: list
     against the voxel scene and its reasoner/detector/memory legs are refused by key path."""
     _skip_unless_ros_and_openral()
     path = _local_scene("auto", _committed_scene(_AUTONOMOUS))
-    env = {**_gated("thor"), "OPENRAL_REASONER_MODEL": "claude-opus-4-8"}
+    env = {**_gated(), "OPENRAL_REASONER_MODEL": "claude-opus-4-8"}
     try:
         proc = _run_script(env, "--scene", str(path), *flags)
     finally:

@@ -455,6 +455,13 @@ class SensorSpec(BaseModel):
         frame_id: tf2 frame name.
         parent_frame: tf2 parent frame (for static transform).
         static_transform_xyz_rpy: Static transform from parent to this sensor.
+        static_transform_calibrated: ``static_transform_xyz_rpy`` is a measured
+            calibration of this robot's mount, not a nominal (CAD) value. A real deploy
+            with the world-voxel check runs a cloud source only on a calibrated mount
+            (``openral_core.depth_extrinsic``).
+        intrinsics_calibrated: ``intrinsics`` were measured for this robot's camera, not
+            a nominal stand-in: a sim renders this field of view (not the twin's), and a
+            real DA3 depth estimate may scale by it.
         rate_hz: Expected publishing rate in Hz.
         intrinsics: Pinhole camera intrinsics (if applicable).
         encoding: Image encoding, e.g. "rgb8", "16UC1".
@@ -495,9 +502,11 @@ class SensorSpec(BaseModel):
     frame_id: str
     parent_frame: str | None = None
     static_transform_xyz_rpy: tuple[float, float, float, float, float, float] | None = None
+    static_transform_calibrated: bool = False
     rate_hz: float
     # Image / depth / stereo
     intrinsics: IntrinsicsPinhole | None = None
+    intrinsics_calibrated: bool = False
     encoding: str | None = None
     fov_h_deg: float | None = None
     fov_v_deg: float | None = None
@@ -896,8 +905,8 @@ def load_robot_unit(robot_yaml: str | Path, unit: str) -> RobotUnit:
             the manifest directory name / the requested unit.
 
     Example:
-        >>> load_robot_unit("robots/openarm/robot.yaml", "thor").robot_id
-        'openarm'
+        >>> load_robot_unit("robots/so101_follower/robot.yaml", "bench_laptop").robot_id
+        'so101_follower'
     """
     manifest_dir = Path(robot_yaml).parent
     path = manifest_dir / "units" / f"{unit}.yaml"
@@ -1014,8 +1023,7 @@ def publishing_sensors(
         >>> sim = publishing_sensors(arm.sensors, [], "sim")
         >>> ", ".join(s.name for s in sim if s.modality == "rgb")
         'top, wrist_left, wrist_right'
-        >>> thor = resolve_sensor_overlays("robots/openarm/robot.yaml", "thor", required=True)
-        >>> bound = publishing_sensors(apply_sensor_overlays(arm.sensors, thor), [], "real")
+        >>> bound = publishing_sensors(arm.sensors, [], "real")  # bindings in the manifest
         >>> ", ".join(s.name for s in bound)
         'head_zed, top, wrist_left, wrist_right'
     """
@@ -13005,8 +13013,8 @@ class RobotUnit(BaseModel):
         """Load and validate a unit overlay YAML file.
 
         Example:
-            >>> RobotUnit.from_yaml("robots/openarm/units/orin.yaml").unit
-            'orin'
+            >>> RobotUnit.from_yaml("robots/so101_follower/units/bench_laptop.yaml").unit
+            'bench_laptop'
         """
         return _load_yaml_model(cls, path)
 

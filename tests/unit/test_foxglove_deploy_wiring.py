@@ -32,8 +32,7 @@ _LAUNCH = _ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.lau
 _MANIFEST = _ROOT / "robots" / "openarm" / "robot.yaml"
 
 # The committed real OpenArm cell. It has no `sensors:` block: every camera on that cell is a
-# robot camera, bound in the scene's unit overlay robots/openarm/units/<robot_unit>.yaml (a
-# deploy scene never redefines one).
+# robot camera, bound in robots/openarm/robot.yaml (a deploy scene never redefines one).
 _SCENE = _ROOT / "scenes" / "deploy" / "openarm_bench.yaml"
 
 
@@ -61,16 +60,13 @@ def test_every_rgb_camera_the_real_deploy_declares_is_also_bound() -> None:
     camera. So every RGB slot the real OpenArm cell surfaces (manifest plus scene)
     must carry a binding.
     """
-    from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
+    from openral_core import RobotDescription
 
     scene = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
-    unit = load_robot_unit(_MANIFEST, scene["robot_unit"])
     bound_rgb = [
         s.model_dump()
-        for s in apply_sensor_overlays(
-            RobotDescription.from_yaml(str(_MANIFEST)).sensors, unit.sensors
-        )
+        for s in RobotDescription.from_yaml(str(_MANIFEST)).sensors
         if s.modality == "rgb"
     ]
 
@@ -84,7 +80,7 @@ def test_every_rgb_camera_the_real_deploy_declares_is_also_bound() -> None:
     assert declared - bound == set(), (
         f"{sorted(declared - bound, key=str)} are declared but never bound, so their panels "
         "would advertise a channel with no publisher — the failure that reads as a "
-        "dead camera. Bind them in the unit overlay (or, for a workcell camera, the scene)."
+        "dead camera. Bind them in robot.yaml (or, for a workcell camera, the scene)."
     )
 
 
@@ -92,7 +88,7 @@ def test_the_real_top_camera_keeps_the_sim_slot() -> None:
     """Sim and real feed the policy the same slot, with no scene remap.
 
     The manifest's `top` carries `observation.images.top` in sim and, through the
-    cell's unit-overlay `deploy_binding`, on the real cell. The scene never redefines it,
+    manifest's `deploy_binding`, on the real cell. The scene never redefines it,
     and an overlay cannot change its feature key, so the
     checkpoint sees the real camera on the slot it saw the MuJoCo render on. A
     checkpoint trained on a different name maps it with `image_preprocessing.aliases`

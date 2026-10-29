@@ -9,8 +9,8 @@
 # (the world-voxel preconditions are the same); this header is the short form.
 #
 # Preconditions, ALL of them, every run:
-#   1. Every precondition of openarm_real_world_voxels.yaml: OPENRAL_ROBOT_UNIT names this
-#      cell and its overlay declares head_zed's calibrated mount; a person at the cell for the
+#   1. Every precondition of openarm_real_world_voxels.yaml: robots/openarm/robot.yaml
+#      declares head_zed's calibrated mount; a person at the cell for the
 #      WHOLE run with the hardware E-stop in hand (a second person for bringup: on_activate
 #      steps all 16 motors to zero UNRAMPED); OPENRAL_OPENARM_ALLOW_MOTION=1 and
 #      OPENRAL_OPENARM_ATTENDED=1 exported by that person for that run only. Presence is per
@@ -42,7 +42,7 @@ scene:
 
 # No `sensors:` entry: head_zed is a robot sensor, so its frames live in
 # robots/openarm/robot.yaml and its calibrated mount pose and real-hardware
-# binding in the unit overlay (robots/openarm/units/<unit>.yaml) — a deploy
+# binding there too — a deploy
 # scene never redefines a robot camera (openral_core.check_scene_sensor_overrides).
 # The cloud itself reaches octomap by topic: zed_wrapper publishes it and
 # `runtime.octomap_cloud_topic` points octomap at it.

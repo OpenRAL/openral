@@ -11,11 +11,10 @@
 # It refuses unless, in this order:
 #   1. OPENRAL_OPENARM_ALLOW_MOTION=1 and OPENRAL_OPENARM_ATTENDED=1 (the HIL tier's gates),
 #      and with --autonomous OPENRAL_REASONER_MODEL naming the planner;
-#   2. OPENRAL_ROBOT_UNIT names this cell (robots/openarm/units/<unit>.yaml), and that unit's
-#      overlay declares head_zed's calibrated mount (static_transform_xyz_rpy): the camera is
-#      bolted to the robot, so its pose is robot geometry, measured per cell by the operator,
-#      never the manifest's nominal value. `openral deploy run` applies the same gate; this
-#      copy only refuses earlier;
+#   2. robots/openarm/robot.yaml declares head_zed's calibrated mount (static_transform_xyz_rpy
+#      with static_transform_calibrated: true): the camera is bolted to the robot, so its pose
+#      is robot geometry, measured by the operator, never a nominal value. `openral deploy run`
+#      applies the same gate; this copy only refuses earlier;
 #   3. it runs in an interactive terminal and the operator types the confirmation.
 # `--scene <path>` swaps in a local copy of the selected committed scene (runbook step 4: one carrying a
 # grasp_declaration) under the same gates. It must be a .yaml under scenes/deploy/local/
@@ -77,9 +76,6 @@ done
   refuse "OPENRAL_OPENARM_ATTENDED is not 1 — export it only while you are at the E-stop."
 [[ -z "${autonomous:-}" || -n "${OPENRAL_REASONER_MODEL:-}" ]] ||
   refuse "OPENRAL_REASONER_MODEL is not set — the autonomous scene's reasoner needs a planner (openral_core.REASONER_MODELS)."
-unit="${OPENRAL_ROBOT_UNIT:-}"
-[[ -n "${unit}" ]] ||
-  refuse "OPENRAL_ROBOT_UNIT is not set — name this cell (robots/openarm/units/<unit>.yaml); its ZED mount is per unit."
 [[ -n "${ROS_DISTRO:-}" ]] || refuse "ROS 2 is not sourced (and source the ZED overlay too)."
 command -v openral >/dev/null || refuse "openral is not on PATH (activate the venv)."
 
@@ -103,25 +99,20 @@ PY
 
 # `openral deploy run` re-applies this gate itself (any robot, world-voxel check on); checking
 # here too refuses before the operator is asked to confirm, not after.
-"${openral_python}" - "${robot}" "${unit}" <<'PY' ||
+"${openral_python}" - "${robot}" <<'PY' ||
 import sys
-from pathlib import Path
 
-from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
+from openral_core import RobotDescription
 from openral_core.depth_extrinsic import depth_extrinsic_problems
 
-robot, unit = Path(sys.argv[1]), sys.argv[2]
-desc = RobotDescription.from_yaml(str(robot))
-overlays = load_robot_unit(robot, unit).sensors
-desc = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, overlays)})
-problems = depth_extrinsic_problems(desc, overlays)
+problems = depth_extrinsic_problems(RobotDescription.from_yaml(sys.argv[1]), [])
 print("\n".join(problems), file=sys.stderr)
 sys.exit(1 if problems else 0)
 PY
-  refuse "head_zed's mount is not declared for unit ${unit} (runbook step 2)."
-# The scene `deploy run` gets: OpenArm's, world-voxel check still on, unit from the env, and
-# for a --scene copy the committed scene exactly, bar grasp_declaration.
-"${openral_python}" - "${scene}" "${unit}" "${committed_scene}" <<'PY' ||
+  refuse "head_zed's mount in ${robot} is not a declared calibration (runbook step 2)."
+# The scene `deploy run` gets: OpenArm's, world-voxel check still on, and for a --scene copy
+# the committed scene exactly, bar grasp_declaration.
+"${openral_python}" - "${scene}" "${committed_scene}" <<'PY' ||
 import sys
 
 from openral_core import DeployScene
@@ -151,15 +142,13 @@ def _diff(a, b, path=""):
 
 with open(sys.argv[1], encoding="utf-8") as fh:
     copy = yaml.safe_load(fh)
-with open(sys.argv[3], encoding="utf-8") as fh:
+with open(sys.argv[2], encoding="utf-8") as fh:
     committed = yaml.safe_load(fh)
 problems += [f"differs from the committed scene at {p}" for p in _diff(committed, copy)]
 if scene.robot_id != "openarm":
     problems.append(f"robot_id is {scene.robot_id!r}, not 'openarm'")
 if scene.runtime is None or scene.runtime.enable_octomap_kernel_check is not True:
     problems.append("runtime.enable_octomap_kernel_check is not true")
-if scene.robot_unit not in (None, sys.argv[2]):
-    problems.append(f"robot_unit {scene.robot_unit!r} is not OPENRAL_ROBOT_UNIT {sys.argv[2]!r}")
 print("\n".join(problems), file=sys.stderr)
 sys.exit(1 if problems else 0)
 PY

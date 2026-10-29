@@ -472,10 +472,9 @@ def test_openarm_wrist_cameras_ride_the_jaw_like_the_mujoco_twin(
         pytest.skip(f"OpenArm MJCF unavailable: {exc}")
     model = mujoco.MjModel.from_xml_path(mjcf)
     urdf = (_REPO_ROOT / "robots" / "openarm" / "openarm.urdf").read_text()
-    nominal = _openarm_spec(monkeypatch, None)["camera_mounts"]
-    thor = _openarm_spec(monkeypatch, "thor")["camera_mounts"]
+    mounts = _openarm_spec(monkeypatch, None)["camera_mounts"]
     for side in ("left", "right"):
-        mount = nominal[f"wrist_{side}"]
+        mount = mounts[f"wrist_{side}"]
         cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, f"camera_wrist_{side}")
         body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.cam_bodyid[cam])
         assert mount["link"] == body == f"openarm_{side}_ee_base_link"
@@ -485,35 +484,30 @@ def test_openarm_wrist_cameras_ride_the_jaw_like_the_mujoco_twin(
         assert abs(float(np.dot(mount["quat_wxyz"], model.cam_quat[cam]))) == pytest.approx(
             1.0, abs=1e-5
         )
-        fovy = math.radians(float(model.cam_fovy[cam]))
-        assert mount["hfov_deg"] == pytest.approx(
-            math.degrees(2 * math.atan(math.tan(fovy / 2) * 640 / 480)), abs=0.1
-        )
-        # The Thor unit calibrated these intrinsics: its field of view, not the twin's.
-        assert thor[f"wrist_{side}"]["hfov_deg"] is None
-        assert thor[f"wrist_{side}"]["xyz"] == mount["xyz"]
+        # The manifest's calibrated intrinsics set the field of view, not the twin's fovy.
+        assert mount["hfov_deg"] is None
 
 
-def test_openarm_head_and_top_render_from_the_units_zed_mount(
+def test_openarm_head_and_top_render_from_the_measured_zed_mount(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`top` is head_zed's device: both ride head_zed's mount, the unit's when one is set."""
-    from openral_core import load_robot_unit
+    """`top` is head_zed's device: both ride head_zed's measured mount from the manifest."""
+    from openral_core import RobotDescription
 
-    nominal = _openarm_spec(monkeypatch, None)
-    thor = _openarm_spec(monkeypatch, "thor")
-    measured = {
-        s.name: s for s in load_robot_unit(_REPO_ROOT / "robots/openarm/robot.yaml", "thor").sensors
-    }["head_zed"].static_transform_xyz_rpy
-    assert measured is not None
-    for spec, xyz in ((nominal, [0.0, 0.0, 0.2]), (thor, list(measured[:3]))):
-        mounts = spec["camera_mounts"]
-        assert mounts["top"] == mounts["head_zed"]
-        assert mounts["head_zed"]["link"] == "openarm_base"
-        assert mounts["head_zed"]["axes"] == "world"  # zed_camera_link: x forward, z up
-        assert mounts["head_zed"]["xyz"] == pytest.approx(xyz)
-    # The unit's calibrated wrist raster reaches the sidecar, which renders it.
-    by_name = {s["name"]: s for s in thor["sensors"]}
+    spec = _openarm_spec(monkeypatch, None)
+    zed = next(
+        s
+        for s in RobotDescription.from_yaml(str(_REPO_ROOT / "robots/openarm/robot.yaml")).sensors
+        if s.name == "head_zed"
+    )
+    assert zed.static_transform_calibrated and zed.static_transform_xyz_rpy is not None
+    mounts = spec["camera_mounts"]
+    assert mounts["top"] == mounts["head_zed"]
+    assert mounts["head_zed"]["link"] == "openarm_base"
+    assert mounts["head_zed"]["axes"] == "world"  # zed_camera_link: x forward, z up
+    assert mounts["head_zed"]["xyz"] == pytest.approx(list(zed.static_transform_xyz_rpy[:3]))
+    # The calibrated wrist raster reaches the sidecar, which renders it.
+    by_name = {s["name"]: s for s in spec["sensors"]}
     assert (
         by_name["wrist_left"]["intrinsics"]["width"],
         by_name["top"]["intrinsics"]["width"],
@@ -573,32 +567,25 @@ def test_initial_joint_positions_reach_the_sidecar_within_limits(
             _write_robot_spec(env_cfg, None, bad)
 
 
-def test_the_scenes_robot_unit_calibrates_the_sim_without_the_env_var(
+def test_the_scenes_robot_unit_reaches_the_isaac_robot_spec(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`sim run` honours the scene's `robot_unit`, as deploy does; `$OPENRAL_ROBOT_UNIT` wins.
 
-    The backend passed no scene unit, so a scene declaring `robot_unit: thor` rendered from
-    the manifest's nominal cameras unless the env var was set. Pro's restock suite (which
-    declares it) lost its calibrated cameras: 0/4 complete on four tasks, 3/4 with the unit.
+    The backend passed no scene unit, so a scene's `robot_unit` was ignored unless the env
+    var was set (Pro's restock suite rendered without its calibrated cameras). A unit that
+    does not exist is refused whichever of the two names it, so the scene's must arrive.
     """
     from openral_core import ROBOT_UNIT_ENV
     from openral_sim.backends.isaac_sim import IsaacSimOptions, _write_robot_spec
 
-    def spec(env_cfg: Any) -> dict[str, Any]:
-        opts = IsaacSimOptions(**env_cfg.scene.backend_options)
-        path, _desc = _write_robot_spec(env_cfg, opts.camera_mounts)
-        try:
-            return dict(json.loads(Path(path).read_text()))
-        finally:
-            Path(path).unlink()
-
-    via_env = _openarm_spec(monkeypatch, "thor")["camera_mounts"]
-    nominal = _openarm_spec(monkeypatch, None)["camera_mounts"]
-    assert via_env != nominal, "the thor unit must change a camera for this test to mean anything"
+    env_cfg = _openarm_env_cfg().model_copy(update={"robot_unit": "no_such_unit"})
+    opts = IsaacSimOptions(**env_cfg.scene.backend_options)
     monkeypatch.delenv(ROBOT_UNIT_ENV, raising=False)
-    scene_unit = _openarm_env_cfg().model_copy(update={"robot_unit": "thor"})
-    assert spec(scene_unit)["camera_mounts"] == via_env
+    with pytest.raises(ROSConfigError):
+        _write_robot_spec(env_cfg, opts.camera_mounts)
+    path, _desc = _write_robot_spec(env_cfg.model_copy(update={"robot_unit": None}), {})
+    Path(path).unlink()
     monkeypatch.setenv(ROBOT_UNIT_ENV, "no_such_unit")
     with pytest.raises(ROSConfigError):
-        spec(scene_unit)  # the env var overrides the scene, as on a deploy
+        _write_robot_spec(env_cfg.model_copy(update={"robot_unit": None}), {})

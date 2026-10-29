@@ -8,13 +8,12 @@ run`` drives it: ``resolve_launch_invocation(hal_mode="real")`` produces the arg
 ``deploy_config`` is dropped from the real-mode composition only: the scene's ``drivers:``
 include resolves ``zed_wrapper`` from the ament path, which exists on the rig overlay, not
 here. The kernel/octomap parameters under test come from the argv, not from that include;
-the ZED mount (the robot manifest's ``head_zed`` with the Thor unit overlay) is covered by
-composing the scene on the sim path, where drivers are ignored. The scene names no
-``robot_unit`` (it runs on either cell), so ``OPENRAL_ROBOT_UNIT=thor`` selects the unit.
+the ZED mount (the robot manifest's measured ``head_zed``) is covered by composing the
+scene on the sim path, where drivers are ignored.
 
-``deploy run`` refuses this scene unless the selected unit's overlay declares ``head_zed``'s
-mount (OpenRAL does not calibrate it); the real-mode tests resolve against a copy of
-``robots/openarm`` served via ``OPENRAL_ROBOTS_DIR``, whose Thor overlay declares it.
+``deploy run`` refuses this scene unless the manifest declares ``head_zed``'s measured mount
+(``static_transform_calibrated``; OpenRAL does not calibrate it); the real-mode tests resolve
+against a copy of ``robots/openarm`` served via ``OPENRAL_ROBOTS_DIR``.
 
 Per CLAUDE.md §1.11: the committed scene, the real ``robots/openarm/robot.yaml``, the real
 CLI resolver and launch composition. No mocks.
@@ -48,7 +47,7 @@ _ZED_CLOUD = "/zed/zed_node/point_cloud/cloud_registered"
 
 @pytest.fixture
 def calibrated_openarm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """``robots/openarm`` copied: its Thor unit overlay declares head_zed's calibrated mount."""
+    """``robots/openarm`` copied: its manifest declares head_zed's calibrated mount."""
     robot_dir = tmp_path / "robots" / "openarm"
     shutil.copytree(_REPO_ROOT / "robots" / "openarm", robot_dir)
     monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
@@ -56,8 +55,8 @@ def calibrated_openarm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _thor_unit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+def _no_unit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
 
 
 def _launch_args(hal_mode: str, scene: Path = _SCENE) -> dict[str, str]:
@@ -123,17 +122,17 @@ def _node(
     return found[0]
 
 
-def test_deploy_run_refuses_a_unit_that_declares_no_zed_mount(calibrated_openarm: Path) -> None:
-    """The gate is the unit overlay: strip head_zed's mount from Thor's and the real launch
-    never resolves, whatever the manifest's nominal pose says."""
+def test_deploy_run_refuses_a_zed_mount_not_marked_measured(calibrated_openarm: Path) -> None:
+    """The gate is the calibration flag: clear it and the real launch never resolves, whatever
+    pose the manifest carries."""
     import yaml
     from openral_core.exceptions import ROSConfigError
 
-    unit_file = calibrated_openarm / "units" / "thor.yaml"
-    doc = yaml.safe_load(unit_file.read_text(encoding="utf-8"))
+    robot_file = calibrated_openarm / "robot.yaml"
+    doc = yaml.safe_load(robot_file.read_text(encoding="utf-8"))
     (zed,) = [s for s in doc["sensors"] if s["name"] == "head_zed"]
-    del zed["static_transform_xyz_rpy"]
-    unit_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    zed["static_transform_calibrated"] = False
+    robot_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
     with pytest.raises(ROSConfigError, match=r"head_zed: mount is the manifest's nominal"):
         _launch_args("real")
 
@@ -222,20 +221,20 @@ def test_the_autonomous_scene_keeps_the_voxel_check_and_adds_the_reasoner_legs()
     )
 
 
-def test_the_unit_pose_is_the_only_mount_published_for_the_zed() -> None:
-    """The selected unit's head_zed pose reaches /tf_static, once, with the manifest's parent.
+def test_the_measured_pose_is_the_only_mount_published_for_the_zed() -> None:
+    """The manifest's measured head_zed pose reaches /tf_static, once, with its parent.
 
     The ZED is bolted to the robot, so its mount is robot geometry: the scene declares no
-    ``head_zed`` entry and may not (``check_scene_sensor_overrides``); its frames are the
-    manifest's and its calibrated pose the unit overlay's (``robots/openarm/units/thor.yaml``).
+    ``head_zed`` entry and may not (``check_scene_sensor_overrides``); its frames and measured
+    pose are the manifest's.
     """
     import yaml
-    from openral_core import load_robot_unit
+    from openral_core import RobotDescription
 
     assert "sensors" not in yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
     (zed,) = [
         s
-        for s in load_robot_unit(_REPO_ROOT / "robots/openarm/robot.yaml", "thor").sensors
+        for s in RobotDescription.from_yaml(str(_REPO_ROOT / "robots/openarm/robot.yaml")).sensors
         if s.name == "head_zed"
     ]
 
@@ -255,15 +254,6 @@ def test_the_unit_pose_is_the_only_mount_published_for_the_zed() -> None:
     assert [float(argv[argv.index(f) + 1]) for f in flags] == pytest.approx(
         list(zed.static_transform_xyz_rpy or ())
     )
-
-
-def test_deploy_run_refuses_without_a_unit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both cells run this scene with different ZED mounts: a real run must name its cell."""
-    from openral_core.exceptions import ROSConfigError
-
-    monkeypatch.delenv("OPENRAL_ROBOT_UNIT")
-    with pytest.raises(ROSConfigError, match="none is selected"):
-        _launch_args("real")
 
 
 @pytest.mark.parametrize("hal_mode", ["real", "sim"])

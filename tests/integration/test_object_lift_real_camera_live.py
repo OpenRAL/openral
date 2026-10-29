@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real-camera detections reach ``/openral/world_state_slow`` lifted in ``openarm_base``.
 
-The Thor OpenArm's detector watches ``top``, whose manifest frame/K are the sim render's
+The real OpenArm's detector watches ``top``, whose manifest frame/K are the sim render's
 stand-in (``world``, 640x480, fx 640) while the real image is the ZED's left rectified
 1920x1080 in ``zed_left_camera_frame_optical`` at fx 1498.18. The detector stamps each batch
 with its driver ``CameraInfo``'s frame and K (``stamp_camera_geometry``); the world-state
 lift must project through those and publish the box in the fixed-base map frame.
 
 Real components (CLAUDE.md §1.11): the real ``_WorldStateLifecycleNode`` on the real OpenArm
-manifest with the Thor unit overlay, real tf2 carrying the overlay's calibrated mount plus the
+manifest, real tf2 carrying its calibrated mount plus the
 driver's REP-103 ``zed_camera_link -> zed_left_camera_frame_optical`` hop, a real
 ``OccupancyVoxels`` grid, a real ``sensor_msgs/CameraInfo`` turned into the detector's
 ``ObjectsMetadata`` by the detector's own helper, and a real subscriber on the slow topic.
@@ -90,8 +90,6 @@ def test_a_zed_detection_is_published_lifted_in_openarm_base() -> None:
         ObjectDetection2D,
         ObjectsMetadata,
         RobotDescription,
-        apply_sensor_overlays,
-        resolve_sensor_overlays,
     )
     from openral_msgs.msg import OccupancyVoxels, PromptStamped, WorldStateStamped
     from openral_perception_ros.ros_image_detector_node import (
@@ -105,8 +103,6 @@ def test_a_zed_detection_is_published_lifted_in_openarm_base() -> None:
     from sensor_msgs.msg import CameraInfo
 
     arm = RobotDescription.from_yaml(_ROBOT_YAML)
-    thor = resolve_sensor_overlays(_ROBOT_YAML, "thor", required=True)
-    arm = arm.model_copy(update={"sensors": apply_sensor_overlays(arm.sensors, thor)})
     zed = next(s for s in arm.sensors if s.name == "head_zed")
     assert arm.base_frame == _BASE and zed.parent_frame == _BASE
     mount = zed.static_transform_xyz_rpy

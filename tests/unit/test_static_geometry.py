@@ -153,7 +153,7 @@ def _cell_scene(tmp_path: Path, runtime: dict[str, object]) -> Path:
 def test_deploy_sim_forwards_a_scene_relative_file_and_refuses_a_missing_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     off = _invoke(_cell_scene(tmp_path, {})).argv_template
     assert not any(a.startswith("static_geometry_file") for a in off), "off: argv unchanged"
     geometry = _cell_geometry(tmp_path)

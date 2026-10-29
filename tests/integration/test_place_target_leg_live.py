@@ -128,7 +128,7 @@ def test_place_target_leg_measures_attests_ages_out_and_retracts_under_the_goal(
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
     from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
-    from tests.integration.test_grasp_target_leg_live import _thor_mount
+    from tests.integration.test_grasp_target_leg_live import _zed_mount
     from tests.integration.test_safety_kernel_grasp_target_band import _kernel_params
     from tests.integration.test_vision_attachment_optical_frame_live import _tf_msg
     from tests.sim.safety._kernel_subprocess import (
@@ -221,7 +221,7 @@ def test_place_target_leg_measures_attests_ages_out_and_retracts_under_the_goal(
                 OccupancyVoxels, "/openral/world_voxels", reliable_kl1
             )
             StaticTransformBroadcaster(peer).sendTransform(
-                [_tf_msg(_BASE, "zed_camera_link", _thor_mount())]
+                [_tf_msg(_BASE, "zed_camera_link", _zed_mount())]
             )
             hand_broadcaster = TransformBroadcaster(peer)
             grid_stamps: list[int] = []

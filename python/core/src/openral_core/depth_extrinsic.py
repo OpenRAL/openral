@@ -3,13 +3,15 @@
 The kernel's world-voxel check places every obstacle through the depth camera's
 ``parent_frame -> frame_id`` mount, absolutely. OpenRAL does not measure that mount: the
 operator calibrates it with the tool of their choice (a hand-eye calibration against a
-printed board is the usual one) and declares the result as ``static_transform_xyz_rpy`` in
-the robot unit's overlay, ``robots/<id>/units/<unit>.yaml``. This module states the accuracy
+printed board is the usual one) and declares the result as ``static_transform_xyz_rpy`` with
+``static_transform_calibrated: true`` in ``robots/<id>/robot.yaml`` (or in a unit overlay,
+``robots/<id>/units/<unit>.yaml``, when one robot model runs on cells with different mounts).
+This module states the accuracy
 such a calibration needs (``MAX_HEIGHT_ERR_M`` .. ``MAX_YAW_DEG``, derived from the real
 world-voxel margin) and
 :func:`depth_extrinsic_problems`, the one gate ``openral deploy run`` applies before a real
 launch with the world-voxel check on: every cloud source must have a declared mount, and a
-robot-mounted one must come from the unit's overlay, never from the manifest's nominal value.
+robot-mounted one must be a measured one, never the manifest's nominal value.
 
 Kept out of ``openral_core.__init__`` and free of numpy, so the launch file can read
 :data:`REAL_WORLD_VOXEL_MARGIN_M` without loading anything heavy.
@@ -52,27 +54,30 @@ def depth_extrinsic_problems(
 
     ``description`` is the robot as the selected unit publishes it (its ``SensorOverlay``
     s already applied); ``overlays`` are those overlays. A robot-mounted cloud source
-    (``SensorSpec.is_cloud_source``: a depth camera, a 3D lidar) must have its
-    ``static_transform_xyz_rpy`` set by one of them: every manifest ships a nominal mount
-    from CAD, so a value being present proves nothing, while a unit overlay only exists
-    because someone set that cell up and measured it. A scene-mounted cloud source is
+    (``SensorSpec.is_cloud_source``: a depth camera, a 3D lidar) must have a measured
+    ``static_transform_xyz_rpy``: the manifest's own, marked ``static_transform_calibrated``,
+    or one an overlay sets. Every manifest ships a nominal mount from CAD, so a value being
+    present proves nothing; the flag or an overlay is the operator's statement that it was
+    measured. A scene-mounted cloud source is
     declared per deployment already; it must carry ``parent_frame`` and
     ``static_transform_xyz_rpy``. ``estimated_camera`` (``DeployRuntime.
     estimated_depth_camera``) is an RGB camera that feeds octomap DA3's cloud, so its
     mount (its own, or the one it ``shares_mount_with``) is a cloud source's here too.
 
     Example:
-        >>> from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
-        >>> robot = "robots/openarm/robot.yaml"
-        >>> desc = RobotDescription.from_yaml(robot)
-        >>> depth_extrinsic_problems(desc, [])[0]
-        "head_zed: mount is the manifest's nominal value, not declared in units/<unit>.yaml"
-        >>> thor = load_robot_unit(robot, "thor").sensors
-        >>> unit = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, thor)})
-        >>> depth_extrinsic_problems(unit, thor)
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> depth_extrinsic_problems(desc, [])  # head_zed's mount is marked calibrated
         []
+        >>> nominal = [
+        ...     s.model_copy(update={"static_transform_calibrated": False}) for s in desc.sensors
+        ... ]
+        >>> depth_extrinsic_problems(desc.model_copy(update={"sensors": nominal}), [])[0]
+        "head_zed: mount is the manifest's nominal value, not a measured calibration"
     """
-    declared = {o.name for o in overlays if o.static_transform_xyz_rpy is not None}
+    declared = {o.name for o in overlays if o.static_transform_xyz_rpy is not None} | {
+        s.name for s in description.sensors if s.static_transform_calibrated
+    }
     if estimated_camera is not None:
         # The camera sits at its own mount or the one it shares; that mount is checked.
         spec = next(
@@ -92,8 +97,7 @@ def depth_extrinsic_problems(
             )
         elif spec.name not in declared:
             problems.append(
-                f"{spec.name}: mount is the manifest's nominal value, not declared in "
-                "units/<unit>.yaml"
+                f"{spec.name}: mount is the manifest's nominal value, not a measured calibration"
             )
     robot_names = {s.name for s in description.sensors}
     for spec in scene_sensors:
@@ -158,11 +162,11 @@ def resolve_estimated_depth_camera(
     On a real deploy DA3's metres scale with the focal, so the camera needs a
     ``deploy_binding`` (or the sensor leg never publishes it) and a *measured* calibration,
     never the manifest's nominal (possibly sim stand-in) K: either its driver's own
-    ``CameraInfo`` (a ``ros2_image`` binding with a ``topic``), or ``intrinsics`` set by
-    this unit's overlay (``calibrated_intrinsics``: the overlays that set them; the sensor
-    leg publishes them, lens model included). The provider rectifies a raw image with that
-    ``CameraInfo``'s lens model; a ``ros2_image`` topic that is already rectified
-    (``image_rect``, sharing the raw ``CameraInfo``) declares
+    ``CameraInfo`` (a ``ros2_image`` binding with a ``topic``), or measured ``intrinsics``
+    (the sensor's ``intrinsics_calibrated``, or ``calibrated_intrinsics``: the unit overlays
+    that set them; the sensor leg publishes them, lens model included). The provider
+    rectifies a raw image with that ``CameraInfo``'s lens model; a ``ros2_image`` topic that
+    is already rectified (``image_rect``, sharing the raw ``CameraInfo``) declares
     ``backend_params.rectified: true`` and is read through ``CameraInfo.p``.
     ``sensors`` are the deploy's manifest (unit-overlaid) + scene sensors.
 
@@ -254,12 +258,14 @@ def resolve_estimated_depth_camera(
             problems.append(
                 f"{camera}: no deploy_binding, so a real deploy never publishes its image"
             )
-        elif not driver_info and camera not in calibrated_intrinsics:
+        elif not driver_info and not (
+            camera in calibrated_intrinsics or spec.intrinsics_calibrated
+        ):
             problems.append(
                 f"{camera}: its intrinsics are the manifest's nominal value and its "
                 f"{binding.backend.value} binding has no driver CameraInfo; DA3's metres "
-                "scale with the focal, so set this unit's calibrated intrinsics in "
-                "units/<unit>.yaml or bind the driver's topic (ros2_image)"
+                "scale with the focal, so declare its measured intrinsics "
+                "(intrinsics_calibrated: true) or bind the driver's topic (ros2_image)"
             )
         if not isinstance(params.get("rectified", False), bool):
             problems.append(

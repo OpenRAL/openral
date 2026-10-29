@@ -3116,7 +3116,7 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
     the launch as the segmenter args; an explicit ``--hal`` override still wins."""
     import yaml
 
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
     data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
     data["runtime"]["vision_attachment"].update(enabled=True, device="cpu", evidence_timeout_s=0.75)
@@ -3196,7 +3196,7 @@ def test_deploy_vision_attachment_producers_reach_the_hal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both producer legs forward as HAL params; nothing about the cell rides along."""
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     scene = _openarm_cell_scene(
         tmp_path,
         runtime={"grasp_allowance_enabled": True},
@@ -3226,7 +3226,7 @@ def test_deploy_refuses_grasp_allowance_without_its_producer(
 ) -> None:
     """On real the kernel would arm the exemption with nothing measuring the region; the
     twin keeps it (its MuJoCo evidence tracker is the producer)."""
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     scene = _openarm_cell_scene(tmp_path, runtime={"grasp_allowance_enabled": True}, leg=leg)
     with pytest.raises(ROSConfigError, match="grasp_target_enabled"):
         _invoke_cell(scene, hal_mode="real")
@@ -3245,7 +3245,7 @@ def test_deploy_run_refuses_a_hal_override_that_turns_the_producer_off(
 ) -> None:
     """The scene enables the target leg, but ``--hal`` turns it off on the HAL: the refusal
     judges the effective HAL params, so the override cannot arm an unmeasured exemption."""
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     scene = _openarm_cell_scene(
         tmp_path,
         runtime={"grasp_allowance_enabled": True},
@@ -3271,7 +3271,7 @@ def test_deploy_run_refuses_a_hal_override_that_turns_the_producer_off(
 
 def test_deploy_vision_attachment_off_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """The committed scene keeps the leg off: no HAL param, no launch arg."""
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     invocation = resolve_launch_invocation(
         config=_REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml",
         robot_override="openarm",

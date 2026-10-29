@@ -4,7 +4,7 @@ The scene is the real OpenArm cell's, numerically: the ``deploy_e2e`` octomap la
 (20 mm cells, the OpenArm's coverage ball r = 0.871 m centred (0.003, 0, 0) in
 ``openarm_base``), the
 floor 0.698 m below the base (``robots/openarm/robot.yaml`` ``base_to_root_xyz_rpy``),
-the Thor ZED's measured mount (``robots/openarm/units/thor.yaml``) and its live
+the ZED's measured mount (``robots/openarm/robot.yaml``) and its live
 ``camera_info`` K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at 1920x1080).
 
 Masks are the **real** SAM 2.1 outputs committed for ``test_vision_attachment_evidence``
@@ -27,7 +27,7 @@ from types import ModuleType
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from openral_core import IntrinsicsPinhole, PlaceRegion, Pose6D, RobotUnit
+from openral_core import IntrinsicsPinhole, PlaceRegion, Pose6D, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import yaw_to_quat_xyzw
 from openral_core.perception_geometry import (
@@ -82,9 +82,13 @@ def _rpy(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
 
 @cache
 def _t_base_from_optical() -> NDArray[np.float64]:
-    """``openarm_base -> zed_camera_link`` (thor.yaml) composed with REP-103 body→optical."""
-    unit = RobotUnit.from_yaml("robots/openarm/units/thor.yaml")
-    head = next(s for s in unit.sensors if s.name == "head_zed")
+    """``openarm_base -> zed_camera_link`` (the manifest's measured mount) composed with
+    REP-103 body→optical."""
+    head = next(
+        s
+        for s in RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
+        if s.name == "head_zed"
+    )
     assert head.static_transform_xyz_rpy is not None
     x, y, z, roll, pitch, yaw = head.static_transform_xyz_rpy
     body_from_optical = np.array(((0.0, 0.0, 1.0), (-1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))

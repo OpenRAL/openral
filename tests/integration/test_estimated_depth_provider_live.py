@@ -215,7 +215,7 @@ def test_a_camera_info_of_another_aspect_feeds_the_map_nothing(tmp_path: Path) -
     assert "is not a resize of CameraInfo" in log
 
 
-# Thor's calibrated left wrist Arducam (robots/openarm/units/thor.yaml), plumb_bob.
+# The calibrated left wrist Arducam (robots/openarm/robot.yaml), plumb_bob.
 _ARDUCAM_D = [-0.072761672, -0.056848830, 0.002163274, 0.001326299, 0.035500496]
 
 

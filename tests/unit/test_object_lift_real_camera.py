@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The object lift projects a real camera's detections through the driver's frame and K.
 
-On the real OpenArm (Thor cell) the detector watches ``top``, which the manifest declares as
+On the real OpenArm the detector watches ``top``, which the manifest declares as
 the sim render's stand-in (frame ``world``, 640x480, fx 640) while the real image is the ZED's
 rectified left image: ``zed_left_camera_frame_optical``, 1920x1080, K = [1498.18, 0, 936.11;
 0, 1498.18, 541.81] (measured 2026-10-02). The detector now stamps each batch with the
 driver ``CameraInfo``'s frame and K; this pins that a 1920x1080 box lifted through them lands
-on the right point in ``openarm_base`` under the Thor overlay's calibrated mount.
+on the right point in ``openarm_base`` under the manifest's calibrated mount.
 
-Real fixtures (CLAUDE.md §1.11): ``robots/openarm/robot.yaml`` + ``units/thor.yaml``, real
+Real fixtures (CLAUDE.md §1.11): ``robots/openarm/robot.yaml``, real
 ``sensor_msgs/CameraInfo`` (skipped without ROS), real ``VoxelFrustumLifter``.
 """
 
@@ -25,8 +25,6 @@ from openral_core import (
     ObjectsMetadata,
     RobotDescription,
     ROSConfigError,
-    apply_sensor_overlays,
-    resolve_sensor_overlays,
 )
 from openral_perception_ros.ros_image_detector_node import (
     camera_geometry_from_info,
@@ -59,14 +57,13 @@ def _rot_rpy(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
 
 
 def _t_base_optical() -> NDArray[np.float64]:
-    """openarm_base <- zed_left_camera_frame_optical: Thor's calibrated mount, then REP-103.
+    """openarm_base <- zed_left_camera_frame_optical: the measured mount, then REP-103.
 
     The driver's ``/tf_static`` also offsets the left lens from ``zed_camera_link``; that is
     a translation tf2 composes the same way, omitted here (not a value OpenRAL records).
     """
     arm = RobotDescription.from_yaml(_ROBOT_YAML)
-    thor = resolve_sensor_overlays(_ROBOT_YAML, "thor", required=True)
-    zed = next(s for s in apply_sensor_overlays(arm.sensors, thor) if s.name == "head_zed")
+    zed = next(s for s in arm.sensors if s.name == "head_zed")
     assert zed.parent_frame == "openarm_base"
     mount = zed.static_transform_xyz_rpy
     assert mount is not None

@@ -318,7 +318,7 @@ def _invoke(scene: Path, hal_mode: str) -> Any:
 def test_deploy_sim_forwards_workspace_contact_and_deploy_run_refuses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     off = _invoke(_cell_scene(tmp_path, {}), "sim").argv_template
     assert not any(a.startswith("workspace_contact") for a in off), "off: argv unchanged"
     scene = _cell_scene(
@@ -344,7 +344,7 @@ def test_a_scene_may_keep_the_workspace_rule_alone_without_k7(
 ) -> None:
     """Restock (2026-10-23 decision): the tote neighbour the finger brushes is hidden from
     the one depth camera, so K7 cannot explain it; the scene keeps the workspace rule alone."""
-    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
     rule: dict[str, object] = {
         "grasp_allowance_enabled": True,
         "workspace_contact_enabled": True,
