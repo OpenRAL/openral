@@ -48,12 +48,14 @@ from openral_core.exceptions import ROSConfigError
 from pydantic import BaseModel, ConfigDict
 
 __all__ = [
+    "DECLARATION_EXPIRY_MARGIN_S",
     "DEFAULT_CLOCK_STALL_S",
     "DEFAULT_WALL_CAP_FACTOR",
     "PARAM_CLOCK_STALL_S",
     "PARAM_WALL_CAP_FACTOR",
     "BudgetMiss",
     "ExecutionBudget",
+    "declaration_expiry_miss",
     "graph_clock_fn",
     "node_execution_budget",
 ]
@@ -217,6 +219,65 @@ class ExecutionBudget:
                 ),
             )
         return None
+
+
+#: Seconds before a grasp declaration's expiry at which the goal ends. The runner checks
+#: between ticks and the HAL still applies the action it holds, so ending exactly at expiry
+#: leaves a finger in contact the kernel no longer exempts (pro#51: restock goals that ran out
+#: of time e-stopped on "world collision" 0.4 s after the exemption dropped).
+#: *Calibration point:* a tick plus the HAL's queued action.
+DECLARATION_EXPIRY_MARGIN_S = 2.0
+
+
+def declaration_expiry_miss(
+    *,
+    target_id: str,
+    stamp_ns: int,
+    timeout_s: float,
+    now_ns: int,
+    margin_s: float = DECLARATION_EXPIRY_MARGIN_S,
+) -> BudgetMiss | None:
+    """The goal's miss once its grasp declaration is within ``margin_s`` of expiring.
+
+    A declaration's contact exemption ends at ``stamp_ns + timeout_s`` on the graph clock,
+    which may come before the goal's own budget (it is armed before the start-pose move).
+    Ending the goal then, as a ``deadline_exceeded`` miss, only ever stops it earlier; a goal
+    left running past it fails later as an unexplained collision instead.
+
+    Args:
+        target_id: The declaration's target, for the detail text.
+        stamp_ns: When the declaration was armed (the clock ``now_ns`` reads).
+        timeout_s: Its lifetime; ``<= 0`` or a ``stamp_ns`` of 0 never expires here.
+        now_ns: The same clock now.
+        margin_s: How long before the expiry the miss is reported.
+
+    Returns:
+        The miss, or ``None`` while the declaration has more than ``margin_s`` left.
+
+    Example:
+        >>> declaration_expiry_miss(
+        ...     target_id="cell:box", stamp_ns=10**9, timeout_s=70.0, now_ns=60 * 10**9
+        ... ) is None
+        True
+        >>> miss = declaration_expiry_miss(
+        ...     target_id="cell:box", stamp_ns=10**9, timeout_s=70.0, now_ns=69 * 10**9
+        ... )
+        >>> miss.kind, round(miss.elapsed_s, 1)
+        ('deadline_exceeded', 68.0)
+    """
+    if timeout_s <= 0.0 or stamp_ns <= 0:
+        return None
+    age_s = (now_ns - stamp_ns) / 1e9
+    if age_s < timeout_s - margin_s:
+        return None
+    return BudgetMiss(
+        kind="deadline_exceeded",
+        elapsed_s=age_s,
+        detail=(
+            f"grasp declaration {target_id!r} expires (armed {age_s:.1f}s ago, "
+            f"timeout_s={timeout_s:.1f}s): its contact exemption ends, so the goal ends first"
+        ),
+    )
 
 
 def graph_clock_fn(node: Any) -> Callable[[], float] | None:  # noqa: ANN401  # reason: rclpy Node is untyped and not importable without a sourced ROS 2 workspace

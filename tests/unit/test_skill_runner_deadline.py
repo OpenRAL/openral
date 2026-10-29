@@ -80,6 +80,9 @@ def budget() -> Any:  # reason: dynamically bound method holder
     holder.deadline_lapsed = MethodType(  # type: ignore[attr-defined]
         mod.RskillRunnerNode._deadline_lapsed, holder
     )
+    holder._report_miss = MethodType(  # type: ignore[attr-defined]
+        mod.RskillRunnerNode._report_miss, holder
+    )
     return holder
 
 
@@ -124,6 +127,90 @@ def test_boundary_just_inside_budget_is_not_a_miss(budget: Any) -> None:
     assert budget.deadline_lapsed(_wall_budget(45.0, elapsed_s=1.0), 0) is False
     assert budget.deadline_lapsed(_wall_budget(45.0, elapsed_s=45.0), 0) is False
     assert budget._last_deadline_miss is None
+
+
+# ── _grasp_declaration_lapsing — the goal ends before its exemption does ─────
+#
+# pro#51: a restock goal's grasp declaration (armed before the start-pose move, 70 s) expired
+# while the policy was still retrying; the kernel dropped the contact exemption and e-stopped
+# the finger 0.4 s later as a "world collision". The goal now ends first, as a deadline miss.
+
+
+class _Now:
+    """The node clock's ``now()`` at a settable instant (the graph clock, as under sim)."""
+
+    def __init__(self, ns: int) -> None:
+        self.nanoseconds = ns
+
+
+class _DeclarationHolder(_BudgetHolder):
+    """``_BudgetHolder`` plus the declaration in force and a node clock."""
+
+    def __init__(self, declaration: Any, now_ns: int) -> None:
+        super().__init__()
+        self._active_grasp_declaration = declaration
+        self.now_ns = now_ns
+
+    def get_clock(self) -> Any:  # reason: stands in for rclpy's Clock at one instant
+        holder = self
+
+        class _Clock:
+            def now(self) -> _Now:
+                return _Now(holder.now_ns)
+
+        return _Clock()
+
+
+def _scene_declaration(stamp_ns: int) -> Any:
+    """The PickOrange scene's grasp declaration (120 s), armed at ``stamp_ns``."""
+    import yaml
+    from openral_core import GraspDeclaration
+
+    scene = Path(__file__).resolve().parents[2] / "scenes/deploy/isaac_leisaac_pick_orange.yaml"
+    raw = yaml.safe_load(scene.read_text())["grasp_declaration"]
+    return GraspDeclaration.model_validate({**raw, "stamp_ns": stamp_ns})
+
+
+def _declaration_holder(declaration: Any, now_ns: int) -> Any:
+    mod = _load_skill_runner_module()
+    holder = _DeclarationHolder(declaration, now_ns)
+    for name in ("_grasp_declaration_lapsing", "_report_miss"):
+        setattr(holder, name, MethodType(getattr(mod.RskillRunnerNode, name), holder))
+    return holder
+
+
+def test_declaration_with_time_left_keeps_the_goal_running() -> None:
+    """More than the margin left: no miss, nothing recorded."""
+    holder = _declaration_holder(_scene_declaration(5 * 10**9), now_ns=100 * 10**9)
+    assert holder._grasp_declaration_lapsing(0) is False
+    assert holder._last_deadline_miss is None
+
+
+def test_expiring_declaration_ends_the_goal_as_a_deadline_miss() -> None:
+    """Within the margin of expiry: a ``deadline_exceeded`` miss naming the declaration, and
+    ``TimeoutEvidence`` the reasoner reads as a timeout, not a collision."""
+    import json
+
+    from openral_rskill.execution_budget import DECLARATION_EXPIRY_MARGIN_S
+
+    armed = 5 * 10**9
+    now = armed + int((120.0 - DECLARATION_EXPIRY_MARGIN_S + 0.1) * 1e9)
+    holder = _declaration_holder(_scene_declaration(armed), now_ns=now)
+    assert holder._grasp_declaration_lapsing(41) is True
+    miss = holder._last_deadline_miss
+    assert miss.kind == "deadline_exceeded"
+    assert "'obj:orange_1' expires" in miss.detail
+    assert miss.elapsed_s == pytest.approx(120.0 - DECLARATION_EXPIRY_MARGIN_S + 0.1)
+    evidence = json.loads(holder._goal_evidence[1])
+    assert evidence["operation"] == "rskill.execute:grasp_declaration:deadline_exceeded"
+    assert evidence["deadline_s"] == 120.0
+
+
+def test_no_declaration_or_unstamped_one_never_lapses() -> None:
+    """No declaration in force, or one never stamped (``stamp_ns=0``): nothing to expire."""
+    assert _declaration_holder(None, now_ns=10**12)._grasp_declaration_lapsing(0) is False
+    unstamped = _declaration_holder(_scene_declaration(0), now_ns=10**12)
+    assert unstamped._grasp_declaration_lapsing(0) is False
 
 
 # ── _pace_tick — absolute-deadline loop cadence ──────────────────────────────

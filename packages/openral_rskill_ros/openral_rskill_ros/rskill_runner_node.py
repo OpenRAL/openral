@@ -1730,6 +1730,46 @@ if _ROS2_AVAILABLE:
             miss = budget.check()
             if miss is None:
                 return False
+            self._report_miss(
+                miss, budget.budget_s, budget.on_graph_clock, chunks, "rskill.execute"
+            )
+            return True
+
+        def _grasp_declaration_lapsing(self, chunks: int) -> bool:
+            """Return True once the goal's grasp declaration is about to expire, reporting it.
+
+            The kernel drops the declaration's contact exemption at its expiry, and a goal
+            still running then fails as a collision the reasoner cannot explain (pro#51: the
+            fingers mid-retry 11 mm into the carton, e-stopped 0.4 s after the drop). The goal
+            ends first, as the same ``deadline_exceeded`` miss a lapsed budget is
+            (``declaration_expiry_miss``), on the clock that stamped the declaration.
+            """
+            from openral_rskill.execution_budget import declaration_expiry_miss, graph_clock_fn
+
+            decl = self._active_grasp_declaration
+            if decl is None:
+                return False
+            miss = declaration_expiry_miss(
+                target_id=str(decl.target_id),
+                stamp_ns=int(decl.stamp_ns),
+                timeout_s=float(decl.timeout_s),
+                now_ns=int(self.get_clock().now().nanoseconds),
+            )
+            if miss is None:
+                return False
+            self._report_miss(
+                miss,
+                float(decl.timeout_s),
+                graph_clock_fn(self) is not None,
+                chunks,
+                "rskill.execute:grasp_declaration",
+            )
+            return True
+
+        def _report_miss(
+            self, miss: Any, deadline_s: float, on_graph_clock: bool, chunks: int, operation: str
+        ) -> None:
+            """Log, trace and stash one miss as the goal's ``FAILURE_DEADLINE_MISSED`` evidence."""
             from openral_observability import semconv
             from opentelemetry import trace
 
@@ -1738,9 +1778,9 @@ if _ROS2_AVAILABLE:
                 semconv.EVENT_DEADLINE_MISSED,
                 {
                     "elapsed_s": round(miss.elapsed_s, 1),
-                    "budget_s": budget.budget_s,
+                    "budget_s": deadline_s,
                     "miss.kind": miss.kind,
-                    "on_graph_clock": budget.on_graph_clock,
+                    "on_graph_clock": on_graph_clock,
                 },
             )
             self._last_deadline_miss = miss
@@ -1750,12 +1790,11 @@ if _ROS2_AVAILABLE:
             self._goal_evidence = (
                 int(ExecuteRskill.Result.FAILURE_DEADLINE_MISSED),
                 TimeoutEvidence(
-                    operation=f"rskill.execute:{miss.kind}",
-                    deadline_s=budget.budget_s,
+                    operation=f"{operation}:{miss.kind}",
+                    deadline_s=deadline_s,
                     elapsed_s=max(miss.elapsed_s, 0.0),
                 ).model_dump_json(),
             )
-            return True
 
         def _run_until_done_or_deadline(  # noqa: PLR0915  # reason: one tick loop — safety/cancel/deadline gates, inference span, dispatch, feedback, pacing
             self,
@@ -1830,7 +1869,9 @@ if _ROS2_AVAILABLE:
                     return "cancelled"
                 if self._complete_requested:  # logged by `_on_complete`
                     return "completed"
-                if self._deadline_lapsed(budget, chunk_index):
+                if self._deadline_lapsed(budget, chunk_index) or self._grasp_declaration_lapsing(
+                    chunk_index
+                ):
                     return "deadline"
 
                 snapshot = self._aggregator.snapshot()
