@@ -184,6 +184,23 @@ def test_a_jaw_held_open_is_not_a_grasp(openarm: RobotDescription) -> None:
     assert _run(trigger, openarm, _flat(0.3, 30)) == []
 
 
+@pytest.mark.parametrize("stall_at", [0.18, 0.29])
+def test_a_jaw_that_never_left_open_after_the_close_is_not_a_grasp(
+    openarm: RobotDescription, stall_at: float
+) -> None:
+    """Spark restock (pro#51): the close was commanded but the jaw sat fully open, flat; it
+    read as stalled far short of the command and bound a full-stroke phantom payload."""
+    trigger = _left(openarm)
+    assert _run(trigger, openarm, _flat(_OPEN, 10)) == []
+    trigger.command(0.0)
+    assert _run(trigger, openarm, _flat(_OPEN, 60)) == []
+    assert not trigger.attached
+    # The same close, once the jaw moves and stalls on the object, still attaches.
+    assert _run(trigger, openarm, [*_close(_OPEN, stall_at), *_flat(stall_at, 12)]) == [
+        GraspEvent.ATTACH
+    ]
+
+
 def test_noise_on_a_held_jaw_never_chatters(openarm: RobotDescription) -> None:
     trigger = _left(openarm)
     trigger.command(0.0)

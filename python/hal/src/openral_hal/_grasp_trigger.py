@@ -383,6 +383,7 @@ class PositionStallTrigger:
         self._history: deque[tuple[int, float]] = deque()
         self._last_stamp_ns: int | None = None
         self._command: float | None = None
+        self._close_from: float | None = None
         self._loaded = False
         self._hold: float | None = None
         self._streak_since_ns: int | None = None
@@ -451,6 +452,8 @@ class PositionStallTrigger:
         was_closing = self._command is not None and self._in_band(self._command)
         self._command = float(target)
         if not was_closing and self._in_band(self._command):
+            # Where the jaw was when told to close; ``None`` if never read.
+            self._close_from = self._history[-1][1] if self._history else None
             self._history.clear()
             self._reset_streak()
             self.close_starts += 1
@@ -539,7 +542,12 @@ class PositionStallTrigger:
         )
         stalled = closing and settled and short_of_command > self._rest + self._gap
         if not self._loaded:
-            return GraspEvent.ATTACH if stalled else None
+            # A jaw that never left where the close found it holds nothing it closed on: it
+            # did not move (Spark restock, OpenRAL/openral-pro#51: ATTACH 1.2 s after the
+            # command with the jaw still fully open, settle spread 0, a full-stroke phantom
+            # payload stopped the arm). Unknown start (never read): as before.
+            moved = self._close_from is None or abs(position - self._close_from) > 0.5 * self._gap
+            return GraspEvent.ATTACH if stalled and moved else None
         half = 0.5 * self._gap
         hold = self._hold if self._hold is not None else position
         if closing and short_of_command <= self._rest + half:
