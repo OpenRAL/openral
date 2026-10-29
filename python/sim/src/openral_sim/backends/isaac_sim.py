@@ -2572,15 +2572,16 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
             f"unknown robot_id {robot_id!r} for the Isaac manifest scene; "
             "expected a robots/<id>/robot.yaml manifest."
         ) from exc
-    # The robot unit this host simulates ($OPENRAL_ROBOT_UNIT, which the deploy launch
-    # sets from the scene's `robot_unit`): its calibrated mounts and intrinsics, as the
-    # launch's TF and kernel see them.
+    # The robot unit this host simulates ($OPENRAL_ROBOT_UNIT, else the scene's
+    # `robot_unit`): its calibrated mounts and intrinsics, as the launch's TF and kernel
+    # see them. Passing no scene unit here ran `sim run` without them unless the env var
+    # was set (Spark restock: 4 always-failing tasks, 0/4 -> 3/4 complete with the unit).
     from openral_core import apply_sensor_overlays, resolve_sensor_overlays
 
     from openral_sim.policies.robots import resolve_robot_manifest
 
     manifest = resolve_robot_manifest(robot_id)
-    overlays = resolve_sensor_overlays(manifest, None, required=False)
+    overlays = resolve_sensor_overlays(manifest, env_cfg.robot_unit, required=False)
     if overlays:
         desc = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, overlays)})
         print(

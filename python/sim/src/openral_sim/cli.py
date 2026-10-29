@@ -454,6 +454,7 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
         record_video=scene_env.record_video or args.save_video is not None,
         save_dir=str(args.save_dir) if args.save_dir is not None else scene_env.save_dir,
         metadata=scene_env.metadata,
+        robot_unit=scene_env.robot_unit,
     )
 
     # Structured summary of what was actually composed -- gives the
