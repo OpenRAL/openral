@@ -91,7 +91,10 @@ def test_images_stay_home_without_consent(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("OPENRAL_TELEMETRY_IMAGE_CONSENT", raising=False)
     assert images_may_leave_host("http://127.0.0.1:4318")
     assert images_may_leave_host("localhost:4317")
+    assert images_may_leave_host("http://otelcol:4317")  # docker-compose.dev.yml
+    assert images_may_leave_host("http://192.168.1.20:4318")  # a laptop dashboard on the LAN
     assert not images_may_leave_host("https://ingest.example.eu")
+    assert not images_may_leave_host("http://8.8.8.8:4317")
     monkeypatch.setenv("OPENRAL_TELEMETRY_IMAGE_CONSENT", "1")
     assert images_may_leave_host("https://ingest.example.eu")
 
@@ -112,3 +115,30 @@ def test_unit_identity_from_the_unit_file_and_env(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("OPENRAL_UNIT_SERIAL", "has,comma")
     with pytest.raises(ROSConfigError, match="OTEL_RESOURCE_ATTRIBUTES"):
         resolve_unit_identity(so101, "bench_laptop", required=False)
+
+
+def test_a_malformed_wire_trace_costs_the_link_not_the_record(
+    exported: tuple[ComplianceEmitter, InMemoryLogRecordExporter],
+) -> None:
+    """Every producer gets the guard: bad trace field → record without a trace id."""
+    emitter, _ = exported
+    record = emitter.emit(
+        SafetyStopRecord, trigger_source="supervisor", latched=False, trace_id="not-a-trace"
+    )
+    assert (record.trace_id, record.span_id) == (None, None)
+    wire = emitter.emit(
+        SafetyStopRecord,
+        trigger_source="kernel",
+        latched=True,
+        trace_id=f"00-{'c' * 32}-{'d' * 16}-01",
+    )
+    assert (wire.trace_id, wire.span_id) == ("c" * 32, "d" * 16)
+
+
+def test_each_emitter_is_its_own_stream() -> None:
+    """Two processes' emitters never share a (stream_id, seq), so gaps stay meaningful."""
+    a, b = ComplianceEmitter(), ComplianceEmitter()
+    ra = a.emit(SafetyStopRecord, trigger_source="kernel", latched=True)
+    rb = b.emit(SafetyStopRecord, trigger_source="kernel", latched=True)
+    assert ra.seq == rb.seq == 0
+    assert ra.stream_id != rb.stream_id

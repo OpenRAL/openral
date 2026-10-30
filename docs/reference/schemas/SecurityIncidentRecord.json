@@ -13,6 +13,19 @@
       "title": "Record Id",
       "type": "string"
     },
+    "stream_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stream Id"
+    },
     "seq": {
       "maximum": 9223372036854775807,
       "minimum": 0,

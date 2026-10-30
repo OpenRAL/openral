@@ -296,7 +296,12 @@ def emit_sensor_frame_span(
             height=int(frame.height),
             channels=int(getattr(frame, "channels", 0) or 0),
             age_ms=age_ms,
-            thumbnail_bytes=encode_frame_thumbnail(frame, flip_180=flip_180),
+            # Gate before the encode: a withheld JPEG still costs the GIL (issue #467).
+            thumbnail_bytes=(
+                encode_frame_thumbnail(frame, flip_180=flip_180)
+                if images_may_leave_host()
+                else None
+            ),
         )
 
 

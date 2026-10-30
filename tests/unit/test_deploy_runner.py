@@ -247,6 +247,42 @@ def test_safety_violation_withholds_action_and_records_on_tick(
     assert active_skill.step_count == 5
 
 
+def test_a_persisting_violation_is_one_safety_stop_record(
+    hal: SO100FollowerHAL,
+    aggregator: WorldStateAggregator,
+    active_skill: _NoOpTestSkill,
+) -> None:
+    """Three withheld ticks of the same violation write one SafetyStopRecord (issue #467)."""
+    from openral_core import SafetyStopRecord
+    from openral_observability.compliance import ComplianceEmitter
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk._logs.export import (
+        InMemoryLogRecordExporter,
+        SimpleLogRecordProcessor,
+    )
+
+    exporter = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]  # reason: OTel SDK leaves __init__ unannotated
+    provider = LoggerProvider()
+    provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+    runner = DeployRunner(
+        hal=hal,
+        skill=active_skill,
+        aggregator=aggregator,
+        safety_client=_RejectAfterSafetyClient(allow_first=2),
+        rate_hz=60.0,
+    )
+    runner._compliance = ComplianceEmitter(logger_provider=provider)
+    runner.activate()
+    try:
+        runner.run(max_ticks=5)
+    finally:
+        runner.deactivate()
+    (log,) = exporter.get_finished_logs()
+    stop = SafetyStopRecord.model_validate_json(str(log.log_record.body))
+    assert stop.trigger_source == "supervisor"
+    assert stop.rskill_id == active_skill.name
+
+
 def test_null_safety_client_is_default(
     hal: SO100FollowerHAL,
     aggregator: WorldStateAggregator,

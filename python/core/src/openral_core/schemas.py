@@ -13840,6 +13840,30 @@ _TRACEPARENT = re.compile(r"^[0-9a-f]{2}-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{
 _HEX64 = r"^[0-9a-f]{64}$"
 
 
+def trace_ids_from_wire(wire: str) -> tuple[str | None, str | None]:
+    """``(trace_id, span_id)`` from a wire trace field: traceparent, raw 32 hex, or ``""``.
+
+    The forms ``FailureTrigger`` / ``SafetyStatus`` (traceparent), ``Tick`` (raw hex) and an
+    unset field (``""``) carry (ISSUE-109). The one parser compliance records use.
+
+    Raises:
+        ValueError: ``wire`` is none of those forms.
+
+    Example:
+        >>> trace_ids_from_wire("00-" + "a" * 32 + "-" + "b" * 16 + "-01")[1]
+        'bbbbbbbbbbbbbbbb'
+        >>> trace_ids_from_wire("")
+        (None, None)
+    """
+    if wire == "":
+        return None, None
+    if match := _TRACEPARENT.match(wire):
+        return match[1], match[2]
+    if re.fullmatch(_HEX32, wire):
+        return wire, None
+    raise ValueError(f"not a trace id or W3C traceparent: {wire[:64]!r}")
+
+
 class Actor(BaseModel):
     """Who performed an intervention, without naming them.
 
@@ -13889,7 +13913,9 @@ class _ComplianceRecordBase(BaseModel):
     Attributes:
         schema_version: Version of this record kind's schema.
         record_id: Unique record id, 32 lowercase hex (a UUID's hex form).
-        seq: Per-unit monotonic sequence number; gaps reveal lost records.
+        stream_id: The emitter that wrote the record (one per process, fresh on restart).
+        seq: Gap-free sequence number within ``stream_id``; a gap is a lost record, a
+            new ``stream_id`` is a new process.
         ts_ns: Event time, UTC nanoseconds since the Unix epoch.
         clock_source: How the producing host's clock was disciplined.
         trace_id: OTel trace id, 32 hex, when the event ran under a span.
@@ -13904,6 +13930,7 @@ class _ComplianceRecordBase(BaseModel):
 
     schema_version: Literal["0.1"] = "0.1"
     record_id: str = Field(pattern=_HEX32)
+    stream_id: str | None = Field(default=None, pattern=_HEX32)
     seq: int = Field(ge=0, le=_INT64_MAX)
     ts_ns: int = Field(ge=0, le=_INT64_MAX)
     clock_source: Literal["ptp", "ntp", "monotonic_unsynced"]
@@ -13925,11 +13952,11 @@ class _ComplianceRecordBase(BaseModel):
         trace_id = data.get("trace_id")
         if not isinstance(trace_id, str):
             return data
-        if trace_id == "":
-            return {**data, "trace_id": None}
-        if match := _TRACEPARENT.match(trace_id):
-            return {**data, "trace_id": match[1], "span_id": data.get("span_id") or match[2]}
-        return data
+        try:
+            parsed_trace, parsed_span = trace_ids_from_wire(trace_id)
+        except ValueError:
+            return data  # the field pattern refuses it
+        return {**data, "trace_id": parsed_trace, "span_id": data.get("span_id") or parsed_span}
 
     @property
     def retention_class(self) -> RetentionClass:

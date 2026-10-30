@@ -1,7 +1,8 @@
 """Compliance records out over OTLP (issue #467).
 
 ``ComplianceEmitter`` stamps the ``openral_core.ComplianceRecord`` envelope (record id,
-per-process sequence, clock source) and sends each record as one OTLP **log record**:
+a per-emitter ``stream_id`` + gap-free ``seq``, clock source) and sends each record as
+one OTLP **log record**:
 the body is the record's JSON, the attributes carry ``openral.record.kind`` /
 ``openral.schema.version`` / ``openral.record.id`` / ``openral.retention.class``, and the
 record's trace id links it to the span it happened under. Unit, org and site ride on
@@ -20,14 +21,18 @@ Example:
 
 from __future__ import annotations
 
+import functools
+import ipaddress
 import itertools
 import os
 import threading
 import time
 import uuid
 from typing import Literal, TypeVar, cast
+from urllib.parse import urlsplit
 
-from openral_core import ComplianceRecord, FailureRecord
+import structlog
+from openral_core import ComplianceRecord, FailureRecord, trace_ids_from_wire
 from opentelemetry import trace
 from opentelemetry._logs import LoggerProvider, LogRecord, SeverityNumber, get_logger
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
@@ -40,7 +45,8 @@ CLOCK_SOURCE_ENV = "OPENRAL_CLOCK_SOURCE"
 """How the host clock is disciplined (``ptp`` / ``ntp`` / ``monotonic_unsynced``)."""
 
 _IMAGE_CONSENT_ENV = "OPENRAL_TELEMETRY_IMAGE_CONSENT"
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+log = structlog.get_logger(__name__)
 
 _ClockSource = Literal["ptp", "ntp", "monotonic_unsynced"]
 _R = TypeVar("_R", bound=ComplianceRecord)
@@ -84,8 +90,9 @@ class ComplianceEmitter:
         *,
         logger_provider: LoggerProvider | None = None,
     ) -> None:
-        """Start the sequence at 0."""
+        """Open a fresh stream: a new ``stream_id``, ``seq`` from 0."""
         self._clock_source: _ClockSource = clock_source or _clock_source_from_env()
+        self._stream_id = uuid.uuid4().hex
         self._seq = itertools.count()
         self._lock = threading.Lock()
         self._logger = get_logger("openral.compliance", logger_provider=logger_provider)
@@ -93,13 +100,23 @@ class ComplianceEmitter:
     def emit(self, kind: type[_R], **fields: object) -> _R:
         """Build one record of ``kind`` from ``fields`` and send it.
 
-        ``record_id``, ``seq``, ``clock_source`` and (unless given) ``ts_ns`` and the
-        active span's ``trace_id`` / ``span_id`` are filled in here.
+        ``record_id``, ``stream_id``, ``seq``, ``clock_source`` and (unless given) ``ts_ns``
+        and the active span's ``trace_id`` / ``span_id`` are filled in here. A ``trace_id``
+        given in a wire form (traceparent, ``""``) is parsed; a malformed one is dropped with
+        a warning, because a producer's bad trace field must cost the link, not the record.
 
         Raises:
             pydantic.ValidationError: ``fields`` do not make a valid record. Callers on a
                 safety path build from typed sources, so this is a programming error.
         """
+        wire = fields.get("trace_id")
+        if isinstance(wire, str):
+            try:
+                fields["trace_id"], span_id = trace_ids_from_wire(wire)
+            except ValueError:
+                log.warning("compliance.trace_id_malformed", trace_id=wire[:64], kind=kind.__name__)
+                fields["trace_id"], span_id = None, None
+            fields.setdefault("span_id", span_id)
         if "trace_id" not in fields:
             ctx = trace.get_current_span().get_span_context()
             if ctx.is_valid:
@@ -112,6 +129,7 @@ class ComplianceEmitter:
                 kind.model_validate(
                     {
                         "record_id": uuid.uuid4().hex,
+                        "stream_id": self._stream_id,
                         "seq": next(self._seq),
                         "ts_ns": time.time_ns(),
                         "clock_source": self._clock_source,
@@ -164,25 +182,44 @@ class ComplianceEmitter:
 def images_may_leave_host(endpoint: str | None = None) -> bool:
     """Whether camera images may ride in exported telemetry.
 
-    Only to a loopback collector (the local ``openral dashboard``), unless the deployer
-    consented with ``OPENRAL_TELEMETRY_IMAGE_CONSENT=1`` (CLAUDE.md §3: no PII in cloud
-    logs without consent; a camera frame of a cell is personal data when a worker is in it).
+    Yes when nothing is exported, or the collector is on the deployer's own network: a
+    loopback, private or link-local address, or a single-label host name (a compose service
+    such as ``otelcol``, a LAN machine). A public endpoint needs the deployer's consent,
+    ``OPENRAL_TELEMETRY_IMAGE_CONSENT=1`` (CLAUDE.md §3: no PII in cloud logs without
+    consent; a camera frame of a cell is personal data when a worker is in it). Withholding
+    is logged once per endpoint, so blank camera tiles are never a silent mystery.
 
     Args:
-        endpoint: The OTLP endpoint; default ``$OTEL_EXPORTER_OTLP_ENDPOINT``.
+        endpoint: The OTLP endpoint; default the one ``configure_observability`` installed.
 
     Example:
         >>> images_may_leave_host("http://127.0.0.1:4318")
         True
-        >>> images_may_leave_host("https://otlp.example.com")
-        False
+        >>> images_may_leave_host("http://otelcol:4317")
+        True
     """
-    if os.environ.get(_IMAGE_CONSENT_ENV) == "1":
-        return True
-    from urllib.parse import urlsplit
+    if endpoint is None:
+        from openral_observability import _sdk
 
-    url = endpoint if endpoint is not None else os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if not url:
-        return True  # nothing is exported
-    host = urlsplit(url if "//" in url else f"//{url}").hostname or ""
-    return host in _LOOPBACK_HOSTS
+        endpoint = _sdk._endpoint
+    return _images_allowed(endpoint or "", os.environ.get(_IMAGE_CONSENT_ENV) == "1")
+
+
+@functools.lru_cache(maxsize=8)
+def _images_allowed(endpoint: str, consent: bool) -> bool:
+    """The decision for one ``(endpoint, consent)``; cached so it is logged once."""
+    if consent or not endpoint:
+        return True
+    host = urlsplit(endpoint if "//" in endpoint else f"//{endpoint}").hostname or ""
+    try:
+        address = ipaddress.ip_address(host)
+        local = address.is_loopback or address.is_private or address.is_link_local
+    except ValueError:
+        local = host == "localhost" or "." not in host
+    if not local:
+        log.warning(
+            "telemetry.images_withheld",
+            endpoint=endpoint,
+            hint=f"set {_IMAGE_CONSENT_ENV}=1 if the deployer consents to camera frames leaving",
+        )
+    return local

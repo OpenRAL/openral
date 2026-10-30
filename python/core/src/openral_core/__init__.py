@@ -314,6 +314,7 @@ from openral_core.schemas import (
     sensor_name_to_slot,
     sim_scene_description,
     task_space_compatible,
+    trace_ids_from_wire,
 )
 from openral_core.time_base import (
     TIME_BASE_TOL,
@@ -640,5 +641,6 @@ __all__ = [
     "sensor_name_to_slot",
     "sim_scene_description",
     "task_space_compatible",
+    "trace_ids_from_wire",
 ]
 __version__ = _pkg_version("openral-core")

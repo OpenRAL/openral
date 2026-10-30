@@ -45,7 +45,7 @@ from openral_hal.protocol import HAL
 from openral_observability import metrics as ral_metrics
 from openral_observability import producer as ral_producer
 from openral_observability import semconv
-from openral_observability.compliance import ComplianceEmitter
+from openral_observability.compliance import ComplianceEmitter, images_may_leave_host
 from openral_observability.tracing_lttng import (
     TP_HAL_READ_STATE,
     TP_HAL_SEND_ACTION,
@@ -146,6 +146,7 @@ class DeployRunner(InferenceRunnerBase):
         self._recorder = recorder
         # Supervisor-boundary stops become compliance records (issue #467).
         self._compliance = ComplianceEmitter()
+        self._withheld_violation: str | None = None
         # VLA slot per camera for the recorder, built on the first recorded tick.
         self._recorder_slots: dict[str, str] | None = None
         # Tracks whether an episode is currently "open" on the recorder.
@@ -358,7 +359,8 @@ class DeployRunner(InferenceRunnerBase):
                     # has already advanced, so a non-renderable camera doesn't retry.
                     thumb_bytes = (
                         ral_producer.encode_frame_thumbnail(frame)
-                        if self._thumbnail_due(reader.sensor_id, self._thumbnail_clock())
+                        if images_may_leave_host()
+                        and self._thumbnail_due(reader.sensor_id, self._thumbnail_clock())
                         else None
                     )
                     ral_producer.record_sensor_frame_attrs(
@@ -463,6 +465,7 @@ class DeployRunner(InferenceRunnerBase):
         safety_t0 = time.perf_counter()
         try:
             self._safety_client.check_action(action)
+            self._withheld_violation = None  # a passing check ends the stop
         except ROSSafetyViolation as exc:
             # Supervisor boundary: record + withhold action. We do NOT
             # re-raise — withholding the action IS the mitigation today.
@@ -470,13 +473,20 @@ class DeployRunner(InferenceRunnerBase):
             # SafetyStopRecord below; E-stop stays with the C++ kernel.
             safety_violations.append(str(exc))
             action_applied = False
-            self._compliance.emit(
-                SafetyStopRecord,
-                trigger_source="supervisor",
-                detail=f"{type(exc).__name__}: {exc}",
-                latched=False,
-                rskill_id=self._skill.name,
-            )
+            # One record per stop, not per withheld tick: a persisting violation at the
+            # control rate would otherwise write 30 "stops" a second into a 1-year log.
+            # Keyed on the violation class, since its message often carries the measured
+            # value and changes every tick; the record keeps the first message.
+            violation = type(exc).__name__
+            if violation != self._withheld_violation:
+                self._withheld_violation = violation
+                self._compliance.emit(
+                    SafetyStopRecord,
+                    trigger_source="supervisor",
+                    detail=f"{violation}: {exc}",
+                    latched=False,
+                    rskill_id=self._skill.name,
+                )
             current = trace.get_current_span()
             if current.get_span_context().is_valid:
                 # ``record_exception`` adds an ``exception`` event with

@@ -7,8 +7,12 @@ publishes and emits typed `openral_core.ComplianceRecord`s as OTLP log records t
 | Source | Record |
 |---|---|
 | `FailureTrigger` on `/openral/failure/<source>` | `FailureRecord` (evidence decoded; undecodable evidence keeps the record without it) |
-| `/openral/safety_status` turning `latched` | `SafetyStopRecord`, linked by `parent_record_id` to the safety failure that explains it (within 2 s) |
-| node activate / deactivate | `SessionRecord` start / end |
+| `/openral/safety_status` turning `latched` | `SafetyStopRecord`, linked by `parent_record_id` to the safety failure whose kind matches the drop reason, arriving up to 2 s before **or after** the latch (an e-stop forwarder publishes `/openral/estop` before its trigger) |
+| node activate / deactivate / SIGINT | `SessionRecord` start / end |
+
+Only an ACTIVE node records. The first `safety_status` sample after configure only syncs
+the latch state: the topic is TRANSIENT_LOCAL, so a restart replays a latch that may
+already be recorded.
 
 ```
 /openral/failure/* ─┐
