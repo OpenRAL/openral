@@ -1,6 +1,6 @@
 {
   "additionalProperties": false,
-  "description": "One safety-kernel verdict on an action chunk.\n\nEvery ``scale`` and ``drop`` is recorded; ``pass`` verdicts are sampled at 1 Hz.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_decision\"``).\n    decision: The verdict.\n    check_name: The check that decided (``\"collision\"``, ``\"workspace\"``\u2026).\n    rskill_id: The rSkill whose chunk was checked.\n    chunk_index: Index of the checked chunk within the goal.\n    inputs_digest: SHA-256 hex over the verdict's inputs, when recorded.",
+  "description": "One safety-kernel verdict on an action chunk.\n\nEvery ``scale`` and ``drop`` is recorded; ``pass`` verdicts are sampled at 1 Hz.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_decision\"``).\n    decision: The verdict.\n    check_name: The check that decided (``\"collision\"``, ``\"workspace\"``\u2026).\n    rskill_id: The rSkill whose chunk was checked.\n    chunk_index: Index of the checked chunk within the goal.\n    inputs_digest: SHA-256 hex over the verdict's inputs, when recorded.\n\nExample:\n    >>> SafetyDecisionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=3,\n    ...     ts_ns=0,\n    ...     clock_source=\"ptp\",\n    ...     decision=\"drop\",\n    ...     check_name=\"collision\",\n    ... ).decision\n    'drop'",
   "properties": {
     "schema_version": {
       "const": "0.1",
@@ -14,11 +14,13 @@
       "type": "string"
     },
     "seq": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Seq",
       "type": "integer"
     },
     "ts_ns": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Ts Ns",
       "type": "integer"

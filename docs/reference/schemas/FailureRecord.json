@@ -1168,7 +1168,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "A ``FailureTrigger`` from the failure bus.\n\nAttributes:\n    kind: Discriminator (always ``\"failure\"``).\n    source: Failure-bus topic suffix (``/openral/failure/<source>``).\n    failure_kind: ``FailureTrigger.KIND_*`` value.\n    severity: ``FailureTrigger.SEVERITY_*`` value (0 info \u2026 3 abort).\n    evidence: Decoded ``evidence_json``; ``None`` when the producer sent none.\n    rskill_id: The rSkill running when the failure fired.",
+  "description": "A ``FailureTrigger`` from the failure bus.\n\nAttributes:\n    kind: Discriminator (always ``\"failure\"``).\n    source: Failure-bus topic suffix (``/openral/failure/<source>``).\n    failure_kind: ``FailureTrigger.KIND_*`` value.\n    severity: ``FailureTrigger.SEVERITY_*`` value (0 info \u2026 3 abort).\n    evidence: Decoded ``evidence_json``; ``None`` when the producer sent none.\n    rskill_id: The rSkill running when the failure fired.\n\nExample:\n    >>> FailureRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=1,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     source=\"safety\",\n    ...     failure_kind=7,\n    ...     severity=3,\n    ...     trace_id=\"00-\" + \"a\" * 32 + \"-\" + \"b\" * 16 + \"-01\",\n    ... ).span_id\n    'bbbbbbbbbbbbbbbb'",
   "properties": {
     "schema_version": {
       "const": "0.1",
@@ -1182,11 +1182,13 @@
       "type": "string"
     },
     "seq": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Seq",
       "type": "integer"
     },
     "ts_ns": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Ts Ns",
       "type": "integer"

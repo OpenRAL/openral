@@ -13756,8 +13756,8 @@ class RetentionClass(StrEnum):
 
 RETENTION_FLOOR_DAYS: Mapping[RetentionClass, int] = MappingProxyType(
     {
-        RetentionClass.AI_LOG_6M: 183,
-        RetentionClass.MR_SAFETY_DECISION_1Y: 365,
+        RetentionClass.AI_LOG_6M: 184,  # longest six calendar months
+        RetentionClass.MR_SAFETY_DECISION_1Y: 366,  # a year spanning 29 Feb
         RetentionClass.MR_TRACE_5Y: 1827,  # 5 * 365 + 2 leap days
         RetentionClass.INCIDENT_10Y: 3653,
         RetentionClass.TELEMETRY_RAW: 0,
@@ -13771,6 +13771,8 @@ Example:
 """
 
 _HEX32 = r"^[0-9a-f]{32}$"
+_INT64_MAX = 2**63 - 1  # OTLP int attributes are int64
+_TRACEPARENT = re.compile(r"^[0-9a-f]{2}-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
 _HEX64 = r"^[0-9a-f]{64}$"
 
 
@@ -13838,12 +13840,32 @@ class _ComplianceRecordBase(BaseModel):
 
     schema_version: Literal["0.1"] = "0.1"
     record_id: str = Field(pattern=_HEX32)
-    seq: int = Field(ge=0)
-    ts_ns: int = Field(ge=0)
+    seq: int = Field(ge=0, le=_INT64_MAX)
+    ts_ns: int = Field(ge=0, le=_INT64_MAX)
     clock_source: Literal["ptp", "ntp", "monotonic_unsynced"]
     trace_id: str | None = Field(default=None, pattern=_HEX32)
     span_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
     parent_record_id: str | None = Field(default=None, pattern=_HEX32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_trace_context(cls, data: object) -> object:
+        """Accept the wire forms of ``trace_id``: a W3C traceparent, raw hex, or ``""``.
+
+        ``FailureTrigger`` / ``SafetyStatus`` carry a full traceparent, ``Tick`` raw hex
+        and an unset field is ``""`` (ISSUE-109); the envelope stores the 32-hex id and
+        takes ``span_id`` from the traceparent when none is given.
+        """
+        if not isinstance(data, dict):
+            return data
+        trace_id = data.get("trace_id")
+        if not isinstance(trace_id, str):
+            return data
+        if trace_id == "":
+            return {**data, "trace_id": None}
+        if match := _TRACEPARENT.match(trace_id):
+            return {**data, "trace_id": match[1], "span_id": data.get("span_id") or match[2]}
+        return data
 
     @property
     def retention_class(self) -> RetentionClass:
@@ -13861,6 +13883,19 @@ class FailureRecord(_ComplianceRecordBase):
         severity: ``FailureTrigger.SEVERITY_*`` value (0 info … 3 abort).
         evidence: Decoded ``evidence_json``; ``None`` when the producer sent none.
         rskill_id: The rSkill running when the failure fired.
+
+    Example:
+        >>> FailureRecord(
+        ...     record_id="0" * 32,
+        ...     seq=1,
+        ...     ts_ns=0,
+        ...     clock_source="ntp",
+        ...     source="safety",
+        ...     failure_kind=7,
+        ...     severity=3,
+        ...     trace_id="00-" + "a" * 32 + "-" + "b" * 16 + "-01",
+        ... ).span_id
+        'bbbbbbbbbbbbbbbb'
     """
 
     _retention = RetentionClass.AI_LOG_6M
@@ -13887,6 +13922,17 @@ class SafetyStopRecord(_ComplianceRecordBase):
         latched: Whether the stop latched (needs a reset to clear).
         rskill_id: The rSkill running at the stop.
         risk_ref: Hazard-log entry id this stop class maps to, when known.
+
+    Example:
+        >>> SafetyStopRecord(
+        ...     record_id="0" * 32,
+        ...     seq=2,
+        ...     ts_ns=0,
+        ...     clock_source="ntp",
+        ...     trigger_source="human",
+        ...     latched=True,
+        ... ).retention_class
+        <RetentionClass.MR_SAFETY_DECISION_1Y: 'mr_safety_decision_1y'>
     """
 
     _retention = RetentionClass.MR_SAFETY_DECISION_1Y
@@ -13896,8 +13942,8 @@ class SafetyStopRecord(_ComplianceRecordBase):
     drop_reason: int | None = Field(default=None, ge=0, le=255)
     detail: str = ""
     evidence: FailureEvidence | None = Field(default=None, discriminator="kind")
-    stop_cmd_ts_ns: int | None = Field(default=None, ge=0)
-    halt_ts_ns: int | None = Field(default=None, ge=0)
+    stop_cmd_ts_ns: int | None = Field(default=None, ge=0, le=_INT64_MAX)
+    halt_ts_ns: int | None = Field(default=None, ge=0, le=_INT64_MAX)
     latched: bool
     rskill_id: str | None = None
     risk_ref: str | None = None
@@ -13915,6 +13961,17 @@ class SafetyDecisionRecord(_ComplianceRecordBase):
         rskill_id: The rSkill whose chunk was checked.
         chunk_index: Index of the checked chunk within the goal.
         inputs_digest: SHA-256 hex over the verdict's inputs, when recorded.
+
+    Example:
+        >>> SafetyDecisionRecord(
+        ...     record_id="0" * 32,
+        ...     seq=3,
+        ...     ts_ns=0,
+        ...     clock_source="ptp",
+        ...     decision="drop",
+        ...     check_name="collision",
+        ... ).decision
+        'drop'
     """
 
     _retention = RetentionClass.MR_SAFETY_DECISION_1Y
@@ -13938,6 +13995,18 @@ class PlanDecisionRecord(_ComplianceRecordBase):
         ladder_rung: Replanning-ladder rung the call came from.
         prompt_digest: SHA-256 hex of the prompt; the prompt itself stays in the trace.
         mission_task_id: Mission task the call served.
+
+    Example:
+        >>> PlanDecisionRecord(
+        ...     record_id="0" * 32,
+        ...     seq=4,
+        ...     ts_ns=0,
+        ...     clock_source="ntp",
+        ...     model="claude-opus-4-8",
+        ...     tool="execute_rskill",
+        ...     ladder_rung="initial",
+        ... ).tool
+        'execute_rskill'
     """
 
     _retention = RetentionClass.MR_SAFETY_DECISION_1Y
@@ -13966,6 +14035,19 @@ class InterventionRecord(_ComplianceRecordBase):
         before_digest: SHA-256 hex of the changed artefact before.
         after_digest: SHA-256 hex after.
         diff_ref: Where the full diff is kept, when it is kept elsewhere.
+
+    Example:
+        >>> InterventionRecord(
+        ...     record_id="0" * 32,
+        ...     seq=5,
+        ...     ts_ns=0,
+        ...     clock_source="ntp",
+        ...     intervention_kind="estop_reset",
+        ...     actor=Actor(channel_label="pendant"),
+        ...     channel="pendant",
+        ...     legitimate=None,
+        ... ).retention_class
+        <RetentionClass.MR_TRACE_5Y: 'mr_trace_5y'>
     """
 
     _retention = RetentionClass.MR_TRACE_5Y
@@ -13995,6 +14077,20 @@ class SoftwareInventoryRecord(_ComplianceRecordBase):
     Attributes:
         kind: Discriminator (always ``"software_inventory"``).
         components: Every installed component.
+
+    Example:
+        >>> SoftwareInventoryRecord(
+        ...     record_id="0" * 32,
+        ...     seq=6,
+        ...     ts_ns=0,
+        ...     clock_source="ntp",
+        ...     components=[
+        ...         SoftwareComponent(
+        ...             name="openral_safety_kernel", version="0.9.0", safety_relevant=True
+        ...         )
+        ...     ],
+        ... ).components[0].safety_relevant
+        True
     """
 
     _retention = RetentionClass.MR_TRACE_5Y
@@ -14013,13 +14109,24 @@ class SessionRecord(_ComplianceRecordBase):
         run_mode: ``openral.run.mode``.
         site_id: Deployer site, when configured.
         shift: Deployer shift label, when configured.
+
+    Example:
+        >>> SessionRecord(
+        ...     record_id="0" * 32,
+        ...     seq=0,
+        ...     ts_ns=0,
+        ...     clock_source="ntp",
+        ...     start_ts_ns=0,
+        ...     run_mode="hardware",
+        ... ).end_ts_ns is None
+        True
     """
 
     _retention = RetentionClass.AI_LOG_6M
 
     kind: Literal["session"] = "session"
-    start_ts_ns: int = Field(ge=0)
-    end_ts_ns: int | None = Field(default=None, ge=0)
+    start_ts_ns: int = Field(ge=0, le=_INT64_MAX)
+    end_ts_ns: int | None = Field(default=None, ge=0, le=_INT64_MAX)
     run_mode: Literal["sim", "hardware"]
     site_id: str | None = None
     shift: str | None = None
@@ -14033,6 +14140,18 @@ class SecurityIncidentRecord(_ComplianceRecordBase):
         actively_exploited: The vulnerability is known to be exploited.
         malicious_suspected: The incident is suspected to be malicious.
         summary: What happened, without personal data.
+
+    Example:
+        >>> SecurityIncidentRecord(
+        ...     record_id="0" * 32,
+        ...     seq=7,
+        ...     ts_ns=0,
+        ...     clock_source="ntp",
+        ...     actively_exploited=False,
+        ...     malicious_suspected=True,
+        ...     summary="unexpected login on the dashboard",
+        ... ).retention_class
+        <RetentionClass.INCIDENT_10Y: 'incident_10y'>
     """
 
     _retention = RetentionClass.INCIDENT_10Y

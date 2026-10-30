@@ -54,7 +54,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "The software installed on the unit, written at bringup and on any change.\n\nAttributes:\n    kind: Discriminator (always ``\"software_inventory\"``).\n    components: Every installed component.",
+  "description": "The software installed on the unit, written at bringup and on any change.\n\nAttributes:\n    kind: Discriminator (always ``\"software_inventory\"``).\n    components: Every installed component.\n\nExample:\n    >>> SoftwareInventoryRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=6,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     components=[\n    ...         SoftwareComponent(\n    ...             name=\"openral_safety_kernel\", version=\"0.9.0\", safety_relevant=True\n    ...         )\n    ...     ],\n    ... ).components[0].safety_relevant\n    True",
   "properties": {
     "schema_version": {
       "const": "0.1",
@@ -68,11 +68,13 @@
       "type": "string"
     },
     "seq": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Seq",
       "type": "integer"
     },
     "ts_ns": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Ts Ns",
       "type": "integer"

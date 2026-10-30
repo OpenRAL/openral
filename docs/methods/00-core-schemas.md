@@ -92,18 +92,18 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   fields: `compute_tops, system_memory_gb, num_gpus, gpu_vram_gb, cuda_compute_capability, cuda_toolkit_version, tensorrt_version, gpu_supported_runtimes, gpu_supported_dtypes, nvmm_available, endpoint, network_latency_ms`
   - `supports_cumotion() -> bool` — True when the host meets the cuMotion (Isaac ROS) GPU floor on compute capability, CUDA toolkit version, and VRAM; used by the MoveIt planner gate to pick cuMotion vs OMPL. (L1492)
 - `prop _CUMOTION_MIN_COMPUTE_CAPABILITY, _CUMOTION_MIN_CUDA_MAJOR, _CUMOTION_MIN_VRAM_GIB` — The cuMotion GPU floor `supports_cumotion()` checks against. (L1407–1409)
-- `ReasonerDialect = Literal["anthropic", "openai"]` — Wire dialect a `ReasonerModel` / named endpoint speaks; only needed on `OPENRAL_REASONER_DIALECT` for a bare, unclassified URL. (L14274)
-- `ReasonerHosting = Literal["cloud", "managed_local", "byo_local"]` — Where a `ReasonerModel` runs; drives `ReasonerModel.is_local`. (L14277)
-- `class ReasonerModel(BaseModel)` — Frozen curated S2 model registry entry. `REASONER_MODELS` is the curated map; membership means the model passed the robotics tool-calling contract. (L14287)
-  - `is_local(self) -> bool` [@property] — True for `managed_local` / `byo_local` hosting (needs local compute); False for `cloud`. (L14357)
-- `REASONER_MANAGED_ENDPOINT: str = "managed"` — Sentinel for `ReasonerModel.default_endpoint` meaning OpenRAL spawns and manages the local server, resolved to the model's managed loopback endpoint at client-build time. (L14284)
-- `_OPENROUTER_ENDPOINT: str` — OpenRouter's OpenAI-compatible endpoint URL; default gateway for the curated GPT-5.x entries. (L14364)
-- `REASONER_MODELS: dict[str, ReasonerModel]` — The curated model registry keyed by `id`; adding a model means adding one entry here after it clears the tool-calling bar. (L14368)
-- `class ReasonerEndpointPreset(NamedTuple)` — Everything a named `OPENRAL_REASONER_ENDPOINT` implies beyond its URL (dialect, auth, cold-start timeout, tool_choice). (L14442)
-- `REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Presets for the accepted `OPENRAL_REASONER_ENDPOINT` names. (L14476)
-- `REASONER_TOOL_CHOICES: tuple[str, ...]` — `("auto", "required")`, the values `OPENRAL_REASONER_TOOL_CHOICE` accepts. (L14491)
-- `parse_reasoner_tool_choice(raw) -> str | None` — Validate (case-insensitively) an `OPENRAL_REASONER_TOOL_CHOICE` value, `None` when unset; `ROSConfigError` otherwise. Shared by the reasoner client factory and `openral doctor`. (L14495)
-- `prop ANTHROPIC_BASE_URL, OPENROUTER_BASE_URL, OLLAMA_BASE_URL, VLLM_BASE_URL, GEMINI_BASE_URL, XAI_BASE_URL, DEEPSEEK_BASE_URL, HUGGINGFACE_BASE_URL` — Base URLs backing the named `OPENRAL_REASONER_ENDPOINT` presets. (L14422–14439)
+- `ReasonerDialect = Literal["anthropic", "openai"]` — Wire dialect a `ReasonerModel` / named endpoint speaks; only needed on `OPENRAL_REASONER_DIALECT` for a bare, unclassified URL. (L14393)
+- `ReasonerHosting = Literal["cloud", "managed_local", "byo_local"]` — Where a `ReasonerModel` runs; drives `ReasonerModel.is_local`. (L14396)
+- `class ReasonerModel(BaseModel)` — Frozen curated S2 model registry entry. `REASONER_MODELS` is the curated map; membership means the model passed the robotics tool-calling contract. (L14406)
+  - `is_local(self) -> bool` [@property] — True for `managed_local` / `byo_local` hosting (needs local compute); False for `cloud`. (L14476)
+- `REASONER_MANAGED_ENDPOINT: str = "managed"` — Sentinel for `ReasonerModel.default_endpoint` meaning OpenRAL spawns and manages the local server, resolved to the model's managed loopback endpoint at client-build time. (L14403)
+- `_OPENROUTER_ENDPOINT: str` — OpenRouter's OpenAI-compatible endpoint URL; default gateway for the curated GPT-5.x entries. (L14483)
+- `REASONER_MODELS: dict[str, ReasonerModel]` — The curated model registry keyed by `id`; adding a model means adding one entry here after it clears the tool-calling bar. (L14487)
+- `class ReasonerEndpointPreset(NamedTuple)` — Everything a named `OPENRAL_REASONER_ENDPOINT` implies beyond its URL (dialect, auth, cold-start timeout, tool_choice). (L14561)
+- `REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Presets for the accepted `OPENRAL_REASONER_ENDPOINT` names. (L14595)
+- `REASONER_TOOL_CHOICES: tuple[str, ...]` — `("auto", "required")`, the values `OPENRAL_REASONER_TOOL_CHOICE` accepts. (L14610)
+- `parse_reasoner_tool_choice(raw) -> str | None` — Validate (case-insensitively) an `OPENRAL_REASONER_TOOL_CHOICE` value, `None` when unset; `ROSConfigError` otherwise. Shared by the reasoner client factory and `openral doctor`. (L14614)
+- `prop ANTHROPIC_BASE_URL, OPENROUTER_BASE_URL, OLLAMA_BASE_URL, VLLM_BASE_URL, GEMINI_BASE_URL, XAI_BASE_URL, DEEPSEEK_BASE_URL, HUGGINGFACE_BASE_URL` — Base URLs backing the named `OPENRAL_REASONER_ENDPOINT` presets. (L14541–14558)
 - `class RobotCapabilities(BaseModel)` — Physical capability flags for skill compatibility; `has_vision_slam` gates the camera-based SLAM backend for lidar-less robots, independent of `has_lidar` (lidar backend wins when both set). (L1518)
   fields: `locomotion, can_lift_kg, has_dexterous_hands, has_tactile, has_force_control, has_vision, has_lidar, has_vision_slam, has_audio, bimanual, supported_control_modes, supported_vla_embodiments, embodiment_tags`
 - `class SafetyEnvelope(BaseModel)` — Constraints handed to the C++ safety kernel (not every field is enforced yet — see the enforcement note below); `self_collision_margin_m` can go negative to tolerate a compact arm's known in-distribution grazing contact while gross folds still trip. Also carries the runner's starting-pose approach per joint type (`starting_pose_max_joint_speed_rad_s` / `starting_pose_tolerance_rad` for non-prismatic joints, `starting_pose_max_joint_speed_m_s` / `starting_pose_tolerance_m` for prismatic ones) and `joint_state_staleness_limit_s`, the one place a rig declares its joint-state freshness window (read by `build_hal` and `deploy_e2e.launch.py`). (L1566)
@@ -516,71 +516,71 @@ Discriminated union backing the `evidence_json` field of `openral_msgs/msg/Failu
 Record kinds the compliance recorder writes to the on-robot log and exports as OTLP log records (issue #467). Discriminator is `kind`; decode via `pydantic.TypeAdapter(ComplianceRecord).validate_json(...)`. All kinds are frozen and reject extra fields. Unit and org identity ride on the OTel resource, not on each record.
 
 - `class RetentionClass(StrEnum)` (L13738) — `ai_log_6m` (AI Act Art. 19/26(6)), `mr_safety_decision_1y`, `mr_trace_5y` (MR Annex III §1.2.1(f)), `incident_10y`, `telemetry_raw`. Follows from the record kind; callers never set it.
-- `RETENTION_FLOOR_DAYS: Mapping[RetentionClass, int]` (L13757) — Read-only minimum days per class (183 / 365 / 1827 / 3653 / 0). Org policy may keep longer, never shorter.
-- `class Actor` (L13777) — `channel_label`, `actor_id` (64-hex HMAC-SHA256 pseudonym under a deployer-held org key, or `None`). Never a name.
-- `class SoftwareComponent` (L13798) — `name, version, sha256, safety_relevant, signature_ok` (MR §1.1.9 identification).
-- `class _ComplianceRecordBase(BaseModel)` (L13820) — Private envelope: `schema_version, record_id (32-hex), seq, ts_ns, clock_source, trace_id, span_id, parent_record_id`; `retention_class` property from the class-level `_retention`.
-- `class FailureRecord` (L13854) — `kind="failure"`; `source, failure_kind (KIND_*), severity (SEVERITY_*), evidence: FailureEvidence | None, rskill_id`. Class `ai_log_6m`.
-- `class SafetyStopRecord` (L13876) — `kind="safety_stop"`; `trigger_source, drop_reason, detail, evidence, stop_cmd_ts_ns, halt_ts_ns, latched, rskill_id, risk_ref`. Class `mr_safety_decision_1y`.
-- `class SafetyDecisionRecord` (L13906) — `kind="safety_decision"`; `decision (pass/scale/drop), check_name, rskill_id, chunk_index, inputs_digest`. Class `mr_safety_decision_1y`.
-- `class PlanDecisionRecord` (L13930) — `kind="plan_decision"`; `model, tool, rskill_id, ladder_rung, prompt_digest, mission_task_id`. Class `mr_safety_decision_1y`.
-- `class InterventionRecord` (L13956) — `kind="intervention"`; `intervention_kind, actor: Actor, channel, legitimate (None = unknown), before_digest, after_digest, diff_ref`. Class `mr_trace_5y`.
-- `class SoftwareInventoryRecord` (L13992) — `kind="software_inventory"`; `components: list[SoftwareComponent]` (≥1). Class `mr_trace_5y`.
-- `class SessionRecord` (L14006) — `kind="session"`; `start_ts_ns, end_ts_ns, run_mode, site_id, shift`. Class `ai_log_6m`.
-- `class SecurityIncidentRecord` (L14028) — `kind="security_incident"`; `actively_exploited, malicious_suspected, summary` (CRA Art. 14). Class `incident_10y`.
-- `ComplianceRecord: TypeAlias` (L14046) — Discriminated union over the eight kinds above.
+- `RETENTION_FLOOR_DAYS: Mapping[RetentionClass, int]` (L13757) — Read-only minimum days per class (184 / 366 / 1827 / 3653 / 0: the longest six months, a year spanning 29 Feb, five and ten years). Org policy may keep longer, never shorter.
+- `class Actor` (L13779) — `channel_label`, `actor_id` (64-hex HMAC-SHA256 pseudonym under a deployer-held org key, or `None`). Never a name.
+- `class SoftwareComponent` (L13800) — `name, version, sha256, safety_relevant, signature_ok` (MR §1.1.9 identification).
+- `class _ComplianceRecordBase(BaseModel)` (L13822) — Private envelope: `schema_version, record_id (32-hex), seq, ts_ns (both ≤ int64), clock_source, trace_id, span_id, parent_record_id`; a before-validator accepts the wire `trace_id` forms (W3C traceparent → id + span, `""` → `None`, ISSUE-109); `retention_class` property from the class-level `_retention`.
+- `class FailureRecord` (L13876) — `kind="failure"`; `source, failure_kind (KIND_*), severity (SEVERITY_*), evidence: FailureEvidence | None, rskill_id`. Class `ai_log_6m`.
+- `class SafetyStopRecord` (L13911) — `kind="safety_stop"`; `trigger_source, drop_reason, detail, evidence, stop_cmd_ts_ns, halt_ts_ns, latched, rskill_id, risk_ref`. Class `mr_safety_decision_1y`.
+- `class SafetyDecisionRecord` (L13952) — `kind="safety_decision"`; `decision (pass/scale/drop), check_name, rskill_id, chunk_index, inputs_digest`. Class `mr_safety_decision_1y`.
+- `class PlanDecisionRecord` (L13987) — `kind="plan_decision"`; `model, tool, rskill_id, ladder_rung, prompt_digest, mission_task_id`. Class `mr_safety_decision_1y`.
+- `class InterventionRecord` (L14025) — `kind="intervention"`; `intervention_kind, actor: Actor, channel, legitimate (None = unknown), before_digest, after_digest, diff_ref`. Class `mr_trace_5y`.
+- `class SoftwareInventoryRecord` (L14074) — `kind="software_inventory"`; `components: list[SoftwareComponent]` (≥1). Class `mr_trace_5y`.
+- `class SessionRecord` (L14102) — `kind="session"`; `start_ts_ns, end_ts_ns, run_mode, site_id, shift`. Class `ai_log_6m`.
+- `class SecurityIncidentRecord` (L14135) — `kind="security_incident"`; `actively_exploited, malicious_suspected, summary` (CRA Art. 14). Class `incident_10y`.
+- `ComplianceRecord: TypeAlias` (L14165) — Discriminated union over the eight kinds above.
 
 **Pydantic models — perception event metadata**
 
 Discriminated union backing the `metadata_json` field of `openral_msgs/msg/PromptStamped` when published on `/openral/perception/<kind>`. Discriminator is `kind`; decode via `pydantic.TypeAdapter(PerceptionEventMetadata).validate_json(...)`. New kinds mean new topics, not a schema bump.
 
-- `class _PerceptionEventBase(BaseModel)` — Private base; carries `sensor_id`. (L14079)
-- `class ObjectDetection2D(BaseModel)` (L14098) — Single 2D detection inside `ObjectsMetadata`; `det_id` is a stable per-detector/per-camera identity assigned at detection time, letting an object be de-duplicated without the 3D lift, then propagated into `DetectedObject.track_id`.
+- `class _PerceptionEventBase(BaseModel)` — Private base; carries `sensor_id`. (L14198)
+- `class ObjectDetection2D(BaseModel)` (L14217) — Single 2D detection inside `ObjectsMetadata`; `det_id` is a stable per-detector/per-camera identity assigned at detection time, letting an object be de-duplicated without the 3D lift, then propagated into `DetectedObject.track_id`.
   fields: `label, confidence, bbox_xyxy, det_id: int = -1`
-- `class MotionMetadata` (L14127) — `kind="motion"`; fields `magnitude, threshold, region_bbox`.
-- `class ObjectsMetadata` (L14150) — `kind="objects"`; `frame_width`/`frame_height` make the pixel space of `bbox_xyxy` explicit so the voxel lifter can scale it to the camera's intrinsics resolution. Optional `camera_frame_id` + `camera_intrinsics` (set together or not at all, validator-enforced) carry the driver `CameraInfo`'s optical frame and K, which the world-state lift projects through instead of the `SensorSpec` named by `sensor_id`.
+- `class MotionMetadata` (L14246) — `kind="motion"`; fields `magnitude, threshold, region_bbox`.
+- `class ObjectsMetadata` (L14269) — `kind="objects"`; `frame_width`/`frame_height` make the pixel space of `bbox_xyxy` explicit so the voxel lifter can scale it to the camera's intrinsics resolution. Optional `camera_frame_id` + `camera_intrinsics` (set together or not at all, validator-enforced) carry the driver `CameraInfo`'s optical frame and K, which the world-state lift projects through instead of the `SensorSpec` named by `sensor_id`.
   fields: `detections: list[ObjectDetection2D], model_id, frame_width: int (>0), frame_height: int (>0)`
-- `class OcrMetadata` (L14206) — `kind="ocr"`; fields `text, confidence, region_bbox`.
-- `class SceneChangeMetadata` (L14224) — `kind="scene_change"`; fields `distance, threshold, metric`.
-- `PerceptionEventMetadata: TypeAlias` (L14247) — Discriminated union over the four variants above.
+- `class OcrMetadata` (L14325) — `kind="ocr"`; fields `text, confidence, region_bbox`.
+- `class SceneChangeMetadata` (L14343) — `kind="scene_change"`; fields `distance, threshold, metric`.
+- `PerceptionEventMetadata: TypeAlias` (L14366) — Discriminated union over the four variants above.
 
 **Pydantic models — reasoner tool calls**
 
 Discriminated union over the closed palette of typed tool calls the reasoner can emit each tick. Discriminator is `tool`; decode via `pydantic.TypeAdapter(ReasonerToolCall).validate_json(...)`. All variants are frozen and reject extra fields so an LLM cannot smuggle ad-hoc ones onto the wire. The reasoner holds no direct actuation authority — it never publishes `ActionChunk` itself; `ExecuteRskillTool` dispatches indirectly via the action server, which gates through safety.
 
-- `class _ReasonerToolBase(BaseModel)` — Private base; carries optional `rationale`. (L14523)
-- `class ExecuteRskillTool` (L14670) — `tool="execute_rskill"`; fields `rskill_id: str` (min_length=1), `prompt: str` (default ""), `goal_params_json: str` (default ""), `deadline_s: float` (ge=0.0; default 0.0; 0 = use manifest latency budget), `patience_s: float | None` (default None; gt=0.0; task-adaptive execution ceiling override — None uses the reward model's `default_patience_s`), `progress_tolerance: float | None` (default None; ge=0.0; overrides the reward model's `plateau_tolerance` for a noisy critic — None uses the model default), `grasp_target: GraspTargetRef | None` and `place_target: PlaceTargetRef | None` (default None; the targets the LLM names, grounded by the reasoner at dispatch into the goal's `GraspDeclaration` / `PlaceDeclaration`, or the dispatch is refused — real pick-and-place design §2.2).
-- `class GraspTargetRef(BaseModel)` (L14558) — Frozen, `extra="forbid"`. `label: str` (min_length=1; open-vocabulary, matched case-insensitively against live lifted detections), `object_id: str | None` (a `recall_object` `node_id`; required when several objects share the label), `contact_links: list[str]` (ALL `role: gripper` `child_link`s of ONE hand — the gripper joints hanging off one arm — in any order; empty only on a single-hand robot, where it means that hand; with several hands an empty list, links of two hands, a non-gripper link, or part of a hand is refused at grounding). Names; arms nothing.
-- `class PlaceTargetRef(BaseModel)` (L14613) — Frozen, `extra="forbid"`. An OPTIONAL hint naming the surface a goal places onto (the real producer measures the surface under the carried payload without it): `label: str` (min length 1), and at most one of `object_id` / `place_node_id` (spatial-memory node ids); grounded at dispatch to `PlaceDeclaration.search_box`.
-- `class ReloadGstPipelineTool` (L14749) — `tool="reload_gst_pipeline"`; fields `sensor_id, pipeline_yaml`.
-- `class LifecycleTransitionTool` (L14773) — `tool="lifecycle_transition"`; `shutdown` is deliberately absent — that authority belongs to the safety supervisor. Canonical primitive for managing long-lived background services (slam_toolbox, RTAB-Map, perception trees), which are LifecycleNode peers, not rSkills.
+- `class _ReasonerToolBase(BaseModel)` — Private base; carries optional `rationale`. (L14642)
+- `class ExecuteRskillTool` (L14789) — `tool="execute_rskill"`; fields `rskill_id: str` (min_length=1), `prompt: str` (default ""), `goal_params_json: str` (default ""), `deadline_s: float` (ge=0.0; default 0.0; 0 = use manifest latency budget), `patience_s: float | None` (default None; gt=0.0; task-adaptive execution ceiling override — None uses the reward model's `default_patience_s`), `progress_tolerance: float | None` (default None; ge=0.0; overrides the reward model's `plateau_tolerance` for a noisy critic — None uses the model default), `grasp_target: GraspTargetRef | None` and `place_target: PlaceTargetRef | None` (default None; the targets the LLM names, grounded by the reasoner at dispatch into the goal's `GraspDeclaration` / `PlaceDeclaration`, or the dispatch is refused — real pick-and-place design §2.2).
+- `class GraspTargetRef(BaseModel)` (L14677) — Frozen, `extra="forbid"`. `label: str` (min_length=1; open-vocabulary, matched case-insensitively against live lifted detections), `object_id: str | None` (a `recall_object` `node_id`; required when several objects share the label), `contact_links: list[str]` (ALL `role: gripper` `child_link`s of ONE hand — the gripper joints hanging off one arm — in any order; empty only on a single-hand robot, where it means that hand; with several hands an empty list, links of two hands, a non-gripper link, or part of a hand is refused at grounding). Names; arms nothing.
+- `class PlaceTargetRef(BaseModel)` (L14732) — Frozen, `extra="forbid"`. An OPTIONAL hint naming the surface a goal places onto (the real producer measures the surface under the carried payload without it): `label: str` (min length 1), and at most one of `object_id` / `place_node_id` (spatial-memory node ids); grounded at dispatch to `PlaceDeclaration.search_box`.
+- `class ReloadGstPipelineTool` (L14868) — `tool="reload_gst_pipeline"`; fields `sensor_id, pipeline_yaml`.
+- `class LifecycleTransitionTool` (L14892) — `tool="lifecycle_transition"`; `shutdown` is deliberately absent — that authority belongs to the safety supervisor. Canonical primitive for managing long-lived background services (slam_toolbox, RTAB-Map, perception trees), which are LifecycleNode peers, not rSkills.
   fields: `node, transition: Literal["configure"|"activate"|"deactivate"|"cleanup"]`
-- `class EmitPromptTool` (L14797) — `tool="emit_prompt"`; the reasoner node publishes on `target_topic` itself via a per-topic publisher cache.
+- `class EmitPromptTool` (L14916) — `tool="emit_prompt"`; the reasoner node publishes on `target_topic` itself via a per-topic publisher cache.
   fields: `target_topic` (must start with `/`), `text`, `metadata_json`
-- `class WaitTool` — deliberate no-op; `tool="wait"`, no fields beyond `rationale`. Since the reasoner's tool choice is forced, this lets the LLM choose "observe and wait" instead of acting every tick. No actuation authority. (L15183)
-- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L14825)
+- `class WaitTool` — deliberate no-op; `tool="wait"`, no fields beyond `rationale`. Since the reasoner's tool choice is forced, this lets the LLM choose "observe and wait" instead of acting every tick. No actuation authority. (L15302)
+- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L14944)
   fields: `query` (free-text/label), `limit`
-- `class ResolvePlaceTool` — read-only query; `tool="resolve_place"`; resolves a place/room/agent to a goal pose plus path. No actuation authority. Dispatch is planned Phase 2. (L14847)
+- `class ResolvePlaceTool` — read-only query; `tool="resolve_place"`; resolves a place/room/agent to a goal pose plus path. No actuation authority. Dispatch is planned Phase 2. (L14966)
   fields: `reference` ("the kitchen", "where I was standing")
-- `class LocateInViewTool` — read-only query; `tool="locate_in_view"`; asks a live VLM detector whether an object is in the current frame (vs `recall_object`'s remembered objects). No actuation authority. (L14864)
+- `class LocateInViewTool` — read-only query; `tool="locate_in_view"`; asks a live VLM detector whether an object is in the current frame (vs `recall_object`'s remembered objects). No actuation authority. (L14983)
   fields: `query` (concrete object noun(s)), `camera` (optional viewpoint id, default primary), `detector` (optional locator selector, default the deployment default)
-- `class QuerySceneTool` — read-only query; `tool="query_scene"`; asks a scene VLM an open-ended question about the current frame, answer fed back as a re-prompt. Distinct from `locate_in_view`: returns free text, not boxes. (L14910)
+- `class QuerySceneTool` — read-only query; `tool="query_scene"`; asks a scene VLM an open-ended question about the current frame, answer fed back as a re-prompt. Distinct from `locate_in_view`: returns free text, not boxes. (L15029)
   fields: `question` (open-ended scene-state question, min_length=1), `camera` (optional viewpoint id)
-- `class QueryTaskProgressTool` — read-only query; `tool="query_task_progress"`; asks the reward monitor for a windowed progress/success assessment, fed back to drive the replanning ladder. Distinct from `query_scene`: returns normalized scalars, not free text. (L14943)
+- `class QueryTaskProgressTool` — read-only query; `tool="query_task_progress"`; asks the reward monitor for a windowed progress/success assessment, fed back to drive the replanning ladder. Distinct from `query_scene`: returns normalized scalars, not free text. (L15062)
   fields: `window_s` (seconds of recent frames to assess, > 0, default 8.0), `task` (optional instruction override)
 - `MemorySection: TypeAlias = Literal[...]` — the five fixed sections of the self-maintained `MEMORY.md` core: `home_map`, `preferences`, `lessons`, `object_locations`, `open_tasks`.
-- `class MemoryWriteTool` — write; the reasoner's first write-capable variant; `tool="memory_write"`; edits the advisory `MEMORY.md` via an explicit add/update/supersede/delete op. Writes the memory file only — no actuation authority. (L14988)
+- `class MemoryWriteTool` — write; the reasoner's first write-capable variant; `tool="memory_write"`; edits the advisory `MEMORY.md` via an explicit add/update/supersede/delete op. Writes the memory file only — no actuation authority. (L15107)
   fields: `op` (`add`/`update`/`supersede`/`delete`), `section: MemorySection`, `content` (required unless `delete`), `importance` (0–1, default 0.5), `target` (required for `update`/`supersede`/`delete`)
-- `class MemorySearchTool` — read-only; `tool="memory_search"`; pages archived entries evicted from the bounded core back in. No actuation. (L15029)
+- `class MemorySearchTool` — read-only; `tool="memory_search"`; pages archived entries evicted from the bounded core back in. No actuation. (L15148)
   fields: `query` (min_length=1), `section: MemorySection | None`, `limit` (1–100, default 5)
-- `is_collective_target(text) -> bool` — True when `text` targets a set rather than one specific object (a quantifier or bare generic plural); shared by `GroundedSubtask`'s validator and the reasoner node's runtime execute gate. (L15065)
-- `_COLLECTIVE_TARGET_RE: re.Pattern[str]` — Backing regex for `is_collective_target`. (L15059)
-- `class GroundedSubtask` — One subtask bound to exactly one specific object; a validator forbids a collective `object_ref`/`text` and requires `text` to name `object_ref`, so "the first batch of objects" isn't representable. (L15081)
+- `is_collective_target(text) -> bool` — True when `text` targets a set rather than one specific object (a quantifier or bare generic plural); shared by `GroundedSubtask`'s validator and the reasoner node's runtime execute gate. (L15184)
+- `_COLLECTIVE_TARGET_RE: re.Pattern[str]` — Backing regex for `is_collective_target`. (L15178)
+- `class GroundedSubtask` — One subtask bound to exactly one specific object; a validator forbids a collective `object_ref`/`text` and requires `text` to name `object_ref`, so "the first batch of objects" isn't representable. (L15200)
   fields: `object_ref: str` (min_length=1), `text: str` (min_length=1)
-  - `render(self) -> str` — The instruction string handed to `MissionState` / the skill. (L15136)
-- `class DecomposeMissionTool` — task-ledger write; `tool="decompose_mission"`; the typed path for a playbook to write the deterministic `MissionState` — empty `target_task_id` replaces the whole queue, a set one flat-splices into that blocked task. Edits the S2 task ledger only, no actuation authority. (L15141)
+  - `render(self) -> str` — The instruction string handed to `MissionState` / the skill. (L15255)
+- `class DecomposeMissionTool` — task-ledger write; `tool="decompose_mission"`; the typed path for a playbook to write the deterministic `MissionState` — empty `target_task_id` replaces the whole queue, a set one flat-splices into that blocked task. Edits the S2 task ledger only, no actuation authority. (L15260)
   fields: `subtasks: list[GroundedSubtask]` (min_length=1), `target_task_id: str` (default `""`)
-  - `rendered_subtasks(self) -> list[str]` — The ordered subtask instruction strings for `MissionState`. (L15178)
+  - `rendered_subtasks(self) -> list[str]` — The ordered subtask instruction strings for `MissionState`. (L15297)
 - `ReasonerToolCall: TypeAlias` — Discriminated union over the thirteen variants above.
 
 **Module-level functions (Layer 0)**
