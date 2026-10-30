@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
+    "openral-core==0.3.1",                             # reason: failure_bus / replay import FailureEvidence and topic constants
     "opentelemetry-api>=1.27",                         # reason: stable Tracer/Span API
     "opentelemetry-sdk>=1.27",                         # reason: TracerProvider, LoggerProvider
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",    # reason: OTLP/gRPC exporter to Jaeger:4317

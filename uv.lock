@@ -3010,6 +3010,7 @@ source = { editable = "python/observability" }
 dependencies = [
     { name = "mcap" },
     { name = "nvidia-ml-py" },
+    { name = "openral-core" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-proto" },
@@ -3036,6 +3037,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dashboard'", specifier = ">=0.27" },
     { name = "mcap", specifier = ">=1.2" },
     { name = "nvidia-ml-py", specifier = ">=12.560" },
+    { name = "openral-core", editable = "python/core" },
     { name = "opentelemetry-api", specifier = ">=1.27" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.27" },
     { name = "opentelemetry-proto", specifier = ">=1.27" },
