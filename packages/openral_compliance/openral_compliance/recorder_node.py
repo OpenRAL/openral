@@ -10,16 +10,28 @@ Turns what the graph already publishes into ``openral_core.ComplianceRecord``s:
   match the latch's ``drop_reason`` and may arrive up to ``STOP_EXPLAIN_WINDOW_S`` before
   or after it: the kernel publishes its trigger first, but the e-stop forwarder, pendant
   and deadman publish ``/openral/estop`` before theirs, and two topics have no order;
-* activate / deactivate (and process shutdown) → ``SessionRecord`` start / end.
+* each latch clearing → ``InterventionRecord(estop_reset)`` (#468). The recorder sees every
+  reset, whatever path made it; an ``OperatorAction`` on ``/openral/operator_action`` up to
+  ``STOP_EXPLAIN_WINDOW_S`` either side says who (channel + pseudonymous actor). A reset
+  nobody announced is recorded as ``channel="unknown"``, ``legitimate=None``: MR Annex III
+  §1.1.9 asks for evidence of illegitimate interventions too;
+* an announced ``param_set`` → ``InterventionRecord(param_set)``;
+* activate / deactivate (and process shutdown) → ``SessionRecord`` start / end, plus a
+  ``SoftwareInventoryRecord`` at every activate.
 
-Only an ACTIVE node records. Records go out as OTLP log records (``ComplianceEmitter``).
-The recorder only listens: it publishes nothing and never sits on the actuation path.
-Writing the on-robot log is #469.
+Only an ACTIVE node records. Records go to the on-robot log (#469) and out as OTLP log
+records (``ComplianceEmitter``). The recorder is not on the actuation path; the one thing it
+publishes is a stop: when a record cannot be written to the log it publishes
+``/openral/estop`` and a ``FailureTrigger(KIND_CONTROLLER, SEVERITY_ABORT)`` — a machine that
+cannot keep its safety evidence does not move (#468, hazard-log entry). It warns while the
+log's filesystem is under ``DISK_WARN_FREE_FRACTION`` free.
 """
 
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import sys
 import time
 from collections import deque
@@ -28,14 +40,17 @@ from typing import Any, TypeVar
 import rclpy
 from openral_core import (
     SITE_ID_ENV,
+    Actor,
     ComplianceRecord,
+    ControllerEvidence,
     FailureEvidence,
     FailureRecord,
+    InterventionRecord,
     SafetyStopRecord,
     SessionRecord,
     SoftwareInventoryRecord,
 )
-from openral_msgs.msg import FailureTrigger, SafetyStatus
+from openral_msgs.msg import FailureTrigger, OperatorAction, SafetyStatus
 from openral_observability import configure_observability
 from openral_observability.compliance import ComplianceEmitter, software_inventory
 from openral_observability.compliance_log import ComplianceLog
@@ -43,11 +58,28 @@ from openral_observability.failure_bus import FailureSource, topic_for
 from pydantic import TypeAdapter, ValidationError
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+from std_msgs.msg import Empty
 
-__all__ = ["STOP_EXPLAIN_WINDOW_S", "ComplianceRecorderNode", "explains", "main"]
+__all__ = [
+    "DISK_WARN_FREE_FRACTION",
+    "OPERATOR_ACTION_TOPIC",
+    "STOP_EXPLAIN_WINDOW_S",
+    "ComplianceRecorderNode",
+    "explains",
+    "main",
+]
 
 _EVIDENCE: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
 _R = TypeVar("_R", bound=ComplianceRecord)
+
+OPERATOR_ACTION_TOPIC = "/openral/operator_action"
+"""Where channels announce who is acting (``openral_msgs/OperatorAction``)."""
+
+DISK_CHECK_PERIOD_S = 30.0
+DISK_WARN_FREE_FRACTION = 0.2
+"""Below this much free space under the log, the recorder warns (it stops when writes fail)."""
+
+_HEX = re.compile(r"[0-9a-f]{64}")
 
 STOP_EXPLAIN_WINDOW_S = 2.0
 """How far apart a latch and the safety failure that explains it may arrive, either way."""
@@ -90,6 +122,20 @@ def _trigger_source(drop_reason: int, cause: FailureRecord | None) -> str:
     return "kernel"
 
 
+_CHANNELS = frozenset({"local", "remote", "ota", "dashboard", "pendant", "chatops", "cli"})
+
+
+def _channel(label: str) -> str:
+    """``InterventionRecord.channel`` for an announced channel label; other labels are remote."""
+    return label if label in _CHANNELS else "remote"
+
+
+def _actor(msg: Any) -> Actor:  # reason: rclpy message
+    """The ``Actor`` an ``OperatorAction`` names; a malformed id is dropped, never stored."""
+    actor_id = msg.actor_id if len(msg.actor_id) == 64 and _HEX.fullmatch(msg.actor_id) else None
+    return Actor(channel_label=msg.channel_label or "unlabelled", actor_id=actor_id)
+
+
 class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
     """Records failures, safety stops and sessions as compliance records.
 
@@ -102,7 +148,11 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         super().__init__(node_name)
         self.declare_parameter("run_mode", "sim")
         self._emitter: ComplianceEmitter | None = None
+        self._log: ComplianceLog | None = None
         self._subs: list[Any] = []
+        self._estop_pub: Any = None
+        self._failure_pub: Any = None
+        self._disk_timer: Any = None
         self._active = False
         self._reset_state()
 
@@ -114,6 +164,11 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         self._pending: tuple[float, int, Any] | None = None  # (seen_at, ts_ns, status msg)
         self._pending_timer: Any = None
         self._session_start_ns: int | None = None
+        self._actions: deque[tuple[float, Any]] = deque(maxlen=32)
+        self._pending_reset: tuple[int, Any] | None = None  # (ts_ns, timer)
+        self._log_failure_stopped = False
+        self._write_failed = False
+        self._disk_low = False
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Open the failure-bus and safety-status subscriptions."""
@@ -121,13 +176,13 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
         try:
-            log = ComplianceLog.from_env(writer="recorder")
+            self._log = ComplianceLog.from_env(writer="recorder")
         except OSError as exc:
             # A recorder that cannot open its log must not come up looking healthy: refuse
             # to configure (on real hardware the launch then ends the graph).
             self.get_logger().error(f"compliance.log_unavailable: {exc}")
             return TransitionCallbackReturn.FAILURE
-        self._emitter = ComplianceEmitter(log=log, on_log_error=self._on_log_error)
+        self._emitter = ComplianceEmitter(log=self._log, on_log_error=self._on_log_error)
         bus_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
@@ -152,6 +207,23 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
                 SafetyStatus, "/openral/safety_status", self._on_safety_status, status_qos
             )
         )
+        estop_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        self._subs.append(
+            self.create_subscription(
+                OperatorAction, OPERATOR_ACTION_TOPIC, self._on_operator_action, estop_qos
+            )
+        )
+        # The one thing the recorder publishes: a stop when it cannot keep the evidence.
+        self._estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
+        self._failure_pub = self.create_publisher(
+            FailureTrigger, topic_for(FailureSource.SAFETY), bus_qos
+        )
+        if self._log is not None:
+            self._disk_timer = self.create_timer(DISK_CHECK_PERIOD_S, self._check_disk)
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -178,7 +250,15 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         for sub in self._subs:
             self.destroy_subscription(sub)
         self._subs = []
+        for pub in (self._estop_pub, self._failure_pub):
+            if pub is not None:
+                self.destroy_publisher(pub)
+        self._estop_pub = self._failure_pub = None
+        if self._disk_timer is not None:
+            self.destroy_timer(self._disk_timer)
+            self._disk_timer = None
         self._emitter = None
+        self._log = None
         self._reset_state()
         return TransitionCallbackReturn.SUCCESS
 
@@ -194,6 +274,8 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         """
         if self._pending is not None:
             self._emit_pending_stop(cause=None)
+        if self._pending_reset is not None:
+            self._emit_reset(action=None)
         if self._active and self._session_start_ns is not None and self._emitter is not None:
             self._emit_session(end_ts_ns=time.time_ns())
         self._active = False
@@ -205,22 +287,119 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         An out-of-range ``kind`` / ``severity`` is a producer bug: recording it as some other
         value would be false evidence, and raising out of a callback would end ``rclpy.spin``
         and every later record. A record that went out over OTLP but not into the on-robot log
-        is still returned (``_on_log_error`` reports the write), so it can explain a stop.
+        is still returned, so it can explain a stop; ``_on_log_error`` stops the machine.
         """
         assert self._emitter is not None
+        self._write_failed = False
         try:
-            return self._emitter.emit(kind, **fields)
+            record = self._emitter.emit(kind, **fields)
         except ValidationError as exc:
             self.get_logger().error(
                 f"compliance.record_invalid {kind.__name__}: {exc.error_count()} error(s) "
                 f"in {sorted(fields)}"
             )
-        return None
+            return None
+        if not self._write_failed:
+            self._log_failure_stopped = False  # the log writes again
+        return record
 
     def _on_log_error(self, record: ComplianceRecord, error: OSError) -> None:
-        """A record went out over OTLP but not into the on-robot log."""
+        """A record went out over OTLP but not into the on-robot log: stop the machine."""
+        self._write_failed = True
         self.get_logger().error(
             f"compliance.log_write_failed {record.kind} {record.record_id}: {error}"
+        )
+        self._stop_for_lost_evidence(str(error))
+
+    def _stop_for_lost_evidence(self, detail: str) -> None:
+        """Latch the machine: one that cannot keep its safety evidence does not move.
+
+        Publishes ``/openral/estop`` (every latch holder — kernel, HALs, runner — subscribes)
+        and a ``FailureTrigger(KIND_CONTROLLER, SEVERITY_ABORT)`` saying why. Once per
+        failure episode: the recorder hears its own trigger, fails to log that too, and must
+        not loop. A reset while the log still fails is itself unloggable, so it latches again.
+        """
+        if self._log_failure_stopped or self._estop_pub is None or self._failure_pub is None:
+            return
+        self._log_failure_stopped = True
+        self._estop_pub.publish(Empty())
+        trigger = FailureTrigger()
+        trigger.header.stamp = self.get_clock().now().to_msg()
+        trigger.kind = FailureTrigger.KIND_CONTROLLER
+        trigger.severity = FailureTrigger.SEVERITY_ABORT
+        trigger.evidence_json = ControllerEvidence(
+            controller_name=self.get_name(), state="log_write_failed", detail=detail[:200]
+        ).model_dump_json()
+        self._failure_pub.publish(trigger)
+        self.get_logger().error("compliance.estop_published: the compliance log cannot be written")
+
+    def _check_disk(self) -> None:
+        """Warn while the log's filesystem is below ``DISK_WARN_FREE_FRACTION`` free."""
+        if self._log is None:
+            return
+        usage = shutil.disk_usage(self._log.root)
+        low = usage.free / usage.total < DISK_WARN_FREE_FRACTION
+        if low and not self._disk_low:
+            self.get_logger().warning(
+                f"compliance.disk_low: {usage.free / 2**30:.1f} GiB free under "
+                f"{self._log.root}; the machine stops when the log can no longer be written"
+            )
+        self._disk_low = low
+
+    def _on_operator_action(self, msg: Any) -> None:  # reason: rclpy message
+        """An announced operator action: who did the next reset, or a parameter change."""
+        if not self._active:
+            return
+        if msg.action == OperatorAction.ACTION_PARAM_SET:
+            self._record(
+                InterventionRecord,
+                intervention_kind="param_set",
+                actor=_actor(msg),
+                channel=_channel(msg.channel_label),
+                legitimate=True,
+                diff_ref=msg.detail or None,
+            )
+            return
+        if msg.action != OperatorAction.ACTION_ESTOP_RESET:
+            return
+        if self._pending_reset is not None:  # the latch cleared first; this says who
+            self._emit_reset(action=msg)
+        else:
+            self._actions.append((time.monotonic(), msg))
+
+    def _on_latch_cleared(self) -> None:
+        """A latch cleared: a reset happened. Attribute it, or wait briefly for who did it."""
+        now = time.monotonic()
+        action = next(
+            (a for seen, a in reversed(self._actions) if now - seen <= STOP_EXPLAIN_WINDOW_S),
+            None,
+        )
+        if self._pending_reset is not None:
+            self._emit_reset(action=None)
+        timer = None
+        if action is None:
+            timer = self.create_timer(STOP_EXPLAIN_WINDOW_S, lambda: self._emit_reset(action=None))
+        self._pending_reset = (time.time_ns(), timer)
+        if action is not None:
+            self._actions.clear()
+            self._emit_reset(action=action)
+
+    def _emit_reset(self, *, action: Any) -> None:  # reason: rclpy message or None
+        """Record the waiting reset; unannounced means unattributed, legitimacy unknown."""
+        if self._pending_reset is None:
+            return
+        ts_ns, timer = self._pending_reset
+        self._pending_reset = None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+        self._record(
+            InterventionRecord,
+            ts_ns=ts_ns,
+            intervention_kind="estop_reset",
+            actor=_actor(action) if action is not None else Actor(channel_label="unattributed"),
+            channel=_channel(action.channel_label) if action is not None else "unknown",
+            legitimate=True if action is not None else None,
         )
 
     def _emit_session(self, *, end_ts_ns: int | None) -> None:
@@ -273,6 +452,9 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
                 self.get_logger().info(
                     "compliance.latch_inherited: already latched at configure; not re-recorded"
                 )
+            return
+        if was_latched and not msg.latched and self._active:
+            self._on_latch_cleared()
             return
         if was_latched or not msg.latched or not self._active:
             return

@@ -71,6 +71,27 @@ Every deletion is itself recorded as an `intervention` record (`retention_delete
 Personal data is minimised at the source: operators appear only as a pseudonymous
 `actor_id`, and no camera frames are logged.
 
+## Interventions and the stop on a lost log
+
+Every e-stop **reset** is recorded as an `intervention` (`estop_reset`), whatever path made it:
+the recorder sees the safety latch clear. `openral estop reset --operator NAME` and the
+dashboard announce who acted on `/openral/operator_action` (`openral_msgs/OperatorAction`)
+just before they act; the record then carries the channel and the operator as
+`HMAC-SHA256(identity, $OPENRAL_ACTOR_KEY)` — the deployer keeps the key, so only the deployer
+can link the id back to a person. A reset nobody announced (a raw `ros2 service call`, say) is
+still recorded, with `channel: unknown` and `legitimate: null`: the Machinery Regulation asks
+for evidence of illegitimate interventions too. Dashboard parameter changes are recorded as
+`param_set` interventions. An announcement is a claim by the channel, not an authentication
+(logins are #36).
+
+**A machine that cannot keep its safety evidence does not move.** If a record cannot be
+written to the log (full disk, read-only filesystem), the recorder publishes `/openral/estop`
+and a `FailureTrigger(KIND_CONTROLLER, SEVERITY_ABORT)` with
+`ControllerEvidence(state="log_write_failed")`; a reset while the log still fails cannot be
+recorded and latches again. The recorder warns in its log while the filesystem has under 20 %
+free. On `deploy run` the recorder is required: a deploy whose recorder cannot start, or dies,
+shuts down.
+
 ## `openral compliance`
 
 | Command | What it does |

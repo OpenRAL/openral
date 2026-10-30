@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import math
 import os
 import re
@@ -13863,6 +13865,29 @@ def trace_ids_from_wire(wire: str) -> tuple[str | None, str | None]:
     raise ValueError(f"not a trace id or W3C traceparent: {wire[:64]!r}")
 
 
+ACTOR_KEY_ENV = "OPENRAL_ACTOR_KEY"
+"""The deployer-held key operator identities are pseudonymised under (``Actor.actor_id``)."""
+
+
+def pseudonymous_actor_id(identity: str, key: str) -> str:
+    """HMAC-SHA256 hex of an operator identity under the deployer's key.
+
+    The same operator maps to the same id within one deployer, so interventions can be
+    attributed on an authority's request, while the record itself holds no name: only the
+    deployer, who holds ``key``, can link the id back (GDPR Art. 4(5) pseudonymisation).
+
+    Raises:
+        ValueError: ``identity`` or ``key`` is empty.
+
+    Example:
+        >>> len(pseudonymous_actor_id("alice", "deployer-secret"))
+        64
+    """
+    if not identity or not key:
+        raise ValueError("pseudonymous_actor_id needs a non-empty identity and key")
+    return hmac.new(key.encode(), identity.encode(), hashlib.sha256).hexdigest()
+
+
 class Actor(BaseModel):
     """Who performed an intervention, without naming them.
 
@@ -14119,7 +14144,7 @@ class InterventionRecord(_ComplianceRecordBase):
         kind: Discriminator (always ``"intervention"``).
         intervention_kind: What was done.
         actor: Who did it, pseudonymously.
-        channel: The path it came through.
+        channel: The path it came through; ``"unknown"`` when nothing announced it.
         legitimate: Whether the intervention was authorised; ``None`` when the
             path cannot tell (a reset through a channel without identity).
         before_digest: SHA-256 hex of the changed artefact before.
@@ -14154,7 +14179,9 @@ class InterventionRecord(_ComplianceRecordBase):
         "retention_delete",
     ]
     actor: Actor
-    channel: Literal["local", "remote", "ota", "dashboard", "pendant", "chatops", "system"]
+    channel: Literal[
+        "local", "remote", "ota", "dashboard", "pendant", "chatops", "system", "cli", "unknown"
+    ]
     legitimate: bool | None
     before_digest: str | None = Field(default=None, pattern=_HEX64)
     after_digest: str | None = Field(default=None, pattern=_HEX64)

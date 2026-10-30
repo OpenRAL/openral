@@ -106,7 +106,9 @@ unit file), and optionally `OPENRAL_ORG_ID` / `OPENRAL_SITE_ID`. `openral deploy
 refuses to start without one; `deploy sim` does not need it. Every record the deploy
 emits is also kept in the [on-robot compliance log](../../reference/compliance-log.md)
 (`~/.local/state/openral/compliance` unless `OPENRAL_COMPLIANCE_DIR` says otherwise); check it
-with `openral compliance verify`.
+with `openral compliance verify`. Set `OPENRAL_ACTOR_KEY` (a secret the deployer keeps) and
+reset with `openral estop reset --operator <name>` so each reset records who did it,
+pseudonymously; the robot stops if the log can no longer be written.
 Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
 `--report detect.json --no-write` for the raw detection report only. The rSkill
 is **not** set in deploy config; the reasoner selects it at runtime from the

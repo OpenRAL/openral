@@ -331,3 +331,129 @@ def test_the_recorder_writes_the_on_robot_log(
     sessions = list(records(tmp_path, RetentionClass.AI_LOG_6M))
     assert sum(isinstance(r, SessionRecord) for r in sessions) == 2  # start and end
     assert sum(isinstance(r, FailureRecord) for r in sessions) == 1
+
+
+def _interventions() -> list[Any]:
+    from openral_core import InterventionRecord
+
+    return [r for r in _records() if isinstance(r, InterventionRecord)]
+
+
+def _announce(
+    g: _Graph, action: str, *, channel: str, actor_id: str = "", detail: str = ""
+) -> None:
+    from openral_compliance.recorder_node import OPERATOR_ACTION_TOPIC
+    from openral_msgs.msg import OperatorAction
+
+    pub = g.helper.create_publisher(OperatorAction, OPERATOR_ACTION_TOPIC, 10)
+    g.executor.spin_once(timeout_sec=0.2)
+    msg = OperatorAction()
+    msg.action = action
+    msg.channel_label = channel
+    msg.actor_id = actor_id
+    msg.detail = detail
+    pub.publish(msg)
+    g.executor.spin_once(timeout_sec=0.2)
+
+
+def test_an_announced_reset_is_attributed(ros_context: None) -> None:
+    """`openral estop reset --operator` announces, then the latch clears: one attributed record."""
+    from openral_core import pseudonymous_actor_id
+
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_reset_announced")
+    try:
+        g.bring_up()
+        g.publish_status(latched=False)
+        g.publish_status(latched=True, drop_reason=SafetyStatus.DROP_EXTERNAL_ESTOP)
+        actor = pseudonymous_actor_id("alice", "deployer-key")
+        _announce(g, "estop_reset", channel="cli", actor_id=actor)
+        g.publish_status(latched=False)
+        assert _spin_until(g.executor, lambda: len(_interventions()) == 1)
+        (reset,) = _interventions()
+        assert reset.intervention_kind == "estop_reset"
+        assert (reset.channel, reset.legitimate, reset.actor.actor_id) == ("cli", True, actor)
+    finally:
+        g.close()
+
+
+def test_an_unannounced_reset_is_recorded_unattributed(ros_context: None) -> None:
+    """A `ros2 service call` reset nobody announced: recorded, legitimacy unknown."""
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_reset_unannounced")
+    try:
+        g.bring_up()
+        g.publish_status(latched=False)
+        g.publish_status(latched=True, drop_reason=SafetyStatus.KIND_COLLISION)
+        g.publish_status(latched=False)
+        assert _interventions() == []  # waiting for someone to say who
+        assert _spin_until(
+            g.executor, lambda: len(_interventions()) == 1, timeout_s=STOP_EXPLAIN_WINDOW_S + 2.0
+        )
+        (reset,) = _interventions()
+        assert (reset.channel, reset.legitimate) == ("unknown", None)
+        assert reset.actor.channel_label == "unattributed"
+    finally:
+        g.close()
+
+
+def test_a_late_announcement_still_attributes_and_param_set_is_recorded(
+    ros_context: None,
+) -> None:
+    """The announcement may arrive after the latch clears; a param change is an intervention."""
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_reset_late")
+    try:
+        g.bring_up()
+        g.publish_status(latched=False)
+        g.publish_status(latched=True, drop_reason=SafetyStatus.DROP_EXTERNAL_ESTOP)
+        g.publish_status(latched=False)
+        _announce(g, "estop_reset", channel="dashboard", actor_id="not-a-hash")
+        _announce(g, "param_set", channel="dashboard", detail="/openral_reasoner:temperature")
+        assert _spin_until(g.executor, lambda: len(_interventions()) == 2)
+        reset, param = sorted(_interventions(), key=lambda r: r.intervention_kind)
+        assert (reset.channel, reset.legitimate, reset.actor.actor_id) == ("dashboard", True, None)
+        assert (param.intervention_kind, param.diff_ref) == (
+            "param_set",
+            "/openral_reasoner:temperature",
+        )
+    finally:
+        g.close()
+
+
+def test_a_log_it_cannot_write_stops_the_machine_once(
+    ros_context: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hazard-log entry (#468): no evidence, no motion. One stop per failure episode."""
+    import os
+
+    from openral_core import ControllerEvidence
+    from std_msgs.msg import Empty
+
+    monkeypatch.setenv("OPENRAL_COMPLIANCE_DIR", str(tmp_path))
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_log_fails")
+    estops: list[Any] = []
+    triggers: list[Any] = []
+    g.helper.create_subscription(Empty, "/openral/estop", estops.append, 10)
+    g.helper.create_subscription(FailureTrigger, "/openral/failure/safety", triggers.append, 50)
+    try:
+        g.bring_up()
+        if os.geteuid() == 0:
+            pytest.skip("running as root: a read-only directory is still writable")
+        for path in tmp_path.rglob("*"):  # a full disk, as far as appends are concerned
+            os.chmod(path, 0o500 if path.is_dir() else 0o400)
+        g.publish_failure(FailureTrigger.KIND_WORKSPACE)
+        g.publish_failure(FailureTrigger.KIND_WORKSPACE)
+        assert _spin_until(g.executor, lambda: len(estops) >= 1)
+        for _ in range(10):
+            g.executor.spin_once(timeout_sec=0.05)
+        assert len(estops) == 1  # its own trigger also fails to log, and does not re-stop
+        ours = [t for t in triggers if t.kind == FailureTrigger.KIND_CONTROLLER]
+        assert len(ours) == 1
+        evidence = ControllerEvidence.model_validate_json(ours[0].evidence_json)
+        assert evidence.state == "log_write_failed"
+    finally:
+        for path in [tmp_path, *tmp_path.rglob("*")]:
+            os.chmod(path, 0o700 if path.is_dir() else 0o600)
+        g.close()
