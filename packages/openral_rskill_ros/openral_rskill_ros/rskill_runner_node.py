@@ -3652,8 +3652,10 @@ def make_local_skill_resolver(
         # SkillResolver signature with `make_default_skill_resolver` —
         # in-tree VLA shims don't need the node handle, but matching
         # signatures keeps the runner's call site uniform.
-        del revision, prompt_metadata_json, commercial_deployment, ros_node
+        del revision, prompt_metadata_json, ros_node
+        from openral_core import RSkillManifest
         from openral_core.exceptions import ROSConfigError
+        from openral_rskill.loader import rSkill
 
         _build_index()
         yaml_path = index.get(rskill_id)
@@ -3665,6 +3667,11 @@ def make_local_skill_resolver(
                 "either add it under one of the search paths or fix the "
                 "reasoner's palette so it doesn't surface unresolvable ids.",
             )
+        # Same license gate as the Hub path's ``rSkill.from_pretrained``: a
+        # non-commercial in-tree policy must not run in a commercial deployment.
+        rSkill._check_license(
+            RSkillManifest.from_yaml(str(yaml_path)), commercial_use=commercial_deployment
+        )
         # Resolve tf_lookup lazily — at dispatch time, AFTER on_configure
         # has wired ``_init_tf_lookup``. Without this the resolver would
         # capture None at factory time and the wrapped-task-space

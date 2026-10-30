@@ -2720,7 +2720,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         state_compatible: list[RSkillManifest] = []
         for m in capability_matched:
             sc = m.state_contract
-            if m.kind in POLICY_KINDS and sc is not None and sc.dim != n_joints:
+            # An unset dim on a raw contract means "the robot's joint vector", as the
+            # runner's warm-up path defaults it. A wrapped layout always goes through the
+            # assembler check below, whether or not it declares a dim.
+            if (
+                m.kind in POLICY_KINDS
+                and sc is not None
+                and (
+                    sc.dim != n_joints
+                    if sc.dim is not None
+                    else sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS
+                )
+            ):
                 if sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS:
                     # admit-with-adapter when the layout's
                     # assembler is registered in the openral_state_adapter

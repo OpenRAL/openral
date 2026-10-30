@@ -153,17 +153,16 @@ class _Registry(Generic[T]):
         ``robocasa``: a backend family registers once and the task stays
         data in the id. ``None`` when no prefix is registered.
         """
-        key = name
-        while key not in self._items and "/" in key:
-            key = key.rsplit("/", 1)[0]
-        if key in self._items:
-            return key
-        if self._entry_point_group is not None:
+        if name not in self._items and self._entry_point_group is not None:
+            # Discover installed ids first, so an exact id registered there wins over a
+            # built-in family prefix (``openvla/wam`` must not resolve to ``openvla``).
             group, self._entry_point_group = self._entry_point_group, None
             for ep in entry_points(group=group):
                 ep.load()
-            return self._key(name)
-        return None
+        key = name
+        while key not in self._items and "/" in key:
+            key = key.rsplit("/", 1)[0]
+        return key if key in self._items else None
 
     def allowed_robots(self, name: str) -> frozenset[str] | None:
         """Return the robot ids the scene can instantiate, or ``None`` if free-axis.
