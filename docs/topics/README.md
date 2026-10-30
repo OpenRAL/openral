@@ -57,7 +57,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/reward/active_task` | `std_msgs/String` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__)<br>packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode._subscribe_active_task) |
 | `/openral/safe_action` | `openral_msgs/ActionChunk` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>tools/kernel_replay_diff.py (_Side.__init__) |
 | `/openral/safety/external_torque` | `sensor_msgs/JointState` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp | — |
-| `/openral/safety_status` | `openral_msgs/SafetyStatus` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) [param `safety_status_topic`]<br>python/observability/src/openral_observability/dashboard/safety_status_subscriber.py (SafetyStatusSubscriber._start) |
+| `/openral/safety_status` | `openral_msgs/SafetyStatus` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) [param `safety_status_topic`]<br>python/observability/src/openral_observability/dashboard/safety_status_subscriber.py (SafetyStatusSubscriber._start) |
 | `/openral/skill_registry_changed` | `std_msgs/Empty` | tools/wait_for_action_and_signal_palette.py (main) [param `--signal-topic`] | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/tracked_objects` | `openral_msgs/TrackedObjectSet` | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._create_outputs) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `tracked_objects_topic`] |
 | `/openral/visual_slam/odometry` | `nav_msgs/Odometry` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode.__init__) [param `odometry_topic`] | — |
@@ -127,7 +127,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (46)
+## Unresolved endpoints (47)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -180,6 +180,7 @@ caller's argument). Shown as their source expression.
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_configure) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) |
+| topic | sub | `topic_for(source)` | `openral_msgs/FailureTrigger` | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure) |
 
 ## Launch remappings (14)
 

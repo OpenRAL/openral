@@ -81,12 +81,14 @@ from openral_core import (
     ROBOT_UNIT_ENV,
     CameraTopicKind,
     DeployRuntime,
+    UnitIdentity,
     apply_sensor_overlays,
     camera_topic,
     deploy_cloud_topic,
     merge_deploy_sensors,
     publishing_sensors,
     resolve_sensor_overlays,
+    resolve_unit_identity,
 )
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
@@ -164,7 +166,7 @@ def _resolve_git_sha() -> str:
     return "unknown"
 
 
-def _run_resource_attrs(hal_mode: str) -> str:
+def _run_resource_attrs(hal_mode: str, identity: UnitIdentity) -> str:
     """Build the ``OTEL_RESOURCE_ATTRIBUTES`` value for every launched node.
 
     The dashboard's Identity card reads ``openral.run.{id,mode,git_sha}`` from
@@ -173,7 +175,9 @@ def _run_resource_attrs(hal_mode: str) -> str:
     SDK's ``OTELResourceDetector`` fold them into each node's Resource
     automatically (``Resource.create`` merges ``OTEL_RESOURCE_ATTRIBUTES``).
     ``hal_mode=="real"`` is the ``deploy run`` hardware path; everything else
-    (``deploy sim``) is a simulation run.
+    (``deploy sim``) is a simulation run. The unit identity (serial / org / site, issue
+    #467) rides the same way, so every record names the machine it came from; the C++
+    kernel's ``Resource::Create`` merges this env var too.
     """
     run_mode = "hardware" if hal_mode == "real" else "sim"
     attrs = {
@@ -181,6 +185,13 @@ def _run_resource_attrs(hal_mode: str) -> str:
         "openral.run.mode": run_mode,
         "openral.run.git_sha": _resolve_git_sha(),
     }
+    for key, value in (
+        ("openral.unit.serial", identity.serial),
+        ("openral.org.id", identity.org_id),
+        ("openral.site.id", identity.site_id),
+    ):
+        if value is not None:
+            attrs[key] = value
     return ",".join(f"{k}={v}" for k, v in attrs.items())
 
 
@@ -2629,6 +2640,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # deploy` resolved identically before launching): per-host bindings and per-unit mount
     # calibration replace the manifest's nominal values for every consumer below.
     unit_overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
+    # The machine's identity for every record it emits; a hardware deploy without a
+    # serial is refused here, before any node starts (issue #467).
+    unit_identity = resolve_unit_identity(robot_yaml, scene_unit, required=hal_mode == "real")
     description = description.model_copy(
         update={"sensors": apply_sensor_overlays(description.sensors, unit_overlays)}
     )
@@ -2984,7 +2998,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # git sha populate regardless of which span family the operator is
     # looking at.
     otel_env: dict[str, str] = {
-        "OTEL_RESOURCE_ATTRIBUTES": _run_resource_attrs(hal_mode),
+        "OTEL_RESOURCE_ATTRIBUTES": _run_resource_attrs(hal_mode, unit_identity),
     }
     # ``--no-dashboard`` is a true headless mode: don't forward an OTLP
     # endpoint nobody is listening on. ``openral_observability._sdk``
@@ -3096,6 +3110,23 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         name="openral_human_estop_forwarder",
         namespace="",
         parameters=[{"use_sim_time": use_sim_time}],
+        additional_env=otel_env,
+        output="screen",
+    )
+    # Compliance recorder (issue #467): the failure bus and safety-status latches as
+    # typed compliance records over OTLP. Listens only, so it is not on the actuation
+    # path and does not gate the graph.
+    compliance_recorder = LifecycleNode(
+        package="openral_compliance",
+        executable="recorder_node.py",
+        name="openral_compliance_recorder",
+        namespace="",
+        parameters=[
+            {
+                "run_mode": "hardware" if hal_mode == "real" else "sim",
+                "use_sim_time": use_sim_time,
+            }
+        ],
         additional_env=otel_env,
         output="screen",
     )
@@ -3672,6 +3703,24 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 _kernel_autostart_path,
                 "--node",
                 "/openral_human_estop_forwarder",
+                "--target",
+                "active",
+                "--service-timeout-s",
+                "60.0",
+                "--transition-timeout-s",
+                "30.0",
+            ],
+            output="log",
+        )
+    )
+    # Same for the compliance recorder: a missing recorder loses records, not safety.
+    autostart.append(
+        ExecuteProcess(
+            cmd=[
+                sys.executable,
+                _kernel_autostart_path,
+                "--node",
+                "/openral_compliance_recorder",
                 "--target",
                 "active",
                 "--service-timeout-s",
@@ -4802,6 +4851,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         deadman_watchdog,
         hardware_estop,
         human_estop_forwarder,
+        compliance_recorder,
         runtime,
         hal,
         *extra_nodes,

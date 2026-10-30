@@ -33,6 +33,7 @@ from openral_observability import semconv
 _T = TypeVar("_T")
 
 __all__ = [
+    "get_failure_count",
     "get_hal_estop_count",
     "get_hal_read_state_duration",
     "get_hal_send_action_duration",
@@ -206,6 +207,21 @@ def get_safety_violations() -> Counter:
         lambda meter, name: meter.create_counter(
             name=name,
             description="ROSSafetyViolation family occurrences.",
+        ),
+    )
+
+
+def get_failure_count() -> Counter:
+    """``openral.failure.count`` — failure-bus triggers recorded by the compliance recorder.
+
+    Labels: ``component`` (the ``/openral/failure/<source>`` suffix), ``kind`` (the
+    ``FailureTrigger.KIND_*`` value), ``severity`` (``SEVERITY_*``); all closed sets.
+    """
+    return _cached(
+        semconv.METRIC_FAILURE_COUNT,
+        lambda meter, name: meter.create_counter(
+            name=name,
+            description="FailureTrigger events on the failure bus, by source, kind and severity.",
         ),
     )
 

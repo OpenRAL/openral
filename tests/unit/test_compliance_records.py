@@ -51,6 +51,7 @@ _text = st.text(min_size=1, max_size=24)
 _pos = st.floats(min_value=1e-3, max_value=1e6, allow_nan=False)
 _envelope = {
     "record_id": _hex32,
+    "stream_id": st.none() | _hex32,
     "seq": st.integers(min_value=0, max_value=2**63 - 1),
     "ts_ns": _ns,
     "clock_source": st.sampled_from(["ptp", "ntp", "monotonic_unsynced"]),

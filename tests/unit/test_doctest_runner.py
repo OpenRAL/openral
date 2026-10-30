@@ -55,6 +55,7 @@ DOCTEST_TARGETS: list[str] = [
     "python/runner/src/openral_runner/dataset_recorder_bridge.py",
     # ROS packages' pure-Python modules are importable via the root conftest.
     "packages/openral_rskill_ros/openral_rskill_ros/sensor_leg.py",
+    "python/observability/src/openral_observability/compliance.py",
 ]
 
 
