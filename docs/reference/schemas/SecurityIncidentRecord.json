@@ -1,6 +1,6 @@
 {
   "additionalProperties": false,
-  "description": "A security incident or exploited vulnerability (CRA Art. 14).\n\nAttributes:\n    kind: Discriminator (always ``\"security_incident\"``).\n    actively_exploited: The vulnerability is known to be exploited.\n    malicious_suspected: The incident is suspected to be malicious.\n    summary: What happened, without personal data.",
+  "description": "A security incident or exploited vulnerability (CRA Art. 14).\n\nAttributes:\n    kind: Discriminator (always ``\"security_incident\"``).\n    actively_exploited: The vulnerability is known to be exploited.\n    malicious_suspected: The incident is suspected to be malicious.\n    summary: What happened, without personal data.\n\nExample:\n    >>> SecurityIncidentRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=7,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     actively_exploited=False,\n    ...     malicious_suspected=True,\n    ...     summary=\"unexpected login on the dashboard\",\n    ... ).retention_class\n    <RetentionClass.INCIDENT_10Y: 'incident_10y'>",
   "properties": {
     "schema_version": {
       "const": "0.1",
@@ -14,11 +14,13 @@
       "type": "string"
     },
     "seq": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Seq",
       "type": "integer"
     },
     "ts_ns": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Ts Ns",
       "type": "integer"

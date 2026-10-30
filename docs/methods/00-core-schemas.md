@@ -517,19 +517,19 @@ Discriminated union backing the `evidence_json` field of `openral_msgs/msg/Failu
 Record kinds the compliance recorder writes to the on-robot log and exports as OTLP log records (issue #467). Discriminator is `kind`; decode via `pydantic.TypeAdapter(ComplianceRecord).validate_json(...)`. All kinds are frozen and reject extra fields. Unit and org identity ride on the OTel resource, not on each record.
 
 - `class RetentionClass(StrEnum)` (L13738) — `ai_log_6m` (AI Act Art. 19/26(6)), `mr_safety_decision_1y`, `mr_trace_5y` (MR Annex III §1.2.1(f)), `incident_10y`, `telemetry_raw`. Follows from the record kind; callers never set it.
-- `RETENTION_FLOOR_DAYS: Mapping[RetentionClass, int]` (L13757) — Read-only minimum days per class (183 / 365 / 1827 / 3653 / 0). Org policy may keep longer, never shorter.
-- `class Actor` (L13777) — `channel_label`, `actor_id` (64-hex HMAC-SHA256 pseudonym under a deployer-held org key, or `None`). Never a name.
-- `class SoftwareComponent` (L13798) — `name, version, sha256, safety_relevant, signature_ok` (MR §1.1.9 identification).
-- `class _ComplianceRecordBase(BaseModel)` (L13820) — Private envelope: `schema_version, record_id (32-hex), seq, ts_ns, clock_source, trace_id, span_id, parent_record_id`; `retention_class` property from the class-level `_retention`.
-- `class FailureRecord` (L13854) — `kind="failure"`; `source, failure_kind (KIND_*), severity (SEVERITY_*), evidence: FailureEvidence | None, rskill_id`. Class `ai_log_6m`.
-- `class SafetyStopRecord` (L13876) — `kind="safety_stop"`; `trigger_source, drop_reason, detail, evidence, stop_cmd_ts_ns, halt_ts_ns, latched, rskill_id, risk_ref`. Class `mr_safety_decision_1y`.
-- `class SafetyDecisionRecord` (L13906) — `kind="safety_decision"`; `decision (pass/scale/drop), check_name, rskill_id, chunk_index, inputs_digest`. Class `mr_safety_decision_1y`.
-- `class PlanDecisionRecord` (L13930) — `kind="plan_decision"`; `model, tool, rskill_id, ladder_rung, prompt_digest, mission_task_id`. Class `mr_safety_decision_1y`.
-- `class InterventionRecord` (L13956) — `kind="intervention"`; `intervention_kind, actor: Actor, channel, legitimate (None = unknown), before_digest, after_digest, diff_ref`. Class `mr_trace_5y`.
-- `class SoftwareInventoryRecord` (L13992) — `kind="software_inventory"`; `components: list[SoftwareComponent]` (≥1). Class `mr_trace_5y`.
-- `class SessionRecord` (L14006) — `kind="session"`; `start_ts_ns, end_ts_ns, run_mode, site_id, shift`. Class `ai_log_6m`.
-- `class SecurityIncidentRecord` (L14028) — `kind="security_incident"`; `actively_exploited, malicious_suspected, summary` (CRA Art. 14). Class `incident_10y`.
-- `ComplianceRecord: TypeAlias` (L14046) — Discriminated union over the eight kinds above.
+- `RETENTION_FLOOR_DAYS: Mapping[RetentionClass, int]` (L13757) — Read-only minimum days per class (184 / 366 / 1827 / 3653 / 0: the longest six months, a year spanning 29 Feb, five and ten years). Org policy may keep longer, never shorter.
+- `class Actor` (L13779) — `channel_label`, `actor_id` (64-hex HMAC-SHA256 pseudonym under a deployer-held org key, or `None`). Never a name.
+- `class SoftwareComponent` (L13800) — `name, version, sha256, safety_relevant, signature_ok` (MR §1.1.9 identification).
+- `class _ComplianceRecordBase(BaseModel)` (L13822) — Private envelope: `schema_version, record_id (32-hex), seq, ts_ns (both ≤ int64), clock_source, trace_id, span_id, parent_record_id`; a before-validator accepts the wire `trace_id` forms (W3C traceparent → id + span, `""` → `None`, ISSUE-109); `retention_class` property from the class-level `_retention`.
+- `class FailureRecord` (L13876) — `kind="failure"`; `source, failure_kind (KIND_*), severity (SEVERITY_*), evidence: FailureEvidence | None, rskill_id`. Class `ai_log_6m`.
+- `class SafetyStopRecord` (L13911) — `kind="safety_stop"`; `trigger_source, drop_reason, detail, evidence, stop_cmd_ts_ns, halt_ts_ns, latched, rskill_id, risk_ref`. Class `mr_safety_decision_1y`.
+- `class SafetyDecisionRecord` (L13952) — `kind="safety_decision"`; `decision (pass/scale/drop), check_name, rskill_id, chunk_index, inputs_digest`. Class `mr_safety_decision_1y`.
+- `class PlanDecisionRecord` (L13987) — `kind="plan_decision"`; `model, tool, rskill_id, ladder_rung, prompt_digest, mission_task_id`. Class `mr_safety_decision_1y`.
+- `class InterventionRecord` (L14025) — `kind="intervention"`; `intervention_kind, actor: Actor, channel, legitimate (None = unknown), before_digest, after_digest, diff_ref`. Class `mr_trace_5y`.
+- `class SoftwareInventoryRecord` (L14074) — `kind="software_inventory"`; `components: list[SoftwareComponent]` (≥1). Class `mr_trace_5y`.
+- `class SessionRecord` (L14102) — `kind="session"`; `start_ts_ns, end_ts_ns, run_mode, site_id, shift`. Class `ai_log_6m`.
+- `class SecurityIncidentRecord` (L14135) — `kind="security_incident"`; `actively_exploited, malicious_suspected, summary` (CRA Art. 14). Class `incident_10y`.
+- `ComplianceRecord: TypeAlias` (L14165) — Discriminated union over the eight kinds above.
 
 **Pydantic models — perception event metadata**
 

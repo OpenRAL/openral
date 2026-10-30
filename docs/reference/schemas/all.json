@@ -29493,7 +29493,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "A ``FailureTrigger`` from the failure bus.\n\nAttributes:\n    kind: Discriminator (always ``\"failure\"``).\n    source: Failure-bus topic suffix (``/openral/failure/<source>``).\n    failure_kind: ``FailureTrigger.KIND_*`` value.\n    severity: ``FailureTrigger.SEVERITY_*`` value (0 info \u2026 3 abort).\n    evidence: Decoded ``evidence_json``; ``None`` when the producer sent none.\n    rskill_id: The rSkill running when the failure fired.",
+      "description": "A ``FailureTrigger`` from the failure bus.\n\nAttributes:\n    kind: Discriminator (always ``\"failure\"``).\n    source: Failure-bus topic suffix (``/openral/failure/<source>``).\n    failure_kind: ``FailureTrigger.KIND_*`` value.\n    severity: ``FailureTrigger.SEVERITY_*`` value (0 info \u2026 3 abort).\n    evidence: Decoded ``evidence_json``; ``None`` when the producer sent none.\n    rskill_id: The rSkill running when the failure fired.\n\nExample:\n    >>> FailureRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=1,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     source=\"safety\",\n    ...     failure_kind=7,\n    ...     severity=3,\n    ...     trace_id=\"00-\" + \"a\" * 32 + \"-\" + \"b\" * 16 + \"-01\",\n    ... ).span_id\n    'bbbbbbbbbbbbbbbb'",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -29507,11 +29507,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"
@@ -30865,7 +30867,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "The machine was stopped by a safety function or a person.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_stop\"``).\n    trigger_source: What commanded the stop.\n    drop_reason: ``SafetyStatus.drop_reason`` code (a ``KIND_*`` or ``DROP_*``).\n    detail: Human-readable detail, as on ``SafetyStatus.detail``.\n    evidence: Typed evidence for the stop, when the producer sent it.\n    stop_cmd_ts_ns: When the stop was commanded.\n    halt_ts_ns: When motion was confirmed stopped, when known.\n    latched: Whether the stop latched (needs a reset to clear).\n    rskill_id: The rSkill running at the stop.\n    risk_ref: Hazard-log entry id this stop class maps to, when known.",
+      "description": "The machine was stopped by a safety function or a person.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_stop\"``).\n    trigger_source: What commanded the stop.\n    drop_reason: ``SafetyStatus.drop_reason`` code (a ``KIND_*`` or ``DROP_*``).\n    detail: Human-readable detail, as on ``SafetyStatus.detail``.\n    evidence: Typed evidence for the stop, when the producer sent it.\n    stop_cmd_ts_ns: When the stop was commanded.\n    halt_ts_ns: When motion was confirmed stopped, when known.\n    latched: Whether the stop latched (needs a reset to clear).\n    rskill_id: The rSkill running at the stop.\n    risk_ref: Hazard-log entry id this stop class maps to, when known.\n\nExample:\n    >>> SafetyStopRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=2,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     trigger_source=\"human\",\n    ...     latched=True,\n    ... ).retention_class\n    <RetentionClass.MR_SAFETY_DECISION_1Y: 'mr_safety_decision_1y'>",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -30879,11 +30881,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"
@@ -31050,6 +31054,7 @@
         "stop_cmd_ts_ns": {
           "anyOf": [
             {
+              "maximum": 9223372036854775807,
               "minimum": 0,
               "type": "integer"
             },
@@ -31063,6 +31068,7 @@
         "halt_ts_ns": {
           "anyOf": [
             {
+              "maximum": 9223372036854775807,
               "minimum": 0,
               "type": "integer"
             },
@@ -31116,7 +31122,7 @@
     },
     "SafetyDecisionRecord": {
       "additionalProperties": false,
-      "description": "One safety-kernel verdict on an action chunk.\n\nEvery ``scale`` and ``drop`` is recorded; ``pass`` verdicts are sampled at 1 Hz.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_decision\"``).\n    decision: The verdict.\n    check_name: The check that decided (``\"collision\"``, ``\"workspace\"``\u2026).\n    rskill_id: The rSkill whose chunk was checked.\n    chunk_index: Index of the checked chunk within the goal.\n    inputs_digest: SHA-256 hex over the verdict's inputs, when recorded.",
+      "description": "One safety-kernel verdict on an action chunk.\n\nEvery ``scale`` and ``drop`` is recorded; ``pass`` verdicts are sampled at 1 Hz.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_decision\"``).\n    decision: The verdict.\n    check_name: The check that decided (``\"collision\"``, ``\"workspace\"``\u2026).\n    rskill_id: The rSkill whose chunk was checked.\n    chunk_index: Index of the checked chunk within the goal.\n    inputs_digest: SHA-256 hex over the verdict's inputs, when recorded.\n\nExample:\n    >>> SafetyDecisionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=3,\n    ...     ts_ns=0,\n    ...     clock_source=\"ptp\",\n    ...     decision=\"drop\",\n    ...     check_name=\"collision\",\n    ... ).decision\n    'drop'",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -31130,11 +31136,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"
@@ -31260,7 +31268,7 @@
     },
     "PlanDecisionRecord": {
       "additionalProperties": false,
-      "description": "A reasoner tool call that led, or could lead, to motion.\n\nAttributes:\n    kind: Discriminator (always ``\"plan_decision\"``).\n    model: Reasoner model id as served (``reasoner.model``).\n    tool: Tool name called.\n    rskill_id: rSkill the call dispatched, when it dispatched one.\n    ladder_rung: Replanning-ladder rung the call came from.\n    prompt_digest: SHA-256 hex of the prompt; the prompt itself stays in the trace.\n    mission_task_id: Mission task the call served.",
+      "description": "A reasoner tool call that led, or could lead, to motion.\n\nAttributes:\n    kind: Discriminator (always ``\"plan_decision\"``).\n    model: Reasoner model id as served (``reasoner.model``).\n    tool: Tool name called.\n    rskill_id: rSkill the call dispatched, when it dispatched one.\n    ladder_rung: Replanning-ladder rung the call came from.\n    prompt_digest: SHA-256 hex of the prompt; the prompt itself stays in the trace.\n    mission_task_id: Mission task the call served.\n\nExample:\n    >>> PlanDecisionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=4,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     model=\"claude-opus-4-8\",\n    ...     tool=\"execute_rskill\",\n    ...     ladder_rung=\"initial\",\n    ... ).tool\n    'execute_rskill'",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -31274,11 +31282,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"
@@ -31443,7 +31453,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "A software, configuration or operator intervention (MR Annex III \u00a71.1.9).\n\nAttributes:\n    kind: Discriminator (always ``\"intervention\"``).\n    intervention_kind: What was done.\n    actor: Who did it, pseudonymously.\n    channel: The path it came through.\n    legitimate: Whether the intervention was authorised; ``None`` when the\n        path cannot tell (a reset through a channel without identity).\n    before_digest: SHA-256 hex of the changed artefact before.\n    after_digest: SHA-256 hex after.\n    diff_ref: Where the full diff is kept, when it is kept elsewhere.",
+      "description": "A software, configuration or operator intervention (MR Annex III \u00a71.1.9).\n\nAttributes:\n    kind: Discriminator (always ``\"intervention\"``).\n    intervention_kind: What was done.\n    actor: Who did it, pseudonymously.\n    channel: The path it came through.\n    legitimate: Whether the intervention was authorised; ``None`` when the\n        path cannot tell (a reset through a channel without identity).\n    before_digest: SHA-256 hex of the changed artefact before.\n    after_digest: SHA-256 hex after.\n    diff_ref: Where the full diff is kept, when it is kept elsewhere.\n\nExample:\n    >>> InterventionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=5,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     intervention_kind=\"estop_reset\",\n    ...     actor=Actor(channel_label=\"pendant\"),\n    ...     channel=\"pendant\",\n    ...     legitimate=None,\n    ... ).retention_class\n    <RetentionClass.MR_TRACE_5Y: 'mr_trace_5y'>",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -31457,11 +31467,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"
@@ -31670,7 +31682,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "The software installed on the unit, written at bringup and on any change.\n\nAttributes:\n    kind: Discriminator (always ``\"software_inventory\"``).\n    components: Every installed component.",
+      "description": "The software installed on the unit, written at bringup and on any change.\n\nAttributes:\n    kind: Discriminator (always ``\"software_inventory\"``).\n    components: Every installed component.\n\nExample:\n    >>> SoftwareInventoryRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=6,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     components=[\n    ...         SoftwareComponent(\n    ...             name=\"openral_safety_kernel\", version=\"0.9.0\", safety_relevant=True\n    ...         )\n    ...     ],\n    ... ).components[0].safety_relevant\n    True",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -31684,11 +31696,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"
@@ -31769,7 +31783,7 @@
     },
     "SessionRecord": {
       "additionalProperties": false,
-      "description": "One period of use of the unit.\n\nAttributes:\n    kind: Discriminator (always ``\"session\"``).\n    start_ts_ns: Session start.\n    end_ts_ns: Session end; ``None`` while open.\n    run_mode: ``openral.run.mode``.\n    site_id: Deployer site, when configured.\n    shift: Deployer shift label, when configured.",
+      "description": "One period of use of the unit.\n\nAttributes:\n    kind: Discriminator (always ``\"session\"``).\n    start_ts_ns: Session start.\n    end_ts_ns: Session end; ``None`` while open.\n    run_mode: ``openral.run.mode``.\n    site_id: Deployer site, when configured.\n    shift: Deployer shift label, when configured.\n\nExample:\n    >>> SessionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=0,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     start_ts_ns=0,\n    ...     run_mode=\"hardware\",\n    ... ).end_ts_ns is None\n    True",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -31783,11 +31797,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"
@@ -31847,6 +31863,7 @@
           "type": "string"
         },
         "start_ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Start Ts Ns",
           "type": "integer"
@@ -31854,6 +31871,7 @@
         "end_ts_ns": {
           "anyOf": [
             {
+              "maximum": 9223372036854775807,
               "minimum": 0,
               "type": "integer"
             },
@@ -31911,7 +31929,7 @@
     },
     "SecurityIncidentRecord": {
       "additionalProperties": false,
-      "description": "A security incident or exploited vulnerability (CRA Art. 14).\n\nAttributes:\n    kind: Discriminator (always ``\"security_incident\"``).\n    actively_exploited: The vulnerability is known to be exploited.\n    malicious_suspected: The incident is suspected to be malicious.\n    summary: What happened, without personal data.",
+      "description": "A security incident or exploited vulnerability (CRA Art. 14).\n\nAttributes:\n    kind: Discriminator (always ``\"security_incident\"``).\n    actively_exploited: The vulnerability is known to be exploited.\n    malicious_suspected: The incident is suspected to be malicious.\n    summary: What happened, without personal data.\n\nExample:\n    >>> SecurityIncidentRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=7,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     actively_exploited=False,\n    ...     malicious_suspected=True,\n    ...     summary=\"unexpected login on the dashboard\",\n    ... ).retention_class\n    <RetentionClass.INCIDENT_10Y: 'incident_10y'>",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -31925,11 +31943,13 @@
           "type": "string"
         },
         "seq": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Seq",
           "type": "integer"
         },
         "ts_ns": {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "title": "Ts Ns",
           "type": "integer"

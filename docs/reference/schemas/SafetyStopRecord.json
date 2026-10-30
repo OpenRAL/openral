@@ -1168,7 +1168,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "The machine was stopped by a safety function or a person.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_stop\"``).\n    trigger_source: What commanded the stop.\n    drop_reason: ``SafetyStatus.drop_reason`` code (a ``KIND_*`` or ``DROP_*``).\n    detail: Human-readable detail, as on ``SafetyStatus.detail``.\n    evidence: Typed evidence for the stop, when the producer sent it.\n    stop_cmd_ts_ns: When the stop was commanded.\n    halt_ts_ns: When motion was confirmed stopped, when known.\n    latched: Whether the stop latched (needs a reset to clear).\n    rskill_id: The rSkill running at the stop.\n    risk_ref: Hazard-log entry id this stop class maps to, when known.",
+  "description": "The machine was stopped by a safety function or a person.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_stop\"``).\n    trigger_source: What commanded the stop.\n    drop_reason: ``SafetyStatus.drop_reason`` code (a ``KIND_*`` or ``DROP_*``).\n    detail: Human-readable detail, as on ``SafetyStatus.detail``.\n    evidence: Typed evidence for the stop, when the producer sent it.\n    stop_cmd_ts_ns: When the stop was commanded.\n    halt_ts_ns: When motion was confirmed stopped, when known.\n    latched: Whether the stop latched (needs a reset to clear).\n    rskill_id: The rSkill running at the stop.\n    risk_ref: Hazard-log entry id this stop class maps to, when known.\n\nExample:\n    >>> SafetyStopRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=2,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     trigger_source=\"human\",\n    ...     latched=True,\n    ... ).retention_class\n    <RetentionClass.MR_SAFETY_DECISION_1Y: 'mr_safety_decision_1y'>",
   "properties": {
     "schema_version": {
       "const": "0.1",
@@ -1182,11 +1182,13 @@
       "type": "string"
     },
     "seq": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Seq",
       "type": "integer"
     },
     "ts_ns": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Ts Ns",
       "type": "integer"
@@ -1353,6 +1355,7 @@
     "stop_cmd_ts_ns": {
       "anyOf": [
         {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "type": "integer"
         },
@@ -1366,6 +1369,7 @@
     "halt_ts_ns": {
       "anyOf": [
         {
+          "maximum": 9223372036854775807,
           "minimum": 0,
           "type": "integer"
         },

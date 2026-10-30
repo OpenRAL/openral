@@ -1,6 +1,6 @@
 {
   "additionalProperties": false,
-  "description": "A reasoner tool call that led, or could lead, to motion.\n\nAttributes:\n    kind: Discriminator (always ``\"plan_decision\"``).\n    model: Reasoner model id as served (``reasoner.model``).\n    tool: Tool name called.\n    rskill_id: rSkill the call dispatched, when it dispatched one.\n    ladder_rung: Replanning-ladder rung the call came from.\n    prompt_digest: SHA-256 hex of the prompt; the prompt itself stays in the trace.\n    mission_task_id: Mission task the call served.",
+  "description": "A reasoner tool call that led, or could lead, to motion.\n\nAttributes:\n    kind: Discriminator (always ``\"plan_decision\"``).\n    model: Reasoner model id as served (``reasoner.model``).\n    tool: Tool name called.\n    rskill_id: rSkill the call dispatched, when it dispatched one.\n    ladder_rung: Replanning-ladder rung the call came from.\n    prompt_digest: SHA-256 hex of the prompt; the prompt itself stays in the trace.\n    mission_task_id: Mission task the call served.\n\nExample:\n    >>> PlanDecisionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=4,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     model=\"claude-opus-4-8\",\n    ...     tool=\"execute_rskill\",\n    ...     ladder_rung=\"initial\",\n    ... ).tool\n    'execute_rskill'",
   "properties": {
     "schema_version": {
       "const": "0.1",
@@ -14,11 +14,13 @@
       "type": "string"
     },
     "seq": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Seq",
       "type": "integer"
     },
     "ts_ns": {
+      "maximum": 9223372036854775807,
       "minimum": 0,
       "title": "Ts Ns",
       "type": "integer"
