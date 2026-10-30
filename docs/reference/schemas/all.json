@@ -27937,7 +27937,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.\n\nSelected by ``$OPENRAL_ROBOT_UNIT`` or ``DeployScene.robot_unit``; see\n``resolve_sensor_overlays``.\n\nAttributes:\n    schema_version: On-disk schema version.\n    robot_id: The ``robots/<robot_id>`` directory this unit belongs to.\n    unit: The unit name, equal to the file stem.\n    sensors: Overlays for the robot manifest's sensors.\n\nExample:\n    >>> RobotUnit(robot_id=\"so101_follower\", unit=\"bench_laptop\").sensors\n    []",
+      "description": "One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.\n\nSelected by ``$OPENRAL_ROBOT_UNIT`` or ``DeployScene.robot_unit``; see\n``resolve_sensor_overlays``.\n\nAttributes:\n    schema_version: On-disk schema version.\n    robot_id: The ``robots/<robot_id>`` directory this unit belongs to.\n    unit: The unit name, equal to the file stem.\n    sensors: Overlays for the robot manifest's sensors.\n    serial: The unit's serial number (``$OPENRAL_UNIT_SERIAL`` wins); see\n        ``resolve_unit_identity``.\n    org_id: The organisation operating the unit (``$OPENRAL_ORG_ID`` wins).\n\nExample:\n    >>> RobotUnit(robot_id=\"so101_follower\", unit=\"bench_laptop\").sensors\n    []",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -27959,6 +27959,32 @@
           },
           "title": "Sensors",
           "type": "array"
+        },
+        "serial": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9._:-]{1,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Serial"
+        },
+        "org_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9._:-]{1,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Org Id"
         }
       },
       "required": [

@@ -70,6 +70,22 @@ RUN_ID: Final[str] = "openral.run.id"
 RUN_MODE: Final[str] = "openral.run.mode"
 RUN_GIT_SHA: Final[str] = "openral.run.git_sha"
 
+# ── openral.unit.* / org / site — which machine (resource attributes) ─────
+# Stamped into OTEL_RESOURCE_ATTRIBUTES by the deploy launch from
+# openral_core.resolve_unit_identity; a hardware deploy without a serial is refused.
+
+UNIT_SERIAL: Final[str] = "openral.unit.serial"
+ORG_ID: Final[str] = "openral.org.id"
+SITE_ID: Final[str] = "openral.site.id"
+
+# ── openral.record.* — compliance records (OTLP log records) ──────────────
+# One log record per openral_core.ComplianceRecord; the body is the record's JSON.
+
+RECORD_KIND: Final[str] = "openral.record.kind"
+RECORD_ID: Final[str] = "openral.record.id"
+RECORD_SCHEMA_VERSION: Final[str] = "openral.schema.version"
+RECORD_RETENTION_CLASS: Final[str] = "openral.retention.class"
+
 # ── openral.tick.* — runner cadence ────────────────────────────────────────
 
 TICK_IDX: Final[str] = "openral.tick.idx"
@@ -306,6 +322,7 @@ METRIC_SYSTEM_CPU_UTIL_PCT: Final[str] = "openral.system.cpu.utilization_pct"
 METRIC_SYSTEM_RAM_USED_MB: Final[str] = "openral.system.ram.used_mb"
 METRIC_SYSTEM_RAM_TOTAL_MB: Final[str] = "openral.system.ram.total_mb"
 METRIC_SIM_EPISODE_SUCCESS: Final[str] = "openral.sim.episode.success"
+METRIC_FAILURE_COUNT: Final[str] = "openral.failure.count"
 
 # ── Closed-set label vocabularies (for metric labels) ──────────────────────
 
@@ -411,6 +428,7 @@ __all__ = [
     "LABEL_RSKILL_REVISION",
     "LABEL_SEVERITY",
     "LABEL_SIGNAL_KIND",
+    "METRIC_FAILURE_COUNT",
     "METRIC_HAL_ESTOP_COUNT",
     "METRIC_HAL_READ_STATE_DURATION",
     "METRIC_HAL_SEND_ACTION_DURATION",
@@ -434,6 +452,7 @@ __all__ = [
     "METRIC_TICK_DURATION",
     "METRIC_WORLD_STATE_COMPONENTS_STALE",
     "METRIC_WORLD_STATE_STALENESS_MS",
+    "ORG_ID",
     "REASONER_ERROR_KIND",
     "REASONER_FORCE",
     "REASONER_LLM_S",
@@ -445,6 +464,10 @@ __all__ = [
     "REASONER_TICK_IDX",
     "REASONER_TIER",
     "REASONER_TOOL",
+    "RECORD_ID",
+    "RECORD_KIND",
+    "RECORD_RETENTION_CLASS",
+    "RECORD_SCHEMA_VERSION",
     "REWARD_CAMERA",
     "REWARD_FRAMES",
     "REWARD_PROGRESS",
@@ -490,6 +513,7 @@ __all__ = [
     "SENSORS_SOURCE",
     "SENSORS_THUMBNAIL_JPEG_B64",
     "SENSORS_WIDTH",
+    "SITE_ID",
     "SKILL_FAILURE_STATE",
     "SPAN_CLI_COMMAND",
     "SPAN_DEPLOY_BRINGUP",
@@ -517,6 +541,7 @@ __all__ = [
     "TICK_DEADLINE_MS",
     "TICK_IDX",
     "TICK_RATE_HZ",
+    "UNIT_SERIAL",
     "WORLD_SCENE_OBJECTS_COUNT",
     "WORLD_SCENE_OBJECTS_FRAME",
     "WORLD_SCENE_OBJECTS_LIST",

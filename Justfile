@@ -444,6 +444,7 @@ ros2-build:
                           openral_safety_watchdog \
                           openral_safety_kernel \
                           openral_human_estop \
+                          openral_compliance \
                           openral_rskill_ros \
                           openral_slam_bringup \
                           openral_nav2_bringup \
@@ -534,6 +535,7 @@ ros2-test:
                           openral_safety_watchdog \
                           openral_safety_kernel \
                           openral_human_estop \
+                          openral_compliance \
                           openral_rskill_ros \
                           openral_slam_bringup \
                           openral_nav2_bringup \

@@ -856,6 +856,65 @@ ROBOT_UNIT_ENV = "OPENRAL_ROBOT_UNIT"
 
 Wins over ``DeployScene.robot_unit`` so one committed scene runs on several cells."""
 
+UNIT_SERIAL_ENV = "OPENRAL_UNIT_SERIAL"
+"""Env var with this unit's serial number; wins over ``RobotUnit.serial``."""
+ORG_ID_ENV = "OPENRAL_ORG_ID"
+"""Env var with the deploying organisation's id; wins over ``RobotUnit.org_id``."""
+SITE_ID_ENV = "OPENRAL_SITE_ID"
+"""Env var with the deployer site the unit runs at (no manifest field: sites move)."""
+
+_RESOURCE_TOKEN = r"^[A-Za-z0-9._:-]{1,64}$"
+"""An identity value safe inside ``OTEL_RESOURCE_ATTRIBUTES`` (no ``,`` / ``=`` / spaces)."""
+
+
+class UnitIdentity(NamedTuple):
+    """Which machine is running, for every telemetry and compliance record it emits.
+
+    Stamped on the OTel resource as ``openral.unit.serial`` / ``openral.org.id`` /
+    ``openral.site.id`` (EU Machinery Regulation 2023/1230: the log must name the machine).
+    """
+
+    serial: str | None
+    org_id: str | None
+    site_id: str | None
+
+
+def resolve_unit_identity(
+    robot_yaml: str | Path, scene_unit: str | None, *, required: bool
+) -> UnitIdentity:
+    """The serial, org and site of the unit this host runs.
+
+    Each value is its env var if set (``$OPENRAL_UNIT_SERIAL`` / ``$OPENRAL_ORG_ID`` /
+    ``$OPENRAL_SITE_ID``), else the selected ``RobotUnit``'s field (unit chosen as in
+    ``resolve_sensor_overlays``). A real deploy (``required``) without a serial is refused:
+    records that cannot name the machine they came from are not evidence of anything.
+
+    Raises:
+        ROSConfigError: ``required`` and no serial resolves, or a value is not a plain token.
+
+    Example:
+        >>> resolve_unit_identity("robots/franka_panda/robot.yaml", None, required=False).org_id
+    """
+    unit_name = os.environ.get(ROBOT_UNIT_ENV) or scene_unit
+    unit = load_robot_unit(robot_yaml, unit_name) if unit_name else None
+    identity = UnitIdentity(
+        serial=os.environ.get(UNIT_SERIAL_ENV) or (unit.serial if unit else None),
+        org_id=os.environ.get(ORG_ID_ENV) or (unit.org_id if unit else None),
+        site_id=os.environ.get(SITE_ID_ENV) or None,
+    )
+    for field, value in identity._asdict().items():
+        if value is not None and not re.fullmatch(_RESOURCE_TOKEN, value):
+            raise ROSConfigError(
+                f"unit {field} {value!r} must match {_RESOURCE_TOKEN} "
+                "(it rides in OTEL_RESOURCE_ATTRIBUTES)"
+            )
+    if required and identity.serial is None:
+        raise ROSConfigError(
+            f"a hardware deploy needs the unit's serial: set ${UNIT_SERIAL_ENV}, or `serial:` "
+            f"in the robots/<robot>/units/<unit>.yaml selected by ${ROBOT_UNIT_ENV}"
+        )
+    return identity
+
 
 def apply_sensor_overlays(
     sensors: Iterable[SensorSpec], overlays: Iterable[SensorOverlay]
@@ -12996,6 +13055,9 @@ class RobotUnit(BaseModel):
         robot_id: The ``robots/<robot_id>`` directory this unit belongs to.
         unit: The unit name, equal to the file stem.
         sensors: Overlays for the robot manifest's sensors.
+        serial: The unit's serial number (``$OPENRAL_UNIT_SERIAL`` wins); see
+            ``resolve_unit_identity``.
+        org_id: The organisation operating the unit (``$OPENRAL_ORG_ID`` wins).
 
     Example:
         >>> RobotUnit(robot_id="so101_follower", unit="bench_laptop").sensors
@@ -13008,6 +13070,8 @@ class RobotUnit(BaseModel):
     robot_id: str
     unit: str
     sensors: list[SensorOverlay] = Field(default_factory=list)
+    serial: str | None = Field(default=None, pattern=_RESOURCE_TOKEN)
+    org_id: str | None = Field(default=None, pattern=_RESOURCE_TOKEN)
 
     @classmethod
     def from_yaml(cls, path: str) -> RobotUnit:
