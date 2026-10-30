@@ -3,12 +3,12 @@
 This is how an installed package (OpenRAL Pro's WAM adapters) adds a policy
 without open importing it. A real module on ``sys.path`` registers the real
 ``zero`` policy adapter through a real ``EntryPoint``. Only the entry-point
-enumeration (installed-package metadata, a process boundary) is substituted.
+enumeration (installed-package metadata) is substituted, by
+``tests/unit/fakes/fake_entry_points.py``.
 """
 
 from __future__ import annotations
 
-from importlib.metadata import EntryPoint
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,21 +20,7 @@ from openral_sim import registry
 from openral_sim.policies import mock
 from openral_sim.policy import PolicyAdapter
 
-
-def _install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *ids: str) -> list[str]:
-    lines = ["from openral_sim.registry import POLICIES", "from openral_sim.policies import mock"]
-    lines += [f"POLICIES.register({i!r})(mock._build_zero_policy)" for i in ids]
-    module = f"fake_wam_{tmp_path.name}"  # unique: each test re-imports and re-registers
-    (tmp_path / f"{module}.py").write_text("\n".join(lines) + "\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    calls: list[str] = []
-
-    def fake_entry_points(group: str) -> tuple[EntryPoint, ...]:
-        calls.append(group)
-        return (EntryPoint(name=ids[0], value=module, group=group),)
-
-    monkeypatch.setattr(registry, "entry_points", fake_entry_points)
-    return calls
+from tests.unit.fakes.fake_entry_points import install_policy_entry_point
 
 
 def test_unknown_policy_id_loads_entry_points_once(
@@ -44,7 +30,7 @@ def test_unknown_policy_id_loads_entry_points_once(
         "policy", entry_point_group="openral.policies"
     )
     monkeypatch.setattr(registry, "POLICIES", fresh)
-    calls = _install(tmp_path, monkeypatch, "fake_wam")
+    calls = install_policy_entry_point(tmp_path, monkeypatch, registry, "fake_wam")
 
     spec = VLASpec(id="fake_wam", weights_uri="hf://none/none", extra={"action_dim": 7})
     env_cfg = SimpleNamespace(vla=spec, scene=SimpleNamespace(backend_options={}))
@@ -65,7 +51,7 @@ def test_an_installed_exact_id_wins_over_a_builtin_family_prefix(
     )
     fresh.register("zero")(mock._build_random_policy)  # the built-in family prefix
     monkeypatch.setattr(registry, "POLICIES", fresh)
-    _install(tmp_path, monkeypatch, "zero/wam")
+    install_policy_entry_point(tmp_path, monkeypatch, registry, "zero/wam")
 
     assert fresh.get("zero/wam") is mock._build_zero_policy
     assert fresh.get("zero/other") is mock._build_random_policy
