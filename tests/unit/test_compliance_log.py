@@ -10,7 +10,6 @@ import datetime as dt
 import json
 import os
 import tarfile
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -35,14 +34,14 @@ from openral_observability.compliance_log import (
     ship,
     verify,
 )
-from opentelemetry.sdk._logs import LoggerProvider, ReadableLogRecord
+from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
     InMemoryLogRecordExporter,
-    LogRecordExporter,
-    LogRecordExportResult,
     SimpleLogRecordProcessor,
 )
 from typer.testing import CliRunner
+
+from tests.unit.fakes.fake_otlp_exporter import FlakyCollector, UnreachableCollector
 
 _DAY = 86_400 * 10**9
 
@@ -161,34 +160,18 @@ def test_an_exported_bundle_verifies_on_its_own(tmp_path: Path) -> None:
     assert n == 1
     with tarfile.open(out) as tar:
         tar.extractall(tmp_path / "authority", filter="data")
-    assert [p for p in verify(tmp_path / "authority") if "chain" in p] == []
-
-
-class _Flaky(LogRecordExporter):
-    """Accepts ``ok`` records, then refuses: a collector going away mid-ship."""
-
-    def __init__(self, ok: int) -> None:
-        self.ok = ok
-        self.got: list[str] = []
-
-    def export(self, batch: Sequence[ReadableLogRecord]) -> LogRecordExportResult:
-        if len(self.got) >= self.ok:
-            return LogRecordExportResult.FAILURE
-        self.got += [str(r.log_record.body) for r in batch]
-        return LogRecordExportResult.SUCCESS
-
-    def shutdown(self) -> None:
-        return None
+    assert verify(tmp_path / "authority", partial=True) == []
+    assert verify(tmp_path / "authority") != []  # other classes of the stream are absent
 
 
 def test_ship_resumes_after_an_outage_and_never_resends(tmp_path: Path) -> None:
     _fill(tmp_path)
     attrs = {"openral.unit.serial": "SO101-0042"}
-    first = _Flaky(ok=2)
+    first = FlakyCollector(ok=2)
     assert ship(tmp_path, first, resource_attributes=attrs) == 2
-    second = _Flaky(ok=100)
+    second = FlakyCollector(ok=100)
     assert ship(tmp_path, second, resource_attributes=attrs) == 2
-    assert ship(tmp_path, _Flaky(ok=100), resource_attributes=attrs) == 0
+    assert ship(tmp_path, FlakyCollector(ok=100), resource_attributes=attrs) == 0
     ids = {json.loads(b)["record_id"] for b in first.got + second.got}
     assert len(ids) == 4
 
@@ -226,3 +209,79 @@ def test_cli_verify_hold_export(tmp_path: Path) -> None:
     assert result.exit_code == 0 and out.exists()
     _segment(tmp_path, RetentionClass.MR_SAFETY_DECISION_1Y).write_bytes(b"")
     assert runner.invoke(app, ["compliance", "verify", *root]).exit_code == 1
+
+
+def test_an_earlier_timestamp_never_goes_to_an_older_segment(tmp_path: Path) -> None:
+    """Written after midnight with a stamp from before (or a clock step back): still intact."""
+    emitter, _ = _emitter(tmp_path)
+    t0 = 1_761_700_000 * 10**9
+    emitter.emit(SafetyStopRecord, ts_ns=t0 + _DAY, trigger_source="kernel", latched=True)
+    emitter.emit(SafetyStopRecord, ts_ns=t0, trigger_source="human", latched=True)
+    assert verify(tmp_path) == []
+    assert len(list((tmp_path / "recorder" / "mr_safety_decision_1y").glob("*.jsonl"))) == 1
+
+
+def test_a_short_write_leaves_no_partial_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENOSPC half-way through a line: the fragment is truncated off, the chain stays whole."""
+    emitter, _ = _emitter(tmp_path)
+    emitter.emit(SafetyStopRecord, trigger_source="kernel", latched=True)
+    real_write = os.write
+
+    def half_then_full(fd: int, data: bytes) -> int:
+        real_write(fd, bytes(data[: len(data) // 2]))
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("os.write", half_then_full)
+    with pytest.raises(ROSRuntimeError):
+        emitter.emit(SafetyStopRecord, trigger_source="human", latched=True)
+    monkeypatch.setattr("os.write", real_write)
+    emitter.emit(SafetyStopRecord, trigger_source="deadman", latched=True)
+    problems = verify(tmp_path)
+    assert [p for p in problems if "chain" in p or "not a compliance" in p] == []
+    assert problems == [p for p in problems if "seq [1] missing" in p]  # the lost one shows
+
+
+def test_ship_to_an_unreachable_collector_sends_nothing_and_raises_nothing(
+    tmp_path: Path,
+) -> None:
+    _fill(tmp_path)
+    attrs = {"openral.unit.serial": "SO101-0042"}
+    assert ship(tmp_path, UnreachableCollector(), resource_attributes=attrs) == 0
+    assert ship(tmp_path, FlakyCollector(ok=100), resource_attributes=attrs) == 4
+
+
+def test_on_log_error_keeps_the_record(tmp_path: Path) -> None:
+    """With a callback, a failed local write is reported and the record still returned."""
+    exporter = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]  # reason: OTel SDK leaves __init__ unannotated
+    provider = LoggerProvider()
+    provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+    errors: list[str] = []
+    emitter = ComplianceEmitter(
+        logger_provider=provider,
+        log=ComplianceLog(tmp_path, writer="recorder"),
+        on_log_error=lambda record, error: errors.append(record.kind),
+    )
+    os.chmod(tmp_path / "recorder", 0o500)
+    try:
+        if os.access(tmp_path / "recorder", os.W_OK):
+            pytest.skip("running as root: a read-only directory is still writable")
+        record = emitter.emit(SafetyStopRecord, trigger_source="kernel", latched=True)
+    finally:
+        os.chmod(tmp_path / "recorder", 0o700)
+    assert record.trigger_source == "kernel" and errors == ["safety_stop"]
+
+
+def test_an_unreadable_safety_binary_is_listed_without_a_digest(tmp_path: Path) -> None:
+    from openral_observability.compliance import _digest
+
+    binary = tmp_path / "safety_kernel_node"
+    binary.write_bytes(b"\x7fELF")
+    binary.chmod(0o000)
+    try:
+        if os.access(binary, os.R_OK):
+            pytest.skip("running as root: an unreadable file is still readable")
+        assert _digest(binary) is None
+    finally:
+        binary.chmod(0o600)

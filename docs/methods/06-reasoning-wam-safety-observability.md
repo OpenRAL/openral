@@ -988,12 +988,12 @@ _W3C TraceContext inject / extract for cross-process trace correlation._
 ### `python/observability/src/openral_observability/compliance.py`
 _Compliance records out as OTLP log records (issue #467)._
 
-- `const CLOCK_SOURCE_ENV: str = "OPENRAL_CLOCK_SOURCE"` (L52) — how the host clock is disciplined; default `monotonic_unsynced`.
-- `class ComplianceEmitter` (L82) — Stamps the `ComplianceRecord` envelope (uuid4 `record_id`, a fresh `stream_id` per emitter with a gap-free `seq`, `ts_ns`, `clock_source`, the active span's ids) and sends one OTLP log record per record: JSON body, `openral.record.*` attributes, record trace context. `logger_provider=` overrides the global provider; `log=` (a `ComplianceLog`) also writes each record to the on-robot log before it goes out (#469). Thread-safe.
-  - `emit(kind, **fields) -> record` (L112) — Build, log, send and return one record; a wire `trace_id` is parsed (`trace_ids_from_wire`) and a malformed one dropped with a warning; a `FailureRecord` also counts `openral.failure.count`. A failed on-robot log write raises `ROSRuntimeError` after the record was still sent (its `seq` is spent, so `verify` shows the gap).
-- `send_record(logger, record) -> None` (L179) — One record as one OTLP log record (JSON body, `openral.record.*` attributes, trace context); `emit` and `compliance_log.ship` use it.
-- `software_inventory() -> list[SoftwareComponent]` (L223) — MR Annex III §1.1.9 identification: every `openral*` distribution, plus, with a ROS overlay sourced, `openral_safety_kernel` (binary SHA-256) and `openral_safety` (sources digest) marked `safety_relevant`; missing software is left out. The recorder records it on every activate.
-- `images_may_leave_host(endpoint=None) -> bool` (L287) — Camera thumbnails go only to the deployer's own network (loopback / private / link-local address, or a dotless host such as `otelcol`) unless `OPENRAL_TELEMETRY_IMAGE_CONSENT=1`; default endpoint is the one `configure_observability` installed; withholding logs `telemetry.images_withheld` once per endpoint. Checked before the JPEG encode in `emit_sensor_frame_span` and `DeployRunner`, and again in `record_sensor_frame_attrs`.
+- `const CLOCK_SOURCE_ENV: str = "OPENRAL_CLOCK_SOURCE"` (L53) — how the host clock is disciplined; default `monotonic_unsynced`.
+- `class ComplianceEmitter` (L83) — Stamps the `ComplianceRecord` envelope (uuid4 `record_id`, a fresh `stream_id` per emitter with a gap-free `seq`, `ts_ns`, `clock_source`, the active span's ids) and sends one OTLP log record per record: JSON body, `openral.record.*` attributes, record trace context. `logger_provider=` overrides the global provider; `log=` (a `ComplianceLog`) also writes each record to the on-robot log before it goes out (#469); `on_log_error=(record, error)` is called when that write fails (else `emit` raises). Thread-safe.
+  - `emit(kind, **fields) -> record` (L118) — Build, log, send and return one record; a wire `trace_id` is parsed (`trace_ids_from_wire`) and a malformed one dropped with a warning; a `FailureRecord` also counts `openral.failure.count`. A failed on-robot log write raises `ROSRuntimeError` after the record was still sent (its `seq` is spent, so `verify` shows the gap).
+- `send_record(logger, record) -> None` (L188) — One record as one OTLP log record (JSON body, `openral.record.*` attributes, trace context); `emit` and `compliance_log.ship` use it.
+- `software_inventory() -> list[SoftwareComponent]` (L240) — MR Annex III §1.1.9 identification: every `openral*` distribution, plus, with a ROS overlay sourced, `openral_safety_kernel` (binary SHA-256) and `openral_safety` (sources digest) marked `safety_relevant`; missing software is left out. The recorder records it on every activate.
+- `images_may_leave_host(endpoint=None) -> bool` (L307) — Camera thumbnails go only to the deployer's own network (loopback / private / link-local address, or a dotless host such as `otelcol`) unless `OPENRAL_TELEMETRY_IMAGE_CONSENT=1`; default endpoint is the one `configure_observability` installed; withholding logs `telemetry.images_withheld` once per endpoint. Checked before the JPEG encode in `emit_sensor_frame_span` and `DeployRunner`, and again in `record_sensor_frame_attrs`.
 
 ### `python/observability/src/openral_observability/compliance_log.py`
 _The on-robot compliance log: append-only, hash-chained JSONL per writer and retention class (issue #469). `<root>/<writer>/<class>/<YYYY-MM-DD>.jsonl`, each line `{"prev_hash", "record"}`._
@@ -1003,15 +1003,15 @@ _The on-robot compliance log: append-only, hash-chained JSONL per writer and ret
 - `const RAW_TELEMETRY_DAYS: int = 90` (L72) — default keep for `telemetry_raw`, which has no floor.
 - `default_compliance_dir() -> Path` (L88) — `$OPENRAL_COMPLIANCE_DIR`, else `$XDG_STATE_HOME/openral/compliance`.
 - `class ComplianceLog` (L117) — One process's writer (`writer=` `recorder` / `runtime` / `cli`), so two processes never fork a chain; opening quarantines a torn tail to `<segment>.quarantine`.
-  - `append(record) -> None` (L164) — One `O_APPEND` write, fsync'd for the safety / trace / incident classes; `OSError` propagates.
-  - `from_env(*, writer) -> ComplianceLog | None` [@classmethod] (L142) — The log at `$OPENRAL_COMPLIANCE_DIR`, `None` when unset.
-- `records(root, cls) -> Iterator[ComplianceRecord]` (L191) — Every record of a class, all writers.
-- `verify(root) -> list[str]` (L200) — Broken `prev_hash` links, non-record lines, quarantined tails, and (unless retention pruned something) `seq` gaps per `stream_id`.
-- `hold(root, *, on) -> None` (L247) — Legal hold on the whole log (AI Act Art. 73(6)); `prunable` returns nothing while held.
-- `prunable(root, today, keep_days=None) -> list[Path]` (L257) — Segments past `max(RETENTION_FLOOR_DAYS, keep_days)`; a floor never shrinks.
-- `delete(segments) -> None` (L277) — Deletes and marks the class `pruned` for `verify`; the CLI records each as a `retention_delete` intervention.
-- `export(root, out, *, classes, since) -> int` (L289) — Whole segments to a `.tar.gz` the recipient can `verify`.
-- `ship(root, exporter, *, resource_attributes) -> int` (L310) — Sends unshipped records, one acknowledged export each, resuming from `ship.state`; stops at the first refusal.
+  - `append(record) -> None` (L173) — One `O_APPEND` write, fsync'd for the safety / trace / incident classes; `OSError` propagates.
+  - `from_env(*, writer) -> ComplianceLog | None` [@classmethod] (L149) — The log at `$OPENRAL_COMPLIANCE_DIR`, `None` when unset.
+- `records(root, cls) -> Iterator[ComplianceRecord]` (L213) — Every record of a class, all writers.
+- `verify(root, *, partial=False) -> list[str]` (L222) — `partial` (an `export` of some classes or days) skips first links and `seq` gaps. Broken `prev_hash` links, non-record lines, quarantined tails, and (unless retention pruned something) `seq` gaps per `stream_id`.
+- `hold(root, *, on) -> None` (L273) — Legal hold on the whole log (AI Act Art. 73(6)); `prunable` returns nothing while held.
+- `prunable(root, today, keep_days=None) -> list[Path]` (L283) — Segments past `max(RETENTION_FLOOR_DAYS, keep_days)`; a floor never shrinks.
+- `delete(segments) -> None` (L303) — Deletes and marks the class `pruned` for `verify`; the CLI records each as a `retention_delete` intervention.
+- `export(root, out, *, classes, since) -> int` (L315) — Whole segments to a `.tar.gz` the recipient can `verify`.
+- `ship(root, exporter, *, resource_attributes) -> int` (L337) — Sends unshipped records, one acknowledged export each, resuming from `ship.state`; stops at the first refusal.
 
 ### `python/observability/src/openral_observability/failure_bus.py`
 _Publisher helper + IDL-mirror constants for the namespaced `/openral/failure/{...}` bus._

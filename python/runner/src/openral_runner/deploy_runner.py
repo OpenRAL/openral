@@ -43,7 +43,6 @@ from openral_core import SafetyStopRecord, SensorFrame, TickResult
 from openral_core.exceptions import (
     ROSConfigError,
     ROSPerceptionStale,
-    ROSRuntimeError,
     ROSSafetyViolation,
 )
 from openral_hal.protocol import HAL
@@ -151,7 +150,16 @@ class DeployRunner(InferenceRunnerBase):
         )
         self._recorder = recorder
         # Supervisor-boundary stops become compliance records (issue #467).
-        self._compliance = ComplianceEmitter(log=ComplianceLog.from_env(writer="runtime"))
+        try:
+            compliance_log = ComplianceLog.from_env(writer="runtime")
+        except OSError as exc:
+            # A hardware runtime that cannot open its compliance log refuses to run.
+            raise ROSConfigError(f"cannot open the compliance log: {exc}") from exc
+        self._compliance = ComplianceEmitter(
+            log=compliance_log, on_log_error=self._on_compliance_log_error
+        )
+        self._compliance_log_failed = False
+        self._withheld_retry_at = 0.0
         self._withheld_violation: str | None = None
         # VLA slot per camera for the recorder, built on the first recorded tick.
         self._recorder_slots: dict[str, str] | None = None
@@ -330,24 +338,34 @@ class DeployRunner(InferenceRunnerBase):
 
         A persisting violation at the control rate would otherwise write 30 "stops" a second
         into a one-year log. Keyed on the violation class, since its message often carries the
-        measured value and changes every tick; the record keeps the first message. A failed
-        write to the on-robot log is logged, never raised out of the tick: the action is
-        already withheld and the record still went out over OTLP.
+        measured value and changes every tick; the record keeps the first message. A stop
+        that did not reach the on-robot log is not marked recorded: it is retried, at most
+        once a second, and never raised out of the tick (the action is already withheld and
+        the record went out over OTLP).
         """
         violation = type(exc).__name__
-        if violation == self._withheld_violation:
+        now = time.monotonic()
+        if violation == self._withheld_violation or now < self._withheld_retry_at:
             return
-        self._withheld_violation = violation
-        try:
-            self._compliance.emit(
-                SafetyStopRecord,
-                trigger_source="supervisor",
-                detail=f"{violation}: {exc}",
-                latched=False,
-                rskill_id=self._skill.name,
-            )
-        except ROSRuntimeError as log_exc:
-            log.error("deploy_runner.compliance_log_write_failed", error=str(log_exc))
+        self._compliance_log_failed = False
+        self._compliance.emit(
+            SafetyStopRecord,
+            trigger_source="supervisor",
+            detail=f"{violation}: {exc}",
+            latched=False,
+            rskill_id=self._skill.name,
+        )
+        if self._compliance_log_failed:
+            # Not in the on-robot log yet: retry this stop, at most once a second.
+            self._withheld_retry_at = now + 1.0
+        else:
+            self._withheld_violation = violation
+
+    def _on_compliance_log_error(self, record: object, error: OSError) -> None:
+        """A stop went out over OTLP but not into the on-robot log."""
+        del record
+        self._compliance_log_failed = True
+        log.error("deploy_runner.compliance_log_write_failed", error=str(error))
 
     # ── Hot path ────────────────────────────────────────────────────────────
 

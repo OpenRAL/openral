@@ -35,7 +35,6 @@ from openral_core import (
     SessionRecord,
     SoftwareInventoryRecord,
 )
-from openral_core.exceptions import ROSRuntimeError
 from openral_msgs.msg import FailureTrigger, SafetyStatus
 from openral_observability import configure_observability
 from openral_observability.compliance import ComplianceEmitter, software_inventory
@@ -121,7 +120,14 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         del state
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-        self._emitter = ComplianceEmitter(log=ComplianceLog.from_env(writer="recorder"))
+        try:
+            log = ComplianceLog.from_env(writer="recorder")
+        except OSError as exc:
+            # A recorder that cannot open its log must not come up looking healthy: refuse
+            # to configure (on real hardware the launch then ends the graph).
+            self.get_logger().error(f"compliance.log_unavailable: {exc}")
+            return TransitionCallbackReturn.FAILURE
+        self._emitter = ComplianceEmitter(log=log, on_log_error=self._on_log_error)
         bus_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
@@ -198,8 +204,8 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
 
         An out-of-range ``kind`` / ``severity`` is a producer bug: recording it as some other
         value would be false evidence, and raising out of a callback would end ``rclpy.spin``
-        and every later record. A failed write to the on-robot log is logged as an ERROR here
-        (the record still went out over OTLP).
+        and every later record. A record that went out over OTLP but not into the on-robot log
+        is still returned (``_on_log_error`` reports the write), so it can explain a stop.
         """
         assert self._emitter is not None
         try:
@@ -209,9 +215,13 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
                 f"compliance.record_invalid {kind.__name__}: {exc.error_count()} error(s) "
                 f"in {sorted(fields)}"
             )
-        except ROSRuntimeError as exc:
-            self.get_logger().error(f"compliance.log_write_failed: {exc}")
         return None
+
+    def _on_log_error(self, record: ComplianceRecord, error: OSError) -> None:
+        """A record went out over OTLP but not into the on-robot log."""
+        self.get_logger().error(
+            f"compliance.log_write_failed {record.kind} {record.record_id}: {error}"
+        )
 
     def _emit_session(self, *, end_ts_ns: int | None) -> None:
         assert self._emitter is not None and self._session_start_ns is not None

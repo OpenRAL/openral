@@ -62,9 +62,14 @@ _CLASSES = typer.Option(
 
 
 @compliance_app.command("verify")
-def verify_command(root: Path | None = _ROOT) -> None:
+def verify_command(
+    root: Path | None = _ROOT,
+    partial: bool = typer.Option(
+        False, help="The log is an export of some classes or days: skip first links and seq gaps."
+    ),
+) -> None:
     """Walk every hash chain; exit 1 on an edited, deleted or missing record."""
-    problems = verify(_root(root))
+    problems = verify(_root(root), partial=partial)
     for problem in problems:
         _console.print(f"[red]✗[/red] {problem}")
     if problems:
@@ -114,7 +119,7 @@ def export_command(
         classes=retention_class,
         since=dt.date.fromisoformat(since) if since else None,
     )
-    _console.print(f"wrote {n} segment(s) to {out}; the recipient can run `verify` on it")
+    _console.print(f"wrote {n} segment(s) to {out}; the recipient can run `verify --partial` on it")
 
 
 @compliance_app.command("hold")

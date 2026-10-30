@@ -27,6 +27,7 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, TypeVar, cast
 from urllib.parse import urlsplit
@@ -92,6 +93,9 @@ class ComplianceEmitter:
             ``configure_observability`` installs.
         log: The on-robot compliance log each record is also written to, before it goes out
             over OTLP (#469). ``None``: OTLP only.
+        on_log_error: Called with ``(record, error)`` when a record went out over OTLP but
+            could not be written to ``log``; ``emit`` then still returns the record. Without
+            it, ``emit`` raises ``ROSRuntimeError``.
     """
 
     def __init__(
@@ -100,6 +104,7 @@ class ComplianceEmitter:
         *,
         logger_provider: LoggerProvider | None = None,
         log: ComplianceLog | None = None,
+        on_log_error: Callable[[ComplianceRecord, OSError], None] | None = None,
     ) -> None:
         """Open a fresh stream: a new ``stream_id``, ``seq`` from 0."""
         self._clock_source: _ClockSource = clock_source or _clock_source_from_env()
@@ -108,6 +113,7 @@ class ComplianceEmitter:
         self._lock = threading.Lock()
         self._logger = get_logger("openral.compliance", logger_provider=logger_provider)
         self._log = log
+        self._on_log_error = on_log_error
 
     def emit(self, kind: type[_R], **fields: object) -> _R:
         """Build one record of ``kind`` from ``fields`` and send it.
@@ -120,8 +126,9 @@ class ComplianceEmitter:
         Raises:
             pydantic.ValidationError: ``fields`` do not make a valid record. Callers on a
                 safety path build from typed sources, so this is a programming error.
-            ROSRuntimeError: The record could not be written to the on-robot log (it was
-                still sent over OTLP, and its ``seq`` is spent, so ``verify`` shows the gap).
+            ROSRuntimeError: The record could not be written to the on-robot log and no
+                ``on_log_error`` is set (it was still sent over OTLP, and its ``seq`` is spent,
+                so ``verify`` shows the gap).
         """
         wire = fields.get("trace_id")
         if isinstance(wire, str):
@@ -159,7 +166,9 @@ class ComplianceEmitter:
                 except OSError as exc:
                     write_error = exc
             send_record(self._logger, record)
-        if write_error is not None:
+        if write_error is not None and self._on_log_error is not None:
+            self._on_log_error(record, write_error)
+        elif write_error is not None:
             raise ROSRuntimeError(
                 f"compliance log write failed for {record.kind} record {record.record_id}: "
                 f"{write_error}"
@@ -207,16 +216,24 @@ def send_record(logger: Logger, record: ComplianceRecord) -> None:
     )
 
 
-def _digest(path: Path) -> str:
-    """SHA-256 of a file, or of a package directory's ``*.py`` sources (names and bytes)."""
+def _digest(path: Path) -> str | None:
+    """SHA-256 of a file, or of a package directory's ``*.py`` sources (names and bytes).
+
+    ``None`` (and a warning) when it cannot be read: the component is still listed, so an
+    unreadable binary never hides the rest of the inventory.
+    """
     import hashlib
 
     h = hashlib.sha256()
-    if path.is_file():
-        h.update(path.read_bytes())
-    else:
-        for f in sorted(path.rglob("*.py")):
-            h.update(str(f.relative_to(path)).encode() + b"\0" + f.read_bytes())
+    try:
+        if path.is_file():
+            h.update(path.read_bytes())
+        else:
+            for f in sorted(path.rglob("*.py")):
+                h.update(str(f.relative_to(path)).encode() + b"\0" + f.read_bytes())
+    except OSError as exc:
+        log.warning("compliance.inventory_unreadable", path=str(path), error=str(exc))
+        return None
     return h.hexdigest()
 
 
@@ -251,7 +268,10 @@ def software_inventory() -> list[SoftwareComponent]:
 
     def version_of(prefix: Path, package: str) -> str:
         xml = prefix / "share" / package / "package.xml"
-        match = re.search(r"<version>([^<]+)</version>", xml.read_text()) if xml.exists() else None
+        try:
+            match = re.search(r"<version>([^<]+)</version>", xml.read_text())
+        except OSError:
+            match = None
         return match[1] if match else "unknown"
 
     try:

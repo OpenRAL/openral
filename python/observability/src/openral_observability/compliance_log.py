@@ -137,6 +137,13 @@ class ComplianceLog:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._heads = {cls: self._recover(self._dir / cls.value) for cls in RetentionClass}
+        # The newest segment day per class: a record never goes to an older segment, even
+        # when its own timestamp is older (written after midnight, a clock step back), or
+        # its ``prev_hash`` would point forward and ``verify`` would see a broken chain.
+        self._newest_day = {
+            cls: max((p.stem for p in _segments(self._dir / cls.value)), default="")
+            for cls in RetentionClass
+        }
 
     @classmethod
     def from_env(cls, *, writer: str) -> ComplianceLog | None:
@@ -154,7 +161,9 @@ class ComplianceLog:
                 keep, _, torn = data.rpartition(b"\n")
                 keep = keep + b"\n" if keep else b""
                 seg.with_suffix(".quarantine").write_bytes(torn)
-                seg.write_bytes(keep)
+                # Truncate in place: rewriting the file would put every durable line at risk
+                # of a second power cut during recovery.
+                os.truncate(seg, len(keep))
                 data = keep
             lines = data.splitlines()
             if lines:
@@ -164,13 +173,18 @@ class ComplianceLog:
     def append(self, record: ComplianceRecord) -> None:
         """Write one record to its class's segment for the record's UTC day.
 
+        The day is the record's, or the class's newest segment day if that is later. A write
+        is all or nothing: a short write (a full disk) is truncated back off the segment, so
+        the chain never holds a partial line.
+
         Raises:
             OSError: The write failed (disk full, read-only filesystem). The log never
                 swallows it; the caller decides whether that stops the machine (#468).
         """
         cls = record.retention_class
-        day = dt.datetime.fromtimestamp(record.ts_ns / 1e9, tz=dt.UTC).date().isoformat()
+        own_day = dt.datetime.fromtimestamp(record.ts_ns / 1e9, tz=dt.UTC).date().isoformat()
         with self._lock:
+            day = max(own_day, self._newest_day[cls])
             line = json.dumps(
                 {"prev_hash": self._heads[cls], "record": json.loads(record.model_dump_json())},
                 separators=(",", ":"),
@@ -180,12 +194,20 @@ class ComplianceLog:
             path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
             try:
-                os.write(fd, line + b"\n")
+                start = os.fstat(fd).st_size
+                data = memoryview(line + b"\n")
+                try:
+                    while data:
+                        data = data[os.write(fd, data) :]
+                except OSError:
+                    os.ftruncate(fd, start)
+                    raise
+                self._heads[cls] = _line_hash(line)  # the line is in the file
+                self._newest_day[cls] = day
                 if cls in _FSYNC_CLASSES:
                     os.fsync(fd)
             finally:
                 os.close(fd)
-            self._heads[cls] = _line_hash(line)
 
 
 def records(root: str | Path, cls: RetentionClass) -> Iterator[ComplianceRecord]:
@@ -197,12 +219,16 @@ def records(root: str | Path, cls: RetentionClass) -> Iterator[ComplianceRecord]
                     yield _ADAPTER.validate_python(json.loads(line)["record"])
 
 
-def verify(root: str | Path) -> list[str]:
+def verify(root: str | Path, *, partial: bool = False) -> list[str]:
     """Walk every chain; one message per problem, empty when the log is intact.
 
     Reports a broken ``prev_hash`` link (an edited, deleted or reordered line), a line that
     is not a compliance record, a quarantined torn tail, and — unless retention has pruned
     something, which removes records by design — a ``seq`` gap within a ``stream_id``.
+
+    ``partial``: the log is an ``export`` of some classes or days, so each class's first
+    line need not chain to ``GENESIS`` and other classes' records of a stream are absent;
+    links inside it are still checked, ``seq`` gaps are not.
 
     Example:
         >>> import tempfile
@@ -215,7 +241,7 @@ def verify(root: str | Path) -> list[str]:
     pruned = False
     for _, class_dir in _class_dirs(root):
         pruned |= (class_dir / "pruned").exists()
-        prev = None if (class_dir / "pruned").exists() else GENESIS
+        prev = None if partial or (class_dir / "pruned").exists() else GENESIS
         for seg in _segments(class_dir):
             if seg.with_suffix(".quarantine").exists():
                 problems.append(f"{seg}: a torn tail was quarantined at open")
@@ -234,7 +260,7 @@ def verify(root: str | Path) -> list[str]:
                 prev = _line_hash(line)
                 if record.stream_id is not None:
                     seqs.setdefault(record.stream_id, set()).add(record.seq)
-    if not pruned:
+    if not pruned and not partial:
         for stream, seen in seqs.items():
             missing = sorted(set(range(min(seen), max(seen) + 1)) - seen)
             if min(seen) != 0:
@@ -291,8 +317,9 @@ def export(
 ) -> int:
     """Write the chosen classes' segments (from ``since``) to a ``.tar.gz`` for an authority.
 
-    Whole segments go in, so the recipient can re-run ``verify`` on the bundle. Returns the
-    number of segments written.
+    Whole segments go in, so the recipient can re-run ``verify`` on the bundle — with
+    ``partial=True`` unless it holds every class from the first day. Returns the number of
+    segments written.
     """
     root = Path(root)
     n = 0
@@ -351,8 +378,10 @@ def ship(
                 key = str(seg.relative_to(root))
                 lines = seg.read_bytes().splitlines()
                 for line in lines[state.get(key, 0) :]:
+                    results.clear()
                     send_record(logger, _ADAPTER.validate_python(json.loads(line)["record"]))
-                    if results[-1] is not LogRecordExportResult.SUCCESS:
+                    # An exporter that raised leaves no result (the processor swallows it).
+                    if results != [LogRecordExportResult.SUCCESS]:
                         return sent
                     state[key] = state.get(key, 0) + 1
                     sent += 1

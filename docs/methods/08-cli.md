@@ -44,12 +44,12 @@ _openral CLI entry point — `openral` command (typer-based)._
 - `_connect_so_follower(label: str, port: str) -> None` — Connect an SO-100/SO-101 follower arm via `SO100FollowerHAL`, read one state, disconnect.
 - `calibrate_camera(--sensor, --topic, --chessboard-size, --square-size, --dry-run)` (L1691) — Run ROS 2 `camera_calibration`.
 - `python/cli/src/openral_cli/compliance.py` — `openral compliance` (issue #469), over `openral_observability.compliance_log`; every command takes `--root` (default `$OPENRAL_COMPLIANCE_DIR`, exit 2 when absent):
-  - `verify_command(--root)` (`python/cli/src/openral_cli/compliance.py` L65) — Walk every chain; exit 1 on a broken link or a `seq` gap.
-  - `inventory_command(--root, --live)` (`python/cli/src/openral_cli/compliance.py` L76) — The last `SoftwareInventoryRecord` (or this host now), safety software marked.
-  - `export_command(--out, --class, --since, --root)` (`python/cli/src/openral_cli/compliance.py` L104) — Bundle for a competent authority's reasoned request.
-  - `hold_command(ON, --root)` (`python/cli/src/openral_cli/compliance.py` L121) — Legal hold on / off.
-  - `prune_command(--dry-run, --root)` (`python/cli/src/openral_cli/compliance.py` L131) — Delete past-retention segments, each recorded as a `retention_delete` intervention.
-  - `ship_command(--endpoint, --serial, --org, --root)` (`python/cli/src/openral_cli/compliance.py` L156) — Ship unshipped records to an OTLP collector (headers / protocol from the standard `OTEL_EXPORTER_OTLP_*` vars).
+  - `verify_command(--root, --partial)` (`python/cli/src/openral_cli/compliance.py` L65) — Walk every chain; exit 1 on a broken link or a `seq` gap.
+  - `inventory_command(--root, --live)` (`python/cli/src/openral_cli/compliance.py` L81) — The last `SoftwareInventoryRecord` (or this host now), safety software marked.
+  - `export_command(--out, --class, --since, --root)` (`python/cli/src/openral_cli/compliance.py` L109) — Bundle for a competent authority's reasoned request.
+  - `hold_command(ON, --root)` (`python/cli/src/openral_cli/compliance.py` L126) — Legal hold on / off.
+  - `prune_command(--dry-run, --root)` (`python/cli/src/openral_cli/compliance.py` L136) — Delete past-retention segments, each recorded as a `retention_delete` intervention.
+  - `ship_command(--endpoint, --serial, --org, --root)` (`python/cli/src/openral_cli/compliance.py` L161) — Ship unshipped records to an OTLP collector (headers / protocol from the standard `OTEL_EXPORTER_OTLP_*` vars).
 - `prompt_command(TEXT, --topic, --wait-s, --discovery-wait-s, --new-goal)` (`python/cli/src/openral_cli/prompt.py` L31) — `openral prompt`: publishes a one-shot `PromptStamped` onto `/openral/prompt_in/cli`, which `prompt_router_node` fans out to the reasoner; spins up to `--discovery-wait-s` for a subscriber before publishing anyway. `--new-goal` tells the reasoner to rebuild its mission queue instead of treating the prompt as conversational context.
 - `estop_reset_command(--service-timeout-s, --discovery-wait-s)` (`python/cli/src/openral_cli/estop.py` L41) — `openral estop reset`: the dashboard's `POST /api/estop_reset` sequence from a shell. Calls the kernel's `/openral/estop_reset` (`std_srvs/Trigger`) first; only on `success=true` broadcasts `/openral/estop_cleared` (RELIABLE/VOLATILE/depth 10, three copies) so every HAL and the rSkill runner un-latch. Exit 0 all cleared, 1 kernel refused (nothing broadcast), 2 no rclpy, 3 service absent/unanswered (nothing broadcast).
 - `estop_app: typer.Typer` (`estop.py` L33) — the `openral estop` sub-app.

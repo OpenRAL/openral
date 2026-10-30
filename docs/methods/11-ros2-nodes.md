@@ -172,16 +172,16 @@ _Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`);
 
 ### `packages/openral_compliance/openral_compliance/recorder_node.py`
 
-- `class ComplianceRecorderNode(LifecycleNode)` (L94) — Issue #467. `FailureTrigger` on `/openral/failure/*` → `FailureRecord` (undecodable evidence or a malformed trace id keeps the record without them); `/openral/safety_status` turning `latched` → `SafetyStopRecord` with `parent_record_id` → the safety failure that `explains` it, arriving up to `STOP_EXPLAIN_WINDOW_S` before or after (the latch waits on a one-shot timer); the first status sample after configure only syncs (the TRANSIENT_LOCAL replay is not a new stop); only an ACTIVE node records; activate / deactivate → `SessionRecord`. Emits through `ComplianceEmitter`; publishes nothing. Param `run_mode`.
-  - `close_session() -> None` (L183) — Records a stop still waiting for its cause and the session's end; idempotent; `main` calls it on SIGINT.
-  - `on_configure(state) -> TransitionCallbackReturn` (L119) — Opens the failure-bus and safety-status subscriptions.
-  - `on_activate(state) -> TransitionCallbackReturn` (L151) — Opens the session (`SessionRecord` start).
-  - `on_deactivate(state) -> TransitionCallbackReturn` (L162) — Closes the session.
-  - `on_cleanup(state) -> TransitionCallbackReturn` (L168) — Releases the subscriptions.
-  - `on_shutdown(state) -> TransitionCallbackReturn` (L179) — Closes an open session, then cleans up.
-- `STOP_EXPLAIN_WINDOW_S: float` (L53) — `2.0`: how far apart a latch and its cause may arrive, either way.
-- `explains(drop_reason, failure_kind) -> bool` (L66) — Cause match: a `KIND_*` latch needs the same kind; `DROP_EXTERNAL_ESTOP` needs `KIND_HUMAN` / `KIND_TIMEOUT`; the kernel's input drops need `KIND_PERCEPTION`; other drops have no cause on the bus.
-- `main(args=None) -> int` (L313) — Entry point for `ros2 run openral_compliance recorder_node.py`; configures OTel as `openral.compliance`; on SIGINT records the session end via `close_session` before destroying the node.
+- `class ComplianceRecorderNode(LifecycleNode)` (L93) — Issue #467. `FailureTrigger` on `/openral/failure/*` → `FailureRecord` (undecodable evidence or a malformed trace id keeps the record without them); `/openral/safety_status` turning `latched` → `SafetyStopRecord` with `parent_record_id` → the safety failure that `explains` it, arriving up to `STOP_EXPLAIN_WINDOW_S` before or after (the latch waits on a one-shot timer); the first status sample after configure only syncs (the TRANSIENT_LOCAL replay is not a new stop); only an ACTIVE node records; activate / deactivate → `SessionRecord`. Emits through `ComplianceEmitter`; publishes nothing. Param `run_mode`.
+  - `close_session() -> None` (L189) — Records a stop still waiting for its cause and the session's end; idempotent; `main` calls it on SIGINT.
+  - `on_configure(state) -> TransitionCallbackReturn` (L118) — Opens the failure-bus and safety-status subscriptions.
+  - `on_activate(state) -> TransitionCallbackReturn` (L157) — Opens the session (`SessionRecord` start).
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L168) — Closes the session.
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L174) — Releases the subscriptions.
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L185) — Closes an open session, then cleans up.
+- `STOP_EXPLAIN_WINDOW_S: float` (L52) — `2.0`: how far apart a latch and its cause may arrive, either way.
+- `explains(drop_reason, failure_kind) -> bool` (L65) — Cause match: a `KIND_*` latch needs the same kind; `DROP_EXTERNAL_ESTOP` needs `KIND_HUMAN` / `KIND_TIMEOUT`; the kernel's input drops need `KIND_PERCEPTION`; other drops have no cause on the bus.
+- `main(args=None) -> int` (L323) — Entry point for `ros2 run openral_compliance recorder_node.py`; configures OTel as `openral.compliance`; on SIGINT records the session end via `close_session` before destroying the node.
 
 ### `packages/openral_safety_watchdog/openral_safety_watchdog/`
 

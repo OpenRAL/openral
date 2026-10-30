@@ -75,9 +75,9 @@ Personal data is minimised at the source: operators appear only as a pseudonymou
 
 | Command | What it does |
 |---|---|
-| `verify` | Walk every chain; exit 1 on a broken link or a `seq` gap |
+| `verify [--partial]` | Walk every chain; exit 1 on a broken link or a `seq` gap (`--partial` for an exported subset) |
 | `inventory [--live]` | The last recorded software inventory (or this host now); safety software marked with its digest |
-| `export --out bundle.tar.gz [--class C …] [--since YYYY-MM-DD]` | Whole segments for an authority; the recipient can run `verify` on the unpacked bundle |
+| `export --out bundle.tar.gz [--class C …] [--since YYYY-MM-DD]` | Whole segments for an authority; the recipient can run `verify --partial` on the unpacked bundle |
 | `hold true\|false` | Legal hold on or off |
 | `prune [--dry-run]` | Delete what is past retention, recording each deletion |
 | `ship [--endpoint URL --serial S --org O]` | Send not-yet-shipped records to an OTLP collector; resumes after an outage, never re-sends an accepted record |
