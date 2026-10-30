@@ -2464,6 +2464,8 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "openral_reasoner_ros/reasoner_node.py",
     "openral_prompt_router/prompt_router_node.py",
     "openral_safety_kernel/safety_kernel_node",
+    # A surviving recorder would stamp the next run's records with this run's identity.
+    "openral_compliance/recorder_node.py",
     "openral dashboard",
     "async_slam_toolbox_node",
     # Nav2 sub-nodes spawned by openral_nav2_bringup's

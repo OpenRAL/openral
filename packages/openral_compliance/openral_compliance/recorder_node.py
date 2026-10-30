@@ -210,15 +210,25 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
                     f"compliance.evidence_undecodable source={source} kind={msg.kind}: "
                     f"{exc.error_count()} error(s)"
                 )
-        record = self._emitter.emit(
-            FailureRecord,
-            source=source,
-            failure_kind=msg.kind,
-            severity=msg.severity,
-            evidence=evidence,
-            rskill_id=msg.rskill_id or None,
-            trace_id=msg.trace_id,
-        )
+        try:
+            record = self._emitter.emit(
+                FailureRecord,
+                source=source,
+                failure_kind=msg.kind,
+                severity=msg.severity,
+                evidence=evidence,
+                rskill_id=msg.rskill_id or None,
+                trace_id=msg.trace_id,
+            )
+        except ValidationError as exc:
+            # An out-of-range kind/severity is a producer bug; recording it as some other
+            # value would be false evidence, and raising out of the callback would end
+            # rclpy.spin and every later record. Log it and keep recording.
+            self.get_logger().error(
+                f"compliance.failure_unrecordable source={source} kind={msg.kind} "
+                f"severity={msg.severity}: {exc.error_count()} error(s)"
+            )
+            return
         if source != FailureSource.SAFETY.value:
             return
         self._recent.append((time.monotonic(), record))

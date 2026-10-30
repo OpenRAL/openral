@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import functools
 import ipaddress
-import itertools
 import os
 import threading
 import time
@@ -93,7 +92,7 @@ class ComplianceEmitter:
         """Open a fresh stream: a new ``stream_id``, ``seq`` from 0."""
         self._clock_source: _ClockSource = clock_source or _clock_source_from_env()
         self._stream_id = uuid.uuid4().hex
-        self._seq = itertools.count()
+        self._next_seq = 0
         self._lock = threading.Lock()
         self._logger = get_logger("openral.compliance", logger_provider=logger_provider)
 
@@ -130,13 +129,14 @@ class ComplianceEmitter:
                     {
                         "record_id": uuid.uuid4().hex,
                         "stream_id": self._stream_id,
-                        "seq": next(self._seq),
+                        "seq": self._next_seq,
                         "ts_ns": time.time_ns(),
                         "clock_source": self._clock_source,
                         **fields,
                     }
                 ),
             )
+            self._next_seq += 1  # only a record that validated takes a seq: no false gap
             self._send(record)
         if isinstance(record, FailureRecord):
             metrics.get_failure_count().add(

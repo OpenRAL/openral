@@ -282,3 +282,24 @@ def test_replayed_latch_and_inactive_node_record_nothing(ros_context: None) -> N
         assert len(_records()) == 2
     finally:
         g.close()
+
+
+def test_an_out_of_range_severity_is_logged_not_fatal(ros_context: None) -> None:
+    """A producer bug on one trigger must not end the recorder; the next one records."""
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_bad_severity")
+    try:
+        g.bring_up()
+        bad = FailureTrigger()
+        bad.kind = FailureTrigger.KIND_COLLISION
+        bad.severity = 9  # SEVERITY_* stops at 3 (ABORT)
+        g.bus.publish(bad)
+        g.executor.spin_once(timeout_sec=0.3)
+        g.publish_failure(FailureTrigger.KIND_HUMAN)
+        assert _spin_until(
+            g.executor, lambda: any(isinstance(r, FailureRecord) for r in _records())
+        )
+        (failure,) = [r for r in _records() if isinstance(r, FailureRecord)]
+        assert failure.failure_kind == FailureTrigger.KIND_HUMAN
+    finally:
+        g.close()

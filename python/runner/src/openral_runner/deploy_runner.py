@@ -239,6 +239,7 @@ class DeployRunner(InferenceRunnerBase):
         first so the tick counter is reset and the active flag is set.
         """
         super().activate()
+        self._withheld_violation = None  # each activation records its own first stop
         self._hal.connect()
         for reader in self._sensor_readers:
             reader.open()

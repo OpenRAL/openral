@@ -988,9 +988,9 @@ _W3C TraceContext inject / extract for cross-process trace correlation._
 ### `python/observability/src/openral_observability/compliance.py`
 _Compliance records out as OTLP log records (issue #467)._
 
-- `const CLOCK_SOURCE_ENV: str = "OPENRAL_CLOCK_SOURCE"` (L44) — how the host clock is disciplined; default `monotonic_unsynced`.
-- `class ComplianceEmitter` (L74) — Stamps the `ComplianceRecord` envelope (uuid4 `record_id`, a fresh `stream_id` per emitter with a gap-free `seq`, `ts_ns`, `clock_source`, the active span's ids) and sends one OTLP log record per record: JSON body, `openral.record.*` attributes, record trace context. `logger_provider=` overrides the global provider. Thread-safe.
-  - `emit(kind, **fields) -> record` (L100) — Build, send and return one record; a wire `trace_id` is parsed (`trace_ids_from_wire`) and a malformed one dropped with a warning; a `FailureRecord` also counts `openral.failure.count`.
+- `const CLOCK_SOURCE_ENV: str = "OPENRAL_CLOCK_SOURCE"` (L43) — how the host clock is disciplined; default `monotonic_unsynced`.
+- `class ComplianceEmitter` (L73) — Stamps the `ComplianceRecord` envelope (uuid4 `record_id`, a fresh `stream_id` per emitter with a gap-free `seq`, `ts_ns`, `clock_source`, the active span's ids) and sends one OTLP log record per record: JSON body, `openral.record.*` attributes, record trace context. `logger_provider=` overrides the global provider. Thread-safe.
+  - `emit(kind, **fields) -> record` (L99) — Build, send and return one record; a wire `trace_id` is parsed (`trace_ids_from_wire`) and a malformed one dropped with a warning; a `FailureRecord` also counts `openral.failure.count`.
 - `images_may_leave_host(endpoint=None) -> bool` (L182) — Camera thumbnails go only to the deployer's own network (loopback / private / link-local address, or a dotless host such as `otelcol`) unless `OPENRAL_TELEMETRY_IMAGE_CONSENT=1`; default endpoint is the one `configure_observability` installed; withholding logs `telemetry.images_withheld` once per endpoint. Checked before the JPEG encode in `emit_sensor_frame_span` and `DeployRunner`, and again in `record_sensor_frame_attrs`.
 
 ### `python/observability/src/openral_observability/failure_bus.py`
@@ -1041,22 +1041,22 @@ _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `
 
 _**Event-log severity band** (distinct from the headline-card routing above). `_is_headline_span(name)` bands a span's Event Log row: ERROR status → `error`; a small allow-list of names/prefixes (`cli.command`, `rskill.execute`/`configure`/`activate`, `reasoner.tick`, `world.scene_objects`, `sim.run`, `detect.probe.*`) → `info`; everything else → `debug`. Deliberately an allow-list rather than a deny-list, so a new high-rate span stays quiet in the event log until promoted here instead of flooding it by default; every span is still indexed in full for `openral replay`._
 
-- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L233)
-  - `to_json(self) -> dict[str, Any]` (L259) — Return a plain-dict view suitable for JSON serialization.
-- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L385)
-  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L478)
-  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L512)
-  - `ingest_logs(self, payload) -> int` (L533) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
-  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L572)
-  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L750)
-  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L766)
-  - `set_estopped(self, value) -> None` (L577) — Force the e-stop latch flag from an authoritative operator action.
-  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L595)
-  - `list_traces(self) -> list[dict[str, Any]]` (L939) — Return one record per indexed trace_id, most-recent first.
-  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L957) — Return every indexed span for `trace_id` in chronological order, or `None`.
+- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L237)
+  - `to_json(self) -> dict[str, Any]` (L263) — Return a plain-dict view suitable for JSON serialization.
+- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L389)
+  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L482)
+  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L516)
+  - `ingest_logs(self, payload) -> int` (L537) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
+  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L580)
+  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L758)
+  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L774)
+  - `set_estopped(self, value) -> None` (L585) — Force the e-stop latch flag from an authoritative operator action.
+  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L603)
+  - `list_traces(self) -> list[dict[str, Any]]` (L953) — Return one record per indexed trace_id, most-recent first.
+  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L971) — Return every indexed span for `trace_id` in chronological order, or `None`.
 
-- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L648) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
-- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L705) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
+- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L656) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
+- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L713) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
 
 ### `python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py`
 _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `safety_status_subscriber.py` — one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only and **advisory**: it decides what an operator sees, never what the robot does._
@@ -1132,7 +1132,7 @@ _The `--inprocess` inverse: spawn `openral dashboard` as a child process and att
 ### `python/observability/src/openral_observability/dashboard/store.py` — F7 trace index additions
 _Bounded per-trace_id span index for query-time bag↔OTel join._
 
-- `class _IndexedSpan` (L271) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
+- `class _IndexedSpan` (L275) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
 - `TelemetryStore.list_traces() -> list[dict]` — One row per indexed trace_id (`trace_id`, `span_count`, `last_seen_unix`), most-recent first. Backs `GET /api/traces`.
 - `TelemetryStore.lookup_trace(trace_id: str) -> list[dict] | None` — Every indexed span for `trace_id`, sorted ascending by `start_unix_ns`. `None` when the trace is not (or no longer) in the bounded index. Backs `GET /api/spans/{trace_id}`.
 - `_TRACE_INDEX_MAX_TRACES = 64` / `_TRACE_INDEX_MAX_SPANS = 2048` — Memory caps. Older trace_ids evict FIFO on insertion.

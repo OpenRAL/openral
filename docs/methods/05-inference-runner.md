@@ -401,8 +401,8 @@ _``DeployRunner`` — concrete `InferenceRunnerBase` subclass composing HAL + Sk
   - `episode_start(task_string: str) -> int` — Open a new episode on the attached recorder; returns the new `episode_idx` (or `-1` when no recorder is attached). Raises `RuntimeError` if called twice without `episode_end`. (L180)
   - `episode_end(*, success: bool) -> None` — Close the current recorder episode with the success flag. No-op when no recorder is attached. Raises `RuntimeError` if called without `episode_start`. (L208)
   - `activate() -> None` — `super().activate()` + `hal.connect()` + open every `SensorReader`. (L234)
-  - `deactivate() -> None` — Close every `SensorReader` (best-effort; logs + continues), `hal.disconnect()`, `super().deactivate()`. (L252)
-  - `_tick_impl(tick_idx) -> TickResult` — Five-phase tick: sensors → world_state → inference → safety → hal, each phase timed onto the `TickResult`/OTel span. Catches `ROSPerceptionStale` per reader and `ROSSafetyViolation` at the supervisor boundary, recording each rather than letting it crash the tick. (L323)
+  - `deactivate() -> None` — Close every `SensorReader` (best-effort; logs + continues), `hal.disconnect()`, `super().deactivate()`. (L253)
+  - `_tick_impl(tick_idx) -> TickResult` — Five-phase tick: sensors → world_state → inference → safety → hal, each phase timed onto the `TickResult`/OTel span. Catches `ROSPerceptionStale` per reader and `ROSSafetyViolation` at the supervisor boundary, recording each rather than letting it crash the tick. (L324)
   - `_tracer` [@property] — Per-call `trace.get_tracer("openral")` (never cached at `__init__`, would bind to the provider live at construction time). (L225)
   - `_hal_adapter_label` — Lower-cased class name of the HAL adapter, used as the closed-set `openral.hal.adapter` value on spans + metrics. (L164)
 

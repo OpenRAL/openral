@@ -282,6 +282,14 @@ def test_a_persisting_violation_is_one_safety_stop_record(
     assert stop.trigger_source == "supervisor"
     assert stop.rskill_id == active_skill.name
 
+    # A new activation records its own first stop, even of the same violation class.
+    runner.activate()
+    try:
+        runner.run(max_ticks=1)
+    finally:
+        runner.deactivate()
+    assert len(exporter.get_finished_logs()) == 2
+
 
 def test_null_safety_client_is_default(
     hal: SO100FollowerHAL,
