@@ -332,6 +332,7 @@ _Advisory, queryable Layer-2 world model the S2 Reasoner consults to recall obje
   - `result_trajectory_field is None` → result-only mode (Nav2 shape); set → trajectory mode (MoveIt shape, replaying one waypoint per `step()`).
   - `default_goal_json` validator round-trips the literal through `json.loads` and rejects non-dict payloads.
 - `_ROS_WRAPPER_KINDS: frozenset[str]` — `{"ros_action", "ros_service"}`, the kinds requiring `RosIntegration`. (L8506)
+- `POLICY_KINDS: frozenset[str]` — `{"vla", "wam"}`, the kinds that run the policy-adapter path (same manifest rules, resolver, and reasoner palette filters); a WAM also predicts future frames. (L8509)
 - `class SegmenterEngine(str, Enum)` — Backend selector for `kind: "segmenter"` rSkills; required on `SegmenterContract.engine` (no legacy fallback, unlike `DetectorEngine`). (L8773)
 - `class SegmenterContract(BaseModel)` — Manifest contract for `kind: "segmenter"` rSkills, the sibling of `DetectorContract` for models answering a geometric prompt rather than a semantic one. Deliberately carries no `labels`/`score_threshold` — a segmenter never classifies and its consumer never gates on model confidence. (L8794)
 - `class DetectorEngine(str, Enum)` — Backend selector for `kind: "detector"` rSkills, disambiguating backends that otherwise share a `runtime`; `None` keeps the legacy `runtime`-keyed dispatch. (L8631)
