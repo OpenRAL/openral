@@ -26,7 +26,9 @@ never motion control. Each record carries `openral.record.kind` / `openral.schem
 machine is named by the OTel resource (`openral.unit.serial`, `openral.org.id`,
 `openral.site.id`, stamped by the deploy launch).
 
-The on-robot hash-chained log these records also go to is #469; recording who reset or
+With `$OPENRAL_COMPLIANCE_DIR` set (always on `deploy run`), each record is also written to
+the on-robot, hash-chained log as writer `recorder`, and every activation records a
+`SoftwareInventoryRecord` (`docs/reference/compliance-log.md`). Recording who reset or
 overrode a stop is #468.
 
 ## Bringup

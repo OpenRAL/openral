@@ -23,19 +23,23 @@ import os
 import sys
 import time
 from collections import deque
-from typing import Any
+from typing import Any, TypeVar
 
 import rclpy
 from openral_core import (
     SITE_ID_ENV,
+    ComplianceRecord,
     FailureEvidence,
     FailureRecord,
     SafetyStopRecord,
     SessionRecord,
+    SoftwareInventoryRecord,
 )
+from openral_core.exceptions import ROSRuntimeError
 from openral_msgs.msg import FailureTrigger, SafetyStatus
 from openral_observability import configure_observability
-from openral_observability.compliance import ComplianceEmitter
+from openral_observability.compliance import ComplianceEmitter, software_inventory
+from openral_observability.compliance_log import ComplianceLog
 from openral_observability.failure_bus import FailureSource, topic_for
 from pydantic import TypeAdapter, ValidationError
 from rclpy.executors import ExternalShutdownException
@@ -44,6 +48,7 @@ from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackRet
 __all__ = ["STOP_EXPLAIN_WINDOW_S", "ComplianceRecorderNode", "explains", "main"]
 
 _EVIDENCE: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+_R = TypeVar("_R", bound=ComplianceRecord)
 
 STOP_EXPLAIN_WINDOW_S = 2.0
 """How far apart a latch and the safety failure that explains it may arrive, either way."""
@@ -116,7 +121,7 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         del state
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-        self._emitter = ComplianceEmitter()
+        self._emitter = ComplianceEmitter(log=ComplianceLog.from_env(writer="recorder"))
         bus_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
@@ -149,6 +154,9 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         self._active = True
         self._session_start_ns = time.time_ns()
         self._emit_session(end_ts_ns=None)
+        # What is installed, at every start (MR Annex III §1.1.9): a changed digest between two
+        # sessions is the evidence of a software intervention.
+        self._record(SoftwareInventoryRecord, components=software_inventory())
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -185,10 +193,30 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         self._active = False
         self._session_start_ns = None
 
+    def _record(self, kind: type[_R], **fields: object) -> _R | None:
+        """Emit one record; a record that cannot be built or logged never ends the node.
+
+        An out-of-range ``kind`` / ``severity`` is a producer bug: recording it as some other
+        value would be false evidence, and raising out of a callback would end ``rclpy.spin``
+        and every later record. A failed write to the on-robot log is logged as an ERROR here
+        (the record still went out over OTLP).
+        """
+        assert self._emitter is not None
+        try:
+            return self._emitter.emit(kind, **fields)
+        except ValidationError as exc:
+            self.get_logger().error(
+                f"compliance.record_invalid {kind.__name__}: {exc.error_count()} error(s) "
+                f"in {sorted(fields)}"
+            )
+        except ROSRuntimeError as exc:
+            self.get_logger().error(f"compliance.log_write_failed: {exc}")
+        return None
+
     def _emit_session(self, *, end_ts_ns: int | None) -> None:
         assert self._emitter is not None and self._session_start_ns is not None
         run_mode = self.get_parameter("run_mode").get_parameter_value().string_value
-        self._emitter.emit(
+        self._record(
             SessionRecord,
             start_ts_ns=self._session_start_ns,
             end_ts_ns=end_ts_ns,
@@ -210,26 +238,16 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
                     f"compliance.evidence_undecodable source={source} kind={msg.kind}: "
                     f"{exc.error_count()} error(s)"
                 )
-        try:
-            record = self._emitter.emit(
-                FailureRecord,
-                source=source,
-                failure_kind=msg.kind,
-                severity=msg.severity,
-                evidence=evidence,
-                rskill_id=msg.rskill_id or None,
-                trace_id=msg.trace_id,
-            )
-        except ValidationError as exc:
-            # An out-of-range kind/severity is a producer bug; recording it as some other
-            # value would be false evidence, and raising out of the callback would end
-            # rclpy.spin and every later record. Log it and keep recording.
-            self.get_logger().error(
-                f"compliance.failure_unrecordable source={source} kind={msg.kind} "
-                f"severity={msg.severity}: {exc.error_count()} error(s)"
-            )
-            return
-        if source != FailureSource.SAFETY.value:
+        record = self._record(
+            FailureRecord,
+            source=source,
+            failure_kind=msg.kind,
+            severity=msg.severity,
+            evidence=evidence,
+            rskill_id=msg.rskill_id or None,
+            trace_id=msg.trace_id,
+        )
+        if record is None or source != FailureSource.SAFETY.value:
             return
         self._recent.append((time.monotonic(), record))
         if self._pending is not None and explains(
@@ -278,7 +296,7 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
             return
         _, ts_ns, msg = self._pending
         self._pending = None
-        self._emitter.emit(
+        self._record(
             SafetyStopRecord,
             ts_ns=ts_ns,
             trigger_source=_trigger_source(msg.drop_reason, cause),

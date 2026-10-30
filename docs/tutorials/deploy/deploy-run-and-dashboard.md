@@ -103,7 +103,10 @@ one is selected (SO-101 bench: `units/bench_laptop.yaml`).
 A real deploy also needs the unit's **serial number** so its telemetry and compliance
 records name the machine they came from: set `OPENRAL_UNIT_SERIAL` (or `serial:` in the
 unit file), and optionally `OPENRAL_ORG_ID` / `OPENRAL_SITE_ID`. `openral deploy run`
-refuses to start without one; `deploy sim` does not need it.
+refuses to start without one; `deploy sim` does not need it. Every record the deploy
+emits is also kept in the [on-robot compliance log](../../reference/compliance-log.md)
+(`~/.local/state/openral/compliance` unless `OPENRAL_COMPLIANCE_DIR` says otherwise); check it
+with `openral compliance verify`.
 Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
 `--report detect.json --no-write` for the raw detection report only. The rSkill
 is **not** set in deploy config; the reasoner selects it at runtime from the

@@ -22,6 +22,7 @@ from openral_core import (
     FailureRecord,
     SafetyStopRecord,
     SessionRecord,
+    SoftwareInventoryRecord,
 )
 from openral_msgs.msg import FailureTrigger, SafetyStatus
 from opentelemetry._logs import set_logger_provider
@@ -274,12 +275,12 @@ def test_replayed_latch_and_inactive_node_record_nothing(ros_context: None) -> N
         assert _records() == []  # INACTIVE: no session, no records
         assert g.node.trigger_activate() == TransitionCallbackReturn.SUCCESS
         g.executor.spin_once(timeout_sec=0.3)
-        assert [type(r) for r in _records()] == [SessionRecord]
+        assert [type(r) for r in _records()] == [SessionRecord, SoftwareInventoryRecord]
         g.node.close_session()  # what main() does on SIGINT
         session_end = _records()[-1]
         assert isinstance(session_end, SessionRecord) and session_end.end_ts_ns is not None
         g.node.close_session()  # idempotent
-        assert len(_records()) == 2
+        assert len(_records()) == 3
     finally:
         g.close()
 
@@ -303,3 +304,30 @@ def test_an_out_of_range_severity_is_logged_not_fatal(ros_context: None) -> None
         assert failure.failure_kind == FailureTrigger.KIND_HUMAN
     finally:
         g.close()
+
+
+def test_the_recorder_writes_the_on_robot_log(
+    ros_context: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With $OPENRAL_COMPLIANCE_DIR set, every record also lands in a verifiable log (#469)."""
+    from openral_core import RetentionClass
+    from openral_observability.compliance_log import records, verify
+
+    monkeypatch.setenv("OPENRAL_COMPLIANCE_DIR", str(tmp_path))
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_log")
+    try:
+        g.bring_up()
+        g.publish_failure(FailureTrigger.KIND_HUMAN)
+        assert _spin_until(
+            g.executor, lambda: any(isinstance(r, FailureRecord) for r in _records())
+        )
+        g.node.close_session()
+    finally:
+        g.close()
+    assert verify(tmp_path) == []
+    (inventory,) = records(tmp_path, RetentionClass.MR_TRACE_5Y)
+    assert isinstance(inventory, SoftwareInventoryRecord)
+    sessions = list(records(tmp_path, RetentionClass.AI_LOG_6M))
+    assert sum(isinstance(r, SessionRecord) for r in sessions) == 2  # start and end
+    assert sum(isinstance(r, FailureRecord) for r in sessions) == 1

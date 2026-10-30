@@ -3000,6 +3000,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     otel_env: dict[str, str] = {
         "OTEL_RESOURCE_ATTRIBUTES": _run_resource_attrs(hal_mode, unit_identity),
     }
+    # The on-robot compliance log (issue #469): always on for real hardware (the machine
+    # keeps its own evidence, network or not), opt-in for sim via $OPENRAL_COMPLIANCE_DIR.
+    from openral_observability.compliance_log import COMPLIANCE_DIR_ENV, default_compliance_dir
+
+    if hal_mode == "real" or os.environ.get(COMPLIANCE_DIR_ENV):
+        otel_env[COMPLIANCE_DIR_ENV] = str(default_compliance_dir())
     # ``--no-dashboard`` is a true headless mode: don't forward an OTLP
     # endpoint nobody is listening on. ``openral_observability._sdk``
     # treats an absent ``OTEL_EXPORTER_OTLP_ENDPOINT`` as a no-op and

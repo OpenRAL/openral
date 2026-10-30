@@ -67,6 +67,7 @@ from rich.text import Text
 
 from openral_cli.check import check_command
 from openral_cli.collision import collision_app
+from openral_cli.compliance import compliance_app
 from openral_cli.dataset import dataset_app
 from openral_cli.deploy_sim import deploy_sim_command
 from openral_cli.estop import estop_app
@@ -3822,6 +3823,9 @@ app.command(
 # `openral estop reset` clears the kernel latch, then (only on success) every
 # HAL/runner latch via /openral/estop_cleared — the dashboard's reset sequence.
 app.add_typer(estop_app, name="estop")
+
+# `openral compliance` — the on-robot compliance log (issue #469).
+app.add_typer(compliance_app, name="compliance")
 
 
 # ── openral dashboard — live debugging UI over the OTel stream (issue #44) ──────
