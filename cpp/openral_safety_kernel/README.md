@@ -1214,11 +1214,16 @@ shipped box at ingest): the measured object against the robot's exact geometry.
 **Workspace brake** (`workspace_contact_brake_enabled`, requires the rule; launch sets it): when a
 JOINT_POSITION chunk's only reasons to stop are the measured hand speed and/or lead (it passes with
 both read as within bound, the measured pose included; needs a fresh measured velocity), the kernel publishes a hold — every commanded
-non-jaw joint at its measured value — instead of an E-stop, no latch; for a speed/lead-only stop the rows instead creep toward the command (scaled so the tightest row leads one control period at the speed bound while the measured hand is over its speed bound, else half the lead bound, plus its row allowance, when the scaled rows pass the relaxed check; WARN `lead_m= row=` names that row). WARN `safety.workspace_brake ... creep=`.
+non-jaw joint at its hold anchor — instead of an E-stop, no latch. The anchor is the last command the kernel published for that joint
+(an accepted chunk's or a hold's last row, recorded whoever owns the workspace rules; a refused chunk or another slot's brake does not
+forget it, every other reset does), while at most `kWorkspaceHoldFreshPeriods` periods past due, leading the measured hand by at most
+the lead bound and passing the relaxed check; else the measured value (WARN `anchor=command|measured`). Why (pro#51): a
+position-controlled arm under gravity rests below its command, so a hold at the measured pose commands it down and each next hold
+re-anchors lower — the OpenArm twin dropped a lifted carton 12–14 cm back into the tote. For a speed/lead-only stop the rows instead creep toward the command (scaled so the tightest row leads one control period at the speed bound while the measured hand is over its speed bound, else half the lead bound, plus its row allowance, when the scaled rows pass the relaxed check; WARN `lead_m= row=` names that row). WARN `safety.workspace_brake ... creep=`.
 A world-state message the kernel refuses for its payload model (no attachment stamp, too many objects or primitives, an undecodable primitive, a support witness out of bounds) is disclosed as WARN `safety.attachment_fail_closed reason=` (≤ 1 Hz) — the producer's attach barrier waits for a revision the kernel will never apply, so the runner's tick ack times out 8 s later (r34 mix07_2).
 With `workspace_contact_hold_max_consecutive` > 0, a command the relaxed check still refuses while the
-measured pose passes is held too (never executed), up to that many chunks in a row; then the latched
-stop.
+hold passes is held too (never executed, at the same anchor), up to that many chunks in a row; then the
+latched stop.
 
 **Fail-closed cases (today's stop):** feature off; no live grasp declaration (retracted, expired
 `timeout_s`, future stamp — a RETIRED identity (`handover_exit`, `released`) ends only the grasp

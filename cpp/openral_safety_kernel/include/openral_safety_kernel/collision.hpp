@@ -424,6 +424,15 @@ inline constexpr double kMaxWorkspaceContactLeadM = 0.10;
 /// again. 2 = the next tick plus one tick of jitter.
 inline constexpr double kWorkspaceCommandFreshPeriods = 2.0;
 
+/// How many control periods the workspace brake's hold anchor (the last command the
+/// kernel published for a joint) stays usable (pro#51). Until a newer command is
+/// published it is still the robot's target, so it is not a speed-chain row: one
+/// slot tick in six arrives without a candidate on the OpenArm twin, and the
+/// 2-period window refused the anchor at exactly 2 periods. Bounded anyway: the
+/// anchor must still lead the measured hand by at most the lead bound and pass the
+/// collision check, else the hold is the measured pose. *Calibration point.*
+inline constexpr double kWorkspaceHoldFreshPeriods = 15.0;
+
 /// Ceiling on a grasp declaration's `timeout_s` backstop (s). **A Safety-WG
 /// placeholder** mirroring `openral_core.GraspDeclaration.MAX_TIMEOUT_S`; the
 /// lifecycle refuses a declaration past it (or non-positive / non-finite)

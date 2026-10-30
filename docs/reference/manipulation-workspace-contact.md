@@ -367,9 +367,18 @@ arm's links it still stops.
 rule; it needs a fresh measured velocity). A JOINT_POSITION chunk that trips as-is but passes with
 the measured hand speed AND lead read as within bound — every exemption and every other check
 unchanged, and the measured pose itself passing — has speed and/or push as its ONLY reasons to stop.
-The kernel then publishes the chunk with every commanded non-jaw joint set to its measured value: a
+The kernel then publishes the chunk with every commanded non-jaw joint set to its hold anchor: a
 hold, i.e. a controlled stop with power kept and no latch (the jaws keep their command so the
-payload is not dropped); the next chunk is judged afresh. WARN `safety.workspace_brake` ≤ 1 Hz with
+payload is not dropped); the next chunk is judged afresh. The anchor is the last command the kernel
+published for the joint (the robot's live target), while at most `kWorkspaceHoldFreshPeriods`
+periods past due, leading the measured hand by at most the lead bound and passing the relaxed
+check; else the measured value. pro#51: a position-controlled arm under gravity rests below its
+command (OpenArm joint 4 ≈ 0.07–0.1 rad), so a hold at the measured pose commanded it down, each next
+hold re-anchored lower, and the twin dropped a lifted carton 12–14 cm back into the tote while the
+policy was swinging it to the shelf. The anchor is recorded on every accepted chunk whoever owns the
+rules (the exemption provider's brake never recorded one), survives a refused chunk and another
+slot's brake (neither changes what the robot tracks), and outlives the speed chain's 2-period window
+(one slot tick in six carries no candidate on the twin). WARN `safety.workspace_brake` ≤ 1 Hz with
 a running count. Why: across 9 place batches the most common remaining stop was contact at 0.35–0.41
 m/s while 809 tolerated contact samples had p99 0.26 m/s, and the next was a lead of 80–96 mm while
 tolerated contact had p99 63 mm — both the tail, which a hold answers (no motion, no push) and
@@ -382,14 +391,14 @@ rate-limited WARNs). The decision on a refused chunk (relaxed pass, hold check, 
 hold) runs before any report, log or publish and allocates nothing
 (`TheWorkspaceBrakeDecisionDoesNotAllocate`, counted through the `workspace_brake_probe` test seam).
 
-**Creep instead of freeze (sim):** for a speed/lead-only stop the commanded rows are scaled toward
-the measured pose so the tightest row leads by one control period at the speed bound while the
+**Creep instead of freeze (sim):** for a speed/lead-only stop the commanded rows are scaled from
+the hold anchor toward the command so the tightest row leads by one control period at the speed bound while the
 measured hand is over its speed bound, else by half the lead bound (r32: scaling a 0.12 m lead to
 one period, 0.017 m, stalled the policy as a hold did), plus its row allowance (none while the
 measured hand touches), and rows s ≥ 1 also so their row-to-row speed is within the bound. The
 arm keeps moving toward the policy's target at the bounded speed. The scaled rows must pass their
 own lead, speed and relaxed check; on an overshoot (the lead is not linear in the joint deltas)
-the creep halves and is re-checked, up to three times, else the measured pose is held (r41: a
+the creep halves and is re-checked, up to three times, else the anchor is held (r41: a
 creep of 0 on every overshoot held the arm still). Why: r24/r25 runs logged 200–1700 holds each —
 a frozen policy re-issues the same command and stalls (a 120 s deadline only reached the 70 s
 declaration timeout). WARN `creep=<factor>` (0 = held).
@@ -402,8 +411,8 @@ r24–r29 cartons 1 cm from the torso read −15 to −40 mm against it with the
 like-for-like baseline (world-voxel check off, payload checks with it) placed 5/8 vs 3/24.
 
 **Hold a refused command (sim):** `workspace_contact_hold_max_consecutive` (launch: 2 s of chunks at
-the control rate). When the relaxed pass still refuses the COMMANDED rows but the measured pose
-passes, the command is never executed and the kernel holds the measured pose instead (MoveIt Servo's
+the control rate). When the relaxed pass still refuses the COMMANDED rows but the hold passes,
+the command is never executed and the kernel holds the anchor instead (MoveIt Servo's
 halt on an imminent collision), up to that many consecutive chunks; then today's latched stop. r20:
 the policy commanded the carried box from the shelf back toward the tote floor (lead 0.2–0.28 m) —
 refusing those rows was right, latching on them was not needed while the arm stood clear. WARN
