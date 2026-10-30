@@ -2370,9 +2370,34 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             ws_speed_override_ = true;
             ws_refused_trip_.set = false;
             rows_refused = check_rows();
-            // The hold IS the measured pose: it must pass.
-            std::copy(q_meas_.begin(), q_meas_.end(), q_check_.begin());
-            hold_trips = check_config(q_check_.data(), -1, 0.0, ws_plain);
+            // The hold anchor: each commanded arm joint's last command the kernel itself
+            // published, while fresh, else its measured value (pro#51: a position-
+            // controlled arm under gravity rests below its command, so a hold at the
+            // measured pose commands it down, and each next hold re-anchors lower — the
+            // OpenArm twin lost 0.3 rad on joint 4 in 0.4 s). Never a command the kernel
+            // did not accept, and only while it leads the measured hand within the lead
+            // bound; the hold must pass, else the measured pose is tried as before.
+            const std::int64_t anchor_ns = this->now().nanoseconds();
+            ws_hold_anchored_ = false;
+            for (std::size_t d = 0; d < robot_ndof; ++d) {
+              const bool commanded = full_row || slot_commanded_[d] != 0;
+              const bool anchored = commanded && !is_jaw(d) && workspace_hold_fresh(d, anchor_ns);
+              q_anchor_[d] = anchored ? workspace_hold_q_[d] : q_meas_[d];
+              ws_hold_anchored_ = ws_hold_anchored_ || (anchored && q_anchor_[d] != q_meas_[d]);
+            }
+            if (ws_hold_anchored_) {
+              fk_config(q_anchor_.data());
+              const double anchor_lead = workspace_hand_lead();
+              hold_trips = !(std::isfinite(anchor_lead) && anchor_lead <= workspace_max_lead_m_) ||
+                           check_config(q_anchor_.data(), -1, 0.0, ws_plain);
+              if (hold_trips) {
+                std::copy(q_meas_.begin(), q_meas_.end(), q_anchor_.begin());
+                ws_hold_anchored_ = false;
+              }
+            }
+            if (!ws_hold_anchored_) {
+              hold_trips = check_config(q_anchor_.data(), -1, 0.0, ws_plain);
+            }
             // Speed/lead only (rows pass relaxed): always a hold. A command the relaxed
             // check still refuses: a hold up to the consecutive cap, then a stop.
             const bool command_hold = rows_refused && holds < workspace_hold_max_consecutive_;
@@ -2382,13 +2407,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             if (!slowed && !rows_refused && view.horizon > 0) {
               // Creep, not freeze, when speed/lead are the only reasons (#349 r24/r25: a
               // held policy re-issues the same command and stalls, 200-1700 holds a run):
-              // the commanded rows scaled toward the measured pose so the tightest row
+              // the commanded rows scaled toward the hold anchor so the tightest row
               // leads by one control period at the speed bound while the measured hand is
               // over its speed bound, else by half the lead bound (r32: scaling a 0.12 m
               // lead to one period, 0.017 m, stalled the policy as a hold did); row s adds
               // its allowance (s periods at the bound; none while the hand touches, #349
               // review A). The scaled rows must pass the relaxed check themselves;
-              // otherwise (and for a refused command) the measured pose is held.
+              // otherwise (and for a refused command) the anchor is held.
               const double per_period = workspace_max_speed_mps_ * workspace_control_period_s_;
               const double base = workspace_measured_speed_mps_ > workspace_max_speed_mps_
                                       ? std::min(0.5 * workspace_max_lead_m_, per_period)
@@ -2439,7 +2464,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                     const bool commanded = full_row || slot_commanded_[d] != 0;
                     q_check_[d] = !commanded  ? q_meas_[d]
                                   : is_jaw(d) ? row[d]
-                                              : q_meas_[d] + creep * (row[d] - q_meas_[d]);
+                                              : q_anchor_[d] + creep * (row[d] - q_anchor_[d]);
                   }
                   std::copy(q_check_.begin(), q_check_.end(), q_lead_.begin());
                   for (const int jd : workspace_jaw_cols_) {
@@ -2464,7 +2489,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               }
             }
             if (!slowed) {
-              // A hold publishes the arm at measured but the jaws at their command (a hold
+              // A hold publishes the arm at its anchor but the jaws at their command (a hold
               // must not drop the payload): every row of exactly that must pass (#349
               // review: only the all-measured pose was checked, so a refused jaw motion
               // was executed under the hold).
@@ -2475,7 +2500,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                   const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
                   for (std::size_t d = 0; d < robot_ndof; ++d) {
                     const bool commanded = full_row || slot_commanded_[d] != 0;
-                    q_check_[d] = commanded && is_jaw(d) ? row[d] : q_meas_[d];
+                    q_check_[d] = commanded && is_jaw(d) ? row[d] : q_anchor_[d];
                   }
                   hold_clear = !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain) &&
                                !partner_trips(static_cast<int>(s));
@@ -2503,7 +2528,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                 const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
                 if ((full_row || slot_commanded_[d] != 0) && !is_jaw(d) &&
                     k < scaled_chunk_.flat.size()) {
-                  scaled_chunk_.flat[k] = q_meas_[d] + creep * (scaled_chunk_.flat[k] - q_meas_[d]);
+                  scaled_chunk_.flat[k] =
+                      q_anchor_[d] + creep * (scaled_chunk_.flat[k] - q_anchor_[d]);
                 }
               }
             }
@@ -2524,18 +2550,20 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               }
             }
             clear_workspace_commands();
+            record_workspace_hold(scaled_chunk_.flat.data(), view.horizon, robot_ndof, full_row);
             const auto wall = std::chrono::steady_clock::now();
             if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
               workspace_brake_last_warn_ = wall;
               RCLCPP_WARN(this->get_logger(),
                           "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
                           "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
-                          "target=%s rskill_id=%s (0 = held at the measured pose; no latch)",
+                          "anchor=%s target=%s rskill_id=%s (0 = held at the anchor; no latch)",
                           workspace_measured_speed_mps_, workspace_max_speed_mps_,
                           workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
                           rows_refused ? "command_refused" : "speed_lead",
                           rows_refused ? trip_str(ws_refused_trip_).c_str() : "", creep,
-                          ws_creep_lead_m_, ws_creep_row_, workspace_target_.c_str(),
+                          ws_creep_lead_m_, ws_creep_row_,
+                          ws_hold_anchored_ ? "command" : "measured", workspace_target_.c_str(),
                           msg->rskill_id.c_str());
             }
             span->SetAttribute("safety.severity", "info");
@@ -2593,6 +2621,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               workspace_cmd_set_[d] = 1;
             }
           }
+        }
+        // The brake's hold anchor: every accepted command, whoever owns the workspace rules
+        // (pro#51: with the rules in the exemption provider it was never recorded, and every
+        // brake after free motion held at the sagged measured pose).
+        if (view.horizon > 0) {
+          record_workspace_hold(view.flat_data, view.horizon, robot_ndof, msg->joint_names.empty());
         }
         // ADR-0121: tell the provider which command was accepted (its chain's next row 0).
         if (provider_ != nullptr && view.horizon > 0) {
@@ -3543,6 +3577,10 @@ SafetyKernelLifecycleNode::configure_workspace_measurement(const std::vector<std
   workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
   workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
   workspace_cmd_set_.assign(envelope_.n_dof, 0);
+  workspace_hold_q_.assign(envelope_.n_dof, 0.0);
+  workspace_hold_due_ns_.assign(envelope_.n_dof, 0);
+  workspace_hold_set_.assign(envelope_.n_dof, 0);
+  q_anchor_.assign(envelope_.n_dof, 0.0);
   workspace_command_holds_.assign(envelope_.n_dof, 0);
   return {};
 }
@@ -6119,6 +6157,13 @@ double SafetyKernelLifecycleNode::workspace_hand_lead() const noexcept {
 
 void SafetyKernelLifecycleNode::clear_workspace_commands(ResetReason why) noexcept {
   std::fill(workspace_cmd_set_.begin(), workspace_cmd_set_.end(), std::uint8_t{0});
+  // The hold anchor is the command the robot is still executing: a refused chunk was never
+  // published, and a brake re-records only the joints it held (pro#51: either one wiped
+  // the other arm's and the jaw slot's anchor, and the next brake held at measured). Every
+  // other reset forgets it.
+  if (why != ResetReason::kRefusal && why != ResetReason::kOther) {
+    std::fill(workspace_hold_set_.begin(), workspace_hold_set_.end(), std::uint8_t{0});
+  }
   workspace_cmd_drops_seen_ = chunks_dropped_;
   if (provider_ != nullptr) {
     provider_->on_reset(why);  // ADR-0121: the provider forgets its chain on the same events
@@ -6134,6 +6179,34 @@ bool SafetyKernelLifecycleNode::workspace_command_fresh(std::size_t d,
   const std::int64_t since_due = now_ns - workspace_cmd_due_ns_[d];
   // Not yet due: the robot is still on an earlier row of that chunk, which the
   // kernel cannot name — fall back to measured.
+  return since_due >= 0 && static_cast<double>(since_due) <= window_ns;
+}
+
+void SafetyKernelLifecycleNode::record_workspace_hold(const double* flat, std::uint16_t horizon,
+                                                      std::size_t stride, bool full_row) noexcept {
+  if (horizon == 0 || flat == nullptr) {
+    return;
+  }
+  const double* last = flat + static_cast<std::size_t>(horizon - 1) * stride;
+  const std::int64_t due_ns =
+      this->now().nanoseconds() + static_cast<std::int64_t>(static_cast<double>(horizon - 1) *
+                                                            workspace_control_period_s_ * 1e9);
+  for (std::size_t d = 0; d < stride && d < workspace_hold_q_.size(); ++d) {
+    if (full_row || slot_commanded_[d] != 0) {
+      workspace_hold_q_[d] = last[d];
+      workspace_hold_due_ns_[d] = due_ns;
+      workspace_hold_set_[d] = 1;
+    }
+  }
+}
+
+bool SafetyKernelLifecycleNode::workspace_hold_fresh(std::size_t d,
+                                                     std::int64_t now_ns) const noexcept {
+  if (d >= workspace_hold_set_.size() || workspace_hold_set_[d] == 0) {
+    return false;
+  }
+  const double window_ns = kWorkspaceHoldFreshPeriods * workspace_control_period_s_ * 1e9;
+  const std::int64_t since_due = now_ns - workspace_hold_due_ns_[d];
   return since_due >= 0 && static_cast<double>(since_due) <= window_ns;
 }
 

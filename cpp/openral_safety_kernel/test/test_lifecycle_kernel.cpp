@@ -4783,6 +4783,10 @@ public:
   // One beat, then `chunk` exactly once, awaited to its verdict. True on a pass.
   bool send_once(const GraspBeat* b, double q, const openral_msgs::msg::ActionChunk& chunk) {
     beat(b, q);
+    return publish_once(chunk);
+  }
+  // `chunk` exactly once with no beat (the inputs age), awaited to its verdict.
+  bool publish_once(const openral_msgs::msg::ActionChunk& chunk) {
     const int passed_before = passed.load();
     const std::uint64_t dropped_before = node->chunks_dropped();
     cand_pub_->publish(chunk);
@@ -7038,6 +7042,159 @@ TEST_F(LifecycleKernelTest, ARefusedCommandWithAClearMeasuredPoseHoldsUpToTheCap
   EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
   EXPECT_TRUE(rig.node->fault_latched()) << "past the cap: today's latched stop";
   EXPECT_GE(logs.count("reason=command_refused"), 1U) << logs.joined();
+}
+
+namespace {
+
+// The hold-cap rig: the cell outside the workspace box, so a command into it is refused
+// even relaxed and the brake holds (cap `cap`).
+GraspRig* hold_rig(std::unique_ptr<GraspRig>& slot, const char* name, std::int64_t cap = 5) {
+  auto params =
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true));
+  params =
+      with_param(params, "workspace_contact_hold_max_consecutive", rclcpp::ParameterValue(cap));
+  slot = std::make_unique<GraspRig>(name, params);
+  slot->js_velocity = {0.0};
+  slot->start();
+  return slot.get();
+}
+
+}  // namespace
+
+// pro#51: a position-controlled arm under gravity rests (gravity torque / kp) below its
+// command, so a hold at the measured pose commands it down by that much, and each next
+// hold re-anchors lower: the OpenArm restock twin (real gains, kp 60) lost 0.3 rad on
+// joint 4 in 0.4 s, the carton fell 14 cm. The hold keeps the last command the kernel
+// itself accepted instead, and keeps it across consecutive holds.
+TEST_F(LifecycleKernelTest, AHoldKeepsTheLastAcceptedCommandNotTheSaggedMeasuredPose) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_anchor");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.6))) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  ASSERT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "accepted as-is";
+  // The arm trails its command (j0 sags toward larger q here, clear of the cell), then
+  // the next command is refused.
+  ASSERT_TRUE(rig.send_once(&b, 0.52, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "held at the accepted command, not measured";
+  // It moves on: the anchor does not follow it.
+  ASSERT_TRUE(rig.send_once(&b, 0.54, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "no ratchet";
+  EXPECT_GE(logs.count("anchor=command"), 1U) << logs.joined();
+}
+
+// The anchor is the accepted command only while it is fresh (kWorkspaceHoldFreshPeriods
+// past its last row's due time); after that the hold is the measured pose.
+TEST_F(LifecycleKernelTest, AStaleAcceptedCommandIsNoHoldAnchor) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_stale");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.55))) << logs.joined();
+  // Past the window, the workspace re-confirmed each second (its measurement age never
+  // lapses: a re-armed workspace would forget the anchor for another reason).
+  const double wait_s = osk::kWorkspaceHoldFreshPeriods * kLagPeriodS + 0.5;
+  for (double t = 0.0; t < wait_s; t += 1.0) {
+    b.workspace_stamp_ns = rig.now_ns();
+    rig.warm(&b, kLagMeasuredQ, 1000);
+  }
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], kLagMeasuredQ) << logs.joined();
+  EXPECT_GE(logs.count("anchor=measured"), 1U) << logs.joined();
+}
+
+// An accepted command the measured hand has since fallen (or been pushed) far behind
+// is no hold: it would lead past the workspace lead bound. Here 0.85 rad x 0.06 m/rad =
+// 0.051 m > 0.05 m: the hold is the measured pose.
+TEST_F(LifecycleKernelTest, AnAnchorLeadingPastTheLeadBoundHoldsAtMeasured) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_far");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.55))) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, 1.4, grasp_chunk(0.0))) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 1.4) << logs.joined();
+  EXPECT_GE(logs.count("anchor=measured"), 1U) << logs.joined();
+}
+
+// pro#51: with no candidate for a slot tick (one in six on the OpenArm twin) the accepted
+// command is two periods old at the next brake — still what the robot tracks, so still
+// the anchor (the speed chain's 2-period window refused it, and the hold sagged).
+TEST_F(LifecycleKernelTest, AHoldKeepsTheAcceptedCommandAcrossAMissedTick) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_gap");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.6))) << logs.joined();
+  rig.warm(&b, 0.52, static_cast<int>(2.0 * kLagPeriodS * 1000.0) + 100);  // > 2 periods
+  ASSERT_TRUE(rig.send_once(&b, 0.52, grasp_chunk(0.0))) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "held at the accepted command: " << logs.joined();
+  EXPECT_GE(logs.count("anchor=command"), 1U) << logs.joined();
+}
+
+// pro#51: a refused chunk is never published, so the robot still tracks the last accepted
+// command: a refusal ends the speed chain but not the hold anchor.
+TEST_F(LifecycleKernelTest, ARefusedChunkKeepsTheHoldAnchor) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_refused");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.6))) << logs.joined();
+  // No beat past the 2 s world deadline: the next chunk is dropped fail-closed, unlatched.
+  rig.spin_for(2300);
+  const std::uint64_t dropped = rig.node->chunks_dropped();
+  EXPECT_FALSE(rig.publish_once(grasp_chunk(0.6)));
+  ASSERT_GT(rig.node->chunks_dropped(), dropped);
+  ASSERT_FALSE(rig.node->fault_latched()) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, 0.52, grasp_chunk(0.0))) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "held at the accepted command: " << logs.joined();
+}
+
+// pro#51: with the #349 rule in the exemption provider (the in-tree rule off, the deploy's
+// configuration) accepted commands are the anchor too: unrecorded, every brake after free
+// motion held at the sagged measured pose.
+TEST_F(LifecycleKernelTest, AProviderBrakeHoldsAtTheAcceptedCommand) {
+  osk_test::serve_test_providers();
+  auto params =
+      with_param(lag_params(), "workspace_contact_enabled", rclcpp::ParameterValue(false));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("Braker")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  LogCapture logs;
+  GraspRig rig("kernel_provider_brake_anchor", params);
+  rig.js_velocity = {0.0};
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  ASSERT_DOUBLE_EQ(rig.last_flat[0], 0.1) << "accepted as-is: " << logs.joined();
+  // The hand now moves at 0.03 m/s, past the provider's 0.02 m/s bound, trailing its command.
+  rig.js_velocity = {-0.5};
+  rig.warm(&b, 0.05, 100);
+  ASSERT_TRUE(rig.send_once(&b, 0.05, grasp_chunk(0.2))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("anchor=command"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_GE(rig.last_flat[0], 0.1) << "never below the accepted command: " << logs.joined();
 }
 
 // #349 review F: the brake's dry run records its trips without building strings; a
