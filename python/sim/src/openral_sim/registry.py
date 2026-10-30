@@ -25,6 +25,7 @@ Example::
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from openral_core.exceptions import ROSConfigError
@@ -52,8 +53,11 @@ class _Registry(Generic[T]):
         kind: Human-readable label used in error messages (``"scene"``, …).
     """
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, *, entry_point_group: str | None = None) -> None:
         self._kind = kind
+        # Installed packages (OpenRAL Pro) register more ids here; each entry
+        # point names a module whose ``@register`` decorators run on import.
+        self._entry_point_group = entry_point_group
         self._items: dict[str, Callable[..., T]] = {}
         self._fixed_robots: dict[str, frozenset[str]] = {}
         self._provisioners: dict[str, Callable[[], None]] = {}
@@ -152,7 +156,14 @@ class _Registry(Generic[T]):
         key = name
         while key not in self._items and "/" in key:
             key = key.rsplit("/", 1)[0]
-        return key if key in self._items else None
+        if key in self._items:
+            return key
+        if self._entry_point_group is not None:
+            group, self._entry_point_group = self._entry_point_group, None
+            for ep in entry_points(group=group):
+                ep.load()
+            return self._key(name)
+        return None
 
     def allowed_robots(self, name: str) -> frozenset[str] | None:
         """Return the robot ids the scene can instantiate, or ``None`` if free-axis.
@@ -295,5 +306,5 @@ class _Registry(Generic[T]):
 
 
 SCENES: _Registry[SimRollout] = _Registry("scene")
-POLICIES: _Registry[PolicyAdapter] = _Registry("policy")
+POLICIES: _Registry[PolicyAdapter] = _Registry("policy", entry_point_group="openral.policies")
 ROBOTS: _Registry[RobotDescription] = _Registry("robot")

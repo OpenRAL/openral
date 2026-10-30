@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from openral_core import (
+    POLICY_KINDS,
     required_vla_camera_slots,
     sensor_name_to_slot,
 )
@@ -3449,8 +3450,8 @@ def make_default_skill_resolver(
       ``ROSActionRskill`` against ``ros_node``. Requires a
       local in-tree manifest in ``search_paths`` — wrapped skills carry no HF Hub weights, the
       manifest is the entire on-disk artefact.
-    * ``"wam"`` — rejected with ``ROSConfigError``; not implemented in this PR (tracked
-      separately).
+    * ``"wam"`` — same path as ``"vla"``; the adapter comes from the ``openral.policies``
+      entry-point group.
 
     Args:
         ros_node: The host ``rclpy.lifecycle.LifecycleNode`` (the ``RskillRunnerNode``
@@ -3537,7 +3538,7 @@ def make_default_skill_resolver(
                 tf_lookup=hub_tf_lookup,
             )
 
-        if manifest.kind == "vla":
+        if manifest.kind in POLICY_KINDS:
             return local_resolver(
                 rskill_id=rskill_id,
                 revision=revision,
@@ -3568,12 +3569,6 @@ def make_default_skill_resolver(
             skill.configure()
             skill.activate()
             return skill
-        if manifest.kind == "wam":
-            raise ROSConfigError(
-                f"rSkill {rskill_id!r} declares kind='wam'; the WAM resolver "
-                "branch is not implemented yet (tracked separately). "
-                "VLA / ros_action / ros_service kinds are supported today."
-            )
         raise ROSConfigError(
             f"rSkill {rskill_id!r} declares unknown kind={manifest.kind!r}; "
             "expected one of 'vla', 'wam', 'ros_action', 'ros_service'."
@@ -4097,7 +4092,7 @@ def _build_runtime_skill_from_manifest(
     # this branch protects the legacy call sites that still go via
     # ``make_local_skill_resolver`` from accidentally invoking
     # ``make_policy`` on a manifest that doesn't carry a model_family.
-    if manifest.kind != "vla":
+    if manifest.kind not in POLICY_KINDS:
         raise ROSConfigError(
             f"_build_runtime_skill_from_manifest({manifest.name!r}): "
             f"kind={manifest.kind!r} is not a VLA policy. Wrapped-ROS skills "

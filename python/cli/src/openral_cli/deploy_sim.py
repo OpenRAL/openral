@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING, Final
 
 import typer
 import yaml
+from openral_core import POLICY_KINDS
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_core.gpu import detect_gpu_vram_gb
 from rich.console import Console
@@ -916,7 +917,7 @@ def _resolve_reward_monitor_manifest(
     named = {
         m.reward_rskill_name
         for m in _capability_matched_manifests(repo_root, description)
-        if m.kind == "vla" and m.reward_rskill_name
+        if m.kind in POLICY_KINDS and m.reward_rskill_name
     }
     if not named:
         return default
@@ -993,7 +994,7 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
         for m in _capability_matched_manifests(
             repo_root, description, commercial_deployment=commercial_deployment
         )
-        if m.kind == "vla"
+        if m.kind in POLICY_KINDS
     ]
     if not vlas:
         return
