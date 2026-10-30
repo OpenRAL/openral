@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
 import rclpy
 from openral_core import (
+    POLICY_KINDS,
     SIM_EXECUTABLE_CONTROL_MODES,
     ControllerEvidence,
     ControlMode,
@@ -2719,7 +2720,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         state_compatible: list[RSkillManifest] = []
         for m in capability_matched:
             sc = m.state_contract
-            if m.kind == "vla" and sc is not None and sc.dim != n_joints:
+            # An unset dim on a raw contract means "the robot's joint vector", as the
+            # runner's warm-up path defaults it. A wrapped layout always goes through the
+            # assembler check below, whether or not it declares a dim.
+            if (
+                m.kind in POLICY_KINDS
+                and sc is not None
+                and (
+                    sc.dim != n_joints
+                    if sc.dim is not None
+                    else sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS
+                )
+            ):
                 if sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS:
                     # admit-with-adapter when the layout's
                     # assembler is registered in the openral_state_adapter
@@ -2789,7 +2801,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         executable_repr = sorted(c.value for c in executable_modes)
         action_executable: list[RSkillManifest] = []
         for m in state_compatible:
-            if m.kind == "vla":
+            if m.kind in POLICY_KINDS:
                 legacy_ok = _action_executable(m, description, hal_mode)
                 # Shared TaskSpace action-space contract, Phase 2 — shadow the canonical TaskSpace
                 # gate alongside the legacy mode check (warn-only; the legacy verdict still decides
@@ -4642,7 +4654,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         installed.
         """
         vla = self._manifest_for_rskill(call.rskill_id)
-        if vla is None or vla.kind != "vla":
+        if vla is None or vla.kind not in POLICY_KINDS:
             return False
         vla_min_gb = vla.active_min_vram_gb()
         if call.rskill_id == self._resident_vla_id:

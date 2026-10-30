@@ -8449,11 +8449,9 @@ RSkillKind: TypeAlias = Literal[
   resolved by the policy adapter dispatch in ``openral_rskill`` (the
   pre-existing path used by every in-tree rSkill prior to this discriminator
   landing).
-* ``"wam"`` — World Action Model (planning-layer mental-simulation /
-  failure-anticipation component per CLAUDE.md §3). Reserved so the
-  discriminator is forward-compatible; the loader / runner branch is not
-  implemented yet and ``kind: wam`` manifests are rejected at resolve time
-  with ``ROSConfigError``.
+* ``"wam"`` — World Action Model: a policy that also predicts future
+  observations. Same shape and resolve path as ``"vla"`` (``POLICY_KINDS``);
+  adapters come from the ``openral.policies`` entry-point group (OpenRAL Pro).
 * ``"ros_action"`` — wraps an existing ROS 2 action server. Requires a
   ``RosIntegration`` block. ``model_family`` and ``weights_uri`` are
   forbidden. ``chunk_size`` is pinned to ``1`` so the safety supervisor's
@@ -8506,6 +8504,9 @@ RSkillKind: TypeAlias = Literal[
 """
 
 _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
+# Kinds the policy adapter path runs: a WAM acts exactly like a VLA (it also
+# imagines future frames, which the adapter keeps for itself).
+POLICY_KINDS: frozenset[str] = frozenset({"vla", "wam"})
 
 # Embodiment-agnostic rSkills (perception kinds detector / vlm / reward, and
 # ``playbook`` decision procedures) do not target a specific embodiment. They
@@ -9494,11 +9495,7 @@ class RSkillManifest(BaseModel):
           ``detector`` branch forbids are forbidden here, plus
           ``detector`` itself (the two contracts are alternatives, never
           both); ``actuators_required`` MUST be empty.
-        * ``kind == "wam"`` → schema-side this is unconstrained beyond the
-          base VLA shape; the loader's resolver branch raises
-          ``ROSConfigError`` at resolve time
-          because the WAM dispatch path is not implemented in this PR
-          (tracked separately).
+        * ``kind == "wam"`` → the same rules as ``"vla"``.
         """
         # A ``playbook`` block belongs only to kind='playbook'. One guard here
         # forbids it for every other kind, so the per-kind branches
@@ -9512,45 +9509,47 @@ class RSkillManifest(BaseModel):
         # `reward_rskill_name` pairs a VLA with its progress-monitor
         # reward rSkill; it is a reference FROM a VLA and meaningless on any other
         # kind. One guard forbids it everywhere except kind='vla'.
-        if self.kind != "vla" and self.reward_rskill_name is not None:
+        if self.kind not in POLICY_KINDS and self.reward_rskill_name is not None:
             raise ValueError(
                 f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
                 "`reward_rskill_name` (it pairs a VLA with its reward model; "
                 "kind='vla' only)."
             )
 
-        if self.kind == "vla":
+        if self.kind in POLICY_KINDS:
             if self.model_family is None:
                 raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='vla' requires `model_family` to be set."
+                    f"RSkillManifest({self.name!r}): kind={self.kind!r} requires "
+                    "`model_family` to be set."
                 )
             if self.weights_uri is None:
                 raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='vla' requires `weights_uri` to be set."
+                    f"RSkillManifest({self.name!r}): kind={self.kind!r} requires "
+                    "`weights_uri` to be set."
                 )
             if self.ros_integration is not None:
                 raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='vla' forbids "
+                    f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
                     "`ros_integration` (it is for wrapped ROS 2 servers only)."
                 )
             if self.detector is not None:
                 raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='vla' forbids "
+                    f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
                     "`detector` (it is for kind='detector' perception producers only)."
                 )
             if self.segmenter is not None:
                 raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='vla' forbids "
+                    f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
                     "`segmenter` (it is for kind='segmenter' mask producers only)."
                 )
             if self.reward is not None:
                 raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='vla' forbids "
+                    f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
                     "`reward` (it is for kind='reward' progress monitors only)."
                 )
             if not self.actuators_required:
                 raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='vla' requires at least one "
+                    f"RSkillManifest({self.name!r}): kind={self.kind!r} requires at least one "
                     "`actuators_required` entry."
                 )
             return self
