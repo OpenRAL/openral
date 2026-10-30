@@ -544,6 +544,8 @@ class _RunnerBudgetHolder:
 
 def test_runner_deadline_lapsed_follows_the_graph_clock(graph: _Graph) -> None:
     """The runner's budget predicate: survives a slow sim, fails closed on a stalled one."""
+    # A lapsed budget records its failure evidence with `openral_msgs`'s ExecuteRskill.
+    pytest.importorskip("openral_msgs")
     from openral_rskill.execution_budget import node_execution_budget
 
     mod = _load_runner_module()
