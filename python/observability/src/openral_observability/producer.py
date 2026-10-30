@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import trace
 
 from openral_observability import semconv
+from openral_observability.compliance import images_may_leave_host
 
 #: Channel count identifying an RGB/BGR frame — the only layout the
 #: display-flip in ``emit_sensor_frame_span`` knows how to rotate.
@@ -234,7 +235,9 @@ def record_sensor_frame_attrs(
         span.set_attribute(semconv.SENSORS_CHANNELS, int(channels))
     if age_ms is not None:
         span.set_attribute(semconv.SENSORS_AGE_MS, round(float(age_ms), 3))
-    if thumbnail_bytes is not None:
+    # A camera frame leaves the host only to the local dashboard or with the deployer's
+    # consent (issue #467, CLAUDE.md §3).
+    if thumbnail_bytes is not None and images_may_leave_host():
         if thumbnail_already_encoded_b64:
             encoded = thumbnail_bytes.decode("ascii")
         else:
@@ -293,7 +296,12 @@ def emit_sensor_frame_span(
             height=int(frame.height),
             channels=int(getattr(frame, "channels", 0) or 0),
             age_ms=age_ms,
-            thumbnail_bytes=encode_frame_thumbnail(frame, flip_180=flip_180),
+            # Gate before the encode: a withheld JPEG still costs the GIL (issue #467).
+            thumbnail_bytes=(
+                encode_frame_thumbnail(frame, flip_180=flip_180)
+                if images_may_leave_host()
+                else None
+            ),
         )
 
 

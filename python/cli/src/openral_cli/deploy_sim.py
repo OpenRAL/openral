@@ -1118,6 +1118,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         merge_deploy_sensors,
         publishing_sensors,
         resolve_sensor_overlays,
+        resolve_unit_identity,
         sim_scene_description,
     )
 
@@ -1313,6 +1314,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # $OPENRAL_ROBOT_UNIT), so every pre-launch decision below sees the sensors they publish.
     scene_unit = launched_scene.robot_unit if launched_scene is not None else None
     overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
+    # The launch refuses a hardware deploy whose records could not name the machine
+    # (issue #467); refuse here first, before any pre-launch work.
+    resolve_unit_identity(robot_yaml, scene_unit, required=hal_mode == "real")
     # The same selection `resolve_sensor_overlays` made; `None` only for a robot without
     # `units/` on a real deploy (it refuses otherwise). The extrinsic preflight reads that
     # unit's calibration.
@@ -2461,6 +2465,8 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "openral_reasoner_ros/reasoner_node.py",
     "openral_prompt_router/prompt_router_node.py",
     "openral_safety_kernel/safety_kernel_node",
+    # A surviving recorder would stamp the next run's records with this run's identity.
+    "openral_compliance/recorder_node.py",
     "openral dashboard",
     "async_slam_toolbox_node",
     # Nav2 sub-nodes spawned by openral_nav2_bringup's

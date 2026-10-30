@@ -1,0 +1,168 @@
+{
+  "$defs": {
+    "SoftwareComponent": {
+      "additionalProperties": false,
+      "description": "One installed software component, for MR Annex III \u00a71.1.9 identification.\n\nAttributes:\n    name: Component name (package, rSkill id, model id, firmware).\n    version: Version or revision string as installed.\n    sha256: Content digest, when the component is a file or weight set.\n    safety_relevant: True for software necessary for the machine to\n        operate safely (the safety kernel, its envelope, safety rSkills).\n    signature_ok: Signature verification result; ``None`` until signing\n        exists (CLAUDE.md \u00a73 rSkill provenance).",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "safety_relevant": {
+          "default": false,
+          "title": "Safety Relevant",
+          "type": "boolean"
+        },
+        "signature_ok": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signature Ok"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "SoftwareComponent",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The software installed on the unit, written at bringup and on any change.\n\nAttributes:\n    kind: Discriminator (always ``\"software_inventory\"``).\n    components: Every installed component.\n\nExample:\n    >>> SoftwareInventoryRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=6,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     components=[\n    ...         SoftwareComponent(\n    ...             name=\"openral_safety_kernel\", version=\"0.9.0\", safety_relevant=True\n    ...         )\n    ...     ],\n    ... ).components[0].safety_relevant\n    True",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "record_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Record Id",
+      "type": "string"
+    },
+    "stream_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stream Id"
+    },
+    "seq": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts_ns": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Ns",
+      "type": "integer"
+    },
+    "clock_source": {
+      "enum": [
+        "ptp",
+        "ntp",
+        "monotonic_unsynced"
+      ],
+      "title": "Clock Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "parent_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Record Id"
+    },
+    "kind": {
+      "const": "software_inventory",
+      "default": "software_inventory",
+      "title": "Kind",
+      "type": "string"
+    },
+    "components": {
+      "items": {
+        "$ref": "#/$defs/SoftwareComponent"
+      },
+      "minItems": 1,
+      "title": "Components",
+      "type": "array"
+    }
+  },
+  "required": [
+    "record_id",
+    "seq",
+    "ts_ns",
+    "clock_source",
+    "components"
+  ],
+  "title": "SoftwareInventoryRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

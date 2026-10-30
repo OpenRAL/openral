@@ -1,0 +1,167 @@
+{
+  "additionalProperties": false,
+  "description": "A reasoner tool call that led, or could lead, to motion.\n\nAttributes:\n    kind: Discriminator (always ``\"plan_decision\"``).\n    model: Reasoner model id as served (``reasoner.model``).\n    tool: Tool name called.\n    rskill_id: rSkill the call dispatched, when it dispatched one.\n    ladder_rung: Replanning-ladder rung the call came from.\n    prompt_digest: SHA-256 hex of the prompt; the prompt itself stays in the trace.\n    mission_task_id: Mission task the call served.\n\nExample:\n    >>> PlanDecisionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=4,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     model=\"claude-opus-4-8\",\n    ...     tool=\"execute_rskill\",\n    ...     ladder_rung=\"initial\",\n    ... ).tool\n    'execute_rskill'",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "record_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Record Id",
+      "type": "string"
+    },
+    "stream_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stream Id"
+    },
+    "seq": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts_ns": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Ns",
+      "type": "integer"
+    },
+    "clock_source": {
+      "enum": [
+        "ptp",
+        "ntp",
+        "monotonic_unsynced"
+      ],
+      "title": "Clock Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "parent_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Record Id"
+    },
+    "kind": {
+      "const": "plan_decision",
+      "default": "plan_decision",
+      "title": "Kind",
+      "type": "string"
+    },
+    "model": {
+      "minLength": 1,
+      "title": "Model",
+      "type": "string"
+    },
+    "tool": {
+      "minLength": 1,
+      "title": "Tool",
+      "type": "string"
+    },
+    "rskill_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rskill Id"
+    },
+    "ladder_rung": {
+      "enum": [
+        "initial",
+        "retry",
+        "param_tweak",
+        "substitute_skill",
+        "goal_replan",
+        "human_handoff"
+      ],
+      "title": "Ladder Rung",
+      "type": "string"
+    },
+    "prompt_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prompt Digest"
+    },
+    "mission_task_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mission Task Id"
+    }
+  },
+  "required": [
+    "record_id",
+    "seq",
+    "ts_ns",
+    "clock_source",
+    "model",
+    "tool",
+    "ladder_rung"
+  ],
+  "title": "PlanDecisionRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

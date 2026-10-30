@@ -6,8 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "opentelemetry-api>=1.27",                         # reason: stable Tracer/Span API
-    "opentelemetry-sdk>=1.27",                         # reason: TracerProvider, LoggerProvider
+    # x-release-please-start-version
+    "openral-core==0.3.1",                             # reason: failure_bus / replay / compliance import openral_core schemas
+    # x-release-please-end
+    "opentelemetry-api>=1.37",                         # reason: stable Tracer/Span API; LogRecord(context=) + Logger.emit of an API LogRecord (compliance records)
+    "opentelemetry-sdk>=1.37",                         # reason: TracerProvider, LoggerProvider
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",    # reason: OTLP/gRPC exporter to Jaeger:4317
     "opentelemetry-proto>=1.27",                       # reason: dashboard decodes OTLP/HTTP protobuf bodies on its embedded receiver
     "structlog>=24.1",                                 # reason: structured logging per CLAUDE.md §2

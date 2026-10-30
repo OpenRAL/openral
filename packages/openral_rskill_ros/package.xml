@@ -47,6 +47,8 @@
        graph on "package 'octomap_server' not found", and bucketed all four
        validation-matrix scenes as harness-error. -->
   <exec_depend>octomap_server</exec_depend>
+  <!-- The compliance recorder (issue #467), spawned by `deploy_e2e.launch.py`. -->
+  <exec_depend>openral_compliance</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

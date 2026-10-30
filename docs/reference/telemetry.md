@@ -158,6 +158,7 @@ attributes and are stripped by the store so they cannot fragment a series.
 | `openral.tick.deadline_misses` | Counter | — | `runner/base.py` | on breach — **every** miss, unlike the rate-limited log |
 | `openral.safety.violations` | Counter | — | `runner/base.py`, `deploy_runner.py` | on violation |
 | `openral.sensors.stale_reads` | Counter | — | `deploy_runner.py` | on stale read |
+| `openral.failure.count` | Counter | — | `observability/compliance.py` (compliance recorder) | per `FailureTrigger`; labels `component` (bus source), `kind`, `severity` |
 | `openral.sim.episode.count` | Counter | — | `sim/sim_runner.py` | per episode |
 | `openral.sim.episode.success` | Counter | — | `sim/sim_runner.py` | per successful episode |
 | `openral.world_state.components_stale` | UpDownCounter | — | `world_state/aggregator.py` | 30 Hz |
@@ -200,6 +201,40 @@ The system metrics come from a 1 Hz daemon thread
 `pynvml`.
 
 ---
+
+## Compliance records
+
+Issue #467. Typed `openral_core.ComplianceRecord`s go out as OTLP **log records**,
+one per record, through `openral_observability.compliance.ComplianceEmitter`: the
+body is the record's JSON, the timestamp its `ts_ns`, the trace context its
+`trace_id` / `span_id`. A collector or hosted plane filters on the attributes.
+
+| Attribute | Value |
+|---|---|
+| `openral.record.kind` | `failure`, `safety_stop`, `safety_decision`, `plan_decision`, `intervention`, `software_inventory`, `session`, `security_incident` |
+| `openral.record.id` | the record's 32-hex id |
+| `openral.schema.version` | the record kind's `schema_version` |
+| `openral.retention.class` | `ai_log_6m`, `mr_safety_decision_1y`, `mr_trace_5y`, `incident_10y`, `telemetry_raw` (floors in `RETENTION_FLOOR_DAYS`) |
+
+| Producer | Records |
+|---|---|
+| `openral_compliance` recorder node (`/openral_compliance_recorder`) | `failure` per `FailureTrigger` on `/openral/failure/*`; `safety_stop` per `/openral/safety_status` transition into `latched`, with `parent_record_id` → the safety failure whose kind matches the drop reason, arriving up to 2 s before or after the latch (an e-stop forwarder publishes `/openral/estop` before its trigger); a latch replayed at configure is not a new stop; nothing is recorded while the node is not ACTIVE; `session` on activate / deactivate |
+| `DeployRunner` safety gate (`ROSSafetyViolation` at the supervisor boundary) | `safety_stop` with `trigger_source="supervisor"`, once per unbroken run of the same violation class (not per withheld tick) |
+
+The machine is named by the **resource**, which the deploy launch stamps into
+`OTEL_RESOURCE_ATTRIBUTES` for every node (the C++ kernel's `Resource::Create`
+merges it too): `openral.unit.serial`, `openral.org.id`, `openral.site.id`,
+from `openral_core.resolve_unit_identity`. A hardware deploy without a serial is
+refused.
+
+Each emitter (one per process) has its own `stream_id`; `seq` is gap-free within it, so a
+gap is a lost record and a new `stream_id` a restarted process.
+
+Camera thumbnails (`openral.sensors.thumbnail_jpeg_b64`) are only encoded and attached
+when the OTLP endpoint is on the deployer's own network (loopback, private or link-local
+address, or a dotless host such as `otelcol`) or the deployer set
+`OPENRAL_TELEMETRY_IMAGE_CONSENT=1` (`compliance.images_may_leave_host`); withholding
+logs `telemetry.images_withheld` once per endpoint.
 
 ## Logs
 
@@ -473,6 +508,11 @@ safety code changed.
 | `OPENRAL_ROS2_TRACING` | off | LTTng tracepoints |
 | `OPENRAL_JAEGER_UI_URL` | unset | Enables the trace deep-link in the dashboard header |
 | `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off | Enables `POST /api/skill/execute` and `/api/param/set` |
+| `OPENRAL_UNIT_SERIAL` | unit file's `serial` | `openral.unit.serial`; **required** for a hardware deploy |
+| `OPENRAL_ORG_ID` | unit file's `org_id` | `openral.org.id` |
+| `OPENRAL_SITE_ID` | unset | `openral.site.id` |
+| `OPENRAL_CLOCK_SOURCE` | `monotonic_unsynced` | Compliance records' `clock_source` (`ptp` / `ntp` / `monotonic_unsynced`) |
+| `OPENRAL_TELEMETRY_IMAGE_CONSENT` | off | `1` lets camera thumbnails go to a public OTLP endpoint |
 
 Sampling note: the 0.1 hardware ratio applies to the **CLI process only**. HAL
 and other nodes call `configure_observability()` without a ratio, so their spans
@@ -494,7 +534,7 @@ are always-on even on real hardware.
 Service names on the wire: `openral` (CLI), `openral.runtime`,
 `openral.hal.<robot>`, `openral.world_state`, `openral.reasoner`,
 `openral.safety`, `openral.prompt_router`, `openral.reward_monitor`,
-`openral_safety_kernel`.
+`openral.compliance`, `openral_safety_kernel`.
 
 ---
 

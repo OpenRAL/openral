@@ -1,0 +1,219 @@
+{
+  "$defs": {
+    "Actor": {
+      "additionalProperties": false,
+      "description": "Who performed an intervention, without naming them.\n\nAttributes:\n    channel_label: The channel the action came through, as configured on\n        the producing node (``\"pendant\"``, ``\"dashboard\"``, ``\"slack\"``).\n    actor_id: Pseudonymous operator id: HMAC-SHA256 hex of the operator\n        identity under an org key the deployer holds. ``None`` when the\n        channel cannot identify the operator.\n\nExample:\n    >>> Actor(channel_label=\"pendant\").actor_id is None\n    True",
+      "properties": {
+        "channel_label": {
+          "minLength": 1,
+          "title": "Channel Label",
+          "type": "string"
+        },
+        "actor_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor Id"
+        }
+      },
+      "required": [
+        "channel_label"
+      ],
+      "title": "Actor",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A software, configuration or operator intervention (MR Annex III \u00a71.1.9).\n\nAttributes:\n    kind: Discriminator (always ``\"intervention\"``).\n    intervention_kind: What was done.\n    actor: Who did it, pseudonymously.\n    channel: The path it came through.\n    legitimate: Whether the intervention was authorised; ``None`` when the\n        path cannot tell (a reset through a channel without identity).\n    before_digest: SHA-256 hex of the changed artefact before.\n    after_digest: SHA-256 hex after.\n    diff_ref: Where the full diff is kept, when it is kept elsewhere.\n\nExample:\n    >>> InterventionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=5,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     intervention_kind=\"estop_reset\",\n    ...     actor=Actor(channel_label=\"pendant\"),\n    ...     channel=\"pendant\",\n    ...     legitimate=None,\n    ... ).retention_class\n    <RetentionClass.MR_TRACE_5Y: 'mr_trace_5y'>",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "record_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Record Id",
+      "type": "string"
+    },
+    "stream_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stream Id"
+    },
+    "seq": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts_ns": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Ns",
+      "type": "integer"
+    },
+    "clock_source": {
+      "enum": [
+        "ptp",
+        "ntp",
+        "monotonic_unsynced"
+      ],
+      "title": "Clock Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "parent_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Record Id"
+    },
+    "kind": {
+      "const": "intervention",
+      "default": "intervention",
+      "title": "Kind",
+      "type": "string"
+    },
+    "intervention_kind": {
+      "enum": [
+        "estop_reset",
+        "override",
+        "reject_plan",
+        "config_change",
+        "software_update",
+        "weights_update",
+        "param_set",
+        "retention_delete"
+      ],
+      "title": "Intervention Kind",
+      "type": "string"
+    },
+    "actor": {
+      "$ref": "#/$defs/Actor"
+    },
+    "channel": {
+      "enum": [
+        "local",
+        "remote",
+        "ota",
+        "dashboard",
+        "pendant",
+        "chatops",
+        "system"
+      ],
+      "title": "Channel",
+      "type": "string"
+    },
+    "legitimate": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Legitimate"
+    },
+    "before_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Before Digest"
+    },
+    "after_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "After Digest"
+    },
+    "diff_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Diff Ref"
+    }
+  },
+  "required": [
+    "record_id",
+    "seq",
+    "ts_ns",
+    "clock_source",
+    "intervention_kind",
+    "actor",
+    "channel",
+    "legitimate"
+  ],
+  "title": "InterventionRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

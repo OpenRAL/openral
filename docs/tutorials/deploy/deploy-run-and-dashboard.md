@@ -99,7 +99,11 @@ scene never touches a robot camera. A robot type with more than
 one unit or host keeps each host's camera bindings (and per-unit calibration) in
 `robots/<id>/units/<unit>.yaml` instead; the scene's `robot_unit` or
 `OPENRAL_ROBOT_UNIT` selects it, and a real deploy of such a robot refuses until
-one is selected (SO-101 bench: `units/bench_laptop.yaml`; OpenArm: `thor`, `orin`).
+one is selected (SO-101 bench: `units/bench_laptop.yaml`).
+A real deploy also needs the unit's **serial number** so its telemetry and compliance
+records name the machine they came from: set `OPENRAL_UNIT_SERIAL` (or `serial:` in the
+unit file), and optionally `OPENRAL_ORG_ID` / `OPENRAL_SITE_ID`. `openral deploy run`
+refuses to start without one; `deploy sim` does not need it.
 Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
 `--report detect.json --no-write` for the raw detection report only. The rSkill
 is **not** set in deploy config; the reasoner selects it at runtime from the

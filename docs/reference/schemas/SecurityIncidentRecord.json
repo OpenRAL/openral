@@ -1,0 +1,121 @@
+{
+  "additionalProperties": false,
+  "description": "A security incident or exploited vulnerability (CRA Art. 14).\n\nAttributes:\n    kind: Discriminator (always ``\"security_incident\"``).\n    actively_exploited: The vulnerability is known to be exploited.\n    malicious_suspected: The incident is suspected to be malicious.\n    summary: What happened, without personal data.\n\nExample:\n    >>> SecurityIncidentRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=7,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     actively_exploited=False,\n    ...     malicious_suspected=True,\n    ...     summary=\"unexpected login on the dashboard\",\n    ... ).retention_class\n    <RetentionClass.INCIDENT_10Y: 'incident_10y'>",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "record_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Record Id",
+      "type": "string"
+    },
+    "stream_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stream Id"
+    },
+    "seq": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts_ns": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Ns",
+      "type": "integer"
+    },
+    "clock_source": {
+      "enum": [
+        "ptp",
+        "ntp",
+        "monotonic_unsynced"
+      ],
+      "title": "Clock Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "parent_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Record Id"
+    },
+    "kind": {
+      "const": "security_incident",
+      "default": "security_incident",
+      "title": "Kind",
+      "type": "string"
+    },
+    "actively_exploited": {
+      "title": "Actively Exploited",
+      "type": "boolean"
+    },
+    "malicious_suspected": {
+      "title": "Malicious Suspected",
+      "type": "boolean"
+    },
+    "summary": {
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "record_id",
+    "seq",
+    "ts_ns",
+    "clock_source",
+    "actively_exploited",
+    "malicious_suspected",
+    "summary"
+  ],
+  "title": "SecurityIncidentRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

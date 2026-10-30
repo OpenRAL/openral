@@ -521,6 +521,28 @@ def test_ingest_logs_appends_debug_event(
     assert ev["attrs"]["count"] == 0
 
 
+def test_ingest_logs_keeps_the_unit_identity_from_the_resource(
+    _wrap_logs: Callable[..., list[ResourceLogs]], _make_log: Callable[..., LogRecord]
+) -> None:
+    """A compliance record names its machine only on the resource; the event keeps it (#467)."""
+    store = TelemetryStore()
+    store.ingest_logs(
+        _wrap_logs(
+            [_make_log('{"kind": "safety_stop"}', attrs={"openral.record.kind": "safety_stop"})],
+            scope_name="openral.compliance",
+            resource_attrs={
+                "service.name": "openral.compliance",
+                "openral.unit.serial": "SO101-0042",
+                "openral.org.id": "acme",
+            },
+        )
+    )
+    (ev,) = store.snapshot()["events"]
+    assert ev["attrs"]["openral.unit.serial"] == "SO101-0042"
+    assert ev["attrs"]["openral.org.id"] == "acme"
+    assert ev["attrs"]["openral.record.kind"] == "safety_stop"
+
+
 def test_ingest_logs_maps_all_levels(
     _wrap_logs: Callable[..., list[ResourceLogs]], _make_log: Callable[..., LogRecord]
 ) -> None:
