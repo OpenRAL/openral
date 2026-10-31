@@ -227,6 +227,10 @@ merges it too): `openral.unit.serial`, `openral.org.id`, `openral.site.id`,
 from `openral_core.resolve_unit_identity`. A hardware deploy without a serial is
 refused.
 
+Every record is also written to the on-robot, hash-chained compliance log (always on for
+`deploy run`; see [The on-robot compliance log](compliance-log.md)) before it goes out over
+OTLP, and the recorder records a `software_inventory` at every start.
+
 Each emitter (one per process) has its own `stream_id`; `seq` is gap-free within it, so a
 gap is a lost record and a new `stream_id` a restarted process.
 
@@ -511,6 +515,7 @@ safety code changed.
 | `OPENRAL_UNIT_SERIAL` | unit file's `serial` | `openral.unit.serial`; **required** for a hardware deploy |
 | `OPENRAL_ORG_ID` | unit file's `org_id` | `openral.org.id` |
 | `OPENRAL_SITE_ID` | unset | `openral.site.id` |
+| `OPENRAL_COMPLIANCE_DIR` | `~/.local/state/openral/compliance` on `deploy run`; unset (off) for sim | The on-robot compliance log |
 | `OPENRAL_CLOCK_SOURCE` | `monotonic_unsynced` | Compliance records' `clock_source` (`ptp` / `ntp` / `monotonic_unsynced`) |
 | `OPENRAL_TELEMETRY_IMAGE_CONSENT` | off | `1` lets camera thumbnails go to a public OTLP endpoint |
 

@@ -66,6 +66,14 @@ def test_namespace_invariants() -> None:
         "openral.observability.",
         "openral.sim.",
         "openral.system.",
+        # Compliance (issue #467): which machine, and the record attributes.
+        "openral.unit.",
+        "openral.org.",
+        "openral.site.",
+        "openral.record.",
+        "openral.schema.",
+        "openral.retention.",
+        "openral.failure.",
     )
     openral_keys = {
         getattr(semconv, name)

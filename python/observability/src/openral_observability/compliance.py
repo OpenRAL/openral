@@ -27,18 +27,28 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Callable
+from pathlib import Path
 from typing import Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 import structlog
-from openral_core import ComplianceRecord, FailureRecord, trace_ids_from_wire
+from openral_core import ComplianceRecord, FailureRecord, SoftwareComponent, trace_ids_from_wire
+from openral_core.exceptions import ROSRuntimeError
 from opentelemetry import trace
-from opentelemetry._logs import LoggerProvider, LogRecord, SeverityNumber, get_logger
+from opentelemetry._logs import Logger, LoggerProvider, LogRecord, SeverityNumber, get_logger
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 
 from openral_observability import metrics, semconv
+from openral_observability.compliance_log import ComplianceLog
 
-__all__ = ["CLOCK_SOURCE_ENV", "ComplianceEmitter", "images_may_leave_host"]
+__all__ = [
+    "CLOCK_SOURCE_ENV",
+    "ComplianceEmitter",
+    "images_may_leave_host",
+    "send_record",
+    "software_inventory",
+]
 
 CLOCK_SOURCE_ENV = "OPENRAL_CLOCK_SOURCE"
 """How the host clock is disciplined (``ptp`` / ``ntp`` / ``monotonic_unsynced``)."""
@@ -81,6 +91,11 @@ class ComplianceEmitter:
             else ``monotonic_unsynced`` (the honest answer when nobody said).
         logger_provider: Where records go. Default: the global provider that
             ``configure_observability`` installs.
+        log: The on-robot compliance log each record is also written to, before it goes out
+            over OTLP (#469). ``None``: OTLP only.
+        on_log_error: Called with ``(record, error)`` when a record went out over OTLP but
+            could not be written to ``log``; ``emit`` then still returns the record. Without
+            it, ``emit`` raises ``ROSRuntimeError``.
     """
 
     def __init__(
@@ -88,6 +103,8 @@ class ComplianceEmitter:
         clock_source: _ClockSource | None = None,
         *,
         logger_provider: LoggerProvider | None = None,
+        log: ComplianceLog | None = None,
+        on_log_error: Callable[[ComplianceRecord, OSError], None] | None = None,
     ) -> None:
         """Open a fresh stream: a new ``stream_id``, ``seq`` from 0."""
         self._clock_source: _ClockSource = clock_source or _clock_source_from_env()
@@ -95,6 +112,8 @@ class ComplianceEmitter:
         self._next_seq = 0
         self._lock = threading.Lock()
         self._logger = get_logger("openral.compliance", logger_provider=logger_provider)
+        self._log = log
+        self._on_log_error = on_log_error
 
     def emit(self, kind: type[_R], **fields: object) -> _R:
         """Build one record of ``kind`` from ``fields`` and send it.
@@ -107,6 +126,9 @@ class ComplianceEmitter:
         Raises:
             pydantic.ValidationError: ``fields`` do not make a valid record. Callers on a
                 safety path build from typed sources, so this is a programming error.
+            ROSRuntimeError: The record could not be written to the on-robot log and no
+                ``on_log_error`` is set (it was still sent over OTLP, and its ``seq`` is spent,
+                so ``verify`` shows the gap).
         """
         wire = fields.get("trace_id")
         if isinstance(wire, str):
@@ -137,7 +159,20 @@ class ComplianceEmitter:
                 ),
             )
             self._next_seq += 1  # only a record that validated takes a seq: no false gap
-            self._send(record)
+            write_error: OSError | None = None
+            if self._log is not None:
+                try:
+                    self._log.append(record)
+                except OSError as exc:
+                    write_error = exc
+            send_record(self._logger, record)
+        if write_error is not None and self._on_log_error is not None:
+            self._on_log_error(record, write_error)
+        elif write_error is not None:
+            raise ROSRuntimeError(
+                f"compliance log write failed for {record.kind} record {record.record_id}: "
+                f"{write_error}"
+            ) from write_error
         if isinstance(record, FailureRecord):
             metrics.get_failure_count().add(
                 1,
@@ -149,34 +184,124 @@ class ComplianceEmitter:
             )
         return record
 
-    def _send(self, record: ComplianceRecord) -> None:
-        context = None
-        if record.trace_id is not None:
-            span_context = SpanContext(
-                trace_id=int(record.trace_id, 16),
-                span_id=int(record.span_id or "1", 16),
-                is_remote=True,
-                trace_flags=TraceFlags(TraceFlags.SAMPLED),
-            )
-            context = trace.set_span_in_context(NonRecordingSpan(span_context))
-        if isinstance(record, FailureRecord):
-            severity = _FAILURE_SEVERITY[record.severity]
+
+def send_record(logger: Logger, record: ComplianceRecord) -> None:
+    """Send one record as an OTLP log record (``openral compliance ship`` reuses this)."""
+    context = None
+    if record.trace_id is not None:
+        span_context = SpanContext(
+            trace_id=int(record.trace_id, 16),
+            span_id=int(record.span_id or "1", 16),
+            is_remote=True,
+            trace_flags=TraceFlags(TraceFlags.SAMPLED),
+        )
+        context = trace.set_span_in_context(NonRecordingSpan(span_context))
+    if isinstance(record, FailureRecord):
+        severity = _FAILURE_SEVERITY[record.severity]
+    else:
+        severity = _SEVERITY.get(record.kind, SeverityNumber.INFO)
+    logger.emit(
+        LogRecord(
+            timestamp=record.ts_ns,
+            context=context,
+            severity_number=severity,
+            body=record.model_dump_json(),
+            attributes={
+                semconv.RECORD_KIND: record.kind,
+                semconv.RECORD_ID: record.record_id,
+                semconv.RECORD_SCHEMA_VERSION: record.schema_version,
+                semconv.RECORD_RETENTION_CLASS: record.retention_class.value,
+            },
+        )
+    )
+
+
+def _digest(path: Path) -> str | None:
+    """SHA-256 of a file, or of a package directory's ``*.py`` sources (names and bytes).
+
+    ``None`` (and a warning) when it cannot be read: the component is still listed, so an
+    unreadable binary never hides the rest of the inventory.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    try:
+        if path.is_file():
+            h.update(path.read_bytes())
         else:
-            severity = _SEVERITY.get(record.kind, SeverityNumber.INFO)
-        self._logger.emit(
-            LogRecord(
-                timestamp=record.ts_ns,
-                context=context,
-                severity_number=severity,
-                body=record.model_dump_json(),
-                attributes={
-                    semconv.RECORD_KIND: record.kind,
-                    semconv.RECORD_ID: record.record_id,
-                    semconv.RECORD_SCHEMA_VERSION: record.schema_version,
-                    semconv.RECORD_RETENTION_CLASS: record.retention_class.value,
-                },
+            for f in sorted(path.rglob("*.py")):
+                h.update(str(f.relative_to(path)).encode() + b"\0" + f.read_bytes())
+    except OSError as exc:
+        log.warning("compliance.inventory_unreadable", path=str(path), error=str(exc))
+        return None
+    return h.hexdigest()
+
+
+def software_inventory() -> list[SoftwareComponent]:
+    """What is installed that the machine needs, for MR Annex III §1.1.9 identification.
+
+    Every ``openral*`` Python distribution (name + version), plus — when a ROS overlay is
+    sourced — the safety software, marked ``safety_relevant`` with a content digest: the C++
+    kernel's ``safety_kernel_node`` binary and the ``openral_safety`` supervisor's sources.
+    Software that is not installed is left out, never invented.
+
+    Example:
+        >>> any(c.name == "openral-observability" for c in software_inventory())
+        True
+    """
+    import importlib.util
+    import re
+    from importlib import metadata
+
+    components = [
+        SoftwareComponent(name=dist.metadata["Name"], version=dist.version)
+        for dist in metadata.distributions()
+        if (dist.metadata["Name"] or "").lower().startswith("openral")
+    ]
+    try:
+        from ament_index_python.packages import (  # type: ignore[import-not-found,unused-ignore]  # reason: ROS overlay, optional
+            PackageNotFoundError,
+            get_package_prefix,
+        )
+    except ImportError:
+        return sorted(components, key=lambda c: c.name)
+
+    def version_of(prefix: Path, package: str) -> str:
+        xml = prefix / "share" / package / "package.xml"
+        try:
+            match = re.search(r"<version>([^<]+)</version>", xml.read_text())
+        except OSError:
+            match = None
+        return match[1] if match else "unknown"
+
+    try:
+        prefix = Path(get_package_prefix("openral_safety_kernel"))
+        binary = prefix / "lib" / "openral_safety_kernel" / "safety_kernel_node"
+        components.append(
+            SoftwareComponent(
+                name="openral_safety_kernel",
+                version=version_of(prefix, "openral_safety_kernel"),
+                sha256=_digest(binary) if binary.exists() else None,
+                safety_relevant=True,
             )
         )
+    except PackageNotFoundError:
+        pass
+    spec = importlib.util.find_spec("openral_safety")
+    if spec is not None and spec.origin is not None:
+        try:
+            version = version_of(Path(get_package_prefix("openral_safety")), "openral_safety")
+        except PackageNotFoundError:
+            version = "unknown"
+        components.append(
+            SoftwareComponent(
+                name="openral_safety",
+                version=version,
+                sha256=_digest(Path(spec.origin).parent),
+                safety_relevant=True,
+            )
+        )
+    return sorted(components, key=lambda c: c.name)
 
 
 def images_may_leave_host(endpoint: str | None = None) -> bool:

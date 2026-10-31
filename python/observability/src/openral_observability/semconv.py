@@ -15,6 +15,9 @@ Namespace scheme (top-level prefix ``openral.``):
 * ``openral.world_state.*`` — world-state aggregator snapshot
 * ``openral.dataset.*`` — LeRobotDataset linkage
 * ``openral.event.*`` — span-event names
+* ``openral.unit.*`` / ``openral.org.*`` / ``openral.site.*`` — which machine (resource)
+* ``openral.record.*`` / ``openral.schema.*`` / ``openral.retention.*`` — compliance records
+* ``openral.failure.*`` — failure-bus metrics
 
 The short-prefix ``rskill.*`` / ``inference.*`` / ``safety.*`` attributes
 ship alongside the namespaced ``openral.rskill.*`` form for dashboard /

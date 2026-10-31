@@ -282,7 +282,8 @@ test-doctest:
         python/reasoner/src/openral_reasoner \
         python/runner/src/openral_runner/dataset_recorder_bridge.py \
         packages/openral_rskill_ros/openral_rskill_ros/sensor_leg.py \
-        python/observability/src/openral_observability/compliance.py
+        python/observability/src/openral_observability/compliance.py \
+        python/observability/src/openral_observability/compliance_log.py
 
 # Sim integration tests: real HF weights + GPU + simulated robots/envs (slow, opt-in)
 # `-p no:launch_testing -p no:launch_ros`: same ROS-env workaround as
