@@ -90,6 +90,14 @@ log = structlog.get_logger(__name__)
 # outside the stored box (max of the two): the box provably no longer contains the object.
 _MOVED_MIN_POINTS = 3
 _MOVED_MIN_FRACTION = 0.05
+#: Fraction of a refused refit's measured surface that must lie in the track's box (grown by a
+#: cell) for the refit to re-date it: the object was measured inside the box it is kept with.
+#: *Calibration point.*
+_REDATE_INSIDE_FRACTION = 0.9
+#: The same for a refit the growth gate refused: its mask spilled onto a touching neighbour,
+#: so part of its surface is that neighbour's. *Calibration point* (restock 2026-10-31: 16-32 %
+#: of a spilled mask's points lay outside the kept box).
+_REDATE_SPILL_FRACTION = 2.0 / 3.0
 
 
 #: Source time a CONTEXT track's refresh, or a CONTEXT query's locate, counts as served
@@ -136,6 +144,13 @@ class TrackerParams(BaseModel):
             track's own clear history) has shown is refused and the previous box kept (#418
             r16po_on1: a 5.8 cm orange refit to 33 cm through the arm's occluder band).
             *Calibration point.*
+        refit_growth_factor: Any refit (moved or not, clear or provisional) whose longer
+            horizontal extent exceeds this many times the track's FIRST clear fit is refused
+            and the box kept. A mask that spills onto a neighbour or the support always has
+            points outside the box, so it read as "moved" and replaced the box unchecked; each
+            larger box then prompted a larger mask (restock 2026-10-30: a 6 x 6 cm carton's box
+            went 14 -> 24 -> 39 cm with the arms out of view). *Calibration point*: 1.5 keeps a
+            box turned 45 degrees in the hand (sqrt 2).
         static_pad_cells: Cells a declared static collider is padded by for the one-body test
             (the camera sees a wall about a cell off its declared box; K7 pads the same).
             *Calibration point.*
@@ -169,6 +184,7 @@ class TrackerParams(BaseModel):
     low_score_confirm_grids: int = Field(default=3, ge=1)
     static_pad_cells: int = Field(default=1, ge=0)
     provisional_oversize_factor: float = Field(default=2.0, ge=1.0)
+    refit_growth_factor: float = Field(default=1.5, ge=1.0)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -340,6 +356,9 @@ class ObjectTracker:
         self._clear_size: dict[str, float] = {}
         # Per track: the largest longer-horizontal extent of its clear fits (the oversize guard).
         self._clear_extent: dict[str, float] = {}
+        # Per track: the longer horizontal extent of its first clear fit, else of its first fit,
+        # and whether that fit was clear (the growth gate).
+        self._first_extent: dict[str, tuple[float, bool]] = {}
         # Declared static geometry (cell centres, grid frame) and its keys on the newest lattice.
         self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
         self._static_cache: tuple[tuple[object, ...], frozenset[Cell]] | None = None
@@ -509,7 +528,7 @@ class ObjectTracker:
         for per_track in (
             self._views, self._cells, self._centroid, self._disagree, self._disagree_ns,
             self._map_cells, self._served, self._clear_size, self._clear_extent, self._low_score,
-            self._low_score_run,
+            self._low_score_run, self._first_extent,
         ):  # fmt: skip
             for oid in [k for k in per_track if k not in live]:
                 del per_track[oid]
@@ -1073,7 +1092,7 @@ class ObjectTracker:
             )
         return moved
 
-    def _refuse_refit(
+    def _refuse_refit(  # noqa: PLR0911  # reason: one return per named gate
         self,
         old: TrackedObject,
         fit: ContainingFit,
@@ -1091,9 +1110,14 @@ class ObjectTracker:
         provisional one re-dates it in the store). Each gate logs.
         """
         oid = old.object_id
+        if self._overgrown(oid, fit, moved):
+            if self._redate_if_inside(old, fit, grid, frame, _REDATE_SPILL_FRACTION):
+                log.info("object_tracker.refit_growth_redated", object_id=oid)
+            return True
         if old.status is TrackStatus.OCCLUDED and not moved:
             self._refresh_evidence(oid, cells)
-            log.info("object_tracker.occluded_refit_ignored", object_id=oid)
+            redated = self._redate_if_inside(old, fit, grid, frame)
+            log.info("object_tracker.occluded_refit_ignored", object_id=oid, redated=redated)
             return True
         if fit.provisional and not old.provisional and not moved:
             # A fit through the robot never replaces geometry measured clear of it,
@@ -1124,8 +1148,9 @@ class ObjectTracker:
             # true tightening passes: the surface it drops is no longer occupied.
             left = uncovered_cells(grid, prior, fit.box)
             if left >= max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(prior)):
+                redated = self._redate_if_inside(old, fit, grid, frame)
                 log.info("object_tracker.partial_refit_ignored", object_id=oid,
-                         uncovered=left, cells=len(prior),
+                         uncovered=left, cells=len(prior), redated=redated,
                          half_extents=[round(h, 3) for h in old.box.half_extents],
                          fit_half=[round(h, 3) for h in fit.box.half_extents])  # fmt: skip
                 return True
@@ -1145,6 +1170,60 @@ class ObjectTracker:
                 log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
                 return True
         return False
+
+    def _overgrown(self, oid: str, fit: ContainingFit, moved: bool) -> bool:
+        """Refuse (``True``) a refit past ``refit_growth_factor`` x the track's first clear fit.
+
+        Unlike ``_provisional_oversize`` this holds for a moved or a clear fit too, and the
+        reference never grows with the fits it admits: the first clear fit, not the largest.
+        A track with no clear fit yet is held to its first provisional fit, but a clear fit is
+        never refused against one (a fit through the robot may undersize the object).
+        The refused fit never changes the box; ``_refuse_refit`` re-dates it only when most of
+        its surface lies inside the kept box. Safety-WG review owed: the kept box is the first
+        clear containing fit.
+        """
+        ref = self._first_extent.get(oid)
+        if ref is None or fit.box is None or (not ref[1] and not fit.provisional):
+            return False
+        first = ref[0]
+        extent = 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1])
+        limit = self.params.refit_growth_factor * first
+        if extent <= limit:
+            return False
+        log.info("object_tracker.refit_growth_refused", object_id=oid, moved=moved,
+                 extent_m=round(extent, 3), first_m=round(first, 3),
+                 limit_m=round(limit, 3))  # fmt: skip
+        return True
+
+    def _redate_if_inside(
+        self,
+        old: TrackedObject,
+        fit: ContainingFit,
+        grid: VoxelLattice,
+        frame: CameraFrame,
+        fraction: float = _REDATE_INSIDE_FRACTION,
+    ) -> bool:
+        """Re-date ``old``'s fit when a refused refit measured the object inside its box.
+
+        The kept box still contains what the camera measured now, so it is fresh geometry for
+        the grasp binder, as a provisional refit already re-dates it (2026-10-22 decision).
+        Without it a partial or occluded refit left the box to age: restock 2026-10-30, the
+        target's refits under the approaching hand were all refused, its fit was 9.4 s old at
+        the grasp and the bind fell back to the pinch payload. A growth-refused refit re-dates
+        at ``_REDATE_SPILL_FRACTION``: restock 2026-10-31, a mask spilling onto a touching
+        carton was refused every frame and the clear target box aged out the same way.
+        Safety-WG review owed.
+        """
+        surface = fit.surface
+        if not len(surface):
+            return False
+        inside = int(np.count_nonzero(_inside(surface, _grown(old.box, grid.resolution))))
+        if inside < fraction * len(surface):
+            return False
+        self.store.replace(
+            old.model_copy(update={"last_fit_stamp_ns": max(old.last_fit_stamp_ns, frame.stamp_ns)})
+        )
+        return True
 
     def _refit_track(
         self,
@@ -1184,6 +1263,31 @@ class ObjectTracker:
             # Safety-WG review owed.
             box, tight = old.box, old.tight
             log.info("object_tracker.contact_refit_kept", object_id=oid)
+        provisional = fit.provisional
+        if moved and fit.provisional and not old.provisional and fit.box is not None:
+            # A fit through the robot sees only what the robot leaves in view, so it may say
+            # where the pushed object went but never how big it is: the clear box keeps its
+            # size, re-centred in x/y on the new fit, and the track turns PROVISIONAL as before
+            # (2026-10-21 decision: a pushed object's box is never a payload). 2026-10-31: the
+            # through-robot box had replaced the clear one, a 2-4x different size. Its hulls
+            # were posed for the old place, so they go. Safety-WG review owed.
+            # A shift within one grid cell is no push the map could tell from noise (restock
+            # 2026-10-31 mix_03: 160 points through the hand "moved" the target 1 cm, it turned
+            # provisional and the grasp bound the pinch fallback): the clear box stands as is.
+            x, y, _ = fit.box.pose.xyz
+            shift = math.dist(old.box.pose.xyz[:2], (x, y))
+            if shift <= grid.resolution:
+                box, tight, provisional = old.box, old.tight, old.provisional
+                log.info("object_tracker.covered_move_within_cell", object_id=oid,
+                         shift_m=round(shift, 3))  # fmt: skip
+            else:
+                box = old.box.model_copy(
+                    update={"pose": old.box.pose.model_copy(
+                        update={"xyz": (x, y, old.box.pose.xyz[2])})}
+                )  # fmt: skip
+                tight = ()
+                log.info("object_tracker.covered_move_size_kept", object_id=oid,
+                         shift_m=round(shift, 3))  # fmt: skip
         track = old.model_copy(
             update={
                 "fit_kind": fit_kind,
@@ -1195,7 +1299,7 @@ class ObjectTracker:
                 "last_fit_stamp_ns": frame.stamp_ns,
                 "status": TrackStatus.TENTATIVE if refit else old.status,
                 "identity_inferred": old.identity_inferred or kind == "inferred",
-                "provisional": fit.provisional,
+                "provisional": provisional,
             }
         )
         self.store.replace(track)
@@ -1213,6 +1317,12 @@ class ObjectTracker:
         frame: CameraFrame,
     ) -> None:
         """Record an accepted fit's evidence for ``track`` and re-confirm it on the map."""
+        ref = self._first_extent.get(track.object_id)
+        if fit.box is not None and (ref is None or (not ref[1] and not fit.provisional)):
+            self._first_extent[track.object_id] = (
+                2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
+                not fit.provisional,
+            )
         if not fit.provisional and fit.box is not None:
             size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])
             self._clear_size[track.object_id] = max(
