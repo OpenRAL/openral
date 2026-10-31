@@ -1083,3 +1083,21 @@ class TestRemediationIsRunnableWhereItPrinted:
         message = str(excinfo.value)
         assert "already imported it" in message, "the guard must still refuse the swap"
         assert "uv sync --all-packages --group robocasa --inexact" in message
+
+
+def test_install_step_runs_in_the_open_checkout_not_the_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """`uv sync` acts on its cwd's project: run from another repo it synced that one.
+
+    Regression: Pro's restock benchmark (`openral sim run` from the Pro checkout) ran the
+    isaac_client plan's `uv sync --group isaacsim` in the Pro workspace and failed.
+    """
+    monkeypatch.chdir(tmp_path)
+    pwd = [sys.executable, "-c", "import os; print(os.getcwd())"]
+    _deps._run_install_step(_deps.InstallStep(description="pwd", argv=pwd), dict(os.environ))
+    assert Path(__file__).resolve().parents[2] == _deps._STEP_DEFAULT_CWD
+    assert str(_deps._STEP_DEFAULT_CWD).encode() in capsysbinary.readouterr().err
+    own = _deps.InstallStep(description="pwd", argv=pwd, cwd=tmp_path)
+    _deps._run_install_step(own, dict(os.environ))
+    assert str(tmp_path).encode() in capsysbinary.readouterr().err, "an explicit cwd wins"

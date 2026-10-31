@@ -439,6 +439,16 @@ def _refresh_editable_finders() -> None:
             break
 
 
+_OPEN_ROOT = Path(__file__).resolve().parents[4]
+_STEP_DEFAULT_CWD: Path | None = _OPEN_ROOT if (_OPEN_ROOT / "uv.lock").is_file() else None
+"""Where an install step without its own ``cwd`` runs: this module's open checkout.
+
+``uv sync`` / ``uv pip install`` act on the project and ``.venv`` of their cwd, so a step
+that inherited the caller's cwd synced whatever repo the CLI was started from (the Pro
+repo's ``openral sim run --config benchmarks/...`` failed on "Group `isaacsim` is not
+defined" and left a stray ``.venv`` there). ``None`` for a non-editable install: there is
+no checkout to sync, so the caller's cwd is kept."""
+
 _STEP_TAIL_BYTES = 8192
 """How much trailing step output is retained to explain a failure."""
 
@@ -468,10 +478,11 @@ def _run_install_step(step: InstallStep, env: dict[str, str]) -> None:
         OSError: The executable could not be spawned (e.g. ``FileNotFoundError``
             when ``argv[0]`` is missing).
     """
+    cwd = step.cwd or _STEP_DEFAULT_CWD
     proc = subprocess.Popen(  # reason: argv is plan-controlled, shell=False
         step.argv,
         env=env,
-        cwd=str(step.cwd) if step.cwd else None,
+        cwd=str(cwd) if cwd else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
