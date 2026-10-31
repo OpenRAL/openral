@@ -354,12 +354,21 @@ private:
   double workspace_reach(std::size_t link) const noexcept;
   // Forget every previously accepted command (row 0 falls back to measured).
   /// Also the provider's `on_reset(why)` (ADR-0121), at every site that forgets the chunk chain.
+  /// The brake's hold anchor survives `kRefusal` and `kOther` (a brake re-records the joints
+  /// it held); every other reason forgets it too.
   void clear_workspace_commands(ResetReason why = ResetReason::kOther) noexcept;
   // Is joint `d`'s previously accepted command still row 0's previous row at
   // `now_ns`? Recorded, not cleared since, its last row due (acceptance +
   // (horizon-1) periods) at or before now, and at most
   // `kWorkspaceCommandFreshPeriods` periods ago.
   bool workspace_command_fresh(std::size_t d, std::int64_t now_ns) const noexcept;
+  // pro#51: record each commanded joint's last published row (`flat`, `horizon` rows of
+  // `stride`) as the workspace brake's hold anchor, due (horizon-1) periods from now.
+  void record_workspace_hold(const double* flat, std::uint16_t horizon, std::size_t stride,
+                             bool full_row) noexcept;
+  // Is joint `d`'s recorded hold anchor usable at `now_ns`? Recorded, not forgotten since,
+  // due at or before now, and at most `kWorkspaceHoldFreshPeriods` periods ago.
+  bool workspace_hold_fresh(std::size_t d, std::int64_t now_ns) const noexcept;
   // Copy the workspace links' current FK poses into `out`.
   void workspace_snapshot(std::vector<Transform>& out) const noexcept;
 
@@ -743,6 +752,17 @@ private:
   std::vector<std::int64_t> workspace_cmd_due_ns_;
   std::vector<std::uint8_t> workspace_cmd_set_;
   std::uint64_t workspace_cmd_drops_seen_{0};
+  /// pro#51: the workspace brake's hold anchor — the last command the kernel PUBLISHED per
+  /// joint (an accepted chunk's or a brake's last row), when that row is due, and whether
+  /// one is held. Recorded on every accepted chunk, whoever owns the workspace rules.
+  /// Unlike `workspace_cmd_q_` neither a brake nor a refusal forgets it (the robot is
+  /// still executing it), so consecutive holds keep one anchor; every other reset does.
+  /// Usable `kWorkspaceHoldFreshPeriods` past its due time. Sized n_dof at configure.
+  std::vector<double> workspace_hold_q_;
+  std::vector<std::int64_t> workspace_hold_due_ns_;
+  std::vector<std::uint8_t> workspace_hold_set_;
+  std::vector<double> q_anchor_;  ///< this brake's hold configuration (n_dof)
+  bool ws_hold_anchored_{false};  ///< whether it is (partly) the anchor, not measured
   /// The candidate's hand speed source: true = measured (FK of q_meas_ +
   /// dq_meas_ * period vs q_meas_, row-independent, in
   /// `workspace_measured_speed_mps_`); false = the commanded-speed fallback.
