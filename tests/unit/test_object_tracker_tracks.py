@@ -19,7 +19,9 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.object_tracker import (
     CameraFrame,
+    FitParams,
     ObjectTracker,
+    TrackerParams,
     TrackerResult,
     associate,
     containing_fit,
@@ -44,6 +46,14 @@ from tests.unit._tracker_scenes import (
 _RIG = so101_top()
 _R = 0.024
 _QUERY = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
+
+
+def _params(containing: bool) -> TrackerParams:
+    """``containing``: the #266 set, whose box doubled as the association gate a pushed
+    object stays inside (a measured box is the object's own size)."""
+    return TrackerParams(fit=FitParams(extent="containing") if containing else FitParams())
+
+
 _PUSH_M = 0.02  # inside the box grown by a cell: not a moved refit
 
 
@@ -58,8 +68,8 @@ def _oranges(spacing: float) -> list[Solid]:
     return [sphere((x + d, y, _RIG.support_z + _R), _R) for d in (-spacing, 0.0, spacing)]
 
 
-def _grounded(oranges: list[Solid]) -> tuple[ObjectTracker, float]:
-    tr = ObjectTracker(_RIG.frame)
+def _grounded(oranges: list[Solid], *, containing: bool = False) -> tuple[ObjectTracker, float]:
+    tr = ObjectTracker(_RIG.frame, params=_params(containing))
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
     out, wall = step(tr, _RIG, oranges, stamp_ns=0, wall_s=0.0)
     assert [o.status for o in out.tracked.objects] == [TrackStatus.CONFIRMED] * 3
@@ -242,7 +252,7 @@ def test_a_pushed_object_takes_the_fit_through_the_robot_as_provisional() -> Non
     still K2 / K7 geometry). Unmoved, the clear box stays (the test above)."""
     orange = _oranges(0.05)[1:2]
     depth, labels = render(orange, _RIG)
-    tr = ObjectTracker(_RIG.frame)
+    tr = ObjectTracker(_RIG.frame, params=_params(True))
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
     wall = _ground(tr, depth, labels, np.zeros(depth.shape, np.uint8), stamp=1, wall=0.0)
     (clear,) = tr.store.all()
@@ -264,7 +274,7 @@ def test_a_bound_tracks_box_follows_the_in_hand_refit() -> None:
     track moves its box to where the object is seen; status and the bind's flags stay."""
     orange = _oranges(0.05)[1:2]
     depth, labels = render(orange, _RIG)
-    tr = ObjectTracker(_RIG.frame)
+    tr = ObjectTracker(_RIG.frame, params=_params(True))
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
     wall = _ground(tr, depth, labels, np.zeros(depth.shape, np.uint8), stamp=1, wall=0.0)
     (clear,) = tr.store.all()
@@ -368,7 +378,7 @@ def test_an_ignored_refit_still_moves_the_cover_to_the_surface_it_measured() -> 
 def test_a_split_track_never_takes_a_neighbours_fit() -> None:
     """A SPLIT box holds two bodies; a fit centred inside it is a new object, never the
     split track's continuation (PickOrange r2po_shadow3: a swap among static oranges)."""
-    tr, _ = _grounded(_oranges(0.05))
+    tr, _ = _grounded(_oranges(0.05), containing=True)
     a = _get(tr, "trk:1")
     big = a.model_copy(
         update={

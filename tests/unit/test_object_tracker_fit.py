@@ -22,6 +22,7 @@ from openral_world_state.object_tracker import (
     ROBOT_PIXEL,
     UNCERTAIN_PIXEL,
     ContainingFit,
+    FitParams,
     containing_fit,
 )
 
@@ -42,6 +43,7 @@ from tests.unit._tracker_scenes import (
 pytest.importorskip("scipy", reason="scipy.spatial.ConvexHull checks hull containment")
 
 _RIGS = {name: make() for name, make in RIGS.items()}
+_CONTAINING = FitParams(extent="containing")
 
 
 def _solid(kind: str, rig: Rig, dx: float, dy: float, a: float, b: float, c: float) -> Solid:
@@ -70,6 +72,7 @@ def _fit(rig: Rig, solids: list[Solid], **kw: Any) -> ContainingFit:
         resolution=RES,
         frame_id=rig.frame,
         stamp_ns=1,
+        params=kw.pop("params", _CONTAINING),  # the #266 set these tests pin
         **kw,
     )
 
@@ -262,3 +265,44 @@ def test_an_oblique_view_does_not_box_far_above_the_object(rig_name: str) -> Non
     zhi = fit.box.pose.xyz[2] + fit.box.half_extents[2]
     assert zhi <= top + 0.02, (rig_name, zhi - top)
     assert _in_tight(surface_samples(solid), fit).all()
+
+
+@pytest.mark.parametrize("rig_name", sorted(_RIGS))
+@settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(
+    kind=st.sampled_from(["cylinder", "box"]),
+    dx=st.floats(-0.05, 0.05),
+    dy=st.floats(-0.05, 0.05),
+    a=st.floats(0.0, 1.0),
+    b=st.floats(0.0, 1.0),
+    c=st.floats(0.0, 1.0),
+)
+def test_the_measured_box_contains_an_upright_prism(
+    rig_name: str, kind: str, dx: float, dy: float, a: float, b: float, c: float
+) -> None:
+    """``extent="measured"`` (the default) boxes what the camera saw, extruded to the support.
+    A solid whose top face spans its footprint (a carton, a can) is whole inside it from any
+    of the rigs; a part hidden past what the camera saw (the far side of a sphere seen
+    obliquely: up to 5 mm on the OpenArm head, 22 mm on DROID's exterior camera) is not."""
+    rig = _RIGS[rig_name]
+    solid = _solid(kind, rig, dx, dy, a, b, c)
+    fit = _fit(rig, [solid], params=FitParams())
+    assert fit.refusal == "", (rig_name, kind, fit.refusal)
+    pts = surface_samples(solid)
+    assert _in_box(pts, fit.box).all()
+    assert _in_tight(pts, fit).all()
+
+
+def test_a_carton_is_boxed_near_its_own_size_not_its_shadow() -> None:
+    """Restock 2026-10-31: from the OpenArm head camera a 6 x 6 x 11 cm carton measured
+    6.9 x 7.0 x 11 cm and was boxed 12.2 x 12.4 x 12.3 cm, the cone of everything it could
+    hide; the kernel then stopped the carried box 5 cm short of the shelf board."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    carton = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    measured = _fit(rig, [carton], params=FitParams())
+    cone = _fit(rig, [carton])  # the #266 containing set
+    assert measured.box is not None and cone.box is not None
+    pad = 0.5 * RES  # half a cell on each side
+    assert max(measured.box.half_extents[:2]) <= 0.03 + pad + 1e-6, measured.box.half_extents
+    assert max(cone.box.half_extents[:2]) > 1.5 * 0.03, cone.box.half_extents

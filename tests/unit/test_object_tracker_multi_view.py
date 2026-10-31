@@ -19,7 +19,12 @@ from hypothesis import strategies as st
 from numpy.typing import NDArray
 from openral_core import FitKind, PlaceRegion, TrackedObject
 from openral_core.geometry import homogeneous_from_quat_xyz
-from openral_world_state.object_tracker import ContainingFit, containing_fit, intersect_views
+from openral_world_state.object_tracker import (
+    ContainingFit,
+    FitParams,
+    containing_fit,
+    intersect_views,
+)
 
 from tests.unit._tracker_scenes import RES, RIGS, Rig, inside_hull, render, surface_samples
 
@@ -59,6 +64,7 @@ def _fit(rig: Rig, solid: object, mask_erode: int = 0) -> ContainingFit:
         resolution=RES,
         frame_id=rig.frame,
         stamp_ns=1,
+        params=FitParams(extent="containing"),  # intersection is of containing cones
     )
 
 

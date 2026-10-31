@@ -1,4 +1,10 @@
-"""Containing fit — the #266 rule: a set that contains the solid, never a hull of samples.
+"""Object fit from one mask: the measured box (default) or the #266 containing set.
+
+``FitParams.extent`` picks. ``"measured"`` (default since 2026-10-31): the measured surface's
+footprint, grown half a cell, extruded from the support to its top -- what the camera saw; a
+hidden part past it is boxed once a view sees it (Safety-WG review owed: A4 below no longer
+holds for it). ``"containing"``, the rest of this docstring: a set that contains the solid,
+never a hull of samples.
 
 Issue #418, design "The tracker algorithm" step 3. One camera mask is lifted to
 
@@ -37,6 +43,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -83,6 +90,14 @@ class FitParams(BaseModel):
         min_depth_valid: Fewest fraction of mask pixels with usable depth (A3).
         min_depth_m: Depth readings at or below this are invalid.
         max_depth_m: Depth readings at or above this are invalid.
+        extent: ``"measured"`` (default): the box is the measured surface's footprint
+            extruded to the support (``prism(P)``), what the camera saw; a part hidden past
+            it is not boxed until a view sees it. ``"containing"``: the #266 set, the cone
+            of everything the silhouette could hide down to the support. From one oblique
+            camera the cone doubles a carton (restock 2026-10-31: a 6 x 6 x 11 cm carton
+            measured 6.9 x 7.0 x 11, boxed 12.2 x 12.4 x 12.3; the kernel stopped the carried
+            box 5 cm short of the shelf board, in the torso, on a slot divider).
+            Safety-WG review owed: ``measured`` drops the hidden-side containment (A4).
 
     Example:
         >>> FitParams().k_px
@@ -99,6 +114,7 @@ class FitParams(BaseModel):
     min_depth_valid: float = Field(default=0.5, ge=0.0, le=1.0)
     min_depth_m: float = Field(default=0.05, ge=0.0)
     max_depth_m: float = Field(default=5.0, gt=0.0)
+    extent: Literal["measured", "containing"] = "measured"
 
 
 @dataclass(frozen=True)
@@ -164,15 +180,16 @@ def _rect(box: tuple[float, float, float, float], shape: tuple[int, ...]) -> NDA
     return out
 
 
-def _outer_polygon(points: NDArray[np.float64]) -> NDArray[np.float64]:
+def _outer_polygon(points: NDArray[np.float64], grow: float = 0.0) -> NDArray[np.float64]:
     """``(16, 2)`` vertices of the 16-direction polygon that contains ``points``.
 
     Each side is a supporting line of the point set, so the polygon contains its hull and
-    every side touches it; consecutive sides meet at the vertices.
+    every side touches it; consecutive sides meet at the vertices. ``grow`` moves every side
+    out by that much.
     """
     th = np.arange(_DOP_DIRS) * (2.0 * math.pi / _DOP_DIRS)
     c, s = np.cos(th), np.sin(th)
-    h = (points @ np.stack((c, s))).max(axis=0)
+    h = (points @ np.stack((c, s))).max(axis=0) + grow
     c1, s1, h1 = np.roll(c, -1), np.roll(s, -1), np.roll(h, -1)
     det = math.sin(2.0 * math.pi / _DOP_DIRS)
     return np.stack(((h * s1 - h1 * s) / det, (c * h1 - c1 * h) / det), axis=1)
@@ -332,8 +349,21 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     hit = np.where(usable[sv, su], np.maximum(d[sv, su] - p.eps_m, z_front), z_front)
     ceiling = max(float((origin[2] + hit * ray_z).max()), top)
     notes["ceiling_z"] = ceiling
-    verts = _clipped_vertices(origin, rays, z_front, z_support, footprint, support_z, top, ceiling)
-    fit = _boxed(verts, surface, support_z, resolution, frame_id, stamp_ns, notes)
+    if p.extent == "measured":
+        # The samples are pixel centres: the solid's rim lies up to a pixel past the outermost
+        # ones, so the hull is grown by the half cell the box is padded by.
+        pad = 0.5 * resolution
+        rim = _outer_polygon(surface[:, :2], grow=pad)
+        verts = np.concatenate(
+            [np.column_stack((rim, np.full(len(rim), z))) for z in (support_z, top + pad)]
+        )
+    else:
+        verts = _clipped_vertices(
+            origin, rays, z_front, z_support, footprint, support_z, top, ceiling
+        )
+    # A measured hull already carries the half-cell pad; the cone's vertices do not.
+    box_pad_res = 0.0 if p.extent == "measured" else resolution
+    fit = _boxed(verts, surface, support_z, box_pad_res, frame_id, stamp_ns, notes)
     return replace(fit, provisional=provisional) if provisional and fit.box is not None else fit
 
 
