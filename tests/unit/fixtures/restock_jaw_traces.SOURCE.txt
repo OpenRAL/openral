@@ -1,0 +1,6 @@
+Source: Spark ~/livesim/i51, 2026-10-31 restock 16-scene bench (OpenArm twin, Isaac, pi05 restock_subtasks), made by mkfix.py.
+c08: bench_clean3_08 (6 cm carton carton_led2335g3_a, left hand); c02: bench_clean2_02 (stock_object, left hand, the policy pre-shapes the jaw to 0.67 before the close).
+<key>_jaw_t/<key>_jaw: left_gripper measured (/joint_states header stamps, sim clock), 3 s before to 2 s after the executed close.
+<key>_cmd_t/<key>_cmd: the approved command, ADR-0102 gripper slot of /openral/safe_action (n_dof 1, ee_name left_gripper), stamped with the newest joint-state stamp at receipt (as the tracker node does).
+<key>_obj_t/<key>_obj_z: the carton's ground-truth centre z (Isaac, stage frame) from the sidecar flight recorder, sim clock.
+<key>_exec_close: sim time the HAL first applied a jaw command within the close band (0.0886) of closed.

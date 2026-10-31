@@ -18,9 +18,10 @@ Pure: no ROS.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Collection, Sequence
 
-__all__ = ["jaw_commands"]
+__all__ = ["SourceClock", "jaw_commands"]
 
 
 def jaw_commands(
@@ -85,3 +86,53 @@ def jaw_commands(
         if index is not None:
             out[joint] = float(row[index])
     return out
+
+
+class SourceClock:
+    """The joint states' source time at a moment on the node's clock, for stamping a command.
+
+    The approved chunk carries no stamp, and the node's clock need not share the joint states'
+    time base (a bag replayed with ``--clock`` runs on its recorded wall times; the joint stamps
+    are sim time). Each joint state gives ``clock - stamp``: the transport offset, plus the time
+    it sat in the executor's queue. The smallest offset over the last ``window_s`` of clock is
+    the transport alone, so ``source_at(clock)`` is the source time *now*, never earlier: a
+    backlog of joint states only raises the offsets, it cannot make a command look older than
+    the samples queued behind it. The estimate is held to at most ``max_lead_s`` past the newest
+    stamp seen: a node clock that runs faster than the source (a wall-clock replay of a sim
+    running below real time: offsets grow, the window's minimum is stale, and a restock replay
+    dated commands 7 s ahead of every jaw sample, so none was ever in force) must cost at most
+    that much delay, never the read.
+
+    Example:
+        >>> c = SourceClock()
+        >>> c.source_at(5_000) is None  # no joint state yet
+        True
+        >>> c.observe(clock_ns=1_000_000_100, stamp_ns=100)
+        >>> c.observe(clock_ns=1_000_000_900, stamp_ns=150)  # read 750 ns late
+        >>> c.source_at(1_000_001_000)
+        1000
+    """
+
+    def __init__(self, window_s: float = 10.0, max_lead_s: float = 0.5) -> None:
+        """Hold no offset yet."""
+        self._window_ns = int(window_s * 1e9)
+        self._max_lead_ns = int(max_lead_s * 1e9)
+        self._offsets: deque[tuple[int, int]] = deque()  # (clock_ns, clock_ns - stamp_ns)
+        self._newest_ns = 0
+
+    def observe(self, *, clock_ns: int, stamp_ns: int) -> None:
+        """Fold in one joint state: its stamp and the node's clock when it was handled."""
+        if self._offsets and clock_ns < self._offsets[-1][0]:
+            self._offsets.clear()  # the node's clock went back (a sim reset)
+            self._newest_ns = 0
+        self._offsets.append((clock_ns, clock_ns - stamp_ns))
+        self._newest_ns = max(self._newest_ns, stamp_ns)
+        while self._offsets[0][0] < clock_ns - self._window_ns:
+            self._offsets.popleft()
+
+    def source_at(self, clock_ns: int) -> int | None:
+        """The joint states' source time at ``clock_ns``, or ``None`` before any joint state."""
+        if not self._offsets:
+            return None
+        estimate = clock_ns - min(offset for _, offset in self._offsets)
+        return min(estimate, self._newest_ns + self._max_lead_ns)

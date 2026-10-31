@@ -67,6 +67,7 @@ from openral_world_state.object_tracker.binding import (
     Binding,
     BindOutcome,
     GraspBinder,
+    _fresh_ns,  # reason: same package; the freshness rule a late bind must share
     _pinch_holds,  # reason: same package; the candidate rule a late bind must share
 )
 from openral_world_state.object_tracker.cover import hand_touches
@@ -396,7 +397,11 @@ class TrackerSession:
                         self.attachment_changes += 1
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
-        """Fold the approved command for a gripper joint into the derived-attach read."""
+        """Fold the approved command for a gripper joint into the derived-attach read.
+
+        ``stamp_ns`` is the source time it was received at: jaw samples stamped before it are
+        read against the command before it.
+        """
         detector = self._stall.get(gripper_joint)
         if detector is not None and math.isfinite(target):
             detector.command(target, stamp_ns)
@@ -576,8 +581,11 @@ class TrackerSession:
         ``_LATE_MAX_TRAVEL_M`` since the hold; exactly one track has a geometry fit within
         ``_LATE_CONFIRM_NS`` of the hold and holds the pinch centre at the hold. An object
         left on the table is the camera's to catch after the bind (``_check_drop``), not the
-        map's before it. Map confirmation alone does not refresh fit age. Otherwise ``None``:
-        the normal bind.
+        map's before it. Map confirmation alone does not refresh fit age, except for the goal's
+        OCCLUDED target, exactly as the bind itself reads it (``binding._fresh_ns``): under the
+        hand the camera cannot refit it (restock bench 2026-10-31, 4 of 4 untracked 6 cm grasps:
+        the target occluded, map-confirmed 0.0-0.17 s before the bind, last fit 2.6-11 s old).
+        Otherwise ``None``: the normal bind.
         A SPLIT / LOST candidate is revived to OCCLUDED for the bind.
         """
         detector = self._stall.get(joint)
@@ -610,7 +618,7 @@ class TrackerSession:
             return _LateAttachChoice()
         store = self.tracker.store
         eligible = [o for o in store.all() if o.status in _LATE_STATUSES]
-        fresh = [o for o in eligible if o.last_fit_stamp_ns >= hold_ns - _LATE_CONFIRM_NS]
+        fresh = [o for o in eligible if _fresh_ns(o) >= hold_ns - _LATE_CONFIRM_NS]
         if eligible and not fresh:
             skip(
                 "stale_fit",

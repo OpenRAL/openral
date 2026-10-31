@@ -127,3 +127,49 @@ def test_the_so101_jaw_that_tracks_its_command_never_fires_but_the_orange_hold_d
     assert _replay("po", 6.3, 7.5) == []  # 0.205 -> 0.205: closed on nothing
     fired = _replay("po")
     assert len(fired) == 1 and fired[0] > 9.4, fired  # the orange hold, not the free closes
+
+
+def test_the_source_clock_maps_a_wall_clock_replay_onto_sim_stamps() -> None:
+    """A bag replayed with ``--clock`` runs the node on recorded wall time while the joint stamps
+    are sim time: a command stamped with the node's clock was never in force for any jaw sample,
+    and the derived read never fired (restock clean3_09 replay, 2026-10-31)."""
+    from openral_world_state.object_tracker.commands import SourceClock
+
+    wall0, sim0, period = 1_793_443_251_000_000_000, 25_000_000_000, 33_333_333
+    c = SourceClock()
+    for i in range(30):  # 30 Hz joint states, each handled 2-8 ms after its stamp
+        c.observe(
+            clock_ns=wall0 + i * period + 2_000_000 + (i % 4) * 2_000_000,
+            stamp_ns=sim0 + i * period,
+        )
+    now = wall0 + 29 * period + 5_000_000
+    source = c.source_at(now)
+    assert source is not None and abs(source - (sim0 + 29 * period + 3_000_000)) < 1_000
+
+
+def test_a_joint_state_backlog_does_not_date_a_command_into_the_past() -> None:
+    """Joint states handled 0.4 s late (an executor held by a fit) raise the observed offsets; the
+    minimum still reads the transport alone, so a command is dated at the source time now. A
+    backlog past ``max_lead_s`` is held to the newest stamp plus that lead."""
+    from openral_world_state.object_tracker.commands import SourceClock
+
+    c = SourceClock()
+    for i in range(10):  # on time
+        c.observe(clock_ns=i * 10**8 + 10**6, stamp_ns=i * 10**8)
+    for i in range(10, 20):  # backlog: each handled 0.4 s after its stamp
+        c.observe(clock_ns=i * 10**8 + 4 * 10**8, stamp_ns=i * 10**8)
+    assert c.source_at(23 * 10**8) == 23 * 10**8 - 10**6  # the newest handled stamp is 19e8
+    assert c.source_at(30 * 10**8) == 19 * 10**8 + 5 * 10**8  # 1.1 s behind: held to the lead
+
+
+def test_a_clock_faster_than_the_source_delays_a_command_by_at_most_the_lead() -> None:
+    """A wall-clock bag replay of a sim that ran at 0.3x real time: the offsets grow, the
+    window's minimum is seconds stale, and an unbounded estimate dated commands 7 s ahead of every
+    jaw sample (restock clean3_09 replay, 2026-10-31), so no command was ever in force."""
+    from openral_world_state.object_tracker.commands import SourceClock
+
+    c = SourceClock()
+    for i in range(300):  # 10 s of wall, 3 s of sim
+        c.observe(clock_ns=i * 33_333_333, stamp_ns=i * 10_000_000)
+    source = c.source_at(300 * 33_333_333)
+    assert source is not None and source <= 299 * 10_000_000 + 500_000_000
