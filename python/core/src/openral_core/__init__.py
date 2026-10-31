@@ -34,6 +34,7 @@ from openral_core.loaders import (
     raise_on_invalid_suite,
 )
 from openral_core.schemas import (
+    ACTOR_KEY_ENV,
     ANTHROPIC_BASE_URL,
     BODY_TWIST_DIM,
     CAMERA_TOPIC_PREFIX,
@@ -304,6 +305,7 @@ from openral_core.schemas import (
     load_robot_unit,
     merge_deploy_sensors,
     parse_reasoner_tool_choice,
+    pseudonymous_actor_id,
     publishing_sensors,
     repo_name_is_canonical,
     required_vla_camera_slots,
@@ -329,6 +331,7 @@ from openral_core.usd_catalog import (
 )
 
 __all__ = [
+    "ACTOR_KEY_ENV",
     "ANTHROPIC_BASE_URL",
     "BODY_TWIST_DIM",
     "CAMERA_TOPIC_PREFIX",
@@ -630,6 +633,7 @@ __all__ = [
     "merge_deploy_sensors",
     "parse_reasoner_tool_choice",
     "physics_steps_per_tick",
+    "pseudonymous_actor_id",
     "publishing_sensors",
     "raise_on_invalid_suite",
     "repo_name_is_canonical",

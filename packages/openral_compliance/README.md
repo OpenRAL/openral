@@ -28,8 +28,11 @@ machine is named by the OTel resource (`openral.unit.serial`, `openral.org.id`,
 
 With `$OPENRAL_COMPLIANCE_DIR` set (always on `deploy run`), each record is also written to
 the on-robot, hash-chained log as writer `recorder`, and every activation records a
-`SoftwareInventoryRecord` (`docs/reference/compliance-log.md`). Recording who reset or
-overrode a stop is #468.
+`SoftwareInventoryRecord` (`docs/reference/compliance-log.md`). Each latch clearing is recorded as an `estop_reset` intervention, attributed by an
+`OperatorAction` on `/openral/operator_action` (published by `openral estop reset` and the
+dashboard) or recorded as unattributed. When a record cannot be written to the log the
+recorder publishes `/openral/estop` (hazard-log Entry 070); on `deploy run` it is a required
+node.
 
 ## Bringup
 

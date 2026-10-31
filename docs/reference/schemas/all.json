@@ -31531,7 +31531,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "A software, configuration or operator intervention (MR Annex III \u00a71.1.9).\n\nAttributes:\n    kind: Discriminator (always ``\"intervention\"``).\n    intervention_kind: What was done.\n    actor: Who did it, pseudonymously.\n    channel: The path it came through.\n    legitimate: Whether the intervention was authorised; ``None`` when the\n        path cannot tell (a reset through a channel without identity).\n    before_digest: SHA-256 hex of the changed artefact before.\n    after_digest: SHA-256 hex after.\n    diff_ref: Where the full diff is kept, when it is kept elsewhere.\n\nExample:\n    >>> InterventionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=5,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     intervention_kind=\"estop_reset\",\n    ...     actor=Actor(channel_label=\"pendant\"),\n    ...     channel=\"pendant\",\n    ...     legitimate=None,\n    ... ).retention_class\n    <RetentionClass.MR_TRACE_5Y: 'mr_trace_5y'>",
+      "description": "A software, configuration or operator intervention (MR Annex III \u00a71.1.9).\n\nAttributes:\n    kind: Discriminator (always ``\"intervention\"``).\n    intervention_kind: What was done.\n    actor: Who did it, pseudonymously.\n    channel: The path it came through; ``\"unknown\"`` when nothing announced it.\n    legitimate: Whether the intervention was authorised; ``None`` when the\n        path cannot tell (a reset through a channel without identity).\n    before_digest: SHA-256 hex of the changed artefact before.\n    after_digest: SHA-256 hex after.\n    diff_ref: Where the full diff is kept, when it is kept elsewhere.\n\nExample:\n    >>> InterventionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=5,\n    ...     ts_ns=0,\n    ...     clock_source=\"ntp\",\n    ...     intervention_kind=\"estop_reset\",\n    ...     actor=Actor(channel_label=\"pendant\"),\n    ...     channel=\"pendant\",\n    ...     legitimate=None,\n    ... ).retention_class\n    <RetentionClass.MR_TRACE_5Y: 'mr_trace_5y'>",
       "properties": {
         "schema_version": {
           "const": "0.1",
@@ -31648,7 +31648,9 @@
             "dashboard",
             "pendant",
             "chatops",
-            "system"
+            "system",
+            "cli",
+            "unknown"
           ],
           "title": "Channel",
           "type": "string"

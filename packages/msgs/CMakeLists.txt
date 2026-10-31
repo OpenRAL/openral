@@ -19,6 +19,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/FailureTrigger.msg
   # ADR-0096 — latched current safety state on /openral/safety_status.
   msg/SafetyStatus.msg
+  msg/OperatorAction.msg
   # generic per-frame critic/reward score on /openral/critic/score.
   msg/CriticScore.msg
   # bounded world obstacles for the kernel's world-collision check.

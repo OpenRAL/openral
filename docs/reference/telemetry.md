@@ -218,7 +218,7 @@ body is the record's JSON, the timestamp its `ts_ns`, the trace context its
 
 | Producer | Records |
 |---|---|
-| `openral_compliance` recorder node (`/openral_compliance_recorder`) | `failure` per `FailureTrigger` on `/openral/failure/*`; `safety_stop` per `/openral/safety_status` transition into `latched`, with `parent_record_id` → the safety failure whose kind matches the drop reason, arriving up to 2 s before or after the latch (an e-stop forwarder publishes `/openral/estop` before its trigger); a latch replayed at configure is not a new stop; nothing is recorded while the node is not ACTIVE; `session` on activate / deactivate |
+| `openral_compliance` recorder node (`/openral_compliance_recorder`) | `failure` per `FailureTrigger` on `/openral/failure/*`; `safety_stop` per `/openral/safety_status` transition into `latched`, with `parent_record_id` → the safety failure whose kind matches the drop reason, arriving up to 2 s before or after the latch (an e-stop forwarder publishes `/openral/estop` before its trigger); a latch replayed at configure is not a new stop; nothing is recorded while the node is not ACTIVE; `session` on activate / deactivate; `software_inventory` on activate; `intervention` (`estop_reset`) per latch clearing, attributed by `/openral/operator_action` or recorded `unknown`; `intervention` (`param_set`) per announced dashboard parameter change. Publishes `/openral/estop` when a record cannot be written to the on-robot log |
 | `DeployRunner` safety gate (`ROSSafetyViolation` at the supervisor boundary) | `safety_stop` with `trigger_source="supervisor"`, once per unbroken run of the same violation class (not per withheld tick) |
 
 The machine is named by the **resource**, which the deploy launch stamps into

@@ -3130,6 +3130,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         parameters=[
             {
                 "run_mode": "hardware" if hal_mode == "real" else "sim",
+                # Real hardware: deactivating the recorder stops the machine (Entry 070).
+                "stop_when_inactive": hal_mode == "real",
                 "use_sim_time": use_sim_time,
             }
         ],
@@ -3661,7 +3663,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     )
     autostart.append(deadman_autostart)
 
-    def _shutdown_unless_clean(what: str) -> object:
+    def _shutdown_unless_clean(
+        what: str,
+        why: str = (
+            "This graph has no independent E-stop source, so it is shutting down instead "
+            "of running unprotected (CLAUDE.md section 3)."
+        ),
+    ) -> object:
         """OnProcessExit callback: a non-zero exit of ``what`` ends the graph."""
 
         def _on_exit(event: object, _context: object) -> list[LaunchDescriptionEntity]:
@@ -3669,13 +3677,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             if returncode == 0:
                 return []
             return [
-                LogInfo(
-                    msg=(
-                        f"FATAL: {what} exited {returncode}. This graph has no "
-                        "independent E-stop source, so it is shutting down instead "
-                        "of running unprotected (CLAUDE.md section 3)."
-                    )
-                ),
+                LogInfo(msg=f"FATAL: {what} exited {returncode}. {why}"),
                 Shutdown(reason=f"{what} exited {returncode}"),
             ]
 
@@ -3719,24 +3721,62 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="log",
         )
     )
-    # Same for the compliance recorder: a missing recorder loses records, not safety.
-    autostart.append(
-        ExecuteProcess(
-            cmd=[
-                sys.executable,
-                _kernel_autostart_path,
-                "--node",
-                "/openral_compliance_recorder",
-                "--target",
-                "active",
-                "--service-timeout-s",
-                "60.0",
-                "--transition-timeout-s",
-                "30.0",
-            ],
-            output="log",
-        )
+    # The compliance recorder (issue #467/#468). On real hardware it is REQUIRED, like the
+    # deadman: a machine whose recorder cannot arm, or dies, keeps no evidence of its stops
+    # and resets and cannot latch when its log fails, so the graph refuses to run without it
+    # (hazard-log Entry 070). In sim it is autostarted but not gated.
+    recorder_required = hal_mode == "real"
+    recorder_autostart = ExecuteProcess(
+        cmd=[
+            sys.executable,
+            _kernel_autostart_path,
+            "--node",
+            "/openral_compliance_recorder",
+            "--target",
+            "active",
+            *(["--required"] if recorder_required else []),
+            "--service-timeout-s",
+            "60.0",
+            "--transition-timeout-s",
+            "30.0",
+        ],
+        output="log",
     )
+    autostart.append(recorder_autostart)
+    if recorder_required:
+        no_recorder = (
+            "A real deploy without its compliance recorder keeps no evidence of its stops and "
+            "resets, so it is shutting down (hazard-log Entry 070)."
+        )
+        autostart.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=recorder_autostart,
+                    on_exit=_shutdown_unless_clean(
+                        "the compliance recorder autostart", no_recorder
+                    ),
+                )
+            )
+        )
+
+        def _shutdown_on_recorder_exit(
+            event: object, _context: object
+        ) -> list[LaunchDescriptionEntity]:
+            # Any exit, clean or not: a recorder SIGINT'd on its own also returns 0, and the
+            # graph must not keep moving without it.
+            returncode = getattr(event, "returncode", None)
+            return [
+                LogInfo(
+                    msg=f"FATAL: the compliance recorder node exited {returncode}. {no_recorder}"
+                ),
+                Shutdown(reason=f"the compliance recorder node exited {returncode}"),
+            ]
+
+        autostart.append(
+            RegisterEventHandler(
+                OnProcessExit(target_action=compliance_recorder, on_exit=_shutdown_on_recorder_exit)
+            )
+        )
     # The pendant is only autostarted when a device is actually declared.
     # Driving it otherwise produces an expected configure FAILURE on every
     # deploy, and that routine traceback is exactly the noise a REAL E-stop
