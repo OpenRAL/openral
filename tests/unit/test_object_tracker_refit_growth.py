@@ -13,6 +13,7 @@ import dataclasses
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import FitKind, ObjectRole, PlaceRegion, TrackedObject, TrackStatus
 from openral_world_state.object_tracker import ObjectTracker, TrackerParams
 from openral_world_state.object_tracker.fit import ContainingFit
@@ -52,7 +53,9 @@ def _tracker(status: TrackStatus = TrackStatus.CONFIRMED) -> tuple[ObjectTracker
     return tr, t
 
 
-def _scaled(box: PlaceRegion, k: float, surface: np.ndarray | None = None) -> ContainingFit:
+def _scaled(
+    box: PlaceRegion, k: float, surface: NDArray[np.float64] | None = None
+) -> ContainingFit:
     h = box.half_extents
     grown = box.model_copy(update={"half_extents": (k * h[0], k * h[1], h[2])})
     return ContainingFit(
@@ -115,12 +118,13 @@ def test_a_provisional_first_fit_holds_provisional_refits_until_a_clear_fit_repl
     assert tr._first_extent[t.object_id] == pytest.approx((2.0 * w, True)), "the first clear stays"
 
 
-def _surface(box: PlaceRegion, offset_m: float) -> np.ndarray:
+def _surface(box: PlaceRegion, offset_m: float) -> NDArray[np.float64]:
     """Eight points around ``box``'s centre, shifted along x by ``offset_m``."""
     c = np.asarray(box.pose.xyz, dtype=np.float64)
     h = 0.5 * np.asarray(box.half_extents, dtype=np.float64)
     corners = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
-    return c + corners * h + np.array([offset_m, 0.0, 0.0])
+    out: NDArray[np.float64] = c + corners * h + np.array([offset_m, 0.0, 0.0])
+    return out
 
 
 def test_a_refused_refit_measured_inside_the_box_re_dates_it() -> None:
