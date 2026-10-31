@@ -488,7 +488,7 @@ class GraspBinder:
                     log.info("object_tracker.destination_not_bound", object_id=track.object_id,
                              hand=self.hand.joint.name)  # fmt: skip
                     continue
-                fit_age_ns = stamp_ns - track.last_fit_stamp_ns
+                fit_age_ns = stamp_ns - _fresh_ns(track)
                 if track.object_id in excluded_track_ids:
                     stale.append((track.object_id, fit_age_ns, "late_hold_stale_fit"))
                     continue
@@ -976,3 +976,21 @@ class GraspBinder:
         """Forget the held payload (the track itself goes through ``release.release_track``)."""
         self.held, self._shape, self._theta = None, [], 0.0
         self._sighted, self._static = {}, None
+
+
+def _fresh_ns(track: TrackedObject) -> int:
+    """When ``track``'s geometry was last current, for the bind's ``max_track_fit_age_s``.
+
+    The camera fit's stamp; for an OCCLUDED TARGET track also the map's last agreement with
+    its cells. Under the hand the camera cannot refit the object, but the map still sees its
+    uncovered cells where the box says (a hidden or contact-held verdict never re-stamps
+    ``last_confirmed_stamp_ns``). A visible track needs a camera fit: the map alone never
+    re-dates it. Restock 2026-10-31 (arms-out start): a clear 2x box, map-confirmed 0.17 s
+    before the grasp, was 4 s past its last fit and bound the pinch fallback. Only the
+    goal's target: an occluded neighbour kept bindable the same way made the next grasp
+    AMBIGUOUS (its 2x box met the pinch), where it stays stale as before. Safety-WG review
+    owed.
+    """
+    if track.status is TrackStatus.OCCLUDED and track.role is ObjectRole.TARGET:
+        return max(track.last_fit_stamp_ns, track.last_confirmed_stamp_ns)
+    return track.last_fit_stamp_ns
