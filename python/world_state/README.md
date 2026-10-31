@@ -44,7 +44,15 @@ newest voxel grid and the answers to the tracker's own requests, and returns at 
   (`partial_refit_ignored`). A refit ignored for geometry (through the robot, or while
   occluded, the object still inside its box) still replaces the cells the cover test expects,
   so a target pushed inside its own box is confirmed where its surface is now. Issue #418,
-  2026-10-21; Safety-WG review owed.
+  2026-10-21; Safety-WG review owed. No refit, moved or not, grows a track past
+  `refit_growth_factor` (1.5) times its first clear fit (`refit_growth_refused`; one with two thirds of its surface still inside the box re-dates it, `refit_growth_redated`): a mask
+  spilling onto a neighbour read as "moved" and ratcheted a 6 cm carton's box to 39 cm. A
+  track with no clear fit yet is held to its first provisional fit, until a clear fit (never
+  refused against a provisional one) replaces the reference. A moved refit through the robot keeps the clear box's size, re-centred in x/y
+  (`covered_move_size_kept`), and still turns the track provisional; a shift within one grid cell
+  is noise and leaves the clear box and its provisional state as they were (`covered_move_within_cell`). 2026-10-31; Safety-WG
+  review owed. The grasp binder takes an OCCLUDED target track's map agreement as fresh as a camera fit (the
+  hand hides it from the camera, not from the map); a visible track still needs a camera fit.
 - `tracks` — `TrackStore` (`get` / `all` / `replace`, the binding/release interface),
   association by continuity (a tie within one voxel updates nothing), ageing on the
   source clock only.
@@ -55,7 +63,8 @@ newest voxel grid and the answers to the tracker's own requests, and returns at 
   DESTINATION track puts that track's refresh first among refreshes.
 - Late ATTACH requires the existing freshness window to contain a geometry fit; map coverage
   confirmation does not make old fitted geometry fresh. A refit through the robot that leaves
-  the clear box in place re-dates that fit (the box is unchanged). The grasp pose is the hold's,
+  the clear box in place re-dates that fit (the box is unchanged), and so does an ignored
+  partial or occluded refit whose measured surface lies inside the box (90 %). The grasp pose is the hold's,
   or the newest within 1 s before it whose pinch was in a fresh box (the policy lifts while
   the jaw still settles). The map is not asked whether the carried box is occupied (the
   self-filter hides a held object, old cells clear late); a wrong bind is released by the
