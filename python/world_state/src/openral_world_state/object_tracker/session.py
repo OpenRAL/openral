@@ -129,7 +129,7 @@ _JUDGE_CLEAR_M = 0.02
 _RELEASE_CLEAR_M = 0.04
 #: Consecutive in-hand fits away from every hand box that read as a drop (`_check_drop`).
 _DROP_FITS = 2
-#: A track a late ATTACH may revive and bind.
+#: A track a late ATTACH may revive and bind (once it has confirmed).
 _LATE_STATUSES = frozenset(
     {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT, TrackStatus.LOST}
 )
@@ -617,7 +617,13 @@ class TrackerSession:
             skip("no_joint_sample_at_hold")
             return _LateAttachChoice()
         store = self.tracker.store
-        eligible = [o for o in store.all() if o.status in _LATE_STATUSES]
+        # A LOST / SPLIT track that never confirmed never held cells of its own: reviving it
+        # revives a duplicate (restock bench_fix_08: a generic "carton" query's mint over the
+        # target, refused `cover_already_tracked` then LOST, revived OCCLUDED by the late bind
+        # and tied with the target, bound ambiguous).
+        eligible = [
+            o for o in store.all() if o.status in _LATE_STATUSES and o.last_confirmed_stamp_ns > 0
+        ]
         fresh = [o for o in eligible if _fresh_ns(o) >= hold_ns - _LATE_CONFIRM_NS]
         if eligible and not fresh:
             skip(

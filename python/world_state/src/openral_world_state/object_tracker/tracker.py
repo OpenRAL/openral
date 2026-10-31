@@ -47,6 +47,7 @@ from openral_core.perception_geometry import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from openral_world_state.object_lift import aabb_iou_3d
 from openral_world_state.object_tracker.catalog import CatalogDeclarations
 from openral_world_state.object_tracker.cover import (
     Cell,
@@ -82,7 +83,14 @@ from openral_world_state.object_tracker.scheduler import (
 from openral_world_state.object_tracker.surface_model import ObjectSurfaceModels
 from openral_world_state.object_tracker.tracks import TrackStore, age_tracks, associate
 
-__all__ = ["CameraFrame", "ObjectTracker", "TrackerOutput", "TrackerParams", "TrackerResult"]
+__all__ = [
+    "CameraFrame",
+    "ObjectTracker",
+    "TrackerOutput",
+    "TrackerParams",
+    "TrackerResult",
+    "duplicate_of",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -106,6 +114,48 @@ _CONTEXT_DEFER_NS = 2_000_000_000
 #: Margin a released match's box is grown by as its query's seed: down onto the support it
 #: fell to, and around where it rolled. *Calibration point.*
 PRIOR_MARGIN_M = 0.05
+#: A new fit whose box overlaps a live track's box by at least this 3D IoU is that track seen
+#: under another label, not a new object: never minted. *Calibration point* (restock
+#: 2026-10-31: a generic "carton" query's fit over the target at IoU 0.8-0.9; two inflated
+#: boxes of neighbouring 6.5 cm cartons 7 cm apart sit near 0.25).
+_DUPLICATE_MINT_IOU = 0.5
+
+
+def _aabb(box: PlaceRegion) -> tuple[float, float, float, float, float, float]:
+    """The axis-aligned extent of ``box``'s eight corners in its frame."""
+    t = homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw)
+    signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+    corners = (signs * np.asarray(box.half_extents)) @ t[:3, :3].T + t[:3, 3]
+    lo, hi = corners.min(axis=0), corners.max(axis=0)
+    return (*(float(v) for v in lo), *(float(v) for v in hi))  # type: ignore[return-value]  # reason: six floats by construction
+
+
+def duplicate_of(box: PlaceRegion, tracks: Sequence[TrackedObject]) -> tuple[str, float] | None:
+    """The live track whose box ``box`` overlaps at ``_DUPLICATE_MINT_IOU`` or more, and the IoU.
+
+    Association is same-label only (a banana let go into the bowl is no refit of the bowl), so
+    a generic query ("carton") fitted over a named one's object minted a second track on it; it
+    never confirmed (``cover_already_tracked``) but lingered, and a late bind revived it beside
+    the target (restock bench_fix_08, bound ambiguous). A banana in a bowl overlaps the bowl's
+    box at a small IoU, the same object at a large one. LOST and RELEASED tracks hold no place.
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> def b(x: float) -> PlaceRegion:
+        ...     p = Pose6D(xyz=(x, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="base")
+        ...     return PlaceRegion(frame_id="base", pose=p, half_extents=(0.06, 0.06, 0.06))
+        >>> duplicate_of(b(0.0), []) is None
+        True
+    """
+    new = _aabb(box)
+    best: tuple[str, float] | None = None
+    for o in tracks:
+        if o.status in (TrackStatus.LOST, TrackStatus.RELEASED):
+            continue
+        iou = aabb_iou_3d(new, _aabb(o.box))
+        if iou >= _DUPLICATE_MINT_IOU and (best is None or iou > best[1]):
+            best = (o.object_id, iou)
+    return best
 
 
 def _grown(box: PlaceRegion, margin_m: float) -> PlaceRegion:
@@ -936,7 +986,13 @@ class ObjectTracker:
             fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
         floor = support_z + grid.resolution
         if oid is None:
-            track = self._mint_track(req, fit, cells, frame, grid, support_z=support_z, floor=floor)
+            track = (
+                None
+                if self._duplicate_mint(req, fit, frame)
+                else self._mint_track(
+                    req, fit, cells, frame, grid, support_z=support_z, floor=floor
+                )
+            )
             if track is None:
                 return None
         else:
@@ -960,8 +1016,35 @@ class ObjectTracker:
                 support_z=support_z,
                 floor=floor,
             )
+        self._retire_context_duplicates(track, fit)
         self._commit_fit(track, fit, cells, centroid, grid, grid_stamp_ns, hands, frame)
         return None
+
+    def _retire_context_duplicates(self, track: TrackedObject, fit: ContainingFit) -> None:
+        """A TARGET / DESTINATION fit retires (LOST) a CONTEXT track that boxes its object.
+
+        The named query is the better evidence of what the object is. Restock bench_dup_05
+        (2026-10-31): the target went LOST, the generic "carton" query minted over it and
+        confirmed, and the target's refits then never confirmed (``cover_already_tracked``):
+        the goal timed out ungrounded. A context track is only avoided; its cells stay on the
+        map either way.
+        """
+        if track.role is ObjectRole.CONTEXT or fit.box is None:
+            return
+        others = [
+            o
+            for o in self.store.all()
+            if o.role is ObjectRole.CONTEXT
+            and o.object_id != track.object_id
+            and o.status is not TrackStatus.BOUND  # a held payload is never retired
+        ]
+        while (dup := duplicate_of(fit.box, others)) is not None:
+            old = self.store.get(dup[0])
+            assert old is not None
+            self.store.replace(old.model_copy(update={"status": TrackStatus.LOST}))
+            others = [o for o in others if o.object_id != dup[0]]
+            log.info("object_tracker.context_duplicate_retired", object_id=dup[0],
+                     by=track.object_id, iou=round(dup[1], 2))  # fmt: skip
 
     def _gate_candidate(
         self,
@@ -996,6 +1079,23 @@ class ObjectTracker:
                 )
                 return _Next.NEXT
         return _Candidate(fit, support_z, centroid, cells)
+
+    def _duplicate_mint(self, req: TrackerRequest, fit: ContainingFit, frame: CameraFrame) -> bool:
+        """Refuse (``True``) a CONTEXT query's mint whose box is a live track's box.
+
+        CONTEXT only: a context track is there to be avoided, which the live track already is;
+        a TARGET / DESTINATION query refused because another query boxed its object first
+        would never resolve, so those still mint.
+        """
+        q = self.queries.get(*req.query_key) if req.query_key else None
+        if q is None or q.query.role is not ObjectRole.CONTEXT or fit.box is None:
+            return False
+        dup = duplicate_of(fit.box, self.store.all())
+        if dup is None:
+            return False
+        self._refuse(f"{req.label}@{req.camera}", "duplicate_of_track", req=req, frame=frame,
+                     track=dup[0], iou=round(dup[1], 2))  # fmt: skip
+        return True
 
     def _mint_track(
         self,

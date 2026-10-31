@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -616,3 +617,43 @@ def test_a_fit_through_the_robot_rising_above_the_clear_box_is_no_move() -> None
     (track,) = tr.store.all()
     assert not track.provisional and track.box == clear.box, "held above: not moved"
     assert track.last_fit_stamp_ns == 2  # measured inside its box: re-dated
+
+
+def test_a_context_query_never_mints_over_a_tracked_object_of_another_label(cap: Any) -> None:
+    """Restock bench_fix_08 (2026-10-31): the generic CONTEXT query "carton" minted a second
+    track over the target "carton led2335g3 a"; it never confirmed, went LOST, and a late
+    bind revived it beside the target (bound ambiguous). Unlike a target query (above), a
+    context query is only there to be avoided, which the live track already is."""
+    oranges = _oranges(0.09)
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY.model_copy(update={"role": ObjectRole.CONTEXT}),
+                  "obj:orange_1@0", stamp_ns=0)  # fmt: skip
+    _, wall = step(tr, _RIG, oranges, stamp_ns=0, wall_s=0.0)
+    two = _get(tr, "trk:2")
+    tr.store.replace(two.model_copy(update={"label": "plate"}))
+    for n in range(1, 8):
+        out, wall = step(tr, _RIG, oranges, stamp_ns=n * 400_000_000, wall_s=wall + 1)
+    assert sorted(o.label for o in out.tracked.objects) == ["orange", "orange", "plate"]
+    assert any(e["why"] == "duplicate_of_track" for e in cap.named("object_tracker.refused"))
+
+
+def test_a_target_fit_retires_a_context_track_boxing_its_object(cap: Any) -> None:
+    """Restock bench_dup_05 (2026-10-31): the target went LOST, the generic CONTEXT query
+    "carton" minted over it and confirmed, and every refit of the target then failed
+    ``cover_already_tracked``; the goal timed out ungrounded. The named query wins."""
+    oranges = _oranges(0.09)
+    tr, wall = _grounded(oranges)
+    two = _get(tr, "trk:2")
+    ctx = tr.store.mint(
+        **{
+            **two.model_dump(exclude={"object_id", "epoch", "status", "label", "role"}),
+            "label": "fruit",
+            "role": ObjectRole.CONTEXT,
+        }
+    )
+    tr.store.replace(ctx.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    for n in range(1, 8):
+        _, wall = step(tr, _RIG, oranges, stamp_ns=n * 400_000_000, wall_s=wall + 1)
+    assert _get(tr, ctx.object_id).status is TrackStatus.LOST
+    assert _get(tr, "trk:2").status is TrackStatus.CONFIRMED
+    assert cap.named("object_tracker.context_duplicate_retired")

@@ -208,6 +208,19 @@ def test_an_occluded_context_track_needs_a_fresh_fit_to_late_bind(cap: Any) -> N
     assert event["why"] == "stale_fit"
 
 
+def test_a_lost_track_that_never_confirmed_is_not_revived_by_a_late_attach() -> None:
+    """Restock bench_fix_08 (2026-10-31): a generic "carton" query minted over the target,
+    never confirmed (``cover_already_tracked``), went LOST; the late bind revived it OCCLUDED
+    and it tied with the target (bound ambiguous). Never confirmed: never its own cells."""
+    s, binder, _, _ = _run(
+        "so101_follower", lift_m=0.05, follows=True, status=TrackStatus.LOST, confirmed_ago_s=10.0
+    )
+    [track] = s.tracker.store.all()
+    assert track.last_confirmed_stamp_ns == 0
+    assert track.status is TrackStatus.LOST
+    assert binder.held is not None and binder.held.outcome is not BindOutcome.TRACKED
+
+
 def test_stale_late_fit_is_excluded_from_normal_attach_fallback(cap: Any) -> None:
     _, binder, _, _ = _run(
         "droid_franka_robotiq",
