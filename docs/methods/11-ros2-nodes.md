@@ -184,7 +184,7 @@ _Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`);
 - `DISK_CHECK_PERIOD_S: float` (L78) — `30.0`: how often the recorder checks the log's free space.
 - `DISK_WARN_FREE_FRACTION: float` (L79) — `0.2`: below this free fraction the recorder warns.
 - `explains(drop_reason, failure_kind) -> bool` (L97) — Cause match: a `KIND_*` latch needs the same kind; `DROP_EXTERNAL_ESTOP` needs `KIND_HUMAN` / `KIND_TIMEOUT`; the kernel's input drops need `KIND_PERCEPTION`; other drops have no cause on the bus.
-- `main(args=None) -> int` (L526) — Entry point for `ros2 run openral_compliance recorder_node.py`; configures OTel as `openral.compliance`; on SIGINT records the session end via `close_session` before destroying the node.
+- `main(args=None) -> int` (L533) — Entry point for `ros2 run openral_compliance recorder_node.py`; configures OTel as `openral.compliance`; on SIGINT records the session end via `close_session` before destroying the node.
 
 ### `packages/openral_safety_watchdog/openral_safety_watchdog/`
 

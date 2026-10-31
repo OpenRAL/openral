@@ -494,3 +494,35 @@ def test_deactivating_the_recorder_on_hardware_stops_the_machine(ros_context: No
         assert ControllerEvidence.model_validate_json(ours()[0].evidence_json).state == "inactive"
     finally:
         g.close()
+
+
+def test_a_vanished_log_filesystem_stops_the_machine(
+    ros_context: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disk check hits a log root that is gone: a stated stop, not a dead recorder."""
+    import shutil
+
+    from openral_core import ControllerEvidence
+    from std_msgs.msg import Empty
+
+    root = tmp_path / "log"
+    monkeypatch.setenv("OPENRAL_COMPLIANCE_DIR", str(root))
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_log_gone")
+    estops: list[Any] = []
+    triggers: list[Any] = []
+    g.helper.create_subscription(Empty, "/openral/estop", estops.append, 10)
+    g.helper.create_subscription(FailureTrigger, "/openral/failure/safety", triggers.append, 50)
+    try:
+        g.bring_up()
+        shutil.rmtree(root)
+        g.node._check_disk()  # the 30 s timer's callback
+
+        def ours() -> list[Any]:
+            return [t for t in triggers if t.kind == FailureTrigger.KIND_CONTROLLER]
+
+        assert _spin_until(g.executor, lambda: len(estops) == 1 and len(ours()) == 1)
+        evidence = ControllerEvidence.model_validate_json(ours()[0].evidence_json)
+        assert evidence.state == "log_unavailable"
+    finally:
+        g.close()

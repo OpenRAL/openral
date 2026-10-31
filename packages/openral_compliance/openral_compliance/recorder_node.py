@@ -352,7 +352,14 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         """Warn while the log's filesystem is below ``DISK_WARN_FREE_FRACTION`` free."""
         if self._log is None:
             return
-        usage = shutil.disk_usage(self._log.root)
+        try:
+            usage = shutil.disk_usage(self._log.root)
+        except OSError as exc:
+            # The log's filesystem is gone (unmounted, removed): the evidence cannot be kept,
+            # so stop with that cause rather than let the exception end the node.
+            self.get_logger().error(f"compliance.log_unavailable: {exc}")
+            self._stop_for_lost_evidence(str(exc), "log_unavailable")
+            return
         low = usage.free / usage.total < DISK_WARN_FREE_FRACTION
         if low and not self._disk_low:
             self.get_logger().warning(
