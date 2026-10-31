@@ -3130,6 +3130,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         parameters=[
             {
                 "run_mode": "hardware" if hal_mode == "real" else "sim",
+                # Real hardware: deactivating the recorder stops the machine (Entry 070).
+                "stop_when_inactive": hal_mode == "real",
                 "use_sim_time": use_sim_time,
             }
         ],
@@ -3746,17 +3748,35 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             "A real deploy without its compliance recorder keeps no evidence of its stops and "
             "resets, so it is shutting down (hazard-log Entry 070)."
         )
-        for action, what in (
-            (recorder_autostart, "the compliance recorder autostart"),
-            (compliance_recorder, "the compliance recorder node"),
-        ):
-            autostart.append(
-                RegisterEventHandler(
-                    OnProcessExit(
-                        target_action=action, on_exit=_shutdown_unless_clean(what, no_recorder)
-                    )
+        autostart.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=recorder_autostart,
+                    on_exit=_shutdown_unless_clean(
+                        "the compliance recorder autostart", no_recorder
+                    ),
                 )
             )
+        )
+
+        def _shutdown_on_recorder_exit(
+            event: object, _context: object
+        ) -> list[LaunchDescriptionEntity]:
+            # Any exit, clean or not: a recorder SIGINT'd on its own also returns 0, and the
+            # graph must not keep moving without it.
+            returncode = getattr(event, "returncode", None)
+            return [
+                LogInfo(
+                    msg=f"FATAL: the compliance recorder node exited {returncode}. {no_recorder}"
+                ),
+                Shutdown(reason=f"the compliance recorder node exited {returncode}"),
+            ]
+
+        autostart.append(
+            RegisterEventHandler(
+                OnProcessExit(target_action=compliance_recorder, on_exit=_shutdown_on_recorder_exit)
+            )
+        )
     # The pendant is only autostarted when a device is actually declared.
     # Driving it otherwise produces an expected configure FAILURE on every
     # deploy, and that routine traceback is exactly the noise a REAL E-stop

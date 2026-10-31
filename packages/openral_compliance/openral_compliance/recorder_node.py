@@ -136,6 +136,15 @@ def _actor(msg: Any) -> Actor:  # reason: rclpy message
     return Actor(channel_label=msg.channel_label or "unlabelled", actor_id=actor_id)
 
 
+def _legitimacy(actor: Actor) -> bool | None:
+    """``True`` only for an identified operator; an anonymous claim proves nothing (``None``).
+
+    Identified means a pseudonymous id under the deployer's key, which only a channel holding
+    that key can produce. Authentication proper (logins) is #36.
+    """
+    return True if actor.actor_id is not None else None
+
+
 class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
     """Records failures, safety stops and sessions as compliance records.
 
@@ -147,6 +156,9 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         """Declare parameters; opens no resources until on_configure."""
         super().__init__(node_name)
         self.declare_parameter("run_mode", "sim")
+        # Real hardware: a recorder that stops recording (deactivated while the graph runs)
+        # stops the machine too, the same way a failed log write does.
+        self.declare_parameter("stop_when_inactive", False)
         self._emitter: ComplianceEmitter | None = None
         self._log: ComplianceLog | None = None
         self._subs: list[Any] = []
@@ -238,9 +250,12 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Stop recording and close the session."""
+        """Stop recording and close the session; with ``stop_when_inactive``, stop the machine."""
         del state
         self.close_session()
+        if self.get_parameter("stop_when_inactive").get_parameter_value().bool_value:
+            self._log_failure_stopped = False
+            self._stop_for_lost_evidence("the compliance recorder was deactivated", "inactive")
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -311,7 +326,7 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         )
         self._stop_for_lost_evidence(str(error))
 
-    def _stop_for_lost_evidence(self, detail: str) -> None:
+    def _stop_for_lost_evidence(self, detail: str, state: str = "log_write_failed") -> None:
         """Latch the machine: one that cannot keep its safety evidence does not move.
 
         Publishes ``/openral/estop`` (every latch holder — kernel, HALs, runner — subscribes)
@@ -328,10 +343,10 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         trigger.kind = FailureTrigger.KIND_CONTROLLER
         trigger.severity = FailureTrigger.SEVERITY_ABORT
         trigger.evidence_json = ControllerEvidence(
-            controller_name=self.get_name(), state="log_write_failed", detail=detail[:200]
+            controller_name=self.get_name(), state=state, detail=detail[:200]
         ).model_dump_json()
         self._failure_pub.publish(trigger)
-        self.get_logger().error("compliance.estop_published: the compliance log cannot be written")
+        self.get_logger().error(f"compliance.estop_published ({state}): {detail[:200]}")
 
     def _check_disk(self) -> None:
         """Warn while the log's filesystem is below ``DISK_WARN_FREE_FRACTION`` free."""
@@ -354,9 +369,9 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
             self._record(
                 InterventionRecord,
                 intervention_kind="param_set",
-                actor=_actor(msg),
+                actor=(actor := _actor(msg)),
                 channel=_channel(msg.channel_label),
-                legitimate=True,
+                legitimate=_legitimacy(actor),
                 diff_ref=msg.detail or None,
             )
             return
@@ -368,7 +383,12 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
             self._actions.append((time.monotonic(), msg))
 
     def _on_latch_cleared(self) -> None:
-        """A latch cleared: a reset happened. Attribute it, or wait briefly for who did it."""
+        """A latch cleared: a reset happened. Attribute it, or wait briefly for who did it.
+
+        Re-arms the lost-evidence stop: a reset whose record cannot be written either (the log
+        still fails) stops the machine again.
+        """
+        self._log_failure_stopped = False
         now = time.monotonic()
         action = next(
             (a for seen, a in reversed(self._actions) if now - seen <= STOP_EXPLAIN_WINDOW_S),
@@ -393,13 +413,14 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
         if timer is not None:
             timer.cancel()
             self.destroy_timer(timer)
+        actor = _actor(action) if action is not None else Actor(channel_label="unattributed")
         self._record(
             InterventionRecord,
             ts_ns=ts_ns,
             intervention_kind="estop_reset",
-            actor=_actor(action) if action is not None else Actor(channel_label="unattributed"),
+            actor=actor,
             channel=_channel(action.channel_label) if action is not None else "unknown",
-            legitimate=True if action is not None else None,
+            legitimate=_legitimacy(actor),
         )
 
     def _emit_session(self, *, end_ts_ns: int | None) -> None:

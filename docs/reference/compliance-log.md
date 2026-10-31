@@ -81,16 +81,19 @@ just before they act; the record then carries the channel and the operator as
 can link the id back to a person. A reset nobody announced (a raw `ros2 service call`, say) is
 still recorded, with `channel: unknown` and `legitimate: null`: the Machinery Regulation asks
 for evidence of illegitimate interventions too. Dashboard parameter changes are recorded as
-`param_set` interventions. An announcement is a claim by the channel, not an authentication
-(logins are #36).
+`param_set` interventions. An intervention is `legitimate: true` only when the operator is
+identified (a pseudonymous id under the deployer's key); an anonymous announcement records
+the channel with `legitimate: null`. An announcement is a claim by the channel, not an
+authentication (logins are #36).
 
 **A machine that cannot keep its safety evidence does not move.** If a record cannot be
 written to the log (full disk, read-only filesystem), the recorder publishes `/openral/estop`
 and a `FailureTrigger(KIND_CONTROLLER, SEVERITY_ABORT)` with
 `ControllerEvidence(state="log_write_failed")`; a reset while the log still fails cannot be
 recorded and latches again. The recorder warns in its log while the filesystem has under 20 %
-free. On `deploy run` the recorder is required: a deploy whose recorder cannot start, or dies,
-shuts down.
+free. On `deploy run` the recorder is required: a deploy whose recorder cannot start or exits
+(cleanly or not) shuts down, and deactivating it stops the machine
+(`ControllerEvidence(state="inactive")`).
 
 ## `openral compliance`
 

@@ -412,7 +412,9 @@ def test_a_late_announcement_still_attributes_and_param_set_is_recorded(
         _announce(g, "param_set", channel="dashboard", detail="/openral_reasoner:temperature")
         assert _spin_until(g.executor, lambda: len(_interventions()) == 2)
         reset, param = sorted(_interventions(), key=lambda r: r.intervention_kind)
-        assert (reset.channel, reset.legitimate, reset.actor.actor_id) == ("dashboard", True, None)
+        # An anonymous claim (no key, or a malformed id) proves nothing: legitimacy unknown.
+        assert (reset.channel, reset.legitimate, reset.actor.actor_id) == ("dashboard", None, None)
+        assert param.legitimate is None
         assert (param.intervention_kind, param.diff_ref) == (
             "param_set",
             "/openral_reasoner:temperature",
@@ -453,7 +455,42 @@ def test_a_log_it_cannot_write_stops_the_machine_once(
         assert len(ours) == 1
         evidence = ControllerEvidence.model_validate_json(ours[0].evidence_json)
         assert evidence.state == "log_write_failed"
+
+        # The operator resets while the disk is still full: the reset cannot be recorded, so
+        # the machine stops again (no evidence, no motion).
+        g.publish_status(latched=False)
+        g.publish_status(latched=True, drop_reason=SafetyStatus.DROP_EXTERNAL_ESTOP)
+        g.publish_status(latched=False)
+        assert _spin_until(
+            g.executor, lambda: len(estops) >= 2, timeout_s=STOP_EXPLAIN_WINDOW_S + 2.0
+        )
     finally:
         for path in [tmp_path, *tmp_path.rglob("*")]:
             os.chmod(path, 0o700 if path.is_dir() else 0o600)
+        g.close()
+
+
+def test_deactivating_the_recorder_on_hardware_stops_the_machine(ros_context: None) -> None:
+    """With stop_when_inactive (real hardware), a recorder that stops recording stops motion."""
+    from openral_core import ControllerEvidence
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import Empty
+
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_deactivated")
+    estops: list[Any] = []
+    triggers: list[Any] = []
+    g.helper.create_subscription(Empty, "/openral/estop", estops.append, 10)
+    g.helper.create_subscription(FailureTrigger, "/openral/failure/safety", triggers.append, 50)
+    try:
+        g.node.set_parameters([Parameter("stop_when_inactive", Parameter.Type.BOOL, True)])
+        g.bring_up()
+        assert g.node.trigger_deactivate() == TransitionCallbackReturn.SUCCESS
+
+        def ours() -> list[Any]:
+            return [t for t in triggers if t.kind == FailureTrigger.KIND_CONTROLLER]
+
+        assert _spin_until(g.executor, lambda: len(estops) == 1 and len(ours()) == 1)
+        assert ControllerEvidence.model_validate_json(ours()[0].evidence_json).state == "inactive"
+    finally:
         g.close()
