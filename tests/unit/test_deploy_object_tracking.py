@@ -483,6 +483,6 @@ def test_deploy_forwards_the_stations_declared_place_zones(tmp_path: Path) -> No
     argv = _argv(config, "sim", {"object_tracking": "off"})
     (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("place_zones_json:=")]
     assert [z["name"] for z in json.loads(raw)] == [z["name"] for z in zones]
-    assert not [
-        a for a in _argv(_PICK_ORANGE, "sim", {"object_tracking": "off"}) if "place_zones" in a
-    ]
+    bare = tmp_path / "no_zones.yaml"  # PickOrange declares its own "plate" zone
+    bare.write_text(yaml.safe_dump({k: v for k, v in scene.items() if k != "place_zones"}))
+    assert not [a for a in _argv(bare, "sim", {"object_tracking": "off"}) if "place_zones" in a]
