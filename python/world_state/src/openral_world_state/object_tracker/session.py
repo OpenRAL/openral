@@ -48,6 +48,7 @@ from openral_core import (
     ObjectRole,
     PlaceDeclaration,
     PlaceRegion,
+    PlaceZone,
     Pose6D,
     RobotDescription,
     TrackedObject,
@@ -287,6 +288,8 @@ class TrackerSession:
         self.grid_stamp_ns = 0
         self.grasp_declaration: GraspDeclaration | None = None
         self.place_declaration: PlaceDeclaration | None = None
+        # The station's declared place zones by ``PlaceZone.target_id`` (``place_region``).
+        self.place_zones: dict[str, PlaceZone] = {}
         self.attachment_changes = 0  # bumped whenever the held set changes
         self._monitors: dict[str, JawReleaseMonitor] = {}
         self._attach_ns: dict[str, int] = {}
@@ -491,6 +494,15 @@ class TrackerSession:
     def on_place_declaration(self, decl: PlaceDeclaration) -> None:
         """A place declaration (or its retraction) from dispatch."""
         self.place_declaration = decl if decl.active else None
+        if decl.active and decl.target_id.startswith(PlaceZone.TARGET_PREFIX):
+            # Logged once per declaration: `place_region` itself runs on every publish.
+            zone = self.place_zones.get(decl.target_id)
+            log.info(
+                "object_tracker.place_zone_declared",
+                target_id=decl.target_id,
+                known=zone is not None,
+                frame_ok=zone is not None and zone.region.frame_id == self.frame_id,
+            )
         queries = () if decl.destination_query is None else (decl.destination_query,)
         self._set_goal(
             "place",
@@ -819,11 +831,21 @@ class TrackerSession:
         confirmation (the kernel ages it out on ``place_region_max_age_s``). ``None`` without a held
         payload, a grid, a destination query or exactly one such track: fail closed. Safety-WG
         review owed.
+
+        A declaration whose ``target_id`` names a declared zone (``zone:<name>``, a shelf slot no
+        detector grounds) gets that ``PlaceZone``'s box instead, stamped with the newest grid's
+        ``source_stamp``, under the same held-payload condition; an unknown zone or one in
+        another frame than the grid is ``None``. A declared, not measured, region: Safety-WG
+        review, a hazard-log row and an ADR-0097 amendment owed.
         """
         decl, grid = self.place_declaration, self.grid
-        if decl is None or decl.destination_query is None or grid is None:
+        if decl is None or grid is None:
             return None
         if all(b.held is None for b in self.binders.values()):
+            return None
+        if decl.target_id.startswith(PlaceZone.TARGET_PREFIX):
+            return self._zone_region(decl.target_id, grid.frame_id)
+        if decl.destination_query is None:
             return None
         label = decl.destination_query.label
         dest = [
@@ -841,6 +863,15 @@ class TrackerSession:
                 "stamp_ns": t.last_confirmed_stamp_ns,
                 "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}",
             }
+        )
+
+    def _zone_region(self, target_id: str, grid_frame: str) -> PlaceRegion | None:
+        """The declared zone ``target_id`` names, stamped with the newest grid, or ``None``."""
+        zone = self.place_zones.get(target_id)
+        if zone is None or zone.region.frame_id != grid_frame:
+            return None
+        return zone.region.model_copy(
+            update={"stamp_ns": self.grid_stamp_ns, "evidence_ref": f"declared:{zone.name}"}
         )
 
     def grasp_region(self) -> PlaceRegion | None:

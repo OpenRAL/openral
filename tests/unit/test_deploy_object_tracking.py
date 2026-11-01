@@ -466,3 +466,23 @@ def test_a_context_query_is_seeded_beside_the_targets_seed() -> None:
     grown = [h + _CONTEXT_SEED_MARGIN_M for h in box.half_extents]
     assert context["seed"]["half_extents"] == pytest.approx(grown)
     assert context["seed"]["pose"]["xyz"] == pytest.approx(list(box.pose.xyz))
+
+
+def test_deploy_forwards_the_stations_declared_place_zones(tmp_path: Path) -> None:
+    """``DeployScene.place_zones`` (the restock shelf fixture) reach the launch as one JSON
+    list (``place_zones_json``) for the runner and the tracker; none declared, none sent."""
+    import json
+
+    import yaml
+
+    fixture = _REPO / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
+    zones = yaml.safe_load(fixture.read_text())["place_zones"]
+    scene = yaml.safe_load(_PICK_ORANGE.read_text())
+    config = tmp_path / "with_zones.yaml"
+    config.write_text(yaml.safe_dump({**scene, "place_zones": zones}))
+    argv = _argv(config, "sim", {"object_tracking": "off"})
+    (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("place_zones_json:=")]
+    assert [z["name"] for z in json.loads(raw)] == [z["name"] for z in zones]
+    assert not [
+        a for a in _argv(_PICK_ORANGE, "sim", {"object_tracking": "off"}) if "place_zones" in a
+    ]

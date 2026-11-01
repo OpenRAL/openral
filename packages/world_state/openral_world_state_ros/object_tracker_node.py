@@ -29,7 +29,8 @@ owns the wire:
   are gated off) with the regions the tracker measures: the grasp declaration's
   ``workspace_box`` as ``workspace_region`` while the tracker's own grid confirms it
   (``TrackerSession.workspace_region``, the producer's rule), the place declaration's
-  ``region`` (``TrackerSession.place_region``) and, in ``tracking`` only, the grasp
+  ``region`` (``TrackerSession.place_region``: a tracked destination, or a declared
+  ``place_zones_json`` zone the declaration names) and, in ``tracking`` only, the grasp
   declaration's ``region`` (``TrackerSession.grasp_region``; ``on``'s exemption provider
   keys on track ids instead and gets none). Heartbeated only while joint states are fresh.
 * **Revisions** are seeded from wall time (ns) at every activate plus the store's own
@@ -481,6 +482,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         GraspDeclaration,
         ObjectQuery,
         PlaceDeclaration,
+        PlaceZone,
         RobotDescription,
         camera_topic,
     )
@@ -575,6 +577,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("static_cells_file", "")
             # The deploy's prompt-time ObjectQuery list (JSON), grounded at start.
             self.declare_parameter("object_queries_json", "")
+            # The station's declared place zones (DeployScene.place_zones, a JSON list of
+            # core.PlaceZone): a place declaration naming one gets its box as the region.
+            self.declare_parameter("place_zones_json", "")
             self.declare_parameter("declared_object_catalog_json", "")
             self.declare_parameter("object_surface_model_json", "")
             self.declare_parameter("locate_service", "")
@@ -704,6 +709,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 from openral_world_state.object_tracker import read_static_cells
 
                 self.session.tracker.set_static_geometry(read_static_cells(static_file))
+            zones_json = str(self._p("place_zones_json"))
+            if zones_json:
+                zones = TypeAdapter(list[PlaceZone]).validate_json(zones_json)
+                self.session.place_zones = {z.target_id: z for z in zones}
+                slog.info(
+                    "loaded declared place zones",
+                    zones=sorted(z.name for z in zones),
+                    off_frame=sorted(
+                        z.name for z in zones if z.region.frame_id != self.session.frame_id
+                    ),
+                )
             raw = str(self._p("object_queries_json"))
             if raw:
                 self.session.open_standing_queries(

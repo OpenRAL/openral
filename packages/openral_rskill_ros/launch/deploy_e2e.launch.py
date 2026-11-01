@@ -2332,6 +2332,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
     object_queries_json = LaunchConfiguration("object_queries_json").perform(context)
+    place_zones_json = LaunchConfiguration("place_zones_json").perform(context)
     declared_object_catalog_json = LaunchConfiguration("declared_object_catalog_json").perform(
         context
     )
@@ -3505,6 +3506,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # Issue #418: the scene task's standing ObjectQuery s; inert while the
                 # runner's object_tracking is "off".
                 "object_queries_json": object_queries_json,
+                # The station's declared place zones: the goal-scope place declaration
+                # names the one the prompt names (`zone:<name>`).
+                "place_zones_json": place_zones_json,
                 "object_tracking": object_tracking,
                 # Issue #418 step 1.4: the runner waits for its TARGET queries to ground
                 # and, under grounding_required, refuses the goal. Checked present above
@@ -4691,6 +4695,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # The kernel's hand-link set: one wrist definition for both.
                     "wrist_links": workspace_contact_wrist_links,
                     "object_queries_json": object_queries_json,
+                    # The station's declared place zones: the region of a place
+                    # declaration naming one (`TrackerSession.place_region`).
+                    "place_zones_json": place_zones_json,
                     "declared_object_catalog_json": declared_object_catalog_json,
                     "object_surface_model_json": object_surface_model_json,
                     # The declared static geometry (the kernel's cells file): a body wholly
@@ -5113,6 +5120,16 @@ def generate_launch_description() -> LaunchDescription:
                 "JSON list of openral_core.ObjectQuery (issue #418) the skill_runner "
                 "attaches to each goal's grasp (TARGET/CONTEXT) and place (DESTINATION) "
                 "declaration when object tracking is on. Empty = none."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "place_zones_json",
+            default_value="",
+            description=(
+                "JSON list of openral_core.PlaceZone (DeployScene.place_zones): named place "
+                "zones on fixed station furniture. The skill_runner's goal-scope place "
+                "declaration names the one the prompt names; the object tracker publishes its "
+                "box as the place region while a payload is held. Empty = none."
             ),
         ),
         DeclareLaunchArgument(

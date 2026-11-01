@@ -2016,6 +2016,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(
             f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
         )
+    # The station's declared place zones (shelf slots): the runner names the one a goal's
+    # prompt names, the object tracker publishes its box as the place region.
+    if deploy_scene is not None and deploy_scene.place_zones:
+        zones = "[" + ",".join(z.model_dump_json() for z in deploy_scene.place_zones) + "]"
+        argv_template.append(f"place_zones_json:={zones}")
     # The grasp-phase sibling (real pick-and-place design §2.1), same path.
     if deploy_scene is not None and deploy_scene.grasp_declaration is not None:
         argv_template.append(

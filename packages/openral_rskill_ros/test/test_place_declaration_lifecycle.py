@@ -532,6 +532,31 @@ def test_the_goal_scope_place_backstop_never_exceeds_120_s(
     assert declaration.timeout_s == pytest.approx(expected_s)
 
 
+@pytest.mark.parametrize(
+    ("prompt", "target_id"),
+    [
+        ("restock box x3 into upper slot 2", "zone:upper_slot_2"),
+        ("restock box x3 onto the shelf", "surface"),  # names no zone: none armed
+    ],
+)
+def test_the_goal_scope_place_declaration_names_the_zone_its_prompt_names(
+    prompt: str, target_id: str
+) -> None:
+    """The station's declared zones (the restock shelf fixture): the prompt's slot becomes
+    the goal-scope declaration's ``zone:<name>`` target, which the tracker resolves."""
+    import json
+    from pathlib import Path
+
+    import yaml
+
+    fixture = Path(__file__).parents[3] / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
+    zones = json.dumps(yaml.safe_load(fixture.read_text())["place_zones"])
+    with _harness("", approach=True, params={"place_zones_json": zones}) as (_, runtime, _seen):
+        declaration = runtime.skill_runner_node._goal_scope_place_declaration(30.0, prompt=prompt)
+    assert declaration.target_id == target_id
+    assert declaration.region is None, "dispatch never publishes a region"
+
+
 # ── Object tracking (issue #418): the destination query rides the place declaration ──
 
 _BANANA_QUERIES = (

@@ -4328,7 +4328,8 @@ class PlaceDeclaration(BaseModel):
             ``geometry`` must be empty.
         destination_query: Optional class the destination belongs to (a plate, a
             bowl; issue #418), with role ``DESTINATION``. The tracker grounds it; it
-            arms nothing. A shelf slot stays a ``search_box``.
+            arms nothing. A shelf slot is a declared ``PlaceZone``
+            instead, named by ``target_id`` ``zone:<name>``.
 
     Example:
         >>> declaration = PlaceDeclaration(
@@ -4509,6 +4510,102 @@ class PlaceDeclaration(BaseModel):
         msg.destination_query_valid = self.destination_query is not None  # type: ignore[attr-defined]
         if self.destination_query is not None:
             self.destination_query.fill_idl(msg.destination_query)  # type: ignore[attr-defined]
+
+
+#: A place-zone name: lower-case words joined by ``_`` (``upper_slot_2``).
+_ZONE_NAME = r"^[a-z0-9]+(?:_[a-z0-9]+)*$"
+
+
+class PlaceZone(BaseModel):
+    """A named place zone on fixed station furniture (a shelf slot), declared by the station.
+
+    The destination of a prompt such as "restock box x3 into upper slot 2" is a position on a
+    fixed shelf, which an open-vocabulary detector cannot ground (unlike a plate, a tracked
+    ``DESTINATION`` object). A station declares such positions here
+    (``DeployScene.place_zones``); the rSkill runner names the one a goal's prompt names as its
+    goal-scope ``PlaceDeclaration.target_id`` (``zone:<name>``, ``place_zone_for_prompt``) and
+    the Layer-2 object tracker publishes ``region`` as the declaration's place region while a
+    payload is held (``TrackerSession.place_region``). The zone arms nothing on its own.
+
+    **A declared, not measured, region** — a deliberate exception to ADR-0097's
+    producer-measured rule, sound only for furniture fixed in the robot base frame (a
+    fixed-base station). Safety-WG review, a hazard-log row and an ADR amendment are owed.
+
+    Attributes:
+        name: The zone's name, lower-case words joined by ``_`` (``upper_slot_2``).
+        aliases: Other names a prompt may use (``upper_2``), same form.
+        region: The zone's box in the robot base frame (the voxel grid's); ``geometry`` empty.
+
+    Example:
+        >>> zone = PlaceZone(
+        ...     name="upper_slot_2",
+        ...     aliases=("upper_2",),
+        ...     region=PlaceRegion(
+        ...         frame_id="openarm_base",
+        ...         pose=Pose6D(
+        ...             xyz=(0.527, 0.214, -0.178),
+        ...             quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ...             frame_id="openarm_base",
+        ...         ),
+        ...         half_extents=(0.188, 0.062, 0.064),
+        ...     ),
+        ... )
+        >>> zone.target_id
+        'zone:upper_slot_2'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: ``PlaceDeclaration.target_id`` prefix naming a declared zone.
+    TARGET_PREFIX: ClassVar[str] = "zone:"
+
+    name: Annotated[str, StringConstraints(pattern=_ZONE_NAME)]
+    aliases: tuple[Annotated[str, StringConstraints(pattern=_ZONE_NAME)], ...] = ()
+    region: PlaceRegion
+
+    @model_validator(mode="after")
+    def _validate_zone(self) -> Self:
+        if self.region.geometry:
+            raise ValueError(f"PlaceZone {self.name!r}: region.geometry must be empty.")
+        return self
+
+    @property
+    def target_id(self) -> str:
+        """The ``PlaceDeclaration.target_id`` naming this zone."""
+        return f"{self.TARGET_PREFIX}{self.name}"
+
+
+def place_zone_for_prompt(prompt: str, zones: Sequence[PlaceZone]) -> PlaceZone | None:
+    """The one declared zone a prompt names, or ``None`` (fail closed).
+
+    Deterministic: the prompt is lower-cased with every non-alphanumeric run read as ``_``
+    ("upper slot 2" → ``upper_slot_2``), and a zone matches when its name or an alias occurs
+    in it as whole words. No zone, or several different ones, named → ``None``: the goal
+    then arms no zone, never "any declared zone".
+
+    Example:
+        >>> zone = PlaceZone.model_validate(
+        ...     {
+        ...         "name": "upper_slot_2",
+        ...         "region": {
+        ...             "frame_id": "openarm_base",
+        ...             "pose": {
+        ...                 "xyz": [0.5, 0.2, -0.2],
+        ...                 "quat_xyzw": [0, 0, 0, 1],
+        ...                 "frame_id": "openarm_base",
+        ...             },
+        ...             "half_extents": [0.1, 0.06, 0.06],
+        ...         },
+        ...     }
+        ... )
+        >>> place_zone_for_prompt("Restock box x3 into upper slot 2", [zone]).name
+        'upper_slot_2'
+        >>> place_zone_for_prompt("restock box x3 into upper slot 20", [zone]) is None
+        True
+    """
+    text = "_" + re.sub(r"[^a-z0-9]+", "_", prompt.lower()).strip("_") + "_"
+    named = [z for z in zones if any(f"_{n}_" in text for n in (z.name, *z.aliases))]
+    return named[0] if len(named) == 1 else None
 
 
 class GraspDeclaration(BaseModel):
@@ -12596,6 +12693,22 @@ class DeployScene(BaseModel):
     reasoner-grounded — the LLM names an ``ExecuteRskillTool.grasp_target``, the
     reasoner grounds its ``search_box`` from perception, and the goal carries the
     declaration (design §2.2)."""
+    place_zones: list[PlaceZone] = Field(default_factory=list)
+    """Named place zones on the cell's fixed furniture (shelf slots), see ``PlaceZone``.
+
+    ``openral deploy sim`` / ``deploy run`` forward them to the rSkill runner, whose
+    goal-scope place declaration names the one zone the goal's prompt names
+    (``place_zone_for_prompt``), and to the object tracker, which publishes it as the place
+    region while a payload is held. Names and aliases are unique across zones. Empty = no
+    zone; a prompt naming none arms none. Declared, not measured: Safety-WG review owed."""
+
+    @model_validator(mode="after")
+    def _unique_zone_names(self) -> Self:
+        names = [n for z in self.place_zones for n in (z.name, *z.aliases)]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"place_zones names/aliases must be unique; repeated: {dupes}.")
+        return self
 
     @model_validator(mode="before")
     @classmethod
