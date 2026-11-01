@@ -12696,10 +12696,12 @@ class DeployScene(BaseModel):
     place_zones: list[PlaceZone] = Field(default_factory=list)
     """Named place zones on the cell's fixed furniture (shelf slots), see ``PlaceZone``.
 
-    ``openral deploy sim`` / ``deploy run`` forward them to the rSkill runner, whose
+    ``openral deploy sim`` / ``deploy run`` forward them (``place_zones_json``, from the
+    shared ``resolve_launch_invocation``) to the rSkill runner, whose
     goal-scope place declaration names the one zone the goal's prompt names
     (``place_zone_for_prompt``), and to the object tracker, which publishes it as the place
-    region while a payload is held. Names and aliases are unique across zones. Empty = no
+    region while a payload is held (sim only: ``deploy run`` refuses every tracking mode
+    until Safety-WG sign-off). Names and aliases are unique across zones. Empty = no
     zone; a prompt naming none arms none. Declared, not measured: Safety-WG review owed."""
 
     @model_validator(mode="after")
