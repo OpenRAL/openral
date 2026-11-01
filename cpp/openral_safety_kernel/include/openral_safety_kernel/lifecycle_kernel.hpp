@@ -504,6 +504,9 @@ private:
   // looks at the received flag, and a default (system-time) stamp throws.
   rclcpp::Time attached_stamp_{0, 0, RCL_ROS_TIME};
   std::uint64_t attached_revision_{0};
+  /// Hash of the accepted attached set's (object_id, epoch, attach_link): a revision edge retakes
+  /// the embedded-residue snapshot only when it changes (or a provider is loaded).
+  std::size_t attached_set_identity_{0};
   bool attached_contact_snapshot_pending_{false};
   bool attached_contact_active_{false};
   /// Identity of the support-contact attestation currently armed for one

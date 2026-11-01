@@ -3888,6 +3888,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_received_ = false;
   attached_overflow_ = false;
   attached_revision_ = 0;
+  attached_set_identity_ = 0;
   attached_contact_snapshot_pending_ = false;
   attached_contact_active_ = false;
   support_witness_live_ = 0;
@@ -4539,10 +4540,19 @@ void SafetyKernelLifecycleNode::on_world_state(
   }
   // Labels and provenance parallel the accepted objects. Provenance is copied
   // only for diagnostic FailureTrigger evidence; it never reaches a check.
+  // The identity of the accepted SET (each object's id, epoch and attach link, in order): the
+  // embedded-residue snapshot below is retaken on a revision edge only when it changed.
+  std::size_t set_identity = 0;
+  const auto mix = [&set_identity](std::size_t h) {
+    set_identity ^= h + 0x9e3779b97f4a7c15ULL + (set_identity << 6) + (set_identity >> 2);
+  };
   for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
     attached_labels_[i] = wire[i].object_id;
     attached_evidence_kinds_[i] = wire[i].evidence_kind;
     attached_evidence_refs_[i] = wire[i].evidence_ref;
+    mix(std::hash<std::string>{}(wire[i].object_id));
+    mix(std::hash<std::uint32_t>{}(wire[i].epoch));
+    mix(std::hash<std::string>{}(wire[i].attach_link));
   }
   check_attachment_bindings(*msg);
   apply_tracked_release();
@@ -4615,9 +4625,19 @@ void SafetyKernelLifecycleNode::on_world_state(
       if (grasp_identity_armed()) {
         retire_grasp_declaration("detached");
       }
-    } else {
+      attached_set_identity_ = 0;
+    } else if (attached_set_identity_ != set_identity || provider_ != nullptr) {
       attached_contact_snapshot_pending_ = true;
       attached_contact_active_ = false;
+      attached_set_identity_ = set_identity;
+    } else {
+      // Same objects, no exemption provider: the revision moved because a payload's geometry grew
+      // (the open `tracking` declarations). A track must not widen an allowance, so the residue
+      // mask taken at attach stays, with its active state; the per-tick update keeps pruning it as
+      // cells separate. Safety-WG review owed; hazard-log row owed.
+      RCLCPP_INFO(this->get_logger(),
+                  "safety.attached_residue_kept reason=same_objects revision=%lu",
+                  static_cast<unsigned long>(msg->attachment_revision));
     }
   }
   // The place declaration rides the same snapshot as the payload it is scoped

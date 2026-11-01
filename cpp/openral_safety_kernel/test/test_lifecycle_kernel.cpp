@@ -8432,6 +8432,137 @@ TEST_F(LifecycleKernelTest, APayloadsOwnMeasuredCellStopsItInOpenWithoutAProvide
   EXPECT_TRUE(latched);
 }
 
+// ── Open `tracking` must not let a track widen an allowance ─────────────────
+//
+// The attach-time embedded-residue exemption is re-snapshotted on an attachment-revision change
+// only when the SET of carried objects changed (id, epoch, link) or an exemption provider is
+// loaded (ADR-0121 `on`). The object tracker bumps the revision when a carried payload's geometry
+// GROWS; in the open kernel that must not exempt the newly overlapped cells.
+namespace {
+
+// Two occupied 25 mm cells 50 mm apart (clear of the 30 mm margin): A, x in [0.140, 0.165], and
+// B, x in [0.215, 0.240].
+void two_cells(openral_msgs::msg::OccupancyVoxels& vox) {
+  vox.size_x = 4;
+  vox.occupancy = {1, 0, 0, 1};
+}
+
+std::vector<rclcpp::Parameter> residue_params(bool provider) {
+  auto params = payload_params();
+  if (provider) {
+    osk_test::serve_test_providers();
+    // The Recorder refuses every pair: every verdict stays the open kernel's.
+    params = with_param(params, "exemption_provider",
+                        rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+    params = with_param(params, "exemption_provider_links",
+                        rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  }
+  return params;
+}
+
+// Attach a payload exactly on cell A (revision 1, snapshot exempts A), then `second` is the beat
+// published afterwards. True when the chunk still passes.
+bool residue_after(const std::string& name, bool provider,
+                   const std::function<void(GraspBeat&)>& second, LogCapture& logs,
+                   bool* latched = nullptr) {
+  GraspRig rig(name, residue_params(provider));
+  rig.voxels = declared_target_voxels();
+  two_cells(rig.voxels);
+  rig.start();
+  EXPECT_EQ(rig.node->exemption_provider_loaded(), provider);
+  GraspBeat b = tracked_beat(rig);
+  b.carrying = true;
+  b.revision = 1;
+  b.payload_x = 0.1475;
+  b.payload_half = 0.0075;
+  rig.warm(&b, 0.0, 300);
+  if (!rig.offer(&b, 0.0)) {
+    ADD_FAILURE() << name
+                  << ": a payload embedded in A at attach is the exempt residue: " << logs.joined();
+    return false;
+  }
+  second(b);
+  rig.warm(&b, 0.0, 100);
+  const bool ok = rig.offer(&b, 0.0);
+  if (latched != nullptr) {
+    *latched = rig.node->fault_latched();
+  }
+  return ok;
+}
+
+// The same object grown over B: bumped revision, same id / epoch / link.
+void grow_over_b(GraspBeat& b) {
+  ++b.revision;
+  b.payload_x = 0.18875;
+  b.payload_half = 0.04875;  // x in [0.140, 0.2375]: deep in A and in B
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AGrownPayloadOfTheSameObjectDoesNotWidenTheResidueWithoutAProvider) {
+  LogCapture logs;
+  bool latched = false;
+  // Control: the same revision bump with the payload unmoved stays on A -- A stays exempt.
+  EXPECT_TRUE(residue_after(
+      "kernel_residue_control", false, [](GraspBeat& b) { ++b.revision; }, logs))
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.attached_residue_kept reason=same_objects revision=2"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(residue_after("kernel_residue_grown", false, grow_over_b, logs, &latched))
+      << "B must not be exempt: " << logs.joined();
+  EXPECT_TRUE(latched);
+}
+
+TEST_F(LifecycleKernelTest, ANewObjectOrEpochStillReSnapshotsTheResidue) {
+  LogCapture logs;
+  EXPECT_TRUE(residue_after(
+      "kernel_residue_new_id", false,
+      [](GraspBeat& b) {
+        grow_over_b(b);
+        b.object_label = "trk:9";
+      },
+      logs))
+      << logs.joined();
+  EXPECT_TRUE(residue_after(
+      "kernel_residue_new_epoch", false,
+      [](GraspBeat& b) {
+        grow_over_b(b);
+        b.epoch = 1;
+      },
+      logs))
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ADetachThenReattachReSnapshotsTheResidue) {
+  LogCapture logs;
+  GraspRig rig("kernel_residue_reattach", residue_params(false));
+  rig.voxels = declared_target_voxels();
+  two_cells(rig.voxels);
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.carrying = true;
+  b.revision = 1;
+  b.payload_x = 0.1475;
+  b.payload_half = 0.0075;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = false;
+  ++b.revision;
+  rig.warm(&b, 0.0, 100);
+  b.carrying = true;
+  ++b.revision;
+  b.payload_x = 0.18875;
+  b.payload_half = 0.04875;  // deep in A and in B
+  rig.warm(&b, 0.0, 100);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "a fresh attach snapshots again: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ALoadedProviderStillReSnapshotsTheResidueOnGrowth) {
+  LogCapture logs;
+  EXPECT_TRUE(residue_after("kernel_residue_provider", true, grow_over_b, logs)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.attached_residue_kept"), 0U) << logs.joined();
+}
+
 TEST_F(LifecycleKernelTest, ARemovedRuleSwitchLeftOnRefusesConfigure) {
   // A launch that still turns a moved rule on fails configure: K7 narrowed the #349 workspace,
   // so running on without it would widen what the kernel tolerates, and K2 / K5 / OT-10 would
