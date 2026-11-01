@@ -7667,3 +7667,236 @@ TEST(ExemptionProvider, APayloadSelfPairNeedsTheAttachAndTheOtherLinkMasked) {
   expect_same_hit(osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate), closed_open);
   EXPECT_EQ(provider.asked_payload_self, asked_closed);
 }
+
+// ── API v5: the #349 verdict quoted to a provider is the in-tree rule's own ──
+//
+// With the in-tree rule off, a provider that enabled it gets the kernel's verdict for each pair
+// (`workspace_exempt`, computed on `ProviderGate::workspace`). A provider that tolerates exactly
+// that verdict must reproduce the in-tree rule bit for bit, on every pair kind: same trip, same
+// evidence, and every in-tree tolerated pair a provider pair instead.
+
+namespace {
+
+class QuotesTheVerdict final : public osk::ExemptionProvider {
+public:
+  std::uint32_t api_version() const noexcept override { return osk::kExemptionProviderApiVersion; }
+  const char* name() const noexcept override { return "quotes-the-verdict"; }
+  bool initialize(const osk::CollisionModel& /*model*/,
+                  rclcpp::node_interfaces::NodeParametersInterface::SharedPtr /*params*/,
+                  const rclcpp::Logger& /*logger*/) override {
+    return true;
+  }
+  static osk::ProviderVerdict of(bool exempt) {
+    return exempt ? osk::ProviderVerdict::kTolerate : osk::ProviderVerdict::kRefuse;
+  }
+  osk::ProviderVerdict voxel_pair(const osk::VoxelPairQuery& q) noexcept override {
+    return of(q.workspace_exempt);
+  }
+  osk::ProviderVerdict self_pair(const osk::SelfPairQuery& q) noexcept override {
+    return of(q.workspace_exempt);
+  }
+  osk::ProviderVerdict payload_voxel_pair(const osk::PayloadPairQuery& q) noexcept override {
+    return of(q.workspace_exempt);
+  }
+  osk::ProviderVerdict payload_self_pair(const osk::PayloadPairQuery& q) noexcept override {
+    return of(q.workspace_exempt);
+  }
+};
+
+// Both outcomes seen per test, so no equivalence below is vacuous.
+struct Seen {
+  int exempted{0};
+  int tripped{0};
+  ~Seen() {
+    EXPECT_GT(exempted, 0) << "no case the rule tolerated";
+    EXPECT_GT(tripped, 0) << "no case that trips";
+  }
+};
+
+void expect_rule_moved(const osk::CollisionHit& in_tree, const osk::CollisionHit& quoted,
+                       const std::string& what, Seen& seen) {
+  seen.exempted += in_tree.workspace_pairs > 0 ? 1 : 0;
+  seen.tripped += in_tree.hit ? 1 : 0;
+  EXPECT_EQ(quoted.hit, in_tree.hit) << what;
+  EXPECT_EQ(quoted.link_a, in_tree.link_a) << what;
+  EXPECT_EQ(quoted.link_b, in_tree.link_b) << what;
+  EXPECT_EQ(quoted.min_distance, in_tree.min_distance) << what;
+  EXPECT_EQ(quoted.sweep_min_distance, in_tree.sweep_min_distance) << what;
+  EXPECT_EQ(quoted.workspace_pairs, 0) << what;
+  EXPECT_EQ(quoted.provider_pairs, in_tree.workspace_pairs) << what;
+}
+
+// Hand speeds and leads at, under and over the bounds, unknown and NaN.
+const std::vector<std::pair<double, double>>& motions() {
+  static const std::vector<std::pair<double, double>> m = {
+      {0.0, 0.0},
+      {0.5 * kWsMaxSpeed, 0.0},
+      {kWsMaxSpeed, kWsMaxLead},
+      {kWsMaxSpeed * 1.0001, 0.0},
+      {0.0, kWsMaxLead * 1.0001},
+      {std::numeric_limits<double>::infinity(), 0.0},
+      {0.0, std::numeric_limits<double>::quiet_NaN()},
+  };
+  return m;
+}
+
+std::string motion_str(const std::pair<double, double>& m) {
+  return "speed=" + std::to_string(m.first) + " lead=" + std::to_string(m.second);
+}
+
+}  // namespace
+
+TEST(ExemptionProvider, TheQuotedWorkspaceVerdictIsTheInTreeRulesOwnOnVoxelPairs) {
+  Seen seen;
+  const osk::CollisionModel m = grasp_cell_model();
+  QuotesTheVerdict provider;
+  const auto mask =
+      provider_mask({kGraspLeftFinger, kGraspRightFinger, kGraspArm, kGraspCapFinger});
+  for (const int link : {kGraspLeftFinger, kGraspCapFinger, kGraspArm}) {
+    osk::CollisionScratch s = grasp_scratch_all_away();
+    s.link_world[static_cast<std::size_t>(link)] = identity();
+    const auto occ = grasp_occ({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}});
+    for (const double half : {0.10, 0.015}) {
+      for (const auto& mo : motions()) {
+        const auto ws = workspace(half, {kGraspLeftFinger, kGraspCapFinger}, mo.first, mo.second);
+        auto in_tree_grid = grasp_grid(occ);
+        in_tree_grid.workspace_region = ws;
+        auto quoted_grid = grasp_grid(occ);
+        arm_provider(quoted_grid, provider, mask);
+        quoted_grid.provider_gate.workspace = &ws;
+        expect_rule_moved(osk::check_voxel_collision(m, s, in_tree_grid, kGraspMargin),
+                          osk::check_voxel_collision(m, s, quoted_grid, kGraspMargin),
+                          "link " + std::to_string(link) + " half " + std::to_string(half) + " " +
+                              motion_str(mo),
+                          seen);
+      }
+    }
+  }
+}
+
+TEST(ExemptionProvider, TheQuotedWorkspaceVerdictIsTheInTreeRulesOwnOnPayloadVoxelPairs) {
+  Seen seen;
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  QuotesTheVerdict provider;
+  const auto mask = provider_mask({0, 1, 2, 3});
+  for (const auto& links : {std::vector<int>{1}, std::vector<int>{2}}) {
+    for (const auto& at : {identity(), translate(1.0, 0.0, 0.0)}) {
+      for (const auto& mo : motions()) {
+        osk::WorkspaceContactRegion ws;
+        ASSERT_EQ(osk::ingest_workspace_region(at, osk::Vec3{0.2, 0.2, 0.2}, grasp_mask({links[0]}),
+                                               kWsMaxSpeed, kWsMaxLead, ws),
+                  osk::GraspRegionStatus::kOk);
+        ws.hand_speed_mps = mo.first;
+        ws.hand_lead_m = mo.second;
+        auto in_tree_grid = make_grid(occ);
+        in_tree_grid.workspace_region = ws;
+        auto quoted_grid = make_grid(occ);
+        arm_provider(quoted_grid, provider, mask);
+        quoted_grid.provider_gate.workspace = &ws;
+        expect_rule_moved(osk::check_attached_voxel_collision(m, att, s, in_tree_grid, 0.0),
+                          osk::check_attached_voxel_collision(m, att, s, quoted_grid, 0.0),
+                          "hand " + std::to_string(links[0]) + " x " + std::to_string(at.t.x) +
+                              " " + motion_str(mo),
+                          seen);
+      }
+    }
+  }
+}
+
+TEST(ExemptionProvider, TheQuotedWorkspaceVerdictIsTheInTreeRulesOwnOnSelfPairs) {
+  Seen seen;
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 2, 0.05, 0.0, identity());
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  QuotesTheVerdict provider;
+  const auto mask = provider_mask({0, 1, 2, 3});
+  for (const auto& hands : {std::vector<int>{2, 3}, std::vector<int>{2}}) {
+    for (const double x3 : {0.08, 0.25}) {
+      osk::CollisionScratch s;
+      s.link_world = {identity(), identity(), translate(x3 - 0.08, 0.0, 0.0),
+                      translate(x3, 0.0, 0.0)};
+      for (const auto& mo : motions()) {
+        osk::WorkspaceContactRegion ws;
+        std::bitset<osk::kMaxGraspMaskLinks> bits;
+        for (const int h : hands) {
+          bits[static_cast<std::size_t>(h)] = true;
+        }
+        ASSERT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.2, 0.2, 0.2}, bits,
+                                               kWsMaxSpeed, kWsMaxLead, ws),
+                  osk::GraspRegionStatus::kOk);
+        ws.hand_speed_mps = mo.first;
+        ws.hand_lead_m = mo.second;
+        osk::ProviderGate gate{&provider, mask.data(), mask.size(), 0};
+        gate.workspace = &ws;
+        expect_rule_moved(osk::check_self_collision(m, s, 0.0, &ws),
+                          osk::check_self_collision(m, s, 0.0, nullptr, &gate),
+                          "hands " + std::to_string(hands.size()) + " x3 " + std::to_string(x3) +
+                              " " + motion_str(mo),
+                          seen);
+      }
+    }
+  }
+}
+
+TEST(ExemptionProvider, TheQuotedWorkspaceVerdictIsTheInTreeRulesOwnOnPayloadSelfPairs) {
+  Seen seen;
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), translate(0.12, 0.0, 0.0)};
+  QuotesTheVerdict provider;
+  const auto mask = provider_mask({0, 1, 2, 3});
+  for (const bool frozen : {false, true}) {
+    osk::AttachedModel att;
+    append_object(att, 1, identity(), {sphere_prim(0.1)});
+    if (frozen) {  // a K5 release window: the hand that let it go keeps its rule
+      att.objects[0].attach_link = -1;
+      att.objects[0].release_hand_link = 1;
+    }
+    for (const auto& hands : {std::vector<int>{1, 3}, std::vector<int>{1}}) {
+      for (const auto& mo : motions()) {
+        osk::WorkspaceContactRegion ws;
+        std::bitset<osk::kMaxGraspMaskLinks> bits;
+        for (const int h : hands) {
+          bits[static_cast<std::size_t>(h)] = true;
+        }
+        ASSERT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.2, 0.2, 0.2}, bits,
+                                               kWsMaxSpeed, kWsMaxLead, ws),
+                  osk::GraspRegionStatus::kOk);
+        ws.hand_speed_mps = mo.first;
+        ws.hand_lead_m = mo.second;
+        osk::ProviderGate gate{&provider, mask.data(), mask.size(), 0};
+        gate.workspace = &ws;
+        expect_rule_moved(osk::check_attached_self_collision(m, att, s, 0.0, &ws),
+                          osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate, &ws),
+                          std::string(frozen ? "frozen " : "carried ") + "hands " +
+                              std::to_string(hands.size()) + " " + motion_str(mo),
+                          seen);
+      }
+    }
+  }
+}
+
+TEST(ExemptionProvider, NoQuotedRegionMeansNoVerdict) {
+  // `ProviderGate::workspace` null (the provider did not enable the rule, the in-tree rule is on
+  // or no workspace is live): every query says not exempt, so the pass-through provider is today.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(today.hit);
+  QuotesTheVerdict provider;
+  const auto mask = provider_mask({kGraspLeftFinger});
+  arm_provider(grid, provider, mask);
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  expect_same_hit(with, today);
+  EXPECT_EQ(with.provider_pairs, 0);
+}

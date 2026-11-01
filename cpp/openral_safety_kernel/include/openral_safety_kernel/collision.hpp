@@ -618,6 +618,11 @@ struct ProviderGate {
   double hand_speed_mps{std::numeric_limits<double>::infinity()};
   double hand_lead_m{std::numeric_limits<double>::infinity()};
   bool hand_contact{false};
+  /// API v5: the #349 region the kernel computes its own verdict on for the provider's queries
+  /// (`workspace_exempt`): the live workspace on the provider's bounds, with this row's hand speed
+  /// and lead (after the per-row allowance). Null = no verdict (the provider did not enable the
+  /// rule, the in-tree rule is on, or no workspace is live). Never applied by the kernel itself.
+  const WorkspaceContactRegion* workspace{nullptr};
 };
 
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
@@ -1707,6 +1712,11 @@ const char* grasp_region_status_reason(GraspRegionStatus status) noexcept;
 /// grasp-target exemption is decided first by `check_voxel_collision`; this is
 /// only asked of pairs it did not exempt. Allocation-free.
 bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept;
+
+/// The same predicate on a region directly (API v5): the verdict the kernel quotes to an ADR-0121
+/// exemption provider (`workspace_exempt`) is this, on `ProviderGate::workspace`.
+bool workspace_region_exempts(const WorkspaceContactRegion& ws, int link_index,
+                              const Vec3& center) noexcept;
 
 /// Validate a producer-confirmed manipulation workspace and lower it into
 /// `out` (#349). Same geometry checks as `ingest_grasp_region`, against the

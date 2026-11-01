@@ -136,6 +136,29 @@ TEST_F(ExemptionProviderKernelTest, AnApiVersionMismatchIsRefused) {
       << node->exemption_provider_status();
 }
 
+TEST_F(ExemptionProviderKernelTest, AnApiV4ProviderIsRefused) {
+  // API v5 quotes the kernel's own #349 verdict, freshness and release memory; a provider built
+  // against v4 re-derives them and is refused with the typed log path.
+  ASSERT_EQ(osk::kExemptionProviderApiVersion, 5U);
+  auto node = configured("osk_prov_api_v4", options(cls("ApiV4"), "sim", {"link1"}));
+  EXPECT_FALSE(node->exemption_provider_loaded());
+  EXPECT_EQ(node->exemption_provider_status(), "refused: api_version 4 != 5");
+}
+
+TEST_F(ExemptionProviderKernelTest, AnUnsoundWorkspaceContactConfigIsRefused) {
+  auto unsound =
+      configured("osk_prov_ws_unsound", options(cls("UnsoundWorkspaceConfig"), "sim", {"link1"}));
+  EXPECT_FALSE(unsound->exemption_provider_loaded());
+  EXPECT_TRUE(starts_with(unsound->exemption_provider_status(),
+                          "refused: workspace_contact_config needs a finite max_speed_mps"))
+      << unsound->exemption_provider_status();
+  auto brake =
+      configured("osk_prov_ws_brake", options(cls("BrakeWithoutContact"), "sim", {"link1"}));
+  EXPECT_FALSE(brake->exemption_provider_loaded());
+  EXPECT_EQ(brake->exemption_provider_status(),
+            "refused: workspace_contact_config: the brake requires the workspace-contact rule");
+}
+
 TEST_F(ExemptionProviderKernelTest, AProviderThatDeclinesOrThrowsIsRefused) {
   auto declines = configured("osk_prov_declines", options(cls("Declines"), "sim", {"link1"}));
   EXPECT_FALSE(declines->exemption_provider_loaded());
