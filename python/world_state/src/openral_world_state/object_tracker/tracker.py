@@ -118,6 +118,7 @@ PRIOR_MARGIN_M = 0.05
 #: under another label, not a new object: never minted. *Calibration point* (restock
 #: 2026-10-31: a generic "carton" query's fit over the target at IoU 0.8-0.9; two inflated
 #: boxes of neighbouring 6.5 cm cartons 7 cm apart sit near 0.25).
+_VIS_HYSTERESIS = 0.1  # visible-fraction margin an OCCLUDED track needs to return to CONFIRMED
 _DUPLICATE_MINT_IOU = 0.5
 
 
@@ -1869,8 +1870,13 @@ class ObjectTracker:
             )
             if vis is None:
                 continue
-            hidden = vis < self.params.theta_vis
-            if hidden != (t.status is TrackStatus.OCCLUDED):
+            # Hysteresis: back to CONFIRMED only past ``theta_vis + _VIS_HYSTERESIS``. A hand
+            # hovering over the target held it near the threshold and flipped it every frame
+            # (restock scene 08 2026-11-01: OCCLUDED -> CONFIRMED in the second of the grasp, so
+            # the map's confirmation stopped counting and the bind went untracked, fit 1.5 s old).
+            occluded = t.status is TrackStatus.OCCLUDED
+            hidden = vis < self.params.theta_vis + (_VIS_HYSTERESIS if occluded else 0.0)
+            if hidden != occluded:
                 new = TrackStatus.OCCLUDED if hidden else TrackStatus.CONFIRMED
                 self.store.replace(t.model_copy(update={"status": new}))
 

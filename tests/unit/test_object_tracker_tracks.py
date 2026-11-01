@@ -677,3 +677,41 @@ def test_a_target_fit_retires_a_context_track_boxing_its_object(cap: Any) -> Non
     assert _get(tr, ctx.object_id).status is TrackStatus.LOST
     assert _get(tr, "trk:2").status is TrackStatus.CONFIRMED
     assert cap.named("object_tracker.context_duplicate_retired")
+
+
+def test_an_occluded_track_needs_a_margin_to_be_confirmed_again() -> None:
+    """Restock scene 08 2026-11-01: a hand hovering over the target held its visible fraction at
+    ``theta_vis`` and flipped it OCCLUDED <-> CONFIRMED every frame; it flipped CONFIRMED in the
+    second of the grasp and the bind went untracked. Back to CONFIRMED needs a margin."""
+    oranges = _oranges(0.09)
+    tr, _ = _grounded(oranges)
+    t = _get(tr, "trk:1")
+    depth, labels = render(oranges, _RIG)
+    _, cols = np.nonzero(labels == 1)
+
+    def frame_at(target: float) -> tuple[CameraFrame, float]:
+        """A frame whose robot mask hides ``trk:1`` down to about ``target`` visible."""
+        best: tuple[CameraFrame, float] | None = None
+        for c in range(int(cols.min()), int(cols.max()) + 2):
+            robot = np.zeros(depth.shape, np.uint8)
+            robot[:, :c] = 255
+            f = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, robot)
+            vis = visible_fraction(t.box, depth, robot, _RIG.k, _RIG.t)
+            if vis is not None and (best is None or abs(vis - target) < abs(best[1] - target)):
+                best = (f, vis)
+        assert best is not None
+        return best
+
+    theta = tr.params.theta_vis
+    hidden, v_lo = frame_at(theta - 0.1)
+    near, v_mid = frame_at(theta + 0.05)
+    clear, v_hi = frame_at(theta + 0.2)
+    assert v_lo < theta <= v_mid < theta + 0.1 <= v_hi
+    tr._visibility(hidden)
+    assert _get(tr, "trk:1").status is TrackStatus.OCCLUDED
+    tr._visibility(near)  # past theta_vis, inside the margin: still OCCLUDED
+    assert _get(tr, "trk:1").status is TrackStatus.OCCLUDED
+    tr._visibility(clear)
+    assert _get(tr, "trk:1").status is TrackStatus.CONFIRMED
+    tr._visibility(near)  # CONFIRMED leaves only below theta_vis
+    assert _get(tr, "trk:1").status is TrackStatus.CONFIRMED
