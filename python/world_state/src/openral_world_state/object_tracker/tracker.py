@@ -196,11 +196,13 @@ class TrackerParams(BaseModel):
             r16po_on1: a 5.8 cm orange refit to 33 cm through the arm's occluder band).
             *Calibration point.*
         refit_growth_factor: Any refit (moved or not, clear or provisional) whose longer
-            horizontal extent exceeds this many times the track's FIRST clear fit is refused
-            and the box kept. A mask that spills onto a neighbour or the support always has
-            points outside the box, so it read as "moved" and replaced the box unchecked; each
-            larger box then prompted a larger mask (restock 2026-10-30: a 6 x 6 cm carton's box
-            went 14 -> 24 -> 39 cm with the arms out of view). *Calibration point*: 1.5 keeps a
+            horizontal extent or height exceeds this many times the track's FIRST clear fit is
+            refused and the box kept, unless it is a re-orientation (every sorted extent and
+            the volume within this factor of the first fit's: a tipped carried carton). A mask
+            that spills onto a neighbour or the support always has points outside the box, so
+            it read as "moved" and replaced the box unchecked; each larger box then prompted a
+            larger mask (restock 2026-10-30: a 6 x 6 cm carton's box went 14 -> 24 -> 39 cm
+            with the arms out of view). *Calibration point*: 1.5 keeps a
             box turned 45 degrees in the hand (sqrt 2).
         static_pad_cells: Cells a declared static collider is padded by for the one-body test
             (the camera sees a wall about a cell off its declared box; K7 pads the same).
@@ -408,8 +410,9 @@ class ObjectTracker:
         # Per track: the largest longer-horizontal extent of its clear fits (the oversize guard).
         self._clear_extent: dict[str, float] = {}
         # Per track: the longer horizontal extent of its first clear fit, else of its first fit,
-        # and whether that fit was clear (the growth gate).
-        self._first_extent: dict[str, tuple[float, bool, float]] = {}  # (extent, clear, height)
+        # and whether that fit was clear (the growth gate); its height and its full extents.
+        # (extent, clear, height, full extents x/y/z)
+        self._first_extent: dict[str, tuple[float, bool, float, tuple[float, ...]]] = {}
         # Declared static geometry (cell centres, grid frame) and its keys on the newest lattice.
         self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
         self._static_cache: tuple[tuple[object, ...], frozenset[Cell]] | None = None
@@ -1287,14 +1290,28 @@ class ObjectTracker:
         ref = self._first_extent.get(oid)
         if ref is None or fit.box is None or (not ref[1] and not fit.provisional):
             return False
-        first, _, first_h = ref
+        first, _, first_h, first_full = ref
+        factor = self.params.refit_growth_factor
         extent = 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1])
         height = 2.0 * fit.box.half_extents[2]
-        limit = self.params.refit_growth_factor * first
+        limit = factor * first
         # Height too (restock scene 00 2026-11-01: an 8 cm carton's refits took in a taller
         # neighbour and its box grew to 14.6 cm tall under a horizontal-only gate).
-        limit_h = self.params.refit_growth_factor * first_h
+        limit_h = factor * first_h
         if extent <= limit and height <= limit_h:
+            return False
+        # A re-orientation is no growth: a carried 6 x 6 x 11 cm carton tipped 90 degrees is
+        # 11 cm across, and refusing it kept re-dating the upright box while the protruding
+        # part went unmodelled. Admitted when every sorted extent stays within the factor of
+        # the first fit's and its volume within the factor too; a spill onto a neighbour or
+        # the support adds volume (a 6 x 6 x 8 carton spilled to 12 x 6 x 8 is 2x).
+        full = sorted(2.0 * h for h in fit.box.half_extents)
+        ref_full = sorted(first_full)
+        if all(f <= factor * r for f, r in zip(full, ref_full, strict=True)) and (
+            float(np.prod(full)) <= factor * float(np.prod(ref_full))
+        ):
+            log.info("object_tracker.refit_reoriented", object_id=oid, moved=moved,
+                     extents_m=[round(f, 3) for f in full])  # fmt: skip
             return False
         log.info("object_tracker.refit_growth_refused", object_id=oid, moved=moved,
                  extent_m=round(extent, 3), first_m=round(first, 3),
@@ -1430,6 +1447,7 @@ class ObjectTracker:
                 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
                 not fit.provisional,
                 2.0 * fit.box.half_extents[2],
+                tuple(2.0 * h for h in fit.box.half_extents),
             )
         if not fit.provisional and fit.box is not None:
             size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])

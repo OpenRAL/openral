@@ -69,6 +69,7 @@ def _first(tr: ObjectTracker, t: TrackedObject) -> float:
         2.0 * max(t.box.half_extents[:2]),
         True,
         2.0 * t.box.half_extents[2],
+        tuple(2.0 * h for h in t.box.half_extents),
     )
     return tr._first_extent[t.object_id][0]
 
@@ -261,3 +262,30 @@ def test_a_refit_that_grows_only_in_height_is_refused() -> None:
     ok = t.box.model_copy(update={"half_extents": (h[0], h[1], 1.2 * h[2])})
     fit = ContainingFit(box=ok, tight=None, support_z=_SUPPORT_Z, surface=np.zeros((0, 3)))
     assert not tr._overgrown(t.object_id, fit, False)
+
+
+def _sized(
+    tr: ObjectTracker,
+    t: TrackedObject,
+    first: tuple[float, float, float],
+    refit: tuple[float, float, float],
+) -> bool:
+    """Is a refit of full extents ``refit`` refused against a first clear fit of ``first``?"""
+    tr._first_extent[t.object_id] = (max(first[:2]), True, first[2], first)
+    box = t.box.model_copy(update={"half_extents": tuple(0.5 * e for e in refit)})
+    fit = ContainingFit(box=box, tight=None, support_z=_SUPPORT_Z, surface=np.zeros((0, 3)))
+    return tr._overgrown(t.object_id, fit, True)
+
+
+def test_a_carried_carton_tipped_on_its_side_is_not_growth() -> None:
+    """A 6 x 6 x 11 cm carton tipped 90 degrees in the hand is 11 cm across: the same box."""
+    tr, t = _tracker()
+    assert not _sized(tr, t, (0.06, 0.06, 0.11), (0.11, 0.06, 0.06))
+    assert not _sized(tr, t, (0.06, 0.06, 0.11), (0.06, 0.11, 0.065))
+
+
+def test_a_spill_onto_a_neighbour_is_still_growth_whatever_its_orientation() -> None:
+    """A 6 x 6 x 8 carton's mask spilled to 12 x 6 x 8: sorted extents pass, the volume does not."""
+    tr, t = _tracker()
+    assert _sized(tr, t, (0.06, 0.06, 0.08), (0.12, 0.06, 0.08))
+    assert _sized(tr, t, (0.06, 0.06, 0.11), (0.11, 0.11, 0.06))

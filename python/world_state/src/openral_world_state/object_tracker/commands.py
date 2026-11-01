@@ -117,7 +117,8 @@ class SourceClock:
         """Hold no offset yet."""
         self._window_ns = int(window_s * 1e9)
         self._max_lead_ns = int(max_lead_s * 1e9)
-        self._offsets: deque[tuple[int, int]] = deque()  # (clock_ns, clock_ns - stamp_ns)
+        # (clock_ns, clock_ns - stamp_ns), offsets strictly increasing front to back.
+        self._offsets: deque[tuple[int, int]] = deque()
         self._newest_ns = 0
 
     def observe(self, *, clock_ns: int, stamp_ns: int) -> None:
@@ -125,7 +126,13 @@ class SourceClock:
         if self._offsets and clock_ns < self._offsets[-1][0]:
             self._offsets.clear()  # the node's clock went back (a sim reset)
             self._newest_ns = 0
-        self._offsets.append((clock_ns, clock_ns - stamp_ns))
+        offset = clock_ns - stamp_ns
+        # A monotonic min-deque: an offset no smaller than a newer one can never be the
+        # window's minimum again, so the front is always the minimum (O(1) amortised at the
+        # joint states' 750 Hz, where a scan of the window was ~7,500 entries per read).
+        while self._offsets and self._offsets[-1][1] >= offset:
+            self._offsets.pop()
+        self._offsets.append((clock_ns, offset))
         self._newest_ns = max(self._newest_ns, stamp_ns)
         while self._offsets[0][0] < clock_ns - self._window_ns:
             self._offsets.popleft()
@@ -134,5 +141,5 @@ class SourceClock:
         """The joint states' source time at ``clock_ns``, or ``None`` before any joint state."""
         if not self._offsets:
             return None
-        estimate = clock_ns - min(offset for _, offset in self._offsets)
+        estimate = clock_ns - self._offsets[0][1]
         return min(estimate, self._newest_ns + self._max_lead_ns)

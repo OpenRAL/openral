@@ -46,7 +46,9 @@ newest voxel grid and the answers to the tracker's own requests, and returns at 
   so a target pushed inside its own box is confirmed where its surface is now. Issue #418,
   2026-10-21; Safety-WG review owed. No refit, moved or not, grows a track past
   `refit_growth_factor` (1.5) times its first clear fit (`refit_growth_refused`; one with two thirds of its surface still inside the box re-dates it, `refit_growth_redated`): a mask
-  spilling onto a neighbour read as "moved" and ratcheted a 6 cm carton's box to 39 cm. A
+  spilling onto a neighbour read as "moved" and ratcheted a 6 cm carton's box to 39 cm. A re-orientation is no growth: a refit whose
+  sorted extents and volume stay within the factor of the first fit's is admitted
+  (`refit_reoriented`; a carried carton tipped on its side). A
   track with no clear fit yet is held to its first provisional fit, until a clear fit (never
   refused against a provisional one) replaces the reference. A moved refit through the robot keeps the clear box's size, re-centred in x/y
   (`covered_move_size_kept`), and still turns the track provisional; a shift within one grid cell

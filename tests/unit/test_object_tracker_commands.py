@@ -173,3 +173,23 @@ def test_a_clock_faster_than_the_source_delays_a_command_by_at_most_the_lead() -
         c.observe(clock_ns=i * 33_333_333, stamp_ns=i * 10_000_000)
     source = c.source_at(300 * 33_333_333)
     assert source is not None and source <= 299 * 10_000_000 + 500_000_000
+
+
+def test_the_source_clock_minimum_equals_a_brute_force_scan_of_the_window() -> None:
+    """The running minimum answers as a scan over the window would, through expiry and a reset."""
+    from openral_world_state.object_tracker.commands import SourceClock
+
+    rng = np.random.default_rng(7)
+    window_ns, lead_ns = 10**9, 10**12  # a lead past every estimate: compare the minimum alone
+    c = SourceClock(window_s=1.0, max_lead_s=lead_ns / 1e9)
+    seen: list[tuple[int, int]] = []
+    clock = 0
+    for i in range(3000):
+        clock += int(rng.integers(0, 3 * 10**6))  # 0-3 ms steps: ties and multi-second spans
+        if i == 2000:
+            clock -= 5 * 10**8  # the node's clock went back (a sim reset)
+            seen.clear()
+        stamp = clock - int(rng.integers(10**5, 5 * 10**7))
+        c.observe(clock_ns=clock, stamp_ns=stamp)
+        seen = [(k, o) for k, o in seen if k >= clock - window_ns] + [(clock, clock - stamp)]
+        assert c.source_at(clock) == clock - min(o for _, o in seen)
