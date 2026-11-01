@@ -153,7 +153,15 @@ class _LateAttachChoice:
 
 
 class TrackingMode(StrEnum):
-    """``DeployRuntime.object_tracking`` (``off`` never starts the node)."""
+    """``DeployRuntime.object_tracking`` (``off`` never starts the node).
+
+    ``tracking`` (open): the tracker tracks, grounds and may ADD geometry (a carried payload's
+    grow-only binding); every contact allowance it publishes comes from a scene declaration
+    (``search_box``, ``workspace_box``, a ``PlaceZone``), a track only confirming one is
+    populated, never shaping it. ``on`` (needs the OpenRAL Pro exemption provider): the
+    allowance is track-driven (the provider keys on track ids; a destination track is the
+    place region).
+    """
 
     TRACKING = "tracking"
     ON = "on"
@@ -218,6 +226,9 @@ class TrackerSession:
             (``HandModel``), the kernel's ``DeployRuntime.workspace_contact_wrist_links``.
         require_hands: Refuse a gripper the binder cannot model (the node sets it in every
             mode); without it such a hand is logged and skipped.
+        mode: ``tracking`` (default, the safer one) publishes only declared grasp / place
+            regions; ``on`` keeps the track-driven place region and publishes no grasp region
+            (``grasp_region`` / ``place_region``).
 
     Raises:
         ROSConfigError: ``require_hands`` and a gripper joint cannot be modelled.
@@ -242,9 +253,11 @@ class TrackerSession:
         require_hands: bool = False,
         derive_attach: bool = False,
         wrist_links: int = 1,
+        mode: TrackingMode = TrackingMode.TRACKING,
     ) -> None:
         """Model every gripper and start with no tracks and no goals."""
         self.description = description
+        self.mode = mode
         self.frame_id = description.base_frame
         self.tracker = ObjectTracker(self.frame_id, params)
         self.grounding_wait_ns = int(grounding_wait_s * _NS)
@@ -807,7 +820,8 @@ class TrackerSession:
 
         What the HAL producer confirms (``WORKSPACE_MIN_COVER`` of its footprint occupied
         on the newest grid, the same box re-stamped with the grid's ``source_stamp``),
-        here for ``tracking`` / ``on``, where the producer stands down: without it the
+        here for ``tracking`` / ``on`` (both modes: a declared box, confirmed, never shaped by
+        a track), where the producer stands down: without it the
         kernel's workspace contact never applies. A box in another frame is not
         confirmed; the kernel ages the stamp out when grids stop.
         """
@@ -821,22 +835,22 @@ class TrackerSession:
         return box.model_copy(update={"stamp_ns": self.grid_stamp_ns}) if covered else None
 
     def place_region(self) -> PlaceRegion | None:
-        """The live place declaration's destination as the tracker holds it, or ``None``.
+        """The live place declaration's destination region, or ``None``.
 
         The HAL's place producer measures a flat support under the payload, which a bowl
-        never is (``partial_support`` / ``no_surface``, no region armed in 9 of 9), and in
-        ``tracking`` / ``on`` the tracker publishes the declaration. So it stands in as it does for
-        ``workspace_region``: the one CONFIRMED / OCCLUDED DESTINATION track labelled as the
-        declaration's ``destination_query``, its containing box stamped with its last map
-        confirmation (the kernel ages it out on ``place_region_max_age_s``). ``None`` without a held
-        payload, a grid, a destination query or exactly one such track: fail closed. Safety-WG
-        review owed.
+        never is (``partial_support`` / ``no_surface``, no region armed in 9 of 9), so the
+        tracker stands in. ``None`` without a held payload or a grid: fail closed.
 
-        A declaration whose ``target_id`` names a declared zone (``zone:<name>``, a shelf slot no
-        detector grounds) gets that ``PlaceZone``'s box instead, stamped with the newest grid's
-        ``source_stamp``, under the same held-payload condition; an unknown zone or one in
-        another frame than the grid is ``None``. A declared, not measured, region: Safety-WG
-        review, a hazard-log row and an ADR-0097 amendment owed.
+        A declaration whose ``target_id`` names a declared zone (``zone:<name>``, a shelf slot
+        no detector grounds) gets that ``PlaceZone``'s box, stamped with the newest grid's
+        ``source_stamp``; an unknown zone or one in another frame than the grid is ``None``.
+        A declared, not measured, region: Safety-WG review, a hazard-log row and an ADR-0097
+        amendment owed. This is the only place region in ``tracking``.
+
+        ``on`` only: otherwise the one CONFIRMED / OCCLUDED DESTINATION track labelled as the
+        declaration's ``destination_query``, its containing box stamped with its last map
+        confirmation (the kernel ages it out on ``place_region_max_age_s``); ``None`` without
+        a destination query or exactly one such track.
         """
         decl, grid = self.place_declaration, self.grid
         if decl is None or grid is None:
@@ -845,7 +859,7 @@ class TrackerSession:
             return None
         if decl.target_id.startswith(PlaceZone.TARGET_PREFIX):
             return self._zone_region(decl.target_id, grid.frame_id)
-        if decl.destination_query is None:
+        if self.mode is not TrackingMode.ON or decl.destination_query is None:
             return None
         label = decl.destination_query.label
         dest = [
@@ -875,58 +889,68 @@ class TrackerSession:
         )
 
     def grasp_region(self) -> PlaceRegion | None:
-        """The live grasp declaration's region as the tracker measures it, or ``None``.
+        """The one target's box while it lies wholly inside the declared ``search_box``.
 
-        ``tracking`` only (``on``'s exemption provider keys on track ids instead). The one
-        CONFIRMED / OCCLUDED / BOUND TARGET track keyed to the declaration (the scope
-        ``_rekey_live_tracks`` assigns, the runner's grounding count), its containing box in
-        the grid frame, stamped with its last map confirmation (the kernel ages it out on
-        ``grasp_region_max_age_s``). ``None`` — fail closed — without a declaration, a grid,
-        exactly one such track, or within ``GraspDeclaration``'s caps (the kernel's
-        ``kMaxGraspRegionHalfExtentM`` / ``kMaxGraspRegionVolumeM3``).
-
-        Several such tracks (a ``count="all"`` query, e.g. PickOrange's three oranges) are
-        narrowed to those whose box centre lies inside the declaration's ``search_box`` (same
-        frame only); exactly one must remain.
+        ``tracking`` only (``on``'s exemption provider keys on track ids: always ``None``). A
+        track only narrows the declaration, never widens it: the region is the target track's
+        box, returned only while all eight of its corners lie inside the declaration's
+        ``search_box`` (so the allowance is never larger than what the scene declared, nor than
+        the object measured; the declared box itself would allow more than ``off``, whose HAL
+        grasp-target leg measures a region inside it). Stamped with the track's last map
+        confirmation (the kernel ages it out on ``grasp_region_max_age_s``), only while exactly
+        one CONFIRMED / OCCLUDED / BOUND TARGET track keyed to the declaration (the scope
+        ``_rekey_live_tracks`` assigns, the runner's grounding count) has its box centre inside
+        it. ``None`` -- fail closed -- without a declaration, a grid, a ``search_box`` (in the
+        grid frame), exactly one such track, a track box reaching outside the ``search_box``,
+        or within ``GraspDeclaration``'s caps (the kernel's ``kMaxGraspRegionHalfExtentM`` /
+        ``kMaxGraspRegionVolumeM3``).
 
         The region keeps being published through the hold, as a HAL-measured one is: the
         kernel latches the box the first snapshot carrying the declared attachment brings,
         ignores later moves of it, and retires the declaration for good once the payload's
         measured origin leaves that box (``ingest_grasp_declaration``,
-        ``grasp_region_moved_after_handover``, ``handover_exit``), so a box riding the hand
-        cannot extend the exemption. Safety-WG review owed (ADR-0122).
+        ``grasp_region_moved_after_handover``, ``handover_exit``). Safety-WG review owed
+        (ADR-0122).
         """
         decl, grid = self.grasp_declaration, self.grid
-        if decl is None or grid is None:
+        if decl is None or grid is None or self.mode is not TrackingMode.TRACKING:
+            return None
+        box = decl.search_box
+        if box is None or box.frame_id != grid.frame_id:
             return None
         key = declaration_key(decl.target_id, decl.stamp_ns)
+        inv = np.linalg.inv(homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw))
+        half = np.asarray(box.half_extents, dtype=np.float64)
+
+        def inside(c: Sequence[float]) -> bool:
+            local = inv @ np.array([c[0], c[1], c[2], 1.0])
+            return bool(np.all(np.abs(local[:3]) <= half))
+
         targets = [
             t
             for t in self.tracker.store.all()
             if t.role is ObjectRole.TARGET
             and t.declaration_key == key
             and t.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.BOUND)
+            and t.box.frame_id == grid.frame_id
+            and inside(t.box.pose.xyz)
         ]
-        box = decl.search_box
-        if len(targets) > 1 and box is not None and box.frame_id == grid.frame_id:
-            inv = np.linalg.inv(homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw))
-            half = np.asarray(box.half_extents, dtype=np.float64)
-
-            def inside(c: Sequence[float]) -> bool:
-                local = inv @ np.array([c[0], c[1], c[2], 1.0])
-                return bool(np.all(np.abs(local[:3]) <= half))
-
-            targets = [t for t in targets if inside(t.box.pose.xyz)]
-        if len(targets) != 1 or targets[0].box.frame_id != grid.frame_id:
+        if len(targets) != 1:
             return None
         t = targets[0]
+        tb = t.box
         cap = GraspDeclaration.MAX_HALF_EXTENT_M
-        if max(t.box.half_extents) > cap or t.box.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
+        if max(tb.half_extents) > cap or tb.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
             return None
-        return t.box.model_copy(
+        t_box = homogeneous_from_quat_xyz(tb.pose.xyz, tb.pose.quat_xyzw)
+        signs = np.array([(a, b, c) for a in (-1, 1) for b in (-1, 1) for c in (-1, 1)], float)
+        corners = (signs * np.asarray(tb.half_extents)) @ t_box[:3, :3].T + t_box[:3, 3]
+        if not all(inside(c) for c in corners):
+            return None
+        return tb.model_copy(
             update={
                 "stamp_ns": t.last_confirmed_stamp_ns,
-                "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}",
+                "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}|within:search_box",
             }
         )
 

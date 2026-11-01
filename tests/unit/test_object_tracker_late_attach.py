@@ -14,7 +14,7 @@ import pytest
 from numpy.typing import NDArray
 from openral_core import ObjectRole, TrackStatus
 from openral_world_state.object_tracker.binding import BindOutcome, GraspBinder
-from openral_world_state.object_tracker.session import TrackerSession
+from openral_world_state.object_tracker.session import TrackerSession, TrackingMode
 
 from tests.unit._object_tracker_fixtures import ROBOTS, arm_at_hold
 from tests.unit.test_object_tracker_binding import _grid, _hand_step
@@ -315,6 +315,7 @@ def test_the_place_region_is_the_one_grounded_destination_while_a_payload_is_hel
     )
 
     s, binder, carried, _ = _run("so101_follower", lift_m=0.05, follows=True)
+    s.mode = TrackingMode.ON  # the destination-track path is `on` only
     joint = ROBOTS["so101_follower"][0]
 
     def bowl(dx: float) -> str:

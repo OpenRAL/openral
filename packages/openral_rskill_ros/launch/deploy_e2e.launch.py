@@ -1534,6 +1534,23 @@ def _workspace_explained_cells(
     return object_tracking == "on" and workspace_contact_enabled and requested
 
 
+def _tracked_clear_enabled(object_tracking: str) -> bool:
+    """Whether a track may drive a map clear (bridge and self-filter ``tracked_clear_enabled``).
+
+    The clears are the identity clear, the released-box window, the carry sweep / vacated
+    box, and the self-filter's payload point drop.
+
+    Only ``on`` (which needs the OpenRAL Pro exemption provider, whose K5 freezes the
+    payload the clears stand in for). ``tracking`` and ``off`` leave a carried payload a
+    mapped obstacle: every contact allowance there comes from scene declarations.
+
+    Example:
+        >>> [_tracked_clear_enabled(m) for m in ("off", "tracking", "on")]
+        [False, False, True]
+    """
+    return object_tracking == "on"
+
+
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
     """The octomap bridge's payload octree-clearing params (``payload_sweep_clear_enabled``).
 
@@ -3544,7 +3561,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # relaxation (the region is the destination track's containing box),
                 # SIM-ONLY (`deploy run` refuses tracking); Safety-WG review and a
                 # hazard-log row are owed (#418). Spark A/B R388 (off: the banana dropped
-                # on the table) vs R389 (on: the banana in the bowl).
+                # on the table) vs R389 (on: the banana in the bowl). In `tracking` the
+                # tracker's `place_region()` is declaration-only (the destination track's
+                # box is never used), so this arms only with a declared place zone; with
+                # none, the declaration carries no region and no allowance is granted.
                 "place_approach_enabled": object_tracking != "off"
                 or (
                     vision_attachment_enabled
@@ -4316,6 +4336,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                 runtime_period_from_hal=self_filter_period_from_hal,
                             ),
                             "trailing_sweep_s": _self_filter_trailing_sweep_s(hal_mode),
+                            # A tracked payload's points are dropped only under `on`.
+                            "tracked_clear_enabled": _tracked_clear_enabled(object_tracking),
                             "use_sim_time": use_sim_time,
                         }
                     ],
@@ -4401,6 +4423,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # kernel's voxel deadline can fail closed (Entry 033).
                     "max_octree_age_s": max_octree_age_s,
                     "released_clear_timeout_s": tracked_release_timeout_s,
+                    # Track-driven map clears (identity, released box, sweep): `on` only.
+                    "tracked_clear_enabled": _tracked_clear_enabled(object_tracking),
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,

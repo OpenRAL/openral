@@ -92,6 +92,7 @@ protected:
         {"world_state_topic", world_state_topic_},
         {"padding_m", padding_m()},
         {"max_joint_state_skew_s", 0.1},
+        {"tracked_clear_enabled", tracked_clear_enabled()},
     };
     for (auto& p : primitive_params()) {
       params.push_back(std::move(p));
@@ -126,6 +127,7 @@ protected:
 
   virtual double padding_m() const { return 0.02; }
   virtual std::vector<rclcpp::Parameter> extra_params() const { return {}; }
+  virtual bool tracked_clear_enabled() const { return true; }
 
   /// One capsule on l1 at x = 0.5 m.
   virtual std::vector<rclcpp::Parameter> primitive_params() const {
@@ -361,6 +363,24 @@ TEST_F(SelfFilterNode, UniqueBoundTrackedObjectFiltersItsOwnReturns) {
   float x = 0.0F;
   std::memcpy(&x, last_.data.data(), sizeof(float));
   EXPECT_FLOAT_EQ(x, 2.0F);
+}
+
+class TrackedClearOffSelfFilterNode : public SelfFilterNode {
+protected:
+  bool tracked_clear_enabled() const override { return false; }
+};
+
+TEST_F(TrackedClearOffSelfFilterNode, ABoundTrackedObjectKeepsItsReturns) {
+  publish_attachment("tracked_object");
+  spin_for(60ms);
+  const rclcpp::Time stamp = peer_->now();
+  send_joint_state(0.0, stamp);
+  spin_for(60ms);
+  cloud_pub_->publish(make_cloud({{1.0F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, stamp));
+  spin_for(250ms);
+
+  ASSERT_EQ(received_.load(), 1U);
+  EXPECT_EQ(last_.width, 2U) << "a track alone dropped the payload's points";
 }
 
 TEST_F(SelfFilterNode, AColouredCloudReachesTheMapAsXyzAndViewersWithItsColour) {
