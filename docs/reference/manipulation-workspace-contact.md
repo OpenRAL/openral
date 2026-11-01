@@ -370,8 +370,9 @@ unchanged, and the measured pose itself passing — has speed and/or push as its
 The kernel then publishes the chunk with every commanded non-jaw joint set to its hold anchor: a
 hold, i.e. a controlled stop with power kept and no latch (the jaws keep their command so the
 payload is not dropped); the next chunk is judged afresh. The anchor is the last command the kernel
-published for the joint (the robot's live target), while at most `kWorkspaceHoldFreshPeriods`
-periods past due, leading the measured hand by at most the lead bound and passing the relaxed
+published for the joint at its row due now (the robot's live target: mid-chunk the row it is
+tracking, never a later row, which would be a motion command), while at most
+`kWorkspaceHoldFreshPeriods` periods past that chunk's last row, leading the measured hand by at most the lead bound and passing the relaxed
 check; else the measured value. pro#51: a position-controlled arm under gravity rests below its
 command (OpenArm joint 4 ≈ 0.07–0.1 rad), so a hold at the measured pose commanded it down, each next
 hold re-anchored lower, and the twin dropped a lifted carton 12–14 cm back into the tote while the

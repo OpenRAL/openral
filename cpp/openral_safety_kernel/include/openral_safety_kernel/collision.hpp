@@ -433,6 +433,12 @@ inline constexpr double kWorkspaceCommandFreshPeriods = 2.0;
 /// collision check, else the hold is the measured pose. *Calibration point.*
 inline constexpr double kWorkspaceHoldFreshPeriods = 15.0;
 
+/// How many rows of a published chunk the workspace brake keeps per joint as its hold
+/// anchor (#480 review: the row due now, not the last). Pre-sized at configure, so the
+/// hot path never allocates. A hold due past the kept rows falls back to the measured
+/// pose (today's conservative default). Above typical chunk horizons (ACT 100, π0 50).
+inline constexpr std::size_t kWorkspaceHoldMaxRows = 256;
+
 /// Ceiling on a grasp declaration's `timeout_s` backstop (s). **A Safety-WG
 /// placeholder** mirroring `openral_core.GraspDeclaration.MAX_TIMEOUT_S`; the
 /// lifecycle refuses a declaration past it (or non-positive / non-finite)

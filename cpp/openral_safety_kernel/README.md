@@ -1215,8 +1215,10 @@ shipped box at ingest): the measured object against the robot's exact geometry.
 JOINT_POSITION chunk's only reasons to stop are the measured hand speed and/or lead (it passes with
 both read as within bound, the measured pose included; needs a fresh measured velocity), the kernel publishes a hold — every commanded
 non-jaw joint at its hold anchor — instead of an E-stop, no latch. The anchor is the last command the kernel published for that joint
-(an accepted chunk's or a hold's last row, recorded whoever owns the workspace rules; a refused chunk or another slot's brake does not
-forget it, every other reset does), while at most `kWorkspaceHoldFreshPeriods` periods past due, leading the measured hand by at most
+at its row due now (an accepted chunk's or a hold's rows, row s due s periods after it; the last row due at or before now, never a
+later one — mid-chunk the arm tracks that row, not the last; up to `kWorkspaceHoldMaxRows` rows kept; recorded whoever owns the
+workspace rules; a refused chunk or another slot's brake does not forget it, every other reset does), while at most
+`kWorkspaceHoldFreshPeriods` periods past its last row's due time, leading the measured hand by at most
 the lead bound and passing the relaxed check; else the measured value (WARN `anchor=command|measured`). Why (pro#51): a
 position-controlled arm under gravity rests below its command, so a hold at the measured pose commands it down and each next hold
 re-anchors lower — the OpenArm twin dropped a lifted carton 12–14 cm back into the tote. For a speed/lead-only stop the rows instead creep toward the command (scaled so the tightest row leads one control period at the speed bound while the measured hand is over its speed bound, else half the lead bound, plus its row allowance, when the scaled rows pass the relaxed check; WARN `lead_m= row=` names that row). WARN `safety.workspace_brake ... creep=`.

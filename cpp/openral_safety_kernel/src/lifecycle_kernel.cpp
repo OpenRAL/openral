@@ -2381,8 +2381,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             ws_hold_anchored_ = false;
             for (std::size_t d = 0; d < robot_ndof; ++d) {
               const bool commanded = full_row || slot_commanded_[d] != 0;
-              const bool anchored = commanded && !is_jaw(d) && workspace_hold_fresh(d, anchor_ns);
-              q_anchor_[d] = anchored ? workspace_hold_q_[d] : q_meas_[d];
+              const double* held =
+                  commanded && !is_jaw(d) ? workspace_hold_q(d, anchor_ns) : nullptr;
+              const bool anchored = held != nullptr;
+              q_anchor_[d] = anchored ? *held : q_meas_[d];
               ws_hold_anchored_ = ws_hold_anchored_ || (anchored && q_anchor_[d] != q_meas_[d]);
             }
             if (ws_hold_anchored_) {
@@ -3577,8 +3579,9 @@ SafetyKernelLifecycleNode::configure_workspace_measurement(const std::vector<std
   workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
   workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
   workspace_cmd_set_.assign(envelope_.n_dof, 0);
-  workspace_hold_q_.assign(envelope_.n_dof, 0.0);
-  workspace_hold_due_ns_.assign(envelope_.n_dof, 0);
+  workspace_hold_rows_.assign(envelope_.n_dof * kWorkspaceHoldMaxRows, 0.0);
+  workspace_hold_start_ns_.assign(envelope_.n_dof, 0);
+  workspace_hold_horizon_.assign(envelope_.n_dof, 0);
   workspace_hold_set_.assign(envelope_.n_dof, 0);
   q_anchor_.assign(envelope_.n_dof, 0.0);
   workspace_command_holds_.assign(envelope_.n_dof, 0);
@@ -6204,27 +6207,38 @@ void SafetyKernelLifecycleNode::record_workspace_hold(const double* flat, std::u
   if (horizon == 0 || flat == nullptr) {
     return;
   }
-  const double* last = flat + static_cast<std::size_t>(horizon - 1) * stride;
-  const std::int64_t due_ns =
-      this->now().nanoseconds() + static_cast<std::int64_t>(static_cast<double>(horizon - 1) *
-                                                            workspace_control_period_s_ * 1e9);
-  for (std::size_t d = 0; d < stride && d < workspace_hold_q_.size(); ++d) {
+  const std::int64_t start_ns = this->now().nanoseconds();
+  const std::size_t kept = std::min<std::size_t>(horizon, kWorkspaceHoldMaxRows);
+  for (std::size_t d = 0; d < stride && d < workspace_hold_set_.size(); ++d) {
     if (full_row || slot_commanded_[d] != 0) {
-      workspace_hold_q_[d] = last[d];
-      workspace_hold_due_ns_[d] = due_ns;
+      for (std::size_t s = 0; s < kept; ++s) {
+        workspace_hold_rows_[d * kWorkspaceHoldMaxRows + s] = flat[s * stride + d];
+      }
+      workspace_hold_start_ns_[d] = start_ns;
+      workspace_hold_horizon_[d] = horizon;
       workspace_hold_set_[d] = 1;
     }
   }
 }
 
-bool SafetyKernelLifecycleNode::workspace_hold_fresh(std::size_t d,
-                                                     std::int64_t now_ns) const noexcept {
+const double* SafetyKernelLifecycleNode::workspace_hold_q(std::size_t d,
+                                                          std::int64_t now_ns) const noexcept {
   if (d >= workspace_hold_set_.size() || workspace_hold_set_[d] == 0) {
-    return false;
+    return nullptr;
   }
-  const double window_ns = kWorkspaceHoldFreshPeriods * workspace_control_period_s_ * 1e9;
-  const std::int64_t since_due = now_ns - workspace_hold_due_ns_[d];
-  return since_due >= 0 && static_cast<double>(since_due) <= window_ns;
+  const double period_ns = workspace_control_period_s_ * 1e9;
+  const double since_start = static_cast<double>(now_ns - workspace_hold_start_ns_[d]);
+  const double last = static_cast<double>(workspace_hold_horizon_[d] - 1);
+  if (!(period_ns > 0.0) || since_start < 0.0 ||
+      since_start - last * period_ns > kWorkspaceHoldFreshPeriods * period_ns) {
+    return nullptr;
+  }
+  // The row due now: floor, never a later row (holding ahead would be a motion command).
+  const auto row = static_cast<std::size_t>(std::min(std::floor(since_start / period_ns), last));
+  if (row >= kWorkspaceHoldMaxRows) {
+    return nullptr;  // past the kept rows: the measured pose, as before
+  }
+  return &workspace_hold_rows_[d * kWorkspaceHoldMaxRows + row];
 }
 
 }  // namespace openral_safety_kernel

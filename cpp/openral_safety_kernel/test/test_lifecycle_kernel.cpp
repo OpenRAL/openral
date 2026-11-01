@@ -7005,7 +7005,10 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
 // 0.02 m/s x 0.5 s = 0.01 m per row, 0.06 m/rad, bound 0.005 m. Measured at 0.5 rad
 // (1.5 mm clear of the cell), rows 0.45/0.4/0.3 rad lead 0.003/0.006/0.012 m against
 // 0.005/0.015/0.025: the chunk goes out whole. Row 0 gets no allowance: the same
-// 0.1 rad push at row 0 still brakes, and the tightest row sets the creep.
+// 0.1 rad push at row 0 still brakes. Inside the first chunk's first period its row 0
+// (0.45 rad) is the hold anchor (#480 review: the row due now); already leading the
+// measured hand by 0.003 m, over half the lead bound, no creep from it passes, so the
+// brake holds there — never at the 0.4 rad push, never back at the measured pose.
 TEST_F(LifecycleKernelTest, ALaterRowMayLeadByItsPeriodsAtTheSpeedBound) {
   LogCapture logs;
   GraspRig rig("kernel_ws_lead_rows",
@@ -7028,7 +7031,9 @@ TEST_F(LifecycleKernelTest, ALaterRowMayLeadByItsPeriodsAtTheSpeedBound) {
   EXPECT_FALSE(rig.node->fault_latched());
   EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
   ASSERT_EQ(rig.last_flat.size(), 3U);
-  EXPECT_NEAR(rig.last_flat[0], kLagMeasuredQ - 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.45) << logs.joined();
+  EXPECT_DOUBLE_EQ(rig.last_flat[2], 0.45) << logs.joined();
+  EXPECT_GE(logs.count("anchor=command"), 1U) << logs.joined();
 }
 
 // #349 review A: a hand already touching is not carried along by its command, so no
@@ -7137,6 +7142,80 @@ TEST_F(LifecycleKernelTest, AStaleAcceptedCommandIsNoHoldAnchor) {
   // Past the window, the workspace re-confirmed each second (its measurement age never
   // lapses: a re-armed workspace would forget the anchor for another reason).
   const double wait_s = osk::kWorkspaceHoldFreshPeriods * kLagPeriodS + 0.5;
+  for (double t = 0.0; t < wait_s; t += 1.0) {
+    b.workspace_stamp_ns = rig.now_ns();
+    rig.warm(&b, kLagMeasuredQ, 1000);
+  }
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], kLagMeasuredQ) << logs.joined();
+  EXPECT_GE(logs.count("anchor=measured"), 1U) << logs.joined();
+}
+
+namespace {
+
+// A 3-row chunk for the hold rig: rows due at acceptance + 0/1/2 periods.
+openral_msgs::msg::ActionChunk hold_rows_chunk() {
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.55);
+  chunk.horizon = 3;
+  chunk.flat = {0.55, 0.6, 0.65};
+  return chunk;
+}
+
+}  // namespace
+
+// #480 review: a brake while a multi-row chunk is still playing holds at the row due
+// NOW — what the arm is tracking — not the chunk's last row (a future target, i.e. a
+// motion command), and not the sagged measured pose (the last-row anchor was "not yet
+// due" until the chunk ended, so mid-chunk brakes fell back to measured: 1 of 29 on the
+// Spark restock twin).
+TEST_F(LifecycleKernelTest, AMidChunkHoldKeepsTheRowDueNow) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_row0");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, hold_rows_chunk())) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  ASSERT_DOUBLE_EQ(rig.last_flat[2], 0.65) << "accepted as-is";
+  // Well inside the first period: row 0 is due, rows 1 and 2 are not.
+  ASSERT_TRUE(rig.send_once(&b, 0.52, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.55) << "held at row 0: " << logs.joined();
+  EXPECT_GE(logs.count("anchor=command"), 1U) << logs.joined();
+}
+
+// One and a half periods in: row 1 is due — never row 2, which is still ahead.
+TEST_F(LifecycleKernelTest, AMidChunkHoldNeverHoldsAheadOfTheRowDueNow) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_row1");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, hold_rows_chunk())) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  rig.warm(&b, 0.52, static_cast<int>(1.5 * kLagPeriodS * 1000.0));
+  ASSERT_TRUE(rig.send_once(&b, 0.52, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "held at row 1: " << logs.joined();
+  EXPECT_GE(logs.count("anchor=command"), 1U) << logs.joined();
+}
+
+// A multi-row chunk past its last row's freshness window is no anchor either.
+TEST_F(LifecycleKernelTest, AStaleMultiRowChunkIsNoHoldAnchor) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_rows_stale");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, hold_rows_chunk())) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  const double wait_s = (osk::kWorkspaceHoldFreshPeriods + 2.0) * kLagPeriodS + 0.5;
   for (double t = 0.0; t < wait_s; t += 1.0) {
     b.workspace_stamp_ns = rig.now_ns();
     rig.warm(&b, kLagMeasuredQ, 1000);
