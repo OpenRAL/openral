@@ -260,6 +260,7 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     stamp_ns: int,
     params: FitParams | None = None,
     detector_box: tuple[float, float, float, float] | None = None,
+    part_box: tuple[float, float, float, float] | None = None,
 ) -> ContainingFit:
     """Fit the set ``C`` that contains the object one mask shows (module docstring).
 
@@ -279,6 +280,10 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
             mask was prompted with, if any: its rectangle joins the silhouette (A1), so a
             mask that lost a rim the detector saw is still contained. Never a track's own
             projected box (that would only ever grow itself).
+        part_box: The box the request prompted with (a detector's box, or a refit's projection
+            of the track's own box), used only to pick which depth-connected parts of a
+            ``"measured"`` fit's mask are the object; it never adds to the silhouette. Defaults
+            to ``detector_box``.
 
     Returns:
         A ``ContainingFit``; ``refusal`` names the failed gate.
@@ -379,9 +384,10 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
         front = sil & usable & ~robot
     notes["a5_robot_band_px"] = float((sil & (robot | uncertain)).sum())
     z_front = min(float(d[front].min()) - p.eps_m, float(z_support.min()))
-    if p.extent == "measured" and detector_box is not None:
+    pick = part_box if part_box is not None else detector_box
+    if p.extent == "measured" and pick is not None:
         part = _detected_part(
-            sure & usable, d, intrinsics, t_base_from_cam, support_z, resolution, detector_box
+            sure & usable, d, intrinsics, t_base_from_cam, support_z, resolution, pick
         )
         if part is not None and len(part) >= p.min_points:
             notes["spill_dropped_points"] = float(len(surface) - len(part))
@@ -430,18 +436,21 @@ def _detected_part(
     t_base_from_cam: NDArray[np.float64],
     support_z: float,
     resolution: float,
-    detector_box: tuple[float, float, float, float],
+    part_box: tuple[float, float, float, float],
 ) -> NDArray[np.float64] | None:
-    """The mask's points on the depth-connected parts the detector boxed; ``None`` = all of them.
+    """The mask's points on the depth-connected parts ``part_box`` holds; ``None`` = all of them.
 
     A mask that spills onto a neighbour standing apart (restock scene 13, 2026-10-31: a carton
     and one 1.6 cm away, boxed 18 x 9 cm for a 6 x 6 cm carton) joins two surfaces that no
     chain of adjacent pixels links within a grid cell once the support seen between them is
-    dropped. Parts with most of their pixels outside the detector's box are dropped, and so are
+    dropped. Parts with most of their pixels outside the prompt's box are dropped, and so are
     the points within a cell of the support (they hold the gap). A part an occluder cuts off the
-    object stays: it lies inside the detector's box. *Ceiling*: neighbours touching within a
-    cell stay joined, and only a detector-prompted fit is split (a refit is held by the growth
-    gate instead). Safety-WG review owed: dropped points no longer bound the box.
+    object stays: it lies inside the prompt's box. A refit picks by the track's projected box:
+    scene 09's refits spilled to 10.4 x 11.8 cm, under the growth gate, and the box carried to
+    the shelf reached the board 5.5 cm ahead of the carton. *Ceiling*: neighbours touching within
+    a cell stay joined; an object pushed mostly out of its old box with a neighbour left in it
+    would be swapped for the neighbour. Safety-WG review owed: dropped points no longer bound the
+    box.
     """
     pts, win = _grid_points(measured, depth_m, intrinsics, t_base_from_cam)
     act = measured[win] & (pts[..., 2] > support_z + resolution)
@@ -461,7 +470,7 @@ def _detected_part(
         lab[act] = lab.ravel()[lab[act] - 1]
         if np.array_equal(prev, lab):
             break
-    inside = _rect(detector_box, measured.shape)[win]
+    inside = _rect(part_box, measured.shape)[win]
     ids, size = np.unique(lab[act], return_counts=True)
     held = np.array([np.count_nonzero(inside & (lab == i)) for i in ids])
     keep = ids[2 * held >= size]

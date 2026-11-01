@@ -333,6 +333,9 @@ def test_a_mask_spilled_onto_a_neighbour_is_cut_to_what_the_detector_boxed() -> 
     assert _in_box(surface_samples(target), cut.box).all()
     assert cut.assumptions["spill_dropped_points"] > 0
     assert kept.box.half_extents == whole.box.half_extents  # a box over both drops nothing
+    # A refit prompts with the track's projected box: it picks the parts the same way.
+    refit = _fit(rig, [target, neighbour], part_box=prompt, **kw)
+    assert refit.box is not None and refit.box.half_extents == cut.box.half_extents
 
 
 def test_a_target_an_occluder_cuts_in_two_keeps_both_parts() -> None:

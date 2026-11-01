@@ -76,19 +76,20 @@ def _grounded(oranges: list[Solid], *, containing: bool = False) -> tuple[Object
     return tr, wall
 
 
-def test_three_identical_oranges_tie_updates_nothing() -> None:
+def test_three_identical_oranges_tie_moves_nothing() -> None:
     oranges = _oranges(0.05)
     tr, wall = _grounded(oranges)
     a, b = _get(tr, "trk:1"), _get(tr, "trk:2")
     mid = tuple((p + q) / 2 for p, q in zip(a.box.pose.xyz, b.box.pose.xyz, strict=True))
     assert associate(tr.store.all(), mid, voxel_m=RES) == (None, "tie")
-    # A segmenter mask that spans two oranges: its fit sits between them and moves neither.
+    # A segmenter mask that spans two oranges: the refit's projected box cuts it to the
+    # prompted orange (2026-11-01), so it moves neither and refreshes only that one.
     depth, labels = render(oranges, _RIG)
     frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
     grid = grid_from_depth(depth, _RIG)
     out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall + 1)
     req = out.requests[0]
-    boxes, rev = {o.object_id: o.box for o in tr.store.all()}, tr.store.revision
+    boxes = {o.object_id: o.box for o in tr.store.all()}
     both = (labels == 1) | (labels == 2)
     union = TrackerResult(req.request_id, mask=both)
     # That fit passes every gate and lands on the tie (what feed then does with it).
@@ -102,8 +103,13 @@ def test_three_identical_oranges_tie_updates_nothing() -> None:
     centroid = tuple(fit.surface.mean(axis=0))
     assert associate(tr.store.all(), centroid, voxel_m=RES) == (None, "tie")
     out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall + 1, results=[union])
-    assert {o.object_id: o.box for o in out.tracked.objects} == boxes
-    assert tr.store.revision == rev
+    same = {k: v.model_copy(update={"stamp_ns": 0}) for k, v in boxes.items()}
+    assert {
+        o.object_id: o.box.model_copy(update={"stamp_ns": 0}) for o in out.tracked.objects
+    } == same
+    assert {
+        o.object_id for o in out.tracked.objects if o.box.stamp_ns != boxes[o.object_id].stamp_ns
+    } <= {req.object_id}
 
 
 def test_refound_lost_track_inherits_its_id_as_inferred() -> None:
@@ -394,10 +400,11 @@ def test_a_split_track_never_takes_a_neighbours_fit() -> None:
     assert others  # the scene still holds the neighbours
 
 
-def test_a_two_object_refit_never_replaces_a_confirmed_box() -> None:
+def test_a_two_object_refit_is_cut_to_the_tracked_object() -> None:
     """PickOrange r3po_on1: a mask over orange_1 and orange_3 refit the CONFIRMED orange_1
-    track, which went SPLIT, so orange_1's next fit took a new id. A refit that splits on
-    the map is ignored: the confirmed box and id stay."""
+    track, which went SPLIT, so orange_1's next fit took a new id. The refit prompts with the
+    track's projected box, which picks orange_1's depth-connected part of the mask (2026-11-01):
+    the id stays, CONFIRMED, and the box tightens to orange_1 alone."""
     oranges = _oranges(0.08)[:2]
     tr = ObjectTracker(_RIG.frame)
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
@@ -436,7 +443,10 @@ def test_a_two_object_refit_never_replaces_a_confirmed_box() -> None:
     out = tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n,
                   results=[TrackerResult(req.request_id, mask=labels > 0)])  # fmt: skip
     after = _get(tr, before.object_id)
-    assert after.status is TrackStatus.CONFIRMED and after.box == before.box
+    assert [o.object_id for o in tr.store.all()] == [before.object_id]
+    assert after.status is TrackStatus.CONFIRMED
+    assert np.allclose(after.box.pose.xyz[:2], oranges[0][1][:2], atol=RES / 2)
+    assert max(after.box.half_extents[:2]) < oranges[0][1][3] + RES  # orange_1 only
 
 
 def test_a_released_orange_is_not_followed_and_is_found_afresh() -> None:
