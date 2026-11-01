@@ -65,7 +65,11 @@ def _scaled(
 
 
 def _first(tr: ObjectTracker, t: TrackedObject) -> float:
-    tr._first_extent[t.object_id] = (2.0 * max(t.box.half_extents[:2]), True)
+    tr._first_extent[t.object_id] = (
+        2.0 * max(t.box.half_extents[:2]),
+        True,
+        2.0 * t.box.half_extents[2],
+    )
     return tr._first_extent[t.object_id][0]
 
 
@@ -94,7 +98,7 @@ def test_the_reference_is_the_first_clear_fit_so_admitted_growth_cannot_ratchet(
     step = _scaled(t.box, 1.4)
     assert not tr._overgrown(t.object_id, step, True)
     tr._commit_fit(t, step, frozenset(), t.box.pose.xyz, _grid(), 2, (), _frame(2))
-    assert tr._first_extent[t.object_id] == (first, True), "an admitted refit never moves it"
+    assert tr._first_extent[t.object_id][:2] == (first, True), "an admitted refit never moves it"
     assert step.box is not None
     assert tr._overgrown(t.object_id, _scaled(step.box, 1.4), True)
 
@@ -108,14 +112,15 @@ def test_a_provisional_first_fit_holds_provisional_refits_until_a_clear_fit_repl
     tr, t = _tracker()
     w = 2.0 * max(t.box.half_extents[:2])
     tr._commit_fit(t, _prov(t.box, 1.0), frozenset(), t.box.pose.xyz, _grid(), 2, (), _frame(2))
-    assert tr._first_extent[t.object_id] == pytest.approx((w, False))
+    assert tr._first_extent[t.object_id][:2] == pytest.approx((w, False))
     assert tr._overgrown(t.object_id, _prov(t.box, 1.6), True), "provisional growth is gated"
     big = _scaled(t.box, 2.0)
     assert not tr._overgrown(t.object_id, big, True), "a clear fit is never refused against one"
     tr._commit_fit(t, big, frozenset(), t.box.pose.xyz, _grid(), 3, (), _frame(3))
-    assert tr._first_extent[t.object_id] == pytest.approx((2.0 * w, True))
+    assert tr._first_extent[t.object_id][:2] == pytest.approx((2.0 * w, True))
     tr._commit_fit(t, _scaled(t.box, 1.0), frozenset(), t.box.pose.xyz, _grid(), 4, (), _frame(4))
-    assert tr._first_extent[t.object_id] == pytest.approx((2.0 * w, True)), "the first clear stays"
+    first = tr._first_extent[t.object_id][:2]
+    assert first == pytest.approx((2.0 * w, True)), "the first clear stays"
 
 
 def _surface(box: PlaceRegion, offset_m: float) -> NDArray[np.float64]:
@@ -241,4 +246,18 @@ def test_the_growth_reference_leaves_the_clear_history_to_every_clear_fit() -> N
         tr._commit_fit(t, _scaled(t.box, k), frozenset(), t.box.pose.xyz, _grid(), stamp, (),
                        _frame(stamp))  # fmt: skip
     assert tr._clear_extent[t.object_id] == pytest.approx(1.3 * w)
-    assert tr._first_extent[t.object_id] == pytest.approx((w, True))
+    assert tr._first_extent[t.object_id][:2] == pytest.approx((w, True))
+
+
+def test_a_refit_that_grows_only_in_height_is_refused() -> None:
+    """Restock scene 00 2026-11-01: an 8 cm carton's refits took in a taller neighbour; the
+    horizontal-only gate let its box grow to 14.6 cm tall."""
+    tr, t = _tracker()
+    _first(tr, t)
+    h = t.box.half_extents
+    taller = t.box.model_copy(update={"half_extents": (h[0], h[1], 1.8 * h[2])})
+    fit = ContainingFit(box=taller, tight=None, support_z=_SUPPORT_Z, surface=np.zeros((0, 3)))
+    assert tr._overgrown(t.object_id, fit, False)
+    ok = t.box.model_copy(update={"half_extents": (h[0], h[1], 1.2 * h[2])})
+    fit = ContainingFit(box=ok, tight=None, support_z=_SUPPORT_Z, surface=np.zeros((0, 3)))
+    assert not tr._overgrown(t.object_id, fit, False)

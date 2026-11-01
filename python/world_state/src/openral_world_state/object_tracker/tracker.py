@@ -409,7 +409,7 @@ class ObjectTracker:
         self._clear_extent: dict[str, float] = {}
         # Per track: the longer horizontal extent of its first clear fit, else of its first fit,
         # and whether that fit was clear (the growth gate).
-        self._first_extent: dict[str, tuple[float, bool]] = {}
+        self._first_extent: dict[str, tuple[float, bool, float]] = {}  # (extent, clear, height)
         # Declared static geometry (cell centres, grid frame) and its keys on the newest lattice.
         self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
         self._static_cache: tuple[tuple[object, ...], frozenset[Cell]] | None = None
@@ -1287,14 +1287,19 @@ class ObjectTracker:
         ref = self._first_extent.get(oid)
         if ref is None or fit.box is None or (not ref[1] and not fit.provisional):
             return False
-        first = ref[0]
+        first, _, first_h = ref
         extent = 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1])
+        height = 2.0 * fit.box.half_extents[2]
         limit = self.params.refit_growth_factor * first
-        if extent <= limit:
+        # Height too (restock scene 00 2026-11-01: an 8 cm carton's refits took in a taller
+        # neighbour and its box grew to 14.6 cm tall under a horizontal-only gate).
+        limit_h = self.params.refit_growth_factor * first_h
+        if extent <= limit and height <= limit_h:
             return False
         log.info("object_tracker.refit_growth_refused", object_id=oid, moved=moved,
                  extent_m=round(extent, 3), first_m=round(first, 3),
-                 limit_m=round(limit, 3))  # fmt: skip
+                 limit_m=round(limit, 3), height_m=round(height, 3),
+                 limit_h_m=round(limit_h, 3))  # fmt: skip
         return True
 
     def _redate_if_inside(
@@ -1424,6 +1429,7 @@ class ObjectTracker:
             self._first_extent[track.object_id] = (
                 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
                 not fit.provisional,
+                2.0 * fit.box.half_extents[2],
             )
         if not fit.provisional and fit.box is not None:
             size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])
