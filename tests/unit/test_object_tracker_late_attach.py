@@ -133,7 +133,7 @@ def test_a_late_bind_does_not_wait_on_the_map() -> None:
 
 
 def test_a_hand_that_travelled_far_since_the_hold_binds_nothing_late() -> None:
-    _, binder, _, _ = _run("so101_follower", lift_m=0.2, follows=True, lift_at=2)
+    _, binder, _, _ = _run("so101_follower", lift_m=0.3, follows=True, lift_at=2)
     assert (
         binder.held is not None and binder.held.outcome is not BindOutcome.TRACKED
     )  # a fallback bind
@@ -143,6 +143,14 @@ def test_an_ordinary_lift_before_a_late_attach_still_binds_late() -> None:
     """Spark R302 (2026-10-23): a 15 cm lift before the ATTACH skipped the late bind at the
     old 12 cm cap and bound the pinch fallback."""
     _, binder, _, _ = _run("so101_follower", lift_m=0.11, follows=True)  # ~0.14 m of pinch
+    assert binder.held is not None and binder.held.outcome is BindOutcome.TRACKED
+
+
+def test_a_fast_lift_before_the_stall_read_still_binds_late() -> None:
+    """Restock scene 08 (2026-11-01): the policy lifted 21 cm in 1 s while the jaw still crept
+    closed on the carton, the stall read fired after the lift and the old 18 cm cap bound the
+    pinch fallback."""
+    _, binder, _, _ = _run("so101_follower", lift_m=0.165, follows=True, lift_at=2)
     assert binder.held is not None and binder.held.outcome is BindOutcome.TRACKED
 
 

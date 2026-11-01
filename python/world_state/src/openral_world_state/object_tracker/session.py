@@ -110,8 +110,10 @@ _LATE_MIN_NS = 0
 _LATE_MAX_NS = 3 * _NS
 #: ... the hand has travelled no further than this since the hold (m; an ordinary
 #: 15 cm lift before a late ATTACH skipped the late bind at 0.12 and bound the
-#: pinch fallback; a wrong late bind is released by `_check_drop`). *Calibration point.* ...
-_LATE_MAX_TRAVEL_M = 0.18
+#: pinch fallback; restock scene 08 2026-11-01 lifted 21 cm in 1 s while the jaw still crept
+#: closed on the carton, the stall read fired after it and 0.18 bound the pinch fallback; a
+#: wrong late bind is a phantom payload, released by `_check_drop`). *Calibration point.* ...
+_LATE_MAX_TRAVEL_M = 0.25
 #: ... (the grasp pose: the hold's, or the newest this long before it with the pinch in a box)
 _LATE_LOOKBACK_NS = 1 * _NS
 #: ... and the track was last fitted within this long of the hold start.
@@ -628,7 +630,15 @@ class TrackerSession:
         if eligible and not fresh:
             skip(
                 "stale_fit",
-                tracks=[(o.object_id, (hold_ns - o.last_fit_stamp_ns) / _NS) for o in eligible],
+                tracks=[
+                    (
+                        o.object_id,
+                        o.status.value,
+                        (hold_ns - o.last_fit_stamp_ns) / _NS,
+                        (hold_ns - o.last_confirmed_stamp_ns) / _NS,
+                    )
+                    for o in eligible
+                ],
             )
             return _LateAttachChoice(excluded_track_ids=frozenset(o.object_id for o in eligible))
         pose = self._grasp_pose(binder, joint, positions, sample, hold_ns, fresh)
