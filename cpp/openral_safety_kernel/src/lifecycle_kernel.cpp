@@ -3822,6 +3822,13 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
                "(workspace_contact_control_period_s)");
         return;
       }
+      if (!measured) {
+        // Unmeasured, the hand speed stays +inf and `workspace_exempt` is false for every pair:
+        // a rule that can never fire must not load as if it could.
+        refuse("workspace_contact_config: the workspace-contact rule needs the hand measurement "
+               "(workspace_contact_control_period_s and workspace links)");
+        return;
+      }
       provider_workspace_on_ = true;
       workspace_max_speed_mps_ = ws.max_speed_mps;
       workspace_max_lead_m_ = ws.max_lead_m;

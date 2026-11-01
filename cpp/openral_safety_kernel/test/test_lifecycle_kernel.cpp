@@ -9154,6 +9154,26 @@ TEST_F(LifecycleKernelTest, AProviderBrakeWithoutTheHandMeasurementIsRefused) {
       << rig.node->exemption_provider_status();
 }
 
+TEST_F(LifecycleKernelTest, AProviderRuleWithoutTheHandMeasurementIsRefused) {
+  // The rule alone (no brake): without the measurement the hand speed stays +inf, so the quoted
+  // `workspace_exempt` is false for every pair and the rule could never fire. Refused at load,
+  // not loaded "OK" as a dead rule.
+  osk_test::serve_test_providers();
+  auto params = with_param(grasp_params(true), "hal_mode", rclcpp::ParameterValue("sim"));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("QuotesTheVerdict")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  params = with_param(params, "workspace_contact_max_speed_mps", rclcpp::ParameterValue(0.02));
+  params = with_param(params, "workspace_contact_max_lead_m", rclcpp::ParameterValue(0.05));
+  GraspRig rig("kernel_provider_rule_nomeasure", params);  // no control period: no measurement
+  rig.start();
+  EXPECT_FALSE(rig.node->exemption_provider_loaded());
+  EXPECT_EQ(rig.node->exemption_provider_status(),
+            "refused: workspace_contact_config: the workspace-contact rule needs the hand "
+            "measurement (workspace_contact_control_period_s and workspace links)");
+}
+
 TEST_F(LifecycleKernelTest, AProviderSeesEachAttachmentsIdentityMatch) {
   // API v4: the kernel's identity match per attachment (index-aligned with the AttachedModel): a
   // tracked_object payload bound to the live trk:1 of the same epoch, on the hand by K3.

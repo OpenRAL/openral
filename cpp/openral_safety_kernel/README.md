@@ -1461,7 +1461,9 @@ installed header
   - `initialize` returning false or throwing;
   - an unsound `workspace_contact_config()` (API v5; read only with the in-tree #349 rule off):
     a non-finite or non-positive bound, a lead bound past `kMaxWorkspaceContactLeadM`, the brake
-    without the rule, or the brake without the hand measurement.
+    without the rule, or the rule (with or without its brake) without the hand measurement
+    (`workspace_contact_control_period_s` and workspace links: unmeasured, the rule could never
+    fire).
 
 **On the live check** (API v2) the provider is consulted in four places:
 - `check_voxel_collision`: robot link vs cell (`voxel_pair`);
@@ -1532,7 +1534,7 @@ arithmetic.
 (`kExemptionProviderApiVersion` 5; a v4 provider is refused: `refused: api_version 4 != 5`):
 - **#349 verdict.** `workspace_contact_config()` (replaces v3's `brake_config`) lets a provider
   enable the kernel's own #349 rule, on the provider's bounds, while the in-tree rule is off;
-  the kernel validates them at load (unsound bounds, a brake without the rule, or a brake without
+  the kernel validates them at load (unsound bounds, a brake without the rule, or the rule without
   the hand measurement refuse the provider). Every pair query then carries `workspace_exempt`:
   the kernel's verdict for that pair (`workspace_region_exempts` on `ProviderGate::workspace`, the
   live workspace with the row's speed and allowance-applied lead; self and payload-self pairs:
