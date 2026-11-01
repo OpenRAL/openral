@@ -379,6 +379,13 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
         front = sil & usable & ~robot
     notes["a5_robot_band_px"] = float((sil & (robot | uncertain)).sum())
     z_front = min(float(d[front].min()) - p.eps_m, float(z_support.min()))
+    if p.extent == "measured" and detector_box is not None:
+        part = _detected_part(
+            sure & usable, d, intrinsics, t_base_from_cam, support_z, resolution, detector_box
+        )
+        if part is not None and len(part) >= p.min_points:
+            notes["spill_dropped_points"] = float(len(surface) - len(part))
+            surface = part
     footprint = _outer_polygon(surface[:, :2])
     top = float(surface[:, 2].max())
     # Every ray of the silhouette meets the solid no nearer than its first hit (an opaque
@@ -414,6 +421,53 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     box_pad_res = 0.0 if p.extent == "measured" else resolution
     fit = _boxed(verts, surface, support_z, box_pad_res, frame_id, stamp_ns, notes)
     return replace(fit, provisional=provisional) if provisional and fit.box is not None else fit
+
+
+def _detected_part(
+    measured: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+    support_z: float,
+    resolution: float,
+    detector_box: tuple[float, float, float, float],
+) -> NDArray[np.float64] | None:
+    """The mask's points on the depth-connected parts the detector boxed; ``None`` = all of them.
+
+    A mask that spills onto a neighbour standing apart (restock scene 13, 2026-10-31: a carton
+    and one 1.6 cm away, boxed 18 x 9 cm for a 6 x 6 cm carton) joins two surfaces that no
+    chain of adjacent pixels links within a grid cell once the support seen between them is
+    dropped. Parts with most of their pixels outside the detector's box are dropped, and so are
+    the points within a cell of the support (they hold the gap). A part an occluder cuts off the
+    object stays: it lies inside the detector's box. *Ceiling*: neighbours touching within a
+    cell stay joined, and only a detector-prompted fit is split (a refit is held by the growth
+    gate instead). Safety-WG review owed: dropped points no longer bound the box.
+    """
+    pts, win = _grid_points(measured, depth_m, intrinsics, t_base_from_cam)
+    act = measured[win] & (pts[..., 2] > support_z + resolution)
+    right = act[:, 1:] & act[:, :-1]
+    right &= np.linalg.norm(pts[:, 1:] - pts[:, :-1], axis=-1) <= resolution
+    down = act[1:] & act[:-1] & (np.linalg.norm(pts[1:] - pts[:-1], axis=-1) <= resolution)
+    # Min-label propagation along the linked pixel pairs; a label is a pixel's flat index + 1,
+    # so following it (``flat[lab - 1]``) jumps along the chain.
+    lab = np.where(act, np.arange(1, act.size + 1).reshape(act.shape), 0)
+    none = act.size + 1
+    while True:
+        prev = lab.copy()
+        lab[:, 1:] = np.minimum(lab[:, 1:], np.where(right, lab[:, :-1], none))
+        lab[:, :-1] = np.minimum(lab[:, :-1], np.where(right, lab[:, 1:], none))
+        lab[1:] = np.minimum(lab[1:], np.where(down, lab[:-1], none))
+        lab[:-1] = np.minimum(lab[:-1], np.where(down, lab[1:], none))
+        lab[act] = lab.ravel()[lab[act] - 1]
+        if np.array_equal(prev, lab):
+            break
+    inside = _rect(detector_box, measured.shape)[win]
+    ids, size = np.unique(lab[act], return_counts=True)
+    held = np.array([np.count_nonzero(inside & (lab == i)) for i in ids])
+    keep = ids[2 * held >= size]
+    if len(keep) in (0, len(ids)):
+        return None
+    return pts[np.isin(lab, keep)]
 
 
 def _clipped_vertices(

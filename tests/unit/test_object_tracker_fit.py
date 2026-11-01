@@ -308,3 +308,48 @@ def test_a_carton_is_boxed_near_its_own_size_not_its_shadow() -> None:
     pad = 0.5 * RES  # half a cell on each side
     assert max(measured.box.half_extents[:2]) <= 0.03 + pad + 1e-6, measured.box.half_extents
     assert max(cone.box.half_extents[:2]) > 1.5 * 0.03, cone.box.half_extents
+
+
+def test_a_mask_spilled_onto_a_neighbour_is_cut_to_what_the_detector_boxed() -> None:
+    """Restock scene 13 2026-10-31: the mask took in a carton 1.6 cm away and the 6 x 6 cm
+    target was boxed 18 x 9 cm. The depth-connected part the detector boxed is kept."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    target = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    neighbour = box((x - 0.076, y, rig.support_z + 0.04), (0.03, 0.03, 0.04), 0.0)
+    _, labels = render([target, neighbour], rig)
+    rows, cols = np.nonzero(labels == 1)
+    prompt = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    rows, cols = np.nonzero(labels > 0)
+    both = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    spilled = labels > 0
+    kw: dict[str, Any] = {"mask": spilled, "params": FitParams()}
+    whole = _fit(rig, [target, neighbour], **kw)
+    cut = _fit(rig, [target, neighbour], detector_box=prompt, **kw)
+    kept = _fit(rig, [target, neighbour], detector_box=both, **kw)
+    assert whole.box is not None and cut.box is not None and kept.box is not None
+    assert max(whole.box.half_extents[:2]) > 0.06, whole.box.half_extents
+    assert max(cut.box.half_extents[:2]) <= 0.03 + RES, cut.box.half_extents
+    assert _in_box(surface_samples(target), cut.box).all()
+    assert cut.assumptions["spill_dropped_points"] > 0
+    assert kept.box.half_extents == whole.box.half_extents  # a box over both drops nothing
+
+
+def test_a_target_an_occluder_cuts_in_two_keeps_both_parts() -> None:
+    """A thin occluder across the target splits its mask; both parts lie in the detector's box,
+    so neither is dropped."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    target = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    _, labels = render([target], rig)
+    whole = labels == 1
+    rows, cols = np.nonzero(whole)
+    prompt = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    mid = (cols.min() + cols.max()) // 2
+    cut = whole.copy()
+    cut[:, mid - 1 : mid + 2] = False
+    fit = _fit(rig, [target], mask=cut, detector_box=prompt, params=FitParams())
+    ref = _fit(rig, [target], mask=whole, params=FitParams())
+    assert fit.box is not None and ref.box is not None
+    assert "spill_dropped_points" not in fit.assumptions
+    assert np.allclose(fit.box.half_extents, ref.box.half_extents, atol=RES / 2)
