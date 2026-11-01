@@ -370,7 +370,10 @@ private:
   // Joint `d`'s hold anchor at `now_ns`: the recorded row due now (the last row due at or
   // before now — never a later one), while recorded, not forgotten since, and at most
   // `kWorkspaceHoldFreshPeriods` periods past the last row's due time; else nullptr.
-  const double* workspace_hold_q(std::size_t d, std::int64_t now_ns) const noexcept;
+  // `why` (optional) names the miss when it returns nullptr: no_command, early, stale,
+  // past_rows or no_period (static strings; logged as the brake's anchor_why).
+  const double* workspace_hold_q(std::size_t d, std::int64_t now_ns,
+                                 const char** why = nullptr) const noexcept;
   // Copy the workspace links' current FK poses into `out`.
   void workspace_snapshot(std::vector<Transform>& out) const noexcept;
 
@@ -765,8 +768,9 @@ private:
   std::vector<std::int64_t> workspace_hold_start_ns_;
   std::vector<std::uint16_t> workspace_hold_horizon_;
   std::vector<std::uint8_t> workspace_hold_set_;
-  std::vector<double> q_anchor_;  ///< this brake's hold configuration (n_dof)
-  bool ws_hold_anchored_{false};  ///< whether it is (partly) the anchor, not measured
+  std::vector<double> q_anchor_;     ///< this brake's hold configuration (n_dof)
+  bool ws_hold_anchored_{false};     ///< whether it is (partly) the anchor, not measured
+  const char* ws_anchor_why_ = "-";  // why the last brake held at measured
   /// The candidate's hand speed source: true = measured (FK of q_meas_ +
   /// dq_meas_ * period vs q_meas_, row-independent, in
   /// `workspace_measured_speed_mps_`); false = the commanded-speed fallback.

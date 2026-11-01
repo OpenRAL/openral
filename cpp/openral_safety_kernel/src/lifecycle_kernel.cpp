@@ -2379,26 +2379,40 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             // bound; the hold must pass, else the measured pose is tried as before.
             const std::int64_t anchor_ns = this->now().nanoseconds();
             ws_hold_anchored_ = false;
+            ws_anchor_why_ = "uncommanded";
+            bool any_miss = false;
             for (std::size_t d = 0; d < robot_ndof; ++d) {
               const bool commanded = full_row || slot_commanded_[d] != 0;
+              const char* miss = "no_command";
               const double* held =
-                  commanded && !is_jaw(d) ? workspace_hold_q(d, anchor_ns) : nullptr;
+                  commanded && !is_jaw(d) ? workspace_hold_q(d, anchor_ns, &miss) : nullptr;
               const bool anchored = held != nullptr;
+              if (commanded && !is_jaw(d) && anchored && !any_miss) {
+                ws_anchor_why_ = "at_measured";  // anchored, but equal to the measured pose
+              }
+              if (commanded && !is_jaw(d) && !anchored && !any_miss) {
+                ws_anchor_why_ = miss;  // the first commanded arm joint without an anchor
+                any_miss = true;
+              }
               q_anchor_[d] = anchored ? *held : q_meas_[d];
               ws_hold_anchored_ = ws_hold_anchored_ || (anchored && q_anchor_[d] != q_meas_[d]);
             }
             if (ws_hold_anchored_) {
               fk_config(q_anchor_.data());
               const double anchor_lead = workspace_hand_lead();
-              hold_trips = !(std::isfinite(anchor_lead) && anchor_lead <= workspace_max_lead_m_) ||
-                           check_config(q_anchor_.data(), -1, 0.0, ws_plain);
+              const bool lead_ok =
+                  std::isfinite(anchor_lead) && anchor_lead <= workspace_max_lead_m_;
+              hold_trips = !lead_ok || check_config(q_anchor_.data(), -1, 0.0, ws_plain);
               if (hold_trips) {
+                ws_anchor_why_ = lead_ok ? "collides" : "lead";
                 std::copy(q_meas_.begin(), q_meas_.end(), q_anchor_.begin());
                 ws_hold_anchored_ = false;
               }
             }
             if (!ws_hold_anchored_) {
               hold_trips = check_config(q_anchor_.data(), -1, 0.0, ws_plain);
+            } else {
+              ws_anchor_why_ = "-";
             }
             // Speed/lead only (rows pass relaxed): always a hold. A command the relaxed
             // check still refuses: a hold up to the consecutive cap, then a stop.
@@ -2559,13 +2573,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               RCLCPP_WARN(this->get_logger(),
                           "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
                           "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
-                          "anchor=%s target=%s rskill_id=%s (0 = held at the anchor; no latch)",
+                          "anchor=%s anchor_why=%s target=%s rskill_id=%s (0 = held at the anchor; "
+                          "no latch)",
                           workspace_measured_speed_mps_, workspace_max_speed_mps_,
                           workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
                           rows_refused ? "command_refused" : "speed_lead",
                           rows_refused ? trip_str(ws_refused_trip_).c_str() : "", creep,
                           ws_creep_lead_m_, ws_creep_row_,
-                          ws_hold_anchored_ ? "command" : "measured", workspace_target_.c_str(),
+                          ws_hold_anchored_ ? "command" : "measured",
+                          ws_hold_anchored_ ? "-" : ws_anchor_why_, workspace_target_.c_str(),
                           msg->rskill_id.c_str());
             }
             span->SetAttribute("safety.severity", "info");
@@ -6221,22 +6237,33 @@ void SafetyKernelLifecycleNode::record_workspace_hold(const double* flat, std::u
   }
 }
 
-const double* SafetyKernelLifecycleNode::workspace_hold_q(std::size_t d,
-                                                          std::int64_t now_ns) const noexcept {
-  if (d >= workspace_hold_set_.size() || workspace_hold_set_[d] == 0) {
+const double* SafetyKernelLifecycleNode::workspace_hold_q(std::size_t d, std::int64_t now_ns,
+                                                          const char** why) const noexcept {
+  const auto miss = [why](const char* reason) noexcept -> const double* {
+    if (why != nullptr) {
+      *why = reason;
+    }
     return nullptr;
+  };
+  if (d >= workspace_hold_set_.size() || workspace_hold_set_[d] == 0) {
+    return miss("no_command");
   }
   const double period_ns = workspace_control_period_s_ * 1e9;
   const double since_start = static_cast<double>(now_ns - workspace_hold_start_ns_[d]);
   const double last = static_cast<double>(workspace_hold_horizon_[d] - 1);
-  if (!(period_ns > 0.0) || since_start < 0.0 ||
-      since_start - last * period_ns > kWorkspaceHoldFreshPeriods * period_ns) {
-    return nullptr;
+  if (!(period_ns > 0.0)) {
+    return miss("no_period");
+  }
+  if (since_start < 0.0) {
+    return miss("early");
+  }
+  if (since_start - last * period_ns > kWorkspaceHoldFreshPeriods * period_ns) {
+    return miss("stale");
   }
   // The row due now: floor, never a later row (holding ahead would be a motion command).
   const auto row = static_cast<std::size_t>(std::min(std::floor(since_start / period_ns), last));
   if (row >= kWorkspaceHoldMaxRows) {
-    return nullptr;  // past the kept rows: the measured pose, as before
+    return miss("past_rows");  // past the kept rows: the measured pose, as before
   }
   return &workspace_hold_rows_[d * kWorkspaceHoldMaxRows + row];
 }

@@ -7184,7 +7184,7 @@ TEST_F(LifecycleKernelTest, AMidChunkHoldKeepsTheRowDueNow) {
   EXPECT_FALSE(rig.node->fault_latched());
   ASSERT_EQ(rig.last_flat.size(), 1U);
   EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.55) << "held at row 0: " << logs.joined();
-  EXPECT_GE(logs.count("anchor=command"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("anchor=command anchor_why=-"), 1U) << logs.joined();
 }
 
 // One and a half periods in: row 1 is due — never row 2, which is still ahead.
@@ -7223,7 +7223,7 @@ TEST_F(LifecycleKernelTest, AStaleMultiRowChunkIsNoHoldAnchor) {
   ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
   ASSERT_EQ(rig.last_flat.size(), 1U);
   EXPECT_DOUBLE_EQ(rig.last_flat[0], kLagMeasuredQ) << logs.joined();
-  EXPECT_GE(logs.count("anchor=measured"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("anchor=measured anchor_why=stale"), 1U) << logs.joined();
 }
 
 // An accepted command the measured hand has since fallen (or been pushed) far behind
@@ -7240,7 +7240,7 @@ TEST_F(LifecycleKernelTest, AnAnchorLeadingPastTheLeadBoundHoldsAtMeasured) {
   ASSERT_TRUE(rig.send_once(&b, 1.4, grasp_chunk(0.0))) << logs.joined();
   ASSERT_EQ(rig.last_flat.size(), 1U);
   EXPECT_DOUBLE_EQ(rig.last_flat[0], 1.4) << logs.joined();
-  EXPECT_GE(logs.count("anchor=measured"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("anchor=measured anchor_why=lead"), 1U) << logs.joined();
 }
 
 // pro#51: with no candidate for a slot tick (one in six on the OpenArm twin) the accepted
