@@ -150,6 +150,17 @@ grasp_declaration:
 
 # Committed posture: world collision on (octomap over top_depth + the kernel's voxel
 # check), no SLAM / Nav2 (a fixed-base arm on a counter).
+# Declared place zone (2026-11-01 mode split): under `object_tracking: tracking` the place
+# allowance comes only from a declared zone the prompt names ("plate"), never from the tracked
+# plate. The grader's `on_plate` region (plate centre from the sim ground truth, base frame,
+# Spark t3 pro_po) lowered 2 cm so the plate's top voxel layer is inside. `on` ignores it and
+# uses the tracked destination. SIM-ONLY, Safety-WG review owed.
+place_zones:
+  - name: plate
+    region:
+      frame_id: base
+      pose: {xyz: [-0.2153, -0.2716, 0.0386], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: base}
+      half_extents: [0.10, 0.10, 0.08]
 runtime:
   enable_slam: false
   enable_nav2: false
@@ -162,10 +173,12 @@ runtime:
   payload_sweep_clear_enabled: true
   # Open path (ADR-0121 step 3): `tracking`. The #418 tracker grounds the seedless target
   # query within `grounding_wait_s` (source time), owns the attachment set (the held
-  # payload is the tracker's box, cleared from the voxel map by tracked identity) and
-  # measures the grasp region (the target track's box until the hand holds it), the place
-  # region and the workspace region; the kernel applies its open box rules over them
-  # (ADR-0115 grasp allowance, ADR-0097/0098 place allowance, #349 workspace contact). The
+  # payload is the tracker's box, a mapped obstacle: no track clears the map in `tracking`)
+  # and takes every allowance from a declaration (2026-11-01 mode split): the grasp region is
+  # the orange's track box only while it lies inside the declared search_box, the place
+  # region the declared `plate` zone above, the workspace the declared workspace_box; the
+  # kernel applies its open box rules over them (ADR-0115 grasp allowance, ADR-0097/0098
+  # place allowance, #349 workspace contact). The
   # HAL grasp-target leg stands down. `on` + `exemption_provider:` (OpenRAL Pro, ADR-0121)
   # adds the tracker-keyed Pro rules, as the successful Spark run R372 (2026-10-23) used.
   # History: r6 (2026-10-25) under the removed `shadow` went 0/5 (the HAL leg fit the
