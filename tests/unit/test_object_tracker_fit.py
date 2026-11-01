@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from numpy.typing import NDArray
 from openral_core import PlaceRegion, TrackedObject
@@ -277,6 +277,8 @@ def test_an_oblique_view_does_not_box_far_above_the_object(rig_name: str) -> Non
     b=st.floats(0.0, 1.0),
     c=st.floats(0.0, 1.0),
 )
+# DROID exterior: the 2 cm-tall box's far corner lay 8.3 mm from its nearest sample.
+@example(kind="box", dx=0.0, dy=0.0, a=0.9375, b=0.0, c=0.0)
 def test_the_measured_box_contains_an_upright_prism(
     rig_name: str, kind: str, dx: float, dy: float, a: float, b: float, c: float
 ) -> None:

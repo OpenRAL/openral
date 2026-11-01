@@ -1,10 +1,10 @@
 """Object fit from one mask: the measured box (default) or the #266 containing set.
 
 ``FitParams.extent`` picks. ``"measured"`` (default since 2026-10-31): the measured surface's
-footprint, grown half a cell, extruded from the support to its top -- what the camera saw; a
-hidden part past it is boxed once a view sees it (Safety-WG review owed: A4 below no longer
-holds for it). ``"containing"``, the rest of this docstring: a set that contains the solid,
-never a hull of samples.
+footprint, grown half a cell (or the sample spacing where wider), extruded from the support to
+its top -- what the camera saw; a hidden part past it is boxed once a view sees it (Safety-WG
+review owed: A4 below no longer holds for it). ``"containing"``, the rest of this docstring:
+a set that contains the solid, never a hull of samples.
 
 Issue #418, design "The tracker algorithm" step 3. One camera mask is lifted to
 
@@ -195,6 +195,52 @@ def _outer_polygon(points: NDArray[np.float64], grow: float = 0.0) -> NDArray[np
     return np.stack(((h * s1 - h1 * s) / det, (c * h1 - c1 * h) / det), axis=1)
 
 
+def _grid_points(
+    mask: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], tuple[slice, slice]]:
+    """``(h, w, 3)`` base-frame points of every pixel in ``mask``'s bounding box, and the box."""
+    rows, cols = np.nonzero(mask)
+    win = (slice(rows.min(), rows.max() + 1), slice(cols.min(), cols.max() + 1))
+    vv, uu = np.mgrid[win]
+    u = (uu + 0.5 - intrinsics.cx) / intrinsics.fx
+    v = (vv + 0.5 - intrinsics.cy) / intrinsics.fy
+    ray = np.stack((u, v, np.ones(u.shape)), axis=-1)
+    pts = (ray * depth_m[win][..., None]) @ t_base_from_cam[:3, :3].T + t_base_from_cam[:3, 3]
+    return pts, win
+
+
+def _sample_gap(
+    measured: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+    resolution: float,
+) -> float:
+    """How far, horizontally, the solid's rim can lie past the nearest measured sample.
+
+    The diagonal of the widest pixel quad on the measured surface: neighbouring samples more
+    than a cell apart straddle a depth jump, not one surface. A 2 cm-tall box's far corner
+    lay 8.3 mm from its nearest sample from the DROID exterior camera (1 m, fx 250), past the
+    half-cell pad (7.5 mm).
+    """
+    if not measured.any():
+        return 0.0
+    pts, win = _grid_points(measured, depth_m, intrinsics, t_base_from_cam)
+    act = measured[win]
+    spans = []
+    for a, b, both in (
+        (pts[:, 1:], pts[:, :-1], act[:, 1:] & act[:, :-1]),
+        (pts[1:], pts[:-1], act[1:] & act[:-1]),
+    ):
+        near = both & (np.linalg.norm(a - b, axis=-1) <= resolution)
+        xy = np.linalg.norm((a - b)[..., :2], axis=-1)[near]
+        spans.append(float(xy.max()) if len(xy) else 0.0)
+    return math.hypot(*spans)
+
+
 def _refused(
     why: str, surface: NDArray[np.float64], support_z: float, notes: dict[str, float | bool]
 ) -> ContainingFit:
@@ -350,10 +396,13 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     ceiling = max(float((origin[2] + hit * ray_z).max()), top)
     notes["ceiling_z"] = ceiling
     if p.extent == "measured":
-        # The samples are pixel centres: the solid's rim lies up to a pixel past the outermost
-        # ones, so the hull is grown by the half cell the box is padded by.
+        # The samples are pixel centres: the solid's rim lies up to a sample spacing past the
+        # outermost ones, so the hull is grown by the half cell the box is padded by, or by that
+        # spacing where it is wider (a slanted top far from the camera).
         pad = 0.5 * resolution
-        rim = _outer_polygon(surface[:, :2], grow=pad)
+        gap = _sample_gap(sure & usable, d, intrinsics, t_base_from_cam, resolution)
+        notes["sample_gap_m"] = gap
+        rim = _outer_polygon(surface[:, :2], grow=max(pad, gap))
         verts = np.concatenate(
             [np.column_stack((rim, np.full(len(rim), z))) for z in (support_z, top + pad)]
         )
