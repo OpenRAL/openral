@@ -356,3 +356,23 @@ def test_a_target_an_occluder_cuts_in_two_keeps_both_parts() -> None:
     assert fit.box is not None and ref.box is not None
     assert "spill_dropped_points" not in fit.assumptions
     assert np.allclose(fit.box.half_extents, ref.box.half_extents, atol=RES / 2)
+
+
+def test_a_mask_over_the_strip_the_carton_stands_on_is_boxed_to_the_carton() -> None:
+    """Restock scene 09 2026-11-01: refit masks took in the white strip under the carton
+    (every point outside the carton 1 mm above its bottom) and boxed it 14.5 x 12 cm."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    strip_top = rig.support_z + 0.004
+    strip = box((x, y, rig.support_z + 0.002), (0.15, 0.04, 0.002), 0.0)
+    carton = box((x, y, strip_top + 0.055), (0.03, 0.03, 0.055), 0.0)
+    _, labels = render([carton, strip], rig)
+    rows, cols = np.nonzero(labels == 1)
+    near = np.zeros(labels.shape, bool)
+    near[rows.min() - 15 : rows.max() + 16, cols.min() - 15 : cols.max() + 16] = True
+    spilled = (labels == 1) | ((labels == 2) & near)
+    fit = _fit(rig, [carton, strip], mask=spilled, support_z=strip_top, params=FitParams())
+    assert fit.box is not None
+    assert max(fit.box.half_extents[:2]) <= 0.03 + RES, fit.box.half_extents
+    assert _in_box(surface_samples(carton), fit.box).all()
+    assert fit.assumptions["support_dropped_points"] > 0

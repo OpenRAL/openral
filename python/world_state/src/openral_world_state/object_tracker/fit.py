@@ -221,8 +221,10 @@ def _sample_gap(
 ) -> float:
     """How far, horizontally, the solid's rim can lie past the nearest measured sample.
 
-    The diagonal of the widest pixel quad on the measured surface: neighbouring samples more
-    than a cell apart straddle a depth jump, not one surface. A 2 cm-tall box's far corner
+    The diagonal of a pixel quad spanning the 90th-percentile neighbour spacing on the measured
+    surface: neighbouring samples more than a cell apart straddle a depth jump, not one surface,
+    and the few pairs that straddle an edge within a cell (a carton's base and the strip it
+    stands on) never set it. A 2 cm-tall box's far corner
     lay 8.3 mm from its nearest sample from the DROID exterior camera (1 m, fx 250), past the
     half-cell pad (7.5 mm).
     """
@@ -237,7 +239,7 @@ def _sample_gap(
     ):
         near = both & (np.linalg.norm(a - b, axis=-1) <= resolution)
         xy = np.linalg.norm((a - b)[..., :2], axis=-1)[near]
-        spans.append(float(xy.max()) if len(xy) else 0.0)
+        spans.append(float(np.percentile(xy, 90)) if len(xy) else 0.0)
     return math.hypot(*spans)
 
 
@@ -392,6 +394,11 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
         if part is not None and len(part) >= p.min_points:
             notes["spill_dropped_points"] = float(len(surface) - len(part))
             surface = part
+    gap = 0.0
+    if p.extent == "measured":
+        gap = _sample_gap(sure & usable, d, intrinsics, t_base_from_cam, resolution)
+        notes["sample_gap_m"] = gap
+        surface = _off_support(surface, support_z, resolution, gap, p.min_points, notes)
     footprint = _outer_polygon(surface[:, :2])
     top = float(surface[:, 2].max())
     # Every ray of the silhouette meets the solid no nearer than its first hit (an opaque
@@ -413,8 +420,6 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
         # outermost ones, so the hull is grown by the half cell the box is padded by, or by that
         # spacing where it is wider (a slanted top far from the camera).
         pad = 0.5 * resolution
-        gap = _sample_gap(sure & usable, d, intrinsics, t_base_from_cam, resolution)
-        notes["sample_gap_m"] = gap
         rim = _outer_polygon(surface[:, :2], grow=max(pad, gap))
         verts = np.concatenate(
             [np.column_stack((rim, np.full(len(rim), z))) for z in (support_z, top + pad)]
@@ -427,6 +432,41 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     box_pad_res = 0.0 if p.extent == "measured" else resolution
     fit = _boxed(verts, surface, support_z, box_pad_res, frame_id, stamp_ns, notes)
     return replace(fit, provisional=provisional) if provisional and fit.box is not None else fit
+
+
+def _off_support(
+    surface: NDArray[np.float64],
+    support_z: float,
+    resolution: float,
+    gap: float,
+    min_points: int,
+    notes: dict[str, float | bool],
+) -> NDArray[np.float64]:
+    """``surface`` without the support it stands on: low points beyond the part above it.
+
+    A mask that takes in the surface the object stands on (restock scene 09, 2026-11-01: a
+    carton's refit masks covered the white strip under it, every point outside the carton
+    1 mm above its bottom, boxed 14.5 x 12 cm for a 6.5 cm carton) carries support points
+    no depth gap separates from the object. Points within a cell of the support are kept only
+    under the footprint of the points above that band, grown by the sample spacing ``gap`` (the
+    16 directions of ``_outer_polygon``; the hull's own pad is added after, once). An object
+    with fewer than ``min_points`` above the band (a lid, a plate) keeps every point.
+    *Ceiling*: a base lower than a cell reaching more than a sample spacing past the body above
+    it (a flange, a flared foot) is dropped. Safety-WG review owed.
+    """
+    low = surface[:, 2] <= support_z + resolution
+    if not low.any() or int(np.count_nonzero(~low)) < min_points:
+        return surface
+    th = np.arange(_DOP_DIRS) * (2.0 * math.pi / _DOP_DIRS)
+    dirs = np.stack((np.cos(th), np.sin(th)))
+    reach = (surface[~low, :2] @ dirs).max(axis=0) + gap
+    under = np.all(surface[:, :2] @ dirs <= reach, axis=1)
+    keep = ~low | under
+    if keep.all():
+        return surface
+    notes["support_dropped_points"] = float(np.count_nonzero(~keep))
+    kept: NDArray[np.float64] = surface[keep]
+    return kept
 
 
 def _detected_part(
