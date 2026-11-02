@@ -2787,7 +2787,17 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         mode == ControlMode::kGripperBinary || mode == ControlMode::kGripperPosition ||
         mode == ControlMode::kDexHandJoint || mode == ControlMode::kCompositeMode;
     if (!hold_recorded && !arm_free_mode) {
-      std::fill(workspace_hold_set_.begin(), workspace_hold_set_.end(), std::uint8_t{0});
+      if (msg->joint_names.empty()) {  // a full-row chunk commands every joint
+        std::fill(workspace_hold_set_.begin(), workspace_hold_set_.end(), std::uint8_t{0});
+      } else {  // a slot commands its own joints only; the other slots keep their anchors
+        for (const auto& name : msg->joint_names) {
+          const auto it = joint_name_to_dof_.find(name);
+          if (it != joint_name_to_dof_.end() &&
+              static_cast<std::size_t>(it->second) < workspace_hold_set_.size()) {
+            workspace_hold_set_[static_cast<std::size_t>(it->second)] = 0;
+          }
+        }
+      }
     }
     const bool rate_shaped = mode == ControlMode::kJointVelocity ||
                              mode == ControlMode::kCartesianDelta ||

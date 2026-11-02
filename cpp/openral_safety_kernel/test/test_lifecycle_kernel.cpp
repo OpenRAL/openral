@@ -7303,6 +7303,35 @@ TEST_F(LifecycleKernelTest, AnAcceptedNonPositionChunkForgetsTheHoldAnchor) {
   EXPECT_GE(logs.count("anchor=measured anchor_why=no_command"), 1U) << logs.joined();
 }
 
+// Review of #480: a chunk that records no anchor forgets the anchors of the joints IT commands
+// only. Two arms slot-dispatched: j0's position slot records its anchor; j1's velocity slot is
+// accepted next; j0's brake still holds at j0's accepted command, not at the measured pose.
+TEST_F(LifecycleKernelTest, AnotherSlotsChunkKeepsThisSlotsHoldAnchor) {
+  LogCapture logs;
+  auto params = with_param(lag_params_two_arm(), "workspace_contact_brake_enabled",
+                           rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{5}));
+  GraspRig rig("kernel_ws_hold_other_slot", params);
+  rig.js_names = {"j0", "j1"};
+  rig.js_tail = {0.0};
+  rig.js_velocity = {0.0, 0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.6, 0.0, {"j0"}, 1)))
+      << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.6, 0.0, {"j1"}, 1)))
+      << logs.joined();
+  openral_msgs::msg::ActionChunk vel = two_arm_chunk(0.0, 0.0, {"j1"}, 2);
+  vel.control_mode = 1;  // JOINT_VELOCITY, at rest
+  ASSERT_TRUE(rig.send_once(&b, 0.52, vel)) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, 0.52, two_arm_chunk(0.0, 0.0, {"j0"}, 2))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("anchor_why=no_command"), 0U) << "j0 kept its anchor: " << logs.joined();
+}
+
 // pro#51: with the #349 rule in the exemption provider (the in-tree rule off, the deploy's
 // configuration) accepted commands are the anchor too: unrecorded, every brake after free
 // motion held at the sagged measured pose.
