@@ -43,7 +43,10 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    the lock a release behind and `uv sync --frozen` installs stale metadata.
 
    The step runs `uv lock` on the release branch; without `--upgrade` it
-   rewrites only the 14 workspace version lines and leaves third-party pins alone.
+   rewrites only the 14 workspace version lines and leaves third-party pins alone. The
+   workflow pins uv to the version that wrote master's lock; a newer uv re-locks
+   in its own format (lock `revision`, markers), which `check_release_diff.py`
+   refuses as more than version churn.
    `test_lockstep_versions.py` fails if the lock and the tree ever disagree
    again.
 

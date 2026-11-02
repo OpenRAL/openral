@@ -1083,3 +1083,56 @@ class TestRemediationIsRunnableWhereItPrinted:
         message = str(excinfo.value)
         assert "already imported it" in message, "the guard must still refuse the swap"
         assert "uv sync --all-packages --group robocasa --inexact" in message
+
+
+def test_install_step_runs_in_the_open_checkout_not_the_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """`uv sync` acts on its cwd's project: run from another repo it synced that one.
+
+    Regression: Pro's restock benchmark (`openral sim run` from the Pro checkout) ran the
+    isaac_client plan's `uv sync --group isaacsim` in the Pro workspace and failed.
+    """
+    monkeypatch.chdir(tmp_path)
+    pwd = [sys.executable, "-c", "import os; print(os.getcwd())"]
+    _deps._run_install_step(_deps.InstallStep(description="pwd", argv=pwd), dict(os.environ))
+    assert Path(__file__).resolve().parents[2] == _deps._STEP_DEFAULT_CWD
+    assert str(_deps._STEP_DEFAULT_CWD).encode() in capsysbinary.readouterr().err
+    own = _deps.InstallStep(description="pwd", argv=pwd, cwd=tmp_path)
+    _deps._run_install_step(own, dict(os.environ))
+    assert str(tmp_path).encode() in capsysbinary.readouterr().err, "an explicit cwd wins"
+
+
+def test_relative_cache_home_is_anchored_to_the_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Steps now run in the open checkout; a relative cache root must not split across bases."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENRAL_CACHE_HOME", "cache")
+    assert _deps._cache_home() == tmp_path / "cache"
+    assert _deps._rldx_sidecar_source_dir() == tmp_path / "cache" / "rldx-sidecar" / "source"
+
+
+def test_shell_steps_survive_a_cache_home_with_spaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A space in the cache root must not split a ``bash -c`` step's path into two words."""
+    monkeypatch.setenv("OPENRAL_CACHE_HOME", str(tmp_path / "cache with space"))
+    rs_dir = _deps._robocasa_kitchen_clone_dir().parent / "robosuite"
+    rc_dir = _deps._robocasa_kitchen_clone_dir()
+    for d in (
+        rs_dir / "robosuite" / "examples" / "third_party_controller",
+        rc_dir / "robocasa",
+    ):
+        d.mkdir(parents=True)
+    touch_steps = [
+        s
+        for s in _deps._robocasa_kitchen_plan().steps
+        if s.argv[:2] == ["bash", "-c"] and s.argv[2].startswith("touch ")
+    ]
+    assert len(touch_steps) == 2
+    for step in touch_steps:
+        subprocess.run(step.argv, check=True, cwd=tmp_path)
+    assert (rs_dir / "robosuite" / "macros_private.py").is_file()
+    assert (rs_dir / "robosuite" / "examples" / "third_party_controller" / "__init__.py").is_file()
+    assert (rc_dir / "robocasa" / "macros_private.py").is_file()
