@@ -67,7 +67,9 @@ interactive prompts are not available.
 
 def _cache_home() -> Path:
     raw = os.environ.get("OPENRAL_CACHE_HOME")
-    return Path(raw) if raw else _DEFAULT_CACHE_HOME
+    # Absolute: install steps run in the open checkout (_STEP_DEFAULT_CWD), so a relative
+    # root would resolve there for some steps and in the caller's cwd for others.
+    return Path(raw).absolute() if raw else _DEFAULT_CACHE_HOME
 
 
 @dataclass(frozen=True)
@@ -1413,7 +1415,7 @@ def _rldx_sidecar_source_dir() -> Path:
     orphan the (~6 GB) sidecar venv.
     """
     home = os.environ.get("OPENRAL_CACHE_HOME")
-    base = Path(home) / "rldx-sidecar" if home else _RLDX_SIDECAR_HOME
+    base = Path(home).absolute() / "rldx-sidecar" if home else _RLDX_SIDECAR_HOME
     return base / "source"
 
 

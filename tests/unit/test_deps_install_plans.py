@@ -1101,3 +1101,13 @@ def test_install_step_runs_in_the_open_checkout_not_the_callers_cwd(
     own = _deps.InstallStep(description="pwd", argv=pwd, cwd=tmp_path)
     _deps._run_install_step(own, dict(os.environ))
     assert str(tmp_path).encode() in capsysbinary.readouterr().err, "an explicit cwd wins"
+
+
+def test_relative_cache_home_is_anchored_to_the_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Steps now run in the open checkout; a relative cache root must not split across bases."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENRAL_CACHE_HOME", "cache")
+    assert _deps._cache_home() == tmp_path / "cache"
+    assert _deps._rldx_sidecar_source_dir() == tmp_path / "cache" / "rldx-sidecar" / "source"
