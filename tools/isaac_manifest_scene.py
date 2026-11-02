@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -415,30 +416,37 @@ def worst_grade(grades: Iterable[str], scores: Mapping[str, float]) -> str:
     return min(grades, key=scores.__getitem__, default="fail")
 
 
-def rest_after(
-    rest_s: float,
-    moved_m: float | None,
-    dt: float,
+def settled(
+    window: Sequence[tuple[float, NDArray[np.float64], NDArray[np.float64]]],
+    settle_s: float,
     rest_speed_m_s: float,
-    turned_rad: float = 0.0,
     rest_turn_rad_s: float = math.inf,
-) -> float:
-    """Seconds an object has been at rest after one step that moved it ``moved_m``
-    and turned it ``turned_rad``.
+) -> bool:
+    """Whether an object's poses ``(t, position, quat_wxyz)`` over the last ``settle_s`` rest.
 
-    ``None`` (no previous pose: the first graded step) restarts the timer, as does any
-    step faster than ``rest_speed_m_s`` or turning faster than ``rest_turn_rad_s`` (an
-    object spinning on the spot is not at rest).
+    At rest: the window spans ``settle_s`` and every pose in it stays within
+    ``rest_speed_m_s * settle_s`` of the window's first one and within
+    ``rest_turn_rad_s * settle_s`` of its orientation -- the speed bound averaged over the
+    window, not per step. A steady drift or spin is judged as a per-step bound would judge
+    it; a resting body's contact jitter is not (Spark 2026-11-02: a carton in its slot
+    jittered 0.5 mm per 30 Hz tick, 16 mm/s apparent, yet stayed within 0.7 mm over every
+    second, and a per-step timer never reached 1 s).
 
     Example:
-        >>> rest_after(0.5, 0.0001, 1 / 30, 0.02) > 0.5, rest_after(0.5, 0.01, 1 / 30, 0.02)
-        (True, 0.0)
-        >>> rest_after(0.5, 0.0, 1 / 30, 0.02, turned_rad=0.1, rest_turn_rad_s=0.2)
-        0.0
+        >>> q = np.array([1.0, 0.0, 0.0, 0.0])
+        >>> still = [(i / 30, np.array([0.0007 * (i % 2), 0.0, 0.0]), q) for i in range(31)]
+        >>> moving = [(i / 30, np.array([0.001 * i, 0.0, 0.0]), q) for i in range(31)]
+        >>> settled(still, 1.0, 0.02), settled(moving, 1.0, 0.02), settled(still[:30], 1.0, 0.02)
+        (True, False, False)
     """
-    if moved_m is None or moved_m > rest_speed_m_s * dt or turned_rad > rest_turn_rad_s * dt:
-        return 0.0
-    return rest_s + dt
+    if not window or window[-1][0] - window[0][0] + 1e-9 < settle_s:
+        return False
+    _, p0, q0 = window[0]
+    reach_m, turn_rad = rest_speed_m_s * settle_s, rest_turn_rad_s * settle_s
+    return all(
+        float(np.linalg.norm(p - p0)) <= reach_m and _quat_angle(q, q0) <= turn_rad
+        for _, p, q in window
+    )
 
 
 def placement_reward(
@@ -1667,9 +1675,11 @@ class IsaacManifestScene(IsaacSceneBase):
         self._placement_by_prompt: dict[str, dict[str, Any]] | None = robot_spec.get(
             "placement_success_by_prompt"
         )
-        self._rest_s: dict[str, float] = {}
-        self._last_pos: dict[str, NDArray[np.float64]] = {}
-        self._last_quat: dict[str, NDArray[np.float64]] = {}
+        # Per placed object, its poses over the last settle_s (`settled`), on the grading clock.
+        self._rest_window: dict[
+            str, deque[tuple[float, NDArray[np.float64], NDArray[np.float64]]]
+        ] = {}
+        self._grade_clock_s = 0.0
         # The rubric the scene boots with: every reset returns to it (a deploy sim goal's
         # `set_task` rubric must not outlive the episode on a kept-alive sidecar).
         self._boot_placement_success: dict[str, Any] | None = robot_spec.get("placement_success")
@@ -2970,9 +2980,8 @@ class IsaacManifestScene(IsaacSceneBase):
         """Make ``spec`` (one prompt's grading spec, or None) the rubric, from a fresh grade."""
         self._placement_success: dict[str, Any] | None = spec
         self._placement_grade = "fail"
-        self._rest_s.clear()
-        self._last_pos.clear()
-        self._last_quat.clear()
+        self._rest_window.clear()
+        self._grade_clock_s = 0.0
         self._grades: list[dict[str, Any]] = list((spec or {}).get("grades", []))
         self._some_placed: dict[str, Any] | None = (spec or {}).get("some_placed")
         self._grade_scores = grade_scores(self._grades)
@@ -3005,10 +3014,12 @@ class IsaacManifestScene(IsaacSceneBase):
         }
 
     def _grade_placements(self) -> str:
-        """Advance each placed object's rest timer and grade the episode (worst placement)."""
+        """Advance each placed object's rest window and grade the episode (worst placement)."""
         ps = self._placement_success
         assert ps is not None  # reason: only called when placement_success is set
-        dt = float(self.sim_dt_per_tick_s or 0.0)
+        self._grade_clock_s += float(self.sim_dt_per_tick_s or 0.0)
+        now = self._grade_clock_s
+        settle_s = float(ps["settle_s"])
         turn_rate = math.radians(float(ps.get("rest_turn_deg_s", math.inf)))
         grades = []
         held = self._robot_touched_paths() if ps.get("require_released") else set()
@@ -3017,24 +3028,16 @@ class IsaacManifestScene(IsaacSceneBase):
             pos_raw, quat_raw = self._object_prims[name].get_world_pose()
             pos = np.asarray(pos_raw, dtype=np.float64)
             quat = np.asarray(quat_raw, dtype=np.float64)
-            last, last_q = self._last_pos.get(name), self._last_quat.get(name)
-            moved = None if last is None else float(np.linalg.norm(pos - last))
-            turned = 0.0 if last_q is None else _quat_angle(quat, last_q)
-            self._rest_s[name] = rest_after(
-                self._rest_s.get(name, 0.0),
-                moved,
-                dt,
-                float(ps["rest_speed_m_s"]),
-                turned,
-                turn_rate,
-            )
-            self._last_pos[name], self._last_quat[name] = pos, quat
-            # require_released: an object the robot still touches is not placed. Without
-            # it a gripper holding the object still in the region for settle_s passes.
+            window = self._rest_window.setdefault(name, deque())
+            # require_released: an object the robot still touches is not placed, so its window
+            # restarts. Without it a gripper holding the object still in the region passes.
             prim_path = str(self._object_prims[name].prim_path)
             if any(p == prim_path or p.startswith(prim_path + "/") for p in held):
-                self._rest_s[name] = 0.0
-            if self._rest_s[name] + 1e-9 < float(ps["settle_s"]):
+                window.clear()
+            window.append((now, pos, quat))
+            while len(window) > 1 and window[1][0] <= now - settle_s + 1e-9:
+                window.popleft()  # keep the newest pose at least settle_s old as the start
+            if not settled(window, settle_s, float(ps["rest_speed_m_s"]), turn_rate):
                 grades.append("fail")
                 continue
             grades.append(

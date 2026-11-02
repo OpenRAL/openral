@@ -65,7 +65,7 @@ Source shows (`python/sim/src/openral_sim/backends/isaac_sim.py`, sidecar
   success terminates the episode (`:995`).
 - **Grading loop.** Sidecar `placement_grade` (`tools/isaac_manifest_scene.py:284`) tests the
   object's centre in the box and its up axis (`object_up_axis`, `:241`, from the object's
-  roll/pitch); `worst_grade` (`:339`); `rest_after` (`:350`); per-tick `_grade_placements`
+  roll/pitch); `worst_grade` (`:339`); `settled` (formerly the per-step `rest_after`); per-tick `_grade_placements`
   (`:2689`); `set_task` (`:2673`) switches rubric per `ExecuteRskill` prompt under `deploy sim`.
 - **Graded objects must be scene objects.** `IsaacSimOptions._placements_name_scene_objects`
   (`isaac_sim.py:1197–1212`) requires each placed object to be a **dynamic**
