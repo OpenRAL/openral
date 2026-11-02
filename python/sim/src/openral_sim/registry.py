@@ -25,6 +25,7 @@ Example::
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from openral_core.exceptions import ROSConfigError
@@ -52,8 +53,11 @@ class _Registry(Generic[T]):
         kind: Human-readable label used in error messages (``"scene"``, …).
     """
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, *, entry_point_group: str | None = None) -> None:
         self._kind = kind
+        # Installed packages (OpenRAL Pro) register more ids here; each entry
+        # point names a module whose ``@register`` decorators run on import.
+        self._entry_point_group = entry_point_group
         self._items: dict[str, Callable[..., T]] = {}
         self._fixed_robots: dict[str, frozenset[str]] = {}
         self._provisioners: dict[str, Callable[[], None]] = {}
@@ -149,6 +153,12 @@ class _Registry(Generic[T]):
         ``robocasa``: a backend family registers once and the task stays
         data in the id. ``None`` when no prefix is registered.
         """
+        if name not in self._items and self._entry_point_group is not None:
+            # Discover installed ids first, so an exact id registered there wins over a
+            # built-in family prefix (``openvla/wam`` must not resolve to ``openvla``).
+            group, self._entry_point_group = self._entry_point_group, None
+            for ep in entry_points(group=group):
+                ep.load()
         key = name
         while key not in self._items and "/" in key:
             key = key.rsplit("/", 1)[0]
@@ -295,5 +305,5 @@ class _Registry(Generic[T]):
 
 
 SCENES: _Registry[SimRollout] = _Registry("scene")
-POLICIES: _Registry[PolicyAdapter] = _Registry("policy")
+POLICIES: _Registry[PolicyAdapter] = _Registry("policy", entry_point_group="openral.policies")
 ROBOTS: _Registry[RobotDescription] = _Registry("robot")

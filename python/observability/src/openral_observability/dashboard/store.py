@@ -229,6 +229,10 @@ def _ns_to_ms(ns: int) -> float:
     return ns / 1_000_000.0
 
 
+_UNIT_IDENTITY_KEYS = (semconv.UNIT_SERIAL, semconv.ORG_ID, semconv.SITE_ID)
+"""Resource attributes carried onto each dashboard log event (issue #467)."""
+
+
 @dataclass(frozen=True)
 class TelemetryEvent:
     """One event surfaced on the dashboard event log.
@@ -555,10 +559,14 @@ class TelemetryStore:
                 service = str(resource_attrs.get("service.name", ""))
                 if service:
                     self._services.add(service)
+                # Compliance records name their machine only on the resource (#467).
+                identity = {
+                    k: resource_attrs[k] for k in _UNIT_IDENTITY_KEYS if k in resource_attrs
+                }
                 for scope_logs in resource_logs.scope_logs:
                     scope_name = scope_logs.scope.name or "log"
                     for record in scope_logs.log_records:
-                        self._record_log(record, scope_name)
+                        self._record_log(record, scope_name, identity)
                         recorded += 1
             if recorded:
                 self._last_ingest_ts = time.time()
@@ -882,9 +890,15 @@ class TelemetryStore:
         elif ev.severity != "debug":
             self._headline_events.append(ev)
 
-    def _record_log(self, record: LogRecord, scope_name: str) -> None:
-        """Append one bridged OTLP ``LogRecord`` to the event ring (issue #318)."""
-        attrs = _attrs_to_dict(list(record.attributes))
+    def _record_log(
+        self, record: LogRecord, scope_name: str, identity: dict[str, Any] | None = None
+    ) -> None:
+        """Append one bridged OTLP ``LogRecord`` to the event ring (issue #318).
+
+        ``identity`` (the resource's unit / org / site) is folded into the attrs, so a
+        compliance record on the UI still names the machine it came from.
+        """
+        attrs = {**(identity or {}), **_attrs_to_dict(list(record.attributes))}
         ts_ns = record.time_unix_nano or record.observed_time_unix_nano
         ts_unix = ts_ns / 1_000_000_000.0 if ts_ns else time.time()
         body = _attr_value(record.body)

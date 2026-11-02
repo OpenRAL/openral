@@ -551,38 +551,38 @@ _Derive a cuRobo (cuMotion) robot-config from the lowered collision geometry. Pu
 ### `packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py`
 _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.ReasonerCore`._
 
-- module constants `_FAILURE_SOURCES`, `_PERCEPTION_KINDS` — closed sets: `hal/sensor/rskill/safety/wam/critic` and `motion/objects/ocr/scene_change`. (L285)
-- module constant `_PERCEPTION_KINDS: tuple[str, ...]` (L294) — `("motion", "objects", "ocr", "scene_change")`.
-- module constant `_QOS_WORLD_STATE` (L228) — `KEEP_LAST=1, RELIABLE, VOLATILE`, the `/openral/world_state_slow` subscription QoS.
-- module constant `_QOS_FAILURE` (L234) — `KEEP_LAST=50, RELIABLE, VOLATILE`, the six `/openral/failure/*` subscription QoS.
-- module constant `_QOS_PERCEPTION` (L240) — `KEEP_LAST=10, BEST_EFFORT, VOLATILE`, the four perception-topic subscription QoS.
-- module constant `_QOS_PROMPT` (L246) — `KEEP_LAST=10, RELIABLE, VOLATILE`, the `/openral/prompt` publisher/subscription QoS.
-- module constant `_QOS_MAP` (L264) — `KEEP_LAST=1, RELIABLE, TRANSIENT_LOCAL`, the latched `/map` subscription QoS.
-- module constant `_QOS_COMPLETION_CAMERA` (L275) — `KEEP_LAST=1, BEST_EFFORT, VOLATILE`, the VLM completion-camera subscription QoS.
-- module constants `_KIND_TIMEOUT`, `_KIND_CONTROLLER`, `_SEVERITY_WARN`, `_SEVERITY_FAIL` — IDL-mirror constants for `openral_msgs/FailureTrigger`, kept inline (not the `failure_bus` helper) so the reasoner emits without pulling the rate-limiter into the dispatch path. (L320)
-- module constant `_KIND_CONTROLLER: int = 5` (L321)
-- module constant `_SEVERITY_WARN: int = 1` (L323)
-- module constant `_SEVERITY_FAIL: int = 2` (L330)
-- module constant `_SKILL_FAILURE_KIND_NAMES: dict[int, str]` (L336) — `{_KIND_TIMEOUT: "timeout", _KIND_CONTROLLER: "controller"}`, kind-derived failure-state names for `_emit_skill_failure_event`.
-- module constants `_EXECUTE_SKILL_SERVER_PROBE_S`, `_LIFECYCLE_SERVER_PROBE_S` — 100 ms `wait_for_server` / `wait_for_service` probes so an absent server/peer can't block the executor thread. (L347)
-- module constant `_LIFECYCLE_SERVER_PROBE_S: float = 0.1` (L349)
-- module constant `_MISSION_VERIFY_WINDOW_S: float = 40.0` (L303) — fallback verify window when the active `RewardContract` sets no `frame_window_s`.
-- module constant `_DEFAULT_SUCCESS_THRESHOLD: float = 0.8` (L312) — fallback reward-gate `success_threshold` when no `RewardContract` is loaded.
-- module constant `_DEFAULT_CHECK_FLOOR: float = 0.5` (L313) — fallback reward-gate `check_floor` when no `RewardContract` is loaded.
-- module constant `_FAILURE_TIER_FOR_SOURCE: dict[str, str]` (L358) — trigger taxonomy mapping each `/openral/failure/<source>` to its tier: `safety → "A"`, `hal/sensor/rskill/wam/world_state → "B"`, `critic → "C"`. Used to stamp `reasoner.tier` on the OTel span; the preemption threshold itself is decided inline in `_on_failure`.
+- module constants `_FAILURE_SOURCES`, `_PERCEPTION_KINDS` — closed sets: `hal/sensor/rskill/safety/wam/critic` and `motion/objects/ocr/scene_change`. (L286)
+- module constant `_PERCEPTION_KINDS: tuple[str, ...]` (L295) — `("motion", "objects", "ocr", "scene_change")`.
+- module constant `_QOS_WORLD_STATE` (L229) — `KEEP_LAST=1, RELIABLE, VOLATILE`, the `/openral/world_state_slow` subscription QoS.
+- module constant `_QOS_FAILURE` (L235) — `KEEP_LAST=50, RELIABLE, VOLATILE`, the six `/openral/failure/*` subscription QoS.
+- module constant `_QOS_PERCEPTION` (L241) — `KEEP_LAST=10, BEST_EFFORT, VOLATILE`, the four perception-topic subscription QoS.
+- module constant `_QOS_PROMPT` (L247) — `KEEP_LAST=10, RELIABLE, VOLATILE`, the `/openral/prompt` publisher/subscription QoS.
+- module constant `_QOS_MAP` (L265) — `KEEP_LAST=1, RELIABLE, TRANSIENT_LOCAL`, the latched `/map` subscription QoS.
+- module constant `_QOS_COMPLETION_CAMERA` (L276) — `KEEP_LAST=1, BEST_EFFORT, VOLATILE`, the VLM completion-camera subscription QoS.
+- module constants `_KIND_TIMEOUT`, `_KIND_CONTROLLER`, `_SEVERITY_WARN`, `_SEVERITY_FAIL` — IDL-mirror constants for `openral_msgs/FailureTrigger`, kept inline (not the `failure_bus` helper) so the reasoner emits without pulling the rate-limiter into the dispatch path. (L321)
+- module constant `_KIND_CONTROLLER: int = 5` (L322)
+- module constant `_SEVERITY_WARN: int = 1` (L324)
+- module constant `_SEVERITY_FAIL: int = 2` (L331)
+- module constant `_SKILL_FAILURE_KIND_NAMES: dict[int, str]` (L337) — `{_KIND_TIMEOUT: "timeout", _KIND_CONTROLLER: "controller"}`, kind-derived failure-state names for `_emit_skill_failure_event`.
+- module constants `_EXECUTE_SKILL_SERVER_PROBE_S`, `_LIFECYCLE_SERVER_PROBE_S` — 100 ms `wait_for_server` / `wait_for_service` probes so an absent server/peer can't block the executor thread. (L348)
+- module constant `_LIFECYCLE_SERVER_PROBE_S: float = 0.1` (L350)
+- module constant `_MISSION_VERIFY_WINDOW_S: float = 40.0` (L304) — fallback verify window when the active `RewardContract` sets no `frame_window_s`.
+- module constant `_DEFAULT_SUCCESS_THRESHOLD: float = 0.8` (L313) — fallback reward-gate `success_threshold` when no `RewardContract` is loaded.
+- module constant `_DEFAULT_CHECK_FLOOR: float = 0.5` (L314) — fallback reward-gate `check_floor` when no `RewardContract` is loaded.
+- module constant `_FAILURE_TIER_FOR_SOURCE: dict[str, str]` (L359) — trigger taxonomy mapping each `/openral/failure/<source>` to its tier: `safety → "A"`, `hal/sensor/rskill/wam/world_state → "B"`, `critic → "C"`. Used to stamp `reasoner.tier` on the OTel span; the preemption threshold itself is decided inline in `_on_failure`.
 - (the `hal_mode == "sim"` gate imports the canonical `openral_core.SIM_EXECUTABLE_CONTROL_MODES` — trimmed to the six packer-implemented modes, see the Layer-0 core entry — rather than a module-local frozenset.)
-- `def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]` (L411) — Pure helper for the deploy-path palette gate. Reads `action_contract` by specificity, from `None` (no constraint) down through representation/slots/legacy `dim`.
-- `def _action_executable(manifest: RSkillManifest, description: RobotDescription, hal_mode: str) -> bool` (L436) — Pure helper: `True` when every `_required_control_modes(manifest)` is in the executable set for `hal_mode` (sim's fixed set, else the robot's declared modes). Empty required set → `True`.
-- `def _resets_search_episode(call) -> bool` (L474) — Pure helper for the find→re-prompt cascade bound. `True` when dispatching `call` ends the active-search episode; `False` for the three read-only search actions, so a search loop's own budget can never be reset by its own query and fail to terminate.
-- `class ReasonerNode(LifecycleNode)` (L659) — Lifecycle node wrapping `ReasonerCore`. Optional injected `spatial_memory` enables the recall/resolve tools; otherwise `spatial_memory_path`/`spatial_memory_ingest` params can load or build one. `memory_md_path` enables the memory tools. `hal_mode` selects the action-mode palette gate; `tick_hz` (default 0.2 Hz) is the heartbeat rate.
+- `def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]` (L412) — Pure helper for the deploy-path palette gate. Reads `action_contract` by specificity, from `None` (no constraint) down through representation/slots/legacy `dim`.
+- `def _action_executable(manifest: RSkillManifest, description: RobotDescription, hal_mode: str) -> bool` (L437) — Pure helper: `True` when every `_required_control_modes(manifest)` is in the executable set for `hal_mode` (sim's fixed set, else the robot's declared modes). Empty required set → `True`.
+- `def _resets_search_episode(call) -> bool` (L475) — Pure helper for the find→re-prompt cascade bound. `True` when dispatching `call` ends the active-search episode; `False` for the three read-only search actions, so a search loop's own budget can never be reset by its own query and fail to terminate.
+- `class ReasonerNode(LifecycleNode)` (L660) — Lifecycle node wrapping `ReasonerCore`. Optional injected `spatial_memory` enables the recall/resolve tools; otherwise `spatial_memory_path`/`spatial_memory_ingest` params can load or build one. `memory_md_path` enables the memory tools. `hal_mode` selects the action-mode palette gate; `tick_hz` (default 0.2 Hz) is the heartbeat rate.
   - **Grasp/place target grounding** (real pick-and-place design §2.2-2.3). Params `grasp_target_voxel_m` (0.0 = unset: no standalone default — on a manifest with a `role: gripper` joint an unset value fails `on_configure` with `ROSConfigError`, once, instead of a per-call `ROSReasonerInvalidPlan` the LLM would burn its replanning ladder on, so no cell-specific fallback pads it; a gripperless manifest needs none; `deploy_e2e` passes `_octomap_resolution(hal_mode)`, the resolution octomap_server gets) and `grasp_target_extrinsic_error_m` (`MAX_PLANAR_ERR_M`, 0.015) — their sum pads a grounded seed box. `_load_grounding_context()` loads the manifest at the start of `on_configure` (a load failure warns and a named target is then refused; a gripper manifest without the voxel raises `ROSConfigError` → configure FAILURE); no robot unit and no cell geometry are read. `_ground_targets(call) -> (grasp, place)` runs in `_dispatch_execute_rskill` before any latch: `openral_reasoner.grounding` over the latest `/openral/world_state_slow` `detected_objects` (bbox now on the wire) and the spatial-memory scene graph; a `ROSReasonerInvalidPlan` is logged, recorded as a `failed` execution with a disambiguation hint, and NO goal is sent. `_send_execute_rskill_goal` fills `grasp_declaration_valid`/`grasp_declaration` and `place_declaration_valid`/`place_declaration` for the matching dispatch generation; the runner stamps, attributes and strips any region as before. Param `object_tracking` (`"off"`; issue #418, the deploy's `DeployRuntime.object_tracking`): not `"off"` → both groundings run with `object_tracking=True` (the grasp query hinted with `openral_core.hand_joint` of the grounded contact links), and the goal's grasp declaration is encoded with `query_factory=openral_msgs/ObjectQuery`.
   - `_submit_client_warmup(client) -> None` — At `on_configure`, kicks a managed LLM sidecar's boot onto `_llm_pool` instead of leaving it to the first tick, off the executor thread so the lifecycle transition returns promptly. No-op for clients without `warm()`; a failure here only warns, since `select_tool`'s lazy path still owns whether the server is usable.
-  - `on_configure(self, state) -> TransitionCallbackReturn` (L1140) — Build `ToolUseClient` from env if not injected, attach subscribers to world-state/failure/perception/prompt/registry topics, create the prompt/failure publishers + `execute_rskill` action client. Reads `vram_lifecycle_peers` (GPU peers auto-deactivated around each `execute_rskill`), loads the reward manifest, and probes GPU total VRAM for the pre-dispatch fit check.
-  - `on_activate(self, state) -> TransitionCallbackReturn` (L1554) — Arm the periodic tick timer at `tick_hz`.
-  - `on_deactivate(self, state) -> TransitionCallbackReturn` (L1563) — Cancel the tick timer (subscriptions remain attached).
-  - `on_cleanup(self, state) -> TransitionCallbackReturn` (L1585) — Tear down pending skill-goal deadline timers, destroy the action client and every cached per-topic emit_prompt publisher, drop cached lifecycle/service clients, clear the in-flight goal / cancel-reason / tick-trampoline state, and reap the LLM/VLM worker pools and inbox guard.
-  - `on_shutdown(self, state) -> TransitionCallbackReturn` (L1687) — Final shutdown.
-  - `destroy_node(self) -> None` (L1670) — Reaps the `reasoner-llm` / `reasoner-vlm` worker pools (no wait; an in-flight provider call is not interruptible) and detaches + destroys the executor-inbox guard condition before `LifecycleNode.destroy_node`, so a node destroyed without a `cleanup`/`shutdown` transition drops a late worker completion instead of triggering a destroyed guard (#381). Idempotent with `on_cleanup`.
+  - `on_configure(self, state) -> TransitionCallbackReturn` (L1141) — Build `ToolUseClient` from env if not injected, attach subscribers to world-state/failure/perception/prompt/registry topics, create the prompt/failure publishers + `execute_rskill` action client. Reads `vram_lifecycle_peers` (GPU peers auto-deactivated around each `execute_rskill`), loads the reward manifest, and probes GPU total VRAM for the pre-dispatch fit check.
+  - `on_activate(self, state) -> TransitionCallbackReturn` (L1555) — Arm the periodic tick timer at `tick_hz`.
+  - `on_deactivate(self, state) -> TransitionCallbackReturn` (L1564) — Cancel the tick timer (subscriptions remain attached).
+  - `on_cleanup(self, state) -> TransitionCallbackReturn` (L1586) — Tear down pending skill-goal deadline timers, destroy the action client and every cached per-topic emit_prompt publisher, drop cached lifecycle/service clients, clear the in-flight goal / cancel-reason / tick-trampoline state, and reap the LLM/VLM worker pools and inbox guard.
+  - `on_shutdown(self, state) -> TransitionCallbackReturn` (L1688) — Final shutdown.
+  - `destroy_node(self) -> None` (L1671) — Reaps the `reasoner-llm` / `reasoner-vlm` worker pools (no wait; an in-flight provider call is not interruptible) and detaches + destroys the executor-inbox guard condition before `LifecycleNode.destroy_node`, so a node destroyed without a `cleanup`/`shutdown` transition drops a late worker completion instead of triggering a destroyed guard (#381). Idempotent with `on_cleanup`.
   - `_on_failure(source, msg)` — Append a `FailureEventRecord` to the renderer and preempt the next tick per the tier taxonomy: Tier A (safety) at `severity ≥ WARN`, Tier B/C at `severity ≥ FAIL`. When a `critic` FAIL is a reward wake and an `execute_rskill` goal is in flight, cancels that goal (latched reason `"reward"`) instead of ticking — the reward signal stops the VLA now, not at the `deadline_s` clock — and the canceled result re-enters mission verification.
   - `_on_object_query(record)` — A matching `world_state` `KIND_OBJECT_QUERY` failure records typed reason/workspace/observation evidence, cancels the active manipulation and waits for its terminal result, then forces recovery only below the persisted task dispatch cap. At the cap, the task remains blocked until a new operator goal. Delayed failures without the exact active action UUID are ignored. No prompt handoff or safety reset. `_on_execute_rskill_result` records the canceled attempt and only then allows the recovery tick; the runner's grounding and contact gates remain authoritative. `_FAILURE_SOURCES` includes `world_state`.
   - `_on_tick(*, force=False, tier="heartbeat")` — No-op while the node is not active (`_is_active`, set in `on_activate`, cleared first in `on_deactivate`/shutdown; prompts and failures arriving meanwhile are kept for the next activation). Single-flight trampoline over `_start_tick`: a tick requested mid-dispatch is coalesced (`force` wins) and replayed after, bounded by `_MAX_TICK_REPLAYS=4`. Runs the blocking LLM call on a single-worker pool so the rclpy executor is never starved, then marshals dispatch back onto the executor. A round-trip landing after deactivate/cleanup is dropped by a generation check.
@@ -608,27 +608,27 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_on_reactivate_result(peer, future)` — Best-effort log of a reactivation `change_state` outcome.
   - `_change_state_async(node, transition) -> future | None` — Shared helper: lazily cache a `ChangeState` client per peer node and call it asynchronously; `None` if the service isn't on the graph. Used by both lifecycle dispatch and VRAM eviction.
   - `_dispatch_lifecycle_transition(call)` — Refuses (error log, no call) a `call.node` outside `self._palette.node_ids`; else drives `<call.node>/change_state` via `_change_state_async`; on success attach `_on_lifecycle_response`, on an absent service log + skip.
-  - module constant `_FEEDBACK_LOG_PERIOD_S: float = 1.0` (L471) — WARNING-log throttle period for per-chunk action feedback.
+  - module constant `_FEEDBACK_LOG_PERIOD_S: float = 1.0` (L472) — WARNING-log throttle period for per-chunk action feedback.
   - `_on_execute_skill_feedback(rskill_id, feedback_msg)` — Forward action feedback to the operator log, throttled to one WARNING per `_FEEDBACK_LOG_PERIOD_S` (a VLA goal streams one feedback per chunk); suppressed lines go to DEBUG.
   - `_on_execute_skill_goal_response(call, generation, sent_at, future, traceparent)` — Ignore/cancel stale generations; on rejection emit a `FailureTrigger`; on acceptance arm the deadline timer and attach the result handler.
   - `_on_execute_skill_result(call, generation, goal_id, future, traceparent)` — Ignore stale generations, cancel the deadline timer; log success or emit a `FailureTrigger` with `ControllerEvidence` on abort/cancel/failure. The replanning ladder classifies on the typed `failure_kind`, not the prose: a config/capability-mismatch result drops that rSkill from the palette until rebuilt; a deadline-miss drives a "timed out" reflection; controller/runtime failures remain retryable.
-  - module constant `_LEGACY_FAILURE_REASON_PREFIXES: tuple[tuple[str, str], ...]` (L518) — deprecated-in-place prose→`FAILURE_*` prefix table, consulted only when a failed result carries `FAILURE_NONE` (a pre-`failure_kind` producer).
+  - module constant `_LEGACY_FAILURE_REASON_PREFIXES: tuple[tuple[str, str], ...]` (L519) — deprecated-in-place prose→`FAILURE_*` prefix table, consulted only when a failed result carries `FAILURE_NONE` (a pre-`failure_kind` producer).
   - `_rskill_failure_kind(result) -> int` — Typed failure kind for a terminal result; the runner-stamped uint8 is authoritative, falling back to the deprecated prose-prefix table only for a producer that predates the field.
   - `_failure_kind_name(value) -> str | None` — The `ExecuteRskill.Result` `FAILURE_*` constant name for a uint8 (reverse of `_failure_kind_value`), passed to `reflect_on_failure` with the result's `evidence_json`.
   - `_failure_kind_value(name) -> int` — Resolve an `ExecuteRskill.Result` `FAILURE_*` constant by name off the generated IDL rather than re-declaring the values, so the reasoner cannot drift from `packages/msgs`.
-  - module constant `_PERMANENT_FAILURE_KIND_NAMES: frozenset[str]` (L538) — `{"FAILURE_CONFIG_ERROR", "FAILURE_CAPABILITY_MISMATCH"}`.
-  - module constant `_TIMED_OUT_FAILURE_KIND_NAMES: frozenset[str]` (L544) — `{"FAILURE_DEADLINE_MISSED"}`.
+  - module constant `_PERMANENT_FAILURE_KIND_NAMES: frozenset[str]` (L539) — `{"FAILURE_CONFIG_ERROR", "FAILURE_CAPABILITY_MISMATCH"}`.
+  - module constant `_TIMED_OUT_FAILURE_KIND_NAMES: frozenset[str]` (L545) — `{"FAILURE_DEADLINE_MISSED"}`.
   - `_palette_after_rskill_failure(palette, rskill_id, failure_kind) -> ToolPalette` — Drop a skill after a typed, session-persistent availability failure, classified on `failure_kind` (never on prose); `FAILURE_NONE` is "unclassified", never "permanently broken".
   - `_on_execute_skill_deadline(*, call, generation, sent_at, goal_handle, traceparent)` — Ignore stale generations; latch a `"patience"` cancel reason (a patience-expired attempt still runs the reward verify gate), cancel the goal, and emit a `KIND_TIMEOUT` `FailureTrigger`.
   - **Ladder persistence.** `_persist_ladder_state()` snapshots `ReasonerLadderState` to the `ladder_state_path` param after every ledger mutation; `_maybe_restore_ladder_state()` reloads it at `on_configure`, so a restart resumes the ladder and preserves an object-query-blocked task until a new operator goal.
   - `_on_lifecycle_response(call, future)` — Log the `ChangeState` result; lifecycle failures surface in the target node's own logs (no `FailureTrigger` re-emission).
   - `_publish_skill_failure(*, kind, rskill_id, evidence, traceparent, trace_id=None)` — Build + publish a `FailureTrigger` on `/openral/failure/rskill`, then mirror it onto the OTLP span path via `_emit_skill_failure_event` so the OTLP-only dashboard can tally it.
   - `_emit_skill_failure_event(*, kind, rskill_id, evidence)` — Stamp an `openral.event.skill_failure` span event carrying the failure state, on the active tick span when recording or a transient span otherwise. Drives the dashboard "skill failures" counter.
-  - `renderer(self) -> ContextRenderer` (L5826) — Direct read access for tests asserting buffer state.
-  - `dispatched_calls(self) -> tuple[Any, ...]` (L5831) — Snapshot of tool calls the reasoner has dispatched (in order).
-  - `set_palette(self, palette) -> None` (L5835) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
-- `_QOS_REGISTRY_CHANGED` (L255) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
-- `main(args=None) -> int` (L5840) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
+  - `renderer(self) -> ContextRenderer` (L5838) — Direct read access for tests asserting buffer state.
+  - `dispatched_calls(self) -> tuple[Any, ...]` (L5843) — Snapshot of tool calls the reasoner has dispatched (in order).
+  - `set_palette(self, palette) -> None` (L5847) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
+- `_QOS_REGISTRY_CHANGED` (L256) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
+- `main(args=None) -> int` (L5852) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
 
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack are out of scope._
@@ -702,251 +702,264 @@ _Make `LifecycleNode` transition-callback failures observable — rclpy silently
 _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final[str]` constants grouped by wire namespace exactly as the module's own `# ──` section banners divide them; each constant's value is its own description._
 
 **rskill.* — short-prefix span/metric attributes**
-- `const RSKILL_ID: str = "rskill.id"` (L30)
-- `const RSKILL_ROLE: str = "rskill.role"` (L31)
-- `const RSKILL_TICK_MS: str = "rskill.tick_ms"` (L33)
-- `const RSKILL_INFERENCE_MS: str = "rskill.inference_ms"` (L34)
-- `const RSKILL_SENSORS_MS: str = "rskill.sensors_ms"` (L35)
-- `const RSKILL_WORLD_STATE_MS: str = "rskill.world_state_ms"` (L36)
-- `const RSKILL_SAFETY_MS: str = "rskill.safety_ms"` (L37)
-- `const RSKILL_HAL_MS: str = "rskill.hal_ms"` (L38)
-- `const RSKILL_ACTION_APPLIED: str = "rskill.action_applied"` (L39)
-- `const RSKILL_SAFETY_VIOLATIONS: str = "rskill.safety_violations"` (L40)
-- `const RSKILL_EPISODE_IDX: str = "rskill.episode_idx"` (L41)
-- `const RSKILL_STEP_IDX: str = "rskill.step_idx"` (L42)
-- `const RSKILL_REWARD: str = "rskill.reward"` (L43)
-- `const RSKILL_TERMINATED: str = "rskill.terminated"` (L44)
-- `const RSKILL_TRUNCATED: str = "rskill.truncated"` (L45)
-- `const INFERENCE_KIND: str = "inference.kind"` (L47)
-- `const INFERENCE_CHUNK_INDEX: str = "inference.chunk_index"` (L48)
-- `const INFERENCE_CHUNK_SIZE: str = "inference.chunk_size"` (L49)
-- `const INFERENCE_ENGINE: str = "inference.engine"` (L50)
-- `const INFERENCE_DEVICE: str = "inference.device"` (L51)
-- `const INFERENCE_DURATION_MS: str = "inference.duration_ms"` (L52)
-- `const SAFETY_SEVERITY: str = "safety.severity"` (L54)
-- `const SAFETY_CHECK_NAME: str = "safety.check_name"` (L55)
-- `const SAFETY_KERNEL: str = "safety.kernel"` (L56)
+- `const RSKILL_ID: str = "rskill.id"` (L33)
+- `const RSKILL_ROLE: str = "rskill.role"` (L34)
+- `const RSKILL_TICK_MS: str = "rskill.tick_ms"` (L36)
+- `const RSKILL_INFERENCE_MS: str = "rskill.inference_ms"` (L37)
+- `const RSKILL_SENSORS_MS: str = "rskill.sensors_ms"` (L38)
+- `const RSKILL_WORLD_STATE_MS: str = "rskill.world_state_ms"` (L39)
+- `const RSKILL_SAFETY_MS: str = "rskill.safety_ms"` (L40)
+- `const RSKILL_HAL_MS: str = "rskill.hal_ms"` (L41)
+- `const RSKILL_ACTION_APPLIED: str = "rskill.action_applied"` (L42)
+- `const RSKILL_SAFETY_VIOLATIONS: str = "rskill.safety_violations"` (L43)
+- `const RSKILL_EPISODE_IDX: str = "rskill.episode_idx"` (L44)
+- `const RSKILL_STEP_IDX: str = "rskill.step_idx"` (L45)
+- `const RSKILL_REWARD: str = "rskill.reward"` (L46)
+- `const RSKILL_TERMINATED: str = "rskill.terminated"` (L47)
+- `const RSKILL_TRUNCATED: str = "rskill.truncated"` (L48)
+- `const INFERENCE_KIND: str = "inference.kind"` (L50)
+- `const INFERENCE_CHUNK_INDEX: str = "inference.chunk_index"` (L51)
+- `const INFERENCE_CHUNK_SIZE: str = "inference.chunk_size"` (L52)
+- `const INFERENCE_ENGINE: str = "inference.engine"` (L53)
+- `const INFERENCE_DEVICE: str = "inference.device"` (L54)
+- `const INFERENCE_DURATION_MS: str = "inference.duration_ms"` (L55)
+- `const SAFETY_SEVERITY: str = "safety.severity"` (L57)
+- `const SAFETY_CHECK_NAME: str = "safety.check_name"` (L58)
+- `const SAFETY_KERNEL: str = "safety.kernel"` (L59)
 
 **reward.* — task-progress reward monitor scores**
-- `const REWARD_PROGRESS: str = "reward.progress"` (L59)
-- `const REWARD_SUCCESS: str = "reward.success"` (L60)
-- `const REWARD_STALLED: str = "reward.stalled"` (L61)
-- `const REWARD_SUCCEEDED: str = "reward.succeeded"` (L62)
-- `const REWARD_FRAMES: str = "reward.frames"` (L63)
-- `const REWARD_TASK: str = "reward.task"` (L64)
-- `const REWARD_CAMERA: str = "reward.camera"` (L65)
+- `const REWARD_PROGRESS: str = "reward.progress"` (L62)
+- `const REWARD_SUCCESS: str = "reward.success"` (L63)
+- `const REWARD_STALLED: str = "reward.stalled"` (L64)
+- `const REWARD_SUCCEEDED: str = "reward.succeeded"` (L65)
+- `const REWARD_FRAMES: str = "reward.frames"` (L66)
+- `const REWARD_TASK: str = "reward.task"` (L67)
+- `const REWARD_CAMERA: str = "reward.camera"` (L68)
 
 **openral.run.* — CLI invocation**
-- `const RUN_ID: str = "openral.run.id"` (L69)
-- `const RUN_MODE: str = "openral.run.mode"` (L70)
-- `const RUN_GIT_SHA: str = "openral.run.git_sha"` (L71)
+- `const RUN_ID: str = "openral.run.id"` (L72)
+- `const RUN_MODE: str = "openral.run.mode"` (L73)
+- `const RUN_GIT_SHA: str = "openral.run.git_sha"` (L74)
+
+**openral.unit.* / org / site — which machine (resource attributes, issue #467)**
+- `const UNIT_SERIAL: str = "openral.unit.serial"` (L80)
+- `const ORG_ID: str = "openral.org.id"` (L81)
+- `const SITE_ID: str = "openral.site.id"` (L82)
+
+**openral.record.* — compliance records (OTLP log-record attributes)**
+- `const RECORD_KIND: str = "openral.record.kind"` (L87)
+- `const RECORD_ID: str = "openral.record.id"` (L88)
+- `const RECORD_SCHEMA_VERSION: str = "openral.schema.version"` (L89)
+- `const RECORD_RETENTION_CLASS: str = "openral.retention.class"` (L90)
+- `const METRIC_FAILURE_COUNT: str = "openral.failure.count"` (L328)
 
 **openral.tick.* — runner cadence**
-- `const TICK_IDX: str = "openral.tick.idx"` (L75)
-- `const TICK_RATE_HZ: str = "openral.tick.rate_hz"` (L76)
-- `const TICK_DEADLINE_MS: str = "openral.tick.deadline_ms"` (L77)
+- `const TICK_IDX: str = "openral.tick.idx"` (L94)
+- `const TICK_RATE_HZ: str = "openral.tick.rate_hz"` (L95)
+- `const TICK_DEADLINE_MS: str = "openral.tick.deadline_ms"` (L96)
 
 **openral.rskill.* — rSkill identity (namespaced)**
-- `const RSKILL_ID_NS: str = "openral.rskill.id"` (L81)
-- `const RSKILL_REVISION_NS: str = "openral.rskill.revision"` (L82)
-- `const RSKILL_ROLE_NS: str = "openral.rskill.role"` (L83)
-- `const RSKILL_ACTION_HORIZON: str = "openral.rskill.action_horizon"` (L84)
+- `const RSKILL_ID_NS: str = "openral.rskill.id"` (L100)
+- `const RSKILL_REVISION_NS: str = "openral.rskill.revision"` (L101)
+- `const RSKILL_ROLE_NS: str = "openral.rskill.role"` (L102)
+- `const RSKILL_ACTION_HORIZON: str = "openral.rskill.action_horizon"` (L103)
 
 **openral.hal.***
-- `const HAL_ADAPTER: str = "openral.hal.adapter"` (L88)
-- `const HAL_ROBOT_MODEL: str = "openral.hal.robot.model"` (L89)
-- `const HAL_CONTROL_MODE: str = "openral.hal.control_mode"` (L90)
-- `const HAL_JOINT_NAMES: str = "openral.hal.joint.names"` (L95)
-- `const HAL_JOINT_POSITIONS: str = "openral.hal.joint.positions"` (L96)
-- `const HAL_JOINT_VELOCITIES: str = "openral.hal.joint.velocities"` (L97)
-- `const HAL_JOINT_EFFORTS: str = "openral.hal.joint.efforts"` (L98)
-- `const HAL_JOINT_POSITION_LIMITS_LO: str = "openral.hal.joint.position_limits_lo"` (L99)
-- `const HAL_JOINT_POSITION_LIMITS_HI: str = "openral.hal.joint.position_limits_hi"` (L100)
-- `const HAL_JOINT_VELOCITY_LIMITS: str = "openral.hal.joint.velocity_limits"` (L101)
-- `const HAL_JOINT_EFFORT_LIMITS: str = "openral.hal.joint.effort_limits"` (L102)
-- `const HAL_JOINT_STAMP_NS: str = "openral.hal.joint.stamp_ns"` (L103)
-- `const HAL_ACTION_NEXT: str = "openral.hal.action.next"` (L110)
-- `const HAL_ACTION_DIM: str = "openral.hal.action.dim"` (L111)
-- `const HAL_ACTION_HORIZON: str = "openral.hal.action.horizon"` (L112)
-- `const HAL_ACTION_APPLIED: str = "openral.hal.action.applied"` (L113)
-- `const HAL_EE_NAMES: str = "openral.hal.ee.names"` (L117)
-- `const HAL_EE_POSE_PREFIX: str = "openral.hal.ee.pose"` (L118)
-- `const HAL_GRIPPER_POSITION: str = "openral.hal.gripper.position"` (L119)
-- `const HAL_GRIPPER_FORCE_N: str = "openral.hal.gripper.force_n"` (L120)
+- `const HAL_ADAPTER: str = "openral.hal.adapter"` (L107)
+- `const HAL_ROBOT_MODEL: str = "openral.hal.robot.model"` (L108)
+- `const HAL_CONTROL_MODE: str = "openral.hal.control_mode"` (L109)
+- `const HAL_JOINT_NAMES: str = "openral.hal.joint.names"` (L114)
+- `const HAL_JOINT_POSITIONS: str = "openral.hal.joint.positions"` (L115)
+- `const HAL_JOINT_VELOCITIES: str = "openral.hal.joint.velocities"` (L116)
+- `const HAL_JOINT_EFFORTS: str = "openral.hal.joint.efforts"` (L117)
+- `const HAL_JOINT_POSITION_LIMITS_LO: str = "openral.hal.joint.position_limits_lo"` (L118)
+- `const HAL_JOINT_POSITION_LIMITS_HI: str = "openral.hal.joint.position_limits_hi"` (L119)
+- `const HAL_JOINT_VELOCITY_LIMITS: str = "openral.hal.joint.velocity_limits"` (L120)
+- `const HAL_JOINT_EFFORT_LIMITS: str = "openral.hal.joint.effort_limits"` (L121)
+- `const HAL_JOINT_STAMP_NS: str = "openral.hal.joint.stamp_ns"` (L122)
+- `const HAL_ACTION_NEXT: str = "openral.hal.action.next"` (L129)
+- `const HAL_ACTION_DIM: str = "openral.hal.action.dim"` (L130)
+- `const HAL_ACTION_HORIZON: str = "openral.hal.action.horizon"` (L131)
+- `const HAL_ACTION_APPLIED: str = "openral.hal.action.applied"` (L132)
+- `const HAL_EE_NAMES: str = "openral.hal.ee.names"` (L136)
+- `const HAL_EE_POSE_PREFIX: str = "openral.hal.ee.pose"` (L137)
+- `const HAL_GRIPPER_POSITION: str = "openral.hal.gripper.position"` (L138)
+- `const HAL_GRIPPER_FORCE_N: str = "openral.hal.gripper.force_n"` (L139)
 
 **openral.sensors.***
-- `const SENSORS_MODALITY: str = "openral.sensors.modality"` (L124)
-- `const SENSORS_SOURCE: str = "openral.sensors.source"` (L125)
-- `const SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L126)
-- `const SENSORS_WIDTH: str = "openral.sensors.width"` (L127)
-- `const SENSORS_HEIGHT: str = "openral.sensors.height"` (L128)
-- `const SENSORS_CHANNELS: str = "openral.sensors.channels"` (L129)
-- `const SENSORS_ENCODING: str = "openral.sensors.encoding"` (L130)
-- `const SENSORS_THUMBNAIL_JPEG_B64: str = "openral.sensors.thumbnail_jpeg_b64"` (L135)
+- `const SENSORS_MODALITY: str = "openral.sensors.modality"` (L143)
+- `const SENSORS_SOURCE: str = "openral.sensors.source"` (L144)
+- `const SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L145)
+- `const SENSORS_WIDTH: str = "openral.sensors.width"` (L146)
+- `const SENSORS_HEIGHT: str = "openral.sensors.height"` (L147)
+- `const SENSORS_CHANNELS: str = "openral.sensors.channels"` (L148)
+- `const SENSORS_ENCODING: str = "openral.sensors.encoding"` (L149)
+- `const SENSORS_THUMBNAIL_JPEG_B64: str = "openral.sensors.thumbnail_jpeg_b64"` (L154)
 
 **openral.system.* — host / GPU / CPU health**
-- `const SYSTEM_GPU_INDEX: str = "openral.system.gpu.index"` (L139)
-- `const SYSTEM_GPU_NAME: str = "openral.system.gpu.name"` (L140)
+- `const SYSTEM_GPU_INDEX: str = "openral.system.gpu.index"` (L158)
+- `const SYSTEM_GPU_NAME: str = "openral.system.gpu.name"` (L159)
 
 **openral.world_state.***
-- `const WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L144)
-- `const WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L145)
-- `const WORLD_STATE_HAS_LATCHED_ERROR: str = "openral.world_state.has_latched_error"` (L146)
-- `const WORLD_STATE_COMPONENT: str = "openral.world_state.component"` (L147)
+- `const WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L163)
+- `const WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L164)
+- `const WORLD_STATE_HAS_LATCHED_ERROR: str = "openral.world_state.has_latched_error"` (L165)
+- `const WORLD_STATE_COMPONENT: str = "openral.world_state.component"` (L166)
 
 **openral.world_state.scene_objects.* (durable spatial-memory scene-object graph)**
-- `const WORLD_SCENE_OBJECTS_LIST: str = "openral.world_state.scene_objects.list"` (L153)
-- `const WORLD_SCENE_OBJECTS_COUNT: str = "openral.world_state.scene_objects.count"` (L154)
-- `const WORLD_SCENE_OBJECTS_FRAME: str = "openral.world_state.scene_objects.frame_id"` (L155)
-- `const WORLD_SCENE_OBJECTS_SOURCE_NODE: str = "openral.world_state.scene_objects.source_node"` (L156)
+- `const WORLD_SCENE_OBJECTS_LIST: str = "openral.world_state.scene_objects.list"` (L172)
+- `const WORLD_SCENE_OBJECTS_COUNT: str = "openral.world_state.scene_objects.count"` (L173)
+- `const WORLD_SCENE_OBJECTS_FRAME: str = "openral.world_state.scene_objects.frame_id"` (L174)
+- `const WORLD_SCENE_OBJECTS_SOURCE_NODE: str = "openral.world_state.scene_objects.source_node"` (L175)
 
 **openral.dataset.***
-- `const DATASET_REPO_ID: str = "openral.dataset.repo_id"` (L160)
-- `const DATASET_EPISODE_IDX: str = "openral.dataset.episode_idx"` (L161)
-- `const DATASET_FRAME_IDX: str = "openral.dataset.frame_idx"` (L162)
-- `const DATASET_EPISODE_SUCCESS: str = "openral.dataset.episode.success"` (L166)
+- `const DATASET_REPO_ID: str = "openral.dataset.repo_id"` (L179)
+- `const DATASET_EPISODE_IDX: str = "openral.dataset.episode_idx"` (L180)
+- `const DATASET_FRAME_IDX: str = "openral.dataset.frame_idx"` (L181)
+- `const DATASET_EPISODE_SUCCESS: str = "openral.dataset.episode.success"` (L185)
 
 **Span names**
-- `const SPAN_CLI_COMMAND: str = "cli.command"` (L170)
-- `const SPAN_RSKILL_TICK: str = "rskill.tick"` (L171)
-- `const SPAN_RSKILL_CONFIGURE: str = "rskill.configure"` (L172)
-- `const SPAN_RSKILL_ACTIVATE: str = "rskill.activate"` (L173)
-- `const SPAN_RSKILL_EXECUTE: str = "rskill.execute"` (L174)
-- `const SPAN_RSKILL_CHUNK_INFERENCE: str = "rskill.chunk_inference"` (L175)
-- `const SPAN_HAL_READ_STATE: str = "hal.read_state"` (L176)
-- `const SPAN_HAL_SEND_ACTION: str = "hal.send_action"` (L177)
-- `const SPAN_SENSORS_READ_LATEST: str = "sensors.read_latest"` (L178)
-- `const SPAN_WORLD_STATE_SNAPSHOT: str = "world_state.snapshot"` (L179)
-- `const SPAN_WORLD_STATE_OBJECT_QUERY: str = "world_state.object_query"` (L181) — Issue #418: one object-query escalation, parented on the goal's skill-execution trace.
-- `const SPAN_WORLD_SCENE_OBJECTS: str = "world.scene_objects"` (L182)
-- `const SPAN_SAFETY_CHECK: str = "safety.check"` (L183)
-- `const SPAN_REWARD_SCORE: str = "reward.score"` (L184)
-- `const SPAN_REASONER_TICK: str = "reasoner.tick"` (L186)
-- `const SPAN_DEPLOY_BRINGUP: str = "deploy.bringup"` (L188)
-- `const BRINGUP_NODE: str = "openral.bringup.node"` (L200)
-- `const BRINGUP_TRANSITION: str = "openral.bringup.transition"` (L201)
-- `const BRINGUP_RESULT: str = "openral.bringup.result"` (L202)
-- `const REASONER_MODEL: str = "reasoner.model"` (L205)
-- `const REASONER_TICK_IDX: str = "reasoner.tick.idx"` (L206)
-- `const REASONER_TOOL: str = "reasoner.tool"` (L207)
-- `const REASONER_RSKILL_ID: str = "reasoner.rskill_id"` (L208)
-- `const REASONER_SUPPRESSED_REASON: str = "reasoner.suppressed_reason"` (L209)
-- `const REASONER_ERROR_KIND: str = "reasoner.error_kind"` (L210)
-- `const REASONER_FORCE: str = "reasoner.force"` (L211)
-- `const REASONER_LLM_S: str = "reasoner.llm_s"` (L216)
-- `const REASONER_PROMPT_TOKENS: str = "reasoner.prompt_tokens"` (L218)
-- `const REASONER_MISSION_JSON: str = "reasoner.mission_json"` (L224)
-- `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L229)
-- `const REASONER_TIER: str = "reasoner.tier"` (L234)
-- `const SPAN_SIM_RUN: str = "sim.run"` (L236)
-- `const SPAN_SIM_STEP: str = "sim.step"` (L237)
-- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L238)
+- `const SPAN_CLI_COMMAND: str = "cli.command"` (L189)
+- `const SPAN_RSKILL_TICK: str = "rskill.tick"` (L190)
+- `const SPAN_RSKILL_CONFIGURE: str = "rskill.configure"` (L191)
+- `const SPAN_RSKILL_ACTIVATE: str = "rskill.activate"` (L192)
+- `const SPAN_RSKILL_EXECUTE: str = "rskill.execute"` (L193)
+- `const SPAN_RSKILL_CHUNK_INFERENCE: str = "rskill.chunk_inference"` (L194)
+- `const SPAN_HAL_READ_STATE: str = "hal.read_state"` (L195)
+- `const SPAN_HAL_SEND_ACTION: str = "hal.send_action"` (L196)
+- `const SPAN_SENSORS_READ_LATEST: str = "sensors.read_latest"` (L197)
+- `const SPAN_WORLD_STATE_SNAPSHOT: str = "world_state.snapshot"` (L198)
+- `const SPAN_WORLD_STATE_OBJECT_QUERY: str = "world_state.object_query"` (L200) — Issue #418: one object-query escalation, parented on the goal's skill-execution trace.
+- `const SPAN_WORLD_SCENE_OBJECTS: str = "world.scene_objects"` (L201)
+- `const SPAN_SAFETY_CHECK: str = "safety.check"` (L202)
+- `const SPAN_REWARD_SCORE: str = "reward.score"` (L203)
+- `const SPAN_REASONER_TICK: str = "reasoner.tick"` (L205)
+- `const SPAN_DEPLOY_BRINGUP: str = "deploy.bringup"` (L207)
+- `const BRINGUP_NODE: str = "openral.bringup.node"` (L219)
+- `const BRINGUP_TRANSITION: str = "openral.bringup.transition"` (L220)
+- `const BRINGUP_RESULT: str = "openral.bringup.result"` (L221)
+- `const REASONER_MODEL: str = "reasoner.model"` (L224)
+- `const REASONER_TICK_IDX: str = "reasoner.tick.idx"` (L225)
+- `const REASONER_TOOL: str = "reasoner.tool"` (L226)
+- `const REASONER_RSKILL_ID: str = "reasoner.rskill_id"` (L227)
+- `const REASONER_SUPPRESSED_REASON: str = "reasoner.suppressed_reason"` (L228)
+- `const REASONER_ERROR_KIND: str = "reasoner.error_kind"` (L229)
+- `const REASONER_FORCE: str = "reasoner.force"` (L230)
+- `const REASONER_LLM_S: str = "reasoner.llm_s"` (L235)
+- `const REASONER_PROMPT_TOKENS: str = "reasoner.prompt_tokens"` (L237)
+- `const REASONER_MISSION_JSON: str = "reasoner.mission_json"` (L243)
+- `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L248)
+- `const REASONER_TIER: str = "reasoner.tier"` (L253)
+- `const SPAN_SIM_RUN: str = "sim.run"` (L255)
+- `const SPAN_SIM_STEP: str = "sim.step"` (L256)
+- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L257)
 
 **Span-event names**
-- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L256)
-- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L257)
-- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L258)
-- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L259)
-- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L260)
-- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L263)
-- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L264)
-- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L271)
-- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L275)
-- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L276)
-- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L281)
+- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L275)
+- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L276)
+- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L277)
+- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L278)
+- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L279)
+- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L282)
+- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L283)
+- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L290)
+- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L294)
+- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L295)
+- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L300)
 
 **Metric instrument names**
-- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L285)
-- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L286)
-- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L287)
-- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L288)
-- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L289)
-- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L290)
-- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L291)
-- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L292)
-- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L293)
-- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L294)
-- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L295)
-- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L296)
-- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L297)
-- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L298)
-- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L302)
-- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L303)
-- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L304)
-- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L305)
-- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L306)
-- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L307)
-- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L308)
+- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L304)
+- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L305)
+- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L306)
+- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L307)
+- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L308)
+- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L309)
+- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L310)
+- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L311)
+- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L312)
+- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L313)
+- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L314)
+- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L315)
+- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L316)
+- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L317)
+- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L321)
+- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L322)
+- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L323)
+- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L324)
+- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L325)
+- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L326)
+- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L327)
 
 **Closed-set label vocabularies (for metric labels)**
-- `const LABEL_RSKILL_ID: str = "rskill.id"` (L315)
-- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L316)
-- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L317)
-- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L318)
-- `const LABEL_CONTROL_MODE: str = "control_mode"` (L319)
-- `const LABEL_ENGINE: str = "engine"` (L320)
-- `const LABEL_DEVICE: str = "device"` (L321)
-- `const LABEL_KIND: str = "kind"` (L322)
-- `const LABEL_MODALITY: str = "modality"` (L323)
-- `const LABEL_CHECK_NAME: str = "check_name"` (L324)
-- `const LABEL_SEVERITY: str = "severity"` (L325)
-- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L326)
-- `const LABEL_COMPONENT: str = "component"` (L327)
-- `const LABEL_REASON: str = "reason"` (L328)
-- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L334)
-- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L340)
-- `const THRESHOLD_DIR_UPPER: str = "upper"` (L341)
-- `const THRESHOLD_DIR_LOWER: str = "lower"` (L342)
+- `const LABEL_RSKILL_ID: str = "rskill.id"` (L335)
+- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L336)
+- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L337)
+- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L338)
+- `const LABEL_CONTROL_MODE: str = "control_mode"` (L339)
+- `const LABEL_ENGINE: str = "engine"` (L340)
+- `const LABEL_DEVICE: str = "device"` (L341)
+- `const LABEL_KIND: str = "kind"` (L342)
+- `const LABEL_MODALITY: str = "modality"` (L343)
+- `const LABEL_CHECK_NAME: str = "check_name"` (L344)
+- `const LABEL_SEVERITY: str = "severity"` (L345)
+- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L346)
+- `const LABEL_COMPONENT: str = "component"` (L347)
+- `const LABEL_REASON: str = "reason"` (L348)
+- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L354)
+- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L360)
+- `const THRESHOLD_DIR_UPPER: str = "upper"` (L361)
+- `const THRESHOLD_DIR_LOWER: str = "lower"` (L362)
 
 **Run-mode enum (closed set for openral.run.mode)**
-- `const RUN_MODE_SIM: str = "sim"` (L346)
-- `const RUN_MODE_HARDWARE: str = "hardware"` (L347)
-- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L348)
+- `const RUN_MODE_SIM: str = "sim"` (L366)
+- `const RUN_MODE_HARDWARE: str = "hardware"` (L367)
+- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L368)
 
 **Safety kernel enum (closed set for safety.kernel — see SAFETY_KERNEL)**
-- `const SAFETY_KERNEL_NULL: str = "null"` (L352)
-- `const SAFETY_KERNEL_CPP: str = "cpp"` (L353)
+- `const SAFETY_KERNEL_NULL: str = "null"` (L372)
+- `const SAFETY_KERNEL_CPP: str = "cpp"` (L373)
 
 
 ### `python/observability/src/openral_observability/metrics.py`
 _Cached OTel meter instruments — safe to call before `configure_observability`._
 
-- `get_meter() -> Meter` — Resolve the OpenRAL meter against the current `MeterProvider`. (L64)
-- `get_tick_duration() -> Histogram` — `openral.tick.duration`, unit `ms`. (L99)
-- `get_inference_duration() -> Histogram` — `openral.inference.duration`, unit `ms`. (L114)
-- `get_hal_read_state_duration() -> Histogram` — `openral.hal.read_state.duration`, unit `ms`. (L126)
-- `get_hal_send_action_duration() -> Histogram` — `openral.hal.send_action.duration`, unit `ms`. (L138)
-- `get_sensors_age_ms() -> Histogram` — `openral.sensors.age_ms`, unit `ms`. (L150)
-- `get_world_state_staleness_ms() -> Histogram` — `openral.world_state.staleness_ms`, unit `ms`. (L162)
-- `get_tick_budget_violations() -> Counter` — `openral.tick.budget_violations`. (L177)
-- `get_tick_deadline_misses() -> Counter` — `openral.tick.deadline_misses`. (L188)
-- `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L199)
-- `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L213)
-- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L234)
-- `get_sim_episode_count() -> Counter` — `openral.sim.episode.count`; sim episodes that ran to completion (terminated or truncated). (L245)
-- `get_sim_episode_success() -> Counter` — `openral.sim.episode.success`; sim episodes that hit `task.success_key` at least once. (L256)
-- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L267)
-- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L292)
-- `get_system_gpu_memory_used_mb() -> UpDownCounter` — `openral.system.gpu.memory_used_mb`, unit `MBy`. (L306)
-- `get_system_gpu_memory_total_mb() -> UpDownCounter` — `openral.system.gpu.memory_total_mb`, unit `MBy`. (L318)
-- `get_system_gpu_util_pct() -> UpDownCounter` — `openral.system.gpu.utilization_pct`, unit `%`. (L330)
-- `get_system_cpu_util_pct() -> UpDownCounter` — `openral.system.cpu.utilization_pct`, unit `%`. (L342)
-- `get_system_ram_used_mb() -> UpDownCounter` — `openral.system.ram.used_mb`, unit `MBy`. (L354)
-- `get_system_ram_total_mb() -> UpDownCounter` — `openral.system.ram.total_mb`, unit `MBy`. (L366)
-- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L381)
+- `get_meter() -> Meter` — Resolve the OpenRAL meter against the current `MeterProvider`. (L65)
+- `get_tick_duration() -> Histogram` — `openral.tick.duration`, unit `ms`. (L100)
+- `get_inference_duration() -> Histogram` — `openral.inference.duration`, unit `ms`. (L115)
+- `get_hal_read_state_duration() -> Histogram` — `openral.hal.read_state.duration`, unit `ms`. (L127)
+- `get_hal_send_action_duration() -> Histogram` — `openral.hal.send_action.duration`, unit `ms`. (L139)
+- `get_sensors_age_ms() -> Histogram` — `openral.sensors.age_ms`, unit `ms`. (L151)
+- `get_world_state_staleness_ms() -> Histogram` — `openral.world_state.staleness_ms`, unit `ms`. (L163)
+- `get_tick_budget_violations() -> Counter` — `openral.tick.budget_violations`. (L178)
+- `get_tick_deadline_misses() -> Counter` — `openral.tick.deadline_misses`. (L189)
+- `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L200)
+- `get_failure_count() -> Counter` — `openral.failure.count{component, kind, severity}`, one per `FailureTrigger` the compliance recorder sees. (L214)
+- `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L229)
+- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L250)
+- `get_sim_episode_count() -> Counter` — `openral.sim.episode.count`; sim episodes that ran to completion (terminated or truncated). (L261)
+- `get_sim_episode_success() -> Counter` — `openral.sim.episode.success`; sim episodes that hit `task.success_key` at least once. (L272)
+- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L283)
+- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L308)
+- `get_system_gpu_memory_used_mb() -> UpDownCounter` — `openral.system.gpu.memory_used_mb`, unit `MBy`. (L322)
+- `get_system_gpu_memory_total_mb() -> UpDownCounter` — `openral.system.gpu.memory_total_mb`, unit `MBy`. (L334)
+- `get_system_gpu_util_pct() -> UpDownCounter` — `openral.system.gpu.utilization_pct`, unit `%`. (L346)
+- `get_system_cpu_util_pct() -> UpDownCounter` — `openral.system.cpu.utilization_pct`, unit `%`. (L358)
+- `get_system_ram_used_mb() -> UpDownCounter` — `openral.system.ram.used_mb`, unit `MBy`. (L370)
+- `get_system_ram_total_mb() -> UpDownCounter` — `openral.system.ram.total_mb`, unit `MBy`. (L382)
+- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L397)
 
 ### `python/observability/src/openral_observability/producer.py`
 _Producer-side helpers for recording rich span attributes on OpenRAL hot-path spans. Safe to call on no-op spans; lists are truncated to `_MAX_JOINTS` / `_MAX_EE_FRAMES` and floats rounded to 3 decimals._
 
-- `record_joint_state(span, *, names, positions, velocities=None, efforts=None, position_limits=None, velocity_limits=None, effort_limits=None, stamp_ns=None) -> None` — Attach per-joint attributes to a `hal.read_state` span. (L96)
-- `record_action(span, *, next_row, dim=None, horizon=None, applied=None, gripper_position=None, gripper_force_n=None) -> None` — Attach commanded-action attributes to a `hal.send_action` span. (L144)
-- `record_ee_poses(span, ee_poses) -> None` — Flatten a `name → Pose6D` mapping onto a `world_state.snapshot` span. (L175)
-- `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L201)
-- `emit_sensor_frame_span(frame, *, sensor_name, age_ms, flip_180=False, tracer_name=…) -> None` — The shared producer of a dashboard `sensors.read_latest` span for one camera frame: optional flip of a display-only copy (the policy's actual frame is never mutated), then span + attrs + thumbnail. Both frame emitters route through this one function so they can't drift apart. (L245) `encode_frame_thumbnail` — but the span is opened first and the function returns as soon as `span.is_recording()` is false (no OTLP endpoint / dashboard off): the flip copy and the JPEG only feed the span, and at 30 Hz per camera they held ~25 % of the deploy runtime's GIL on an AGX Orin for nothing. The flip is passed to `encode_frame_thumbnail`; the span never copies a full-resolution flipped frame.
-- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L300)
-- `encode_frame_thumbnail(frame, *, flip_180=False) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L333) Raw frames are subsampled to the 320x240 box before any copy, and the optional 180° flip and BGR swap run on that small view: 0.6 ms per 1920x1200 frame on a Jetson AGX Thor instead of 8.2 ms, which at three cameras x 30 Hz had left a competing Python thread 34 % of its speed. JPEG input decodes in reduced-scale draft mode. Display-only (the dashboard tile); Foxglove reads the full-resolution ROS image topics.
-- `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` to the dashboard's modality label (`rgb`/`mono`/`depth`/`raw`/`unknown`); shared by `DeployRunner` and the world-state node so both produce identical labels. (L57)
-- `_MODALITY_BY_ENCODING: dict[str, str]` (L45) — Canonical encoding → modality lookup table.
+- `record_joint_state(span, *, names, positions, velocities=None, efforts=None, position_limits=None, velocity_limits=None, effort_limits=None, stamp_ns=None) -> None` — Attach per-joint attributes to a `hal.read_state` span. (L97)
+- `record_action(span, *, next_row, dim=None, horizon=None, applied=None, gripper_position=None, gripper_force_n=None) -> None` — Attach commanded-action attributes to a `hal.send_action` span. (L145)
+- `record_ee_poses(span, ee_poses) -> None` — Flatten a `name → Pose6D` mapping onto a `world_state.snapshot` span. (L176)
+- `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L202)
+- `emit_sensor_frame_span(frame, *, sensor_name, age_ms, flip_180=False, tracer_name=…) -> None` — The shared producer of a dashboard `sensors.read_latest` span for one camera frame: optional flip of a display-only copy (the policy's actual frame is never mutated), then span + attrs + thumbnail. Both frame emitters route through this one function so they can't drift apart. (L248) `encode_frame_thumbnail` — but the span is opened first and the function returns as soon as `span.is_recording()` is false (no OTLP endpoint / dashboard off): the flip copy and the JPEG only feed the span, and at 30 Hz per camera they held ~25 % of the deploy runtime's GIL on an AGX Orin for nothing. The flip is passed to `encode_frame_thumbnail`; the span never copies a full-resolution flipped frame.
+- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L308)
+- `encode_frame_thumbnail(frame, *, flip_180=False) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L341) Raw frames are subsampled to the 320x240 box before any copy, and the optional 180° flip and BGR swap run on that small view: 0.6 ms per 1920x1200 frame on a Jetson AGX Thor instead of 8.2 ms, which at three cameras x 30 Hz had left a competing Python thread 34 % of its speed. JPEG input decodes in reduced-scale draft mode. Display-only (the dashboard tile); Foxglove reads the full-resolution ROS image topics.
+- `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` to the dashboard's modality label (`rgb`/`mono`/`depth`/`raw`/`unknown`); shared by `DeployRunner` and the world-state node so both produce identical labels. (L58)
+- `_MODALITY_BY_ENCODING: dict[str, str]` (L46) — Canonical encoding → modality lookup table.
 
 ### `python/observability/src/openral_observability/rclpy_spin.py`
 _Quiet teardown for rclpy executor spin threads._
@@ -971,6 +984,34 @@ _W3C TraceContext inject / extract for cross-process trace correlation._
 - `traceparent_env(carrier=None) -> dict[str, str]` — Env-var carrier (`OTEL_TRACEPARENT` + optional `OTEL_TRACESTATE`) for the active span, built from `inject_traceparent`; pass as `env=` to `subprocess` / `multiprocessing` so a worker joins the parent trace. `{}` when no valid span is in scope. (L153)
 - `attach_traceparent_from_env(env=None) -> object | None` — Worker-side counterpart: read `OTEL_TRACEPARENT` / `OTEL_TRACESTATE` from `env` (default `os.environ`) and `context.attach` the parent context; returns the detach token, or `None` when absent/empty. (L195)
 - `remote_parent_from_env(env=None)` [@contextmanager] — Scope `attach_traceparent_from_env` for a worker `main()`: attaches on enter, detaches on exit; yields the detach token (or `None` when no carrier present). (L238)
+
+### `python/observability/src/openral_observability/compliance.py`
+_Compliance records out as OTLP log records (issue #467)._
+
+- `const CLOCK_SOURCE_ENV: str = "OPENRAL_CLOCK_SOURCE"` (L53) — how the host clock is disciplined; default `monotonic_unsynced`.
+- `class ComplianceEmitter` (L83) — Stamps the `ComplianceRecord` envelope (uuid4 `record_id`, a fresh `stream_id` per emitter with a gap-free `seq`, `ts_ns`, `clock_source`, the active span's ids) and sends one OTLP log record per record: JSON body, `openral.record.*` attributes, record trace context. `logger_provider=` overrides the global provider; `log=` (a `ComplianceLog`) also writes each record to the on-robot log before it goes out (#469); `on_log_error=(record, error)` is called when that write fails (else `emit` raises). Thread-safe.
+  - `emit(kind, **fields) -> record` (L118) — Build, log, send and return one record; a wire `trace_id` is parsed (`trace_ids_from_wire`) and a malformed one dropped with a warning; a `FailureRecord` also counts `openral.failure.count`. A failed on-robot log write raises `ROSRuntimeError` after the record was still sent (its `seq` is spent, so `verify` shows the gap).
+- `send_record(logger, record) -> None` (L188) — One record as one OTLP log record (JSON body, `openral.record.*` attributes, trace context); `emit` and `compliance_log.ship` use it.
+- `software_inventory() -> list[SoftwareComponent]` (L240) — MR Annex III §1.1.9 identification: every `openral*` distribution, plus, with a ROS overlay sourced, `openral_safety_kernel` (binary SHA-256) and `openral_safety` (sources digest) marked `safety_relevant`; missing software is left out. The recorder records it on every activate.
+- `images_may_leave_host(endpoint=None) -> bool` (L307) — Camera thumbnails go only to the deployer's own network (loopback / private / link-local address, or a dotless host such as `otelcol`) unless `OPENRAL_TELEMETRY_IMAGE_CONSENT=1`; default endpoint is the one `configure_observability` installed; withholding logs `telemetry.images_withheld` once per endpoint. Checked before the JPEG encode in `emit_sensor_frame_span` and `DeployRunner`, and again in `record_sensor_frame_attrs`.
+
+### `python/observability/src/openral_observability/compliance_log.py`
+_The on-robot compliance log: append-only, hash-chained JSONL per writer and retention class (issue #469). `<root>/<writer>/<class>/<YYYY-MM-DD>.jsonl`, each line `{"prev_hash", "record"}`._
+
+- `const COMPLIANCE_DIR_ENV: str = "OPENRAL_COMPLIANCE_DIR"` (L66) — set → the log is on; the deploy launch always sets it on real hardware.
+- `const GENESIS: str` (L69) — `"0" * 64`, the `prev_hash` of a writer-class's first line.
+- `const RAW_TELEMETRY_DAYS: int = 90` (L72) — default keep for `telemetry_raw`, which has no floor.
+- `default_compliance_dir() -> Path` (L88) — `$OPENRAL_COMPLIANCE_DIR`, else `$XDG_STATE_HOME/openral/compliance`.
+- `class ComplianceLog` (L117) — One process's writer (`writer=` `recorder` / `runtime` / `cli`), so two processes never fork a chain; opening quarantines a torn tail to `<segment>.quarantine`.
+  - `append(record) -> None` (L173) — One `O_APPEND` write, fsync'd for the safety / trace / incident classes; `OSError` propagates.
+  - `from_env(*, writer) -> ComplianceLog | None` [@classmethod] (L149) — The log at `$OPENRAL_COMPLIANCE_DIR`, `None` when unset.
+- `records(root, cls) -> Iterator[ComplianceRecord]` (L213) — Every record of a class, all writers.
+- `verify(root, *, partial=False) -> list[str]` (L222) — `partial` (an `export` of some classes or days) skips first links and `seq` gaps. Broken `prev_hash` links, non-record lines, quarantined tails, and (unless retention pruned something) `seq` gaps per `stream_id`.
+- `hold(root, *, on) -> None` (L273) — Legal hold on the whole log (AI Act Art. 73(6)); `prunable` returns nothing while held.
+- `prunable(root, today, keep_days=None) -> list[Path]` (L283) — Segments past `max(RETENTION_FLOOR_DAYS, keep_days)`; a floor never shrinks.
+- `delete(segments) -> None` (L303) — Deletes and marks the class `pruned` for `verify`; the CLI records each as a `retention_delete` intervention.
+- `export(root, out, *, classes, since) -> int` (L315) — Whole segments to a `.tar.gz` the recipient can `verify`.
+- `ship(root, exporter, *, resource_attributes) -> int` (L337) — Sends unshipped records, one acknowledged export each, resuming from `ship.state`; stops at the first refusal.
 
 ### `python/observability/src/openral_observability/failure_bus.py`
 _Publisher helper + IDL-mirror constants for the namespaced `/openral/failure/{...}` bus._
@@ -1020,22 +1061,22 @@ _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `
 
 _**Event-log severity band** (distinct from the headline-card routing above). `_is_headline_span(name)` bands a span's Event Log row: ERROR status → `error`; a small allow-list of names/prefixes (`cli.command`, `rskill.execute`/`configure`/`activate`, `reasoner.tick`, `world.scene_objects`, `sim.run`, `detect.probe.*`) → `info`; everything else → `debug`. Deliberately an allow-list rather than a deny-list, so a new high-rate span stays quiet in the event log until promoted here instead of flooding it by default; every span is still indexed in full for `openral replay`._
 
-- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L233)
-  - `to_json(self) -> dict[str, Any]` (L259) — Return a plain-dict view suitable for JSON serialization.
-- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L385)
-  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L478)
-  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L512)
-  - `ingest_logs(self, payload) -> int` (L533) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
-  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L572)
-  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L750)
-  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L766)
-  - `set_estopped(self, value) -> None` (L577) — Force the e-stop latch flag from an authoritative operator action.
-  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L595)
-  - `list_traces(self) -> list[dict[str, Any]]` (L939) — Return one record per indexed trace_id, most-recent first.
-  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L957) — Return every indexed span for `trace_id` in chronological order, or `None`.
+- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L237)
+  - `to_json(self) -> dict[str, Any]` (L263) — Return a plain-dict view suitable for JSON serialization.
+- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L389)
+  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L482)
+  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L516)
+  - `ingest_logs(self, payload) -> int` (L537) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
+  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L580)
+  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L758)
+  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L774)
+  - `set_estopped(self, value) -> None` (L585) — Force the e-stop latch flag from an authoritative operator action.
+  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L603)
+  - `list_traces(self) -> list[dict[str, Any]]` (L953) — Return one record per indexed trace_id, most-recent first.
+  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L971) — Return every indexed span for `trace_id` in chronological order, or `None`.
 
-- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L648) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
-- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L705) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
+- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L656) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
+- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L713) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
 
 ### `python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py`
 _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `safety_status_subscriber.py` — one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only and **advisory**: it decides what an operator sees, never what the robot does._
@@ -1083,7 +1124,7 @@ _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` e
   - `stop(self) -> None` (L151) — Unregister the advertised service, cancel the browser, and close Zeroconf.
 
 ### `python/observability/src/openral_observability/dashboard/app.py`
-- `create_app(store: TelemetryStore | None = None) -> FastAPI` — Build the dashboard ASGI app: the SSE/state routes, the OTLP/HTTP receivers, operator write endpoints (`/api/prompt`, `/api/estop_reset`), a live MJPEG camera stream, mDNS robot discovery, and the guarded write-controls (`/api/skill/execute`, `/api/param/set`, both OFF by default). A middleware refuses (403, audit-logged) any non-GET/HEAD/OPTIONS request whose `Origin` host:port differs from `Host` (CSRF; no `Origin` = non-browser client, allowed; `Origin: null` refused) — DNS rebinding is same-origin and stays open (#44). `/api/param/set` matches `_SAFETY_PARAM_DENYLIST` (now incl. `deadline`, `timeout`) against `"<node> <name>"`, so every param on a safety node is refused. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413; corrupt gzip 400); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413). (L864)
+- `create_app(store: TelemetryStore | None = None) -> FastAPI` — Build the dashboard ASGI app: the SSE/state routes, the OTLP/HTTP receivers, operator write endpoints (`/api/prompt`, `/api/estop_reset`), a live MJPEG camera stream, mDNS robot discovery, and the guarded write-controls (`/api/skill/execute`, `/api/param/set`, both OFF by default). A middleware refuses (403, audit-logged) any non-GET/HEAD/OPTIONS request whose `Origin` host:port differs from `Host` (CSRF; no `Origin` = non-browser client, allowed; `Origin: null` refused) — DNS rebinding is same-origin and stays open (#44). `/api/param/set` matches `_SAFETY_PARAM_DENYLIST` (now incl. `deadline`, `timeout`) against `"<node> <name>"`, so every param on a safety node is refused. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413; corrupt gzip 400); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413). (L902)
 
 ### `python/observability/src/openral_observability/dashboard/vad_assets.py`
 - `class PinnedAsset(NamedTuple)` (L52) — `url: str`, `sha256: str`, `size: int` for one pinned binary asset.
@@ -1111,7 +1152,7 @@ _The `--inprocess` inverse: spawn `openral dashboard` as a child process and att
 ### `python/observability/src/openral_observability/dashboard/store.py` — F7 trace index additions
 _Bounded per-trace_id span index for query-time bag↔OTel join._
 
-- `class _IndexedSpan` (L271) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
+- `class _IndexedSpan` (L275) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
 - `TelemetryStore.list_traces() -> list[dict]` — One row per indexed trace_id (`trace_id`, `span_count`, `last_seen_unix`), most-recent first. Backs `GET /api/traces`.
 - `TelemetryStore.lookup_trace(trace_id: str) -> list[dict] | None` — Every indexed span for `trace_id`, sorted ascending by `start_unix_ns`. `None` when the trace is not (or no longer) in the bounded index. Backs `GET /api/spans/{trace_id}`.
 - `_TRACE_INDEX_MAX_TRACES = 64` / `_TRACE_INDEX_MAX_SPANS = 2048` — Memory caps. Older trace_ids evict FIFO on insertion.

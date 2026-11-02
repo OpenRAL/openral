@@ -348,6 +348,7 @@ RUN bash -lc 'set -eo pipefail \
                           openral_safety_watchdog \
                           openral_safety_kernel \
                           openral_human_estop \
+                          openral_compliance \
                           openral_foxglove_bringup \
                           openral_rskill_ros \
                           openral_octomap_bridge \

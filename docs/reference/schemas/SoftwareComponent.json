@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "description": "One installed software component, for MR Annex III \u00a71.1.9 identification.\n\nAttributes:\n    name: Component name (package, rSkill id, model id, firmware).\n    version: Version or revision string as installed.\n    sha256: Content digest, when the component is a file or weight set.\n    safety_relevant: True for software necessary for the machine to\n        operate safely (the safety kernel, its envelope, safety rSkills).\n    signature_ok: Signature verification result; ``None`` until signing\n        exists (CLAUDE.md \u00a73 rSkill provenance).",
+  "properties": {
+    "name": {
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    },
+    "sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sha256"
+    },
+    "safety_relevant": {
+      "default": false,
+      "title": "Safety Relevant",
+      "type": "boolean"
+    },
+    "signature_ok": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Signature Ok"
+    }
+  },
+  "required": [
+    "name",
+    "version"
+  ],
+  "title": "SoftwareComponent",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

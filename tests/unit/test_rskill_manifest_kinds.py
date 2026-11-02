@@ -112,6 +112,15 @@ def test_vla_kind_happy_path() -> None:
     assert m.ros_integration is None
 
 
+def test_wam_kind_follows_vla_rules() -> None:
+    """A WAM is a policy (``POLICY_KINDS``): same required/forbidden fields as a VLA."""
+    assert RSkillManifest(**_vla_kwargs(kind="wam")).kind == "wam"
+    with pytest.raises(ValidationError, match="kind='wam' requires `model_family`"):
+        RSkillManifest(**_vla_kwargs(kind="wam", model_family=None))
+    with pytest.raises(ValidationError, match="ros_integration"):
+        RSkillManifest(**_vla_kwargs(kind="wam", ros_integration=_VALID_ROS_INTEGRATION))
+
+
 # ── embodiment_tags: kind-aware presence ──────────────────────────────────────
 
 

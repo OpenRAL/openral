@@ -1131,3 +1131,15 @@ def test_sharded_snapshot_dir_resolves_to_itself(tmp_path: Path) -> None:
     repo_id, revision = resolve_rskill_to_hf_with_revision(str(snapshot))
     assert repo_id == str(snapshot.resolve())
     assert revision is None
+
+
+def test_resolve_rskill_snapshot_with_a_torch_checkpoint_resolves_to_itself(tmp_path: Path) -> None:
+    """A snapshot bundling a ``.pt`` (Cosmos Policy style) is used in place, not re-fetched."""
+    from openral_rskill.loader import resolve_rskill_to_hf_with_revision
+
+    manifest_src = Path(__file__).resolve().parents[2] / "rskills" / "act-libero" / "rskill.yaml"
+    snapshot = tmp_path / "snapshots" / "torch"
+    snapshot.mkdir(parents=True)
+    (snapshot / "rskill.yaml").write_text(manifest_src.read_text(encoding="utf-8"))
+    (snapshot / "policy.pt").write_bytes(b"")
+    assert resolve_rskill_to_hf_with_revision(str(snapshot)) == (str(snapshot.resolve()), None)

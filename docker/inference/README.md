@@ -77,6 +77,7 @@ back to (or fails on) CPU.
   - `openral_prompt_router` — prompt fan-in
   - `openral_safety`, `openral_safety_watchdog` — safety envelope + deadman watchdog
   - `openral_human_estop` — human e-stop forwarder
+  - `openral_compliance` — compliance recorder (failure bus + safety stops → OTLP log records)
   - `openral_foxglove_bringup` — read-only allowlists imported by the rskill launch
   - `openral_rskill_ros` — the `ExecuteRskill` action server
   - `openral_octomap_bridge` — octree → world-voxels bridge
