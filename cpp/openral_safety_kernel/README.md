@@ -1217,7 +1217,7 @@ both read as within bound, the measured pose included; needs a fresh measured ve
 non-jaw joint at its hold anchor — instead of an E-stop, no latch. The anchor is the last command the kernel published for that joint
 at its row due now (an accepted chunk's or a hold's rows, row s due s periods after it; the last row due at or before now, never a
 later one — mid-chunk the arm tracks that row, not the last; up to `kWorkspaceHoldMaxRows` rows kept; recorded whoever owns the
-workspace rules; a refused chunk or another slot's brake does not forget it, every other reset does), while at most
+workspace rules; a refused chunk or another slot's brake does not forget it, every other reset does, and so does an accepted arm chunk that records none — velocity, Cartesian, torque), while at most
 `kWorkspaceHoldFreshPeriods` periods past its last row's due time, leading the measured hand by at most
 the lead bound and passing the relaxed check; else the measured value (WARN `anchor=command|measured`, and `anchor_why=` naming why it fell back: `no_command`, `early`, `stale`, `past_rows`, `no_period`, `lead`, `collides`, `at_measured` or `uncommanded`; `-` when anchored). Why (pro#51): a
 position-controlled arm under gravity rests below its command, so a hold at the measured pose commands it down and each next hold

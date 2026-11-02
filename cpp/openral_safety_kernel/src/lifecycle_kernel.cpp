@@ -1354,6 +1354,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     const bool geom_enabled =
         self_collision_enabled_ || world_voxel_enabled_ || attached_collision_enabled_;
     const auto mode = static_cast<ControlMode>(view.control_mode);
+    // pro#51: whether this candidate recorded the brake's hold anchor (an accepted position
+    // chunk or a brake). An arm chunk published without one forgets it (below).
+    bool hold_recorded = false;
     // Smallest clearance ABOVE its own gate margin anywhere in this chunk's
     // sweep (#188). Slack, not raw distance: every check carries a different
     // margin and predictive steps inflate theirs with look-ahead depth, so
@@ -2645,6 +2648,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // brake after free motion held at the sagged measured pose).
         if (view.horizon > 0) {
           record_workspace_hold(view.flat_data, view.horizon, robot_ndof, msg->joint_names.empty());
+          hold_recorded = true;
         }
         // ADR-0121: tell the provider which command was accepted (its chain's next row 0).
         if (provider_ != nullptr && view.horizon > 0) {
@@ -2775,6 +2779,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     // nothing here measures where the BASE is going, and slowing it for an
     // arm-side clearance would apply the number to the wrong body (base's
     // own proximity gate is Nav2's collision monitor, #186).
+    // #480 review: an arm chunk published without recording a hold anchor (velocity,
+    // Cartesian, torque, or a position chunk outside the geometry checks) moves the arm off
+    // the recorded command, so a later brake must not hold (move the arm back) there: forget
+    // it. Gripper / dex-hand / composite chunks command no arm joint and keep it.
+    const bool arm_free_mode =
+        mode == ControlMode::kGripperBinary || mode == ControlMode::kGripperPosition ||
+        mode == ControlMode::kDexHandJoint || mode == ControlMode::kCompositeMode;
+    if (!hold_recorded && !arm_free_mode) {
+      std::fill(workspace_hold_set_.begin(), workspace_hold_set_.end(), std::uint8_t{0});
+    }
     const bool rate_shaped = mode == ControlMode::kJointVelocity ||
                              mode == ControlMode::kCartesianDelta ||
                              mode == ControlMode::kCartesianTwist;

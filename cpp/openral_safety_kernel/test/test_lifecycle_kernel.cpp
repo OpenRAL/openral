@@ -7282,6 +7282,27 @@ TEST_F(LifecycleKernelTest, ARefusedChunkKeepsTheHoldAnchor) {
   EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "held at the accepted command: " << logs.joined();
 }
 
+// #480 review: an accepted chunk that records no anchor (here JOINT_VELOCITY) is published,
+// so the robot no longer tracks the earlier position command: the next brake must not hold
+// (i.e. move the arm back) there. It holds at the measured pose, as before pro#51.
+TEST_F(LifecycleKernelTest, AnAcceptedNonPositionChunkForgetsTheHoldAnchor) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_mode_switch");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.6))) << logs.joined();
+  openral_msgs::msg::ActionChunk vel = grasp_chunk(0.0);
+  vel.control_mode = 1;  // JOINT_VELOCITY, at rest
+  ASSERT_TRUE(rig.send_once(&b, 0.52, vel)) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, 0.52, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.52) << "held at measured: " << logs.joined();
+  EXPECT_GE(logs.count("anchor=measured anchor_why=no_command"), 1U) << logs.joined();
+}
+
 // pro#51: with the #349 rule in the exemption provider (the in-tree rule off, the deploy's
 // configuration) accepted commands are the anchor too: unrecorded, every brake after free
 // motion held at the sagged measured pose.

@@ -378,7 +378,8 @@ command (OpenArm joint 4 ≈ 0.07–0.1 rad), so a hold at the measured pose com
 hold re-anchored lower, and the twin dropped a lifted carton 12–14 cm back into the tote while the
 policy was swinging it to the shelf. The anchor is recorded on every accepted chunk whoever owns the
 rules (the exemption provider's brake never recorded one), survives a refused chunk and another
-slot's brake (neither changes what the robot tracks), and outlives the speed chain's 2-period window
+slot's brake (neither changes what the robot tracks) but not an accepted velocity, Cartesian or torque
+chunk (which does), and outlives the speed chain's 2-period window
 (one slot tick in six carries no candidate on the twin). WARN `safety.workspace_brake` ≤ 1 Hz with
 a running count. Why: across 9 place batches the most common remaining stop was contact at 0.35–0.41
 m/s while 809 tolerated contact samples had p99 0.26 m/s, and the next was a lead of 80–96 mm while
