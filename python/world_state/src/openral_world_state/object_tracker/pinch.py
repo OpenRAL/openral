@@ -219,11 +219,11 @@ class HandModel:
     def fallback_in_link(self, jaw: float, opening: float | None = None) -> PinchVolume:
         """The ``PINCH_FALLBACK`` payload (OT-10, bounded), in the attach link.
 
-        Along the closing axis: ``J_h`` at ``opening``, the jaw measured just before
-        closure (the held width there is at most that gap); the whole stroke when no
-        opening was seen. Along the approach and the pad width: the gripper's full stroke
-        (the pad gap at the manifest's open end), from ``J_h``'s centre at ``jaw``. Its
-        back face stays on or in front of the palm plane.
+        Along the closing axis: ``J_h`` at ``opening``, the jaw the grasping closure
+        started from (``GraspBinder.observe_jaw``; the held width there is at most that
+        gap); the whole stroke when no opening was seen. Along the approach and the pad
+        width: the gripper's full stroke (the pad gap at the manifest's open end), from
+        ``J_h``'s centre at ``jaw``. Its back face stays on or in front of the palm plane.
         """
         j = self.pinch_in_link(jaw)
         gap = self.pinch_in_link(self.open_end if opening is None else opening)

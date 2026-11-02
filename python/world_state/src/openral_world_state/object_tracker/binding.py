@@ -430,7 +430,10 @@ class GraspBinder:
         self.held: Binding | None = None
         self._shape: list[AttachedCollisionPrimitive] = []  # object frame, revision 0
         self._theta = 0.0
-        self._opening: float | None = None  # the most open jaw since the last ATTACH
+        # The jaw the current closing stroke started from (its most open reading), and the
+        # most closed one since: a reopening past the release gap starts a new stroke.
+        self._opening: float | None = None
+        self._closed_since: float | None = None
         # Untracked growth: attach-frame cell key -> its grid-frame centre when first seen.
         self._sighted: dict[tuple[int, int, int], NDArray[np.float64]] = {}
         # The world at the hold's first growth call: occupied lattice cells that were neither
@@ -438,12 +441,30 @@ class GraspBinder:
         self._static: set[tuple[int, ...]] | None = None
 
     def observe_jaw(self, jaw: float) -> None:
-        """Fold in a measured jaw; the most open one bounds the next fallback's width."""
-        if math.isfinite(jaw) and (
-            self._opening is None
-            or abs(jaw - self.hand.closed) > abs(self._opening - self.hand.closed)
-        ):
-            self._opening = jaw
+        """Fold in a measured jaw; the opening of the last closing stroke bounds the fallback.
+
+        The held part passed between the pads as they closed from that opening, so it is at
+        most that wide. Not the most open jaw of the whole hold: a regrasp that closes from
+        part way would otherwise take a full-stroke width from an earlier opening (Spark
+        bkA_on_rs_10, 2026-11-02: 21 cm across a 5 cm carton, against the torso). A
+        reopening counts as a new stroke only past half the manifest's ``stall_gap`` (the
+        jaw's release hysteresis), so reading jitter never narrows the bound.
+        """
+        if not math.isfinite(jaw):
+            return
+        cal = self.hand.joint.closure_calibration
+        tol = cal.stall_gap / 2.0 if cal is not None else 0.0
+        d = abs(jaw - self.hand.closed)
+        if self._opening is None or self._closed_since is None:
+            self._opening, self._closed_since = jaw, d
+            return
+        peak = abs(self._opening - self.hand.closed)
+        if d > peak:
+            self._opening, self._closed_since = jaw, d  # still opening
+        elif self._closed_since < peak - tol and d > self._closed_since + tol:
+            self._opening, self._closed_since = jaw, d  # closed, then reopened: a new stroke
+        else:
+            self._closed_since = min(self._closed_since, d)
 
     # -- geometry -------------------------------------------------------------------
     def pinch_in_frame(self, positions: Mapping[str, float]) -> Box:
@@ -547,6 +568,7 @@ class GraspBinder:
             log.warning(event, hand=self.hand.joint.name, candidates=ids, jaw=jaw,
                         pinch=[round(float(v), 3) for v in centre], missed=missed)  # fmt: skip
         self._opening = None
+        self._closed_since = None
         self._sighted, self._static = {}, None
         self.held = binding
         log.info(

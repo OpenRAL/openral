@@ -360,6 +360,36 @@ def test_the_untracked_fallback_bounds_the_opening_and_the_stroke(robot: str) ->
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))
+def test_the_fallback_width_is_the_closing_stroke_that_grasped(robot: str) -> None:
+    """Spark bkA_on_rs_10 (2026-11-02): a regrasp closed from 0.47 onto the carton, but the
+    jaw had stood fully open earlier in the hold, so the fallback took the whole stroke
+    (21 cm across a 5 cm carton) and met the torso. The width is the opening the grasping
+    closure started from; jitter under the jaw's release gap never starts a new stroke."""
+    binder, q, _ = arm_at_hold(robot)
+    hand = binder.hand
+    joint = hand.joint.name
+    cal = hand.joint.closure_calibration
+    assert cal is not None
+    tol = cal.stall_gap / 2.0
+    sign = 1.0 if hand.open_end > hand.closed else -1.0
+
+    def at(frac: float) -> float:
+        return q[joint] + frac * (hand.open_end - q[joint])
+
+    # Wide open, closed onto nothing, reopened only part way, then closed onto the object
+    # with a reading that ticks back open by less than the release gap on the way.
+    for jaw in (at(1.0), at(0.2), at(0.5), at(0.3), at(0.3) + sign * 0.4 * tol, q[joint]):
+        binder.observe_jaw(jaw)
+    b = binder.on_attach(DictStore([]), q, stamp_ns=10)
+    assert b.outcome is BindOutcome.UNTRACKED
+    (box,) = _payload_boxes(binder, q, b)
+    t = hand.t_frame_from_attach(binder.frame_id, q)
+    axes = t[:3, :3] @ hand.axes
+    width = float(((_corners(box) - box[0]) @ axes)[:, 0].max())
+    assert width == pytest.approx(float(hand.pinch_in_link(at(0.5)).half[0]), abs=1e-6)
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
 def test_a_bound_payload_never_reaches_behind_the_palm(robot: str) -> None:
     """DROID r2dr_on1: a 17 cm banana's containing box, bound at the pinch volume, reached the
     Franka's wrist (payload x panda_link7). Nothing held lies behind the palm, so the bound
