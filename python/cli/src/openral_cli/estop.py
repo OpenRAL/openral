@@ -21,6 +21,7 @@ sub-second when ROS is not sourced.
 
 from __future__ import annotations
 
+import os
 import time
 
 import typer
@@ -28,6 +29,7 @@ import typer
 __all__ = ["CLEARED_TOPIC", "RESET_SERVICE", "estop_app"]
 
 RESET_SERVICE = "/openral/estop_reset"
+OPERATOR_ACTION_TOPIC = "/openral/operator_action"
 CLEARED_TOPIC = "/openral/estop_cleared"
 
 estop_app = typer.Typer(
@@ -42,6 +44,13 @@ def estop_reset_command(
     service_timeout_s: float = typer.Option(
         15.0,
         help="Seconds to wait for the kernel's reset service to appear and answer.",
+    ),
+    operator: str = typer.Option(
+        "",
+        help=(
+            "Who is resetting, recorded pseudonymously (HMAC under $OPENRAL_ACTOR_KEY) in the "
+            "compliance log; the name itself is never stored or sent."
+        ),
     ),
     discovery_wait_s: float = typer.Option(
         5.0,
@@ -81,6 +90,7 @@ def estop_reset_command(
     rclpy.init()
     try:
         node = rclpy.create_node("openral_cli_estop_reset")
+        _announce_reset(node, operator, discovery_wait_s)
         client = node.create_client(Trigger, RESET_SERVICE)
         if not client.wait_for_service(timeout_sec=service_timeout_s):
             typer.echo(
@@ -142,3 +152,44 @@ def estop_reset_command(
         node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+def _announce_reset(node: object, operator: str, discovery_wait_s: float) -> None:
+    """Announce who is resetting on ``/openral/operator_action`` before the reset happens.
+
+    The compliance recorder records the reset either way (it sees the latch clear); this only
+    says who. Without ``$OPENRAL_ACTOR_KEY`` the operator stays anonymous: a name is never sent.
+    """
+    import rclpy  # noqa: PLC0415  # reason: heavy ROS dep deferred
+    from openral_core import (  # noqa: PLC0415  # reason: lazy CLI import
+        ACTOR_KEY_ENV,
+        pseudonymous_actor_id,
+    )
+    from openral_msgs.msg import OperatorAction  # noqa: PLC0415  # reason: heavy ROS dep deferred
+    from rclpy.qos import (  # noqa: PLC0415  # reason: heavy ROS dep deferred
+        QoSDurabilityPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    key = os.environ.get(ACTOR_KEY_ENV, "")
+    if operator and not key:
+        typer.echo(
+            f"openral estop reset: ${ACTOR_KEY_ENV} unset, so --operator is not recorded.",
+            err=True,
+        )
+    qos = QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+        depth=10,
+    )
+    pub = node.create_publisher(OperatorAction, OPERATOR_ACTION_TOPIC, qos)  # type: ignore[attr-defined]
+    deadline = time.monotonic() + min(discovery_wait_s, 2.0)
+    while time.monotonic() < deadline and pub.get_subscription_count() == 0:
+        rclpy.spin_once(node, timeout_sec=0.05)
+    msg = OperatorAction()
+    msg.header.stamp = node.get_clock().now().to_msg()  # type: ignore[attr-defined]
+    msg.action = OperatorAction.ACTION_ESTOP_RESET
+    msg.channel_label = "cli"
+    msg.actor_id = pseudonymous_actor_id(operator, key) if operator and key else ""
+    pub.publish(msg)

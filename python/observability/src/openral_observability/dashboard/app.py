@@ -44,6 +44,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from google.protobuf.message import DecodeError
+from openral_core import ACTOR_KEY_ENV, pseudonymous_actor_id
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
     ExportLogsServiceRequest,
     ExportLogsServiceResponse,
@@ -382,7 +383,42 @@ async def _prompt_response(text: str) -> JSONResponse:
     return JSONResponse({"status": "ok", "stdout": stdout, "stderr": stderr})
 
 
-async def _estop_reset_response(estop: Any = None) -> JSONResponse:
+async def _announce_operator_action(action: str, operator_ip: str, detail: str = "") -> None:
+    """Announce a dashboard action on ``/openral/operator_action`` (issue #468), best effort.
+
+    The compliance recorder records the effect either way (a reset is the latch clearing);
+    this says it came through the dashboard and, when the deployer set ``$OPENRAL_ACTOR_KEY``,
+    from which client (the IP, pseudonymised; never sent in clear).
+    """
+    ros2 = shutil.which("ros2")
+    if ros2 is None:
+        return
+    key = os.environ.get(ACTOR_KEY_ENV, "")
+    actor_id = pseudonymous_actor_id(operator_ip, key) if key and operator_ip else ""
+    payload = json.dumps(
+        {"action": action, "channel_label": "dashboard", "actor_id": actor_id, "detail": detail}
+    )
+    proc = await asyncio.create_subprocess_exec(
+        ros2,
+        "topic",
+        "pub",
+        "--once",
+        "--wait-matching-subscriptions",
+        "1",
+        "/openral/operator_action",
+        "openral_msgs/msg/OperatorAction",
+        payload,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
+    except TimeoutError:  # no recorder up: the action still happens, unattributed
+        proc.kill()
+        await proc.wait()
+
+
+async def _estop_reset_response(estop: Any = None, operator_ip: str = "") -> JSONResponse:
     """Clear a latched safety e-stop via the kernel's ``/openral/estop_reset``.
 
     The C++ safety kernel latches on a violation and drops every candidate chunk
@@ -401,6 +437,7 @@ async def _estop_reset_response(estop: Any = None) -> JSONResponse:
             {"error": "`ros2` not on PATH; source the workspace install first"},
             status_code=503,
         )
+    await _announce_operator_action("estop_reset", operator_ip)
     proc = await asyncio.create_subprocess_exec(
         ros2,
         "service",
@@ -835,6 +872,7 @@ async def _param_set_response(node: str, name: str, value: str, operator_ip: str
         name=name,
         value=value,
     )
+    await _announce_operator_action("param_set", operator_ip, f"{node}:{name}")
     proc = await asyncio.create_subprocess_exec(
         ros2,
         "param",
@@ -1071,7 +1109,10 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
     async def post_estop_reset(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         # Operator recovery from a latched safety e-stop. Body lives in a
         # module-level helper to keep create_app() under the statement cap.
-        resp = await _estop_reset_response(getattr(request.app.state, "estop", None))
+        resp = await _estop_reset_response(
+            getattr(request.app.state, "estop", None),
+            request.client.host if request.client else "",
+        )
         # Clear the latch flag only when the kernel actually accepted the reset
         # (200); a cooldown rejection (409) leaves the robot latched, so the
         # Reset control must stay.

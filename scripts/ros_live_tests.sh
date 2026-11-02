@@ -231,6 +231,7 @@ ISOLATED_TARGETS=(
     packages/openral_hal_node/test/test_real_hal_spans.py
     packages/openral_human_estop/test/test_forwarder_node.py
     packages/openral_human_estop/test/test_forwarder_node_sigint_shape.py
+    packages/openral_compliance/test/test_recorder_node.py
     packages/openral_nav2_bringup/test/test_nav2_launch.py
     packages/openral_nav2_bringup/test/test_payload_scan_filter.py
     packages/openral_perception_ros/test/test_ros_image_detector_node_sigint_shape.py

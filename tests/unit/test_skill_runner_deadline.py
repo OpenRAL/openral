@@ -107,6 +107,8 @@ def test_lapsed_budget_reports_true_and_records_true_elapsed(budget: Any) -> Non
     (45 s) — quoting the limit back would hide exactly the number that made
     this bug visible.
     """
+    # A lapsed budget records its failure evidence with `openral_msgs`'s ExecuteRskill.
+    pytest.importorskip("openral_msgs")
     assert budget.deadline_lapsed(_wall_budget(45.0, elapsed_s=144.5), 3) is True
 
     miss = budget._last_deadline_miss

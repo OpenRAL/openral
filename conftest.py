@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
 import pathlib
 import sys
 import warnings
@@ -64,6 +65,11 @@ structlog.configure(
     # Capture fixtures replace processors; cached loggers would retain an earlier pipeline.
     cache_logger_on_first_use=False,
 )
+
+# A hardware deploy refuses to start without the unit's serial (issue #467,
+# ``openral_core.resolve_unit_identity``). The test host is one unit; tests that
+# exercise the refusal delete the variable themselves.
+os.environ.setdefault("OPENRAL_UNIT_SERIAL", "TEST-UNIT-0001")
 
 
 # ── ROS 2 `launch` swaps the global logger class ────────────────────────────

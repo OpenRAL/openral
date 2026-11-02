@@ -1,0 +1,159 @@
+{
+  "additionalProperties": false,
+  "description": "One safety-kernel verdict on an action chunk.\n\nEvery ``scale`` and ``drop`` is recorded; ``pass`` verdicts are sampled at 1 Hz.\n\nAttributes:\n    kind: Discriminator (always ``\"safety_decision\"``).\n    decision: The verdict.\n    check_name: The check that decided (``\"collision\"``, ``\"workspace\"``\u2026).\n    rskill_id: The rSkill whose chunk was checked.\n    chunk_index: Index of the checked chunk within the goal.\n    inputs_digest: SHA-256 hex over the verdict's inputs, when recorded.\n\nExample:\n    >>> SafetyDecisionRecord(\n    ...     record_id=\"0\" * 32,\n    ...     seq=3,\n    ...     ts_ns=0,\n    ...     clock_source=\"ptp\",\n    ...     decision=\"drop\",\n    ...     check_name=\"collision\",\n    ... ).decision\n    'drop'",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "record_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Record Id",
+      "type": "string"
+    },
+    "stream_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stream Id"
+    },
+    "seq": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts_ns": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Ns",
+      "type": "integer"
+    },
+    "clock_source": {
+      "enum": [
+        "ptp",
+        "ntp",
+        "monotonic_unsynced"
+      ],
+      "title": "Clock Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Span Id"
+    },
+    "parent_record_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Record Id"
+    },
+    "kind": {
+      "const": "safety_decision",
+      "default": "safety_decision",
+      "title": "Kind",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "pass",
+        "scale",
+        "drop"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "check_name": {
+      "minLength": 1,
+      "title": "Check Name",
+      "type": "string"
+    },
+    "rskill_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rskill Id"
+    },
+    "chunk_index": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chunk Index"
+    },
+    "inputs_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inputs Digest"
+    }
+  },
+  "required": [
+    "record_id",
+    "seq",
+    "ts_ns",
+    "clock_source",
+    "decision",
+    "check_name"
+  ],
+  "title": "SafetyDecisionRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

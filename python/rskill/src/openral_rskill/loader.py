@@ -1323,10 +1323,16 @@ def resolve_rskill_to_hf_with_revision(uri: str) -> tuple[str, str | None]:
     # because ``openral rskill install`` never writes to that cache. In-tree
     # ``rskills/<name>/`` directories ship no weights, so they keep following
     # their ``weights_uri`` as before.
+    # A bundled torch checkpoint (``*.pt`` / ``*.pth`` / ``*.ckpt``, e.g. Cosmos Policy)
+    # counts too. Bare ``*.safetensors`` does not: in-tree rSkills ship processor
+    # ``*.safetensors`` files and must keep following their ``weights_uri``.
     snapshot = Path(uri)
-    if snapshot.is_dir() and any(
-        (snapshot / name).is_file()
-        for name in ("model.safetensors", "model.safetensors.index.json")
+    if snapshot.is_dir() and (
+        any(
+            (snapshot / name).is_file()
+            for name in ("model.safetensors", "model.safetensors.index.json")
+        )
+        or any(p.suffix in {".pt", ".pth", ".ckpt"} for p in snapshot.iterdir() if p.is_file())
     ):
         return str(snapshot.resolve()), None
     weights = manifest.weights_uri

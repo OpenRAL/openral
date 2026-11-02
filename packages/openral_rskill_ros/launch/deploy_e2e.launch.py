@@ -81,12 +81,14 @@ from openral_core import (
     ROBOT_UNIT_ENV,
     CameraTopicKind,
     DeployRuntime,
+    UnitIdentity,
     apply_sensor_overlays,
     camera_topic,
     deploy_cloud_topic,
     merge_deploy_sensors,
     publishing_sensors,
     resolve_sensor_overlays,
+    resolve_unit_identity,
 )
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
@@ -164,7 +166,7 @@ def _resolve_git_sha() -> str:
     return "unknown"
 
 
-def _run_resource_attrs(hal_mode: str) -> str:
+def _run_resource_attrs(hal_mode: str, identity: UnitIdentity) -> str:
     """Build the ``OTEL_RESOURCE_ATTRIBUTES`` value for every launched node.
 
     The dashboard's Identity card reads ``openral.run.{id,mode,git_sha}`` from
@@ -173,7 +175,9 @@ def _run_resource_attrs(hal_mode: str) -> str:
     SDK's ``OTELResourceDetector`` fold them into each node's Resource
     automatically (``Resource.create`` merges ``OTEL_RESOURCE_ATTRIBUTES``).
     ``hal_mode=="real"`` is the ``deploy run`` hardware path; everything else
-    (``deploy sim``) is a simulation run.
+    (``deploy sim``) is a simulation run. The unit identity (serial / org / site, issue
+    #467) rides the same way, so every record names the machine it came from; the C++
+    kernel's ``Resource::Create`` merges this env var too.
     """
     run_mode = "hardware" if hal_mode == "real" else "sim"
     attrs = {
@@ -181,6 +185,13 @@ def _run_resource_attrs(hal_mode: str) -> str:
         "openral.run.mode": run_mode,
         "openral.run.git_sha": _resolve_git_sha(),
     }
+    for key, value in (
+        ("openral.unit.serial", identity.serial),
+        ("openral.org.id", identity.org_id),
+        ("openral.site.id", identity.site_id),
+    ):
+        if value is not None:
+            attrs[key] = value
     return ",".join(f"{k}={v}" for k, v in attrs.items())
 
 
@@ -2629,6 +2640,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # deploy` resolved identically before launching): per-host bindings and per-unit mount
     # calibration replace the manifest's nominal values for every consumer below.
     unit_overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
+    # The machine's identity for every record it emits; a hardware deploy without a
+    # serial is refused here, before any node starts (issue #467).
+    unit_identity = resolve_unit_identity(robot_yaml, scene_unit, required=hal_mode == "real")
     description = description.model_copy(
         update={"sensors": apply_sensor_overlays(description.sensors, unit_overlays)}
     )
@@ -2984,8 +2998,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # git sha populate regardless of which span family the operator is
     # looking at.
     otel_env: dict[str, str] = {
-        "OTEL_RESOURCE_ATTRIBUTES": _run_resource_attrs(hal_mode),
+        "OTEL_RESOURCE_ATTRIBUTES": _run_resource_attrs(hal_mode, unit_identity),
     }
+    # The on-robot compliance log (issue #469): always on for real hardware (the machine
+    # keeps its own evidence, network or not), opt-in for sim via $OPENRAL_COMPLIANCE_DIR.
+    from openral_observability.compliance_log import COMPLIANCE_DIR_ENV, default_compliance_dir
+
+    if hal_mode == "real" or os.environ.get(COMPLIANCE_DIR_ENV):
+        otel_env[COMPLIANCE_DIR_ENV] = str(default_compliance_dir())
     # ``--no-dashboard`` is a true headless mode: don't forward an OTLP
     # endpoint nobody is listening on. ``openral_observability._sdk``
     # treats an absent ``OTEL_EXPORTER_OTLP_ENDPOINT`` as a no-op and
@@ -3096,6 +3116,25 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         name="openral_human_estop_forwarder",
         namespace="",
         parameters=[{"use_sim_time": use_sim_time}],
+        additional_env=otel_env,
+        output="screen",
+    )
+    # Compliance recorder (issue #467): the failure bus and safety-status latches as
+    # typed compliance records over OTLP. Listens only, so it is not on the actuation
+    # path and does not gate the graph.
+    compliance_recorder = LifecycleNode(
+        package="openral_compliance",
+        executable="recorder_node.py",
+        name="openral_compliance_recorder",
+        namespace="",
+        parameters=[
+            {
+                "run_mode": "hardware" if hal_mode == "real" else "sim",
+                # Real hardware: deactivating the recorder stops the machine (Entry 070).
+                "stop_when_inactive": hal_mode == "real",
+                "use_sim_time": use_sim_time,
+            }
+        ],
         additional_env=otel_env,
         output="screen",
     )
@@ -3624,7 +3663,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     )
     autostart.append(deadman_autostart)
 
-    def _shutdown_unless_clean(what: str) -> object:
+    def _shutdown_unless_clean(
+        what: str,
+        why: str = (
+            "This graph has no independent E-stop source, so it is shutting down instead "
+            "of running unprotected (CLAUDE.md section 3)."
+        ),
+    ) -> object:
         """OnProcessExit callback: a non-zero exit of ``what`` ends the graph."""
 
         def _on_exit(event: object, _context: object) -> list[LaunchDescriptionEntity]:
@@ -3632,13 +3677,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             if returncode == 0:
                 return []
             return [
-                LogInfo(
-                    msg=(
-                        f"FATAL: {what} exited {returncode}. This graph has no "
-                        "independent E-stop source, so it is shutting down instead "
-                        "of running unprotected (CLAUDE.md section 3)."
-                    )
-                ),
+                LogInfo(msg=f"FATAL: {what} exited {returncode}. {why}"),
                 Shutdown(reason=f"{what} exited {returncode}"),
             ]
 
@@ -3682,6 +3721,62 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="log",
         )
     )
+    # The compliance recorder (issue #467/#468). On real hardware it is REQUIRED, like the
+    # deadman: a machine whose recorder cannot arm, or dies, keeps no evidence of its stops
+    # and resets and cannot latch when its log fails, so the graph refuses to run without it
+    # (hazard-log Entry 070). In sim it is autostarted but not gated.
+    recorder_required = hal_mode == "real"
+    recorder_autostart = ExecuteProcess(
+        cmd=[
+            sys.executable,
+            _kernel_autostart_path,
+            "--node",
+            "/openral_compliance_recorder",
+            "--target",
+            "active",
+            *(["--required"] if recorder_required else []),
+            "--service-timeout-s",
+            "60.0",
+            "--transition-timeout-s",
+            "30.0",
+        ],
+        output="log",
+    )
+    autostart.append(recorder_autostart)
+    if recorder_required:
+        no_recorder = (
+            "A real deploy without its compliance recorder keeps no evidence of its stops and "
+            "resets, so it is shutting down (hazard-log Entry 070)."
+        )
+        autostart.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=recorder_autostart,
+                    on_exit=_shutdown_unless_clean(
+                        "the compliance recorder autostart", no_recorder
+                    ),
+                )
+            )
+        )
+
+        def _shutdown_on_recorder_exit(
+            event: object, _context: object
+        ) -> list[LaunchDescriptionEntity]:
+            # Any exit, clean or not: a recorder SIGINT'd on its own also returns 0, and the
+            # graph must not keep moving without it.
+            returncode = getattr(event, "returncode", None)
+            return [
+                LogInfo(
+                    msg=f"FATAL: the compliance recorder node exited {returncode}. {no_recorder}"
+                ),
+                Shutdown(reason=f"the compliance recorder node exited {returncode}"),
+            ]
+
+        autostart.append(
+            RegisterEventHandler(
+                OnProcessExit(target_action=compliance_recorder, on_exit=_shutdown_on_recorder_exit)
+            )
+        )
     # The pendant is only autostarted when a device is actually declared.
     # Driving it otherwise produces an expected configure FAILURE on every
     # deploy, and that routine traceback is exactly the noise a REAL E-stop
@@ -4802,6 +4897,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         deadman_watchdog,
         hardware_estop,
         human_estop_forwarder,
+        compliance_recorder,
         runtime,
         hal,
         *extra_nodes,

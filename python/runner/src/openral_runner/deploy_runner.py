@@ -39,12 +39,18 @@ import time
 from collections.abc import Callable, Sequence
 
 import structlog
-from openral_core import SensorFrame, TickResult
-from openral_core.exceptions import ROSConfigError, ROSPerceptionStale, ROSSafetyViolation
+from openral_core import SafetyStopRecord, SensorFrame, TickResult
+from openral_core.exceptions import (
+    ROSConfigError,
+    ROSPerceptionStale,
+    ROSSafetyViolation,
+)
 from openral_hal.protocol import HAL
 from openral_observability import metrics as ral_metrics
 from openral_observability import producer as ral_producer
 from openral_observability import semconv
+from openral_observability.compliance import ComplianceEmitter, images_may_leave_host
+from openral_observability.compliance_log import ComplianceLog
 from openral_observability.tracing_lttng import (
     TP_HAL_READ_STATE,
     TP_HAL_SEND_ACTION,
@@ -143,6 +149,18 @@ class DeployRunner(InferenceRunnerBase):
             safety_client if safety_client is not None else NullSafetyClient()
         )
         self._recorder = recorder
+        # Supervisor-boundary stops become compliance records (issue #467).
+        try:
+            compliance_log = ComplianceLog.from_env(writer="runtime")
+        except OSError as exc:
+            # A hardware runtime that cannot open its compliance log refuses to run.
+            raise ROSConfigError(f"cannot open the compliance log: {exc}") from exc
+        self._compliance = ComplianceEmitter(
+            log=compliance_log, on_log_error=self._on_compliance_log_error
+        )
+        self._compliance_log_failed = False
+        self._withheld_retry_at = 0.0
+        self._withheld_violation: str | None = None
         # VLA slot per camera for the recorder, built on the first recorded tick.
         self._recorder_slots: dict[str, str] | None = None
         # Tracks whether an episode is currently "open" on the recorder.
@@ -235,6 +253,7 @@ class DeployRunner(InferenceRunnerBase):
         first so the tick counter is reset and the active flag is set.
         """
         super().activate()
+        self._withheld_violation = None  # each activation records its own first stop
         self._hal.connect()
         for reader in self._sensor_readers:
             reader.open()
@@ -314,6 +333,40 @@ class DeployRunner(InferenceRunnerBase):
         self._thumb_next_due[sensor_id] = nxt
         return True
 
+    def _record_withheld(self, exc: ROSSafetyViolation) -> None:
+        """One ``SafetyStopRecord`` per stop, not per withheld tick (issue #467).
+
+        A persisting violation at the control rate would otherwise write 30 "stops" a second
+        into a one-year log. Keyed on the violation class, since its message often carries the
+        measured value and changes every tick; the record keeps the first message. A stop
+        that did not reach the on-robot log is not marked recorded: it is retried, at most
+        once a second, and never raised out of the tick (the action is already withheld and
+        the record went out over OTLP).
+        """
+        violation = type(exc).__name__
+        now = time.monotonic()
+        if violation == self._withheld_violation or now < self._withheld_retry_at:
+            return
+        self._compliance_log_failed = False
+        self._compliance.emit(
+            SafetyStopRecord,
+            trigger_source="supervisor",
+            detail=f"{violation}: {exc}",
+            latched=False,
+            rskill_id=self._skill.name,
+        )
+        if self._compliance_log_failed:
+            # Not in the on-robot log yet: retry this stop, at most once a second.
+            self._withheld_retry_at = now + 1.0
+        else:
+            self._withheld_violation = violation
+
+    def _on_compliance_log_error(self, record: object, error: OSError) -> None:
+        """A stop went out over OTLP but not into the on-robot log."""
+        del record
+        self._compliance_log_failed = True
+        log.error("deploy_runner.compliance_log_write_failed", error=str(error))
+
     # ── Hot path ────────────────────────────────────────────────────────────
 
     def _tick_impl(  # noqa: PLR0915  # reason: five sequential tick phases each carry their own bookkeeping
@@ -355,7 +408,8 @@ class DeployRunner(InferenceRunnerBase):
                     # has already advanced, so a non-renderable camera doesn't retry.
                     thumb_bytes = (
                         ral_producer.encode_frame_thumbnail(frame)
-                        if self._thumbnail_due(reader.sensor_id, self._thumbnail_clock())
+                        if images_may_leave_host()
+                        and self._thumbnail_due(reader.sensor_id, self._thumbnail_clock())
                         else None
                     )
                     ral_producer.record_sensor_frame_attrs(
@@ -460,13 +514,15 @@ class DeployRunner(InferenceRunnerBase):
         safety_t0 = time.perf_counter()
         try:
             self._safety_client.check_action(action)
+            self._withheld_violation = None  # a passing check ends the stop
         except ROSSafetyViolation as exc:
             # Supervisor boundary: record + withhold action. We do NOT
             # re-raise — withholding the action IS the mitigation today.
-            # When the C++ safety kernel lands, this branch will also
-            # trigger the E-stop / incident-log path.
+            # The structured incident log (CLAUDE.md §5) is the
+            # SafetyStopRecord below; E-stop stays with the C++ kernel.
             safety_violations.append(str(exc))
             action_applied = False
+            self._record_withheld(exc)
             current = trace.get_current_span()
             if current.get_span_context().is_valid:
                 # ``record_exception`` adds an ``exception`` event with
