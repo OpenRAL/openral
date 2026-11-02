@@ -822,6 +822,10 @@ struct AttachedObject {
   /// Issue #418 K5: while a released payload's window is open, the hand link
   /// that held it, exempt against it like a touch link; -1 otherwise.
   int release_hand_link{-1};
+  /// The wire's `released_by_link`, resolved at ingest: the link that let a producer-released
+  /// payload go (-1 = held). Ingest only resolves it; the node freezes the object and runs its
+  /// release window (`apply_declared_release`).
+  int released_by{-1};
   int prim_first{0};                    ///< offset into AttachedModel.primitives
   int prim_count{0};                    ///< number of primitives owned by this object
   int touch_first{0};                   ///< offset into AttachedModel.touch_links
@@ -938,6 +942,7 @@ struct AttachedObjectInput {
   std::string attach_link;               ///< attach-link name (resolved against link_names)
   std::vector<std::string> touch_links;  ///< touch-link names (resolved against link_names)
   std::vector<AttachedPrimitiveInput> primitives;  ///< one or more owned primitives
+  std::string released_by_link;                    ///< wire `released_by_link` ("" = held)
   bool has_support_witness{false};                 ///< wire `support_contact_valid`
   Vec3 support_point{};                            ///< attested contact point, object frame
   Vec3 support_normal{};                     ///< outward support normal, object frame (normalised)

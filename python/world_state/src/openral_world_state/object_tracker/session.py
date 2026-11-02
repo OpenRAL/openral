@@ -158,12 +158,14 @@ class _LateAttachChoice:
 class TrackingMode(StrEnum):
     """``DeployRuntime.object_tracking`` (``off`` never starts the node).
 
-    ``tracking`` (open): the tracker tracks, grounds and may ADD geometry (a carried payload's
-    grow-only binding); every contact allowance it publishes comes from a scene declaration
-    (``search_box``, ``workspace_box``, a ``PlaceZone``), a track only confirming one is
-    populated, never shaping it. ``on`` (needs the OpenRAL Pro exemption provider): the
-    allowance is track-driven (the provider keys on track ids; a destination track is the
-    place region).
+    ``tracking`` (open): the tracker tracks, grounds and binds a carried payload; every contact
+    allowance it publishes comes from a scene declaration (``search_box``, ``workspace_box``, a
+    ``PlaceZone``), a track only confirming one is populated, never shaping it. Its one
+    track-driven effect is on the map: a payload uniquely bound to a hand is cleared from it by
+    identity (2026-11-02), and a released one is frozen and declared (``released_by_link``) so
+    the kernel holds it in place of the cleared cells. ``on`` (needs the OpenRAL Pro exemption
+    provider): the allowance is track-driven (the provider keys on track ids; a destination
+    track is the place region) and the provider decides the release inside the kernel.
     """
 
     TRACKING = "tracking"
@@ -214,8 +216,9 @@ class TrackerSession:
         grounding_required: ``DeployRuntime.grounding_required``.
         release_dwell_s: The jaw-open rule's dwell (source seconds). *Calibration point.*
         released_clear_timeout_s: How long (source seconds) a released ``TRACKED_OBJECT``
-            binding stays on ``attachment_state`` after release (the kernel freezes it at
-            the release pose, the voxel bridge clears its box); the RELEASED track is
+            binding stays on ``attachment_state`` after release (frozen at the let-go pose:
+            declared ``released_by_link`` in ``tracking``, released by the exemption provider
+            in ``on``; the voxel bridge clears its box); the RELEASED track is
             retired with it. MUST equal the kernel's ``tracked_release_timeout_s`` and the
             voxel bridge's ``released_clear_timeout_s`` (all default 3.0 s).
         params: Tracker calibration.
@@ -468,7 +471,8 @@ class TrackerSession:
             jaw = positions.get(joint)
             if jaw is not None and monitor.observe(jaw, stamp_ns):
                 log.info("object_tracker.jaw_open_release", hand=joint, jaw=jaw)
-                self._release(joint, stamp_ns)
+                # Decided a dwell after the jaw opened; the object was let go at the opening.
+                self._release(joint, stamp_ns, let_go_ns=monitor.opened_ns)
         for joint, detector in self._stall.items():
             jaw = positions.get(joint)
             if jaw is None or not math.isfinite(jaw) or not detector.update(jaw, stamp_ns):
@@ -1091,7 +1095,13 @@ class TrackerSession:
 
     # -- binding -------------------------------------------------------------------------
 
-    def _release(self, joint: str, stamp_ns: int) -> None:
+    def _positions_at(self, stamp_ns: int) -> Mapping[str, float]:
+        """The recorded joint sample nearest ``stamp_ns`` (the newest when none is recorded)."""
+        if not self._joint_history:
+            return self.positions
+        return min(self._joint_history, key=lambda s: abs(s[0] - stamp_ns))[1]
+
+    def _release(self, joint: str, stamp_ns: int, *, let_go_ns: int | None = None) -> None:
         binder = self.binders[joint]
         held = binder.held
         self._monitors.pop(joint, None)
@@ -1104,7 +1114,10 @@ class TrackerSession:
         if held.outcome is BindOutcome.TRACKED and self._joints <= self.positions.keys():
             oid = held.attachment.object_id
             track = self.tracker.store.get(oid)
-            pose = binder.object_pose(self.positions)
+            # The hand where it let go, not where the (late) decision finds it: a jaw-open
+            # release is decided a dwell after the opening, the retreat may have begun.
+            q_let_go = self._positions_at(stamp_ns if let_go_ns is None else let_go_ns)
+            pose = binder.object_pose(q_let_go)
             if track is not None:
                 support = self._support_under(pose, track.box.half_extents, track.support_z)
                 released = release_track(
@@ -1116,13 +1129,18 @@ class TrackerSession:
                     stamp_ns=stamp_ns,
                 )
                 if released is not None:
-                    # Frozen where it was let go: on the hand link the kernel would carry it
-                    # away with the retreating hand (2026-11-02: 1.0-1.5 s, up to 20 cm).
-                    t_hand = binder.hand.t_frame_from_attach(self.frame_id, self.positions)
-                    frozen = freeze_released_attachment(
-                        held.attachment, base_link=self.frame_id, t_base_from_link=t_hand
-                    )
-                    self._released[oid] = (frozen, stamp_ns)
+                    # `tracking`: frozen where it was let go and declared released
+                    # (`released_by_link`), so the kernel freezes it and runs the window; left on
+                    # the hand it rode the retreating hand 1.0-1.5 s, up to 20 cm (2026-11-02).
+                    # `on`: the exemption provider releases it inside the kernel, earlier, keyed
+                    # on the hand-attached record, so the record stays as held.
+                    record = held.attachment
+                    if self.mode is TrackingMode.TRACKING:
+                        t_hand = binder.hand.t_frame_from_attach(self.frame_id, q_let_go)
+                        record = freeze_released_attachment(
+                            record, base_link=self.frame_id, t_base_from_link=t_hand
+                        )
+                    self._released[oid] = (record, stamp_ns)
                     self._known_at_release[oid] = frozenset(
                         t.object_id for t in self.tracker.store.all()
                     )

@@ -61,3 +61,12 @@ ContactForceWitness contact_force
 # revisions, so bound geometry only grows. Both 0 for producers that do not track.
 uint32 epoch
 uint64 geometry_revision
+
+# A released payload (2026-11-02). Empty while the object is held. Set, it names the robot link
+# that let the object go: `attach_link` is then a link FK never moves (the robot's root) and
+# `pose_in_link` the object's pose where it was released. The safety kernel treats it as a
+# frozen, uncarried payload: never checked against the world (nothing the robot does moves it),
+# still an obstacle to every robot link; the releasing link and `touch_links` stay exempt against
+# it only until the kernel measures them clear or its release timeout passes. A record on a link
+# the robot moves, or naming an unknown link, is refused (fail closed).
+string released_by_link

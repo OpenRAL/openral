@@ -1024,6 +1024,22 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
   }
 
+  // A link FK never moves: no joint dof on its chain to the root, or only the mobile-base dofs
+  // the collision FK zeroes. Only such a link may hold a producer-released (frozen) payload.
+  link_static_.assign(collision_model_.n_links, 1);
+  for (std::size_t i = 0; i < collision_model_.n_links; ++i) {
+    for (int l = static_cast<int>(i); l >= 0;
+         l = collision_model_.parent[static_cast<std::size_t>(l)]) {
+      const int d = collision_model_.dof_index[static_cast<std::size_t>(l)];
+      if (d >= 0 && std::find(collision_base_dofs_.begin(), collision_base_dofs_.end(), d) ==
+                        collision_base_dofs_.end()) {
+        link_static_[i] = 0;
+        break;
+      }
+    }
+  }
+  released_records_.assign(std::min<std::size_t>(attached_max_objects_, 8), ReleasedRecord{});
+
   joint_name_to_dof_.clear();
   for (std::size_t i = 0; i < collision_joint_names_.size() && i < ndof; ++i) {
     joint_name_to_dof_.emplace(collision_joint_names_[i], static_cast<int>(i));
@@ -4439,6 +4455,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     }
     in.attach_link = obj.attach_link;
     in.touch_links.assign(obj.touch_links.begin(), obj.touch_links.end());
+    in.released_by_link = obj.released_by_link;
     // Support-contact attestation (ADR-0092 D6). World State may attest that
     // this payload rests on a named surface; the kernel bounds what it will
     // accept. An attestation outside those bounds is not silently downgraded to
@@ -4521,9 +4538,22 @@ void SafetyKernelLifecycleNode::on_world_state(
   }
 
   union_bound_geometry(*msg);
-  const AttachIngestStatus status = ingest_attached_objects(
+  AttachIngestStatus status = ingest_attached_objects(
       attached_ingest_scratch_, collision_link_names_, attached_max_objects_,
       attached_max_primitives_, attached_max_touch_links_, attached_model_);
+  // A released record is frozen where its attach link holds it, so that link must be one FK never
+  // moves: on a moving link the "frozen" payload would ride the robot, unchecked against the world.
+  for (std::size_t i = 0; status == AttachIngestStatus::kOk && i < attached_model_.n_objects; ++i) {
+    const AttachedObject& obj = attached_model_.objects[i];
+    if (obj.released_by >= 0 && link_static_[static_cast<std::size_t>(obj.attach_link)] == 0) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.released_payload_rejected object=%s reason=attach_link_moves link=%s",
+                  wire[i].object_id.c_str(), wire[i].attach_link.c_str());
+      attached_model_.n_objects = 0;
+      attached_model_.n_primitives = 0;
+      status = AttachIngestStatus::kMalformed;
+    }
+  }
   if (status != AttachIngestStatus::kOk) {
     attached_overflow_ = true;
     attached_received_ = true;
@@ -4555,6 +4585,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     mix(std::hash<std::string>{}(wire[i].attach_link));
   }
   check_attachment_bindings(*msg);
+  apply_declared_release(wire);
   apply_tracked_release();
   // Arm a support-contact witness only when World State attests a genuinely NEW
   // one. The attachment set is heartbeated, so keying off message arrival would
@@ -5287,6 +5318,101 @@ void SafetyKernelLifecycleNode::union_bound_geometry(
     }
     in.pose_in_link = e->frame;
     in.primitives.assign(e->prims.begin(), e->prims.begin() + static_cast<std::ptrdiff_t>(e->n));
+  }
+}
+
+void SafetyKernelLifecycleNode::apply_declared_release(
+    const std::vector<openral_msgs::msg::AttachedCollisionObject>& wire) {
+  // A producer (the HAL's release window, the object tracker) let a payload go and re-attached it
+  // to a link FK never moves, naming the link that held it (`released_by_link`). The kernel gives
+  // it exactly its own K5 treatment (`apply_tracked_release`): frozen in the base frame, so never
+  // checked against the world; the releasing link and the touch links exempt against it only
+  // until the kernel measures them clear (`tracked_release_clear_m`) or `tracked_release_timeout_s`
+  // passes; a plain obstacle after that. The window is the kernel's, keyed on the record's
+  // (object id, epoch, stamp): a heartbeat never reopens a closed one, a new release opens anew.
+  // Safety-WG review owed; hazard-log row owed.
+  for (auto& r : released_records_) {
+    r.seen = false;
+  }
+  const std::int64_t now = this->now().nanoseconds();
+  const bool fresh = measured_state_fresh();
+  bool fk_done = false;
+  for (std::size_t i = 0; i < attached_model_.n_objects && i < wire.size(); ++i) {
+    AttachedObject& obj = attached_model_.objects[i];
+    if (obj.released_by < 0) {
+      continue;
+    }
+    const auto& w = wire[i];
+    ReleasedRecord* rec = nullptr;
+    for (auto& r : released_records_) {
+      if (r.used && r.object_id == w.object_id && r.epoch == w.epoch && r.stamp_ns == w.stamp_ns) {
+        rec = &r;
+        break;
+      }
+    }
+    if (rec == nullptr) {
+      for (auto& r : released_records_) {
+        if (!r.used) {
+          rec = &r;
+          break;
+        }
+      }
+      if (rec == nullptr) {
+        continue;  // more released records than slots: unreachable (slots = max objects)
+      }
+      rec->used = true;
+      rec->object_id = w.object_id;
+      rec->epoch = w.epoch;
+      rec->stamp_ns = w.stamp_ns;
+      rec->opened_ns = now;
+      rec->closed = false;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.released_payload object=%s by=%s: frozen in base, releasing and touch "
+                  "links exempt until %g m clear or %g s",
+                  w.object_id.c_str(), w.released_by_link.c_str(), release_clear_m_,
+                  release_timeout_s_);
+    }
+    rec->seen = true;
+    // Frozen: the base-frame pose of a link FK never moves (any configuration gives it).
+    if (!fk_done) {
+      std::copy(q_meas_.begin(), q_meas_.end(), q_fk_.begin());
+      for (const int d : collision_base_dofs_) {
+        q_fk_[static_cast<std::size_t>(d)] = 0.0;
+      }
+      forward_kinematics(collision_model_, q_fk_.data(), q_fk_.size(), binding_scratch_);
+      fk_done = true;
+    }
+    obj.pose_in_link = rigid_compose(
+        binding_scratch_.link_world[static_cast<std::size_t>(obj.attach_link)], obj.pose_in_link);
+    obj.attach_link = -1;
+    obj.has_support_witness = false;
+    attached_binding_[i].off_hand = "released";  // never a handover, no witness
+    obj.release_hand_link = obj.released_by;
+    if (!rec->closed) {
+      const char* why = nullptr;
+      if (static_cast<double>(now - rec->opened_ns) >= release_timeout_s_ * 1e9) {
+        why = "timeout";
+      } else if (fresh && released_payload_clearance(collision_model_, binding_scratch_,
+                                                     attached_model_, obj) > release_clear_m_) {
+        why = "separation";
+      }
+      if (why != nullptr) {
+        rec->closed = true;
+        RCLCPP_INFO(
+            this->get_logger(),
+            "safety.released_payload_closed object=%s reason=%s: a plain obstacle from here",
+            w.object_id.c_str(), why);
+      }
+    }
+    if (rec->closed) {
+      obj.release_hand_link = -1;
+      obj.touch_count = 0;  // nothing is exempt against it any more
+    }
+  }
+  for (auto& r : released_records_) {
+    if (r.used && !r.seen) {
+      r = ReleasedRecord{};  // the producer retired it
+    }
   }
 }
 

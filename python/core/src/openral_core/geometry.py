@@ -296,33 +296,32 @@ def freeze_released_attachment(
     pose_in_link`` for every configuration a candidate predicts, so a record
     left on the hand would ride the retreating hand through the whole chunk while
     the real object stays put. Attached to the collision model's root link (the
-    manifest's ``base_frame``: identity FK, no primitives of its own) it stays
-    where it was released in every predicted configuration, and the attach-link
-    skip exempts nothing.
+    manifest's ``base_frame``, a link FK never moves) it stays where it was
+    released, and ``released_by_link`` names the hand that let it go: the kernel
+    then treats it as a frozen payload (2026-11-02, Spark ``v_off_dr``: read as a
+    carried payload, the frozen banana latched a world stop on the bowl 170 ms after
+    release). It is never checked against the world, stays an obstacle to every robot
+    link, and the hand plus ``touch_links`` are exempt against it only until the
+    kernel measures them clear or its release timeout passes.
 
     ``touch_links`` become the held record's attach link plus its touch links —
     exactly the links the held record already exempted (the hand and the jaws
-    are in contact with the payload at release); every other link, and the
-    world, is still checked against it.
+    are in contact with the payload at release).
 
     Args:
-        held: The attachment the gripper held until DETACH.
+        held: The attachment the gripper held until it let go.
         base_link: The collision model's root link (``RobotDescription.base_frame``).
         t_base_from_link: ``(4, 4)`` pose of ``held.attach_link`` in ``base_link``
-            at the DETACH stamp.
+            when the gripper let go.
 
     ``support_contact`` is dropped: a held payload's own witness is the grasp-time
     ``map_support_under:*`` one (``region_attachment``), a claim about where the payload
-    rested at ATTACH. Released before it retired (lifted less than its rise tolerance),
-    it would ride the record at the release pose — its band misplaced above the support
-    — for the whole window though the payload no longer rests there. The place leg's
-    set-down witness is not on the held payload: the HAL's ``PlaceTargetLeg.decorate`` puts it on
-    whatever carries the object's (id, stamp) at each publish, the record included, so
-    the place support stays exempt through the window.
+    rested at ATTACH, and a frozen payload is not checked against the world at all.
 
     Returns:
         The frozen record: same object, geometry, evidence and force attestation, no
-        support witness; base-frame pose; ``evidence_ref`` suffixed ``|frozen_release``.
+        support witness; base-frame pose; ``released_by_link`` the held attach link;
+        ``evidence_ref`` suffixed ``|frozen_release``.
     """
     pose = t_base_from_link @ homogeneous_from_quat_xyz(
         held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
@@ -341,5 +340,6 @@ def freeze_released_attachment(
             },
             "evidence_ref": f"{held.evidence_ref or held.object_id}|frozen_release",
             "support_contact": None,
+            "released_by_link": held.attach_link,
         }
     )

@@ -5201,8 +5201,9 @@ class AttachedCollisionPrimitive(BaseModel):
             2.3-3.9x the entire world-voxel quantisation term, and 97 % of
             15 mm-arm stops were payload-vs-world (issue #266).
         geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``
-            (the tracked or single provisional object's own fitted geometry), ``grown`` (cells
-            observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of
+            (the tracked or single provisional object's own fitted geometry), ``grown`` (retired
+            2026-11-02: the tracker no longer grows a payload; the code stays readable on the
+            wire, nothing produces it) or ``fallback`` (the pinch volume, or boxes of
             candidates that may not be the held object; the default, and what a reader treats an
             unknown code as). Only measured and grown primitives can explain the payload's own
             cells to the exemption provider's payload-own rule
@@ -5377,6 +5378,13 @@ class AttachedCollisionObject(BaseModel):
             every producer that does not track.
         geometry_revision: Revision of the bound geometry within one binding; the
             kernel unions revisions, so bound geometry only grows. ``0`` = first.
+        released_by_link: ``None`` while the object is held. Set, the payload was let go
+            by that robot link: ``attach_link`` is a link the robot never moves (its root)
+            and ``pose_in_link`` the pose where it was released. The safety kernel then
+            treats it as a frozen payload: never checked against the world, still an
+            obstacle to every robot link, the releasing link and ``touch_links`` exempt
+            against it only until the kernel measures them clear or its release timeout
+            passes. The kernel refuses one on a link the robot moves.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -5397,9 +5405,16 @@ class AttachedCollisionObject(BaseModel):
     contact_force: ContactForceWitness | None = None
     epoch: int = Field(default=0, ge=0)
     geometry_revision: int = Field(default=0, ge=0)
+    released_by_link: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _validate_attachment(self) -> AttachedCollisionObject:
+        if self.released_by_link == self.attach_link:
+            raise ValueError(
+                "AttachedCollisionObject.released_by_link names the link that let the payload "
+                "go; a released payload is attached to a link the robot never moves "
+                f"({self.attach_link!r})."
+            )
         if self.pose_in_link.frame_id != self.attach_link:
             raise ValueError(
                 "AttachedCollisionObject.pose_in_link.frame_id must equal attach_link "
@@ -5478,6 +5493,7 @@ class AttachedCollisionObject(BaseModel):
             ),
             epoch=int(getattr(msg, "epoch", 0)),
             geometry_revision=int(getattr(msg, "geometry_revision", 0)),
+            released_by_link=str(getattr(msg, "released_by_link", "")) or None,
         )
 
     def fill_idl(self, msg: object, *, primitive_factory: Callable[[], object]) -> None:
@@ -5522,6 +5538,7 @@ class AttachedCollisionObject(BaseModel):
             self.contact_force.fill_idl(msg.contact_force)  # type: ignore[attr-defined]
         msg.epoch = int(self.epoch)  # type: ignore[attr-defined]
         msg.geometry_revision = int(self.geometry_revision)  # type: ignore[attr-defined]
+        msg.released_by_link = self.released_by_link or ""  # type: ignore[attr-defined]
 
 
 class TrackStatus(StrEnum):

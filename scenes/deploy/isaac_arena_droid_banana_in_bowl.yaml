@@ -196,7 +196,8 @@ runtime:
   payload_sweep_clear_enabled: true
   # Open path (ADR-0121 step 3): `tracking`. The #418 tracker grounds the seedless target
   # query within `grounding_wait_s` (source time), owns the attachment set (the held
-  # payload is the tracker's box, a mapped obstacle: no track clears the map in `tracking`)
+  # payload is the tracker's box; its own cells are cleared by identity while it is bound and
+  # the released box is frozen by the kernel, `released_by_link`)
   # and takes every allowance from a declaration (2026-11-01 mode split): the grasp region is
   # the banana's track box only while it lies inside the declared search_box, the place
   # region the declared `bowl` zone above, the workspace the declared workspace_box; the

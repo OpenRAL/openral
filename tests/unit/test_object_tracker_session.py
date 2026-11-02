@@ -297,9 +297,61 @@ def test_a_released_payload_is_frozen_where_it_was_let_go() -> None:
     s.on_grasp_event(GraspEventKind.DETACH, joint, jaw=jaw, hold=jaw, stamp_ns=_S)
     [frozen] = s.attachments()
     assert frozen.object_id == oid and frozen.attach_link == s.frame_id
+    assert frozen.released_by_link == held.attach_link, "the kernel's release key"
     assert held.attach_link in frozen.touch_links
     assert np.allclose(frozen.pose_in_link.xyz, at_release.xyz, atol=1e-9)
     assert frozen.primitives == held.primitives
+
+
+def test_under_on_the_released_record_stays_as_held() -> None:
+    """``on``: the exemption provider releases the hand-attached record inside the kernel,
+    earlier, keyed on its attach link; a re-attached record would restart that release."""
+    d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    s = TrackerSession(
+        d,
+        cell_m=RES,
+        grounding_wait_s=3.0,
+        params=TrackerParams(),
+        require_hands=True,
+        mode=TrackingMode.ON,
+    )
+    _, q, _ = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    _mint(s, arm_at_hold("so101_follower")[2])
+    s.on_joint_state(q, 10)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=20)
+    [held] = s.attachments()
+    s.on_grasp_event(GraspEventKind.DETACH, joint, jaw=jaw, hold=jaw, stamp_ns=_S)
+    assert s.attachments() == [held]
+
+
+def test_a_jaw_open_release_freezes_where_the_jaw_opened_not_where_it_was_decided() -> None:
+    """The jaw-open rule decides a dwell (0.3 s) after the opening; by then the retreat may
+    have begun (review of #481, 2026-11-02). The record and the released track are frozen at
+    the hand pose of the opening."""
+    from tests.unit.test_object_tracker_binding import _hand_step
+
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    s = _session("so101_follower")
+    oid = _mint(s, centre)
+    s.on_joint_state(q, 10)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=20)
+    binder = s.binders[joint]
+    hand = binder.hand
+    lo, hi = hand.joint.position_limits  # type: ignore[misc]  # reason: the SO-101 jaw has limits
+    far = hi if abs(hi - hand.closed) > abs(lo - hand.closed) else lo
+    opened = {**q, joint: far}
+    at_opening = binder.object_pose(opened)
+    s.on_joint_state({joint: far}, 30)
+    s.on_joint_state({**_hand_step(binder, "so101_follower", q, 0.05), joint: far}, 30 + _S // 10)
+    s.on_joint_state({joint: far}, 30 + int(0.31 * _S))  # decided, the hand 5 cm up
+    [frozen] = s.attachments()
+    assert frozen.released_by_link is not None
+    assert np.allclose(frozen.pose_in_link.xyz, at_opening.xyz, atol=1e-9)
+    track = s.tracker.store.get(oid)
+    assert track is not None and track.status is TrackStatus.RELEASED
+    assert np.allclose(track.box.pose.xyz, at_opening.xyz, atol=1e-6)
 
 
 def test_a_released_track_retires_once_every_hand_is_clear_of_it() -> None:
