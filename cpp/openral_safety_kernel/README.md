@@ -60,6 +60,7 @@ received, the time since activation), `threshold_ms` the limit it crossed. An
 overflow, an unstamped grid or an unmapped slot stays `KIND_CONTROLLER` with
 `ControllerEvidence`. Reporting only: which chunks drop is unchanged.
 | attached payload unverifiable (ADR-0092) | `false` | `DROP_ATTACHED_UNAVAILABLE`, `DROP_ATTACHED_OVERFLOW` |
+| arrived place refused in the advisory band (#176) | `false` | `DROP_PLACE_ADVISORY` |
 | chunk accepted after a drop | `false` | `DROP_NONE` |
 | `/openral/estop_reset` succeeded | `false` | `DROP_NONE` |
 

@@ -152,13 +152,15 @@ class ROSPublishingHAL:
             ``/openral/action_applied``, and the adapter reports only the
             apply-timeout (CLAUDE.md §1.4). Must be non-blocking — it is
             called while the adapter's applied-condition lock is held.
-        drop_reason_getter: Called with the monotonic time the apply-wait started; returns the
-            newest NON-latching kernel drop (``/openral/safety_status`` ``DROP_*``, e.g.
-            ``voxel_stale``) seen since then as ``(reason, exception type)``, or ``None``. A
-            fail-closed drop is not a latch, so the wait runs out its timeout; the timeout
-            raises that type (``ROSPerceptionStale`` for a stale kernel input) with the reason
-            appended, so the goal's ``failure_kind`` and ``failure_reason`` name the typed
-            cause. ``None`` raises ``ROSRuntimeError``. Non-blocking.
+        drop_reason_getter: Called with the monotonic time the tick's first slot was
+            published; returns the newest NON-latching kernel drop (``/openral/safety_status``
+            ``DROP_*``, e.g. ``voxel_stale``, ``place_advisory``) seen since then as
+            ``(reason, exception type)``, or ``None``. A dropped chunk is never applied, and a
+            tick missing one of its slots is never acknowledged, so the apply-wait ends at the
+            drop instead of running out its timeout (Spark ``bkB_on_rs_08``, 2026-11-02: an
+            advisory place refusal stalled the goal 8 s). It raises that type
+            (``ROSPerceptionStale`` for a stale kernel input) with the reason appended, so the
+            goal's ``failure_kind`` and ``failure_reason`` name the typed cause. Non-blocking.
         action_applied_timeout_s: Maximum time to wait for the HAL's
             application acknowledgement for an active tick.
         joint_state_staleness_limit_s: Maximum age of the last received
@@ -217,6 +219,7 @@ class ROSPublishingHAL:
         self._last_applied_tick: int = 0
         self._published_group_tick: int | None = None
         self._published_group_count: int = 0
+        self._tick_published_at: float = 0.0  # monotonic, the current tick's first slot
         # Cached JointState; populated on every /joint_states callback.
         # ``read_state`` rejects a missing or stale frame (matches the HAL
         # Protocol's connect-then-read and freshness contract).
@@ -323,6 +326,8 @@ class ROSPublishingHAL:
         if not self._connected:
             raise ROSRuntimeError("ROSPublishingHAL.send_action called before connect")
         chunk = self._action_to_chunk(action)
+        if self._published_group_tick is None:  # the tick's first (or only) slot
+            self._tick_published_at = time.monotonic()
         self._publisher.publish(chunk)
         chunk_message: Any = chunk
         self._wait_for_group_applied(action, tick_index=int(chunk_message.tick_index))
@@ -343,10 +348,11 @@ class ROSPublishingHAL:
                 simply goes silent — waiting out the full timeout and
                 reporting it as one would bury the safety stop behind a
                 generic apply-timeout (CLAUDE.md §1.4).
-            ROSPerceptionStale: When the tick is still unapplied at the deadline
-                because the kernel dropped it for a stale input (``drop_reason_getter``).
-            ROSRuntimeError: When the tick is still unapplied at the
-                deadline, no safety stop is latched and no stale-input drop explains it.
+            ROSPerceptionStale: As soon as the kernel reports it dropped the tick for a stale
+                input (``drop_reason_getter``).
+            ROSRuntimeError: As soon as the kernel reports any other non-latching drop of
+                the tick, or when it is still unapplied at the deadline with no safety stop
+                latched and no drop reported.
         """
         group_size = int(action.tick_group_size)
         tick = int(action.tick_index if tick_index is None else tick_index)
@@ -375,8 +381,8 @@ class ROSPublishingHAL:
             self._published_group_tick = None
             self._published_group_count = 0
         tick_label = "action group tick" if group_size > 1 else "action tick"
-        wait_started = time.monotonic()
-        deadline = wait_started + self._action_applied_timeout_s
+        published_at = self._tick_published_at
+        deadline = time.monotonic() + self._action_applied_timeout_s
         with self._applied_condition:
             while self._last_applied_tick < tick:
                 safety_reason = self._safety_abort_getter()
@@ -391,14 +397,18 @@ class ROSPublishingHAL:
                         f"ROSPublishingHAL: safety stop latched ({safety_reason}) while "
                         f"waiting for {tick_label} {tick} to be applied"
                     )
+                dropped = self._drop_reason_getter(published_at)
+                if dropped is not None:
+                    reason, exc_type = dropped
+                    raise exc_type(
+                        f"ROSPublishingHAL: {tick_label} {tick} was not applied "
+                        f"(kernel dropped it: {reason})"
+                    )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
-                    dropped = self._drop_reason_getter(wait_started)
-                    reason, exc_type = dropped or ("", ROSRuntimeError)
-                    raise exc_type(
+                    raise ROSRuntimeError(
                         f"ROSPublishingHAL: {tick_label} {tick} was not applied within "
                         f"{self._action_applied_timeout_s:g} s"
-                        + (f" (kernel dropped it: {reason})" if reason else "")
                     )
                 self._applied_condition.wait(timeout=min(remaining, _SAFETY_ABORT_POLL_S))
 

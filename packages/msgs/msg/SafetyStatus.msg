@@ -71,6 +71,12 @@ uint8 DROP_EXTERNAL_ESTOP        = 106
 uint8 DROP_ATTACHED_UNAVAILABLE   = 107
 uint8 DROP_ATTACHED_OVERFLOW      = 108
 
+# #176 advisory band: an attached payload that ARRIVED in its own live place
+# declaration read within one voxel past the approach allowance, so this chunk
+# was refused without a latch (the skill may retry; the refusal after
+# `place_advisory_max_consecutive` in a row latches KIND_COLLISION).
+uint8 DROP_PLACE_ADVISORY         = 109
+
 # Nothing is being dropped. Published explicitly on every clear /
 # recovery transition and on lifecycle activation; never left implicit,
 # because a default-initialised message would otherwise read as

@@ -1632,6 +1632,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           ++advisory_refusals_;
           last_drop_reason_ = "collision_advisory";
           publish_collision_failure(*msg, kind, a, b, step, hit, q_fk_);
+          // Typed and non-latching on the status topic like every other drop: a runner waiting
+          // for this chunk's application learns it was refused instead of timing out on it.
+          set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_PLACE_ADVISORY,
+                            "collision_advisory", msg->rskill_id, msg->trace_id);
           RCLCPP_WARN(this->get_logger(),
                       "safety.collision_advisory kind=%s a=%s b=%s step=%d min_distance_m=%g "
                       "sweep_min_distance_m=%g place_target=%s consecutive=%llu/%llu "

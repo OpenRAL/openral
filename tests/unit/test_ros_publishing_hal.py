@@ -369,10 +369,13 @@ def test_single_action_ack_timeout_is_bounded() -> None:
         hal._wait_for_group_applied(action)
 
 
-def test_ack_timeout_names_the_kernel_drop_seen_during_the_wait() -> None:
-    """A fail-closed drop latches nothing, so the apply-wait times out: say why (r10dr_on1).
+def test_a_kernel_drop_ends_the_apply_wait_with_its_typed_reason() -> None:
+    """A fail-closed drop latches nothing and the dropped tick is never applied: the wait ends
+    at the drop, naming it (r10dr_on1), instead of running out its timeout (Spark
+    ``bkB_on_rs_08``, 2026-11-02: 8 s on an advisory place refusal).
 
-    A stale kernel input raises ``ROSPerceptionStale``, the type the runner's getter names.
+    A stale kernel input raises ``ROSPerceptionStale``, the type the runner's getter names; the
+    getter is asked about drops since the tick was published.
     """
 
     class _StubNode:
@@ -387,17 +390,37 @@ def test_ack_timeout_names_the_kernel_drop_seen_during_the_wait() -> None:
     hal = ROSPublishingHAL(
         node=_StubNode(),
         description=_so100_like_description(),
-        action_applied_timeout_s=0.01,
+        action_applied_timeout_s=30.0,
         drop_reason_getter=_drop,
     )
     action = Action(
         control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0] * 6], tick_index=73
     )
+    hal._tick_published_at = published = time.monotonic()  # what send_action stamps
+    t0 = time.monotonic()
     with pytest.raises(
-        ROSPerceptionStale, match=r"tick 73 was not applied within 0.01 s.*voxel_stale"
+        ROSPerceptionStale, match=r"tick 73 was not applied \(kernel dropped it: .*voxel_stale"
     ):
         hal._wait_for_group_applied(action)
-    assert len(seen) == 1 and seen[0] > 0.0
+    assert time.monotonic() - t0 < 1.0, "not the 30 s timeout"
+    assert seen == [published]
+
+
+def test_with_no_drop_reported_the_apply_wait_times_out_as_a_runtime_error() -> None:
+    class _StubNode:
+        pass
+
+    hal = ROSPublishingHAL(
+        node=_StubNode(),
+        description=_so100_like_description(),
+        action_applied_timeout_s=0.01,
+        drop_reason_getter=lambda _since: None,
+    )
+    action = Action(
+        control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0] * 6], tick_index=74
+    )
+    with pytest.raises(ROSRuntimeError, match=r"tick 74 was not applied within 0.01 s"):
+        hal._wait_for_group_applied(action)
 
 
 @pytest.mark.skipif(

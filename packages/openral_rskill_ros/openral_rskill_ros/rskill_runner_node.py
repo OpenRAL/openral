@@ -3123,10 +3123,10 @@ if _ROS2_AVAILABLE:
             """The newest non-latching kernel drop received at or after ``since_monotonic``.
 
             Injected into ``ROSPublishingHAL`` as ``drop_reason_getter``: a fail-closed drop
-            (``voxel_stale``, ``state_unavailable``, ...) latches nothing, so the apply-wait
-            times out; this names the cause and the exception type the timeout raises
-            (``_drop_exception_type``), and records it for the goal's ``ControllerEvidence``
-            (``_attach_failure_evidence``). Non-blocking.
+            (``voxel_stale``, ``state_unavailable``, ``place_advisory``, ...) latches nothing
+            and the dropped tick is never applied, so the apply-wait ends there; this names the
+            cause and the exception type it raises (``_drop_exception_type``), and records it
+            for the goal's ``ControllerEvidence`` (``_attach_failure_evidence``). Non-blocking.
             """
             drop = self._last_drop
             if drop is None or drop[0] < since_monotonic:
