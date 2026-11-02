@@ -713,3 +713,16 @@ def test_hands_are_clear_of_targets_only_away_from_every_target_and_holding_noth
     far = _mint(s, centre + np.array([0.0, 0.0, 0.15]), "banana")  # 15 cm: off the hand
     s.tracker.store.drop(next(t.object_id for t in s.tracker.store.all() if t.object_id != far))
     assert s.hands_clear_of_targets(), "the only target is 15 cm away: off the hand"
+
+
+def test_the_session_clock_follows_a_source_clock_reset() -> None:
+    """Review of #479: jaw commands are stamped no earlier than ``now_ns``; a running maximum
+    kept across a sim reset put every command ahead of every jaw sample, so the stall-derived
+    ATTACH never fired. A late message (under a second back) does not move it."""
+    s = _session("so101_follower")
+    _, q, _ = arm_at_hold("so101_follower")
+    s.on_joint_state(q, 100 * _S)
+    s.on_joint_state(q, 100 * _S - _S // 2)  # late, not a reset
+    assert s.now_ns == 100 * _S
+    s.on_joint_state(q, 2 * _S)  # the sim reset: source time restarts
+    assert s.now_ns == 2 * _S

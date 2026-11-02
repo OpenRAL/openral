@@ -139,6 +139,10 @@ _LATE_STATUSES = frozenset(
 _JOINT_SAMPLE_MAX_AGE_NS = 250_000_000
 
 
+#: A source stamp this far behind the newest one is a reset clock, not a late message.
+_CLOCK_RESET_NS = 1_000_000_000
+
+
 @dataclass(frozen=True)
 class _LateAttachChoice:
     """Late-bind pose and tracks that must not fall through to ordinary ATTACH binding."""
@@ -296,10 +300,15 @@ class TrackerSession:
 
     @property
     def now_ns(self) -> int:
-        """The newest source stamp seen."""
+        """The newest source stamp seen since the source clock last went back (a sim reset)."""
         return self._now_ns
 
     def _tick(self, stamp_ns: int) -> None:
+        if stamp_ns < self._now_ns - _CLOCK_RESET_NS:
+            # The source clock went back (a sim reset), as ``JawStallDetector.update`` reads it:
+            # a running maximum from before it would stamp every jaw command ahead of every
+            # jaw sample, and the stall-derived ATTACH would never fire (review of #479).
+            self._now_ns = stamp_ns
         self._now_ns = max(self._now_ns, stamp_ns)
         for goal in self._goals.values():
             if goal is not None and goal.start_ns is None and self._now_ns > 0:

@@ -512,7 +512,8 @@ def _detected_part(
             break
     inside = _rect(part_box, measured.shape)[win]
     ids, size = np.unique(lab[act], return_counts=True)
-    held = np.array([np.count_nonzero(inside & (lab == i)) for i in ids])
+    # One pass over the pixels (a per-label mask was O(labels x pixels) on noisy mask edges).
+    held = np.bincount(lab[act & inside], minlength=act.size + 1)[ids]
     keep = ids[2 * held >= size]
     if len(keep) in (0, len(ids)):
         return None
