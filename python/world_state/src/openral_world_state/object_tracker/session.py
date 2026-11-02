@@ -55,7 +55,11 @@ from openral_core import (
     TrackStatus,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
+from openral_core.geometry import (
+    freeze_released_attachment,
+    homogeneous_from_quat_xyz,
+    rotation_to_quat_wxyz,
+)
 from openral_core.kinematics import Box, box_gap_lower_bound_m
 from openral_core.perception_geometry import (
     WORKSPACE_MIN_COVER,
@@ -1112,7 +1116,13 @@ class TrackerSession:
                     stamp_ns=stamp_ns,
                 )
                 if released is not None:
-                    self._released[oid] = (held.attachment, stamp_ns)
+                    # Frozen where it was let go: on the hand link the kernel would carry it
+                    # away with the retreating hand (2026-11-02: 1.0-1.5 s, up to 20 cm).
+                    t_hand = binder.hand.t_frame_from_attach(self.frame_id, self.positions)
+                    frozen = freeze_released_attachment(
+                        held.attachment, base_link=self.frame_id, t_base_from_link=t_hand
+                    )
+                    self._released[oid] = (frozen, stamp_ns)
                     self._known_at_release[oid] = frozenset(
                         t.object_id for t in self.tracker.store.all()
                     )

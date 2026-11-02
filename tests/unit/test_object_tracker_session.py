@@ -281,6 +281,27 @@ def test_a_released_binding_stays_on_the_wire_until_its_window_runs_out() -> Non
     assert s.attachments() == [] and s.attachment_changes == changes + 1
 
 
+def test_a_released_payload_is_frozen_where_it_was_let_go() -> None:
+    """Spark restock 2026-11-01: a released record left on the hand rode the retreating hand
+    1.0-1.5 s (up to 20 cm) in ``tracking``; it is re-expressed on the base frame at the
+    release pose, the hand and jaws (its old touch links) still exempt."""
+    s = _session("so101_follower")
+    _, q, _ = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    oid = _mint(s, arm_at_hold("so101_follower")[2])
+    s.on_joint_state(q, 10)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=20)
+    [held] = s.attachments()
+    binder = s.binders[joint]
+    at_release = binder.object_pose(q)
+    s.on_grasp_event(GraspEventKind.DETACH, joint, jaw=jaw, hold=jaw, stamp_ns=_S)
+    [frozen] = s.attachments()
+    assert frozen.object_id == oid and frozen.attach_link == s.frame_id
+    assert held.attach_link in frozen.touch_links
+    assert np.allclose(frozen.pose_in_link.xyz, at_release.xyz, atol=1e-9)
+    assert frozen.primitives == held.primitives
+
+
 def test_a_released_track_retires_once_every_hand_is_clear_of_it() -> None:
     """Spark R281 (2026-10-23): the source-clock window ran 14 s of wall time and the frozen
     box blocked the regrasp. Once the hand is clear of the released box the window ends."""

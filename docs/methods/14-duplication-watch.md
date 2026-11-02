@@ -197,6 +197,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 - **`_resolve_cameras` in three perception nodes** — `openral_perception_ros.camera_topics.resolve_camera_topics`.
 - **Hand-built `/openral/cameras/<name>/<kind>` strings at ~40 sites** (sim bridge, sensor leg, world-state `camera_topic_prefix`, deploy launch, Foxglove layout + allowlist, vision-attachment bridge, record profiles, perception/SLAM node defaults) — `openral_core.camera_topic` / `CAMERA_TOPIC_PREFIX` (ADR-0108); `tests/unit/test_camera_topic_layout.py` fails on a new one.
 - **`homogeneous_from_quat_xyz`** — moved from `openral_world_state.object_lift` to `openral_core.geometry`; world-state keeps a thin wrapper.
+- **`freeze_released_attachment`** — moved from `openral_hal.vision_attachment_bridge` to `openral_core.geometry` so the object tracker freezes a released payload the same way; the HAL re-imports it.
 
 ---
 

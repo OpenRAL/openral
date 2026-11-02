@@ -678,16 +678,17 @@ _The depth-camera extrinsic a real world-voxel deploy runs on. OpenRAL does not 
 _Shared rotation geometry — look-at/camera gaze poses plus planar yaw↔quaternion helpers, so every layer uses one implementation instead of duplicating them. Import-on-demand, not re-exported by `openral_core.__init__`, so schemas stay numpy-free on the fast CLI path._
 
 - `ViewAxis` (TypeAlias = `Literal["-z", "+z", "+x"]`) — Camera forward-axis conventions: `"-z"` MuJoCo, `"+z"` ROS optical frames, `"+x"` body-frame forward.
-- `_ZERO_NORM: float = 1e-9` — Below this vector norm, `look_at_quat_wxyz` treats the gaze direction as degenerate. (L48)
-- `_PARALLEL: float = 0.999` — Above this `|cos|` between gaze and `up`, `look_at_quat_wxyz` swaps to the alternate up vector. (L49)
-- `_QUAT_NORM_EPS: float = 1e-12` — Below this squared norm, a quaternion is treated as degenerate. (L50)
-- `look_at_quat_wxyz(eye, target, *, up=(0,0,1), view_axis="-z") -> tuple[float, float, float, float]` — Unit quaternion orienting a camera at `eye` so `view_axis` points at `target`; never raises, falling back to a fixed orientation on degenerate input. (L187)
-- `compute_gaze_pose(camera_xyz, target_xyz, *, frame_id="map", up=(0,0,1), view_axis="+z") -> Pose6D` — Full 6-DOF camera pose whose view axis hits `target_xyz`. (L250)
-- `rotation_to_quat_wxyz(rot: 3x3) -> tuple[w, x, y, z]` — Matrix→quaternion conversion (Shepperd's method). (L173)
-- `homogeneous_from_quat_xyz(translation, quat_xyzw) -> NDArray[np.float64]` — The canonical TF2 transform→4x4-matrix step; raises `ROSConfigError` on a degenerate rotation rather than guessing. (L53)
-- `yaw_to_quat_xyzw(yaw: float) -> tuple[x, y, z, w]` — Unit quaternion (ROS order) for `Rz(yaw)`. (L109)
-- `yaw_to_quat_wxyz(yaw: float) -> tuple[w, x, y, z]` — Same rotation in MuJoCo order. (L120)
-- `quat_xyzw_to_yaw(x, y, z, w) -> float` — Planar yaw in `[-pi, pi]`, roll/pitch ignored. (L131)
+- `_ZERO_NORM: float = 1e-9` — Below this vector norm, `look_at_quat_wxyz` treats the gaze direction as degenerate. (L49)
+- `_PARALLEL: float = 0.999` — Above this `|cos|` between gaze and `up`, `look_at_quat_wxyz` swaps to the alternate up vector. (L50)
+- `_QUAT_NORM_EPS: float = 1e-12` — Below this squared norm, a quaternion is treated as degenerate. (L51)
+- `look_at_quat_wxyz(eye, target, *, up=(0,0,1), view_axis="-z") -> tuple[float, float, float, float]` — Unit quaternion orienting a camera at `eye` so `view_axis` points at `target`; never raises, falling back to a fixed orientation on degenerate input. (L188)
+- `compute_gaze_pose(camera_xyz, target_xyz, *, frame_id="map", up=(0,0,1), view_axis="+z") -> Pose6D` — Full 6-DOF camera pose whose view axis hits `target_xyz`. (L251)
+- `rotation_to_quat_wxyz(rot: 3x3) -> tuple[w, x, y, z]` — Matrix→quaternion conversion (Shepperd's method). (L174)
+- `homogeneous_from_quat_xyz(translation, quat_xyzw) -> NDArray[np.float64]` — The canonical TF2 transform→4x4-matrix step; raises `ROSConfigError` on a degenerate rotation rather than guessing. (L54)
+- `freeze_released_attachment(held, *, base_link, t_base_from_link) -> AttachedCollisionObject` (L287) — The released payload re-expressed on the collision model's root link at its DETACH pose: geometry, evidence and force attestation kept, `support_contact` dropped (the held payload's own is the grasp-time `map_support_under:*` witness, a claim about the ATTACH pose that would ride the record misplaced through the window; the place leg's set-down witness is decorated per publish, `PlaceTargetLeg.decorate`, and still rides the record); `touch_links` = the held attach link + its touch links (nothing the held record did not already exempt); `evidence_ref` suffixed `|frozen_release`. Root, not hand: the kernel places a record at `link_world[attach_link]` in every predicted configuration, so a hand-attached record would follow the retreat. Shared by the HAL release window and the object tracker's release (moved from `openral_hal.vision_attachment_bridge`, 2026-11-02).
+- `yaw_to_quat_xyzw(yaw: float) -> tuple[x, y, z, w]` — Unit quaternion (ROS order) for `Rz(yaw)`. (L110)
+- `yaw_to_quat_wxyz(yaw: float) -> tuple[w, x, y, z]` — Same rotation in MuJoCo order. (L121)
+- `quat_xyzw_to_yaw(x, y, z, w) -> float` — Planar yaw in `[-pi, pi]`, roll/pitch ignored. (L132)
 
 ### `python/core/src/openral_core/kinematics.py`
 
