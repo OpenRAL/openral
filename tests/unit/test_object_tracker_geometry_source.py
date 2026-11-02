@@ -8,22 +8,13 @@ not be the held object) never does. Real manifests, the real binder.
 
 from __future__ import annotations
 
-import math
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 from openral_core import AttachedCollisionPrimitive, BoxShape, ObjectRole, Pose6D, TrackStatus
-from openral_core.geometry import rotation_to_quat_wxyz
 from openral_world_state.object_tracker.binding import BindOutcome
 
-from tests.unit._object_tracker_fixtures import CELL, ROBOTS, DictStore, arm_at_hold, track
-from tests.unit.test_object_tracker_binding import (
-    _body,
-    _grid,
-    _hand_step,
-    _tracked_hold,
-)
+from tests.unit._object_tracker_fixtures import ROBOTS, DictStore, arm_at_hold, track
 
 
 def _sources(binding: object) -> list[str]:
@@ -99,50 +90,6 @@ def test_a_destination_is_never_the_payload(robot: str) -> None:
     target = bowl.model_copy(update={"role": ObjectRole.TARGET})
     binder.on_release()
     assert binder.on_attach(DictStore([target]), q, stamp_ns=1).outcome is BindOutcome.TRACKED
-
-
-@pytest.mark.parametrize("robot", list(ROBOTS))
-def test_in_hand_growth_cells_are_grown_and_the_fit_stays_measured(robot: str) -> None:
-    binder, q, r = _tracked_hold(robot)
-    frame = binder.frame_id
-    t_a = binder.hand.t_frame_from_attach(frame, q)
-    pc = t_a[:3, :3] @ binder.hand.pinch_in_link(q[binder.hand.joint.name]).centre + t_a[:3, 3]
-    body_a = _body(pc, r, -0.02, 0.035)
-    q_b = _hand_step(binder, robot, q, 1.0 * CELL)
-    t_b = binder.hand.t_frame_from_attach(frame, q_b)
-    move = t_b @ np.linalg.inv(t_a)
-    body_b = body_a @ move[:3, :3].T + move[:3, 3]
-    lo = np.floor((pc - 0.3) / CELL) * CELL
-    store = DictStore([])
-    first = binder.held.attachment.primitives  # type: ignore[union-attr]
-    n0 = len(first)
-    assert binder.grow_untracked(store, _grid(frame, body_a, lo, 60), q, 20) is None
-    grown = binder.grow_untracked(store, _grid(frame, body_b, lo, 60), q_b, 30)
-    assert grown is not None
-    src = [p.geometry_source for p in grown.attachment.primitives]
-    assert src[:n0] == ["measured"] * n0 and set(src[n0:]) == {"grown"}
-
-
-def test_a_protrusion_arc_is_grown_and_the_first_fit_stays_measured() -> None:
-    binder, q, centre = arm_at_hold("droid_franka_robotiq")
-    frame = binder.frame_id
-    t_fa = binder.hand.t_frame_from_attach(frame, q)
-    r_pinch = t_fa[:3, :3] @ binder.hand.axes
-    w, x, y, z = rotation_to_quat_wxyz(r_pinch)
-    half = (0.012, 0.012, 0.07)
-    store = DictStore([track("trk:1", frame, centre, half, quat=(x, y, z, w))])
-    first = binder.on_attach(store, q, stamp_ns=10).attachment
-    theta = math.radians(30.0)
-    c = r_pinch[:, 0]
-    k = np.array([[0, -c[2], c[1]], [c[2], 0, -c[0]], [-c[1], c[0], 0]])
-    rot = np.eye(3) + math.sin(theta) * k + (1 - math.cos(theta)) * (k @ k)
-    g = np.stack(np.meshgrid(*[np.arange(-h, h + 1e-9, 0.002) for h in half]), -1).reshape(-1, 3)
-    grid = _grid(frame, g @ (rot @ r_pinch).T + centre, np.floor((centre - 0.2) / CELL) * CELL)
-    grown = binder.grow_by_protrusion(store, grid, q, stamp_ns=20)
-    assert grown is not None
-    src = [p.geometry_source for p in grown.attachment.primitives]
-    n0 = len(first.primitives)
-    assert src[:n0] == ["measured"] * n0 and set(src[n0:]) == {"grown"}
 
 
 def test_the_tag_round_trips_the_wire_and_an_unknown_code_is_fallback() -> None:

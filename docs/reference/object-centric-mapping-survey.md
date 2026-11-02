@@ -45,11 +45,10 @@ the object's size.
 
 The current tracker combines recent clear camera fits in a short window and uses
 heuristics for hidden extent; it is not a persistent object-local surface mapper.
-Binding constructs carried geometry, and subsequent protrusion observations can
-grow it. See [tracker.py](https://github.com/OpenRAL/openral/blob/master/python/world_state/src/openral_world_state/object_tracker/tracker.py)
+Binding constructs carried geometry; the map never grows it. See [tracker.py](https://github.com/OpenRAL/openral/blob/master/python/world_state/src/openral_world_state/object_tracker/tracker.py)
 (`VIEW_WINDOW_S`, multi-view fusion, measured hidden size) and
 [binding.py](https://github.com/OpenRAL/openral/blob/master/python/world_state/src/openral_world_state/object_tracker/binding.py)
-(binding construction and `grow_by_protrusion`).
+(binding construction).
 
 The world-map bridge already handles tracked-object current, swept, vacated and
 released cells, with identity checks and support/static-geometry exclusions.

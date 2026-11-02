@@ -15,8 +15,7 @@ wire; everything it decides lives here so it runs without ROS:
   ``grounding_required`` is the runner's (it is logged at error level here).
 * **Binding** (``binding.GraspBinder`` per gripper): ``ATTACH`` binds what the pinch volume
   meets; ``REGRASP`` grows it; ``DETACH`` — or the jaw-open rule (``JawReleaseMonitor``,
-  the kernel's K5 mirrored) — releases it (``release.release_track``). A fit the tracker
-  hands back for a bound track triggers the in-hand protrusion growth. An ambiguous
+  the kernel's K5 mirrored) — releases it (``release.release_track``). An ambiguous
   (``PINCH_FALLBACK``) union drops every candidate that a post-lift re-fit shows stayed
   behind (re-fitted after the ATTACH, its box no longer meeting the pinch volume). An
   untracked grasp re-opens the live grasp goal's queries (the re-ground after lift).
@@ -441,12 +440,6 @@ class TrackerSession:
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._tick(source_stamp_ns)
-            if self._joints <= self.positions.keys():
-                for binder in self.binders.values():  # untracked payloads grow on the map
-                    if binder.grow_untracked(
-                        self.tracker.store, grid, self.positions, source_stamp_ns
-                    ):
-                        self.attachment_changes += 1
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
         """Fold the approved command for a gripper joint into the derived-attach read.
@@ -752,7 +745,6 @@ class TrackerSession:
         # minted by an older standing query. Reconcile ownership after every feed.
         self._rekey_live_tracks()
         for oid, fit in out.bound_fits:
-            self._grow(oid)
             self._check_drop(oid, fit, hands)
         self._expire_released()
         self._prune_ambiguous()
@@ -1147,19 +1139,6 @@ class TrackerSession:
         if not len(col):
             return fallback_z
         return float(col[:, 2].max()) + self.grid.resolution / 2.0
-
-    def _grow(self, object_id: str) -> None:
-        """In-hand growth on a fit of the bound ``object_id`` (map protrusion)."""
-        if self.grid is None or not self._joints <= self.positions.keys():
-            return
-        for binder in self.binders.values():
-            held = binder.held
-            if held is not None and held.attachment.object_id == object_id:
-                grown = binder.grow_by_protrusion(
-                    self.tracker.store, self.grid, self.positions, self._now_ns
-                )
-                if grown is not None:
-                    self.attachment_changes += 1
 
     def _prune_ambiguous(self) -> None:
         """Drop each candidate a post-lift re-fit shows stayed behind from an ambiguous union."""
