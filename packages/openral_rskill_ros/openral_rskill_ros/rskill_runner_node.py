@@ -474,6 +474,9 @@ if _ROS2_AVAILABLE:
             # Newest NON-latching kernel drop (DROP_* + detail) and when it arrived.
             # (receipt monotonic, label, exception type) of the newest kernel drop.
             self._last_drop: tuple[float, str, type[Exception], str] | None = None
+            # (drop_reason, latched) of the last status received: the kernel republishes the
+            # standing status every second, and only a change is a new drop.
+            self._last_status_key: tuple[int, bool] | None = None
             # (bare drop label, reason) of the drop the last apply-wait timeout raised on
             # (``_safety_drop_reason``): a non-stale drop's ControllerEvidence.
             self._explained_drop: tuple[str, str] | None = None
@@ -3102,11 +3105,18 @@ if _ROS2_AVAILABLE:
             self._safety_status = msg
             self._safety_status_recv_monotonic = time.monotonic()
             code = int(getattr(msg, "drop_reason", 0))
+            key = (code, bool(getattr(msg, "latched", False)))
+            # The kernel republishes the standing status every second (its diagnostics
+            # tick): a repeat is no new drop, and re-stamping it would let an apply-wait
+            # that began after the drop end on it while its own tick is accepted.
+            repeat = key == self._last_status_key
+            self._last_status_key = key
             # DROP_NONE (255, "chunk accepted") is in the DROP_* range but drops nothing:
             # recorded, it overwrote the real cause of a timed-out apply-wait (Spark restock
             # seed 16, 2026-10-28: attached_unavailable reported as "drop_none").
             if (
-                code >= 100
+                not repeat
+                and code >= 100
                 and code != int(getattr(type(msg), "DROP_NONE", 255))
                 and not bool(getattr(msg, "latched", False))
             ):  # SafetyStatus DROP_*
