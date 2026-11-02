@@ -440,15 +440,6 @@ class GraspBinder:
         t = self.hand.t_frame_from_attach(self.frame_id, positions)
         return _pose(t @ _t(self.held.attachment.pose_in_link), self.frame_id)
 
-    def _held_boxes(self, positions: Mapping[str, float]) -> list[Box]:
-        assert self.held is not None  # reason: callers check
-        t = _t(self.object_pose(positions))
-        out: list[Box] = []
-        for p in self.held.attachment.primitives:
-            tp = t @ _t(p.pose_in_object)
-            out.append((tp[:3, 3], tp[:3, :3], bounding_half_extents(p.shape)))
-        return out
-
     # -- ATTACH ---------------------------------------------------------------------
     def on_attach(
         self,
@@ -668,16 +659,14 @@ class GraspBinder:
         )
 
     # -- REGRASP --------------------------------------------------------------------
-    def _union(
-        self, added: Sequence[AttachedCollisionPrimitive], stamp_ns: int, why: str
-    ) -> Binding | None:
+    def _union(self, added: Sequence[AttachedCollisionPrimitive], stamp_ns: int) -> Binding | None:
         assert self.held is not None  # reason: callers check
         att = self.held.attachment
         if len(att.primitives) + len(added) > MAX_PRIMITIVES:
             log.warning(
                 "object_tracker.bound_geometry_cap",
                 object_id=att.object_id,
-                why=why,
+                why="regrasp",
                 held=len(att.primitives),
                 added=len(added),
             )
@@ -698,7 +687,7 @@ class GraspBinder:
         log.info(
             "object_tracker.bound_geometry_grew",
             object_id=att.object_id,
-            why=why,
+            why="regrasp",
             revision=grown.geometry_revision,
             primitives=len(grown.primitives),
         )
@@ -715,7 +704,7 @@ class GraspBinder:
         if np.linalg.norm(shift) <= _EPS_M:
             return None  # already on the pinch axis: nothing new to union
         slide = _frame(t_ao[:3, :3].T @ shift, np.eye(3))
-        return self._union([_moved(p, slide) for p in self._shape], stamp_ns, "regrasp")
+        return self._union([_moved(p, slide) for p in self._shape], stamp_ns)
 
     def on_release(self) -> None:
         """Forget the held payload (the track itself goes through ``release.release_track``)."""

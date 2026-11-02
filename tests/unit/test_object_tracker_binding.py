@@ -425,39 +425,6 @@ def _lift(robot: str, q: dict[str, float]) -> dict[str, float]:
     return lifted
 
 
-# ── In-hand growth of a TRACKED payload (#418 r6po_dbg8, 2026-10-17) ────────────────────
-#
-# The bound orange_3 was no longer where the payload said: in the gripper frame the orange
-# drifted 0.9 cm in 80 ms (inhand.py on the bag), then fell out 1.5 cm at 8.03 s. The payload
-# is fixed in the link at bind and only rotation-about-the-pinch-axis growth ran for tracked
-# binds; the cells that moved with the hand but stuck out of the payload were never taken.
-
-
-def _tracked_hold(robot: str) -> tuple[GraspBinder, dict[str, float], NDArray[np.float64]]:
-    binder, q, centre = arm_at_hold(robot)
-    frame = binder.frame_id
-    r = binder.hand.t_frame_from_attach(frame, q)[:3, :3] @ binder.hand.axes  # c, a, b
-    held = track("trk:1", frame, centre, (0.02, 0.02, 0.02))
-    store = DictStore([held])
-    assert binder.on_attach(store, q, stamp_ns=10).outcome is BindOutcome.TRACKED
-    return binder, q, r
-
-
-def _body(
-    centre: NDArray[np.float64], r: NDArray[np.float64], lo: float, hi: float
-) -> NDArray[np.float64]:
-    """A 3 x 3 cm (closing, width) body long along the pinch approach axis, ``lo..hi`` about
-    ``centre``, sampled at 2 mm: the real orange is wider than its fit by a few mm."""
-    half = np.array([0.015, 0.015, 0.015])
-    axes = (
-        np.arange(-half[0], half[0] + 1e-9, 0.002),
-        np.arange(lo, hi + 1e-9, 0.002),
-        np.arange(-half[2], half[2] + 1e-9, 0.002),
-    )
-    g = np.stack(np.meshgrid(*axes), -1).reshape(-1, 3)
-    return g @ r.T + centre
-
-
 def _hand_step(
     binder: GraspBinder, robot: str, q: dict[str, float], step_m: float
 ) -> dict[str, float]:
@@ -467,9 +434,6 @@ def _hand_step(
     k = step_m / float(np.linalg.norm(full[:3, 3] - t0[:3, 3]))
     lifted = _lift(robot, q)
     return {n: q[n] + k * (lifted[n] - q[n]) for n in q}
-
-
-_PAN = {"so101_follower": "shoulder_pan", "droid_franka_robotiq": "panda_joint1"}
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))

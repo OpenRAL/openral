@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from openral_core import ObjectRole, TrackStatus
-from openral_world_state.object_tracker.binding import BindOutcome, GraspBinder
+from openral_world_state.object_tracker.binding import BindOutcome, GraspBinder, _t
 from openral_world_state.object_tracker.session import TrackerSession, TrackingMode
 
 from tests.unit._object_tracker_fixtures import ROBOTS, arm_at_hold
@@ -248,8 +248,13 @@ def test_a_provisional_track_binds_late_as_a_provisional_payload_carried_with_th
     s, binder, carried, q_up = _run("so101_follower", lift_m=0.05, follows=True, provisional=True)
     assert binder.held is not None and binder.held.outcome is BindOutcome.PROVISIONAL
     assert set(binder.held.candidates) <= s._held_ids()  # never aged
-    boxes = binder._held_boxes(q_up)
-    near = min(np.linalg.norm(b[0] - carried) for b in boxes)
+    t_obj = binder.hand.t_frame_from_attach(binder.frame_id, q_up) @ _t(
+        binder.held.attachment.pose_in_link
+    )
+    near = min(
+        np.linalg.norm((t_obj @ _t(p.pose_in_object))[:3, 3] - carried)
+        for p in binder.held.attachment.primitives
+    )
     assert near < 0.05, (
         near
     )  # the measured box rides with the hand: a primitive sits at the carried object
