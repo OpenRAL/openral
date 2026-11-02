@@ -143,6 +143,29 @@ def test_a_stop_by_a_human_or_the_deadman_asks_for_a_human_not_a_new_motion() ->
     assert "self-collision" in own and "clear the obstacle" not in own
 
 
+def test_a_stop_against_an_unmeasured_payload_says_the_bound_may_be_the_cause() -> None:
+    """Spark restock (pro#51): an ATTACH with no tracked object carries the jaw-stroke box
+    (``pinch_fallback``); it hit the robot's own base while the real carton cleared it. The
+    hint must not read as a motion that hits the robot or a world obstacle."""
+    hint = reflect_on_failure(
+        "aborted",
+        "safety_estop:...",
+        failure_kind="FAILURE_SAFETY_ESTOP",
+        evidence_json=CollisionEvidence(
+            collision_kind="self",
+            link_a="attached:pinch:right_gripper@12083333964",
+            link_b_or_object="openarm_body_link0",
+            min_distance_m=-0.0001,
+            horizon_step=0,
+            payload_evidence_kind="pinch_fallback",
+            payload_evidence_ref="untracked_grasp",
+        ).model_dump_json(),
+    )
+    assert "never measured" in hint and "re-grasp" in hint
+    assert "until an operator resets it" in hint
+    assert "self-collision" not in hint and "clear the obstacle" not in hint
+
+
 def test_a_stalled_clock_is_not_reported_as_a_stuck_skill() -> None:
     """A ``clock_stalled`` deadline miss means the stack stopped, not the skill."""
     stalled = TimeoutEvidence(

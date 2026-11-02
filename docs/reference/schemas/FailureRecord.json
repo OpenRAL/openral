@@ -125,7 +125,7 @@
     },
     "CollisionEvidence": {
       "additionalProperties": false,
-      "description": "Evidence for ``KIND_COLLISION`` \u2014 a proposed motion would collide.\n\nAttributes:\n    kind: Discriminator (always ``\"collision\"``).\n    collision_kind: ``\"self\"`` (link vs link) or ``\"world\"`` (link vs\n        obstacle).\n    link_a: Robot link whose collision volume tripped the check.\n    link_b_or_object: The other robot link (self-collision) or the world\n        object / occupancy region (world-collision).\n    horizon_step: Chunk step (horizon index) where the collision was first\n        detected, or ``REACTIVE_HORIZON_STEP`` (``-1``) when the hit is a\n        REACTIVE one \u2014 the robot's *measured* configuration already\n        collides, so no prediction step is involved. The C++ safety kernel\n        emits ``-1`` for that check (``check_config(q_meas, -1)`` in\n        ``cpp/openral_safety_kernel/src/lifecycle_kernel.cpp``); it is the\n        common case for Cartesian control modes, whose reactive\n        measured-state check is the guaranteed floor.\n    min_distance_m: Signed minimum distance at detection, in metres\n        (negative means interpenetration).\n    joint_positions_rad: The configuration the kernel ran forward\n        kinematics on for ``horizon_step`` \u2014 the exact vector handed to\n        ``forward_kinematics``, in the envelope's dof order, with mobile-base\n        dofs zeroed (the kernel checks the arm in ``base_link``). This is\n        what makes a stop adjudicatable: a *predicted* step's configuration\n        exists in no other artifact, because it depends on the kernel's own\n        damped-least-squares Jacobian, its lambda and its seed dt \u2014 so\n        replaying such a stop against the measured joints reads geometry the\n        kernel never checked. Empty only on a record emitted before the field\n        existed: a kernel that reports a collision has a collision model by\n        construction, and its FK buffer is always ``n_dof`` long.\n    joint_names: Optional joint names in the exact same order as\n        ``joint_positions_rad``. Missing on older records or when the\n        producer cannot establish a same-length name vector.\n    sweep_min_distance_m: Minimum distance over all checked pairs, including\n        exempted pairs. It does not identify the pair named by the link fields.\n    workspace_denial_reason: Readable reason the workspace rule did not\n        tolerate the reported pair, mapped from the kernel's existing code.\n    workspace_contact_active: Whether a live workspace contact region was\n        active during the check, when reported by the producer.\n    grasp_exemption_active: Whether a live grasp exemption was active during\n        the check, when reported by the producer.\n    grasp_exemption_source: Which grasp exemption the check ran under (ADR-0121):\n        ``region`` (ADR-0115), ``tracked`` (in-tree K2), ``provider`` (an exemption\n        provider replacing the region) or ``none``; ``None`` from a producer that\n        predates it. Backward-compatible addition.\n    grasp_exemption_provider: The provider's name when ``grasp_exemption_source`` is\n        ``provider``. Backward-compatible addition.\n    depth_is_box_bound: Whether ``min_distance_m`` reports a bounding-box\n        lower bound instead of a tight-geometry distance.\n    payload_evidence_kind: Attached-payload source kind from the accepted\n        attachment wire, only when the reported pair is a carried payload.\n    payload_evidence_ref: Producer reference paired with\n        ``payload_evidence_kind``, when present and bounded.\n    world_grid_origin_m: Base-frame position of voxel ``(0,0,0)``'s minimum\n        corner in the occupancy grid **this check ran against**, when the\n        other party is a world voxel; ``None`` otherwise and on any\n        producer that predates the field. The kernel names its cell only\n        as ``voxel_<n>``, an index into a grid it does not republish, so a\n        consumer has to pair that index with a grid of its own \u2014 and the\n        published window is snapped to the source lattice, so a base drift\n        across one cell boundary shifts the whole window and the same index\n        names a different cell. Matching on a stamp cannot separate two\n        grids inside one clock tick (`/clock` quantises every stamp in the\n        graph to the tick); matching on this origin is exact.",
+      "description": "Evidence for ``KIND_COLLISION`` \u2014 a proposed motion would collide.\n\nAttributes:\n    kind: Discriminator (always ``\"collision\"``).\n    collision_kind: ``\"self\"`` (link vs link) or ``\"world\"`` (link vs\n        obstacle).\n    link_a: Robot link whose collision volume tripped the check.\n    link_b_or_object: The other robot link (self-collision) or the world\n        object / occupancy region (world-collision).\n    horizon_step: Chunk step (horizon index) where the collision was first\n        detected, or ``REACTIVE_HORIZON_STEP`` (``-1``) when the hit is a\n        REACTIVE one \u2014 the robot's *measured* configuration already\n        collides, so no prediction step is involved. The C++ safety kernel\n        emits ``-1`` for that check (``check_config(q_meas, -1)`` in\n        ``cpp/openral_safety_kernel/src/lifecycle_kernel.cpp``); it is the\n        common case for Cartesian control modes, whose reactive\n        measured-state check is the guaranteed floor.\n    min_distance_m: Signed minimum distance at detection, in metres\n        (negative means interpenetration).\n    joint_positions_rad: The configuration the kernel ran forward\n        kinematics on for ``horizon_step`` \u2014 the exact vector handed to\n        ``forward_kinematics``, in the envelope's dof order, with mobile-base\n        dofs zeroed (the kernel checks the arm in ``base_link``). This is\n        what makes a stop adjudicatable: a *predicted* step's configuration\n        exists in no other artifact, because it depends on the kernel's own\n        damped-least-squares Jacobian, its lambda and its seed dt \u2014 so\n        replaying such a stop against the measured joints reads geometry the\n        kernel never checked. Empty only on a record emitted before the field\n        existed: a kernel that reports a collision has a collision model by\n        construction, and its FK buffer is always ``n_dof`` long.\n    joint_names: Optional joint names in the exact same order as\n        ``joint_positions_rad``. Missing on older records or when the\n        producer cannot establish a same-length name vector.\n    sweep_min_distance_m: Minimum distance over all checked pairs, including\n        exempted pairs. It does not identify the pair named by the link fields.\n    workspace_denial_reason: Readable reason the workspace rule did not\n        tolerate the reported pair, mapped from the kernel's existing code.\n    workspace_contact_active: Whether a live workspace contact region was\n        active during the check, when reported by the producer. This is the\n        kernel's in-tree rule, which is off when an exemption provider applies\n        workspace contact (ADR-0121), so it reads ``False`` on every provider stop.\n    workspace_declaration_live: Whether the grasp declaration's workspace was live\n        at the stop, whoever applies it (the in-tree rule or a provider). ``False``\n        with a declared workspace means it had lapsed or been dropped. ``None`` from\n        a producer that predates the field.\n    grasp_exemption_active: Whether a live grasp exemption was active during\n        the check, when reported by the producer.\n    grasp_exemption_source: Which grasp exemption the check ran under (ADR-0121):\n        ``region`` (ADR-0115), ``tracked`` (in-tree K2), ``provider`` (an exemption\n        provider replacing the region) or ``none``; ``None`` from a producer that\n        predates it. Backward-compatible addition.\n    grasp_exemption_provider: The provider's name when ``grasp_exemption_source`` is\n        ``provider``. Backward-compatible addition.\n    depth_is_box_bound: Whether ``min_distance_m`` reports a bounding-box\n        lower bound instead of a tight-geometry distance.\n    payload_evidence_kind: Attached-payload source kind from the accepted\n        attachment wire, only when the reported pair is a carried payload.\n    payload_evidence_ref: Producer reference paired with\n        ``payload_evidence_kind``, when present and bounded.\n    world_grid_origin_m: Base-frame position of voxel ``(0,0,0)``'s minimum\n        corner in the occupancy grid **this check ran against**, when the\n        other party is a world voxel; ``None`` otherwise and on any\n        producer that predates the field. The kernel names its cell only\n        as ``voxel_<n>``, an index into a grid it does not republish, so a\n        consumer has to pair that index with a grid of its own \u2014 and the\n        published window is snapped to the source lattice, so a base drift\n        across one cell boundary shifts the whole window and the same index\n        names a different cell. Matching on a stamp cannot separate two\n        grids inside one clock tick (`/clock` quantises every stamp in the\n        graph to the tick); matching on this origin is exact.\n    world_cell_center_m: Base-frame centre of that world voxel, when the other\n        party is one; ``None`` otherwise and on any producer that predates the\n        field. The grid's dimensions are not in the evidence, so without it the\n        index names no place a reasoner or an operator can look at.",
       "properties": {
         "kind": {
           "const": "collision",
@@ -223,6 +223,18 @@
           ],
           "default": null,
           "title": "Workspace Contact Active"
+        },
+        "workspace_declaration_live": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Declaration Live"
         },
         "grasp_exemption_active": {
           "anyOf": [
@@ -332,6 +344,31 @@
           ],
           "default": null,
           "title": "World Grid Origin M"
+        },
+        "world_cell_center_m": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "World Cell Center M"
         }
       },
       "required": [

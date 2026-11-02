@@ -1930,6 +1930,8 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   EXPECT_NE(stop_evidence.find(R"("workspace_denial_reason":"not_applicable_or_exempt")"),
             std::string::npos)
       << stop_evidence;
+  EXPECT_NE(stop_evidence.find(R"("workspace_declaration_live":false)"), std::string::npos)
+      << stop_evidence;
   EXPECT_NE(stop_evidence.find(R"("workspace_contact_active":false)"), std::string::npos)
       << stop_evidence;
   EXPECT_NE(stop_evidence.find(R"("grasp_exemption_active":false)"), std::string::npos)
@@ -2492,6 +2494,24 @@ TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
   // against. Matches `vox.origin` published above.
   EXPECT_NE(evidence.find(R"("world_grid_origin_m":[0,0,-0.14999999999999999])"), std::string::npos)
       << "a world-voxel stop must disclose the grid its index addresses: " << evidence;
+  // ...and where the named cell is: the index decoded on this grid (20 x 20, 0.1 m).
+  {
+    long idx = -1;
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    const auto at_voxel = evidence.find(R"("link_b_or_object":"voxel_)");
+    const auto at_centre = evidence.find(R"("world_cell_center_m":[)");
+    ASSERT_NE(at_voxel, std::string::npos) << evidence;
+    ASSERT_NE(at_centre, std::string::npos) << "a world-voxel stop must say where: " << evidence;
+    ASSERT_EQ(std::sscanf(evidence.c_str() + at_voxel, R"("link_b_or_object":"voxel_%ld")", &idx),
+              1);
+    ASSERT_EQ(std::sscanf(evidence.c_str() + at_centre, R"("world_cell_center_m":[%lf,%lf,%lf])",
+                          &cx, &cy, &cz),
+              3);
+    EXPECT_NEAR(cx, (static_cast<double>(idx % 20) + 0.5) * 0.1, 1e-9) << evidence;
+    EXPECT_NEAR(cy, (static_cast<double>(idx / 20 % 20) + 0.5) * 0.1, 1e-9) << evidence;
+    EXPECT_NEAR(cz, -0.15 + (static_cast<double>(idx / 400) + 0.5) * 0.1, 1e-9) << evidence;
+    EXPECT_GE(cy, 0.95) << "the named cell must be one of the wall's: " << evidence;
+  }
   EXPECT_NE(evidence.find(R"("horizon_step":-1)"), std::string::npos)
       << "the reactive (measured-state) check must report the -1 sentinel, not a "
          "predicted-horizon index: "
@@ -4682,6 +4702,16 @@ public:
           last_flat = msg->flat;
           ++passed;
         });
+    rclcpp::QoS fail_qos(rclcpp::KeepLast(50));
+    fail_qos.reliable();
+    fail_sub_ = helper_->create_subscription<openral_msgs::msg::FailureTrigger>(
+        "/openral/failure/safety", fail_qos,
+        [this](const openral_msgs::msg::FailureTrigger::SharedPtr m) {
+          if (m->kind == openral_msgs::msg::FailureTrigger::KIND_COLLISION &&
+              collision_evidence.empty()) {
+            collision_evidence = m->evidence_json;
+          }
+        });
     diag_sub_ = helper_->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
         "/diagnostics", rclcpp::QoS(10),
         [this](const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg) {
@@ -4831,6 +4861,7 @@ public:
   std::atomic<int> passed{0};
   std::vector<double> last_flat;  ///< the last chunk republished on /openral/safe_action
   std::string grasp_diag;
+  std::string collision_evidence;  ///< the first KIND_COLLISION report's evidence_json
   openral_msgs::msg::OccupancyVoxels voxels = grasp_target_voxels();  ///< published every beat
   /// The measured state every beat: `js_names` = {q} + `js_tail` (a 2-dof rig
   /// adds its second joint here).
@@ -4854,6 +4885,7 @@ private:
   rclcpp::Publisher<openral_msgs::msg::WorldStateStamped>::SharedPtr ws_pub_;
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr safe_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_sub_;
+  rclcpp::Subscription<openral_msgs::msg::FailureTrigger>::SharedPtr fail_sub_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr estop_pub_;
   rclcpp::executors::SingleThreadedExecutor exec_;
   bool configured_ = false;
@@ -6541,6 +6573,11 @@ TEST_F(LifecycleKernelTest, AFastHandInsideTheWorkspaceStillTrips) {
   EXPECT_FALSE(rig.offer_chunk(&b, 0.3, grasp_chunk(0.0)));
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("workspace_contact_active=1"), 1U) << logs.joined();
+  // The stop's evidence says the declaration was live, so a reader can tell "inside a live
+  // workspace, too fast" from "no workspace" (with a provider the in-tree flag reads false).
+  rig.spin_for(200);
+  EXPECT_NE(rig.collision_evidence.find(R"("workspace_declaration_live":true)"), std::string::npos)
+      << rig.collision_evidence;
 }
 
 TEST_F(LifecycleKernelTest, NoConfirmedWorkspaceOrTheRuleOffMeansTodaysStop) {

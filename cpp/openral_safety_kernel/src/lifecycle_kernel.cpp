@@ -4143,6 +4143,10 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   }
   oss << R"(,"workspace_contact_active":)"
       << (voxel_grid_.workspace_region.valid ? "true" : "false");
+  // The declaration itself, whoever applies it: with an exemption provider the in-tree rule
+  // above is off (ADR-0121), so `workspace_contact_active` read false on every provider stop,
+  // a live workspace and a lapsed one alike.
+  oss << R"(,"workspace_declaration_live":)" << (workspace_live() ? "true" : "false");
   const char* grasp_source = grasp_exemption_source();
   const bool grasp_active = std::strcmp(grasp_source, "none") != 0;
   oss << R"(,"grasp_exemption_active":)" << (grasp_active ? "true" : "false")
@@ -4182,6 +4186,19 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   if (link_b.rfind("voxel_", 0) == 0) {
     oss << R"(,"world_grid_origin_m":[)" << voxel_grid_.pose.t.x << ',' << voxel_grid_.pose.t.y
         << ',' << voxel_grid_.pose.t.z << ']';
+    // WHERE that cell is, in base_frame. The grid's dimensions are not in the evidence,
+    // so the index alone cannot be decoded: a stop read "hit voxel_467357" and gave the
+    // reasoner and an operator no place to look.
+    const long long sx = voxel_grid_.sx;
+    const long long sxy = sx * voxel_grid_.sy;
+    const char* digits = link_b.c_str() + 6;
+    char* end = nullptr;
+    const long long idx = std::strtoll(digits, &end, 10);
+    if (end != digits && *end == '\0' && idx >= 0 && idx < sxy * voxel_grid_.sz) {
+      const Vec3 c = voxel_center(voxel_grid_, static_cast<int>(idx % sx),
+                                  static_cast<int>((idx % sxy) / sx), static_cast<int>(idx / sxy));
+      oss << R"(,"world_cell_center_m":[)" << c.x << ',' << c.y << ',' << c.z << ']';
+    }
   }
   oss << '}';
   trigger.evidence_json = oss.str();
