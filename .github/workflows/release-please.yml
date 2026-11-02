@@ -61,6 +61,14 @@ jobs:
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
+          # Pinned: an unpinned (latest) uv re-locks in its own format — uv
+          # 0.13 wrote `revision = 5` and rewrote the torch markers on the
+          # v0.4.0 PR — so the refresh stopped being version-only and
+          # check_release_diff.py rightly ran the full suite. Must match the
+          # uv that wrote master's lock (`revision = 3`).
+          # ponytail: one pin here; move to [tool.uv] required-version if
+          # contributors' locks drift onto a newer format.
+          version: "0.12.5"
           enable-cache: true
           cache-dependency-glob: uv.lock
 

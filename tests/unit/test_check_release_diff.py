@@ -8,6 +8,7 @@ and runs the checker over the real ``git diff``.
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -67,7 +68,10 @@ def _bump(repo: Path, rel: str, edit: Callable[[str], str]) -> list[str]:
 
 
 def _release(text: str) -> str:
-    return text.replace(_VERSION, f'"{_NEXT}"').replace(f"=={_CURRENT}", f"=={_NEXT}")
+    # Bump only OpenRAL's own entries: a third-party package can share the
+    # version string (uv.lock pins distlib at 0.4.0, the v0.4.0 release).
+    own = re.compile(rf'(name = "openral[^"]*"\nversion = )"{re.escape(_CURRENT)}"')
+    return own.sub(rf'\1"{_NEXT}"', text).replace(f"=={_CURRENT}", f"=={_NEXT}")
 
 
 def test_a_lockstep_version_bump_passes(release_repo: Path) -> None:
