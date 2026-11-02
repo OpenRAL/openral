@@ -101,8 +101,9 @@ with nothing exempting them, and it ends as an unexplained world-collision e-sto
 six of eight restock timeouts). The runner ends the goal
 `DECLARATION_EXPIRY_MARGIN_S` (2 s) before that expiry instead: `failure_reason=
 "deadline_exceeded: grasp declaration '<target>' expires (armed … ago, timeout_s=…)"`,
-`TimeoutEvidence.operation="rskill.execute:grasp_declaration:deadline_exceeded"`. It only
-ever ends a goal earlier.
+`TimeoutEvidence.operation="rskill.execute:grasp_declaration:deadline_exceeded"`. A wrapped
+`ros_action` goal checks it too, in the `stop_check` it polls while blocked. It only ever ends
+a goal earlier.
 
 `_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period sleep wait on the
 clock, not the safety layer. `ROSActionRskill._poll_future` (a wrapped `ros_action`/

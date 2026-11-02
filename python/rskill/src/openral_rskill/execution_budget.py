@@ -247,7 +247,7 @@ def declaration_expiry_miss(
     Args:
         target_id: The declaration's target, for the detail text.
         stamp_ns: When the declaration was armed (the clock ``now_ns`` reads).
-        timeout_s: Its lifetime; ``<= 0`` or a ``stamp_ns`` of 0 never expires here.
+        timeout_s: Its lifetime; ``<= 0`` never expires here.
         now_ns: The same clock now.
         margin_s: How long before the expiry the miss is reported.
 
@@ -265,17 +265,21 @@ def declaration_expiry_miss(
         >>> miss.kind, round(miss.elapsed_s, 1)
         ('deadline_exceeded', 68.0)
     """
-    if timeout_s <= 0.0 or stamp_ns <= 0:
+    if timeout_s <= 0.0:
         return None
     age_s = (now_ns - stamp_ns) / 1e9
-    if age_s < timeout_s - margin_s:
+    # The kernel drops the exemption on the same test (`elapsed_ns < 0 || elapsed_ns >
+    # timeout`): a stamp of 0 ages like any other, and a clock that ran backwards (a sim
+    # reset) has already expired it.
+    if 0.0 <= age_s < timeout_s - margin_s:
         return None
+    armed = f"armed {age_s:.1f}s ago" if age_s >= 0.0 else "stamped in the future"
     return BudgetMiss(
         kind="deadline_exceeded",
         elapsed_s=age_s,
         detail=(
-            f"grasp declaration {target_id!r} expires (armed {age_s:.1f}s ago, "
-            f"timeout_s={timeout_s:.1f}s): its contact exemption ends, so the goal ends first"
+            f"grasp declaration {target_id!r} expires ({armed}, timeout_s={timeout_s:.1f}s): "
+            "its contact exemption ends, so the goal ends first"
         ),
     )
 

@@ -138,29 +138,24 @@ def test_boundary_just_inside_budget_is_not_a_miss(budget: Any) -> None:
 # the finger 0.4 s later as a "world collision". The goal now ends first, as a deadline miss.
 
 
-class _Now:
-    """The node clock's ``now()`` at a settable instant (the graph clock, as under sim)."""
-
-    def __init__(self, ns: int) -> None:
-        self.nanoseconds = ns
-
-
 class _DeclarationHolder(_BudgetHolder):
-    """``_BudgetHolder`` plus the declaration in force and a node clock."""
+    """``_BudgetHolder`` plus the declaration in force and a real rclpy system clock."""
 
-    def __init__(self, declaration: Any, now_ns: int) -> None:
+    def __init__(self, declaration: Any) -> None:
+        import rclpy.clock
+
         super().__init__()
         self._active_grasp_declaration = declaration
-        self.now_ns = now_ns
+        self._clock = rclpy.clock.Clock()
 
-    def get_clock(self) -> Any:  # reason: stands in for rclpy's Clock at one instant
-        holder = self
+    def get_clock(self) -> Any:  # reason: rclpy Clock is untyped
+        return self._clock
 
-        class _Clock:
-            def now(self) -> _Now:
-                return _Now(holder.now_ns)
 
-        return _Clock()
+def _now_ns() -> int:
+    import rclpy.clock
+
+    return int(rclpy.clock.Clock().now().nanoseconds)
 
 
 def _scene_declaration(stamp_ns: int) -> Any:
@@ -173,9 +168,9 @@ def _scene_declaration(stamp_ns: int) -> Any:
     return GraspDeclaration.model_validate({**raw, "stamp_ns": stamp_ns})
 
 
-def _declaration_holder(declaration: Any, now_ns: int) -> Any:
+def _declaration_holder(declaration: Any) -> Any:
     mod = _load_skill_runner_module()
-    holder = _DeclarationHolder(declaration, now_ns)
+    holder = _DeclarationHolder(declaration)
     for name in ("_grasp_declaration_lapsing", "_report_miss"):
         setattr(holder, name, MethodType(getattr(mod.RskillRunnerNode, name), holder))
     return holder
@@ -183,7 +178,7 @@ def _declaration_holder(declaration: Any, now_ns: int) -> Any:
 
 def test_declaration_with_time_left_keeps_the_goal_running() -> None:
     """More than the margin left: no miss, nothing recorded."""
-    holder = _declaration_holder(_scene_declaration(5 * 10**9), now_ns=100 * 10**9)
+    holder = _declaration_holder(_scene_declaration(_now_ns() - 95 * 10**9))
     assert holder._grasp_declaration_lapsing(0) is False
     assert holder._last_deadline_miss is None
 
@@ -195,24 +190,35 @@ def test_expiring_declaration_ends_the_goal_as_a_deadline_miss() -> None:
 
     from openral_rskill.execution_budget import DECLARATION_EXPIRY_MARGIN_S
 
-    armed = 5 * 10**9
-    now = armed + int((120.0 - DECLARATION_EXPIRY_MARGIN_S + 0.1) * 1e9)
-    holder = _declaration_holder(_scene_declaration(armed), now_ns=now)
+    age_s = 120.0 - DECLARATION_EXPIRY_MARGIN_S + 0.1
+    holder = _declaration_holder(_scene_declaration(_now_ns() - int(age_s * 1e9)))
     assert holder._grasp_declaration_lapsing(41) is True
     miss = holder._last_deadline_miss
     assert miss.kind == "deadline_exceeded"
     assert "'obj:orange_1' expires" in miss.detail
-    assert miss.elapsed_s == pytest.approx(120.0 - DECLARATION_EXPIRY_MARGIN_S + 0.1)
+    assert miss.elapsed_s == pytest.approx(age_s, abs=0.5)
     evidence = json.loads(holder._goal_evidence[1])
     assert evidence["operation"] == "rskill.execute:grasp_declaration:deadline_exceeded"
     assert evidence["deadline_s"] == 120.0
 
 
-def test_no_declaration_or_unstamped_one_never_lapses() -> None:
-    """No declaration in force, or one never stamped (``stamp_ns=0``): nothing to expire."""
-    assert _declaration_holder(None, now_ns=10**12)._grasp_declaration_lapsing(0) is False
-    unstamped = _declaration_holder(_scene_declaration(0), now_ns=10**12)
-    assert unstamped._grasp_declaration_lapsing(0) is False
+def test_no_declaration_never_lapses() -> None:
+    """No declaration in force: nothing to expire."""
+    assert _declaration_holder(None)._grasp_declaration_lapsing(0) is False
+
+
+def test_stamp_zero_and_future_stamp_lapse_like_the_kernel() -> None:
+    """The kernel expires on ``elapsed < 0 || elapsed > timeout``: a declaration stamped at 0
+    (armed before the graph clock started) still ages, and one stamped ahead of the clock (a
+    sim reset) is already gone. Neither may keep the goal running."""
+    from openral_rskill.execution_budget import declaration_expiry_miss
+
+    assert _declaration_holder(_scene_declaration(0))._grasp_declaration_lapsing(0) is True
+    future = _declaration_holder(_scene_declaration(_now_ns() + 10 * 10**9))
+    assert future._grasp_declaration_lapsing(0) is True
+    assert "stamped in the future" in future._last_deadline_miss.detail
+    # A clock still at 0 when the stamp was taken: fresh, not lapsed.
+    assert declaration_expiry_miss(target_id="t", stamp_ns=0, timeout_s=70.0, now_ns=0) is None
 
 
 # ── _pace_tick — absolute-deadline loop cadence ──────────────────────────────

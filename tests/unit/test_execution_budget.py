@@ -550,6 +550,9 @@ def test_runner_deadline_lapsed_follows_the_graph_clock(graph: _Graph) -> None:
 
     mod = _load_runner_module()
     holder = _RunnerBudgetHolder()
+    holder._report_miss = MethodType(  # type: ignore[attr-defined]
+        mod.RskillRunnerNode._report_miss, holder
+    )
     lapsed = MethodType(mod.RskillRunnerNode._deadline_lapsed, holder)
 
     clock = graph.start_clock(rtf=0.1)

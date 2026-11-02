@@ -1842,6 +1842,8 @@ if _ROS2_AVAILABLE:
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         return "cancel requested"
                     miss = budget.check()
+                    if miss is None and self._grasp_declaration_lapsing(chunk_index):
+                        miss = self._last_deadline_miss
                     return None if miss is None else f"{miss.kind}: {miss.detail}"
 
                 skill.stop_check = _goal_ended
