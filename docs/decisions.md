@@ -62,10 +62,12 @@ in full so the posture stays visible although the records are private:
   payload, grow-only); every contact allowance there comes from a scene
   declaration — the grasp region is the target's box only while it lies wholly
   inside the declared `search_box`, the place region only a declared place zone,
-  the workspace only the declared `workspace_box` — and no track clears the
-  map. Every allowance a *track* shapes (destination-track place regions,
-  identity and released-box clearing, payload re-arming of the attach residue)
-  is `on`'s (ADR-0122; 2026-11-01 amendment owed: off / tracking = declarations,
+  the workspace only the declared `workspace_box`. The one track-driven
+  exception is the carried object's own map cells: they are cleared by identity
+  (a unique tracker binding) in `tracking` too (2026-11-02, Safety-WG review
+  owed), otherwise the arm stops on the object in its own hand. Every other
+  allowance a *track* shapes (destination-track place regions, payload re-arming
+  of the attach residue) is `on`'s (ADR-0122; 2026-11-01 amendment owed: off / tracking = declarations,
   on = the adaptive, perception-driven behaviour).
 - **Open runs weights in fp32, fp16 and bf16; every format of 8 bits or
   fewer needs OpenRAL Pro** (`ADR-0123`): int8, fp8, int4/NF4 and nvfp4,

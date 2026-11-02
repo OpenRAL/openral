@@ -1540,15 +1540,18 @@ def _tracked_clear_enabled(object_tracking: str) -> bool:
     The clears are the identity clear, the released-box window, the carry sweep / vacated
     box, and the self-filter's payload point drop.
 
-    Only ``on`` (which needs the OpenRAL Pro exemption provider, whose K5 freezes the
-    payload the clears stand in for). ``tracking`` and ``off`` leave a carried payload a
-    mapped obstacle: every contact allowance there comes from scene declarations.
+    Every mode with the object tracker (``tracking`` and ``on``). The clears follow one
+    unique ``tracked_object`` binding (an identity, not a geometry), and the tracker freezes
+    a released payload where it was let go, so the released-box window clears what the
+    kernel still checks. Without them the carried object's own re-observed cells stop the
+    arm on itself (2026-11-02 audit). ``off`` has no tracker identity, so its HAL payload
+    stays a mapped obstacle. Safety-WG review owed.
 
     Example:
         >>> [_tracked_clear_enabled(m) for m in ("off", "tracking", "on")]
-        [False, False, True]
+        [False, True, True]
     """
-    return object_tracking == "on"
+    return object_tracking in ("tracking", "on")
 
 
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:

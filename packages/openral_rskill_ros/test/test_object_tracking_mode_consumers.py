@@ -14,8 +14,8 @@ diffed against ``off``, and the diff must be exactly the consumers the mode owns
   its region, ``TrackerSession.place_region``). The kernel is untouched: no
   ``contact_exemptions.*`` (K2 / K5 / K7 / OT-10 are exemption-provider rules since
   ADR-0121 step 3); its open box rules take the regions the tracker measures.
-  Neither clears the map from a track: ``tracked_clear_enabled`` is false on the octomap
-  voxel bridge and the self-filter, so every allowance comes from scene declarations.
+  Its carried object is cleared from the map by identity: ``tracked_clear_enabled`` is true
+  on the octomap voxel bridge and the self-filter (false under ``off``).
 * ``on`` (refused without an ``exemption_provider``; diffed against ``off`` with the same
   provider): as ``tracking`` plus, for the provider only, under ``contact_exemptions.``, K5,
   the tracked grasp exemption (K2), payload ownership and explained-workspace cells; the
@@ -70,7 +70,10 @@ _K5 = {
     "tracked_release_dwell_s",
 }
 _TRACKING = {
-    _FILTER: _MASK,
+    # The carried object's own cells are cleared by identity (bridge) and its points dropped
+    # (self-filter) whenever the tracker runs; `off` leaves a carried payload mapped.
+    _FILTER: _MASK | {"tracked_clear_enabled"},
+    _BRIDGE: {"tracked_clear_enabled"},
     # The HAL vision camera is dropped from the segmenter: only the tracked cameras stay.
     _SEGMENTER: {
         "cameras",
@@ -101,10 +104,6 @@ _PROVIDER_ONLY = _K5 | {
 _PROVIDER = "openral_pro_safety_exemptions/ContactExemptions"
 _ON = {
     **_TRACKING,
-    # The track-driven map clears (identity / released box / sweep; the self-filter's
-    # payload point drop) are `on` only: `tracking` and `off` leave a carried payload mapped.
-    _FILTER: _MASK | {"tracked_clear_enabled"},
-    _BRIDGE: {"tracked_clear_enabled"},
     _KERNEL: {
         f"contact_exemptions.{k}" for k in _PROVIDER_ONLY | {"tracked_grasp_extra_contact_links"}
     }
@@ -225,7 +224,7 @@ def test_each_mode_switches_only_its_own_consumers(
         assert "tracked_grasp_extra_contact_links" not in now[_KERNEL]
     assert now[_FILTER]["robot_mask_enabled"] is True
     for node in (_BRIDGE, _FILTER):
-        assert now[node]["tracked_clear_enabled"] is (mode == "on"), node
+        assert now[node]["tracked_clear_enabled"] is (mode != "off"), node
 
 
 def test_tracking_on_without_a_provider_is_refused(tmp_path: Path) -> None:

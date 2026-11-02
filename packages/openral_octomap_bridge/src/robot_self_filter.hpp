@@ -22,9 +22,9 @@
 //
 // A held payload is removed only with the same unique `tracked_object`
 // binding the voxel bridge requires, and only when `tracked_clear_enabled` (default false:
-// the launch sets it for `object_tracking: on` alone). Region, segmentation, fallback, stale,
-// malformed, or ambiguous attachments leave their returns in the cloud: their
-// geometry alone does not prove that those sensor points belong to the object.
+// the launch sets it whenever the object tracker runs, `object_tracking: tracking` or `on`).
+// Region, segmentation, fallback, stale, malformed, or ambiguous attachments leave their returns in
+// the cloud: their geometry alone does not prove that those sensor points belong to the object.
 //
 // `cloud_out` carries x/y/z only, whatever the input carries: octomap reads
 // nothing else. An input with more fields (a coloured sim cloud's `rgb`) also

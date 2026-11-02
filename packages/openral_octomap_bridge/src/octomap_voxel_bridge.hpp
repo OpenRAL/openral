@@ -122,9 +122,9 @@ public:
     attached_clear_enabled_ = this->declare_parameter<bool>("attached_clear_enabled", true);
     attached_state_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
     // Track-driven clearing (identity clear of a `tracked_object` binding, the released-box
-    // window, the carry sweep / vacated box). Default OFF, fail closed: only the launch's
-    // `object_tracking: on` (OpenRAL Pro exemption provider) turns it on. In `off` and
-    // `tracking` no track drives any clear, so a carried payload stays a mapped obstacle.
+    // window, the carry sweep / vacated box). Default OFF, fail closed: the launch turns it on
+    // whenever the object tracker runs (`object_tracking: tracking` or `on`). In `off` no
+    // track drives any clear, so a carried payload stays a mapped obstacle.
     tracked_clear_enabled_ = this->declare_parameter<bool>("tracked_clear_enabled", false);
     // Optional octree clearing is used only by the identity-validated tracker path below.
     const auto sweep_service =
