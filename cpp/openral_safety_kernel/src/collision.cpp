@@ -2001,21 +2001,16 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
       support_normal = Vec3{normal_in.x * inv_norm, normal_in.y * inv_norm, normal_in.z * inv_norm};
     }
     // A released record names the link that let it go; an unknown one fails closed like any
-    // unknown link (whether its attach link may hold a frozen payload is the node's check).
-    int released_by = -1;
-    if (!in.released_by_link.empty()) {
-      released_by = resolve(in.released_by_link);
-      if (released_by < 0) {
-        out.n_objects = 0;
-        out.n_primitives = 0;
-        return AttachIngestStatus::kUnknownLink;
-      }
+    // unknown link (the node resolves it again and checks the attach link may hold it frozen).
+    if (!in.released_by_link.empty() && resolve(in.released_by_link) < 0) {
+      out.n_objects = 0;
+      out.n_primitives = 0;
+      return AttachIngestStatus::kUnknownLink;
     }
     AttachedObject& o = out.objects[i];
     o.pose_in_link = in.pose_in_link;
     o.attach_link = attach;
     o.release_hand_link = -1;
-    o.released_by = released_by;
     o.has_support_witness = in.has_support_witness;
     o.support_point = in.support_point;
     o.support_normal = support_normal;

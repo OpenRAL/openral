@@ -4339,7 +4339,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                 runtime_period_from_hal=self_filter_period_from_hal,
                             ),
                             "trailing_sweep_s": _self_filter_trailing_sweep_s(hal_mode),
-                            # A tracked payload's points are dropped only under `on`.
+                            # A tracked payload's points are dropped whenever the tracker runs.
                             "tracked_clear_enabled": _tracked_clear_enabled(object_tracking),
                             "use_sim_time": use_sim_time,
                         }
@@ -4426,7 +4426,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # kernel's voxel deadline can fail closed (Entry 033).
                     "max_octree_age_s": max_octree_age_s,
                     "released_clear_timeout_s": tracked_release_timeout_s,
-                    # Track-driven map clears (identity, released box, sweep): `on` only.
+                    # Track-driven map clears (identity, released box, sweep): `tracking` and `on`.
                     "tracked_clear_enabled": _tracked_clear_enabled(object_tracking),
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).

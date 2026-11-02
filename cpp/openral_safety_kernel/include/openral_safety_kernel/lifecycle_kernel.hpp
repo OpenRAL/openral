@@ -622,6 +622,9 @@ private:
     std::int64_t opened_ns{0};
   };
   std::vector<ReleasedRecord> released_records_;
+  /// Per accepted attachment, the wire's `released_by_link` resolved to a collision link (-1 =
+  /// held). Node-side, so the provider-visible `AttachedObject` keeps its layout.
+  std::vector<int> attached_released_by_;
   /// Per collision link: FK never moves it (no dof on its chain but the zeroed mobile-base ones).
   std::vector<std::uint8_t> link_static_;
   double support_witness_max_patch_radius_m_{0.0};

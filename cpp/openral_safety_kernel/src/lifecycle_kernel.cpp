@@ -1038,7 +1038,8 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
       }
     }
   }
-  released_records_.assign(std::min<std::size_t>(attached_max_objects_, 8), ReleasedRecord{});
+  released_records_.assign(attached_max_objects_, ReleasedRecord{});  // one per attachable object
+  attached_released_by_.assign(attached_max_objects_, -1);
 
   joint_name_to_dof_.clear();
   for (std::size_t i = 0; i < collision_joint_names_.size() && i < ndof; ++i) {
@@ -4543,9 +4544,18 @@ void SafetyKernelLifecycleNode::on_world_state(
       attached_max_primitives_, attached_max_touch_links_, attached_model_);
   // A released record is frozen where its attach link holds it, so that link must be one FK never
   // moves: on a moving link the "frozen" payload would ride the robot, unchecked against the world.
+  // Resolved here, node-side, so `AttachedObject` (which a provider reads) keeps its layout.
   for (std::size_t i = 0; status == AttachIngestStatus::kOk && i < attached_model_.n_objects; ++i) {
+    attached_released_by_[i] = -1;
+    const std::string& by = attached_ingest_scratch_[i].released_by_link;
+    for (std::size_t l = 0; !by.empty() && l < collision_link_names_.size(); ++l) {
+      if (collision_link_names_[l] == by) {
+        attached_released_by_[i] = static_cast<int>(l);
+      }
+    }
     const AttachedObject& obj = attached_model_.objects[i];
-    if (obj.released_by >= 0 && link_static_[static_cast<std::size_t>(obj.attach_link)] == 0) {
+    if (attached_released_by_[i] >= 0 &&
+        link_static_[static_cast<std::size_t>(obj.attach_link)] == 0) {
       RCLCPP_WARN(this->get_logger(),
                   "safety.released_payload_rejected object=%s reason=attach_link_moves link=%s",
                   wire[i].object_id.c_str(), wire[i].attach_link.c_str());
@@ -5339,7 +5349,8 @@ void SafetyKernelLifecycleNode::apply_declared_release(
   bool fk_done = false;
   for (std::size_t i = 0; i < attached_model_.n_objects && i < wire.size(); ++i) {
     AttachedObject& obj = attached_model_.objects[i];
-    if (obj.released_by < 0) {
+    const int released_by = attached_released_by_[i];
+    if (released_by < 0) {
       continue;
     }
     const auto& w = wire[i];
@@ -5358,7 +5369,7 @@ void SafetyKernelLifecycleNode::apply_declared_release(
         }
       }
       if (rec == nullptr) {
-        continue;  // more released records than slots: unreachable (slots = max objects)
+        continue;  // unreachable: one slot per attachable object, every unseen one freed below
       }
       rec->used = true;
       rec->object_id = w.object_id;
@@ -5387,7 +5398,7 @@ void SafetyKernelLifecycleNode::apply_declared_release(
     obj.attach_link = -1;
     obj.has_support_witness = false;
     attached_binding_[i].off_hand = "released";  // never a handover, no witness
-    obj.release_hand_link = obj.released_by;
+    obj.release_hand_link = released_by;
     if (!rec->closed) {
       const char* why = nullptr;
       if (static_cast<double>(now - rec->opened_ns) >= release_timeout_s_ * 1e9) {
