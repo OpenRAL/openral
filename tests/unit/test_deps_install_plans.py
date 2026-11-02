@@ -1111,3 +1111,28 @@ def test_relative_cache_home_is_anchored_to_the_callers_cwd(
     monkeypatch.setenv("OPENRAL_CACHE_HOME", "cache")
     assert _deps._cache_home() == tmp_path / "cache"
     assert _deps._rldx_sidecar_source_dir() == tmp_path / "cache" / "rldx-sidecar" / "source"
+
+
+def test_shell_steps_survive_a_cache_home_with_spaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A space in the cache root must not split a ``bash -c`` step's path into two words."""
+    monkeypatch.setenv("OPENRAL_CACHE_HOME", str(tmp_path / "cache with space"))
+    rs_dir = _deps._robocasa_kitchen_clone_dir().parent / "robosuite"
+    rc_dir = _deps._robocasa_kitchen_clone_dir()
+    for d in (
+        rs_dir / "robosuite" / "examples" / "third_party_controller",
+        rc_dir / "robocasa",
+    ):
+        d.mkdir(parents=True)
+    touch_steps = [
+        s
+        for s in _deps._robocasa_kitchen_plan().steps
+        if s.argv[:2] == ["bash", "-c"] and s.argv[2].startswith("touch ")
+    ]
+    assert len(touch_steps) == 2
+    for step in touch_steps:
+        subprocess.run(step.argv, check=True, cwd=tmp_path)
+    assert (rs_dir / "robosuite" / "macros_private.py").is_file()
+    assert (rs_dir / "robosuite" / "examples" / "third_party_controller" / "__init__.py").is_file()
+    assert (rc_dir / "robocasa" / "macros_private.py").is_file()

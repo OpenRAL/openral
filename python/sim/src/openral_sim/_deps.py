@@ -25,6 +25,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -63,6 +64,11 @@ Honoured the same way ``openral_sim._assets._ROBOCASA_ALLOW_ENV``
 gates the asset-download prompt — useful in CI / Dockerfiles where
 interactive prompts are not available.
 """
+
+
+def _sh(value: Path | str) -> str:
+    """Quote one path or command word for a ``bash -c`` / ``sh -c`` step or manual hint."""
+    return shlex.quote(str(value))
 
 
 def _cache_home() -> Path:
@@ -646,10 +652,10 @@ def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
         argv=[
             "bash",
             "-c",
-            f"set -e; [ -d {rs_dir}/.git ] || {git} clone --depth=1 "
-            f"https://github.com/ARISE-Initiative/robosuite.git {rs_dir}; "
-            f"{git} -C {rs_dir} fetch --depth=1 origin {_ROBOSUITE_PIN}; "
-            f"{git} -C {rs_dir} checkout --quiet --detach {_ROBOSUITE_PIN}",
+            f"set -e; [ -d {_sh(rs_dir)}/.git ] || {_sh(git)} clone --depth=1 "
+            f"https://github.com/ARISE-Initiative/robosuite.git {_sh(rs_dir)}; "
+            f"{_sh(git)} -C {_sh(rs_dir)} fetch --depth=1 origin {_ROBOSUITE_PIN}; "
+            f"{_sh(git)} -C {_sh(rs_dir)} checkout --quiet --detach {_ROBOSUITE_PIN}",
         ],
     )
 
@@ -657,9 +663,10 @@ def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
 def _robosuite_clone_hint(git: str, rs_dir: Path) -> str:
     """Manual-install one-liner mirroring ``_robosuite_clone_step``."""
     return (
-        f"{git} clone --depth=1 https://github.com/ARISE-Initiative/robosuite.git {rs_dir} ; "
-        f"{git} -C {rs_dir} fetch --depth=1 origin {_ROBOSUITE_PIN} && "
-        f"{git} -C {rs_dir} checkout --detach {_ROBOSUITE_PIN}"
+        f"{_sh(git)} clone --depth=1 "
+        f"https://github.com/ARISE-Initiative/robosuite.git {_sh(rs_dir)} ; "
+        f"{_sh(git)} -C {_sh(rs_dir)} fetch --depth=1 origin {_ROBOSUITE_PIN} && "
+        f"{_sh(git)} -C {_sh(rs_dir)} checkout --detach {_ROBOSUITE_PIN}"
     )
 
 
@@ -757,9 +764,9 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
                 argv=[
                     "bash",
                     "-c",
-                    f"touch {rs_dir}/robosuite/examples/__init__.py "
-                    f"{rs_dir}/robosuite/examples/third_party_controller/__init__.py "
-                    f"{rs_dir}/robosuite/macros_private.py",
+                    f"touch {_sh(rs_dir)}/robosuite/examples/__init__.py "
+                    f"{_sh(rs_dir)}/robosuite/examples/third_party_controller/__init__.py "
+                    f"{_sh(rs_dir)}/robosuite/macros_private.py",
                 ],
             ),
             InstallStep(
@@ -837,8 +844,8 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
                 argv=[
                     "bash",
                     "-c",
-                    f"[ -d {rc_dir}/.git ] || {git} clone --depth=1 "
-                    f"https://github.com/robocasa/robocasa.git {rc_dir}",
+                    f"[ -d {_sh(rc_dir)}/.git ] || {_sh(git)} clone --depth=1 "
+                    f"https://github.com/robocasa/robocasa.git {_sh(rc_dir)}",
                 ],
             ),
             InstallStep(
@@ -846,7 +853,7 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
                     "patch robocasa kitchen clone: write empty macros_private.py "
                     "(silences `[robosuite WARNING] No private macro file found`)"
                 ),
-                argv=["bash", "-c", f"touch {rc_dir}/robocasa/macros_private.py"],
+                argv=["bash", "-c", f"touch {_sh(rc_dir)}/robocasa/macros_private.py"],
             ),
             _relax_robocasa_version_asserts_step(rc_dir / "robocasa" / "__init__.py"),
             InstallStep(
@@ -862,20 +869,20 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
         ),
         manual_hint=(
             "just sync --all-packages --group robocasa --inexact && "
-            f"mkdir -p {rs_dir.parent} && "
+            f"mkdir -p {_sh(rs_dir.parent)} && "
             f"{_robosuite_clone_hint(git, rs_dir)} && "
-            f"touch {rs_dir}/robosuite/examples/__init__.py "
-            f"{rs_dir}/robosuite/examples/third_party_controller/__init__.py "
-            f"{rs_dir}/robosuite/macros_private.py && "
-            f"uv pip install --force-reinstall --no-deps -e {rs_dir} && "
+            f"touch {_sh(rs_dir)}/robosuite/examples/__init__.py "
+            f"{_sh(rs_dir)}/robosuite/examples/third_party_controller/__init__.py "
+            f"{_sh(rs_dir)}/robosuite/macros_private.py && "
+            f"uv pip install --force-reinstall --no-deps -e {_sh(rs_dir)} && "
             'uv pip install --no-deps "robosuite-models @ '
             'git+https://github.com/ARISE-Initiative/robosuite_models.git" && '
             'uv pip install "h5py>=3.16" "lxml>=5" llvmlite '
             "numba qpsolvers pyopengl-accelerate && "
             'uv pip install --no-deps "mink==0.0.5" && '
-            f"git clone --depth=1 https://github.com/robocasa/robocasa.git {rc_dir} && "
-            f"touch {rc_dir}/robocasa/macros_private.py && "
-            f"uv pip install --no-deps -e {rc_dir}"
+            f"git clone --depth=1 https://github.com/robocasa/robocasa.git {_sh(rc_dir)} && "
+            f"touch {_sh(rc_dir)}/robocasa/macros_private.py && "
+            f"uv pip install --no-deps -e {_sh(rc_dir)}"
         ),
         repins=("robosuite",),
     )
@@ -978,9 +985,9 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
                 argv=[
                     "bash",
                     "-c",
-                    f"touch {rs_dir}/robosuite/examples/__init__.py "
-                    f"{rs_dir}/robosuite/examples/third_party_controller/__init__.py "
-                    f"{rs_dir}/robosuite/macros_private.py",
+                    f"touch {_sh(rs_dir)}/robosuite/examples/__init__.py "
+                    f"{_sh(rs_dir)}/robosuite/examples/third_party_controller/__init__.py "
+                    f"{_sh(rs_dir)}/robosuite/macros_private.py",
                 ],
             ),
             InstallStep(
@@ -1052,9 +1059,9 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
                 argv=[
                     "bash",
                     "-c",
-                    f"[ -d {clone_dir}/.git ] || {git} clone --depth=1 "
+                    f"[ -d {_sh(clone_dir)}/.git ] || {_sh(git)} clone --depth=1 "
                     "https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git "
-                    f"{clone_dir}",
+                    f"{_sh(clone_dir)}",
                 ],
             ),
             InstallStep(
@@ -1066,7 +1073,7 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
                 argv=[
                     "bash",
                     "-c",
-                    f"touch {clone_dir}/robocasa/macros_private.py",
+                    f"touch {_sh(clone_dir)}/robocasa/macros_private.py",
                 ],
             ),
             _relax_robocasa_version_asserts_step(clone_dir / "robocasa" / "__init__.py"),
@@ -1082,12 +1089,12 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
         ),
         manual_hint=(
             "just sync --all-packages --group robocasa --inexact && "
-            f"mkdir -p {clone_parent} && "
+            f"mkdir -p {_sh(clone_parent)} && "
             f"{_robosuite_clone_hint(git, rs_dir)} && "
-            f"touch {rs_dir}/robosuite/examples/__init__.py "
-            f"{rs_dir}/robosuite/examples/third_party_controller/__init__.py "
-            f"{rs_dir}/robosuite/macros_private.py && "
-            f"uv pip install --force-reinstall --no-deps -e {rs_dir} && "
+            f"touch {_sh(rs_dir)}/robosuite/examples/__init__.py "
+            f"{_sh(rs_dir)}/robosuite/examples/third_party_controller/__init__.py "
+            f"{_sh(rs_dir)}/robosuite/macros_private.py && "
+            f"uv pip install --force-reinstall --no-deps -e {_sh(rs_dir)} && "
             'uv pip install --no-deps "robosuite-models @ '
             'git+https://github.com/ARISE-Initiative/robosuite_models.git" && '
             'uv pip install "h5py>=3.16" "lxml>=5" llvmlite '
@@ -1095,9 +1102,9 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
             'uv pip install --no-deps "mink==0.0.5" && '
             "git clone --depth=1 "
             "https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git "
-            f"{clone_dir} && "
-            f"touch {clone_dir}/robocasa/macros_private.py && "
-            f"uv pip install --no-deps -e {clone_dir}"
+            f"{_sh(clone_dir)} && "
+            f"touch {_sh(clone_dir)}/robocasa/macros_private.py && "
+            f"uv pip install --no-deps -e {_sh(clone_dir)}"
         ),
         repins=("robosuite",),
     )
@@ -1491,8 +1498,8 @@ def _rldx_sidecar_setup_plan() -> BackendInstallPlan:
                 argv=[
                     "sh",
                     "-c",
-                    f"[ -d {source}/.git ] || {git} clone --depth 1 "
-                    f"{_RLDX_SIDECAR_REPO_URL} {source}",
+                    f"[ -d {_sh(source)}/.git ] || {_sh(git)} clone --depth 1 "
+                    f"{_RLDX_SIDECAR_REPO_URL} {_sh(source)}",
                 ],
             ),
             # uv sync inside the sidecar's own pyproject creates
@@ -1530,9 +1537,9 @@ def _rldx_sidecar_setup_plan() -> BackendInstallPlan:
             ),
         ),
         manual_hint=(
-            f"mkdir -p {source.parent} && "
-            f"git clone --depth 1 {_RLDX_SIDECAR_REPO_URL} {source} && "
-            f"cd {source} && uv sync && "
+            f"mkdir -p {_sh(source.parent)} && "
+            f"git clone --depth 1 {_RLDX_SIDECAR_REPO_URL} {_sh(source)} && "
+            f"cd {_sh(source)} && uv sync && "
             f"uv pip install --python {venv_python} 'bitsandbytes>=0.43.0'"
         ),
     )
@@ -1735,7 +1742,8 @@ def _vlabench_plan() -> BackendInstallPlan:
     git = _git()
     src = _vlabench_source_dir()
     clone_step = (
-        f"[ -d {src}/.git ] || {git} clone --depth=1 https://github.com/OpenMOSS/VLABench.git {src}"
+        f"[ -d {_sh(src)}/.git ] || {_sh(git)} clone --depth=1 "
+        f"https://github.com/OpenMOSS/VLABench.git {_sh(src)}"
     )
     # VLABench's dm_control integration is API-coupled to this MuJoCo pair.
     # Newer loose resolution currently lands dm_control 1.0.44 + MuJoCo 3.11,
@@ -1795,12 +1803,12 @@ def _vlabench_plan() -> BackendInstallPlan:
             _vlabench_stub_rrt_step(),
         ),
         manual_hint=(
-            f"mkdir -p {src.parent} && "
+            f"mkdir -p {_sh(src.parent)} && "
             f"{clone_step} && "
-            f"uv pip install --no-deps -e {src} && "
+            f"uv pip install --no-deps -e {_sh(src)} && "
             "uv pip install " + " ".join(sim_deps) + " && "
             "# then stub rrt_algorithms in site-packages (see _vlabench_stub_rrt_step) "
-            f"and export VLABENCH_ROOT={src}/VLABench"
+            f"and export VLABENCH_ROOT={_sh(src)}/VLABench"
         ),
     )
 
