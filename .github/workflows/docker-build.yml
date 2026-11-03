@@ -206,7 +206,9 @@ jobs:
       # omdet present; `deploy run --dry-run` resolves the real launch.
       - name: Smoke test (gstreamer-free deploy)
         run: |
-          docker run --rm --entrypoint /entrypoint.sh openral:x86 bash -lc '
+          # A hardware deploy names its unit (#470): the dry-run resolves the real launch, so it
+          # needs a serial too. A CI placeholder, never a real unit's.
+          docker run --rm -e OPENRAL_UNIT_SERIAL=ci-smoke --entrypoint /entrypoint.sh openral:x86 bash -lc '
             set -e
             python -c "import cv2, scservo_sdk, onnxruntime; \
               from transformers import AutoModelForZeroShotObjectDetection; \
