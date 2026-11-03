@@ -125,7 +125,11 @@ public:
     // window, the carry sweep / vacated box). Default OFF, fail closed: the launch turns it on
     // whenever the object tracker runs (`object_tracking: tracking` or `on`). In `off` no
     // track drives any clear, so a carried payload stays a mapped obstacle.
-    tracked_clear_enabled_ = this->declare_parameter<bool>("tracked_clear_enabled", false);
+    // Read once here, so read-only: a runtime set would report a value the gate ignores.
+    rcl_interfaces::msg::ParameterDescriptor startup_only;
+    startup_only.read_only = true;
+    tracked_clear_enabled_ =
+        this->declare_parameter<bool>("tracked_clear_enabled", false, startup_only);
     // Optional octree clearing is used only by the identity-validated tracker path below.
     const auto sweep_service =
         this->declare_parameter<std::string>("payload_sweep_clear_service", "");

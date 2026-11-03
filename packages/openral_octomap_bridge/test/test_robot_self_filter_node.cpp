@@ -383,6 +383,12 @@ TEST_F(TrackedClearOffSelfFilterNode, ABoundTrackedObjectKeepsItsReturns) {
   EXPECT_EQ(last_.width, 2U) << "a track alone dropped the payload's points";
 }
 
+TEST_F(TrackedClearOffSelfFilterNode, TheGateCannotBeFlippedAtRuntime) {
+  // Read once at startup: a runtime set would report a value the gate never sees.
+  EXPECT_FALSE(filter_->set_parameter(rclcpp::Parameter("tracked_clear_enabled", true)).successful);
+  EXPECT_FALSE(filter_->get_parameter("tracked_clear_enabled").as_bool());
+}
+
 TEST_F(SelfFilterNode, AColouredCloudReachesTheMapAsXyzAndViewersWithItsColour) {
   // Review G: the map never carries colour; a viewer gets it, robot removed.
   sensor_msgs::msg::PointCloud2 rgb_last;

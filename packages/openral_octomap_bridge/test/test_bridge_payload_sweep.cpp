@@ -500,3 +500,9 @@ TEST_F(BridgeTrackedClearOff, ABoundTrackClearsNothingAndTheRevisionIsStillCerti
   EXPECT_TRUE(last_grid_cell_occupied(line_cell(11))) << "a track cleared its grid cells";
   EXPECT_EQ(last_grid_revision(), 11U);
 }
+
+TEST_F(BridgeTrackedClearOff, TheGateCannotBeFlippedAtRuntime) {
+  // Read once at startup: a runtime set would report a value the gate never sees.
+  EXPECT_FALSE(bridge_->set_parameter(rclcpp::Parameter("tracked_clear_enabled", true)).successful);
+  EXPECT_FALSE(bridge_->get_parameter("tracked_clear_enabled").as_bool());
+}

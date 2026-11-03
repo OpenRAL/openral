@@ -143,7 +143,11 @@ public:
     attached_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
     // A tracked-object payload's points are dropped only when a track drives it: default
     // OFF (fail closed), on whenever the launch runs the tracker (`tracking` or `on`).
-    tracked_clear_enabled_ = this->declare_parameter<bool>("tracked_clear_enabled", false);
+    // Read once here, so read-only: a runtime set would report a value the gate ignores.
+    rcl_interfaces::msg::ParameterDescriptor startup_only;
+    startup_only.read_only = true;
+    tracked_clear_enabled_ =
+        this->declare_parameter<bool>("tracked_clear_enabled", false, startup_only);
     const auto joint_states_topic =
         this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
     const auto world_state_topic =
