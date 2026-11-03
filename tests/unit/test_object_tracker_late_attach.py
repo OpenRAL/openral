@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from openral_core import TrackStatus
+from openral_core import ObjectRole, TrackStatus
 from openral_world_state.object_tracker.binding import BindOutcome, GraspBinder
 from openral_world_state.object_tracker.session import TrackerSession
 
@@ -47,6 +47,7 @@ def _run(
     max_age_s: float = 2.0,
     lift_at: int = 6,
     box_half: tuple[float, float, float] | None = None,
+    role: ObjectRole = ObjectRole.TARGET,
 ) -> tuple[TrackerSession, GraspBinder, NDArray[np.float64], dict[str, float]]:
     """Hold, lift by ``lift_m`` from sample ``lift_at``, keep the jaw stalled until the read."""
     binder, q, centre = arm_at_hold(robot)
@@ -61,6 +62,7 @@ def _run(
         track.model_copy(
             update={
                 "box": box,
+                "role": role,
                 "status": status,
                 "provisional": provisional,
                 "last_fit_stamp_ns": t0 - int(fit_ago_s * _S),
@@ -101,10 +103,11 @@ def test_a_late_attach_binds_the_track_at_the_hold_pose_and_carries_it(status: T
 
 def test_a_lift_before_the_jaw_settles_binds_from_the_last_pose_in_the_box(cap: Any) -> None:
     """2026-10-22, Spark R117 / R121: the policy lifts while the jaw still settles, so at the
-    stall the pinch is above the box; the grasp pose is the newest one before it in the box."""
+    stall the pinch is above the box; the grasp pose is the newest one before it in the box.
+    The hold dates from where the jaw entered it (restock bench 2026-10-31), the grasp pose."""
     s, binder, carried, q_up = _run("so101_follower", lift_m=0.05, follows=True, lift_at=2)
     hold_ns = s._stall[ROBOTS["so101_follower"][0]].hold_since_ns
-    assert hold_ns is not None and hold_ns >= 10 * _S + int(2 * _S / _HZ)  # stalled after lift
+    assert hold_ns == 10 * _S  # the first held sample, before the lift
     assert binder.held is not None and binder.held.outcome is BindOutcome.TRACKED
     assert not cap.named("object_tracker.late_attach_skipped")
     np.testing.assert_allclose(binder.object_pose(q_up).xyz, carried, atol=1e-6)
@@ -130,7 +133,7 @@ def test_a_late_bind_does_not_wait_on_the_map() -> None:
 
 
 def test_a_hand_that_travelled_far_since_the_hold_binds_nothing_late() -> None:
-    _, binder, _, _ = _run("so101_follower", lift_m=0.2, follows=True)
+    _, binder, _, _ = _run("so101_follower", lift_m=0.3, follows=True, lift_at=2)
     assert (
         binder.held is not None and binder.held.outcome is not BindOutcome.TRACKED
     )  # a fallback bind
@@ -140,6 +143,14 @@ def test_an_ordinary_lift_before_a_late_attach_still_binds_late() -> None:
     """Spark R302 (2026-10-23): a 15 cm lift before the ATTACH skipped the late bind at the
     old 12 cm cap and bound the pinch fallback."""
     _, binder, _, _ = _run("so101_follower", lift_m=0.11, follows=True)  # ~0.14 m of pinch
+    assert binder.held is not None and binder.held.outcome is BindOutcome.TRACKED
+
+
+def test_a_fast_lift_before_the_stall_read_still_binds_late() -> None:
+    """Restock scene 08 (2026-11-01): the policy lifted 21 cm in 1 s while the jaw still crept
+    closed on the carton, the stall read fired after the lift and the old 18 cm cap bound the
+    pinch fallback."""
+    _, binder, _, _ = _run("so101_follower", lift_m=0.165, follows=True, lift_at=2)
     assert binder.held is not None and binder.held.outcome is BindOutcome.TRACKED
 
 
@@ -171,6 +182,51 @@ def test_fresh_map_confirmation_does_not_make_an_old_fit_eligible_for_late_bindi
     assert binder.held is not None and binder.held.outcome is not BindOutcome.TRACKED
     [event] = cap.named("object_tracker.late_attach_skipped")
     assert event["why"] == "stale_fit"
+
+
+def test_an_occluded_target_confirmed_by_the_map_late_binds_on_an_old_fit() -> None:
+    """Restock bench 2026-10-31: under the hand the camera cannot refit the target, so its fit
+    was 2.6-11 s old at the late bind while the map confirmed its cells 0.0-0.17 s before; the
+    late bind refused (``stale_fit``) and the payload fell back to the pinch box, 4 of 4 times.
+    The late bind reads freshness as the bind does: an OCCLUDED target counts the map."""
+    _, binder, carried, q_up = _run(
+        "droid_franka_robotiq",
+        lift_m=0.05,
+        follows=True,
+        status=TrackStatus.OCCLUDED,
+        confirmed_ago_s=0.1,
+        fit_ago_s=5.0,
+    )
+    assert binder.held is not None and binder.held.outcome is BindOutcome.TRACKED, binder.held
+    np.testing.assert_allclose(binder.object_pose(q_up).xyz, carried, atol=1e-6)
+
+
+def test_an_occluded_context_track_needs_a_fresh_fit_to_late_bind(cap: Any) -> None:
+    _, binder, _, _ = _run(
+        "droid_franka_robotiq",
+        lift_m=0.05,
+        follows=True,
+        status=TrackStatus.OCCLUDED,
+        confirmed_ago_s=0.1,
+        fit_ago_s=5.0,
+        role=ObjectRole.CONTEXT,
+    )
+    assert binder.held is not None and binder.held.outcome is not BindOutcome.TRACKED
+    [event] = cap.named("object_tracker.late_attach_skipped")
+    assert event["why"] == "stale_fit"
+
+
+def test_a_lost_track_that_never_confirmed_is_not_revived_by_a_late_attach() -> None:
+    """Restock bench_fix_08 (2026-10-31): a generic "carton" query minted over the target,
+    never confirmed (``cover_already_tracked``), went LOST; the late bind revived it OCCLUDED
+    and it tied with the target (bound ambiguous). Never confirmed: never its own cells."""
+    s, binder, _, _ = _run(
+        "so101_follower", lift_m=0.05, follows=True, status=TrackStatus.LOST, confirmed_ago_s=10.0
+    )
+    [track] = s.tracker.store.all()
+    assert track.last_confirmed_stamp_ns == 0
+    assert track.status is TrackStatus.LOST
+    assert binder.held is not None and binder.held.outcome is not BindOutcome.TRACKED
 
 
 def test_stale_late_fit_is_excluded_from_normal_attach_fallback(cap: Any) -> None:
@@ -372,7 +428,9 @@ def test_an_attach_stamped_just_before_the_hold_read_still_binds_from_the_lookba
     t0 = 10 * _S
     track = s.tracker.store.get(oid)
     assert track is not None
-    s.tracker.store.replace(track.model_copy(update={"last_fit_stamp_ns": t0}))
+    # Fitted before the grasp: the hold now dates from its first sample, t0, so an ATTACH
+    # stamped one sample before it would otherwise predate the fit (``future_fit``).
+    s.tracker.store.replace(track.model_copy(update={"last_fit_stamp_ns": t0 - int(0.2 * _S)}))
     q_up = _hand_step(binder, robot, q, 0.08)
     lo = np.floor((centre - 0.3) / 0.015) * 0.015
     s.on_grid(_grid(binder.frame_id, _cube(centre), lo, 60), t0)
@@ -386,7 +444,8 @@ def test_an_attach_stamped_just_before_the_hold_read_still_binds_from_the_lookba
         since = s._stall[joint].hold_since_ns
         i += 1
         assert i < 15
-    s.on_joint_state({**q_up, joint: jaw}, t0 + int(i * _S / _HZ))  # lifted, before the dwell
+    # Lifted, before the dwell (0.3 s from the hold's first sample; the read needs 5 samples).
+    s.on_joint_state({**q_up, joint: jaw}, t0 + int(0.29 * _S))
     assert s.binders[joint].held is None, "the stall has not fired yet"
     s.on_grasp_event(
         GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=since - int(_S / _HZ)

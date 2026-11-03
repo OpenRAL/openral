@@ -24,6 +24,13 @@ falls back to the primary fit (``fit_kind`` ``silhouette_cone``, reason logged) 
 second view qualifies, when a measured point of any view falls outside the result, or when
 the result's box is not smaller than the primary's.
 
+A ``FitParams(extent="measured")`` primary (the default) is not a containing set, so it is
+not cut: views combine by **union** (``_union_measured``), the measured prism of everything
+the cameras saw, a second view's points kept only inside the primary's cone. Every view's cone
+is the one ``containing_fit`` carries (``ContainingFit.cone``); reading it off the tight hull
+holds only for a containing fit's layout, and refused every measured second view
+(``cone_layout``, #479 review).
+
 Pure numpy, no ROS, no scipy (the ROS tracker node's interpreter need not have it).
 """
 
@@ -39,7 +46,12 @@ from numpy.typing import NDArray
 from openral_core import FitKind
 from openral_core.geometry import homogeneous_from_quat_xyz
 
-from openral_world_state.object_tracker.fit import ContainingFit, _boxed, _outer_polygon
+from openral_world_state.object_tracker.fit import (
+    ContainingFit,
+    _boxed,
+    _measured_prism,
+    _outer_polygon,
+)
 
 __all__ = ["MultiViewFit", "intersect_views"]
 
@@ -154,7 +166,103 @@ def _volume(fit: ContainingFit) -> float:
     return 8.0 * hx * hy * hz
 
 
-def intersect_views(
+def _view_cone(fit: ContainingFit, t: NDArray[np.float64]) -> Planes | None:
+    """``fit``'s silhouette cone: carried on the fit, else read off a containing hull.
+
+    ``None`` when neither holds (a measured fit's hull is its seen prism, not the cone).
+    """
+    if fit.cone is not None:
+        return _cone_planes(fit.cone[1], fit.cone[0])
+    origin = t[:3, 3]
+    hull = _hull_base(fit)
+    rays = hull[_RING : 2 * _RING] - origin  # fit.py: support ring, on the cone's rays
+    front = hull[:_RING] - origin
+    parallel = np.linalg.norm(np.cross(rays, front), axis=1) <= 1e-6 * (
+        np.linalg.norm(rays, axis=1) * np.linalg.norm(front, axis=1) + 1e-12
+    )
+    if len(hull) != _MAX_VERTS or not parallel.all():
+        return None
+    return _cone_planes(rays, origin)
+
+
+def _union_measured(
+    views: Sequence[tuple[ContainingFit, NDArray[np.float64]]],
+    primary: int,
+    resolution: float,
+    frame_id: str,
+    stamp_ns: int,
+) -> MultiViewFit:
+    """Combine ``extent="measured"`` fits: the prism of every view's seen surface.
+
+    A measured box holds what its camera saw, so a second camera adds the sides the first
+    could not see: the union of the views' surfaces, reboxed as ``containing_fit`` boxes one
+    view. A second view joins only when its cone holds every point the primary measured (a
+    silhouette cut short would otherwise be trusted for what it hides); of its own points only
+    those inside the primary's cone join (a mask that spilled onto a neighbour or the support
+    reaches out of the cone the object stands in). Never smaller than the primary: on any
+    fallback the primary stands, and every primary point stays in the union.
+    """
+    base = views[primary][0]
+    refusals: dict[int, str] = {primary: "primary"}
+    if base.cone is None:
+        return MultiViewFit(base, FitKind.SILHOUETTE_CONE, {primary: "fallback:no_primary_cone"})
+    own = _cone_planes(base.cone[1], base.cone[0])
+    points = [base.surface]
+    for i, (f, t) in enumerate(views):
+        if i == primary:
+            continue
+        if f.refusal:
+            refusals[i] = f.refusal
+            continue
+        cone = _view_cone(f, t)
+        if cone is None:
+            refusals[i] = "cone_layout"
+            continue
+        if not _inside(base.surface, cone):
+            refusals[i] = "silhouette_too_small"
+            continue
+        n, c = own
+        keep = (f.surface @ n.T - c <= _TOL_M).all(axis=1)
+        if not keep.any():
+            refusals[i] = "outside_primary_cone"
+            continue
+        points.append(f.surface[keep])
+        refusals[i] = "contributed"
+
+    def fallback(why: str) -> MultiViewFit:
+        refusals[primary] = f"fallback:{why}"
+        log.info("object_tracker.multi_view_fallback", reason=why, views=refusals)
+        return MultiViewFit(base, FitKind.SILHOUETTE_CONE, refusals)
+
+    if "contributed" not in refusals.values():
+        return fallback("no_second_view")
+    surface = np.concatenate(points)
+    gap = float(base.assumptions.get("sample_gap_m", 0.0))
+    verts = _measured_prism(surface, base.support_z, resolution, gap)
+    notes = {**base.assumptions, "multi_view_cones": float(len(points) - 1)}
+    fit = _boxed(verts, surface, base.support_z, 0.0, frame_id, stamp_ns, notes)
+    if fit.refusal or fit.box is None:
+        return fallback(fit.refusal or "no_box")
+    if _volume(fit) <= _volume(base):
+        return fallback("no_gain")
+    box = fit.box.model_copy(update={"evidence_ref": "object_tracker:multi_view_measured"})
+    log.info("object_tracker.multi_view", views=refusals, points=len(surface))
+    return MultiViewFit(
+        ContainingFit(
+            box,
+            fit.tight,
+            surface,
+            base.support_z,
+            fit.assumptions,
+            cone=base.cone,
+            extent="measured",
+        ),
+        FitKind.MULTI_VIEW_CONE,
+        refusals,
+    )
+
+
+def intersect_views(  # noqa: PLR0911  # reason: one return per named fallback
     views: Sequence[tuple[ContainingFit, NDArray[np.float64]]],
     *,
     resolution: float,
@@ -202,6 +310,8 @@ def intersect_views(
     if primary is None:
         return MultiViewFit(views[0][0], FitKind.SILHOUETTE_CONE, {0: "no_fitted_view"})
     base = views[primary][0]
+    if base.extent == "measured":
+        return _union_measured(views, primary, resolution, frame_id, stamp_ns)
     refusals[primary] = "primary"
     measured = np.concatenate([f.surface for f, _ in views if not f.refusal])
     n, c = _hull_planes(_hull_base(base))
@@ -211,17 +321,10 @@ def intersect_views(
         if f.refusal:
             refusals[i] = f.refusal
             continue
-        origin = t[:3, 3]
-        hull = _hull_base(f)
-        rays = hull[_RING : 2 * _RING] - origin  # fit.py: support ring, on the cone's rays
-        front = hull[:_RING] - origin
-        parallel = np.linalg.norm(np.cross(rays, front), axis=1) <= 1e-6 * (
-            np.linalg.norm(rays, axis=1) * np.linalg.norm(front, axis=1) + 1e-12
-        )
-        if len(hull) != _MAX_VERTS or not parallel.all():
+        cone = _view_cone(f, t)
+        if cone is None:
             refusals[i] = "cone_layout"
             continue
-        cone = _cone_planes(rays, origin)
         if not _inside(measured, cone):
             refusals[i] = "silhouette_too_small"  # would cut what another camera measured
             continue
@@ -252,7 +355,15 @@ def intersect_views(
     box = fit.box.model_copy(update={"evidence_ref": "object_tracker:multi_view_cone"})
     log.info("object_tracker.multi_view", views=refusals, vertices=len(pts))
     return MultiViewFit(
-        ContainingFit(box, fit.tight, fit.surface, fit.support_z, fit.assumptions),
+        ContainingFit(
+            box,
+            fit.tight,
+            fit.surface,
+            fit.support_z,
+            fit.assumptions,
+            cone=base.cone,
+            extent=base.extent,
+        ),
         FitKind.MULTI_VIEW_CONE,
         refusals,
     )

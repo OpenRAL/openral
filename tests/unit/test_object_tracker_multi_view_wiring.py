@@ -14,7 +14,7 @@ import math
 import numpy as np
 import pytest
 from openral_core import FitKind, ObjectQuery, ObjectRole
-from openral_world_state.object_tracker import ObjectTracker
+from openral_world_state.object_tracker import FitParams, ObjectTracker, TrackerParams
 
 from tests.unit._tracker_scenes import RIGS, inside_hull, sphere, step, surface_samples
 from tests.unit.test_object_tracker_multi_view import _hull, _turned, _volume
@@ -23,7 +23,7 @@ pytest.importorskip("scipy", reason="the hull containment check uses scipy Conve
 
 
 def _tracker(frame: str) -> ObjectTracker:
-    tr = ObjectTracker(frame)
+    tr = ObjectTracker(frame, params=TrackerParams(fit=FitParams(extent="containing")))
     tr.open_query("g", "q0", ObjectQuery(label="orange", count="one", role=ObjectRole.TARGET),
                   "obj:orange@0", stamp_ns=0)  # fmt: skip
     return tr

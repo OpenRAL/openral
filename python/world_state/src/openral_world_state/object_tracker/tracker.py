@@ -47,6 +47,7 @@ from openral_core.perception_geometry import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from openral_world_state.object_lift import aabb_iou_3d
 from openral_world_state.object_tracker.catalog import CatalogDeclarations
 from openral_world_state.object_tracker.cover import (
     Cell,
@@ -82,7 +83,14 @@ from openral_world_state.object_tracker.scheduler import (
 from openral_world_state.object_tracker.surface_model import ObjectSurfaceModels
 from openral_world_state.object_tracker.tracks import TrackStore, age_tracks, associate
 
-__all__ = ["CameraFrame", "ObjectTracker", "TrackerOutput", "TrackerParams", "TrackerResult"]
+__all__ = [
+    "CameraFrame",
+    "ObjectTracker",
+    "TrackerOutput",
+    "TrackerParams",
+    "TrackerResult",
+    "duplicate_of",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -90,6 +98,23 @@ log = structlog.get_logger(__name__)
 # outside the stored box (max of the two): the box provably no longer contains the object.
 _MOVED_MIN_POINTS = 3
 _MOVED_MIN_FRACTION = 0.05
+#: Fraction of a refused refit's measured surface that must lie in the track's box (grown by a
+#: cell) for the refit to re-date it: the object was measured inside the box it is kept with.
+#: *Calibration point.*
+_REDATE_INSIDE_FRACTION = 0.9
+#: The same for a refit the growth gate refused: its mask spilled onto a touching neighbour,
+#: so part of its surface is that neighbour's. *Calibration point* (restock 2026-10-31: 16-32 %
+#: of a spilled mask's points lay outside the kept box).
+_REDATE_SPILL_FRACTION = 2.0 / 3.0
+#: Refused clear growth fits that must agree before one is admitted (``_admit_growth``).
+#: *Calibration point.*
+_GROWTH_VOTES = 3
+#: How close (extent, height, centre) the agreeing fits must be. *Calibration point.*
+_GROWTH_AGREE_M = 0.01
+#: Source seconds the agreeing fits must fall in. *Calibration point*: the full fit of a
+#: partly-masked carton recurs every 2-3 s between accepted partial fits (Spark replay
+#: bkA_on_rs_11 2026-11-03: three over about 5 s, none admitted at a 5 s window).
+_GROWTH_WINDOW_NS = 15_000_000_000
 
 
 #: Source time a CONTEXT track's refresh, or a CONTEXT query's locate, counts as served
@@ -98,6 +123,57 @@ _CONTEXT_DEFER_NS = 2_000_000_000
 #: Margin a released match's box is grown by as its query's seed: down onto the support it
 #: fell to, and around where it rolled. *Calibration point.*
 PRIOR_MARGIN_M = 0.05
+#: A new fit whose box overlaps a live track's box by at least this 3D IoU is that track seen
+#: under another label, not a new object: never minted. *Calibration point* (restock
+#: 2026-10-31: a generic "carton" query's fit over the target at IoU 0.8-0.9; two inflated
+#: boxes of neighbouring 6.5 cm cartons 7 cm apart sit near 0.25).
+_VIS_HYSTERESIS = 0.1  # visible-fraction margin an OCCLUDED track needs to return to CONFIRMED
+_DUPLICATE_MINT_IOU = 0.5
+
+
+def _aabb(box: PlaceRegion) -> tuple[float, float, float, float, float, float]:
+    """The axis-aligned extent of ``box``'s eight corners in its frame."""
+    t = homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw)
+    signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+    corners = (signs * np.asarray(box.half_extents)) @ t[:3, :3].T + t[:3, 3]
+    lo, hi = corners.min(axis=0), corners.max(axis=0)
+    return (*(float(v) for v in lo), *(float(v) for v in hi))  # type: ignore[return-value]  # reason: six floats by construction
+
+
+def _aabb_overlap(
+    a: tuple[float, float, float, float, float, float],
+    b: tuple[float, float, float, float, float, float],
+) -> bool:
+    """Whether two ``_aabb`` extents share volume."""
+    return all(min(a[k + 3], b[k + 3]) > max(a[k], b[k]) for k in range(3))
+
+
+def duplicate_of(box: PlaceRegion, tracks: Sequence[TrackedObject]) -> tuple[str, float] | None:
+    """The live track whose box ``box`` overlaps at ``_DUPLICATE_MINT_IOU`` or more, and the IoU.
+
+    Association is same-label only (a banana let go into the bowl is no refit of the bowl), so
+    a generic query ("carton") fitted over a named one's object minted a second track on it; it
+    never confirmed (``cover_already_tracked``) but lingered, and a late bind revived it beside
+    the target (restock bench_fix_08, bound ambiguous). A banana in a bowl overlaps the bowl's
+    box at a small IoU, the same object at a large one. LOST and RELEASED tracks hold no place.
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> def b(x: float) -> PlaceRegion:
+        ...     p = Pose6D(xyz=(x, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="base")
+        ...     return PlaceRegion(frame_id="base", pose=p, half_extents=(0.06, 0.06, 0.06))
+        >>> duplicate_of(b(0.0), []) is None
+        True
+    """
+    new = _aabb(box)
+    best: tuple[str, float] | None = None
+    for o in tracks:
+        if o.status in (TrackStatus.LOST, TrackStatus.RELEASED):
+            continue
+        iou = aabb_iou_3d(new, _aabb(o.box))
+        if iou >= _DUPLICATE_MINT_IOU and (best is None or iou > best[1]):
+            best = (o.object_id, iou)
+    return best
 
 
 def _grown(box: PlaceRegion, margin_m: float) -> PlaceRegion:
@@ -136,6 +212,19 @@ class TrackerParams(BaseModel):
             track's own clear history) has shown is refused and the previous box kept (#418
             r16po_on1: a 5.8 cm orange refit to 33 cm through the arm's occluder band).
             *Calibration point.*
+        refit_growth_factor: Any refit (moved or not, clear or provisional) whose longer
+            horizontal extent or height exceeds this many times the track's FIRST clear fit is
+            refused and the box kept, unless it is a re-orientation (every sorted extent and
+            the volume within this factor of the first fit's: a tipped carried carton). A mask
+            that spills onto a neighbour or the support always has points outside the box, so
+            it read as "moved" and replaced the box unchecked; each larger box then prompted a
+            larger mask (restock 2026-10-30: a 6 x 6 cm carton's box went 14 -> 24 -> 39 cm
+            with the arms out of view). *Calibration point*: 1.5 keeps a
+            box turned 45 degrees in the hand (sqrt 2). A refused clear refit seen at the same
+            larger size and the reference's height ``_GROWTH_VOTES`` times running, reaching no
+            other track and holding one body, is admitted as the new reference once per track
+            (``_admit_growth``): a first fit from a partial mask no longer holds the box small
+            for good (#479 review, restock seeds 111/112).
         static_pad_cells: Cells a declared static collider is padded by for the one-body test
             (the camera sees a wall about a cell off its declared box; K7 pads the same).
             *Calibration point.*
@@ -169,6 +258,7 @@ class TrackerParams(BaseModel):
     low_score_confirm_grids: int = Field(default=3, ge=1)
     static_pad_cells: int = Field(default=1, ge=0)
     provisional_oversize_factor: float = Field(default=2.0, ge=1.0)
+    refit_growth_factor: float = Field(default=1.5, ge=1.0)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -340,6 +430,15 @@ class ObjectTracker:
         self._clear_size: dict[str, float] = {}
         # Per track: the largest longer-horizontal extent of its clear fits (the oversize guard).
         self._clear_extent: dict[str, float] = {}
+        # Per track: the longer horizontal extent of its first clear fit, else of its first fit,
+        # and whether that fit was clear (the growth gate); its height and its full extents.
+        # (extent, clear, height, full extents x/y/z)
+        # Growth admission (#479 review): each track's recent refused clear growth fits
+        # (stamp, (extent, height), centre xy), and whether one was admitted (once per track).
+        self._growth_votes: dict[str, list[tuple[int, tuple[float, float], tuple[float, float]]]]
+        self._growth_votes = {}
+        self._growth_admitted: dict[str, bool] = {}
+        self._first_extent: dict[str, tuple[float, bool, float, tuple[float, ...]]] = {}
         # Declared static geometry (cell centres, grid frame) and its keys on the newest lattice.
         self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
         self._static_cache: tuple[tuple[object, ...], frozenset[Cell]] | None = None
@@ -509,7 +608,7 @@ class ObjectTracker:
         for per_track in (
             self._views, self._cells, self._centroid, self._disagree, self._disagree_ns,
             self._map_cells, self._served, self._clear_size, self._clear_extent, self._low_score,
-            self._low_score_run,
+            self._low_score_run, self._first_extent, self._growth_votes, self._growth_admitted,
         ):  # fmt: skip
             for oid in [k for k in per_track if k not in live]:
                 del per_track[oid]
@@ -866,6 +965,7 @@ class ObjectTracker:
             params=fp,
             # A detector's box (a query prompt), never a track's own projected box.
             detector_box=req.box_xyxy if req.object_id is None else None,
+            part_box=req.box_xyxy or req.within_xyxy,
         )
         log.debug("object_tracker.fit", label=req.label, refusal=fit.refusal, **fit.assumptions)
         if fit.box is None or fit.tight is None:
@@ -917,7 +1017,13 @@ class ObjectTracker:
             fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
         floor = support_z + grid.resolution
         if oid is None:
-            track = self._mint_track(req, fit, cells, frame, grid, support_z=support_z, floor=floor)
+            track = (
+                None
+                if self._duplicate_mint(req, fit, frame)
+                else self._mint_track(
+                    req, fit, cells, frame, grid, support_z=support_z, floor=floor
+                )
+            )
             if track is None:
                 return None
         else:
@@ -941,8 +1047,35 @@ class ObjectTracker:
                 support_z=support_z,
                 floor=floor,
             )
+        self._retire_context_duplicates(track, fit)
         self._commit_fit(track, fit, cells, centroid, grid, grid_stamp_ns, hands, frame)
         return None
+
+    def _retire_context_duplicates(self, track: TrackedObject, fit: ContainingFit) -> None:
+        """A TARGET / DESTINATION fit retires (LOST) a CONTEXT track that boxes its object.
+
+        The named query is the better evidence of what the object is. Restock bench_dup_05
+        (2026-10-31): the target went LOST, the generic "carton" query minted over it and
+        confirmed, and the target's refits then never confirmed (``cover_already_tracked``):
+        the goal timed out ungrounded. A context track is only avoided; its cells stay on the
+        map either way.
+        """
+        if track.role is ObjectRole.CONTEXT or fit.box is None:
+            return
+        others = [
+            o
+            for o in self.store.all()
+            if o.role is ObjectRole.CONTEXT
+            and o.object_id != track.object_id
+            and o.status is not TrackStatus.BOUND  # a held payload is never retired
+        ]
+        while (dup := duplicate_of(fit.box, others)) is not None:
+            old = self.store.get(dup[0])
+            assert old is not None
+            self.store.replace(old.model_copy(update={"status": TrackStatus.LOST}))
+            others = [o for o in others if o.object_id != dup[0]]
+            log.info("object_tracker.context_duplicate_retired", object_id=dup[0],
+                     by=track.object_id, iou=round(dup[1], 2))  # fmt: skip
 
     def _gate_candidate(
         self,
@@ -977,6 +1110,23 @@ class ObjectTracker:
                 )
                 return _Next.NEXT
         return _Candidate(fit, support_z, centroid, cells)
+
+    def _duplicate_mint(self, req: TrackerRequest, fit: ContainingFit, frame: CameraFrame) -> bool:
+        """Refuse (``True``) a CONTEXT query's mint whose box is a live track's box.
+
+        CONTEXT only: a context track is there to be avoided, which the live track already is;
+        a TARGET / DESTINATION query refused because another query boxed its object first
+        would never resolve, so those still mint.
+        """
+        q = self.queries.get(*req.query_key) if req.query_key else None
+        if q is None or q.query.role is not ObjectRole.CONTEXT or fit.box is None:
+            return False
+        dup = duplicate_of(fit.box, self.store.all())
+        if dup is None:
+            return False
+        self._refuse(f"{req.label}@{req.camera}", "duplicate_of_track", req=req, frame=frame,
+                     track=dup[0], iou=round(dup[1], 2))  # fmt: skip
+        return True
 
     def _mint_track(
         self,
@@ -1073,7 +1223,7 @@ class ObjectTracker:
             )
         return moved
 
-    def _refuse_refit(
+    def _refuse_refit(  # noqa: PLR0911  # reason: one return per named gate
         self,
         old: TrackedObject,
         fit: ContainingFit,
@@ -1091,9 +1241,17 @@ class ObjectTracker:
         provisional one re-dates it in the store). Each gate logs.
         """
         oid = old.object_id
+        grown = self._overgrown(oid, fit, moved)
+        if grown and not self._admit_growth(
+            old, fit, cells, centroid, support_z, grid, hands, frame
+        ):
+            if self._redate_if_inside(old, fit, grid, frame, _REDATE_SPILL_FRACTION):
+                log.info("object_tracker.refit_growth_redated", object_id=oid)
+            return True
         if old.status is TrackStatus.OCCLUDED and not moved:
             self._refresh_evidence(oid, cells)
-            log.info("object_tracker.occluded_refit_ignored", object_id=oid)
+            redated = self._redate_if_inside(old, fit, grid, frame)
+            log.info("object_tracker.occluded_refit_ignored", object_id=oid, redated=redated)
             return True
         if fit.provisional and not old.provisional and not moved:
             # A fit through the robot never replaces geometry measured clear of it,
@@ -1124,8 +1282,9 @@ class ObjectTracker:
             # true tightening passes: the surface it drops is no longer occupied.
             left = uncovered_cells(grid, prior, fit.box)
             if left >= max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(prior)):
+                redated = self._redate_if_inside(old, fit, grid, frame)
                 log.info("object_tracker.partial_refit_ignored", object_id=oid,
-                         uncovered=left, cells=len(prior),
+                         uncovered=left, cells=len(prior), redated=redated,
                          half_extents=[round(h, 3) for h in old.box.half_extents],
                          fit_half=[round(h, 3) for h in fit.box.half_extents])  # fmt: skip
                 return True
@@ -1144,7 +1303,164 @@ class ObjectTracker:
                 # track would go SPLIT and its next fit take a new id (a swap).
                 log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
                 return True
+        if grown and fit.box is not None:
+            # Admitted and past every later gate: the fit is committed and replaces the
+            # reference (``_commit_fit``). Taken earlier, a later gate's refusal left the track
+            # with no reference and its one admission spent (review of #479).
+            self._first_extent.pop(oid, None)
+            self._growth_votes.pop(oid, None)
+            self._growth_admitted[oid] = True
+            log.info("object_tracker.refit_growth_admitted", object_id=oid,
+                     extent_m=round(2.0 * max(fit.box.half_extents[:2]), 3),
+                     height_m=round(2.0 * fit.box.half_extents[2], 3))  # fmt: skip
         return False
+
+    def _admit_growth(
+        self,
+        old: TrackedObject,
+        fit: ContainingFit,
+        cells: frozenset[Cell],
+        centroid: tuple[float, ...],
+        support_z: float,
+        grid: VoxelLattice,
+        hands: Sequence[PlaceRegion],
+        frame: CameraFrame,
+    ) -> bool:
+        """Whether a growth-refused clear refit may become the track's new size reference.
+
+        A first fit from a partial mask holds the reference small for good: restock seeds 111 and
+        112 (2026-11-01/02), an 8.2 cm carton first fitted at 6 cm refused every 10.6 cm full
+        fit for the whole episode, 3-4 cm under-covered. Admitted, once per track, when all hold:
+
+        * the last ``_GROWTH_VOTES`` refused clear growth fits agree within ``_GROWTH_AGREE_M``
+          in longer horizontal extent, height and centre, within ``_GROWTH_WINDOW_NS``;
+        * the height stays within a cell of the reference's: a camera above sees the top, so a
+          partial view loses a side, never the height; a spill takes in something taller (a
+          neighbour, the hand, a shelf) or a fragment (Spark replays 2026-11-03: of 4 admissions
+          without this check, 3 were spills 3.2-6.5 cm over the carton, 2 of them 5-6 cm taller);
+        * its box reaches no live track the kept box (grown a cell) does not already touch: a
+          spill onto a tracked neighbour (a duplicate track of this object overlaps the kept box
+          too, so it never blocks);
+        * ``cover_verdict`` is not ``map_split``: one body on the map.
+
+        Once per track: a spill that feeds its own prompt (a larger box prompts a larger mask)
+        cannot ratchet the box (restock 2026-10-30: 14 -> 24 -> 39 cm). The admitted fit
+        replaces the reference once ``_refuse_refit``'s later gates pass it too. *Ceiling*: an
+        object whose first clear fit missed its top stays short; growth onto an untracked object
+        of the same height that the map sees as one body is admitted once. Safety-WG review owed.
+        """
+        oid = old.object_id
+        ref = self._first_extent.get(oid)
+        if fit.box is None or fit.provisional or ref is None or self._growth_admitted.get(oid):
+            return False
+        ext = (2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
+               2.0 * fit.box.half_extents[2])  # fmt: skip
+        xy = (fit.box.pose.xyz[0], fit.box.pose.xyz[1])
+        recent = [
+            v for v in self._growth_votes.get(oid, []) if frame.stamp_ns - v[0] <= _GROWTH_WINDOW_NS
+        ]
+        votes = [*recent, (frame.stamp_ns, ext, xy)][-_GROWTH_VOTES:]
+        self._growth_votes[oid] = votes
+        if len(votes) < _GROWTH_VOTES or not all(
+            abs(e[0] - ext[0]) <= _GROWTH_AGREE_M
+            and abs(e[1] - ext[1]) <= _GROWTH_AGREE_M
+            and math.hypot(c[0] - xy[0], c[1] - xy[1]) <= _GROWTH_AGREE_M
+            for _, e, c in votes
+        ):
+            return False
+        if abs(ext[1] - ref[2]) > grid.resolution:
+            log.info("object_tracker.refit_growth_blocked", object_id=oid, by="height")
+            return False
+        kept = _aabb(_grown(old.box, grid.resolution))
+        new = _aabb(fit.box)
+        for o in self.store.all():
+            if o.object_id == oid or o.status in (TrackStatus.LOST, TrackStatus.RELEASED):
+                continue
+            other = _aabb(o.box)
+            if _aabb_overlap(new, other) and not _aabb_overlap(kept, other):
+                log.info("object_tracker.refit_growth_blocked", object_id=oid, by=o.object_id)
+                return False
+        verdict = cover_verdict(
+            grid, cells, fit.box, support_z=support_z, own=hands,
+            others=self._other_boxes(centroid), static=self._static_keys(grid),
+        )  # fmt: skip
+        if verdict.kind == "map_split":
+            log.info("object_tracker.refit_growth_blocked", object_id=oid, by="map_split")
+            return False
+        return True
+
+    def _overgrown(self, oid: str, fit: ContainingFit, moved: bool) -> bool:
+        """Refuse (``True``) a refit past ``refit_growth_factor`` x the track's first clear fit.
+
+        Unlike ``_provisional_oversize`` this holds for a moved or a clear fit too, and the
+        reference never grows with the fits it admits: the first clear fit, not the largest.
+        A track with no clear fit yet is held to its first provisional fit, but a clear fit is
+        never refused against one (a fit through the robot may undersize the object).
+        The refused fit never changes the box; ``_refuse_refit`` re-dates it only when most of
+        its surface lies inside the kept box. Safety-WG review owed: the kept box is the first
+        clear containing fit.
+        """
+        ref = self._first_extent.get(oid)
+        if ref is None or fit.box is None or (not ref[1] and not fit.provisional):
+            return False
+        first, _, first_h, first_full = ref
+        factor = self.params.refit_growth_factor
+        extent = 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1])
+        height = 2.0 * fit.box.half_extents[2]
+        limit = factor * first
+        # Height too (restock scene 00 2026-11-01: an 8 cm carton's refits took in a taller
+        # neighbour and its box grew to 14.6 cm tall under a horizontal-only gate).
+        limit_h = factor * first_h
+        if extent <= limit and height <= limit_h:
+            return False
+        # A re-orientation is no growth: a carried 6 x 6 x 11 cm carton tipped 90 degrees is
+        # 11 cm across, and refusing it kept re-dating the upright box while the protruding
+        # part went unmodelled. Admitted when every sorted extent stays within the factor of
+        # the first fit's and its volume within the factor too; a spill onto a neighbour or
+        # the support adds volume (a 6 x 6 x 8 carton spilled to 12 x 6 x 8 is 2x).
+        full = sorted(2.0 * h for h in fit.box.half_extents)
+        ref_full = sorted(first_full)
+        if all(f <= factor * r for f, r in zip(full, ref_full, strict=True)) and (
+            float(np.prod(full)) <= factor * float(np.prod(ref_full))
+        ):
+            log.info("object_tracker.refit_reoriented", object_id=oid, moved=moved,
+                     extents_m=[round(f, 3) for f in full])  # fmt: skip
+            return False
+        log.info("object_tracker.refit_growth_refused", object_id=oid, moved=moved,
+                 extent_m=round(extent, 3), first_m=round(first, 3),
+                 limit_m=round(limit, 3), height_m=round(height, 3),
+                 limit_h_m=round(limit_h, 3))  # fmt: skip
+        return True
+
+    def _redate_if_inside(
+        self,
+        old: TrackedObject,
+        fit: ContainingFit,
+        grid: VoxelLattice,
+        frame: CameraFrame,
+        fraction: float = _REDATE_INSIDE_FRACTION,
+    ) -> bool:
+        """Re-date ``old``'s fit when a refused refit measured the object inside its box.
+
+        The kept box still contains what the camera measured now, so it is fresh geometry for
+        the grasp binder, as a provisional refit already re-dates it (2026-10-22 decision).
+        Without it a partial or occluded refit left the box to age: restock 2026-10-30, the
+        target's refits under the approaching hand were all refused, its fit was 9.4 s old at
+        the grasp and the bind fell back to the pinch payload. A growth-refused refit re-dates
+        at ``_REDATE_SPILL_FRACTION``: restock 2026-10-31, a mask spilling onto a touching
+        carton was refused every frame and the clear target box aged out the same way.
+        Safety-WG review owed.
+        """
+        surface = fit.surface
+        if not len(surface):
+            return False
+        inside = int(np.count_nonzero(_inside(surface, _grown(old.box, grid.resolution))))
+        if inside < fraction * len(surface):
+            return False
+        self.store.replace(
+            old.model_copy(update={"last_fit_stamp_ns": max(old.last_fit_stamp_ns, frame.stamp_ns)})
+        )
+        return True
 
     def _refit_track(
         self,
@@ -1184,6 +1500,31 @@ class ObjectTracker:
             # Safety-WG review owed.
             box, tight = old.box, old.tight
             log.info("object_tracker.contact_refit_kept", object_id=oid)
+        provisional = fit.provisional
+        if moved and fit.provisional and not old.provisional and fit.box is not None:
+            # A fit through the robot sees only what the robot leaves in view, so it may say
+            # where the pushed object went but never how big it is: the clear box keeps its
+            # size, re-centred in x/y on the new fit, and the track turns PROVISIONAL as before
+            # (2026-10-21 decision: a pushed object's box is never a payload). 2026-10-31: the
+            # through-robot box had replaced the clear one, a 2-4x different size. Its hulls
+            # were posed for the old place, so they go. Safety-WG review owed.
+            # A shift within one grid cell is no push the map could tell from noise (restock
+            # 2026-10-31 mix_03: 160 points through the hand "moved" the target 1 cm, it turned
+            # provisional and the grasp bound the pinch fallback): the clear box stands as is.
+            x, y, _ = fit.box.pose.xyz
+            shift = math.dist(old.box.pose.xyz[:2], (x, y))
+            if shift <= grid.resolution:
+                box, tight, provisional = old.box, old.tight, old.provisional
+                log.info("object_tracker.covered_move_within_cell", object_id=oid,
+                         shift_m=round(shift, 3))  # fmt: skip
+            else:
+                box = old.box.model_copy(
+                    update={"pose": old.box.pose.model_copy(
+                        update={"xyz": (x, y, old.box.pose.xyz[2])})}
+                )  # fmt: skip
+                tight = ()
+                log.info("object_tracker.covered_move_size_kept", object_id=oid,
+                         shift_m=round(shift, 3))  # fmt: skip
         track = old.model_copy(
             update={
                 "fit_kind": fit_kind,
@@ -1195,7 +1536,7 @@ class ObjectTracker:
                 "last_fit_stamp_ns": frame.stamp_ns,
                 "status": TrackStatus.TENTATIVE if refit else old.status,
                 "identity_inferred": old.identity_inferred or kind == "inferred",
-                "provisional": fit.provisional,
+                "provisional": provisional,
             }
         )
         self.store.replace(track)
@@ -1213,6 +1554,14 @@ class ObjectTracker:
         frame: CameraFrame,
     ) -> None:
         """Record an accepted fit's evidence for ``track`` and re-confirm it on the map."""
+        ref = self._first_extent.get(track.object_id)
+        if fit.box is not None and (ref is None or (not ref[1] and not fit.provisional)):
+            self._first_extent[track.object_id] = (
+                2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
+                not fit.provisional,
+                2.0 * fit.box.half_extents[2],
+                tuple(2.0 * h for h in fit.box.half_extents),
+            )
         if not fit.provisional and fit.box is not None:
             size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])
             self._clear_size[track.object_id] = max(
@@ -1658,8 +2007,13 @@ class ObjectTracker:
             )
             if vis is None:
                 continue
-            hidden = vis < self.params.theta_vis
-            if hidden != (t.status is TrackStatus.OCCLUDED):
+            # Hysteresis: back to CONFIRMED only past ``theta_vis + _VIS_HYSTERESIS``. A hand
+            # hovering over the target held it near the threshold and flipped it every frame
+            # (restock scene 08 2026-11-01: OCCLUDED -> CONFIRMED in the second of the grasp, so
+            # the map's confirmation stopped counting and the bind went untracked, fit 1.5 s old).
+            occluded = t.status is TrackStatus.OCCLUDED
+            hidden = vis < self.params.theta_vis + (_VIS_HYSTERESIS if occluded else 0.0)
+            if hidden != occluded:
                 new = TrackStatus.OCCLUDED if hidden else TrackStatus.CONFIRMED
                 self.store.replace(t.model_copy(update={"status": new}))
 

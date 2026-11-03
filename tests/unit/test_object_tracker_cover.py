@@ -10,7 +10,9 @@ from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.perception_geometry import VoxelLattice
 from openral_world_state.object_tracker import (
     CameraFrame,
+    FitParams,
     ObjectTracker,
+    TrackerParams,
     TrackerResult,
     cover_verdict,
     surface_cells,
@@ -38,9 +40,11 @@ _QUERY = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
 
 
 def _confirmed_tracker(
-    solid: Solid = _ORANGE, query: ObjectQuery = _QUERY
+    solid: Solid = _ORANGE, query: ObjectQuery = _QUERY, *, containing: bool = False
 ) -> tuple[ObjectTracker, float]:
-    tr = ObjectTracker(_RIG.frame)
+    # ``containing``: these scenarios' cell counts and gates were calibrated on the #266 set.
+    fit = FitParams(extent="containing") if containing else FitParams()
+    tr = ObjectTracker(_RIG.frame, params=TrackerParams(fit=fit))
     tr.open_query("g", "q0", query, "obj:orange_1@0", stamp_ns=0)
     out, wall = step(tr, _RIG, [solid], stamp_ns=0, wall_s=0.0)
     assert [o.status for o in out.tracked.objects] == [TrackStatus.CONFIRMED]
@@ -342,7 +346,7 @@ def test_a_re_anchor_counts_neither_the_support_layer_nor_more_than_the_object()
     pushed out of its box still re-stamped. The support layer is never the object, and a box
     holding more than ``_REANCHOR_MAX_RATIO`` times the expected cells holds something else
     too: neither re-anchors (2026-10-21 decisions)."""
-    tr, _ = _confirmed_tracker(_CAN)
+    tr, _ = _confirmed_tracker(_CAN, containing=True)
     t0 = tr.store.all()[0]
     origin_z = grid_from_depth(render([], _RIG)[0], _RIG).origin[2]
     support_layer = math.floor((t0.support_z - origin_z) / RES)  # the cell the top lies in
@@ -352,7 +356,7 @@ def test_a_re_anchor_counts_neither_the_support_layer_nor_more_than_the_object()
     }
 
     def touched(solids: list[Solid], extra: list[tuple[int, int, int]]) -> int:
-        tr, wall = _confirmed_tracker(_CAN)
+        tr, wall = _confirmed_tracker(_CAN, containing=True)
         depth, _ = render(solids, _RIG)
         frame = CameraFrame(
             _RIG.name, 100_000_000, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8)
@@ -387,7 +391,7 @@ def test_a_refit_never_shrinks_a_touched_targets_box() -> None:
     at it, a refit's box encloses the old box too; with no hand, it is the new fit alone."""
 
     def refit_after_push(*, hand: bool, push: float = 0.05) -> tuple[PlaceRegion, PlaceRegion]:
-        tr, wall = _confirmed_tracker(_CAN)
+        tr, wall = _confirmed_tracker(_CAN, containing=True)
         old = tr.store.all()[0].box
         x, y = _RIG.centre_xy
         can = cylinder((x + push, y), 0.035, _RIG.support_z, _RIG.support_z + 0.10)
@@ -419,7 +423,7 @@ def test_the_cells_the_robot_hides_are_no_evidence_the_object_is_gone() -> None:
     banana for 255-466 steps). An arm in front of most of the can hides its expected cells;
     the self-filtered map no longer holds them. Visible-only cover still confirms the track
     and re-stamps it, publishing the smaller visible count (the kernel's cover bar)."""
-    tr, wall = _confirmed_tracker(_CAN)
+    tr, wall = _confirmed_tracker(_CAN, containing=True)
     before = tr.store.all()[0]
     depth, labels = render([_CAN], _RIG)
     rows, cols = np.nonzero(labels == 1)

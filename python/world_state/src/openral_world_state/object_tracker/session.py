@@ -67,6 +67,7 @@ from openral_world_state.object_tracker.binding import (
     Binding,
     BindOutcome,
     GraspBinder,
+    _fresh_ns,  # reason: same package; the freshness rule a late bind must share
     _pinch_holds,  # reason: same package; the candidate rule a late bind must share
 )
 from openral_world_state.object_tracker.cover import hand_touches
@@ -109,8 +110,10 @@ _LATE_MIN_NS = 0
 _LATE_MAX_NS = 3 * _NS
 #: ... the hand has travelled no further than this since the hold (m; an ordinary
 #: 15 cm lift before a late ATTACH skipped the late bind at 0.12 and bound the
-#: pinch fallback; a wrong late bind is released by `_check_drop`). *Calibration point.* ...
-_LATE_MAX_TRAVEL_M = 0.18
+#: pinch fallback; restock scene 08 2026-11-01 lifted 21 cm in 1 s while the jaw still crept
+#: closed on the carton, the stall read fired after it and 0.18 bound the pinch fallback; a
+#: wrong late bind is a phantom payload, released by `_check_drop`). *Calibration point.* ...
+_LATE_MAX_TRAVEL_M = 0.25
 #: ... (the grasp pose: the hold's, or the newest this long before it with the pinch in a box)
 _LATE_LOOKBACK_NS = 1 * _NS
 #: ... and the track was last fitted within this long of the hold start.
@@ -128,12 +131,16 @@ _JUDGE_CLEAR_M = 0.02
 _RELEASE_CLEAR_M = 0.04
 #: Consecutive in-hand fits away from every hand box that read as a drop (`_check_drop`).
 _DROP_FITS = 2
-#: A track a late ATTACH may revive and bind.
+#: A track a late ATTACH may revive and bind (once it has confirmed).
 _LATE_STATUSES = frozenset(
     {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT, TrackStatus.LOST}
 )
 #: A joint sample further than this from a stamp is not the pose then.
 _JOINT_SAMPLE_MAX_AGE_NS = 250_000_000
+
+
+#: A source stamp this far behind the newest one is a reset clock, not a late message.
+_CLOCK_RESET_NS = 1_000_000_000
 
 
 @dataclass(frozen=True)
@@ -288,15 +295,42 @@ class TrackerSession:
         self._derived: set[str] = set()
         self._goals: dict[str, _Goal | None] = {"grasp": None, "place": None, "deploy": None}
         self._now_ns = 0
+        self._clock_reset = False  # the joint stamps went back at least once (a sim reset)
 
     # -- inputs ------------------------------------------------------------------------
 
     @property
     def now_ns(self) -> int:
-        """The newest source stamp seen."""
+        """The newest source stamp seen since the joint stamps last went back (a sim reset)."""
         return self._now_ns
 
-    def _tick(self, stamp_ns: int) -> None:
+    def _from_old_epoch(self, stamp_ns: int) -> bool:
+        """Whether ``stamp_ns`` predates the last sim reset: past it by more than a reset step.
+
+        Inputs lag the joint clock, never lead it, so after a reset a stamp that far ahead of
+        it was taken before the reset (a frame or answer still queued in the node).
+        """
+        return self._clock_reset and stamp_ns > self._now_ns + _CLOCK_RESET_NS
+
+    def _tick(self, stamp_ns: int, *, may_reset: bool = False) -> None:
+        if may_reset and stamp_ns < self._now_ns - _CLOCK_RESET_NS:
+            # The source clock went back (a sim reset), as ``JawStallDetector.update`` reads it:
+            # a running maximum from before it would stamp every jaw command ahead of every
+            # jaw sample, and the stall-derived ATTACH would never fire (review of #479). Joint
+            # states only: a camera frame or grid can lag a second or more (the node holds a
+            # frame up to ``_MASK_TF_WAIT_S`` for its transform) and is late, not a reset.
+            self._now_ns = stamp_ns
+            self._clock_reset = True
+            # Source-time state from before the reset would gate or mislead the new epoch:
+            # the newest-grid gate would refuse every grid until sim time passed the old one,
+            # and a late ATTACH would look up hand poses from the last episode.
+            self.grid, self.grid_stamp_ns = None, 0
+            kept = [h for h in self._joint_history if h[0] <= stamp_ns]
+            self._joint_history.clear()
+            self._joint_history.extend(kept)
+        if self._from_old_epoch(stamp_ns):
+            # A frame, grid or answer queued before the reset never lifts the clock back.
+            return
         self._now_ns = max(self._now_ns, stamp_ns)
         for goal in self._goals.values():
             if goal is not None and goal.start_ns is None and self._now_ns > 0:
@@ -385,6 +419,9 @@ class TrackerSession:
         if grid.frame_id != self.frame_id:
             log.warning("object_tracker.grid_frame", grid=grid.frame_id, tracks=self.frame_id)
             return
+        if self._from_old_epoch(source_stamp_ns):
+            log.info("object_tracker.grid_before_reset_ignored", stamp_ns=source_stamp_ns)
+            return
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._tick(source_stamp_ns)
@@ -396,7 +433,11 @@ class TrackerSession:
                         self.attachment_changes += 1
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
-        """Fold the approved command for a gripper joint into the derived-attach read."""
+        """Fold the approved command for a gripper joint into the derived-attach read.
+
+        ``stamp_ns`` is the source time it was received at: jaw samples stamped before it are
+        read against the command before it.
+        """
         detector = self._stall.get(gripper_joint)
         if detector is not None and math.isfinite(target):
             detector.command(target, stamp_ns)
@@ -409,7 +450,7 @@ class TrackerSession:
         for joint, binder in self.binders.items():
             if joint in positions:  # the most open jaw before closure bounds a fallback
                 binder.observe_jaw(positions[joint])
-        self._tick(stamp_ns)
+        self._tick(stamp_ns, may_reset=True)
         for joint, monitor in list(self._monitors.items()):
             jaw = positions.get(joint)
             if jaw is not None and monitor.observe(jaw, stamp_ns):
@@ -576,8 +617,11 @@ class TrackerSession:
         ``_LATE_MAX_TRAVEL_M`` since the hold; exactly one track has a geometry fit within
         ``_LATE_CONFIRM_NS`` of the hold and holds the pinch centre at the hold. An object
         left on the table is the camera's to catch after the bind (``_check_drop``), not the
-        map's before it. Map confirmation alone does not refresh fit age. Otherwise ``None``:
-        the normal bind.
+        map's before it. Map confirmation alone does not refresh fit age, except for the goal's
+        OCCLUDED target, exactly as the bind itself reads it (``binding._fresh_ns``): under the
+        hand the camera cannot refit it (restock bench 2026-10-31, 4 of 4 untracked 6 cm grasps:
+        the target occluded, map-confirmed 0.0-0.17 s before the bind, last fit 2.6-11 s old).
+        Otherwise ``None``: the normal bind.
         A SPLIT / LOST candidate is revived to OCCLUDED for the bind.
         """
         detector = self._stall.get(joint)
@@ -609,12 +653,26 @@ class TrackerSession:
             skip("no_joint_sample_at_hold")
             return _LateAttachChoice()
         store = self.tracker.store
-        eligible = [o for o in store.all() if o.status in _LATE_STATUSES]
-        fresh = [o for o in eligible if o.last_fit_stamp_ns >= hold_ns - _LATE_CONFIRM_NS]
+        # A LOST / SPLIT track that never confirmed never held cells of its own: reviving it
+        # revives a duplicate (restock bench_fix_08: a generic "carton" query's mint over the
+        # target, refused `cover_already_tracked` then LOST, revived OCCLUDED by the late bind
+        # and tied with the target, bound ambiguous).
+        eligible = [
+            o for o in store.all() if o.status in _LATE_STATUSES and o.last_confirmed_stamp_ns > 0
+        ]
+        fresh = [o for o in eligible if _fresh_ns(o) >= hold_ns - _LATE_CONFIRM_NS]
         if eligible and not fresh:
             skip(
                 "stale_fit",
-                tracks=[(o.object_id, (hold_ns - o.last_fit_stamp_ns) / _NS) for o in eligible],
+                tracks=[
+                    (
+                        o.object_id,
+                        o.status.value,
+                        (hold_ns - o.last_fit_stamp_ns) / _NS,
+                        (hold_ns - o.last_confirmed_stamp_ns) / _NS,
+                    )
+                    for o in eligible
+                ],
             )
             return _LateAttachChoice(excluded_track_ids=frozenset(o.object_id for o in eligible))
         pose = self._grasp_pose(binder, joint, positions, sample, hold_ns, fresh)

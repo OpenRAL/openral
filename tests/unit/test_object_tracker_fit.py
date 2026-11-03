@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from numpy.typing import NDArray
 from openral_core import PlaceRegion, TrackedObject
@@ -22,6 +22,7 @@ from openral_world_state.object_tracker import (
     ROBOT_PIXEL,
     UNCERTAIN_PIXEL,
     ContainingFit,
+    FitParams,
     containing_fit,
 )
 
@@ -42,6 +43,7 @@ from tests.unit._tracker_scenes import (
 pytest.importorskip("scipy", reason="scipy.spatial.ConvexHull checks hull containment")
 
 _RIGS = {name: make() for name, make in RIGS.items()}
+_CONTAINING = FitParams(extent="containing")
 
 
 def _solid(kind: str, rig: Rig, dx: float, dy: float, a: float, b: float, c: float) -> Solid:
@@ -70,6 +72,7 @@ def _fit(rig: Rig, solids: list[Solid], **kw: Any) -> ContainingFit:
         resolution=RES,
         frame_id=rig.frame,
         stamp_ns=1,
+        params=kw.pop("params", _CONTAINING),  # the #266 set these tests pin
         **kw,
     )
 
@@ -262,3 +265,131 @@ def test_an_oblique_view_does_not_box_far_above_the_object(rig_name: str) -> Non
     zhi = fit.box.pose.xyz[2] + fit.box.half_extents[2]
     assert zhi <= top + 0.02, (rig_name, zhi - top)
     assert _in_tight(surface_samples(solid), fit).all()
+
+
+@pytest.mark.parametrize("rig_name", sorted(_RIGS))
+@settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(
+    kind=st.sampled_from(["cylinder", "box"]),
+    dx=st.floats(-0.05, 0.05),
+    dy=st.floats(-0.05, 0.05),
+    a=st.floats(0.0, 1.0),
+    b=st.floats(0.0, 1.0),
+    c=st.floats(0.0, 1.0),
+)
+# DROID exterior: the 2 cm-tall box's far corner lay 8.3 mm from its nearest sample.
+@example(kind="box", dx=0.0, dy=0.0, a=0.9375, b=0.0, c=0.0)
+def test_the_measured_box_contains_an_upright_prism(
+    rig_name: str, kind: str, dx: float, dy: float, a: float, b: float, c: float
+) -> None:
+    """``extent="measured"`` (the default) boxes what the camera saw, extruded to the support.
+    A solid whose top face spans its footprint (a carton, a can) is whole inside it from any
+    of the rigs; a part hidden past what the camera saw (the far side of a sphere seen
+    obliquely: up to 5 mm on the OpenArm head, 22 mm on DROID's exterior camera) is not."""
+    rig = _RIGS[rig_name]
+    solid = _solid(kind, rig, dx, dy, a, b, c)
+    fit = _fit(rig, [solid], params=FitParams())
+    assert fit.refusal == "", (rig_name, kind, fit.refusal)
+    pts = surface_samples(solid)
+    assert _in_box(pts, fit.box).all()
+    assert _in_tight(pts, fit).all()
+
+
+def test_a_carton_is_boxed_near_its_own_size_not_its_shadow() -> None:
+    """Restock 2026-10-31: from the OpenArm head camera a 6 x 6 x 11 cm carton measured
+    6.9 x 7.0 x 11 cm and was boxed 12.2 x 12.4 x 12.3 cm, the cone of everything it could
+    hide; the kernel then stopped the carried box 5 cm short of the shelf board."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    carton = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    measured = _fit(rig, [carton], params=FitParams())
+    cone = _fit(rig, [carton])  # the #266 containing set
+    assert measured.box is not None and cone.box is not None
+    pad = 0.5 * RES  # half a cell on each side
+    assert max(measured.box.half_extents[:2]) <= 0.03 + pad + 1e-6, measured.box.half_extents
+    assert max(cone.box.half_extents[:2]) > 1.5 * 0.03, cone.box.half_extents
+
+
+def test_a_mask_spilled_onto_a_neighbour_is_cut_to_what_the_detector_boxed() -> None:
+    """Restock scene 13 2026-10-31: the mask took in a carton 1.6 cm away and the 6 x 6 cm
+    target was boxed 18 x 9 cm. The depth-connected part the detector boxed is kept."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    target = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    neighbour = box((x - 0.076, y, rig.support_z + 0.04), (0.03, 0.03, 0.04), 0.0)
+    _, labels = render([target, neighbour], rig)
+    rows, cols = np.nonzero(labels == 1)
+    prompt = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    rows, cols = np.nonzero(labels > 0)
+    both = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    spilled = labels > 0
+    kw: dict[str, Any] = {"mask": spilled, "params": FitParams()}
+    whole = _fit(rig, [target, neighbour], **kw)
+    cut = _fit(rig, [target, neighbour], detector_box=prompt, **kw)
+    kept = _fit(rig, [target, neighbour], detector_box=both, **kw)
+    assert whole.box is not None and cut.box is not None and kept.box is not None
+    assert max(whole.box.half_extents[:2]) > 0.06, whole.box.half_extents
+    assert max(cut.box.half_extents[:2]) <= 0.03 + RES, cut.box.half_extents
+    assert _in_box(surface_samples(target), cut.box).all()
+    assert cut.assumptions["spill_dropped_points"] > 0
+    assert kept.box.half_extents == whole.box.half_extents  # a box over both drops nothing
+    # A refit prompts with the track's projected box: it picks the parts the same way.
+    refit = _fit(rig, [target, neighbour], part_box=prompt, **kw)
+    assert refit.box is not None and refit.box.half_extents == cut.box.half_extents
+
+
+def test_a_target_an_occluder_cuts_in_two_keeps_both_parts() -> None:
+    """A thin occluder across the target splits its mask; both parts lie in the detector's box,
+    so neither is dropped."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    target = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    _, labels = render([target], rig)
+    whole = labels == 1
+    rows, cols = np.nonzero(whole)
+    prompt = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    mid = (cols.min() + cols.max()) // 2
+    cut = whole.copy()
+    cut[:, mid - 1 : mid + 2] = False
+    fit = _fit(rig, [target], mask=cut, detector_box=prompt, params=FitParams())
+    ref = _fit(rig, [target], mask=whole, params=FitParams())
+    assert fit.box is not None and ref.box is not None
+    assert "spill_dropped_points" not in fit.assumptions
+    assert np.allclose(fit.box.half_extents, ref.box.half_extents, atol=RES / 2)
+
+
+def test_a_mask_over_the_strip_the_carton_stands_on_is_boxed_to_the_carton() -> None:
+    """Restock scene 09 2026-11-01: refit masks took in the white strip under the carton
+    (every point outside the carton 1 mm above its bottom) and boxed it 14.5 x 12 cm."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    strip_top = rig.support_z + 0.004
+    strip = box((x, y, rig.support_z + 0.002), (0.15, 0.04, 0.002), 0.0)
+    carton = box((x, y, strip_top + 0.055), (0.03, 0.03, 0.055), 0.0)
+    _, labels = render([carton, strip], rig)
+    rows, cols = np.nonzero(labels == 1)
+    near = np.zeros(labels.shape, bool)
+    near[rows.min() - 15 : rows.max() + 16, cols.min() - 15 : cols.max() + 16] = True
+    spilled = (labels == 1) | ((labels == 2) & near)
+    fit = _fit(rig, [carton, strip], mask=spilled, support_z=strip_top, params=FitParams())
+    assert fit.box is not None
+    assert max(fit.box.half_extents[:2]) <= 0.03 + RES, fit.box.half_extents
+    assert _in_box(surface_samples(carton), fit.box).all()
+    assert fit.assumptions["support_dropped_points"] > 0
+
+
+def test_a_mask_all_in_the_robot_filters_uncertain_band_does_not_raise_with_a_part_box() -> None:
+    """Review of #479: with no pixel the filter is sure of, the fit falls back to the whole mask,
+    and a part box picked parts from an empty mask (``rows.min()`` of nothing raised). Only a
+    direct ``containing_fit`` caller gets here: ``ObjectTracker._fit`` refuses such a mask first
+    (``too_few_points`` on the pixels with ``robot_mask == 0``). No measured part: no point is
+    dropped as spill."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    carton = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    _, labels = render([carton], rig)
+    rows, cols = np.nonzero(labels == 1)
+    prompt = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    robot = np.where(labels == 1, UNCERTAIN_PIXEL, 0).astype(np.uint8)
+    fit = _fit(rig, [carton], robot_mask=robot, params=FitParams(), part_box=prompt)
+    assert "spill_dropped_points" not in fit.assumptions

@@ -72,7 +72,7 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.object_tracker.catalog import CatalogDeclarations
-from openral_world_state.object_tracker.commands import jaw_commands
+from openral_world_state.object_tracker.commands import SourceClock, jaw_commands
 from openral_world_state.object_tracker.grounding import QueryEscalation, StandingQuery
 from openral_world_state.object_tracker.heartbeat import StarvationFill
 
@@ -608,6 +608,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._attach_key: tuple[int, int, int] | None = None
             self._attach_rev = 0
             self._joint_rx_ns = 0
+            self._source_clock = SourceClock()
             # Keeps /openral/tracked_objects and /openral/attachment_state alive while a long
             # fit holds the executor (the kernel gates on the attachment stamp's age).
             self._fill: StarvationFill[Any] = StarvationFill()
@@ -875,6 +876,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             }
             stamp = _stamp_ns(msg.header.stamp) or int(self.get_clock().now().nanoseconds)
             self._joint_rx_ns = int(self.get_clock().now().nanoseconds)
+            self._source_clock.observe(clock_ns=self._joint_rx_ns, stamp_ns=stamp)
             self._fill.joints(time.monotonic())
             self._fill.touch(time.monotonic())
             self.session.on_joint_state(positions, stamp)
@@ -898,8 +900,14 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 tick_group_size=int(msg.tick_group_size),
                 ee_name=str(msg.ee_name),
             )
+            # In force from the joint states' source time at receipt, not the newest joint state
+            # processed: the chunk carries no stamp, and with joint states queued behind it the
+            # newest processed stamp is old, so a backlog of still jaw samples would be read
+            # against it (``SourceClock``: the node's clock, in the joint stamps' time base).
+            received = self._source_clock.source_at(int(self.get_clock().now().nanoseconds))
+            stamp = max(received or 0, self.session.now_ns)
             for joint, target in got.items():
-                self.session.on_jaw_command(joint, target, self.session.now_ns)
+                self.session.on_jaw_command(joint, target, stamp)
 
         def _on_grasp_event(self, msg: Any) -> None:
             kind = kinds.get(int(msg.kind))

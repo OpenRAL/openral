@@ -158,3 +158,31 @@ def test_a_target_lying_in_its_destinations_box_confirms() -> None:
         assert t is not None
         tr._confirm(t, grid, stamp, ())
     assert _status(tr, inside) is TrackStatus.CONFIRMED
+
+
+def _carton(x: float, y: float, hx: float, hy: float) -> PlaceRegion:
+    return PlaceRegion(
+        frame_id=_FRAME,
+        half_extents=(hx, hy, 0.062),
+        pose=Pose6D(xyz=(x, y, -0.523), quat_xyzw=(0, 0, 0, 1), frame_id=_FRAME),
+    )
+
+
+def test_a_generic_query_fit_over_a_tracked_object_is_its_duplicate() -> None:
+    """Restock bench_fix_08 (2026-10-31): the target ``carton led2335g3 a`` (trk:1) and a
+    generic ``carton`` query's fit over it (trk:2), as logged; the neighbouring carton 7 cm
+    over, with the same inflated box, is a new object."""
+    from openral_world_state.object_tracker.tracker import duplicate_of
+
+    tr = _tracker()
+    t = tr.store.mint(
+        label="carton led2335g3 a", role=ObjectRole.TARGET, declaration_key="deploy@0",
+        box=_carton(0.174, 0.115, 0.059, 0.061), tight=(), fit_kind=FitKind.SILHOUETTE_CONE,
+        support_z=-0.585, support_ref="map", floor_z=-0.57, visible_cells=0, occupied_cells=0,
+        last_fit_stamp_ns=1, last_confirmed_stamp_ns=1,
+    )  # fmt: skip
+    dup = duplicate_of(_carton(0.175, 0.117, 0.065, 0.066), tr.store.all())
+    assert dup is not None and dup[0] == t.object_id and dup[1] > 0.8, dup
+    assert duplicate_of(_carton(0.244, 0.115, 0.059, 0.061), tr.store.all()) is None
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.LOST}))
+    assert duplicate_of(_carton(0.175, 0.117, 0.065, 0.066), tr.store.all()) is None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -18,7 +19,9 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.object_tracker import (
     CameraFrame,
+    FitParams,
     ObjectTracker,
+    TrackerParams,
     TrackerResult,
     associate,
     containing_fit,
@@ -43,6 +46,14 @@ from tests.unit._tracker_scenes import (
 _RIG = so101_top()
 _R = 0.024
 _QUERY = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
+
+
+def _params(containing: bool) -> TrackerParams:
+    """``containing``: the #266 set, whose box doubled as the association gate a pushed
+    object stays inside (a measured box is the object's own size)."""
+    return TrackerParams(fit=FitParams(extent="containing") if containing else FitParams())
+
+
 _PUSH_M = 0.02  # inside the box grown by a cell: not a moved refit
 
 
@@ -57,27 +68,28 @@ def _oranges(spacing: float) -> list[Solid]:
     return [sphere((x + d, y, _RIG.support_z + _R), _R) for d in (-spacing, 0.0, spacing)]
 
 
-def _grounded(oranges: list[Solid]) -> tuple[ObjectTracker, float]:
-    tr = ObjectTracker(_RIG.frame)
+def _grounded(oranges: list[Solid], *, containing: bool = False) -> tuple[ObjectTracker, float]:
+    tr = ObjectTracker(_RIG.frame, params=_params(containing))
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
     out, wall = step(tr, _RIG, oranges, stamp_ns=0, wall_s=0.0)
     assert [o.status for o in out.tracked.objects] == [TrackStatus.CONFIRMED] * 3
     return tr, wall
 
 
-def test_three_identical_oranges_tie_updates_nothing() -> None:
+def test_three_identical_oranges_tie_moves_nothing() -> None:
     oranges = _oranges(0.05)
     tr, wall = _grounded(oranges)
     a, b = _get(tr, "trk:1"), _get(tr, "trk:2")
     mid = tuple((p + q) / 2 for p, q in zip(a.box.pose.xyz, b.box.pose.xyz, strict=True))
     assert associate(tr.store.all(), mid, voxel_m=RES) == (None, "tie")
-    # A segmenter mask that spans two oranges: its fit sits between them and moves neither.
+    # A segmenter mask that spans two oranges: the refit's projected box cuts it to the
+    # prompted orange (2026-11-01), so it moves neither and refreshes only that one.
     depth, labels = render(oranges, _RIG)
     frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
     grid = grid_from_depth(depth, _RIG)
     out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall + 1)
     req = out.requests[0]
-    boxes, rev = {o.object_id: o.box for o in tr.store.all()}, tr.store.revision
+    boxes = {o.object_id: o.box for o in tr.store.all()}
     both = (labels == 1) | (labels == 2)
     union = TrackerResult(req.request_id, mask=both)
     # That fit passes every gate and lands on the tie (what feed then does with it).
@@ -91,8 +103,18 @@ def test_three_identical_oranges_tie_updates_nothing() -> None:
     centroid = tuple(fit.surface.mean(axis=0))
     assert associate(tr.store.all(), centroid, voxel_m=RES) == (None, "tie")
     out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall + 1, results=[union])
-    assert {o.object_id: o.box for o in out.tracked.objects} == boxes
-    assert tr.store.revision == rev
+    # Moves nothing: the refreshed box is a re-fit of the same surface, equal up to float
+    # rounding (bit-identical on one host, 1e-17 apart on CI), never a moved or grown box.
+    after = {o.object_id: o.box for o in out.tracked.objects}
+    assert after.keys() == boxes.keys()
+    for oid, box in boxes.items():
+        moved = after[oid]
+        assert moved.pose.xyz == pytest.approx(box.pose.xyz, abs=1e-9), oid
+        assert moved.pose.quat_xyzw == pytest.approx(box.pose.quat_xyzw, abs=1e-9), oid
+        assert moved.half_extents == pytest.approx(box.half_extents, abs=1e-9), oid
+    assert {
+        o.object_id for o in out.tracked.objects if o.box.stamp_ns != boxes[o.object_id].stamp_ns
+    } <= {req.object_id}
 
 
 def test_refound_lost_track_inherits_its_id_as_inferred() -> None:
@@ -241,7 +263,7 @@ def test_a_pushed_object_takes_the_fit_through_the_robot_as_provisional() -> Non
     still K2 / K7 geometry). Unmoved, the clear box stays (the test above)."""
     orange = _oranges(0.05)[1:2]
     depth, labels = render(orange, _RIG)
-    tr = ObjectTracker(_RIG.frame)
+    tr = ObjectTracker(_RIG.frame, params=_params(True))
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
     wall = _ground(tr, depth, labels, np.zeros(depth.shape, np.uint8), stamp=1, wall=0.0)
     (clear,) = tr.store.all()
@@ -263,7 +285,7 @@ def test_a_bound_tracks_box_follows_the_in_hand_refit() -> None:
     track moves its box to where the object is seen; status and the bind's flags stay."""
     orange = _oranges(0.05)[1:2]
     depth, labels = render(orange, _RIG)
-    tr = ObjectTracker(_RIG.frame)
+    tr = ObjectTracker(_RIG.frame, params=_params(True))
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
     wall = _ground(tr, depth, labels, np.zeros(depth.shape, np.uint8), stamp=1, wall=0.0)
     (clear,) = tr.store.all()
@@ -331,7 +353,8 @@ def test_a_partial_mask_never_shrinks_an_unmoved_objects_box() -> None:
     wall = _ground_mask(tr, rig, depth, half, stamp=2, wall=wall + 1.0)
     (track,) = tr.store.all()
     assert track.object_id == full.object_id
-    assert track.last_fit_stamp_ns == 1  # the partial refit was ignored
+    # Ignored for geometry, but it measured the banana inside the kept box: re-dated (2026-10-31)
+    assert track.last_fit_stamp_ns == 2
     assert track.box == full.box
     _ground_mask(tr, rig, depth, labels == 1, stamp=3, wall=wall + 1.0)
     (track,) = tr.store.all()
@@ -366,7 +389,7 @@ def test_an_ignored_refit_still_moves_the_cover_to_the_surface_it_measured() -> 
 def test_a_split_track_never_takes_a_neighbours_fit() -> None:
     """A SPLIT box holds two bodies; a fit centred inside it is a new object, never the
     split track's continuation (PickOrange r2po_shadow3: a swap among static oranges)."""
-    tr, _ = _grounded(_oranges(0.05))
+    tr, _ = _grounded(_oranges(0.05), containing=True)
     a = _get(tr, "trk:1")
     big = a.model_copy(
         update={
@@ -382,10 +405,11 @@ def test_a_split_track_never_takes_a_neighbours_fit() -> None:
     assert others  # the scene still holds the neighbours
 
 
-def test_a_two_object_refit_never_replaces_a_confirmed_box() -> None:
+def test_a_two_object_refit_is_cut_to_the_tracked_object() -> None:
     """PickOrange r3po_on1: a mask over orange_1 and orange_3 refit the CONFIRMED orange_1
-    track, which went SPLIT, so orange_1's next fit took a new id. A refit that splits on
-    the map is ignored: the confirmed box and id stay."""
+    track, which went SPLIT, so orange_1's next fit took a new id. The refit prompts with the
+    track's projected box, which picks orange_1's depth-connected part of the mask (2026-11-01):
+    the id stays, CONFIRMED, and the box tightens to orange_1 alone."""
     oranges = _oranges(0.08)[:2]
     tr = ObjectTracker(_RIG.frame)
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
@@ -424,7 +448,10 @@ def test_a_two_object_refit_never_replaces_a_confirmed_box() -> None:
     out = tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n,
                   results=[TrackerResult(req.request_id, mask=labels > 0)])  # fmt: skip
     after = _get(tr, before.object_id)
-    assert after.status is TrackStatus.CONFIRMED and after.box == before.box
+    assert [o.object_id for o in tr.store.all()] == [before.object_id]
+    assert after.status is TrackStatus.CONFIRMED
+    assert np.allclose(after.box.pose.xyz[:2], oranges[0][1][:2], atol=RES / 2)
+    assert max(after.box.half_extents[:2]) < oranges[0][1][3] + RES  # orange_1 only
 
 
 def test_a_released_orange_is_not_followed_and_is_found_afresh() -> None:
@@ -615,3 +642,81 @@ def test_a_fit_through_the_robot_rising_above_the_clear_box_is_no_move() -> None
     (track,) = tr.store.all()
     assert not track.provisional and track.box == clear.box, "held above: not moved"
     assert track.last_fit_stamp_ns == 2  # measured inside its box: re-dated
+
+
+def test_a_context_query_never_mints_over_a_tracked_object_of_another_label(cap: Any) -> None:
+    """Restock bench_fix_08 (2026-10-31): the generic CONTEXT query "carton" minted a second
+    track over the target "carton led2335g3 a"; it never confirmed, went LOST, and a late
+    bind revived it beside the target (bound ambiguous). Unlike a target query (above), a
+    context query is only there to be avoided, which the live track already is."""
+    oranges = _oranges(0.09)
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY.model_copy(update={"role": ObjectRole.CONTEXT}),
+                  "obj:orange_1@0", stamp_ns=0)  # fmt: skip
+    _, wall = step(tr, _RIG, oranges, stamp_ns=0, wall_s=0.0)
+    two = _get(tr, "trk:2")
+    tr.store.replace(two.model_copy(update={"label": "plate"}))
+    for n in range(1, 8):
+        out, wall = step(tr, _RIG, oranges, stamp_ns=n * 400_000_000, wall_s=wall + 1)
+    assert sorted(o.label for o in out.tracked.objects) == ["orange", "orange", "plate"]
+    assert any(e["why"] == "duplicate_of_track" for e in cap.named("object_tracker.refused"))
+
+
+def test_a_target_fit_retires_a_context_track_boxing_its_object(cap: Any) -> None:
+    """Restock bench_dup_05 (2026-10-31): the target went LOST, the generic CONTEXT query
+    "carton" minted over it and confirmed, and every refit of the target then failed
+    ``cover_already_tracked``; the goal timed out ungrounded. The named query wins."""
+    oranges = _oranges(0.09)
+    tr, wall = _grounded(oranges)
+    two = _get(tr, "trk:2")
+    ctx = tr.store.mint(
+        **{
+            **two.model_dump(exclude={"object_id", "epoch", "status", "label", "role"}),
+            "label": "fruit",
+            "role": ObjectRole.CONTEXT,
+        }
+    )
+    tr.store.replace(ctx.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    for n in range(1, 8):
+        _, wall = step(tr, _RIG, oranges, stamp_ns=n * 400_000_000, wall_s=wall + 1)
+    assert _get(tr, ctx.object_id).status is TrackStatus.LOST
+    assert _get(tr, "trk:2").status is TrackStatus.CONFIRMED
+    assert cap.named("object_tracker.context_duplicate_retired")
+
+
+def test_an_occluded_track_needs_a_margin_to_be_confirmed_again() -> None:
+    """Restock scene 08 2026-11-01: a hand hovering over the target held its visible fraction at
+    ``theta_vis`` and flipped it OCCLUDED <-> CONFIRMED every frame; it flipped CONFIRMED in the
+    second of the grasp and the bind went untracked. Back to CONFIRMED needs a margin."""
+    oranges = _oranges(0.09)
+    tr, _ = _grounded(oranges)
+    t = _get(tr, "trk:1")
+    depth, labels = render(oranges, _RIG)
+    _, cols = np.nonzero(labels == 1)
+
+    def frame_at(target: float) -> tuple[CameraFrame, float]:
+        """A frame whose robot mask hides ``trk:1`` down to about ``target`` visible."""
+        best: tuple[CameraFrame, float] | None = None
+        for c in range(int(cols.min()), int(cols.max()) + 2):
+            robot = np.zeros(depth.shape, np.uint8)
+            robot[:, :c] = 255
+            f = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, robot)
+            vis = visible_fraction(t.box, depth, robot, _RIG.k, _RIG.t)
+            if vis is not None and (best is None or abs(vis - target) < abs(best[1] - target)):
+                best = (f, vis)
+        assert best is not None
+        return best
+
+    theta = tr.params.theta_vis
+    hidden, v_lo = frame_at(theta - 0.1)
+    near, v_mid = frame_at(theta + 0.05)
+    clear, v_hi = frame_at(theta + 0.2)
+    assert v_lo < theta <= v_mid < theta + 0.1 <= v_hi
+    tr._visibility(hidden)
+    assert _get(tr, "trk:1").status is TrackStatus.OCCLUDED
+    tr._visibility(near)  # past theta_vis, inside the margin: still OCCLUDED
+    assert _get(tr, "trk:1").status is TrackStatus.OCCLUDED
+    tr._visibility(clear)
+    assert _get(tr, "trk:1").status is TrackStatus.CONFIRMED
+    tr._visibility(near)  # CONFIRMED leaves only below theta_vis
+    assert _get(tr, "trk:1").status is TrackStatus.CONFIRMED

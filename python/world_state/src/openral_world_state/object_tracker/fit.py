@@ -1,4 +1,10 @@
-"""Containing fit — the #266 rule: a set that contains the solid, never a hull of samples.
+"""Object fit from one mask: the measured box (default) or the #266 containing set.
+
+``FitParams.extent`` picks. ``"measured"`` (default since 2026-10-31): the measured surface's
+footprint, grown half a cell (or the sample spacing where wider), extruded from the support to
+its top -- what the camera saw; a hidden part past it is boxed once a view sees it (Safety-WG
+review owed: A4 below no longer holds for it). ``"containing"``, the rest of this docstring:
+a set that contains the solid, never a hull of samples.
 
 Issue #418, design "The tracker algorithm" step 3. One camera mask is lifted to
 
@@ -37,6 +43,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -83,6 +90,14 @@ class FitParams(BaseModel):
         min_depth_valid: Fewest fraction of mask pixels with usable depth (A3).
         min_depth_m: Depth readings at or below this are invalid.
         max_depth_m: Depth readings at or above this are invalid.
+        extent: ``"measured"`` (default): the box is the measured surface's footprint
+            extruded to the support (``prism(P)``), what the camera saw; a part hidden past
+            it is not boxed until a view sees it. ``"containing"``: the #266 set, the cone
+            of everything the silhouette could hide down to the support. From one oblique
+            camera the cone doubles a carton (restock 2026-10-31: a 6 x 6 x 11 cm carton
+            measured 6.9 x 7.0 x 11, boxed 12.2 x 12.4 x 12.3; the kernel stopped the carried
+            box 5 cm short of the shelf board, in the torso, on a slot divider).
+            Safety-WG review owed: ``measured`` drops the hidden-side containment (A4).
 
     Example:
         >>> FitParams().k_px
@@ -99,6 +114,7 @@ class FitParams(BaseModel):
     min_depth_valid: float = Field(default=0.5, ge=0.0, le=1.0)
     min_depth_m: float = Field(default=0.05, ge=0.0)
     max_depth_m: float = Field(default=5.0, gt=0.0)
+    extent: Literal["measured", "containing"] = "measured"
 
 
 @dataclass(frozen=True)
@@ -121,6 +137,12 @@ class ContainingFit:
         provisional: The robot touches the mask and reaches past the occluder band, so the
             fit may under-contain what it hides (A4 not held): good for exemptions and
             identity clearing only (``TrackedObject.provisional``), never a payload.
+        cone: ``(origin (3,), rays (16, 3))``, base frame: the camera centre and the rays
+            through the dilated silhouette's 16-direction outer polygon. The solid lies in
+            this cone whatever ``extent`` boxed; ``multi_view`` cuts and gates with it. ``None``
+            when refused before the silhouette was traced.
+        extent: The ``FitParams.extent`` that boxed it, empty when not known (``multi_view``
+            combines a ``"measured"`` fit by union, any other by intersection).
     """
 
     box: PlaceRegion | None
@@ -130,6 +152,8 @@ class ContainingFit:
     assumptions: dict[str, float | bool] = field(default_factory=dict)
     refusal: str = ""
     provisional: bool = False
+    cone: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
+    extent: str = ""
 
 
 def _dilate(mask: NDArray[np.bool_], px: int) -> NDArray[np.bool_]:
@@ -164,18 +188,67 @@ def _rect(box: tuple[float, float, float, float], shape: tuple[int, ...]) -> NDA
     return out
 
 
-def _outer_polygon(points: NDArray[np.float64]) -> NDArray[np.float64]:
+def _outer_polygon(points: NDArray[np.float64], grow: float = 0.0) -> NDArray[np.float64]:
     """``(16, 2)`` vertices of the 16-direction polygon that contains ``points``.
 
     Each side is a supporting line of the point set, so the polygon contains its hull and
-    every side touches it; consecutive sides meet at the vertices.
+    every side touches it; consecutive sides meet at the vertices. ``grow`` moves every side
+    out by that much.
     """
     th = np.arange(_DOP_DIRS) * (2.0 * math.pi / _DOP_DIRS)
     c, s = np.cos(th), np.sin(th)
-    h = (points @ np.stack((c, s))).max(axis=0)
+    h = (points @ np.stack((c, s))).max(axis=0) + grow
     c1, s1, h1 = np.roll(c, -1), np.roll(s, -1), np.roll(h, -1)
     det = math.sin(2.0 * math.pi / _DOP_DIRS)
     return np.stack(((h * s1 - h1 * s) / det, (c * h1 - c1 * h) / det), axis=1)
+
+
+def _grid_points(
+    mask: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], tuple[slice, slice]]:
+    """``(h, w, 3)`` base-frame points of every pixel in ``mask``'s bounding box, and the box."""
+    rows, cols = np.nonzero(mask)
+    win = (slice(rows.min(), rows.max() + 1), slice(cols.min(), cols.max() + 1))
+    vv, uu = np.mgrid[win]
+    u = (uu + 0.5 - intrinsics.cx) / intrinsics.fx
+    v = (vv + 0.5 - intrinsics.cy) / intrinsics.fy
+    ray = np.stack((u, v, np.ones(u.shape)), axis=-1)
+    pts = (ray * depth_m[win][..., None]) @ t_base_from_cam[:3, :3].T + t_base_from_cam[:3, 3]
+    return pts, win
+
+
+def _sample_gap(
+    measured: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+    resolution: float,
+) -> float:
+    """How far, horizontally, the solid's rim can lie past the nearest measured sample.
+
+    The diagonal of a pixel quad spanning the 90th-percentile neighbour spacing on the measured
+    surface: neighbouring samples more than a cell apart straddle a depth jump, not one surface,
+    and the few pairs that straddle an edge within a cell (a carton's base and the strip it
+    stands on) never set it. A 2 cm-tall box's far corner
+    lay 8.3 mm from its nearest sample from the DROID exterior camera (1 m, fx 250), past the
+    half-cell pad (7.5 mm).
+    """
+    if not measured.any():
+        return 0.0
+    pts, win = _grid_points(measured, depth_m, intrinsics, t_base_from_cam)
+    act = measured[win]
+    spans = []
+    for a, b, both in (
+        (pts[:, 1:], pts[:, :-1], act[:, 1:] & act[:, :-1]),
+        (pts[1:], pts[:-1], act[1:] & act[:-1]),
+    ):
+        near = both & (np.linalg.norm(a - b, axis=-1) <= resolution)
+        xy = np.linalg.norm((a - b)[..., :2], axis=-1)[near]
+        spans.append(float(np.percentile(xy, 90)) if len(xy) else 0.0)
+    return math.hypot(*spans)
 
 
 def _refused(
@@ -197,6 +270,7 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     stamp_ns: int,
     params: FitParams | None = None,
     detector_box: tuple[float, float, float, float] | None = None,
+    part_box: tuple[float, float, float, float] | None = None,
 ) -> ContainingFit:
     """Fit the set ``C`` that contains the object one mask shows (module docstring).
 
@@ -216,6 +290,10 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
             mask was prompted with, if any: its rectangle joins the silhouette (A1), so a
             mask that lost a rim the detector saw is still contained. Never a track's own
             projected box (that would only ever grow itself).
+        part_box: The box the request prompted with (a detector's box, or a refit's projection
+            of the track's own box), used only to pick which depth-connected parts of a
+            ``"measured"`` fit's mask are the object; it never adds to the silhouette. Defaults
+            to ``detector_box``.
 
     Returns:
         A ``ContainingFit``; ``refusal`` names the failed gate.
@@ -316,6 +394,19 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
         front = sil & usable & ~robot
     notes["a5_robot_band_px"] = float((sil & (robot | uncertain)).sum())
     z_front = min(float(d[front].min()) - p.eps_m, float(z_support.min()))
+    pick = part_box if part_box is not None else detector_box
+    if p.extent == "measured" and pick is not None:
+        part = _detected_part(
+            sure & usable, d, intrinsics, t_base_from_cam, support_z, resolution, pick
+        )
+        if part is not None and len(part) >= p.min_points:
+            notes["spill_dropped_points"] = float(len(surface) - len(part))
+            surface = part
+    gap = 0.0
+    if p.extent == "measured":
+        gap = _sample_gap(sure & usable, d, intrinsics, t_base_from_cam, resolution)
+        notes["sample_gap_m"] = gap
+        surface = _off_support(surface, support_z, resolution, gap, p.min_points, notes)
     footprint = _outer_polygon(surface[:, :2])
     top = float(surface[:, 2].max())
     # Every ray of the silhouette meets the solid no nearer than its first hit (an opaque
@@ -332,9 +423,124 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     hit = np.where(usable[sv, su], np.maximum(d[sv, su] - p.eps_m, z_front), z_front)
     ceiling = max(float((origin[2] + hit * ray_z).max()), top)
     notes["ceiling_z"] = ceiling
-    verts = _clipped_vertices(origin, rays, z_front, z_support, footprint, support_z, top, ceiling)
-    fit = _boxed(verts, surface, support_z, resolution, frame_id, stamp_ns, notes)
-    return replace(fit, provisional=provisional) if provisional and fit.box is not None else fit
+    if p.extent == "measured":
+        # The samples are pixel centres: the solid's rim lies up to a sample spacing past the
+        # outermost ones, so the hull is grown by the half cell the box is padded by, or by that
+        # spacing where it is wider (a slanted top far from the camera).
+        verts = _measured_prism(surface, support_z, resolution, gap)
+    else:
+        verts = _clipped_vertices(
+            origin, rays, z_front, z_support, footprint, support_z, top, ceiling
+        )
+    # A measured hull already carries the half-cell pad; the cone's vertices do not.
+    box_pad_res = 0.0 if p.extent == "measured" else resolution
+    fit = _boxed(verts, surface, support_z, box_pad_res, frame_id, stamp_ns, notes)
+    cone = (origin, rays)
+    return replace(fit, provisional=provisional, cone=cone, extent=p.extent) if fit.box else fit
+
+
+def _measured_prism(
+    surface: NDArray[np.float64], support_z: float, resolution: float, gap: float = 0.0
+) -> NDArray[np.float64]:
+    """The ``extent="measured"`` hull vertices of ``surface``: its rim, support to top.
+
+    The samples are pixel centres, so the rim is grown by half a cell or by the sample
+    spacing ``gap`` where that is wider (``containing_fit``'s measured branch).
+    """
+    pad = 0.5 * resolution
+    rim = _outer_polygon(surface[:, :2], grow=max(pad, gap))
+    top = float(surface[:, 2].max())
+    return np.concatenate(
+        [np.column_stack((rim, np.full(len(rim), z))) for z in (support_z, top + pad)]
+    )
+
+
+def _off_support(
+    surface: NDArray[np.float64],
+    support_z: float,
+    resolution: float,
+    gap: float,
+    min_points: int,
+    notes: dict[str, float | bool],
+) -> NDArray[np.float64]:
+    """``surface`` without the support it stands on: low points beyond the part above it.
+
+    A mask that takes in the surface the object stands on (restock scene 09, 2026-11-01: a
+    carton's refit masks covered the white strip under it, every point outside the carton
+    1 mm above its bottom, boxed 14.5 x 12 cm for a 6.5 cm carton) carries support points
+    no depth gap separates from the object. Points within a cell of the support are kept only
+    under the footprint of the points above that band, grown by the sample spacing ``gap`` (the
+    16 directions of ``_outer_polygon``; the hull's own pad is added after, once). An object
+    with fewer than ``min_points`` above the band (a lid, a plate) keeps every point.
+    *Ceiling*: a base lower than a cell reaching more than a sample spacing past the body above
+    it (a flange, a flared foot) is dropped. Safety-WG review owed.
+    """
+    low = surface[:, 2] <= support_z + resolution
+    if not low.any() or int(np.count_nonzero(~low)) < min_points:
+        return surface
+    th = np.arange(_DOP_DIRS) * (2.0 * math.pi / _DOP_DIRS)
+    dirs = np.stack((np.cos(th), np.sin(th)))
+    reach = (surface[~low, :2] @ dirs).max(axis=0) + gap
+    under = np.all(surface[:, :2] @ dirs <= reach, axis=1)
+    keep = ~low | under
+    if keep.all():
+        return surface
+    notes["support_dropped_points"] = float(np.count_nonzero(~keep))
+    kept: NDArray[np.float64] = surface[keep]
+    return kept
+
+
+def _detected_part(
+    measured: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+    support_z: float,
+    resolution: float,
+    part_box: tuple[float, float, float, float],
+) -> NDArray[np.float64] | None:
+    """The mask's points on the depth-connected parts ``part_box`` holds; ``None`` = all of them.
+
+    A mask that spills onto a neighbour standing apart (restock scene 13, 2026-10-31: a carton
+    and one 1.6 cm away, boxed 18 x 9 cm for a 6 x 6 cm carton) joins two surfaces that no
+    chain of adjacent pixels links within a grid cell once the support seen between them is
+    dropped. Parts with most of their pixels outside the prompt's box are dropped, and so are
+    the points within a cell of the support (they hold the gap). A part an occluder cuts off the
+    object stays: it lies inside the prompt's box. A refit picks by the track's projected box:
+    scene 09's refits spilled to 10.4 x 11.8 cm, under the growth gate, and the box carried to
+    the shelf reached the board 5.5 cm ahead of the carton. *Ceiling*: neighbours touching within
+    a cell stay joined; an object pushed mostly out of its old box with a neighbour left in it
+    would be swapped for the neighbour. Safety-WG review owed: dropped points no longer bound the
+    box.
+    """
+    if not measured.any():  # every non-robot pixel in the filter's uncertain band
+        return None
+    pts, win = _grid_points(measured, depth_m, intrinsics, t_base_from_cam)
+    act = measured[win] & (pts[..., 2] > support_z + resolution)
+    right = act[:, 1:] & act[:, :-1]
+    right &= np.linalg.norm(pts[:, 1:] - pts[:, :-1], axis=-1) <= resolution
+    down = act[1:] & act[:-1] & (np.linalg.norm(pts[1:] - pts[:-1], axis=-1) <= resolution)
+    # Min-label propagation along the linked pixel pairs; a label is a pixel's flat index + 1,
+    # so following it (``flat[lab - 1]``) jumps along the chain.
+    lab = np.where(act, np.arange(1, act.size + 1).reshape(act.shape), 0)
+    none = act.size + 1
+    while True:
+        prev = lab.copy()
+        lab[:, 1:] = np.minimum(lab[:, 1:], np.where(right, lab[:, :-1], none))
+        lab[:, :-1] = np.minimum(lab[:, :-1], np.where(right, lab[:, 1:], none))
+        lab[1:] = np.minimum(lab[1:], np.where(down, lab[:-1], none))
+        lab[:-1] = np.minimum(lab[:-1], np.where(down, lab[1:], none))
+        lab[act] = lab.ravel()[lab[act] - 1]
+        if np.array_equal(prev, lab):
+            break
+    inside = _rect(part_box, measured.shape)[win]
+    ids, size = np.unique(lab[act], return_counts=True)
+    # One pass over the pixels (a per-label mask was O(labels x pixels) on noisy mask edges).
+    held = np.bincount(lab[act & inside], minlength=act.size + 1)[ids]
+    keep = ids[2 * held >= size]
+    if len(keep) in (0, len(ids)):
+        return None
+    return pts[np.isin(lab, keep)]
 
 
 def _clipped_vertices(

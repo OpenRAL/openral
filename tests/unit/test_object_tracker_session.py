@@ -713,3 +713,49 @@ def test_hands_are_clear_of_targets_only_away_from_every_target_and_holding_noth
     far = _mint(s, centre + np.array([0.0, 0.0, 0.15]), "banana")  # 15 cm: off the hand
     s.tracker.store.drop(next(t.object_id for t in s.tracker.store.all() if t.object_id != far))
     assert s.hands_clear_of_targets(), "the only target is 15 cm away: off the hand"
+
+
+def test_the_session_clock_follows_a_source_clock_reset() -> None:
+    """Review of #479: jaw commands are stamped no earlier than ``now_ns``; a running maximum
+    kept across a sim reset put every command ahead of every jaw sample, so the stall-derived
+    ATTACH never fired. A late message (under a second back) does not move it."""
+    s = _session("so101_follower")
+    _, q, _ = arm_at_hold("so101_follower")
+    s.on_joint_state(q, 100 * _S)
+    s.on_joint_state(q, 100 * _S - _S // 2)  # late, not a reset
+    assert s.now_ns == 100 * _S
+    s.on_joint_state(q, 2 * _S)  # the sim reset: source time restarts
+    assert s.now_ns == 2 * _S
+
+
+def test_input_queued_before_a_sim_reset_neither_lifts_the_clock_nor_blocks_new_grids() -> None:
+    """Review of #479: after the joint stamps go back, a frame or grid still queued from before
+    the reset carries the old (larger) time. It must not lift ``now_ns`` back into the old
+    epoch, and the newest-grid gate must not refuse every new grid until sim time passes the
+    old one."""
+    s = _session("droid_franka_robotiq")
+    _, q, _ = arm_at_hold("droid_franka_robotiq")
+    depth, _ = render([], _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    s.on_joint_state(q, 100 * _S)
+    s.on_grid(grid, 100 * _S)
+    s.on_joint_state(q, 2 * _S)  # the sim reset
+    assert s.grid is None and s.grid_stamp_ns == 0
+    s.on_grid(grid, 99 * _S)  # queued before the reset
+    assert s.now_ns == 2 * _S
+    assert s.grid is None
+    s.on_grid(grid, 2 * _S)  # the new epoch's first grid
+    assert s.grid is grid and s.grid_stamp_ns == 2 * _S
+    assert s.now_ns == 2 * _S
+
+
+def test_a_grid_a_second_behind_the_joint_states_does_not_move_the_session_clock_back() -> None:
+    """Review of #479: only a joint state resets the clock. A frame or grid that lags (the node
+    holds a frame up to a second for its transform) is late, not a sim reset: read as one, the
+    rest of that step ran, and published its snapshot, at the older time."""
+    s = _session("droid_franka_robotiq")
+    _, q, _ = arm_at_hold("droid_franka_robotiq")
+    s.on_joint_state(q, 100 * _S)
+    depth, _ = render([], _RIG)
+    s.on_grid(grid_from_depth(depth, _RIG), 98 * _S)
+    assert s.now_ns == 100 * _S

@@ -100,6 +100,54 @@ def test_fresh_map_confirmation_does_not_make_an_old_fit_bindable(robot: str, ca
     assert event["candidates"][0]["reason"] == "stale_fit"
 
 
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_map_agreement_keeps_an_occluded_tracks_fit_bindable(robot: str) -> None:
+    """Under the hand the camera cannot refit; the map's agreement keeps the box current.
+
+    Restock 2026-10-31 (arms-out start): the clear target box was map-confirmed 0.17 s
+    before the grasp but 4 s past its last fit, and bound the pinch fallback.
+    """
+    binder, q, centre = arm_at_hold(robot)
+    hidden = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024)).model_copy(
+        update={
+            "status": TrackStatus.OCCLUDED,
+            "role": ObjectRole.TARGET,
+            "last_fit_stamp_ns": 1,
+            "last_confirmed_stamp_ns": 10_000_000_000,
+        }
+    )
+    result = binder.on_attach(DictStore([hidden]), q, stamp_ns=10_500_000_000)
+    assert result.outcome is BindOutcome.TRACKED
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_an_occluded_neighbour_is_not_kept_bindable_by_the_map(robot: str) -> None:
+    """2026-10-31 restock seed 20: an occluded context carton kept fresh this way met the
+    pinch beside the target and made the grasp AMBIGUOUS."""
+    binder, q, centre = arm_at_hold(robot)
+    hidden = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024)).model_copy(
+        update={
+            "status": TrackStatus.OCCLUDED,
+            "role": ObjectRole.CONTEXT,
+            "last_fit_stamp_ns": 1,
+            "last_confirmed_stamp_ns": 10_000_000_000,
+        }
+    )
+    result = binder.on_attach(DictStore([hidden]), q, stamp_ns=10_500_000_000)
+    assert result.outcome is BindOutcome.UNTRACKED
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_an_occluded_track_the_map_has_not_confirmed_is_still_stale(robot: str) -> None:
+    binder, q, centre = arm_at_hold(robot)
+    hidden = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024)).model_copy(
+        update={"status": TrackStatus.OCCLUDED, "last_fit_stamp_ns": 1,
+                "last_confirmed_stamp_ns": 1}
+    )  # fmt: skip
+    result = binder.on_attach(DictStore([hidden]), q, stamp_ns=10_000_000_000)
+    assert result.outcome is BindOutcome.UNTRACKED
+
+
 def test_a_future_fit_is_not_eligible_for_normal_tracked_binding() -> None:
     binder, q, centre = arm_at_hold("so101_follower")
     future = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024)).model_copy(
