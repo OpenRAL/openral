@@ -32,8 +32,10 @@ pytestmark = pytest.mark.skipif(
     reason="live rclpy graph — set OPENRAL_TEST_ROS_LIVE=1 and source install/setup.bash first.",
 )
 
-# Long enough that the first CLI call lands inside it, short enough to wait out.
-_COOLDOWN_S = 3.0
+# Long enough that the first CLI call lands inside it, short enough to wait out. The CLI
+# spends ~1 s starting and up to 2 s announcing the reset on /openral/operator_action (#478)
+# before it calls the service, so 3 s let the "refused" call land after the cooldown on CI.
+_COOLDOWN_S = 10.0
 
 
 def _wait_until(predicate: Any, *, timeout_s: float = 10.0) -> bool:
@@ -141,7 +143,10 @@ def test_estop_reset_cli_clears_kernel_then_runner_and_rejection_is_loud(
         # 2. Inside the cooldown the kernel refuses; nothing is broadcast.
         assert time.monotonic() - latched_at < _COOLDOWN_S, "test too slow for its cooldown"
         refused = _openral_estop_reset()
-        assert refused.returncode == 1, refused.stdout + refused.stderr
+        assert refused.returncode == 1, (
+            f"{refused.stdout}{refused.stderr}(answered "
+            f"{time.monotonic() - latched_at:.2f} s after the latch; cooldown {_COOLDOWN_S} s)"
+        )
         assert "REFUSED" in refused.stderr
         assert safety._estopped is True
         time.sleep(0.5)  # anything the CLI might have broadcast would have landed by now
