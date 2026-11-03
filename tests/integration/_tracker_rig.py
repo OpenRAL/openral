@@ -8,9 +8,9 @@ committed scene, ray-cast (``tests/unit/_tracker_scenes``) with a ∅4.8 cm oran
 where the SO-101's pinch volume is at a measured hold configuration: depth (32FC1) +
 ``CameraInfo`` + an all-free robot mask at the depth stamp, the voxel grid a single-view
 octomap of that depth would hold, a static tf ``base <- optical`` and the grasp
-declaration naming ``orange`` with a seed box. The one double is the ``SegmentInView``
-peer at the service boundary: it answers with the ray-cast's own label mask under the
-prompt (``test_grasp_target_leg_live`` does the same).
+declaration naming ``orange`` with a seed box, declared as its ``search_box`` too. The
+one double is the ``SegmentInView`` peer at the service boundary: it answers with the
+ray-cast's own label mask under the prompt (``test_grasp_target_leg_live`` does the same).
 """
 
 from __future__ import annotations
@@ -218,7 +218,8 @@ class TrackerRig:
         self.pub_depth.publish(img)
 
     def declare(self) -> int:
-        """Publish the grasp declaration naming ``orange`` around the pinch; its stamp."""
+        """Publish the grasp declaration naming ``orange`` (query seed and ``search_box``
+        around the pinch); its stamp."""
         from openral_core import GraspDeclaration, ObjectQuery, ObjectRole, PlaceRegion, Pose6D
         from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
         from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
@@ -238,6 +239,9 @@ class TrackerRig:
             target_queries=(
                 ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET, seed=seed),
             ),
+            # `tracking` (#481): the grasp region is the track's box only while it lies
+            # wholly inside this declared box; without one the tracker arms none.
+            search_box=seed,
         )
         msg = GraspDeclarationMsg()
         decl.fill_idl(msg, query_factory=ObjectQueryMsg)
