@@ -23,6 +23,10 @@ from collections.abc import Collection, Sequence
 
 __all__ = ["SourceClock", "jaw_commands"]
 
+#: A joint stamp this far behind the newest one is a reset source clock, not a late message
+#: (``TrackerSession``'s rule).
+_STAMP_RESET_NS = 1_000_000_000
+
 
 def jaw_commands(
     joints: Collection[str],
@@ -123,8 +127,13 @@ class SourceClock:
 
     def observe(self, *, clock_ns: int, stamp_ns: int) -> None:
         """Fold in one joint state: its stamp and the node's clock when it was handled."""
-        if self._offsets and clock_ns < self._offsets[-1][0]:
-            self._offsets.clear()  # the node's clock went back (a sim reset)
+        if self._offsets and (
+            clock_ns < self._offsets[-1][0] or stamp_ns < self._newest_ns - _STAMP_RESET_NS
+        ):
+            # The node's clock or the joint stamps went back (a sim reset; under a ``--clock``
+            # replay only the stamps do, and the pre-reset minimum offset would date every
+            # command ahead of every jaw sample for the whole window).
+            self._offsets.clear()
             self._newest_ns = 0
         offset = clock_ns - stamp_ns
         # A monotonic min-deque: an offset no smaller than a newer one can never be the

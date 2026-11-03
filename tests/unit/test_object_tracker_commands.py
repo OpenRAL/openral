@@ -193,3 +193,17 @@ def test_the_source_clock_minimum_equals_a_brute_force_scan_of_the_window() -> N
         c.observe(clock_ns=clock, stamp_ns=stamp)
         seen = [(k, o) for k, o in seen if k >= clock - window_ns] + [(clock, clock - stamp)]
         assert c.source_at(clock) == clock - min(o for _, o in seen)
+
+
+def test_the_source_clock_follows_joint_stamps_that_go_back_under_a_rising_clock() -> None:
+    """Review of #479: a ``--clock`` replay keeps the node's clock rising through a sim reset
+    while the joint stamps restart. The pre-reset minimum offset stayed the window's minimum, so
+    every command was dated near the old source time, ahead of every post-reset jaw sample."""
+    from openral_world_state.object_tracker.commands import SourceClock
+
+    sec, c = 10**9, SourceClock()
+    for i in range(30):  # 30 s of source time, each handled 1 ms after its stamp
+        c.observe(clock_ns=i * sec + 10**6, stamp_ns=i * sec)
+    for i in range(5):  # the sim reset: the stamps restart at 0, the clock keeps rising
+        c.observe(clock_ns=(30 + i) * sec + 10**6, stamp_ns=i * sec)
+    assert c.source_at(34 * sec + 2 * 10**6) == 4 * sec + 10**6
