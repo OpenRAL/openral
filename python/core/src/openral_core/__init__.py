@@ -327,6 +327,7 @@ from openral_core.time_base import (
     physics_steps_per_tick,
     scene_control_rate_hz,
 )
+from openral_core.tracking_thresholds import TrackingThresholds, load_tracking_thresholds
 from openral_core.usd_catalog import (
     USD_OBJECT_CATALOG_CUSTOM_DATA_KEY,
     load_usd_object_catalog,
@@ -589,6 +590,7 @@ __all__ = [
     "TrackStatus",
     "TrackedObject",
     "TrackedObjectSet",
+    "TrackingThresholds",
     "USDDeclaredObject",
     "USDDeclaredWorkspace",
     "USDLocalPose",
@@ -632,6 +634,7 @@ __all__ = [
     "load_robot_unit",
     "load_scene_strict",
     "load_suite_task",
+    "load_tracking_thresholds",
     "load_usd_object_catalog",
     "merge_deploy_sensors",
     "parse_reasoner_tool_choice",

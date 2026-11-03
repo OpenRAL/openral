@@ -629,6 +629,13 @@ _Optional OpenUSD reader for deploy scene declarations; it never imports or star
 - `USD_OBJECT_CATALOG_CUSTOM_DATA_KEY: str` — Namespaced USD customData key `openral:object_catalog_json`; on a prim, USD stores it as a nested `openral` dictionary, while `prim_path: "/"` reads the equivalent namespaced entry from root-layer `customLayerData`. (L19)
 - `def load_usd_object_catalog(scene: DeployScene, *, scene_path: str | Path) -> USDObjectCatalog | None` — Resolves a scene-relative local USD path, lazily imports `pxr.Usd` by default or invokes the configured `reader_python` worker, decodes/validates bounded JSON, checks its pinned revision and every referenced prim path, and returns plain typed records. Does not read xforms or simulator state. Requires `just sync --group scene-usd` only when a scene opts in without an external reader. (L173)
 
+### `python/core/src/openral_core/tracking_thresholds.py`
+_The one home of the object-tracking and pick-and-place thresholds: `python/core/src/openral_core/data/tracking_thresholds.yaml`, shipped as `openral_core` package data so it resolves in a wheel install (every entry commented with units and calibration history). Modules read it; none hard-codes these numbers._
+
+- `class TrackingThresholds(BaseModel)` — Frozen, `extra="forbid"` model with a `schema_version` and sections `fit`, `tracker`, `cover`, `binding`, `late_bind`, `release`, `stall`, each a frozen range-validated section model. The tracker's `TrackerParams` / `FitParams` defaults and every module constant of `object_tracker/` read it; the C++ defaults `tracked_release_clear_m` / `tracked_release_timeout_s` (kernel) and `kReleasedClearTimeoutS` (voxel bridge) mirror `release.*` and are pinned equal by `tests/unit/test_tracking_thresholds.py`. (L131)
+- `DEFAULT_PATH: Path` — the packaged `openral_core/data/tracking_thresholds.yaml` (resolved with `importlib.resources`). (L25)
+- `def load_tracking_thresholds(path: Path | None = None) -> TrackingThresholds` — Parse and validate the default file (or `path`); cached per path. A missing file, bad YAML, or a missing, unknown or out-of-range key raises `ROSConfigError` (no defaults; fails closed at import of every reader). (L150)
+
 ### `python/core/src/openral_core/assets.py`
 _The single resolver for robot description assets — URDF / MJCF / SRDF._
 

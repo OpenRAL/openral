@@ -85,6 +85,7 @@ from openral_core import (
     apply_sensor_overlays,
     camera_topic,
     deploy_cloud_topic,
+    load_tracking_thresholds,
     merge_deploy_sensors,
     publishing_sensors,
     resolve_sensor_overlays,
@@ -3300,14 +3301,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     )
     # The vision bridge reads the same voxel path the kernel checks, so its bounds derive from
     # this launch's single sources: a grid is usable no longer than the kernel's voxel
-    # deadline, and a released payload is clear once it sits the kernel's world margin plus
-    # one octree cell away. First in the list, so an explicit `--hal` value still wins.
+    # deadline, and a released payload is clear at the one release clearance the tracker and
+    # kernel use (the tracking thresholds file, `release.clear_m`; it used to be derived here as
+    # margin + one cell, 1.5 cm in sim against the others' 4 cm). The floor check below still
+    # refuses a clearance under margin + one cell. First in the list, so `--hal` still wins.
     hal_derived_params: list[dict[str, float | str]] = (
         [
             {
                 "vision_attachment_grid_max_age_s": world_voxel_deadline_s,
-                "vision_attachment_release_clear_m": _world_voxel_margin_m(hal_mode)
-                + _octomap_resolution(hal_mode),
+                "vision_attachment_release_clear_m": load_tracking_thresholds().release.clear_m,
                 # The self-filter's output for the camera octomap maps: the grasp target
                 # fit drops the robot's own points as the map does (empty: no filter).
                 "vision_attachment_self_filtered_cloud_topic": _SELF_FILTERED_CLOUD_TOPIC

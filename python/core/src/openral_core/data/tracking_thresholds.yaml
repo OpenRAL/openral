@@ -1,0 +1,85 @@
+# The one place the object-tracking and pick-and-place thresholds live (validated by
+# openral_core.TrackingThresholds). Python reads them through
+# openral_core.load_tracking_thresholds(); the C++ defaults that mirror a value here
+# are pinned equal by tests/unit/test_tracking_thresholds.py. Change a number here,
+# not in a module. Units are in each comment; "calibration point" marks a value tuned
+# against a recorded run.
+schema_version: 1
+
+fit:  # per-camera surface fit (fit.py FitParams)
+  k_px: 2                  # px: mask error plus extrinsic error (silhouette dilation)
+  w_occ_px: 4              # px: occluder band width where a nearer surface cuts the mask
+  eps_m: 0.005             # m: depth error (A3) and support tolerance (A2)
+  occluder_tol_m: 0.01     # m: how much nearer a neighbour pixel must be to count as an occluder
+  min_points: 20           # points a fit needs to be measured
+  min_depth_valid: 0.5     # fraction of valid depth pixels a mask needs
+  min_depth_m: 0.05        # m: nearest usable depth
+  max_depth_m: 5.0         # m: farthest usable depth
+  extent: measured         # measured | containing (hidden-side containment off by default)
+
+tracker:  # tracker.py TrackerParams and module constants
+  theta_vis: 0.5                   # visible fraction below which a track is OCCLUDED
+  theta_vis_provisional: 0.25      # the same for a provisional track
+  continuous_locate_s: 2.0         # s: re-locate period of a RESOLVED query
+  locate_min_score: 0.15           # detector score floor asked of the locator
+  low_score_confirm_grids: 3       # confirming grids a track minted from a low-score prompt needs
+  static_pad_cells: 1              # cells: padding of declared static colliders for the one-body (SPLIT) test
+  provisional_oversize_factor: 2.0 # gate: refuse a through-robot refit wider than this x the known clear size
+  refit_growth_factor: 1.5         # gate: refuse any refit wider or taller than this x the first clear fit
+  max_age_s: 2.0                   # s (source): a track unrefreshed this long is stale, not CONFIRMED
+  lost_s: 6.0                      # s: unseen this long -> LOST
+  keep_lost_s: 30.0                # s: a LOST track is kept this long
+  disagree_grids: 3                # fresh grids refuting a track before it goes LOST
+  segment_hz: 2.0                  # Hz: segmentation rate
+  segment_budget_wall_s: 5.0       # s (wall): abandon an unanswered segment request
+  search_start_s: 5.0              # s: delay before a search starts (reaches the ROS node)
+  search_max_s: 60.0               # s: search bound (reaches the ROS node)
+  support_min_cells: 4             # cells: smallest support layer
+  support_probe_m: 0.06            # m: reach of the support probe ring
+  moved_min_points: 3              # surface points outside the box that mean "moved"
+  moved_min_fraction: 0.05         # ... or this fraction of the measured points
+  redate_inside_fraction: 0.9      # calibration point: measured surface inside the kept box to re-date a refused refit
+  redate_spill_fraction: 0.6666666666666666  # calibration point (restock 2026-10-31): the same for a spilled mask
+  growth_votes: 3                  # calibration point: refused clear growth fits that must agree before one is admitted
+  growth_agree_m: 0.01             # m: how close (extent, height, centre) the agreeing fits must be
+  growth_window_s: 15.0            # calibration point (Spark replay bkA_on_rs_11 2026-11-03): source s the agreeing fits fall in
+  context_defer_s: 2.0             # s: CONTEXT track refresh served later than target/destination
+  prior_margin_m: 0.05             # m: growth of a released match's box as its query seed
+  vis_hysteresis: 0.1              # visible-fraction margin an OCCLUDED track needs to return to CONFIRMED
+  duplicate_mint_iou: 0.5          # 3D IoU at which a new fit is an existing track, never minted
+  view_window_s: 0.5               # s: fits from different cameras combined within this
+  locate_roi_pad: 0.25             # fraction: locate crop growth on every side
+  robot_box_fraction: 0.5          # detector box with more ROBOT pixels is re-prompted
+  low_prompt_score: 0.3            # prompt score under which a minted track needs low_score_confirm_grids
+  reanchor_max_ratio: 2.0          # calibration point: contact re-anchor ceiling, multiple of the last plain fill
+
+cover:  # cover.py and the tracker's own-cover checks
+  min_split_cells: 3     # cells: a second body this big inside a box SPLITs the track (drops its exemption)
+  need_fraction: 0.5     # fraction of a track's cells its own cover must hold ...
+  need_min_cells: 2      # ... and never fewer than this
+
+binding:  # binding.py (grasp-time binding)
+  support_near_m: 0.15           # calibration point, m: horizontal reach for the grasp's support
+  tracked_confidence: 0.7        # confidence of a tracked bind
+  fallback_confidence: 0.2       # confidence of the pinch fallback bind
+
+late_bind:  # session.py late ATTACH
+  min_s: 0.0           # s: earliest lag of the hold before the event
+  max_s: 3.0           # s: latest lag
+  max_travel_m: 0.25   # calibration point, m: hand travel since the hold (restock scene 08 2026-11-01 lifted 21 cm)
+  lookback_s: 1.0      # s: grasp-pose lookback
+  confirm_s: 1.5       # s: the track was last fitted within this of the hold start
+
+release:  # session.py release window; kernel/bridge/HAL values must follow (see tests)
+  dwell_s: 0.3                  # calibration point, s: jaw-open dwell, shared by kernel K5 and the tracker
+  clear_timeout_s: 3.0          # s: released-binding lifetime = kernel tracked_release_timeout_s = bridge released_clear_timeout_s
+  clear_m: 0.04                 # m: hand box clearance that ends a release window = kernel tracked_release_clear_m
+  judge_clear_m: 0.02           # m: pinch-to-target clearance at which the completion judge is asked
+  drop_fits: 2                  # consecutive in-hand fits away from every hand box that read as a drop
+  joint_sample_max_age_s: 0.25  # s: oldest joint sample a late bind may use
+
+stall:  # stall.py JawStallDetector defaults
+  window_s: 0.6      # s: observation window
+  dwell_s: 0.3       # s: stall dwell
+  min_samples: 5     # samples a window needs
+  approach_s: 2.0    # s: approach lookback

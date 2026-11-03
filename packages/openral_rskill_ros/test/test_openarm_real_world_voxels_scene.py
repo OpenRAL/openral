@@ -409,17 +409,20 @@ def _hal_launch_params(ctx: Any, entities: list[Any]) -> dict[str, Any]:
 
 @pytest.mark.usefixtures("calibrated_openarm")
 def test_the_vision_leg_bounds_derive_from_the_kernels_voxel_path(tmp_path: Path) -> None:
-    """The release window and grid-age bounds come from the kernel's own voxel deadline,
-    world margin and octree resolution, never a second copy; leg off, none are set."""
+    """The grid-age bound comes from the kernel's own voxel deadline; the release clearance is
+    the one value the tracker and kernel use (openral_core/data/tracking_thresholds.yaml
+    release.clear_m), never a second copy, never under the kernel's margin plus one cell; leg
+    off, none are set."""
     _, kernel, ctx, entities = _real_graph(_scene_with_vision_leg(tmp_path, enabled=True))
     hal = _hal_launch_params(ctx, entities)
     deadline_s = kernel["world_voxel_deadline_ms"] / 1000.0
     assert hal["vision_attachment_grid_max_age_s"] == pytest.approx(deadline_s)
-    # 20 mm real margin + one 20 mm cell: the release window's documented 40 mm.
-    assert hal["vision_attachment_release_clear_m"] == pytest.approx(
-        kernel["world_voxel_margin_m"] + 0.02
-    )
-    assert hal["vision_attachment_release_clear_m"] == pytest.approx(0.04)
+    from openral_core.tracking_thresholds import load_tracking_thresholds
+
+    clear_m = load_tracking_thresholds().release.clear_m
+    assert hal["vision_attachment_release_clear_m"] == pytest.approx(clear_m)
+    # The floor the launch enforces: real 20 mm margin + one 20 mm cell.
+    assert hal["vision_attachment_release_clear_m"] >= kernel["world_voxel_margin_m"] + 0.02 - 1e-9
 
     _, _, ctx_off, entities_off = _real_graph(_scene_with_vision_leg(tmp_path, enabled=False))
     assert not any(

@@ -53,9 +53,12 @@ from __future__ import annotations
 from collections import deque
 from statistics import median
 
+from openral_core.tracking_thresholds import load_tracking_thresholds
+
 __all__ = ["JawStallDetector"]
 
 _NS = 1_000_000_000
+_S = load_tracking_thresholds().stall
 _FLOAT_SLACK = 1e-9
 
 
@@ -97,10 +100,10 @@ class JawStallDetector:
         gap: float,
         settle: float,
         *,
-        window_s: float = 0.6,
-        dwell_s: float = 0.3,
-        min_samples: int = 5,
-        approach_s: float = 2.0,
+        window_s: float = _S.window_s,
+        dwell_s: float = _S.dwell_s,
+        min_samples: int = _S.min_samples,
+        approach_s: float = _S.approach_s,
     ) -> None:
         """Read nothing yet."""
         self.closed, self.gap = closed, gap

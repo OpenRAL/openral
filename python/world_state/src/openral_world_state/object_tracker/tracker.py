@@ -45,6 +45,7 @@ from openral_core.perception_geometry import (
     project_point,
     support_top_from_voxels,
 )
+from openral_core.tracking_thresholds import load_tracking_thresholds
 from pydantic import BaseModel, ConfigDict, Field
 
 from openral_world_state.object_lift import aabb_iou_3d
@@ -54,6 +55,7 @@ from openral_world_state.object_tracker.cover import (
     _inside,
     box_cells,
     cells_behind_robot,
+    cover_need,
     cover_verdict,
     hand_touches,
     own_cover,
@@ -94,41 +96,44 @@ __all__ = [
 
 log = structlog.get_logger(__name__)
 
+_T = load_tracking_thresholds().tracker
+
 # A refit "moved" its track when this many measured surface points lie more than one cell
 # outside the stored box (max of the two): the box provably no longer contains the object.
-_MOVED_MIN_POINTS = 3
-_MOVED_MIN_FRACTION = 0.05
+_MOVED_MIN_POINTS = _T.moved_min_points
+_MOVED_MIN_FRACTION = _T.moved_min_fraction
 #: Fraction of a refused refit's measured surface that must lie in the track's box (grown by a
 #: cell) for the refit to re-date it: the object was measured inside the box it is kept with.
 #: *Calibration point.*
-_REDATE_INSIDE_FRACTION = 0.9
+_REDATE_INSIDE_FRACTION = _T.redate_inside_fraction
 #: The same for a refit the growth gate refused: its mask spilled onto a touching neighbour,
 #: so part of its surface is that neighbour's. *Calibration point* (restock 2026-10-31: 16-32 %
 #: of a spilled mask's points lay outside the kept box).
-_REDATE_SPILL_FRACTION = 2.0 / 3.0
+_REDATE_SPILL_FRACTION = _T.redate_spill_fraction
 #: Refused clear growth fits that must agree before one is admitted (``_admit_growth``).
 #: *Calibration point.*
-_GROWTH_VOTES = 3
+_GROWTH_VOTES = _T.growth_votes
 #: How close (extent, height, centre) the agreeing fits must be. *Calibration point.*
-_GROWTH_AGREE_M = 0.01
+_GROWTH_AGREE_M = _T.growth_agree_m
 #: Source seconds the agreeing fits must fall in. *Calibration point*: the full fit of a
 #: partly-masked carton recurs every 2-3 s between accepted partial fits (Spark replay
 #: bkA_on_rs_11 2026-11-03: three over about 5 s, none admitted at a 5 s window).
-_GROWTH_WINDOW_NS = 15_000_000_000
+_GROWTH_WINDOW_NS = round(_T.growth_window_s * 1_000_000_000)
 
 
 #: Source time a CONTEXT track's refresh, or a CONTEXT query's locate, counts as served
 #: later than it was: the target and destination go first. *Calibration point.*
-_CONTEXT_DEFER_NS = 2_000_000_000
+_CONTEXT_DEFER_NS = round(_T.context_defer_s * 1e9)
 #: Margin a released match's box is grown by as its query's seed: down onto the support it
 #: fell to, and around where it rolled. *Calibration point.*
-PRIOR_MARGIN_M = 0.05
+PRIOR_MARGIN_M = _T.prior_margin_m
 #: A new fit whose box overlaps a live track's box by at least this 3D IoU is that track seen
 #: under another label, not a new object: never minted. *Calibration point* (restock
 #: 2026-10-31: a generic "carton" query's fit over the target at IoU 0.8-0.9; two inflated
 #: boxes of neighbouring 6.5 cm cartons 7 cm apart sit near 0.25).
-_VIS_HYSTERESIS = 0.1  # visible-fraction margin an OCCLUDED track needs to return to CONFIRMED
-_DUPLICATE_MINT_IOU = 0.5
+#: Visible-fraction margin an OCCLUDED track needs to return to CONFIRMED.
+_VIS_HYSTERESIS = _T.vis_hysteresis
+_DUPLICATE_MINT_IOU = _T.duplicate_mint_iou
 
 
 def _aabb(box: PlaceRegion) -> tuple[float, float, float, float, float, float]:
@@ -251,24 +256,24 @@ class TrackerParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    theta_vis: float = Field(default=0.5, gt=0.0, le=1.0)
-    theta_vis_provisional: float = Field(default=0.25, gt=0.0, le=1.0)
-    continuous_locate_s: float = Field(default=2.0, gt=0.0)
-    locate_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
-    low_score_confirm_grids: int = Field(default=3, ge=1)
-    static_pad_cells: int = Field(default=1, ge=0)
-    provisional_oversize_factor: float = Field(default=2.0, ge=1.0)
-    refit_growth_factor: float = Field(default=1.5, ge=1.0)
-    max_age_s: float = Field(default=2.0, gt=0.0)
-    lost_s: float = Field(default=6.0, gt=0.0)
-    keep_lost_s: float = Field(default=30.0, gt=0.0)
-    disagree_grids: int = Field(default=3, ge=1)
-    segment_hz: float = Field(default=2.0, gt=0.0)
-    segment_budget_wall_s: float = Field(default=5.0, gt=0.0)
-    search_start_s: float = Field(default=5.0, ge=0.0)
-    search_max_s: float = Field(default=60.0, gt=0.0)
-    support_min_cells: int = Field(default=4, ge=1)
-    support_probe_m: float = Field(default=0.06, gt=0.0)
+    theta_vis: float = Field(default=_T.theta_vis, gt=0.0, le=1.0)
+    theta_vis_provisional: float = Field(default=_T.theta_vis_provisional, gt=0.0, le=1.0)
+    continuous_locate_s: float = Field(default=_T.continuous_locate_s, gt=0.0)
+    locate_min_score: float = Field(default=_T.locate_min_score, ge=0.0, le=1.0)
+    low_score_confirm_grids: int = Field(default=_T.low_score_confirm_grids, ge=1)
+    static_pad_cells: int = Field(default=_T.static_pad_cells, ge=0)
+    provisional_oversize_factor: float = Field(default=_T.provisional_oversize_factor, ge=1.0)
+    refit_growth_factor: float = Field(default=_T.refit_growth_factor, ge=1.0)
+    max_age_s: float = Field(default=_T.max_age_s, gt=0.0)
+    lost_s: float = Field(default=_T.lost_s, gt=0.0)
+    keep_lost_s: float = Field(default=_T.keep_lost_s, gt=0.0)
+    disagree_grids: int = Field(default=_T.disagree_grids, ge=1)
+    segment_hz: float = Field(default=_T.segment_hz, gt=0.0)
+    segment_budget_wall_s: float = Field(default=_T.segment_budget_wall_s, gt=0.0)
+    search_start_s: float = Field(default=_T.search_start_s, ge=0.0)
+    search_max_s: float = Field(default=_T.search_max_s, gt=0.0)
+    support_min_cells: int = Field(default=_T.support_min_cells, ge=1)
+    support_probe_m: float = Field(default=_T.support_probe_m, gt=0.0)
     fit: FitParams = FitParams()
 
 
@@ -313,16 +318,16 @@ class _Candidate(NamedTuple):
 REFUSAL_LOG_PERIOD_S = 5.0
 #: Source seconds within which fits of one track from different cameras are combined
 #: (``intersect_views``): the object must not have moved between them. *Calibration point.*
-VIEW_WINDOW_S = 0.5
+VIEW_WINDOW_S = _T.view_window_s
 #: A locate's crop: the projected search region grown by this fraction of its size on
 #: every side (a seed or workspace box need not be tight in the image). *Calibration point.*
-LOCATE_ROI_PAD = 0.25
+LOCATE_ROI_PAD = _T.locate_roi_pad
 #: A detector box more than this fraction ROBOT pixels is re-prompted on what it hides.
-ROBOT_BOX_FRACTION = 0.5
+ROBOT_BOX_FRACTION = _T.robot_box_fraction
 #: Negative point prompts placed on the robot in such a box.
 ROBOT_BOX_NEGATIVES = 3
 #: A prompt box scored under this grounds a track that is logged when it confirms.
-LOW_PROMPT_SCORE = 0.3
+LOW_PROMPT_SCORE = _T.low_prompt_score
 #: How far under the voxel-measured support top the camera's own support returns may lie and
 #: still read as ON the layer boundary (``ObjectTracker._support_seen``). Sim depth is exact;
 #: a real camera's noise is larger. *Calibration point.*
@@ -338,7 +343,7 @@ _CONTACT_ROLES = frozenset({ObjectRole.TARGET, ObjectRole.DESTINATION})
 # last plain pass: more occupied cells in the box than this is something besides the object
 # (a neighbour, a hand leak). *Calibration point*: 33-52 cells were held in the box while
 # the hand hid the banana (3-7 in view).
-_REANCHOR_MAX_RATIO = 2.0
+_REANCHOR_MAX_RATIO = _T.reanchor_max_ratio
 
 
 @dataclass(frozen=True)
@@ -1732,7 +1737,7 @@ class ObjectTracker:
             # the box still fails, more is the box holding something else). Safety-WG review
             # and hazard row owed.
             body = box_cells(grid, t.box, support_z=t.support_z, exclude=exclude)
-            if max(2, math.ceil(0.5 * ref)) <= len(body) <= _REANCHOR_MAX_RATIO * ref:
+            if cover_need(ref) <= len(body) <= _REANCHOR_MAX_RATIO * ref:
                 moved = cover_verdict(
                     grid,
                     body,
@@ -1967,7 +1972,7 @@ class ObjectTracker:
         two tracked oranges), and a low-score prompt's track needs
         ``low_score_confirm_grids`` consecutive confirming grids.
         """
-        if own_cover(grid, cells, others) < max(2, math.ceil(0.5 * occupied)):
+        if own_cover(grid, cells, others) < cover_need(occupied):
             self._refuse(f"{t.label}@{t.object_id}", "cover_already_tracked", occupied=occupied)
             self._low_score_run.pop(t.object_id, None)
             return False

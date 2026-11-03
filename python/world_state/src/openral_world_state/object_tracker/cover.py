@@ -24,6 +24,7 @@ from openral_core import IntrinsicsPinhole, PlaceRegion
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.object_primitives import map_confirms
 from openral_core.perception_geometry import VoxelLattice, occupied_centers_in_box
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 __all__ = [
     "MIN_SPLIT_CELLS",
@@ -40,13 +41,15 @@ __all__ = [
 
 Cell = tuple[int, int, int]
 
+_COVER = load_tracking_thresholds().cover
+
 #: The fewest cells a second body inside a track's box needs to split it (user decision
 #: 2026-10-21, Safety-WG review owed). 1-2 cells is a fragment of the object itself: a
 #: curved banana's tip or a piece the hand's occlusion cuts off (Isaac R28: 1 cell, R31: 2,
 #: both 100% inside the truth box) went SPLIT mid-grasp and dropped the target's exemption.
 #: At 15 mm cells, 3 is ~3 cm: a smaller foreign item inside a target's box rides its
 #: exemption, still under the workspace's speed and lead bounds. *Calibration point.*
-MIN_SPLIT_CELLS = 3
+MIN_SPLIT_CELLS = _COVER.min_split_cells
 
 
 @dataclass(frozen=True)
@@ -348,6 +351,16 @@ def box_cells(
     return frozenset(tuple(c) for c in np.floor(local).astype(np.int64).tolist())
 
 
+def cover_need(n_cells: int) -> int:
+    """Cells of ``n_cells`` expected ones a track's own cover must hold (the 50 % / min-2 rule).
+
+    Example:
+        >>> cover_need(1), cover_need(10)
+        (2, 5)
+    """
+    return max(_COVER.need_min_cells, math.ceil(_COVER.need_fraction * n_cells))
+
+
 def cover_verdict(
     grid: VoxelLattice,
     cells: frozenset[Cell],
@@ -398,10 +411,10 @@ def cover_verdict(
     """
     if hidden:
         cells = cells - hidden
-        if len(cells) < 2:  # noqa: PLR2004  # reason: the cover rule's own floor
+        if len(cells) < _COVER.need_min_cells:
             return CoverVerdict(len(cells), 0, "hidden", "the robot hides the expected cells")
     hit = _occupied_count(grid, cells)
-    need = max(2, math.ceil(0.5 * len(cells)))
+    need = cover_need(len(cells))
     if hit < need:
         return CoverVerdict(len(cells), hit, "map_disagrees", f"{hit}/{len(cells)} expected cells")
     pad = 0.5 * grid.resolution
