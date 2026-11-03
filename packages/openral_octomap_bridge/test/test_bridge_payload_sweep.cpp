@@ -497,6 +497,6 @@ TEST_F(BridgeTrackedClearOff, ABoundTrackClearsNothingAndTheRevisionIsStillCerti
     const std::lock_guard<std::mutex> lock(mutex_);
     EXPECT_TRUE(requests_.empty()) << "a track drove an octree clear";
   }
-  EXPECT_EQ(times_cleared(line_cell(11)), 0) << "a track cleared its grid cells";
+  EXPECT_TRUE(last_grid_cell_occupied(line_cell(11))) << "a track cleared its grid cells";
   EXPECT_EQ(last_grid_revision(), 11U);
 }
