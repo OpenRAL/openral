@@ -40,6 +40,9 @@ tracker:  # tracker.py TrackerParams and module constants
   moved_min_fraction: 0.05         # ... or this fraction of the measured points
   redate_inside_fraction: 0.9      # calibration point: measured surface inside the kept box to re-date a refused refit
   redate_spill_fraction: 0.6666666666666666  # calibration point (restock 2026-10-31): the same for a spilled mask
+  growth_votes: 3                  # calibration point: refused clear growth fits that must agree before one is admitted
+  growth_agree_m: 0.01             # m: how close (extent, height, centre) the agreeing fits must be
+  growth_window_s: 15.0            # calibration point (Spark replay bkA_on_rs_11 2026-11-03): source s the agreeing fits fall in
   context_defer_s: 2.0             # s: CONTEXT track refresh served later than target/destination
   prior_margin_m: 0.05             # m: growth of a released match's box as its query seed
   vis_hysteresis: 0.1              # visible-fraction margin an OCCLUDED track needs to return to CONFIRMED

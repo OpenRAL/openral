@@ -82,6 +82,9 @@ def test_module_constants_equal_the_file() -> None:
         (tracker._MOVED_MIN_FRACTION, t.moved_min_fraction),
         (tracker._REDATE_INSIDE_FRACTION, t.redate_inside_fraction),
         (tracker._REDATE_SPILL_FRACTION, t.redate_spill_fraction),
+        (tracker._GROWTH_VOTES, t.growth_votes),
+        (tracker._GROWTH_AGREE_M, t.growth_agree_m),
+        (tracker._GROWTH_WINDOW_NS, round(t.growth_window_s * _NS)),
         (tracker._CONTEXT_DEFER_NS, round(t.context_defer_s * _NS)),
         (tracker.PRIOR_MARGIN_M, t.prior_margin_m),
         (tracker._VIS_HYSTERESIS, t.vis_hysteresis),
@@ -146,7 +149,16 @@ def test_cpp_defaults_that_mirror_a_release_value_equal_the_file() -> None:
 @pytest.mark.parametrize(
     ("module", "names"),
     [
-        (tracker, ["_MOVED_MIN_POINTS", "PRIOR_MARGIN_M", "VIEW_WINDOW_S", "_REANCHOR_MAX_RATIO"]),
+        (
+            tracker,
+            [
+                "_MOVED_MIN_POINTS",
+                "PRIOR_MARGIN_M",
+                "VIEW_WINDOW_S",
+                "_REANCHOR_MAX_RATIO",
+                "_GROWTH_VOTES",
+            ],
+        ),
         (session, ["RELEASE_DWELL_S", "_RELEASE_CLEAR_M", "_LATE_MAX_TRAVEL_M", "_DROP_FITS"]),
         (binding, ["_SUPPORT_NEAR_M", "TRACKED_CONFIDENCE", "FALLBACK_CONFIDENCE"]),
         (cover, ["MIN_SPLIT_CELLS"]),

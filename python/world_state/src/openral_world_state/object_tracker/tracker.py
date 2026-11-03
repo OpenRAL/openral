@@ -112,13 +112,13 @@ _REDATE_INSIDE_FRACTION = _T.redate_inside_fraction
 _REDATE_SPILL_FRACTION = _T.redate_spill_fraction
 #: Refused clear growth fits that must agree before one is admitted (``_admit_growth``).
 #: *Calibration point.*
-_GROWTH_VOTES = 3
+_GROWTH_VOTES = _T.growth_votes
 #: How close (extent, height, centre) the agreeing fits must be. *Calibration point.*
-_GROWTH_AGREE_M = 0.01
+_GROWTH_AGREE_M = _T.growth_agree_m
 #: Source seconds the agreeing fits must fall in. *Calibration point*: the full fit of a
 #: partly-masked carton recurs every 2-3 s between accepted partial fits (Spark replay
 #: bkA_on_rs_11 2026-11-03: three over about 5 s, none admitted at a 5 s window).
-_GROWTH_WINDOW_NS = 15_000_000_000
+_GROWTH_WINDOW_NS = round(_T.growth_window_s * 1_000_000_000)
 
 
 #: Source time a CONTEXT track's refresh, or a CONTEXT query's locate, counts as served
