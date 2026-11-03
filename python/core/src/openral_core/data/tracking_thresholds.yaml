@@ -16,6 +16,7 @@ fit:  # per-camera surface fit (fit.py FitParams)
   min_depth_m: 0.05        # m: nearest usable depth
   max_depth_m: 5.0         # m: farthest usable depth
   extent: measured         # measured | containing (hidden-side containment off by default)
+  yaw_step_deg: 1.0        # deg: yaw search step of the box fit (finer = slower, tighter)
 
 tracker:  # tracker.py TrackerParams and module constants
   theta_vis: 0.5                   # visible fraction below which a track is OCCLUDED
@@ -52,6 +53,12 @@ tracker:  # tracker.py TrackerParams and module constants
   robot_box_fraction: 0.5          # detector box with more ROBOT pixels is re-prompted
   low_prompt_score: 0.3            # prompt score under which a minted track needs low_score_confirm_grids
   reanchor_max_ratio: 2.0          # calibration point: contact re-anchor ceiling, multiple of the last plain fill
+  refusal_log_period_s: 5.0        # s (source): at most one object_tracker.refused log per this
+  robot_box_negatives: 3           # robot-pixel negatives added to a re-prompt for a detector box on the robot
+  support_seen_tol_m: 0.001        # m: a support layer seen at or above the top within this counts as ON the boundary
+  beside_px: 8                     # px (Chebyshev): a mask component this near a robot pixel is 'beside' the robot
+  beside_min_px: 10                # px: smallest mask component kept after the beside-robot test
+  support_flatness_res_fraction: 0.25  # fraction of a cell: spread of support heights still read as flat
 
 cover:  # cover.py and the tracker's own-cover checks
   min_split_cells: 3     # cells: a second body this big inside a box SPLITs the track (drops its exemption)
@@ -69,6 +76,7 @@ late_bind:  # session.py late ATTACH
   max_travel_m: 0.25   # calibration point, m: hand travel since the hold (restock scene 08 2026-11-01 lifted 21 cm)
   lookback_s: 1.0      # s: grasp-pose lookback
   confirm_s: 1.5       # s: the track was last fitted within this of the hold start
+  joint_history_len: 480  # samples: joint-state history kept for the grasp-pose lookback
 
 release:  # session.py release window; kernel/bridge/HAL values must follow (see tests)
   dwell_s: 0.3                  # calibration point, s: jaw-open dwell, shared by kernel K5 and the tracker
@@ -83,3 +91,94 @@ stall:  # stall.py JawStallDetector defaults
   dwell_s: 0.3       # s: stall dwell
   min_samples: 5     # samples a window needs
   approach_s: 2.0    # s: approach lookback
+  min_dt_window_fraction: 0.2  # fraction of window_s: least time between samples the closing test reads
+
+caps:  # mirrors of the kernel's C++ constexpr caps and the schema MAX_* bounds; tests pin each equal
+  # Safety values: the schema bounds each at its reviewed value, so an edit here can only tighten.
+  grasp_region_half_extent_m: 0.20      # m: a grasp region's largest half-extent (kMaxGraspRegionHalfExtentM, GraspDeclaration.MAX_HALF_EXTENT_M)
+  grasp_region_volume_m3: 0.03          # m^3: a grasp region's largest volume
+  workspace_half_extent_m: 0.50         # m: a grasp workspace box's largest half-extent
+  workspace_volume_m3: 0.25             # m^3: a grasp workspace box's largest volume
+  workspace_contact_lead_m: 0.10        # m: how far past the hand a workspace contact still counts as touching
+  place_region_half_extent_m: 1.5       # m: a place region's largest half-extent (kMaxPlaceRegionHalfExtentM)
+  place_region_volume_m3: 8.0           # m^3: a place region's largest volume
+  place_target_primitives: 64           # primitives a place declaration may carry
+  grasp_timeout_s: 120.0                # s: ceiling of a grasp declaration's timeout
+  place_timeout_s: 600.0                # s: ceiling of a place declaration's / force gate's timeout
+  contact_force_n: 140.0                # N: ceiling of a declared contact-force threshold
+  place_approach_allowance_voxels: 1.5  # cells: place approach allowance ...
+  place_approach_allowance_max_m: 0.04  # m: ... capped at this
+  place_advisory_depth_voxels: 0.2      # cells: place advisory band depth ...
+  place_advisory_depth_max_m: 0.005     # m: ... capped at this
+  attach_residue_voxels: 0.5            # cells: an attach-time cell this deep inside the payload is its own residue
+  tracked_objects: 32                   # objects: tracked-object set capacity (kMaxTrackedObjects, TrackedObjectSet.MAX_OBJECTS)
+  tracked_hull_vertices: 64             # vertices: per tracked-object hull (kMaxTrackedHullVertices)
+  bound_primitives: 16                  # primitives: a bound payload's most (kMaxBoundPrimitives, binding.MAX_PRIMITIVES)
+  attached_max_objects: 8               # kernel default attached_max_objects
+  attached_max_primitives: 16           # kernel default attached_max_primitives
+  attached_max_touch_links: 32          # kernel default attached_max_touch_links
+  region_measurement_age_s: 4.0         # s: oldest region measurement the kernel accepts (kMaxRegionMeasurementAgeS)
+  explained_static_pad_cells: 1         # cells: padding of declared static colliders in the kernel's explained set (= tracker.static_pad_cells)
+  support_witness_max_patch_radius_m: 0.5   # m: largest support-witness patch (kernel default, HAL place leg and sim evidence)
+  support_witness_max_penetration_m: 0.01   # m: deepest support-witness penetration (the same three)
+
+hal:  # python/hal vision attachment leg and its producer gates
+  # Safety gates (ages, deadline, release clearance, containment, payload caps, occluder/support
+  # reach, freeze ceiling, depth-valid fraction, target min cells/cover): bounded at their reviewed
+  # value, so an edit here can only tighten. Rates, depth range, margins, stall/gap, jaw span and
+  # premeasure are tuning.
+  grasp_target_rate_hz: 3.0                    # Hz: grasp-target measurement rate
+  grasp_target_min_cells: 8                    # cells: smallest measured region
+  grasp_target_min_cover: 0.5                  # fraction: cover a region measurement needs
+  grasp_target_support_search_below_m: 0.15    # m: how far under the target the support is searched
+  grasp_target_support_probe_margin_m: 0.05    # m: lateral margin of the support probe
+  grasp_target_occluder_margin_m: 0.05         # m: hand-point distance that excuses a shrunken re-fit
+  place_target_rate_hz: 2.0                    # Hz: place-target measurement rate
+  place_target_search_depth_m: 0.20            # m: depth under the payload a place surface is searched
+  grid_max_age_s: 1.0                          # s: oldest voxel grid the legs measure from
+  evidence_timeout_s: 0.5                      # s: oldest jaw-position sample that still backs the attachment heartbeat
+  deadline_s: 0.25                             # s: segmentation request deadline before the conservative box
+  max_release_clear_m: 0.1                     # m: ceiling of release_clear_m (and the support-witness rise tolerance)
+  stall_rad: 0.002                             # rad: jaw travel per tick below which a closing jaw is stalled
+  stall_ticks: 3                               # ticks of stall that read as 'on an object'
+  gap_periods: 4.0                             # sample periods tolerated between accepted jaw samples
+  containment_radius_m: 0.12                   # m: fitted payload centroid must lie within this of the jaws
+  max_payload_extents_m: [0.10, 0.25, 0.25]    # m: per-axis full-extent cap of an accepted payload
+  max_payload_volume_m3: 0.004                 # m^3: bounding-box volume backstop (calibration point)
+  min_depth_valid_fraction: 0.30               # fraction of mask pixels with valid depth
+  min_depth_m: 0.02                            # m: depth at or below this is invalid
+  max_depth_m: 1.0                             # m: depth at or above this is invalid
+  view_ray_inflation_m: 0.02                   # m: extra half-extent along the view ray
+  jaw_span_m: 0.05                             # m: half-extent of the conservative jaw box
+  gate_max_primitives: 16                      # primitives: producer's bound (= caps.bound_primitives)
+  premeasure_max_hz: 2.0                       # Hz: instance pre-measurement prompts per second (calibration point)
+  premeasure_reach_approaches: 2.0             # approach distances: pre-measurement reach around a hand (calibration point)
+  max_occluder_margin_m: 0.10                  # m: ceiling of grasp_target_occluder_margin_m
+  max_support_search_below_m: 0.5              # m: ceiling of grasp_target_support_search_below_m
+  max_freeze_grid_ages: 2.0                    # grid ages: ceiling of a region freeze
+
+deploy:  # deploy_e2e.launch.py, per hal_mode where the two differ
+  # Margins, deadlines, occupancy/clamping, sensor miss and coverage margin are bounded at their
+  # reviewed values (tighten only) and pinned by tests; loosening one is a reviewed code change.
+  sim:
+    octomap_resolution_m: 0.015              # m: octree cell
+    occupancy_thres: 0.8                     # probability: a cell is occupied above this (needs repeated hits)
+    clamping_max: 0.85                       # probability: ceiling of a cell's log-odds (one clearing ray can remove a hit)
+    world_voxel_margin_m: 0.0                # m: kernel clearance around the robot
+    self_filter_trailing_sweep_s: 0.2        # s: how far back the robot's swept volume pads the self-filter
+    attached_collision_deadline_ms: 5000.0   # ms: how long the kernel trusts the last attachment state
+    safe_action_deadline_s: 8.0              # s: deadman gap between safe actions
+  real:
+    octomap_resolution_m: 0.02
+    occupancy_thres: 0.6
+    clamping_max: 0.97
+    world_voxel_margin_m: 0.02               # also bounds the extrinsic gate (depth_extrinsic.py)
+    self_filter_trailing_sweep_s: 0.0        # off until Safety-WG review
+    attached_collision_deadline_ms: 1000.0
+    safe_action_deadline_s: 5.0
+  sensor_model_miss: 0.4                     # probability: log-odds of a miss ray
+  collision_state_deadline_ms: 1000.0        # ms: how stale the kernel's joint state may be
+  segmenter_camera_deadline_s: 1.5           # s: per-camera segment request deadline (calibration point)
+  segmenter_max_frame_skew_s: 0.25           # s: per-camera mask-depth skew
+  coverage_margin_m: 0.05                    # m: margin of the world coverage ball over the measured reach
+  bridge_max_cells: 4000000                  # cells: octomap bridge allocation guard (kMaxCells)

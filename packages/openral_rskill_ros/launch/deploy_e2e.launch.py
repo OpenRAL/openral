@@ -85,12 +85,12 @@ from openral_core import (
     apply_sensor_overlays,
     camera_topic,
     deploy_cloud_topic,
-    load_tracking_thresholds,
     merge_deploy_sensors,
     publishing_sensors,
     resolve_sensor_overlays,
     resolve_unit_identity,
 )
+from openral_core.tracking_thresholds import DeployModeThresholds, load_tracking_thresholds
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
@@ -196,15 +196,21 @@ def _run_resource_attrs(hal_mode: str, identity: UnitIdentity) -> str:
     return ",".join(f"{k}={v}" for k, v in attrs.items())
 
 
+_DEPLOY = load_tracking_thresholds().deploy
+
+
+def _deploy_mode(hal_mode: str) -> DeployModeThresholds:
+    """The launch values of this ``hal_mode`` (the tracking thresholds file, ``deploy``)."""
+    return _DEPLOY.sim if hal_mode == "sim" else _DEPLOY.real
+
+
 def _world_voxel_margin_m(hal_mode: str) -> float:
     """Return the calibrated world-voxel clearance for this boundary.
 
     The real value is owned by ``openral_core.depth_extrinsic``, whose extrinsic pass
     limits are derived from it: a margin change re-tightens the calibration gate.
     """
-    from openral_core.depth_extrinsic import REAL_WORLD_VOXEL_MARGIN_M
-
-    return 0.0 if hal_mode == "sim" else REAL_WORLD_VOXEL_MARGIN_M
+    return _deploy_mode(hal_mode).world_voxel_margin_m
 
 
 def _cpuset_prefix(env: str) -> str:
@@ -263,7 +269,7 @@ def _collision_scale_params() -> dict[str, float]:
 
 def _octomap_occupancy_threshold(hal_mode: str) -> float:
     """Require repeated simulated hits while preserving real-map behavior."""
-    return 0.8 if hal_mode == "sim" else 0.6
+    return _deploy_mode(hal_mode).occupancy_thres
 
 
 def _self_filter_trailing_sweep_s(hal_mode: str) -> float:
@@ -280,12 +286,12 @@ def _self_filter_trailing_sweep_s(hal_mode: str) -> float:
         >>> _self_filter_trailing_sweep_s("sim"), _self_filter_trailing_sweep_s("real")
         (0.2, 0.0)
     """
-    return 0.2 if hal_mode == "sim" else 0.0
+    return _deploy_mode(hal_mode).self_filter_trailing_sweep_s
 
 
 def _octomap_clamping_max(hal_mode: str) -> float:
     """Let one exact simulated clearing ray remove a confirmed hit."""
-    return 0.85 if hal_mode == "sim" else 0.97
+    return _deploy_mode(hal_mode).clamping_max
 
 
 def _octomap_resolution(hal_mode: str) -> float:
@@ -343,7 +349,7 @@ def _octomap_resolution(hal_mode: str) -> float:
         # silently empty grid. Fall through to the shipped default.
         if 0.001 <= value <= 0.5:
             return value
-    return 0.015 if hal_mode == "sim" else 0.02
+    return _deploy_mode(hal_mode).octomap_resolution_m
 
 
 def _static_points_file(
@@ -617,13 +623,13 @@ def _self_filter_params(
 # The octomap bridge's allocation guard (``octree_to_grid.cpp``, ``kMaxCells``): a ball
 # needing more cells is REFUSED by the bridge, i.e. published as an empty grid -- every
 # obstacle dropped. ``_coverage_ball`` refuses such a ball at launch instead.
-_BRIDGE_MAX_CELLS = 4_000_000
+_BRIDGE_MAX_CELLS = _DEPLOY.bridge_max_cells
 
 #: Margin of the coverage ball over the measured reach: the kernel's real
 #: ``world_voxel_margin_m`` (20 mm) plus half a 20 mm cell (the window it scans around
 #: each link), plus 20 mm for the measured maximum falling short of the true one
 #: (``test_deploy_e2e_coverage_ball.py`` bounds that shortfall well inside it).
-_COVERAGE_MARGIN_M = 0.05
+_COVERAGE_MARGIN_M = _DEPLOY.coverage_margin_m
 #: Reach measurement (``_ReachModel.maximise``): random joint-space samples, then the best
 #: few refined by coordinate ascent, one exhaustive 1-D grid per joint per round.
 _COVERAGE_SAMPLES = 4096
@@ -1016,7 +1022,7 @@ def _attached_collision_deadline_ms(hal_mode: str) -> float:
     Sim keeps 5000 ms. Real is 1000 ms: the HAL's attachment heartbeat runs at 5 Hz, and a
     real payload must not stay trusted for seconds after its producer went silent.
     """
-    return 5000.0 if hal_mode == "sim" else 1000.0
+    return _deploy_mode(hal_mode).attached_collision_deadline_ms
 
 
 def _hal_file_params(path: str, node_name: str) -> dict[str, object]:
@@ -2787,7 +2793,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # chunk; 1 s is a safe backstop here because when stepping is slow the arm
     # also moves slowly in sim-time, so a wall-stale seed is still spatially
     # accurate. Real hardware (30 Hz+ /joint_states) never approaches this bound.
-    kernel_params["collision_state_deadline_ms"] = 1000.0
+    kernel_params["collision_state_deadline_ms"] = _DEPLOY.collision_state_deadline_ms
     # Dof indices of the planar mobile-base joints (manifest base_joints). The kernel zeroes
     # these before the base-relative collision FK so a mobile manipulator's arm is checked in
     # the base_link frame the world/voxel grid lives in. Empty for fixed-base arms.
@@ -3098,7 +3104,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # (action_applied_timeout_s). Conservative first value;
                 # tightening it toward the chunk cadence is a safety-WG call
                 # backed by measured per-policy gaps.
-                "safe_action_deadline_s": 8.0 if hal_mode == "sim" else 5.0,
+                "safe_action_deadline_s": _deploy_mode(hal_mode).safe_action_deadline_s,
                 # Bound on goal-accepted -> first chunk, covering a cold policy
                 # load. Unbounded, a runner that dies before its first chunk
                 # holds the window open and is never braked.
@@ -4386,7 +4392,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # sim uses 0.8 so a transient self/floating point cannot
                     # become a safety voxel until a second frame confirms it.
                     "occupancy_thres": _octomap_occupancy_threshold(hal_mode),
-                    "sensor_model.miss": 0.4,
+                    "sensor_model.miss": _DEPLOY.sensor_model_miss,
                     # Exact sim depth makes robot/attached bodies transparent,
                     # so a background return is a trustworthy miss through the
                     # old object cell. Real maps keep OctoMap's 0.97 saturation
@@ -4687,8 +4693,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # (restock's head camera) takes them as well: the HAL still drops a reply past
                     # its own deadline and re-checks the mask-depth skew itself. *Calibration
                     # points.*
-                    "camera_request_deadlines": [f"{c}=1.5" for c in tracked_cameras] or [""],
-                    "camera_max_frame_skews": [f"{c}=0.25" for c in tracked_cameras] or [""],
+                    "camera_request_deadlines": [
+                        f"{c}={_DEPLOY.segmenter_camera_deadline_s}" for c in tracked_cameras
+                    ]
+                    or [""],
+                    "camera_max_frame_skews": [
+                        f"{c}={_DEPLOY.segmenter_max_frame_skew_s}" for c in tracked_cameras
+                    ]
+                    or [""],
                     "use_sim_time": use_sim_time,
                 }
             ],

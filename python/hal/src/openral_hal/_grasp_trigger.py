@@ -71,6 +71,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from openral_core.exceptions import ROSConfigError
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import JointSpec, JointState, RobotDescription
@@ -88,7 +89,7 @@ __all__ = [
 #: How many sample periods ``PositionStallConfig.for_rate`` tolerates between accepted samples
 #: before a window restarts: three missed samples (one executor stall of a few ticks) are
 #: jitter, a fourth is a gap. Calibration point, not a benchmark.
-GAP_PERIODS = 4.0
+GAP_PERIODS = load_tracking_thresholds().hal.gap_periods
 
 
 class GraspEvent(str, Enum):

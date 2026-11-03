@@ -174,7 +174,7 @@ class JawStallDetector:
 
     def _drift(self, run: list[tuple[int, float]]) -> float:
         """How far ``run``'s jaw moves per ``window_s``: |Theil-Sen slope| x the window."""
-        min_dt = 0.2 * self.window_ns
+        min_dt = _S.min_dt_window_fraction * self.window_ns
         slopes = [
             (run[j][1] - run[i][1]) / ((run[j][0] - run[i][0]) / _NS)
             for i in range(len(run))

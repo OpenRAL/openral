@@ -80,6 +80,7 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import rotation_to_quat_wxyz
 from openral_core.perception_geometry import backproject_masked_depth
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import IntrinsicsPinhole
@@ -111,6 +112,9 @@ _VISION_CONFIDENCE = 0.7
 # geometry is a guess, and a consumer ranking evidence should prefer almost
 # anything else. CALIBRATION POINT.
 _FALLBACK_CONFIDENCE = 0.2
+
+
+_G = load_tracking_thresholds().hal
 
 
 @dataclass(frozen=True)
@@ -171,15 +175,15 @@ class VisionGateConfig:
             ``max_length`` and the simulator producer's contract.
     """
 
-    containment_radius_m: float = 0.12
-    max_payload_extents_m: tuple[float, float, float] = (0.10, 0.25, 0.25)
-    max_payload_volume_m3: float = 0.004
-    min_depth_valid_fraction: float = 0.30
-    min_depth_m: float = 0.02
-    max_depth_m: float = 1.0
-    view_ray_inflation_m: float = 0.02
-    jaw_span_m: float = 0.05
-    max_primitives: int = 16
+    containment_radius_m: float = _G.containment_radius_m
+    max_payload_extents_m: tuple[float, float, float] = _G.max_payload_extents_m
+    max_payload_volume_m3: float = _G.max_payload_volume_m3
+    min_depth_valid_fraction: float = _G.min_depth_valid_fraction
+    min_depth_m: float = _G.min_depth_m
+    max_depth_m: float = _G.max_depth_m
+    view_ray_inflation_m: float = _G.view_ray_inflation_m
+    jaw_span_m: float = _G.jaw_span_m
+    max_primitives: int = _G.gate_max_primitives
 
 
 @dataclass(frozen=True)

@@ -206,6 +206,7 @@ __all__ = [
 
 #: The release window's clearance and lifetime: the one value the tracker and kernel use too.
 _RELEASE = load_tracking_thresholds().release
+_HAL = load_tracking_thresholds().hal
 
 #: Service the perception-side segmenter node offers by default.
 DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
@@ -216,7 +217,7 @@ DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
 #: more. It is also the region payload's support-witness rise tolerance
 #: (``_retire_lifted_supports``), so an unbounded value (a params-file 0.3) would keep the
 #: support exemption through a 30 cm carry.
-MAX_RELEASE_CLEAR_M = 0.1
+MAX_RELEASE_CLEAR_M = _HAL.max_release_clear_m
 
 
 @dataclass
@@ -330,8 +331,8 @@ _GRASP_EVENTS_TOPIC = "/openral/grasp_events"
 
 #: Confidence on a region payload: the vision producer's own accepted-mask value, since the
 #: region is a gated, map-verified head-view measurement of the same object.
-_STALL_RAD = 0.002
-_STALL_TICKS = 3
+_STALL_RAD = _HAL.stall_rad
+_STALL_TICKS = _HAL.stall_ticks
 """Jaw travel per tick below which a closing jaw counts as stalled on an object."""
 
 _REGION_CONFIDENCE = 0.7
@@ -1129,33 +1130,33 @@ class VisionAttachmentConfig:
     camera_info_topic: str | None = None
     self_filtered_cloud_topic: str = ""
     service_name: str = DEFAULT_SEGMENT_SERVICE
-    deadline_s: float = 0.25
+    deadline_s: float = _HAL.deadline_s
     tcp_frame: str = ""
     jaw_tip_frames: tuple[str, ...] = ()
     object_id: str = "grasped_payload"
     tf_frames: Mapping[str, str] = field(default_factory=dict)
-    evidence_timeout_s: float = 0.5
+    evidence_timeout_s: float = _HAL.evidence_timeout_s
     evidence_run_spans_gaps: bool = False
     grasp_target_enabled: bool = False
-    grasp_target_rate_hz: float = 3.0
+    grasp_target_rate_hz: float = _HAL.grasp_target_rate_hz
     grasp_target_freeze_s: float | None = None
-    grasp_target_min_cells: int = 8
-    grasp_target_min_cover: float = 0.5
-    grasp_target_support_search_below_m: float = 0.15
-    grasp_target_support_probe_margin_m: float = 0.05
-    grasp_target_occluder_margin_m: float = 0.05
+    grasp_target_min_cells: int = _HAL.grasp_target_min_cells
+    grasp_target_min_cover: float = _HAL.grasp_target_min_cover
+    grasp_target_support_search_below_m: float = _HAL.grasp_target_support_search_below_m
+    grasp_target_support_probe_margin_m: float = _HAL.grasp_target_support_probe_margin_m
+    grasp_target_occluder_margin_m: float = _HAL.grasp_target_occluder_margin_m
     grasp_target_approach_m: float | None = None
     grasp_target_margin_m: float = VisionAttachmentRuntime.DEFAULT_GRASP_TARGET_MARGIN_M
     grasp_target_premeasure: bool = False
     # One release clearance and lifetime everywhere: the tracking thresholds file, `release`.
     release_clear_m: float = _RELEASE.clear_m
     release_timeout_s: float = _RELEASE.clear_timeout_s
-    grid_max_age_s: float = 1.0
+    grid_max_age_s: float = _HAL.grid_max_age_s
     mask_depth_max_skew_s: float = 0.1
     place_target_enabled: bool = False
-    place_target_rate_hz: float = 2.0
+    place_target_rate_hz: float = _HAL.place_target_rate_hz
     place_target_freeze_s: float | None = None
-    place_target_search_depth_m: float = 0.20
+    place_target_search_depth_m: float = _HAL.place_target_search_depth_m
     place_target_extrinsic_error_m: float = MAX_PLANAR_ERR_M
     publish_attachment_state: bool = True
 

@@ -35,6 +35,7 @@ from openral_core.schemas import (
     MAX_TIGHT_HULL_VERTICES,
     TightCollisionGeometry,
 )
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 _LOGGER = structlog.get_logger(__name__)
 
@@ -61,8 +62,8 @@ _SUPPORT_PROBE_GAP_M = 0.001
 # attachment message on the kernel side, so the producer never constructs one:
 # deeper than the cap is a collision, not support, and clamping would launder
 # it into an exemption.
-_SUPPORT_MAX_PENETRATION_M = 0.01
-_SUPPORT_MAX_PATCH_RADIUS_M = 0.5
+_SUPPORT_MAX_PENETRATION_M = load_tracking_thresholds().caps.support_witness_max_penetration_m
+_SUPPORT_MAX_PATCH_RADIUS_M = load_tracking_thresholds().caps.support_witness_max_patch_radius_m
 # Exact-distance call budget for one attestation (runs at attach and on every
 # tick of a live place declaration until one attests). Measured on the shipped
 # `robocasa_baguette` kitchen (2383 geoms, 16 payload geoms, 1358 support

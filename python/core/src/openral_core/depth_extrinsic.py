@@ -23,13 +23,17 @@ import math
 from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Final, NamedTuple
 
+from openral_core.tracking_thresholds import load_tracking_thresholds
+
 if TYPE_CHECKING:
     from openral_core.schemas import RobotDescription, SensorOverlay, SensorSpec
 
 #: Clearance the kernel's world-voxel check keeps around the robot on a real deploy
 #: (``world_voxel_margin_m``; sim runs at 0). The launch passes this value, and the accuracy
 #: an extrinsic needs below is derived from it, so tightening the margin tightens that too.
-REAL_WORLD_VOXEL_MARGIN_M: Final[float] = 0.02
+REAL_WORLD_VOXEL_MARGIN_M: Final[float] = (
+    load_tracking_thresholds().deploy.real.world_voxel_margin_m
+)
 #: Range at which an angular error is converted to a position error. A head camera sees
 #: its workspace within 1 m; a closer (wrist) camera only makes the same angle smaller.
 CHECKED_RANGE_M: Final[float] = 1.0
