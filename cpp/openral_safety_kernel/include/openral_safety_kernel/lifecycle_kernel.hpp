@@ -458,7 +458,11 @@ private:
   /// in-tree rule still needs `workspace_contact_enabled_`.
   bool workspace_ingest_enabled_{false};
   bool ws_provider_measure_{false};  ///< this candidate: measure the hand for the provider only
-  std::uint64_t voxel_grid_seq_{0};  ///< bumped on every grid ingest (provider view)
+  /// API v5: the provider enabled the #349 rule (`workspace_contact_config`) with the in-tree one
+  /// off, and the region its per-pair verdict is computed on (`ProviderGate::workspace`).
+  bool provider_workspace_on_{false};
+  WorkspaceContactRegion provider_workspace_{};
+  std::uint64_t voxel_grid_seq_{0};       ///< bumped on every grid ingest (provider view)
   bool provider_replaces_region_{false};  ///< ExemptionProvider::replaces_grasp_region()
 
   // Voxel phase — dense occupancy grid (octomap path). `voxel_grid_`
@@ -864,9 +868,10 @@ private:
     enum class Release : std::uint8_t { kHeld, kWindow, kClosed };
     Release release{Release::kHeld};
     std::int64_t window_opened_ns{0};
-    Transform frozen{};  ///< base-frame pose at release
-    int hand_link{-1};   ///< the attach link that held it
-    bool in_map{false};  ///< closed and the map carries it: the frozen box is dropped
+    Transform frozen{};              ///< base-frame pose at release
+    int hand_link{-1};               ///< the attach link that held it
+    bool in_map{false};              ///< closed and the map carries it: the frozen box is dropped
+    ReleaseMemory release_memory{};  ///< the provider's release-rule memory (API v5), never read
   };
   std::array<BoundPayload, kMaxTrackedObjects> bound_{};
   std::chrono::steady_clock::time_point bound_cap_last_warn_{};

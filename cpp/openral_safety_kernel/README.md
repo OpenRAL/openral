@@ -1458,7 +1458,12 @@ installed header
   - a mask link the model does not know;
   - a pluginlib load failure;
   - an `api_version()` other than `kExemptionProviderApiVersion`;
-  - `initialize` returning false or throwing.
+  - `initialize` returning false or throwing;
+  - an unsound `workspace_contact_config()` (API v5; read only with the in-tree #349 rule off):
+    a non-finite or non-positive bound, a lead bound past `kMaxWorkspaceContactLeadM`, the brake
+    without the rule, or the rule (with or without its brake) without the hand measurement
+    (`workspace_contact_control_period_s` and workspace links: unmeasured, the rule could never
+    fire).
 
 **On the live check** (API v2) the provider is consulted in four places:
 - `check_voxel_collision`: robot link vs cell (`voxel_pair`);
@@ -1525,6 +1530,25 @@ Pro's K2). The open ADR-0115 region then exempts nothing, which only narrows the
 `grid_cell_of` are exported from `collision.hpp`, so a provider's rules use the kernel's own
 arithmetic.
 
+**API v5** quotes the kernel's own verdicts, so a provider never re-derives an open rule
+(`kExemptionProviderApiVersion` 5; a v4 provider is refused: `refused: api_version 4 != 5`):
+- **#349 verdict.** `workspace_contact_config()` (replaces v3's `brake_config`) lets a provider
+  enable the kernel's own #349 rule, on the provider's bounds, while the in-tree rule is off;
+  the kernel validates them at load (unsound bounds, a brake without the rule, or the rule without
+  the hand measurement refuse the provider). Every pair query then carries `workspace_exempt`:
+  the kernel's verdict for that pair (`workspace_region_exempts` on `ProviderGate::workspace`, the
+  live workspace with the row's speed and allowance-applied lead; self and payload-self pairs:
+  both links slow and both origins inside). The kernel does not apply it; the provider tolerates
+  it as is or narrows it (OpenRAL Pro's K7). A provider tolerating exactly `workspace_exempt`
+  reproduces the in-tree rule (`ExemptionProvider.TheQuotedWorkspaceVerdict*`,
+  `TheQuotedWorkspaceVerdictIsTheInTreeRuleThroughTheKernel`). No verdict (false) without the
+  rule enabled, with the in-tree rule on (it decided first), or without a live workspace and grid.
+- **Freshness.** `TrackedObjectView::confirmed_fresh` is the kernel's `region_measurement_fresh`
+  on the track's confirmation against `grasp_region_max_age_s`.
+- **Release memory.** `ReleaseQuery::memory` is the bound payload's own `ReleaseMemory` (jaw,
+  hold, dwell start), kernel-owned in `BoundPayload`, reset whenever a binding starts (new
+  identity, epoch or slot), never read by the kernel.
+
 **API v4** adds `CandidateView::attachments`: the kernel's identity match per attachment (evidence kind, the bound or named provisional track, the K3 on-hand verdict), plus `static_points_declared` and `voxel_overflow`, so a provider can run OT-10's rule.
 
 **API v3** adds three hooks.
@@ -1537,8 +1561,8 @@ arithmetic.
   payload itself, keeps its own window (`tracked_release_clear_m` / `tracked_release_timeout_s`,
   validated at load) and closes it. During the window the frozen payload is offered to
   `payload_self_pair` on the releasing hand.
-- **Brake.** `brake_config` enables the kernel's own #349 brake on the provider's bounds. The
-  brake mechanism stays open: the dry run, the relaxed re-check with the hand read as still, and
+- **Brake.** `brake_config` (v5: `workspace_contact_config().brake_enabled`) enables the kernel's
+  own #349 brake on the provider's bounds. The brake mechanism stays open: the dry run, the relaxed re-check with the hand read as still, and
   the hold or creep, all re-checked by every open check. It needs the hand measurement.
 
 The kernel library is SHARED, so a provider .so and `safety_kernel_node` share one copy.
@@ -1548,6 +1572,11 @@ with a stage-2 refinement is checked against the robot's own links as its measur
 box. With a provider and the in-tree rule off, it is checked as the shipped, padded box. That
 narrowing loosens geometry for every link, arm links included, so it is not offered as a
 provider capability. It ends with the in-tree rule.
+
+**A second stricter difference under a provider.** The previously-accepted-command memory row 0
+reads the hand's speed from is kept only for the in-tree rule, so with a provider row 0's speed is
+read against the measured state: a hand trailing its command (the Isaac lag rig) is refused where
+the in-tree rule tolerates it (`AProviderOwnedRowZeroReadsTheMeasuredState`). Unchanged by API v5.
 
 `end_candidate` reports each accepted JOINT_POSITION chunk's last row, commanded joints and
 horizon. `on_reset(reason)` fires wherever the kernel forgets its command chain: configure,
@@ -1559,7 +1588,9 @@ contact hold and the OT-10 payload / pinch own cells — were removed from this 
 provider implemented them against this header (their tests were ported to
 `openral_pro_safety_exemptions`). The box-based rules stay open (ADR-0121 amendment,
 2026-10-25): the ADR-0115 grasp allowance (`search_box`) and #349 workspace contact with its
-brake (`workspace_box`). A loaded provider still takes #349 over, because its K7 narrows it.
+brake (`workspace_box`). A loaded provider still takes #349's application over, because its K7
+narrows it; since API v5 the rule itself (speed, lead, per-row allowance, inside) is computed only
+here and quoted to the provider (`workspace_exempt`).
 The symbols a provider links against (`apply`, `compose`, `inverse_rigid`, `point_in_obb`,
 `footprint_gap`, `grid_cell_of`, `voxel_center`, `box_box_distance`, `box_capsule_distance`,
 `grasp_hand_tcp`, `tracked_box_meets_hand`, `build_grasp_hands`, `mark_static_cells`,

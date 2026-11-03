@@ -14,6 +14,9 @@
 //  * self and payload pairs only when every robot link of the pair is in the mask;
 //  * never for a joint/speed/torque limit, the
 //    workspace envelope, a lead bound or a watchdog;
+//  * the #349 workspace-contact rule's verdict is the kernel's own (API v5): with the in-tree
+//    rule off, a provider that enables it (`workspace_contact_config`) gets the kernel's verdict
+//    for each pair in the query (`workspace_exempt`) and may only narrow it, never re-derive it;
 //  * sim only: the kernel refuses to load any provider off `hal_mode: sim`;
 //  * fail closed: no provider, a failed load, an API-version mismatch or a
 //    `false` from `initialize` all leave the kernel exactly as with no provider.
@@ -40,7 +43,7 @@ namespace openral_safety_kernel {
 
 /// Bumped on any change to this header's layout or hook semantics. A provider
 /// built against another version is refused at load (fail closed).
-inline constexpr std::uint32_t kExemptionProviderApiVersion = 4;
+inline constexpr std::uint32_t kExemptionProviderApiVersion = 5;
 
 /// A provider's answer for one pair. Anything but `kTolerate` keeps the open
 /// kernel's verdict.
@@ -54,15 +57,18 @@ enum class ProviderVerdict : std::uint8_t {
 struct TrackedObjectView {
   std::size_t id_hash{0};  ///< std::hash of object_id (the K6 key)
   std::uint32_t epoch{0};
-  bool live{false};                     ///< confirmed / occluded / bound
-  bool released{false};                 ///< the tracker let go of it
-  bool target{false};                   ///< role == "target"
-  bool contact{false};                  ///< role target or destination
-  bool exemptible{false};               ///< confirmed / occluded
-  bool provisional{false};              ///< exemption geometry only, never payload
-  bool cover_ok{false};                 ///< the kernel's OWN cover check on this grid
-  std::uint32_t visible_cells{0};       ///< the tracker's expected visible cells
-  std::int64_t confirmed_ns{0};         ///< last confirmation, source clock
+  bool live{false};                ///< confirmed / occluded / bound
+  bool released{false};            ///< the tracker let go of it
+  bool target{false};              ///< role == "target"
+  bool contact{false};             ///< role target or destination
+  bool exemptible{false};          ///< confirmed / occluded
+  bool provisional{false};         ///< exemption geometry only, never payload
+  bool cover_ok{false};            ///< the kernel's OWN cover check on this grid
+  std::uint32_t visible_cells{0};  ///< the tracker's expected visible cells
+  std::int64_t confirmed_ns{0};    ///< last confirmation, source clock
+  /// The kernel's own `region_measurement_fresh` on `confirmed_ns` against
+  /// `grasp_region_max_age_s` (API v5): the age verdict a provider must not re-derive.
+  bool confirmed_fresh{false};
   double support_z{0.0};                ///< NaN = none
   double floor_z{0.0};                  ///< NaN = none
   std::size_t declaration_key_hash{0};  ///< std::hash of the track's declaration_key (API v2)
@@ -182,6 +188,12 @@ struct VoxelPairQuery {
   double hand_speed_mps{std::numeric_limits<double>::infinity()};
   double hand_lead_m{std::numeric_limits<double>::infinity()};
   bool hand_contact{false};  ///< the measured hand (or its payload) already touches
+  /// The kernel's own #349 workspace-contact verdict for this pair (API v5): the hand slow and
+  /// close to its measured pose (the per-row lead allowance applied) on the provider's bounds
+  /// (`workspace_contact_config`), its link(s) in the workspace's mask, and the cell (or, for a
+  /// self pair, both links' origins) inside the live workspace. False whenever the provider has
+  /// not enabled the rule, the in-tree rule is on (it decided first) or no workspace is live.
+  bool workspace_exempt{false};
 };
 
 /// Two robot links of one self-collision pair about to trip (both in the mask).
@@ -196,6 +208,12 @@ struct SelfPairQuery {
   double hand_speed_mps{std::numeric_limits<double>::infinity()};
   double hand_lead_m{std::numeric_limits<double>::infinity()};
   bool hand_contact{false};  ///< the measured hand (or its payload) already touches
+  /// The kernel's own #349 workspace-contact verdict for this pair (API v5): the hand slow and
+  /// close to its measured pose (the per-row lead allowance applied) on the provider's bounds
+  /// (`workspace_contact_config`), its link(s) in the workspace's mask, and the cell (or, for a
+  /// self pair, both links' origins) inside the live workspace. False whenever the provider has
+  /// not enabled the rule, the in-tree rule is on (it decided first) or no workspace is live.
+  bool workspace_exempt{false};
 };
 
 /// A carried payload about to trip against an occupied cell (`payload_voxel_pair`) or against a
@@ -223,6 +241,12 @@ struct PayloadPairQuery {
   double hand_speed_mps{std::numeric_limits<double>::infinity()};
   double hand_lead_m{std::numeric_limits<double>::infinity()};
   bool hand_contact{false};  ///< the measured hand (or its payload) already touches
+  /// The kernel's own #349 workspace-contact verdict for this pair (API v5): the hand slow and
+  /// close to its measured pose (the per-row lead allowance applied) on the provider's bounds
+  /// (`workspace_contact_config`), its link(s) in the workspace's mask, and the cell (or, for a
+  /// self pair, both links' origins) inside the live workspace. False whenever the provider has
+  /// not enabled the rule, the in-tree rule is on (it decided first) or no workspace is live.
+  bool workspace_exempt{false};
 };
 
 /// One tracked object whose kernel cover check fell short this grid, while the kernel's OWN check
@@ -237,6 +261,17 @@ struct CoverHoldQuery {
   /// The kernel-ingested workspace (its hand-link mask and box), null when not live.
   const WorkspaceContactRegion* workspace{nullptr};
   double resolution{0.0};  ///< this grid's cell size
+};
+
+/// Per-binding memory of a provider's release rule (API v5): kernel-owned, one per bound
+/// payload (the kernel's `BoundPayload`), reset whenever a binding starts (a new identity, epoch
+/// or slot) and never read by the kernel. A provider keeps its jaw hold and dwell here instead of
+/// a table of its own.
+struct ReleaseMemory {
+  int jaw{-1};  ///< the provider's jaw index for this binding, -1 = not resolved yet
+  bool hold_set{false};
+  double hold{0.0};                ///< the jaw's position when the hold was first read
+  std::int64_t open_since_ns{-1};  ///< kernel clock; -1 = not open
 };
 
 /// A bound (carried) tracked payload at a fresh measured state (API v3). Releasing it
@@ -256,17 +291,21 @@ struct ReleaseQuery {
   std::int64_t now_ns{0};
   const TrackedObjectView* tracked{nullptr};  ///< the tracked set (its `released` flags)
   std::size_t n_tracked{0};
+  ReleaseMemory* memory{nullptr};  ///< this binding's memory (API v5); never null when asked
 };
 
-/// The #349 workspace brake, requested by a provider (API v3). The brake MECHANISM stays the
-/// kernel's: on a refused JOINT_POSITION chunk it re-checks the rows with the hand read as
-/// still (speed and lead 0, quoted to the provider's pair queries as such); if that passes it
-/// holds the measured pose or creeps toward it, every replacement re-checked by every open check.
-/// The provider only enables it and supplies the bounds the creep is scaled by.
-struct BrakeConfig {
+/// The #349 workspace-contact rule and its brake, requested by a provider while the in-tree rule
+/// is off (API v5; v3's `BrakeConfig`). The rule and the brake MECHANISM stay the kernel's: with
+/// `enabled` the kernel computes its own #349 verdict on these bounds for every pair it asks about
+/// (`workspace_exempt`); with `brake_enabled`, on a refused JOINT_POSITION chunk it re-checks the
+/// rows with the hand read as still (speed and lead 0) and, if that passes, holds the measured pose
+/// or creeps toward it, every replacement re-checked by every open check. Read once at load and
+/// validated by the kernel; an unsound one refuses the provider.
+struct WorkspaceContactConfig {
   bool enabled{false};
   double max_speed_mps{0.0};              ///< finite, > 0
   double max_lead_m{0.0};                 ///< finite, (0, kMaxWorkspaceContactLeadM]
+  bool brake_enabled{false};              ///< needs `enabled` and the hand measurement
   std::uint64_t hold_max_consecutive{0};  ///< refused commands held in a row before the stop
 };
 
@@ -294,9 +333,10 @@ public:
   /// narrows the open kernel); read once at load and logged.
   virtual bool replaces_grasp_region() const noexcept { return false; }
 
-  /// The workspace brake this provider wants (API v3); disabled by default. Read once at load and
-  /// validated by the kernel; needs the hand measurement (`workspace_contact_control_period_s`).
-  virtual BrakeConfig brake_config() const noexcept { return {}; }
+  /// The #349 rule and brake this provider wants while the in-tree rule is off (API v5); disabled
+  /// by default. Read once at load and validated by the kernel; the brake needs the hand
+  /// measurement (`workspace_contact_control_period_s`).
+  virtual WorkspaceContactConfig workspace_contact_config() const noexcept { return {}; }
 
   /// Per candidate chunk, before any pair query. Preallocated state only.
   virtual void begin_candidate(const CandidateView& view) noexcept { (void)view; }

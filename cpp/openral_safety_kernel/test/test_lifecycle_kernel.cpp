@@ -9149,9 +9149,29 @@ TEST_F(LifecycleKernelTest, AProviderBrakeWithoutTheHandMeasurementIsRefused) {
   GraspRig rig("kernel_provider_brake_nomeasure", params);  // no control period: no measurement
   rig.start();
   EXPECT_FALSE(rig.node->exemption_provider_loaded());
-  EXPECT_NE(rig.node->exemption_provider_status().find("brake_config needs the hand measurement"),
+  EXPECT_NE(rig.node->exemption_provider_status().find("the brake needs the hand measurement"),
             std::string::npos)
       << rig.node->exemption_provider_status();
+}
+
+TEST_F(LifecycleKernelTest, AProviderRuleWithoutTheHandMeasurementIsRefused) {
+  // The rule alone (no brake): without the measurement the hand speed stays +inf, so the quoted
+  // `workspace_exempt` is false for every pair and the rule could never fire. Refused at load,
+  // not loaded "OK" as a dead rule.
+  osk_test::serve_test_providers();
+  auto params = with_param(grasp_params(true), "hal_mode", rclcpp::ParameterValue("sim"));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("QuotesTheVerdict")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  params = with_param(params, "workspace_contact_max_speed_mps", rclcpp::ParameterValue(0.02));
+  params = with_param(params, "workspace_contact_max_lead_m", rclcpp::ParameterValue(0.05));
+  GraspRig rig("kernel_provider_rule_nomeasure", params);  // no control period: no measurement
+  rig.start();
+  EXPECT_FALSE(rig.node->exemption_provider_loaded());
+  EXPECT_EQ(rig.node->exemption_provider_status(),
+            "refused: workspace_contact_config: the workspace-contact rule needs the hand "
+            "measurement (workspace_contact_control_period_s and workspace links)");
 }
 
 TEST_F(LifecycleKernelTest, AProviderSeesEachAttachmentsIdentityMatch) {
@@ -9191,4 +9211,236 @@ TEST_F(LifecycleKernelTest, AProviderSeesAnUntrackedHoldsBindFloor) {
   EXPECT_EQ(log.att0_evidence, static_cast<int>(osk::AttachmentView::Evidence::kUntrackedGrasp));
   EXPECT_TRUE(std::isfinite(log.att0_bind_low_z)) << "the bind-time floor";
   EXPECT_TRUE(log.attached_model_set);
+}
+
+// ── API v5: the views a provider reads are the kernel's own state ──────────────────────────────
+
+namespace {
+
+// The same rig with #349 handed to the QuotesTheVerdict test provider, as the deploy launch hands
+// it to a provider (`_hand_rules_to_provider`): the in-tree switches off, the provider enabling
+// the kernel's rule on the same bounds and its brake on the same switch.
+std::vector<rclcpp::Parameter> quoted(std::vector<rclcpp::Parameter> p) {
+  bool brake = false;
+  std::int64_t hold = 0;
+  for (const auto& q : p) {
+    if (q.get_name() == "workspace_contact_brake_enabled") {
+      brake = q.as_bool();
+    } else if (q.get_name() == "workspace_contact_hold_max_consecutive") {
+      hold = q.as_int();
+    }
+  }
+  p = with_param(p, "workspace_contact_enabled", rclcpp::ParameterValue(false));
+  p = with_param(p, "workspace_contact_brake_enabled", rclcpp::ParameterValue(false));
+  p = with_param(p, "workspace_contact_hold_max_consecutive",
+                 rclcpp::ParameterValue(std::int64_t{0}));
+  p = with_param(p, "verdict.brake_enabled", rclcpp::ParameterValue(brake));
+  p = with_param(p, "verdict.hold_max_consecutive", rclcpp::ParameterValue(hold));
+  p = with_param(p, "exemption_provider",
+                 rclcpp::ParameterValue(osk_test::test_provider("QuotesTheVerdict")));
+  return with_param(p, "exemption_provider_links",
+                    rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+}
+
+// One #349 scenario's observable outcome: every chunk's verdict, the latch and the republished
+// chunk (the brake's hold / creep).
+struct WsOutcome {
+  std::vector<bool> passed;
+  bool latched{false};
+  std::vector<double> last_flat;
+};
+
+using WsScenario = std::function<std::vector<bool>(GraspRig&)>;
+
+WsOutcome run_ws(const std::string& name, const std::vector<rclcpp::Parameter>& params,
+                 bool js_still, bool provider, const WsScenario& scenario) {
+  osk_test::serve_test_providers();
+  GraspRig rig(name, params);
+  if (js_still) {
+    rig.js_velocity = {0.0};
+  }
+  rig.start();
+  EXPECT_EQ(rig.node->exemption_provider_loaded(), provider)
+      << rig.node->exemption_provider_status();
+  WsOutcome out;
+  out.passed = scenario(rig);
+  out.latched = rig.node->fault_latched();
+  out.last_flat = rig.last_flat;
+  return out;
+}
+
+void expect_same_ws(const std::string& name, const std::vector<rclcpp::Parameter>& params,
+                    bool js_still, const WsScenario& scenario) {
+  const WsOutcome in_tree = run_ws(name + "_in_tree", params, js_still, false, scenario);
+  const WsOutcome moved = run_ws(name + "_quoted", quoted(params), js_still, true, scenario);
+  EXPECT_EQ(moved.passed, in_tree.passed) << name;
+  EXPECT_EQ(moved.latched, in_tree.latched) << name;
+  ASSERT_EQ(moved.last_flat.size(), in_tree.last_flat.size()) << name;
+  for (std::size_t i = 0; i < moved.last_flat.size(); ++i) {
+    EXPECT_NEAR(moved.last_flat[i], in_tree.last_flat[i], 1e-12) << name << " row " << i;
+  }
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, TheQuotedWorkspaceVerdictIsTheInTreeRuleThroughTheKernel) {
+  // API v5: a provider that tolerates exactly the kernel's quoted #349 verdict reproduces the
+  // in-tree rule on the in-tree rule's own scenarios: the speed (measured and commanded), the
+  // workspace box, the per-row allowance and its loss while touching, and the brake's hold and
+  // creep. Not the lag rig's walk-in (ALaggingHandWalkedSlowlyIntoTheWorkspaceIsExempt): the
+  // previously-accepted-command memory row 0 reads its speed from is kept only for the in-tree
+  // rule, so with a provider row 0 reads from the measured state, which is stricter (API v4
+  // measured the same way; AProviderOwnedRowZeroReadsTheMeasuredState below).
+  expect_same_ws("kernel_v5_slow", workspace_params(), false, [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, 0.0, 300);
+    const bool slow = rig.offer(&b, 0.0);
+    EXPECT_TRUE(slow) << "the tolerated case";
+    return std::vector<bool>{slow};
+  });
+  expect_same_ws("kernel_v5_fast", workspace_params(), false, [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, 0.3, 300);
+    return std::vector<bool>{rig.offer_chunk(&b, 0.3, grasp_chunk(0.0))};
+  });
+  expect_same_ws("kernel_v5_outside", workspace_params(), false, [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace_x = 0.5;
+    rig.warm(&b, 0.0, 300);
+    return std::vector<bool>{rig.offer(&b, 0.0)};
+  });
+  expect_same_ws("kernel_v5_cmd_fast", lag_params(), false, [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    const bool hold = rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ));
+    return std::vector<bool>{hold, rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))};
+  });
+  const auto braked = with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                                 rclcpp::ParameterValue(true));
+  expect_same_ws("kernel_v5_rows", braked, true, [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.45);
+    chunk.horizon = 3;
+    chunk.flat = {0.45, 0.4, 0.3};
+    const bool first = rig.send_once(&b, kLagMeasuredQ, chunk);
+    chunk.flat = {0.4, 0.4, 0.3};
+    return std::vector<bool>{first, rig.send_once(&b, kLagMeasuredQ, chunk)};
+  });
+  expect_same_ws("kernel_v5_touching", braked, true, [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, 0.0, 300);
+    openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.0);
+    chunk.horizon = 3;
+    chunk.flat = {0.0, 0.1, 0.1};
+    return std::vector<bool>{rig.send_once(&b, 0.0, chunk)};
+  });
+  auto capped =
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true));
+  capped = with_param(capped, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{2}));
+  expect_same_ws("kernel_v5_hold_cap", capped, true, [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace_x = 0.5;
+    rig.warm(&b, kLagMeasuredQ, 300);
+    std::vector<bool> v;
+    for (int i = 0; i < 3; ++i) {
+      v.push_back(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+    }
+    return v;
+  });
+}
+
+TEST_F(LifecycleKernelTest, AProviderThatDidNotEnableTheRuleGetsNoVerdict) {
+  // The Recorder keeps the default (rule off): the kernel quotes no #349 verdict, whatever the
+  // hand.
+  osk_test::serve_test_providers();
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  auto params = with_param(workspace_params(false), "exemption_provider",
+                           rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_v5_no_verdict", params);
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_GE(osk_test_recorder()->voxel_asked, 1);
+  EXPECT_FALSE(osk_test_recorder()->workspace_exempt);
+}
+
+TEST_F(LifecycleKernelTest, ATrackedViewsConfirmedFreshIsTheKernelsOwnAgeVerdict) {
+  // API v5: `confirmed_fresh` is `region_measurement_fresh` on the confirmation stamp against
+  // grasp_region_max_age_s (0.6 s here): fresh at the stream stamp and 0.3 s old, stale 1 s old
+  // and in the future.
+  osk_test::serve_test_providers();
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  auto params =
+      with_param(workspace_params(false), "grasp_region_max_age_s", rclcpp::ParameterValue(0.6));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_v5_confirmed_fresh", params);
+  rig.voxels = k2_voxels();
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  const auto& log = *osk_test_recorder();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  k7_neighbour(b);
+  const auto seen = [&](std::int64_t confirmed_offset_ns, bool stream_stamp) {
+    b.tracked_confirmed_ns = stream_stamp ? 0 : rig.now_ns() + confirmed_offset_ns;
+    rig.warm(&b, kGraspClearQ, 150);
+    EXPECT_TRUE(rig.offer(&b, kGraspClearQ));
+    EXPECT_EQ(log.n_tracked, 1);
+    return log.confirmed_fresh0;
+  };
+  EXPECT_TRUE(seen(0, true)) << "confirmed at the stream stamp";
+  EXPECT_TRUE(seen(-300'000'000, false)) << "0.3 s old";
+  EXPECT_FALSE(seen(-1'000'000'000, false)) << "1 s old, past the 0.6 s bound";
+  EXPECT_FALSE(seen(1'000'000'000, false)) << "in the future";
+}
+
+TEST_F(LifecycleKernelTest, AProvidersReleaseMemoryIsTheBindingsOwn) {
+  // API v5: the kernel hands each ask the bound payload's own release memory: fresh at the first
+  // ask of a binding, the provider's mark at every later one, fresh again for a new epoch.
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  ReleaseRig r("kernel_v5_release_memory",
+               with_param(release_params(), "exemption_provider",
+                          rclcpp::ParameterValue(osk_test::test_provider("MemoryReleaser"))));
+  ASSERT_TRUE(r.rig.node->exemption_provider_loaded()) << r.rig.node->exemption_provider_status();
+  r.jaw(0.30, 300);
+  const auto& log = *osk_test_recorder();
+  ASSERT_GE(log.release_asks, 2);
+  EXPECT_EQ(log.release_fresh, 1) << "one binding: fresh once";
+  r.rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = release_state(stream_ns);
+    msg.attached_objects[0].epoch = 1;
+    msg.tracked_objects.objects[0].epoch = 1;
+    return msg;
+  };
+  const int asks = log.release_asks;
+  r.jaw(0.30, 300);
+  EXPECT_GT(log.release_asks, asks + 1);
+  EXPECT_EQ(log.release_fresh, 2) << "a new epoch is a new binding: fresh again";
+  EXPECT_EQ(log.release_foreign, 0);
+  EXPECT_EQ(log.release_no_memory, 0);
+}
+
+TEST_F(LifecycleKernelTest, AProviderOwnedRowZeroReadsTheMeasuredState) {
+  // With #349 handed to a provider the kernel keeps no previously-accepted-command memory (it is
+  // the in-tree rule's), so row 0's speed is read against the measured state: the lagging hand the
+  // in-tree rule tolerates by its command memory is refused. Stricter, never looser; unchanged
+  // from API v4, where the provider read the same measurement.
+  const WsScenario walk = [](GraspRig& rig) {
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    return std::vector<bool>{walk_in(rig, b, 0.0)};
+  };
+  const WsOutcome in_tree = run_ws("kernel_v5_lag_in_tree", lag_params(), false, false, walk);
+  const WsOutcome moved = run_ws("kernel_v5_lag_quoted", quoted(lag_params()), false, true, walk);
+  EXPECT_EQ(in_tree.passed, std::vector<bool>{true});
+  EXPECT_EQ(moved.passed, std::vector<bool>{false});
+  EXPECT_TRUE(moved.latched);
 }

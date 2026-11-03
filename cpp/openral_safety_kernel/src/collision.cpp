@@ -1363,6 +1363,8 @@ bool provider_tolerates(CollisionHit& hit, const VoxelGrid& grid, const Collisio
   q.hand_speed_mps = gate.hand_speed_mps;
   q.hand_lead_m = gate.hand_lead_m;
   q.hand_contact = gate.hand_contact;
+  q.workspace_exempt = gate.workspace != nullptr &&
+                       workspace_region_exempts(*gate.workspace, link, q.cell_center_base);
   if (gate.provider->voxel_pair(q) != ProviderVerdict::kTolerate) {
     return false;
   }
@@ -1413,6 +1415,7 @@ void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double ma
     q.hand_speed_mps = gate->hand_speed_mps;
     q.hand_lead_m = gate->hand_lead_m;
     q.hand_contact = gate->hand_contact;
+    q.workspace_exempt = workspace_self_exempt(gate->workspace, scratch, a, b);
     provider_exempt = gate->provider->self_pair(q) == ProviderVerdict::kTolerate;
     if (provider_exempt) {
       note_provider_pair(result, d, a, b);
@@ -1425,9 +1428,13 @@ void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double ma
 
 }  // namespace
 
+bool workspace_region_exempts(const WorkspaceContactRegion& ws, int link_index,
+                              const Vec3& center) noexcept {
+  return workspace_link_slow(ws, link_index) && point_in_obb(ws.pose, ws.half_extents, center);
+}
+
 bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept {
-  return workspace_link_slow(grid.workspace_region, link_index) &&
-         point_in_obb(grid.workspace_region.pose, grid.workspace_region.half_extents, center);
+  return workspace_region_exempts(grid.workspace_region, link_index, center);
 }
 
 namespace {
@@ -2284,6 +2291,9 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 q.hand_speed_mps = grid.provider_gate.hand_speed_mps;
                 q.hand_lead_m = grid.provider_gate.hand_lead_m;
                 q.hand_contact = grid.provider_gate.hand_contact;
+                q.workspace_exempt = grid.provider_gate.workspace != nullptr &&
+                                     workspace_region_exempts(*grid.provider_gate.workspace,
+                                                              obj.attach_link, center);
                 if (grid.provider_gate.provider->payload_voxel_pair(q) ==
                     ProviderVerdict::kTolerate) {
                   tripped = false;
@@ -2855,6 +2865,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       q.hand_speed_mps = gate->hand_speed_mps;
       q.hand_lead_m = gate->hand_lead_m;
       q.hand_contact = gate->hand_contact;
+      q.workspace_exempt = workspace_self_exempt(gate->workspace, scratch, hand_link, link);
       provider_exempt = gate->provider->payload_self_pair(q) == ProviderVerdict::kTolerate;
       if (provider_exempt) {
         note_provider_pair(result, d, hand_link, link);

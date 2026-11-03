@@ -44,6 +44,12 @@ struct RecorderLog {
   bool static_points_declared{false};
   double att0_bind_low_z{0.0};
   bool attached_model_set{false};
+  bool confirmed_fresh0{false};  ///< API v5: the first tracked view's confirmed_fresh
+  bool workspace_exempt{false};  ///< API v5: the last voxel query's quoted #349 verdict
+  int release_asks{0};           ///< MemoryReleaser: release_payload calls
+  int release_fresh{0};          ///< ... that found the binding's memory fresh
+  int release_foreign{0};        ///< ... that found another binding's mark (never)
+  int release_no_memory{0};      ///< ... with no memory (never)
 };
 
 }  // namespace openral_safety_kernel_test

@@ -1928,6 +1928,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       voxel_grid_.provider_gate.hand_speed_mps = std::numeric_limits<double>::infinity();
       voxel_grid_.provider_gate.hand_lead_m = std::numeric_limits<double>::infinity();
       voxel_grid_.provider_gate.hand_contact = false;
+      // API v5: the #349 verdict the kernel quotes to the provider, on the provider's bounds and
+      // the same live workspace the provider is handed (`DeclarationView::workspace`), with a grid.
+      const bool provider_ws = provider_ != nullptr && provider_workspace_on_ && !workspace_on &&
+                               world_voxel_enabled_ && workspace_live();
+      provider_workspace_ = provider_ws ? workspace_region_ : WorkspaceContactRegion{};
+      voxel_grid_.provider_gate.workspace = provider_ws ? &provider_workspace_ : nullptr;
       const bool workspace_speed_known =
           (workspace_on || ws_provider_measure_) && is_position && measured_state_fresh();
       workspace_speed_measured_ = false;  // set below for a position chunk with dq_meas_
@@ -2083,6 +2089,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           voxel_grid_.workspace_region.hand_speed_mps = speed;
           voxel_grid_.provider_gate.hand_speed_mps = speed;
           voxel_grid_.provider_gate.hand_contact = ws_hand_contact_;
+          // API v5: the provider's verdict region reads the same row as the in-tree one would.
+          provider_workspace_.hand_speed_mps = speed;
+          provider_workspace_.hand_lead_m = voxel_grid_.workspace_region.hand_lead_m;
         } else {
           fk_config(q);
         }
@@ -3593,6 +3602,7 @@ TrackedObjectView SafetyKernelLifecycleNode::tracked_view(const TrackedEntry& e)
   v.cover_ok = e.cover_ok;
   v.visible_cells = e.visible_cells;
   v.confirmed_ns = e.confirmed_ns;
+  v.confirmed_fresh = region_measurement_fresh(e.confirmed_ns, grasp_region_max_age_s_);
   v.support_z = e.support_z;
   v.floor_z = e.floor_z;
   v.declaration_key_hash = std::hash<std::string>{}(e.declaration_key);
@@ -3664,6 +3674,7 @@ SafetyKernelLifecycleNode::configure_workspace_measurement(const std::vector<std
 void SafetyKernelLifecycleNode::load_exemption_provider() {
   voxel_grid_.provider_gate = ProviderGate{};
   provider_replaces_region_ = false;
+  provider_workspace_on_ = false;
   provider_.reset();
   provider_links_.clear();
   provider_pairs_total_ = 0;
@@ -3678,6 +3689,7 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
     provider_.reset();
     provider_links_.clear();
     provider_replaces_region_ = false;
+    provider_workspace_on_ = false;
     provider_status_ = "refused: " + why;
     RCLCPP_ERROR(this->get_logger(), "safety.exemption_provider refused name=%s: %s", name.c_str(),
                  why.c_str());
@@ -3788,23 +3800,43 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
   provider_q_fk_.assign(q_fk_.size(), 0.0);
   provider_replaces_region_ = provider_->replaces_grasp_region();
   if (!workspace_contact_enabled_) {
-    const BrakeConfig brake = provider_->brake_config();
-    if (brake.enabled) {
-      // The kernel's own brake, on the provider's bounds (validated here, refused otherwise).
-      const bool measured = !workspace_link_index_.empty() && workspace_control_period_s_ > 0.0;
-      if (!measured || !std::isfinite(brake.max_speed_mps) || brake.max_speed_mps <= 0.0 ||
-          !std::isfinite(brake.max_lead_m) || brake.max_lead_m <= 0.0 ||
-          brake.max_lead_m > kMaxWorkspaceContactLeadM) {
-        refuse("brake_config needs the hand measurement, a finite max_speed_mps > 0 and "
-               "max_lead_m in (0, " +
+    // API v5: the kernel's own #349 rule on the provider's bounds, its verdict quoted in every
+    // pair query (`workspace_exempt`), and the kernel's own brake (validated here, refused
+    // otherwise).
+    const WorkspaceContactConfig ws = provider_->workspace_contact_config();
+    if (ws.brake_enabled && !ws.enabled) {
+      refuse("workspace_contact_config: the brake requires the workspace-contact rule");
+      return;
+    }
+    if (ws.enabled) {
+      if (!std::isfinite(ws.max_speed_mps) || ws.max_speed_mps <= 0.0 ||
+          !std::isfinite(ws.max_lead_m) || ws.max_lead_m <= 0.0 ||
+          ws.max_lead_m > kMaxWorkspaceContactLeadM) {
+        refuse("workspace_contact_config needs a finite max_speed_mps > 0 and max_lead_m in (0, " +
                std::to_string(kMaxWorkspaceContactLeadM) + "]");
         return;
       }
-      workspace_brake_enabled_ = true;
-      workspace_max_speed_mps_ = brake.max_speed_mps;
-      workspace_max_lead_m_ = brake.max_lead_m;
-      workspace_hold_max_consecutive_ = brake.hold_max_consecutive;
-      workspace_brakes_ = 0;
+      const bool measured = !workspace_link_index_.empty() && workspace_control_period_s_ > 0.0;
+      if (ws.brake_enabled && !measured) {
+        refuse("workspace_contact_config: the brake needs the hand measurement "
+               "(workspace_contact_control_period_s)");
+        return;
+      }
+      if (!measured) {
+        // Unmeasured, the hand speed stays +inf and `workspace_exempt` is false for every pair:
+        // a rule that can never fire must not load as if it could.
+        refuse("workspace_contact_config: the workspace-contact rule needs the hand measurement "
+               "(workspace_contact_control_period_s and workspace links)");
+        return;
+      }
+      provider_workspace_on_ = true;
+      workspace_max_speed_mps_ = ws.max_speed_mps;
+      workspace_max_lead_m_ = ws.max_lead_m;
+      if (ws.brake_enabled) {
+        workspace_brake_enabled_ = true;
+        workspace_hold_max_consecutive_ = ws.hold_max_consecutive;
+        workspace_brakes_ = 0;
+      }
     }
   }
   provider_status_ = std::string("loaded: ") + provider_->name();
@@ -5486,6 +5518,7 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
       for (std::size_t k = 0; k < tracked_n_ && q.n_tracked < provider_tracked_.size(); ++k) {
         provider_tracked_[q.n_tracked++] = tracked_view(tracked_[k]);
       }
+      q.memory = &e.release_memory;
       if (provider_->release_payload(q) != ProviderVerdict::kTolerate) {
         continue;  // held: today's rules
       }
