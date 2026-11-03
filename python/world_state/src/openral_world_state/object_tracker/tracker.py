@@ -106,6 +106,15 @@ _REDATE_INSIDE_FRACTION = 0.9
 #: so part of its surface is that neighbour's. *Calibration point* (restock 2026-10-31: 16-32 %
 #: of a spilled mask's points lay outside the kept box).
 _REDATE_SPILL_FRACTION = 2.0 / 3.0
+#: Refused clear growth fits that must agree before one is admitted (``_admit_growth``).
+#: *Calibration point.*
+_GROWTH_VOTES = 3
+#: How close (extent, height, centre) the agreeing fits must be. *Calibration point.*
+_GROWTH_AGREE_M = 0.01
+#: Source seconds the agreeing fits must fall in. *Calibration point*: the full fit of a
+#: partly-masked carton recurs every 2-3 s between accepted partial fits (Spark replay
+#: bkA_on_rs_11 2026-11-03: three over about 5 s, none admitted at a 5 s window).
+_GROWTH_WINDOW_NS = 15_000_000_000
 
 
 #: Source time a CONTEXT track's refresh, or a CONTEXT query's locate, counts as served
@@ -129,6 +138,14 @@ def _aabb(box: PlaceRegion) -> tuple[float, float, float, float, float, float]:
     corners = (signs * np.asarray(box.half_extents)) @ t[:3, :3].T + t[:3, 3]
     lo, hi = corners.min(axis=0), corners.max(axis=0)
     return (*(float(v) for v in lo), *(float(v) for v in hi))  # type: ignore[return-value]  # reason: six floats by construction
+
+
+def _aabb_overlap(
+    a: tuple[float, float, float, float, float, float],
+    b: tuple[float, float, float, float, float, float],
+) -> bool:
+    """Whether two ``_aabb`` extents share volume."""
+    return all(min(a[k + 3], b[k + 3]) > max(a[k], b[k]) for k in range(3))
 
 
 def duplicate_of(box: PlaceRegion, tracks: Sequence[TrackedObject]) -> tuple[str, float] | None:
@@ -203,7 +220,11 @@ class TrackerParams(BaseModel):
             it read as "moved" and replaced the box unchecked; each larger box then prompted a
             larger mask (restock 2026-10-30: a 6 x 6 cm carton's box went 14 -> 24 -> 39 cm
             with the arms out of view). *Calibration point*: 1.5 keeps a
-            box turned 45 degrees in the hand (sqrt 2).
+            box turned 45 degrees in the hand (sqrt 2). A refused clear refit seen at the same
+            larger size and the reference's height ``_GROWTH_VOTES`` times running, reaching no
+            other track and holding one body, is admitted as the new reference once per track
+            (``_admit_growth``): a first fit from a partial mask no longer holds the box small
+            for good (#479 review, restock seeds 111/112).
         static_pad_cells: Cells a declared static collider is padded by for the one-body test
             (the camera sees a wall about a cell off its declared box; K7 pads the same).
             *Calibration point.*
@@ -412,6 +433,11 @@ class ObjectTracker:
         # Per track: the longer horizontal extent of its first clear fit, else of its first fit,
         # and whether that fit was clear (the growth gate); its height and its full extents.
         # (extent, clear, height, full extents x/y/z)
+        # Growth admission (#479 review): each track's recent refused clear growth fits
+        # (stamp, (extent, height), centre xy), and whether one was admitted (once per track).
+        self._growth_votes: dict[str, list[tuple[int, tuple[float, float], tuple[float, float]]]]
+        self._growth_votes = {}
+        self._growth_admitted: dict[str, bool] = {}
         self._first_extent: dict[str, tuple[float, bool, float, tuple[float, ...]]] = {}
         # Declared static geometry (cell centres, grid frame) and its keys on the newest lattice.
         self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
@@ -582,7 +608,7 @@ class ObjectTracker:
         for per_track in (
             self._views, self._cells, self._centroid, self._disagree, self._disagree_ns,
             self._map_cells, self._served, self._clear_size, self._clear_extent, self._low_score,
-            self._low_score_run, self._first_extent,
+            self._low_score_run, self._first_extent, self._growth_votes, self._growth_admitted,
         ):  # fmt: skip
             for oid in [k for k in per_track if k not in live]:
                 del per_track[oid]
@@ -1215,7 +1241,9 @@ class ObjectTracker:
         provisional one re-dates it in the store). Each gate logs.
         """
         oid = old.object_id
-        if self._overgrown(oid, fit, moved):
+        if self._overgrown(oid, fit, moved) and not self._admit_growth(
+            old, fit, cells, centroid, support_z, grid, hands, frame
+        ):
             if self._redate_if_inside(old, fit, grid, frame, _REDATE_SPILL_FRACTION):
                 log.info("object_tracker.refit_growth_redated", object_id=oid)
             return True
@@ -1275,6 +1303,85 @@ class ObjectTracker:
                 log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
                 return True
         return False
+
+    def _admit_growth(
+        self,
+        old: TrackedObject,
+        fit: ContainingFit,
+        cells: frozenset[Cell],
+        centroid: tuple[float, ...],
+        support_z: float,
+        grid: VoxelLattice,
+        hands: Sequence[PlaceRegion],
+        frame: CameraFrame,
+    ) -> bool:
+        """Admit a growth-refused clear refit as the track's new size reference; whether admitted.
+
+        A first fit from a partial mask holds the reference small for good: restock seeds 111 and
+        112 (2026-11-01/02), an 8.2 cm carton first fitted at 6 cm refused every 10.6 cm full
+        fit for the whole episode, 3-4 cm under-covered. Admitted, once per track, when all hold:
+
+        * the last ``_GROWTH_VOTES`` refused clear growth fits agree within ``_GROWTH_AGREE_M``
+          in longer horizontal extent, height and centre, within ``_GROWTH_WINDOW_NS``;
+        * the height stays within a cell of the reference's: a camera above sees the top, so a
+          partial view loses a side, never the height; a spill takes in something taller (a
+          neighbour, the hand, a shelf) or a fragment (Spark replays 2026-11-03: of 4 admissions
+          without this check, 3 were spills 3.2-6.5 cm over the carton, 2 of them 5-6 cm taller);
+        * its box reaches no live track the kept box (grown a cell) does not already touch: a
+          spill onto a tracked neighbour (a duplicate track of this object overlaps the kept box
+          too, so it never blocks);
+        * ``cover_verdict`` is not ``map_split``: one body on the map.
+
+        Once per track: a spill that feeds its own prompt (a larger box prompts a larger mask)
+        cannot ratchet the box (restock 2026-10-30: 14 -> 24 -> 39 cm). The admitted fit
+        replaces the reference. *Ceiling*: an object whose first clear fit missed its top stays
+        short; growth onto an untracked object of the same height that the map sees as one body
+        is admitted once. Safety-WG review owed.
+        """
+        oid = old.object_id
+        ref = self._first_extent.get(oid)
+        if fit.box is None or fit.provisional or ref is None or self._growth_admitted.get(oid):
+            return False
+        ext = (2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
+               2.0 * fit.box.half_extents[2])  # fmt: skip
+        xy = (fit.box.pose.xyz[0], fit.box.pose.xyz[1])
+        recent = [
+            v for v in self._growth_votes.get(oid, []) if frame.stamp_ns - v[0] <= _GROWTH_WINDOW_NS
+        ]
+        votes = [*recent, (frame.stamp_ns, ext, xy)][-_GROWTH_VOTES:]
+        self._growth_votes[oid] = votes
+        if len(votes) < _GROWTH_VOTES or not all(
+            abs(e[0] - ext[0]) <= _GROWTH_AGREE_M
+            and abs(e[1] - ext[1]) <= _GROWTH_AGREE_M
+            and math.hypot(c[0] - xy[0], c[1] - xy[1]) <= _GROWTH_AGREE_M
+            for _, e, c in votes
+        ):
+            return False
+        if abs(ext[1] - ref[2]) > grid.resolution:
+            log.info("object_tracker.refit_growth_blocked", object_id=oid, by="height")
+            return False
+        kept = _aabb(_grown(old.box, grid.resolution))
+        new = _aabb(fit.box)
+        for o in self.store.all():
+            if o.object_id == oid or o.status in (TrackStatus.LOST, TrackStatus.RELEASED):
+                continue
+            other = _aabb(o.box)
+            if _aabb_overlap(new, other) and not _aabb_overlap(kept, other):
+                log.info("object_tracker.refit_growth_blocked", object_id=oid, by=o.object_id)
+                return False
+        verdict = cover_verdict(
+            grid, cells, fit.box, support_z=support_z, own=hands,
+            others=self._other_boxes(centroid), static=self._static_keys(grid),
+        )  # fmt: skip
+        if verdict.kind == "map_split":
+            log.info("object_tracker.refit_growth_blocked", object_id=oid, by="map_split")
+            return False
+        self._first_extent.pop(oid, None)
+        self._growth_votes.pop(oid, None)
+        self._growth_admitted[oid] = True
+        log.info("object_tracker.refit_growth_admitted", object_id=oid,
+                 extent_m=round(ext[0], 3), height_m=round(ext[1], 3))  # fmt: skip
+        return True
 
     def _overgrown(self, oid: str, fit: ContainingFit, moved: bool) -> bool:
         """Refuse (``True``) a refit past ``refit_growth_factor`` x the track's first clear fit.

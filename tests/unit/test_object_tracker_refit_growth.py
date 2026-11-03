@@ -16,6 +16,7 @@ import pytest
 from numpy.typing import NDArray
 from openral_core import FitKind, ObjectRole, PlaceRegion, TrackedObject, TrackStatus
 from openral_world_state.object_tracker import ObjectTracker, TrackerParams
+from openral_world_state.object_tracker import tracker as tracker_mod
 from openral_world_state.object_tracker.fit import ContainingFit
 from openral_world_state.object_tracker.tracker import CameraFrame
 
@@ -30,6 +31,7 @@ from tests.unit.test_object_tracker_hidden_side import (
 )
 
 _FACTOR = TrackerParams().refit_growth_factor
+_NS = 1_000_000_000
 
 
 def _frame(stamp_ns: int) -> CameraFrame:
@@ -289,3 +291,70 @@ def test_a_spill_onto_a_neighbour_is_still_growth_whatever_its_orientation() -> 
     tr, t = _tracker()
     assert _sized(tr, t, (0.06, 0.06, 0.08), (0.12, 0.06, 0.08))
     assert _sized(tr, t, (0.06, 0.06, 0.11), (0.11, 0.11, 0.06))
+
+
+# -- #479 review: a partial first fit must not hold a track small for good ---------------------
+
+
+def _refuse(tr: ObjectTracker, t: TrackedObject, fit: ContainingFit, stamp_ns: int) -> bool:
+    return tr._refuse_refit(t, fit, frozenset(), t.box.pose.xyz, _SUPPORT_Z, _grid(), (),
+                            _frame(stamp_ns), True)  # fmt: skip
+
+
+def test_a_consistent_clear_growth_is_admitted_once_and_cannot_ratchet() -> None:
+    """Restock seeds 111/112 (2026-11-01..02): a carton first fitted from a partial mask at 6 cm
+    (8.2 cm true) refused every full 10.6 cm refit for the whole episode, 3-4 cm under-covered.
+    The same larger size measured ``_GROWTH_VOTES`` times running is admitted, once."""
+    tr, t = _tracker()
+    _first(tr, t)
+    grown = _scaled(t.box, 1.8)
+    votes = tracker_mod._GROWTH_VOTES
+    for n in range(votes - 1):
+        assert _refuse(tr, t, grown, (n + 1) * _NS), "one sighting is no evidence"
+    assert not _refuse(tr, t, grown, votes * _NS), "the same size seen again and again is real"
+    tr._commit_fit(t, grown, frozenset(), t.box.pose.xyz, _grid(), 2, (), _frame(votes * _NS))
+    assert grown.box is not None
+    assert tr._first_extent[t.object_id][0] == pytest.approx(2.0 * max(grown.box.half_extents[:2]))
+    again = _scaled(grown.box, 1.8)  # a spill feeding its own prompt: 14 -> 24 -> 39 cm
+    for n in range(2 * votes):
+        assert _refuse(tr, t, again, (votes + 1 + n) * _NS), "admitted once per track"
+
+
+def test_an_alternating_growth_is_not_consistent() -> None:
+    tr, t = _tracker()
+    _first(tr, t)
+    for n in range(4 * tracker_mod._GROWTH_VOTES):
+        assert _refuse(tr, t, _scaled(t.box, 1.8 if n % 2 else 2.4), (n + 1) * _NS)
+
+
+def test_a_consistent_growth_onto_a_tracked_neighbour_stays_refused() -> None:
+    tr, t = _tracker()
+    _first(tr, t)
+    h = t.box.half_extents
+    x, y, z = t.box.pose.xyz
+    beside = t.box.model_copy(update={
+        "pose": t.box.pose.model_copy(update={"xyz": (x + 1.7 * h[0] + 0.02, y, z)}),
+        "half_extents": (0.5 * h[0], h[1], h[2]),
+    })  # fmt: skip
+    tr.store.mint(
+        label="carton", role=ObjectRole.CONTEXT, declaration_key="deploy@1", box=beside, tight=(),
+        fit_kind=FitKind.SILHOUETTE_CONE, support_z=_SUPPORT_Z, support_ref="map",
+        floor_z=_SUPPORT_Z + _RES, visible_cells=1, occupied_cells=1, last_fit_stamp_ns=1,
+        last_confirmed_stamp_ns=1,
+    )  # fmt: skip
+    spill = _scaled(t.box, 1.8)  # reaches the neighbour, which the kept box does not touch
+    for n in range(3 * tracker_mod._GROWTH_VOTES):
+        assert _refuse(tr, t, spill, (n + 1) * _NS)
+
+
+def test_a_consistent_growth_that_adds_height_stays_refused() -> None:
+    """Spark replays 2026-11-03: a carton's refits took in the hand or a taller neighbour above it,
+    12.3 x 12 x 14.5 cm for an 8.2 x 4.8 x 8 cm carton, the same each frame. A camera above sees
+    the top, so a partial first view loses a side, never the height: growth in height is spill."""
+    tr, t = _tracker()
+    _first(tr, t)
+    h = t.box.half_extents
+    taller = t.box.model_copy(update={"half_extents": (1.8 * h[0], 1.8 * h[1], 1.6 * h[2])})
+    fit = ContainingFit(box=taller, tight=None, support_z=_SUPPORT_Z, surface=np.zeros((0, 3)))
+    for n in range(3 * tracker_mod._GROWTH_VOTES):
+        assert _refuse(tr, t, fit, (n + 1) * _NS)
