@@ -807,6 +807,17 @@ the baseline was snapshotted. This is stale self-occupancy, a different
 phenomenon from support contact, and the witness deliberately does not cover
 it; the attach-time baseline snapshot is retained solely for this.
 
+The snapshot is retaken on an `attachment_revision` change only when the SET of carried objects
+changed (each object's `object_id`, `epoch` and `attach_link`, in order) or an exemption provider is
+loaded (ADR-0121 `on`). The object tracker bumps the revision when a carried payload's geometry
+*grows*; in the open kernel (no provider) that keeps the residue mask taken at attach, with its
+active state, so a track cannot widen the allowance (the per-tick update still prunes cells as they
+separate). The kept edge logs once, `safety.attached_residue_kept reason=same_objects revision=N`.
+A detach or a different object / epoch / link retakes the snapshot as before. Tests:
+`AGrownPayloadOfTheSameObjectDoesNotWidenTheResidueWithoutAProvider`,
+`ANewObjectOrEpochStillReSnapshotsTheResidue`, `ADetachThenReattachReSnapshotsTheResidue`,
+`ALoadedProviderStillReSnapshotsTheResidueOnGrowth`. **Safety-WG review owed; hazard-log row owed.**
+
 **Removed:** the non-deepening index-keyed baseline (per-cell attach-time
 distance, capping penetration at what it allowed) — it decorrelated as the
 base drove and the lattice re-phased, since indices shift while physical

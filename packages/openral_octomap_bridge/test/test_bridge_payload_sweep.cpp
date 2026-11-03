@@ -62,6 +62,7 @@ protected:
         {"coverage_radius_m", 0.4},
         {"publish_rate_hz", 20.0},
         {"payload_sweep_clear_service", "/test_clear_bbox"},
+        {"tracked_clear_enabled", tracked_clear_enabled_},
         {"payload_sweep_clear_period_s", 0.2},
         {"static_points_file", static_points_file_},
     };
@@ -233,6 +234,7 @@ protected:
         << "processing the attachment revision should still certify";
   }
 
+  bool tracked_clear_enabled_{true};
   std::string static_points_file_;
   rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr grid_sub_;
   std::vector<std::uint64_t> grid_revisions_;
@@ -392,6 +394,16 @@ protected:
   }
 };
 
+// `tracked_clear_enabled` false (the default; `object_tracking: tracking` / `off`): a track
+// drives no clear, yet the revision is still acknowledged, so the barrier does not wait.
+class BridgeTrackedClearOff : public BridgeIdentitySweep {
+protected:
+  void SetUp() override {
+    tracked_clear_enabled_ = false;
+    BridgeIdentitySweep::SetUp();
+  }
+};
+
 TEST_F(BridgeIdentitySweep, TheCarryIsBackfilledFromAttachAndKeepsEveryExclusion) {
   carry("tracked_object");
   EXPECT_GT(times_cleared(line_cell(11)), 0) << "the live carry was not cleared";
@@ -477,3 +489,20 @@ TEST_F(BridgeIdentitySweep, APinchFallbackReleaseClearsNothing) {
 }
 
 }  // namespace
+
+TEST_F(BridgeTrackedClearOff, ABoundTrackClearsNothingAndTheRevisionIsStillCertified) {
+  revision_ = 11;
+  carry("tracked_object");
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    EXPECT_TRUE(requests_.empty()) << "a track drove an octree clear";
+  }
+  EXPECT_TRUE(last_grid_cell_occupied(line_cell(11))) << "a track cleared its grid cells";
+  EXPECT_EQ(last_grid_revision(), 11U);
+}
+
+TEST_F(BridgeTrackedClearOff, TheGateCannotBeFlippedAtRuntime) {
+  // Read once at startup: a runtime set would report a value the gate never sees.
+  EXPECT_FALSE(bridge_->set_parameter(rclcpp::Parameter("tracked_clear_enabled", true)).successful);
+  EXPECT_FALSE(bridge_->get_parameter("tracked_clear_enabled").as_bool());
+}

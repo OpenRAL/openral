@@ -121,6 +121,15 @@ public:
     }
     attached_clear_enabled_ = this->declare_parameter<bool>("attached_clear_enabled", true);
     attached_state_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
+    // Track-driven clearing (identity clear of a `tracked_object` binding, the released-box
+    // window, the carry sweep / vacated box). Default OFF, fail closed: the launch turns it on
+    // whenever the object tracker runs (`object_tracking: tracking` or `on`). In `off` no
+    // track drives any clear, so a carried payload stays a mapped obstacle.
+    // Read once here, so read-only: a runtime set would report a value the gate ignores.
+    rcl_interfaces::msg::ParameterDescriptor startup_only;
+    startup_only.read_only = true;
+    tracked_clear_enabled_ =
+        this->declare_parameter<bool>("tracked_clear_enabled", false, startup_only);
     // Optional octree clearing is used only by the identity-validated tracker path below.
     const auto sweep_service =
         this->declare_parameter<std::string>("payload_sweep_clear_service", "");
@@ -352,6 +361,14 @@ private:
                          const tf2::Transform& base_to_octomap) {
     const auto state = world_state_;
     if (!attached_clear_enabled_ || state == nullptr) {
+      return;
+    }
+    if (!tracked_clear_enabled_) {
+      // Nothing is cleared, so nothing is pending: the revision is still acknowledged.
+      identity_carries_.clear();
+      identity_homes_.clear();
+      identity_was_bound_.clear();
+      release_clears_.clear();
       return;
     }
     const double age_s = (this->now() - rclcpp::Time(state->header.stamp)).seconds();
@@ -704,6 +721,7 @@ private:
   std::string static_points_file_;
   std::vector<tf2::Vector3> static_points_;
   bool attached_clear_enabled_{true};
+  bool tracked_clear_enabled_{false};
   double attached_state_timeout_s_{0.5};
   double max_octree_age_s_{1.0};
   rclcpp::Time octree_received_;

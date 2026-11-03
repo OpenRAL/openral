@@ -58,8 +58,26 @@ in full so the posture stays visible although the records are private:
   payload-own cells) are the ones that move (ADR-0121 amendment, 2026-10-25),
   and step 3 has removed them from the open kernel: `object_tracking: on`
   requires an exemption provider. Open's tracker mode is `tracking`: the
-  open tracker measures the box rules' regions, and the kernel applies only
-  its open rules to them (ADR-0122).
+  open tracker tracks objects and may only *add* checked geometry (a carried
+  payload; it never grows it); every contact allowance there comes from a scene
+  declaration — the grasp region is the target's box only while it lies wholly
+  inside the declared `search_box`, the place region only a declared place zone,
+  the workspace only the declared `workspace_box`. The one track-driven
+  exception is the carried object's own map cells: the bridge and self-filter
+  clear them by identity (a unique tracker binding: the live cells, the carry
+  sweep, the vacated pick box and the released box's window) in `tracking` too
+  (2026-11-02, Safety-WG review owed), otherwise the arm stops on the object in
+  its own hand. A release is the kernel's in every mode: a producer that lets a
+  payload go (the HAL's release window, the tracker's jaw-open rule) re-attaches
+  it to the robot's root and names the releasing link (`released_by_link`), and
+  the kernel gives it its K5 treatment — frozen, never world-checked, the hand
+  and touch links exempt until measured clear or the release timeout (2026-11-02,
+  Spark `v_off_dr`: read as a carried payload, the frozen banana latched a world
+  stop on the bowl). The trigger is robot state (the gripper opening), not a
+  track; the provider's own earlier release stays `on`'s. Every other allowance a
+  *track* shapes (destination-track place regions, payload re-arming of the
+  attach residue) is `on`'s (ADR-0122; 2026-11-01 amendment owed: off / tracking
+  = declarations, on = the adaptive, perception-driven behaviour).
 - **Open runs weights in fp32, fp16 and bf16; every format of 8 bits or
   fewer needs OpenRAL Pro** (`ADR-0123`): int8, fp8, int4/NF4 and nvfp4,
   whether quantized at load time, loaded from a pre-quantized pack, or

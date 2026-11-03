@@ -29,9 +29,11 @@ owns the wire:
   are gated off) with the regions the tracker measures: the grasp declaration's
   ``workspace_box`` as ``workspace_region`` while the tracker's own grid confirms it
   (``TrackerSession.workspace_region``, the producer's rule), the place declaration's
-  ``region`` (``TrackerSession.place_region``) and, in ``tracking`` only, the grasp
-  declaration's ``region`` (``TrackerSession.grasp_region``; ``on``'s exemption provider
-  keys on track ids instead and gets none). Heartbeated only while joint states are fresh.
+  ``region`` (``TrackerSession.place_region``: a declared ``place_zones_json`` zone the
+  declaration names; in ``on`` also a tracked destination) and, in ``tracking`` only, the
+  grasp declaration's ``region`` (``TrackerSession.grasp_region``: the DECLARED
+  ``search_box`` while one target track sits in it, never a track's box; ``on``'s exemption
+  provider keys on track ids instead and gets none). Heartbeated only while joint states are fresh.
 * **Revisions** are seeded from wall time (ns) at every activate plus the store's own
   counter, so they never regress across a node restart or re-activation (the kernel
   refuses a regressing ``tracked_objects`` revision, and the aggregator a regressing
@@ -481,6 +483,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         GraspDeclaration,
         ObjectQuery,
         PlaceDeclaration,
+        PlaceZone,
         RobotDescription,
         camera_topic,
     )
@@ -575,6 +578,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("static_cells_file", "")
             # The deploy's prompt-time ObjectQuery list (JSON), grounded at start.
             self.declare_parameter("object_queries_json", "")
+            # The station's declared place zones (DeployScene.place_zones, a JSON list of
+            # core.PlaceZone): a place declaration naming one gets its box as the region.
+            self.declare_parameter("place_zones_json", "")
             self.declare_parameter("declared_object_catalog_json", "")
             self.declare_parameter("object_surface_model_json", "")
             self.declare_parameter("locate_service", "")
@@ -672,6 +678,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 # trigger is unchanged and a real ATTACH is never doubled.
                 derive_attach=True,
                 wrist_links=int(self._p("wrist_links")),
+                mode=mode,
                 params=TrackerParams(
                     search_start_s=float(self._p("search_start_s")),
                     search_max_s=float(self._p("search_max_s")),
@@ -704,6 +711,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 from openral_world_state.object_tracker import read_static_cells
 
                 self.session.tracker.set_static_geometry(read_static_cells(static_file))
+            zones_json = str(self._p("place_zones_json"))
+            if zones_json:
+                zones = TypeAdapter(list[PlaceZone]).validate_json(zones_json)
+                self.session.place_zones = {z.target_id: z for z in zones}
+                slog.info(
+                    "loaded declared place zones",
+                    zones=sorted(z.name for z in zones),
+                    off_frame=sorted(
+                        z.name for z in zones if z.region.frame_id != self.session.frame_id
+                    ),
+                )
             raw = str(self._p("object_queries_json"))
             if raw:
                 self.session.open_standing_queries(
@@ -1350,16 +1368,16 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             msg.grasp_declaration_valid = grasp is not None
             if grasp is not None:
                 # The producer's workspace confirmation, redone on the tracker's grid; the
-                # target's box as the region in `tracking` only (`on`: none, nothing exempted
-                # by it; the exemption provider keys on track ids).
+                # declared search_box as the region in `tracking`, while a target track sits in it
+                # (`on`: none, `grasp_region` is None; the provider keys on track ids).
                 ws = s.workspace_region()
-                region = s.grasp_region() if self.mode is TrackingMode.TRACKING else None
+                region = s.grasp_region()
                 grasp.model_copy(update={"region": region, "workspace_region": ws}).fill_idl(
                     msg.grasp_declaration, query_factory=ObjectQueryMsg
                 )
             msg.place_declaration_valid = place is not None
             if place is not None:
-                # The destination as the tracker holds it (`TrackerSession.place_region`).
+                # A declared zone (`tracking`), or the destination track (`on`): `place_region`.
                 place.model_copy(update={"region": s.place_region()}).fill_idl(
                     msg.place_declaration
                 )

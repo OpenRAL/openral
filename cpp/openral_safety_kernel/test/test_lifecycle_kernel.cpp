@@ -277,6 +277,28 @@ TEST_F(LifecycleKernelTest, ParameterPathFailsOnJointArrayLengthMismatch) {
   EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE);
 }
 
+TEST_F(LifecycleKernelTest, AnOpenKernelRefusesUnboundedReleaseWindowParameters) {
+  // #481 review: the open kernel opens a release window on a producer-declared release, so its
+  // bounds are checked at configure, not only at a provider's load. A NaN timeout would never
+  // close the window.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<std::pair<const char*, double>> bad = {
+      {"tracked_release_timeout_s", nan},  {"tracked_release_timeout_s", 0.0},
+      {"tracked_release_timeout_s", 11.0}, {"tracked_release_clear_m", nan},
+      {"tracked_release_clear_m", 0.0},    {"tracked_release_clear_m", 0.2}};
+  for (const auto& [name, value] : bad) {
+    rclcpp::NodeOptions opts;
+    auto params = minimal_envelope_params();
+    params.emplace_back(name, value);
+    opts.parameter_overrides(params);
+    auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_bad_release", opts);
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                   "unconfigured");
+    EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+        << name << "=" << value;
+  }
+}
+
 TEST_F(LifecycleKernelTest, ParameterPathFailsOnANaNOrNegativePerModeBound) {
   // A NaN bound would pass every chunk (`x > NaN` is false); a negative one
   // would refuse every chunk. Both must fail configure; +inf stays legal.
@@ -8308,6 +8330,175 @@ TEST_F(LifecycleKernelTest, DuringTheReleaseWindowANonTouchLinkStillTripsOnThePa
   EXPECT_EQ(logs.count("safety.tracked_release_closed"), 0U) << "still in the window";
 }
 
+// ── A producer-declared release (`released_by_link`) ────────────────────────
+//
+// The release rig plus a fixed root link "base" (no geometry, origin x = 0.05), the link a
+// producer re-attaches a released payload to. 2026-11-02, Spark v_off_dr: the HAL froze the
+// released banana on `panda_link0` and the kernel, which read that record as an ordinary
+// carried payload, latched a world stop on it 170 ms later. A record that names the link that
+// let it go is the same frozen payload as the kernel's own K5 release, with the same window.
+namespace {
+
+std::vector<rclcpp::Parameter> declared_release_params() {
+  auto p = release_params_open();
+  p = with_param(p, "collision_n_links", rclcpp::ParameterValue(std::int64_t{4}));
+  p = with_param(p, "collision_parent",
+                 rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0, -1, -1}));
+  p = with_param(p, "collision_joint_kind",
+                 rclcpp::ParameterValue(std::vector<std::int64_t>{1, 1, 2, 0}));
+  p = with_param(p, "collision_dof_index",
+                 rclcpp::ParameterValue(std::vector<std::int64_t>{0, 1, 2, -1}));
+  std::vector<double> origin(24, 0.0);
+  origin[18] = 0.05;  // base: x = 0.05
+  p = with_param(p, "collision_origin_xyzrpy", rclcpp::ParameterValue(origin));
+  p = with_param(p, "collision_axis",
+                 rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1}));
+  return with_param(
+      p, "collision_link_names",
+      rclcpp::ParameterValue(std::vector<std::string>{"hand", "finger", "other", "base"}));
+}
+
+// The HAL's vision payload: on the hand while held; let go, the producer re-attaches it to
+// `attach_link` at its base-frame pose (base origin 0.05 + 0.05 = the hand's 0.10) and names the
+// hand in `released_by_link` ("" = no release declared).
+openral_msgs::msg::WorldStateStamped producer_state(bool released, const std::string& attach_link,
+                                                    const std::string& released_by,
+                                                    std::int64_t stamp_ns = 7) {
+  openral_msgs::msg::WorldStateStamped msg;
+  msg.attachment_stamp_ns = 1;
+  msg.attachment_revision = released ? 2 : 1;
+  openral_msgs::msg::AttachedCollisionObject obj;
+  obj.object_id = "grasped_payload:hand";
+  obj.attach_link = released ? attach_link : "hand";
+  obj.touch_links =
+      released ? std::vector<std::string>{"hand", "finger"} : std::vector<std::string>{"finger"};
+  obj.pose_in_link.position.x = released && attach_link == "base" ? 0.05 : 0.10;
+  obj.pose_in_link.orientation.w = 1.0;
+  obj.evidence_kind = "vision_segmentation";
+  obj.stamp_ns = stamp_ns;
+  if (released) {
+    obj.released_by_link = released_by;
+  }
+  openral_msgs::msg::AttachedCollisionPrimitive prim;
+  prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_SPHERE;
+  prim.shape_dimensions = {0.01};
+  prim.pose_in_object.orientation.w = 1.0;
+  obj.primitives.push_back(prim);
+  msg.attached_objects.push_back(obj);
+  return msg;
+}
+
+struct DeclaredReleaseRig : ReleaseRig {
+  explicit DeclaredReleaseRig(const std::string& name)
+      : ReleaseRig(name, declared_release_params()) {
+    rig.state_fn = [](std::int64_t stream_ns) {
+      auto msg = producer_state(false, "", "");
+      msg.attachment_stamp_ns = stream_ns;
+      return msg;
+    };
+  }
+  // The producer lets go: the record on `attach_link`, released by `released_by`.
+  void let_go(const std::string& attach_link = "base", const std::string& released_by = "hand",
+              std::int64_t stamp_ns = 7) {
+    rig.state_fn = [attach_link, released_by, stamp_ns](std::int64_t stream_ns) {
+      auto msg = producer_state(true, attach_link, released_by, stamp_ns);
+      msg.attachment_stamp_ns = stream_ns;
+      return msg;
+    };
+    jaw(0.988, 200);
+  }
+};
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AReleasedRecordIsFrozenAndNotCheckedAgainstTheWorld) {
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_declared_release_world");
+  r.jaw(0.30, 300);
+  r.let_go();
+  ASSERT_EQ(logs.count("safety.released_payload object=grasped_payload:hand by=hand"), 1U)
+      << logs.joined();
+  r.rig.voxels.origin.x = 0.0875;  // a cell right on the frozen payload (base 0.10, 0, 0)
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_TRUE(r.passes(kGraspClearQ)) << "a static box on a static cell: " << logs.joined();
+  EXPECT_EQ(logs.count("a=attached:grasped_payload:hand"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ARootAttachedRecordThatDeclaresNoReleaseIsStillWorldChecked) {
+  // The kernel never infers a release from the attach link: without `released_by_link` the
+  // record is a payload like any other (v_off_dr's stop, kept for a producer that declares none).
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_declared_release_none");
+  r.jaw(0.30, 300);
+  r.let_go("base", "");
+  EXPECT_EQ(logs.count("safety.released_payload "), 0U) << logs.joined();
+  r.rig.voxels.origin.x = 0.0875;
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_FALSE(r.passes(kGraspClearQ)) << logs.joined();
+  EXPECT_GE(logs.count("a=attached:grasped_payload:hand"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AReleasedRecordsWindowClosesOnSeparation) {
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_declared_release_separation");
+  r.jaw(0.30, 300);
+  r.let_go();
+  r.jaw(0.988, 150, kGraspClearQ);  // the hand clears it (inside the 0.4 s window)
+  ASSERT_EQ(logs.count("safety.released_payload_closed object=grasped_payload:hand reason="
+                       "separation"),
+            1U)
+      << logs.joined();
+  r.jaw(0.988, 150, 0.0);  // and comes back: a plain obstacle, the producer's touch links too
+  EXPECT_FALSE(r.passes(0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("b=finger step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AReleasedRecordsWindowClosesOnTimeoutAndNoHeartbeatReopensIt) {
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_declared_release_timeout");
+  r.jaw(0.30, 300);
+  r.let_go();
+  r.jaw(0.988, 500);  // the hand never moves; 0.4 s timeout, the record republished all along
+  EXPECT_EQ(logs.count("safety.released_payload_closed object=grasped_payload:hand reason=timeout"),
+            1U)
+      << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << "the touching finger is no longer exempt: " << logs.joined();
+  EXPECT_EQ(logs.count("b=finger step="), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.released_payload object="), 1U) << "one window: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, DuringAReleasedRecordsWindowANonTouchLinkStillTrips) {
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_declared_release_other_link");
+  r.jaw(0.30, 300);
+  r.let_go();
+  ASSERT_TRUE(r.passes(0.0)) << logs.joined();
+  EXPECT_FALSE(r.passes(0.0, 0.03)) << "link2 into the frozen payload: " << logs.joined();
+  EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AReleaseOnALinkTheRobotMovesIsRefused) {
+  // Frozen means FK never moves it: a released record on the hand would ride the hand.
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_declared_release_moving");
+  r.jaw(0.30, 300);
+  r.let_go("hand", "hand");
+  EXPECT_GE(logs.count("safety.released_payload_rejected object=grasped_payload:hand "
+                       "reason=attach_link_moves"),
+            1U)
+      << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << "an unaccepted payload model fails closed: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AReleaseByALinkTheModelDoesNotKnowIsRefused) {
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_declared_release_unknown");
+  r.jaw(0.30, 300);
+  r.let_go("base", "no_such_link");
+  EXPECT_GE(logs.count("safety.attached_ingest_rejected"), 1U) << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << logs.joined();
+}
+
 // ── ADR-0121 step 3: the tracker-based rules live in OpenRAL Pro's provider ──
 //
 // K2 (the tracked grasp exemption), K5's release decision, K7 (explained cells), the contact
@@ -8430,6 +8621,137 @@ TEST_F(LifecycleKernelTest, APayloadsOwnMeasuredCellStopsItInOpenWithoutAProvide
   EXPECT_FALSE(
       own_payload_passes("kernel_open_pinch_own", untracked_hold, payload_params(), &latched));
   EXPECT_TRUE(latched);
+}
+
+// ── Open `tracking` must not let a track widen an allowance ─────────────────
+//
+// The attach-time embedded-residue exemption is re-snapshotted on an attachment-revision change
+// only when the SET of carried objects changed (id, epoch, link) or an exemption provider is
+// loaded (ADR-0121 `on`). The object tracker bumps the revision when a carried payload's geometry
+// GROWS; in the open kernel that must not exempt the newly overlapped cells.
+namespace {
+
+// Two occupied 25 mm cells 50 mm apart (clear of the 30 mm margin): A, x in [0.140, 0.165], and
+// B, x in [0.215, 0.240].
+void two_cells(openral_msgs::msg::OccupancyVoxels& vox) {
+  vox.size_x = 4;
+  vox.occupancy = {1, 0, 0, 1};
+}
+
+std::vector<rclcpp::Parameter> residue_params(bool provider) {
+  auto params = payload_params();
+  if (provider) {
+    osk_test::serve_test_providers();
+    // The Recorder refuses every pair: every verdict stays the open kernel's.
+    params = with_param(params, "exemption_provider",
+                        rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+    params = with_param(params, "exemption_provider_links",
+                        rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  }
+  return params;
+}
+
+// Attach a payload exactly on cell A (revision 1, snapshot exempts A), then `second` is the beat
+// published afterwards. True when the chunk still passes.
+bool residue_after(const std::string& name, bool provider,
+                   const std::function<void(GraspBeat&)>& second, LogCapture& logs,
+                   bool* latched = nullptr) {
+  GraspRig rig(name, residue_params(provider));
+  rig.voxels = declared_target_voxels();
+  two_cells(rig.voxels);
+  rig.start();
+  EXPECT_EQ(rig.node->exemption_provider_loaded(), provider);
+  GraspBeat b = tracked_beat(rig);
+  b.carrying = true;
+  b.revision = 1;
+  b.payload_x = 0.1475;
+  b.payload_half = 0.0075;
+  rig.warm(&b, 0.0, 300);
+  if (!rig.offer(&b, 0.0)) {
+    ADD_FAILURE() << name
+                  << ": a payload embedded in A at attach is the exempt residue: " << logs.joined();
+    return false;
+  }
+  second(b);
+  rig.warm(&b, 0.0, 100);
+  const bool ok = rig.offer(&b, 0.0);
+  if (latched != nullptr) {
+    *latched = rig.node->fault_latched();
+  }
+  return ok;
+}
+
+// The same object grown over B: bumped revision, same id / epoch / link.
+void grow_over_b(GraspBeat& b) {
+  ++b.revision;
+  b.payload_x = 0.18875;
+  b.payload_half = 0.04875;  // x in [0.140, 0.2375]: deep in A and in B
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AGrownPayloadOfTheSameObjectDoesNotWidenTheResidueWithoutAProvider) {
+  LogCapture logs;
+  bool latched = false;
+  // Control: the same revision bump with the payload unmoved stays on A -- A stays exempt.
+  EXPECT_TRUE(residue_after(
+      "kernel_residue_control", false, [](GraspBeat& b) { ++b.revision; }, logs))
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.attached_residue_kept reason=same_objects revision=2"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(residue_after("kernel_residue_grown", false, grow_over_b, logs, &latched))
+      << "B must not be exempt: " << logs.joined();
+  EXPECT_TRUE(latched);
+}
+
+TEST_F(LifecycleKernelTest, ANewObjectOrEpochStillReSnapshotsTheResidue) {
+  LogCapture logs;
+  EXPECT_TRUE(residue_after(
+      "kernel_residue_new_id", false,
+      [](GraspBeat& b) {
+        grow_over_b(b);
+        b.object_label = "trk:9";
+      },
+      logs))
+      << logs.joined();
+  EXPECT_TRUE(residue_after(
+      "kernel_residue_new_epoch", false,
+      [](GraspBeat& b) {
+        grow_over_b(b);
+        b.epoch = 1;
+      },
+      logs))
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ADetachThenReattachReSnapshotsTheResidue) {
+  LogCapture logs;
+  GraspRig rig("kernel_residue_reattach", residue_params(false));
+  rig.voxels = declared_target_voxels();
+  two_cells(rig.voxels);
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.carrying = true;
+  b.revision = 1;
+  b.payload_x = 0.1475;
+  b.payload_half = 0.0075;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = false;
+  ++b.revision;
+  rig.warm(&b, 0.0, 100);
+  b.carrying = true;
+  ++b.revision;
+  b.payload_x = 0.18875;
+  b.payload_half = 0.04875;  // deep in A and in B
+  rig.warm(&b, 0.0, 100);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "a fresh attach snapshots again: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ALoadedProviderStillReSnapshotsTheResidueOnGrowth) {
+  LogCapture logs;
+  EXPECT_TRUE(residue_after("kernel_residue_provider", true, grow_over_b, logs)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.attached_residue_kept"), 0U) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, ARemovedRuleSwitchLeftOnRefusesConfigure) {

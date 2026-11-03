@@ -15,8 +15,7 @@ wire; everything it decides lives here so it runs without ROS:
   ``grounding_required`` is the runner's (it is logged at error level here).
 * **Binding** (``binding.GraspBinder`` per gripper): ``ATTACH`` binds what the pinch volume
   meets; ``REGRASP`` grows it; ``DETACH`` — or the jaw-open rule (``JawReleaseMonitor``,
-  the kernel's K5 mirrored) — releases it (``release.release_track``). A fit the tracker
-  hands back for a bound track triggers the in-hand protrusion growth. An ambiguous
+  the kernel's K5 mirrored) — releases it (``release.release_track``). An ambiguous
   (``PINCH_FALLBACK``) union drops every candidate that a post-lift re-fit shows stayed
   behind (re-fitted after the ATTACH, its box no longer meeting the pinch volume). An
   untracked grasp re-opens the live grasp goal's queries (the re-ground after lift).
@@ -48,6 +47,7 @@ from openral_core import (
     ObjectRole,
     PlaceDeclaration,
     PlaceRegion,
+    PlaceZone,
     Pose6D,
     RobotDescription,
     TrackedObject,
@@ -55,7 +55,11 @@ from openral_core import (
     TrackStatus,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
+from openral_core.geometry import (
+    freeze_released_attachment,
+    homogeneous_from_quat_xyz,
+    rotation_to_quat_wxyz,
+)
 from openral_core.kinematics import Box, box_gap_lower_bound_m
 from openral_core.perception_geometry import (
     WORKSPACE_MIN_COVER,
@@ -152,7 +156,17 @@ class _LateAttachChoice:
 
 
 class TrackingMode(StrEnum):
-    """``DeployRuntime.object_tracking`` (``off`` never starts the node)."""
+    """``DeployRuntime.object_tracking`` (``off`` never starts the node).
+
+    ``tracking`` (open): the tracker tracks, grounds and binds a carried payload; every contact
+    allowance it publishes comes from a scene declaration (``search_box``, ``workspace_box``, a
+    ``PlaceZone``), a track only confirming one is populated, never shaping it. Its one
+    track-driven effect is on the map: a payload uniquely bound to a hand is cleared from it by
+    identity (2026-11-02), and a released one is frozen and declared (``released_by_link``) so
+    the kernel holds it in place of the cleared cells. ``on`` (needs the OpenRAL Pro exemption
+    provider): the allowance is track-driven (the provider keys on track ids; a destination
+    track is the place region) and the provider decides the release inside the kernel.
+    """
 
     TRACKING = "tracking"
     ON = "on"
@@ -202,8 +216,9 @@ class TrackerSession:
         grounding_required: ``DeployRuntime.grounding_required``.
         release_dwell_s: The jaw-open rule's dwell (source seconds). *Calibration point.*
         released_clear_timeout_s: How long (source seconds) a released ``TRACKED_OBJECT``
-            binding stays on ``attachment_state`` after release (the kernel freezes it at
-            the release pose, the voxel bridge clears its box); the RELEASED track is
+            binding stays on ``attachment_state`` after release (frozen at the let-go pose:
+            declared ``released_by_link`` in ``tracking``, released by the exemption provider
+            in ``on``; the voxel bridge clears its box); the RELEASED track is
             retired with it. MUST equal the kernel's ``tracked_release_timeout_s`` and the
             voxel bridge's ``released_clear_timeout_s`` (all default 3.0 s).
         params: Tracker calibration.
@@ -217,6 +232,9 @@ class TrackerSession:
             (``HandModel``), the kernel's ``DeployRuntime.workspace_contact_wrist_links``.
         require_hands: Refuse a gripper the binder cannot model (the node sets it in every
             mode); without it such a hand is logged and skipped.
+        mode: ``tracking`` (default, the safer one) publishes only declared grasp / place
+            regions; ``on`` keeps the track-driven place region and publishes no grasp region
+            (``grasp_region`` / ``place_region``).
 
     Raises:
         ROSConfigError: ``require_hands`` and a gripper joint cannot be modelled.
@@ -241,9 +259,11 @@ class TrackerSession:
         require_hands: bool = False,
         derive_attach: bool = False,
         wrist_links: int = 1,
+        mode: TrackingMode = TrackingMode.TRACKING,
     ) -> None:
         """Model every gripper and start with no tracks and no goals."""
         self.description = description
+        self.mode = mode
         self.frame_id = description.base_frame
         self.tracker = ObjectTracker(self.frame_id, params)
         self.grounding_wait_ns = int(grounding_wait_s * _NS)
@@ -287,6 +307,8 @@ class TrackerSession:
         self.grid_stamp_ns = 0
         self.grasp_declaration: GraspDeclaration | None = None
         self.place_declaration: PlaceDeclaration | None = None
+        # The station's declared place zones by ``PlaceZone.target_id`` (``place_region``).
+        self.place_zones: dict[str, PlaceZone] = {}
         self.attachment_changes = 0  # bumped whenever the held set changes
         self._monitors: dict[str, JawReleaseMonitor] = {}
         self._attach_ns: dict[str, int] = {}
@@ -425,12 +447,6 @@ class TrackerSession:
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._tick(source_stamp_ns)
-            if self._joints <= self.positions.keys():
-                for binder in self.binders.values():  # untracked payloads grow on the map
-                    if binder.grow_untracked(
-                        self.tracker.store, grid, self.positions, source_stamp_ns
-                    ):
-                        self.attachment_changes += 1
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
         """Fold the approved command for a gripper joint into the derived-attach read.
@@ -455,7 +471,8 @@ class TrackerSession:
             jaw = positions.get(joint)
             if jaw is not None and monitor.observe(jaw, stamp_ns):
                 log.info("object_tracker.jaw_open_release", hand=joint, jaw=jaw)
-                self._release(joint, stamp_ns)
+                # Decided a dwell after the jaw opened; the object was let go at the opening.
+                self._release(joint, stamp_ns, let_go_ns=monitor.opened_ns)
         for joint, detector in self._stall.items():
             jaw = positions.get(joint)
             if jaw is None or not math.isfinite(jaw) or not detector.update(jaw, stamp_ns):
@@ -491,6 +508,15 @@ class TrackerSession:
     def on_place_declaration(self, decl: PlaceDeclaration) -> None:
         """A place declaration (or its retraction) from dispatch."""
         self.place_declaration = decl if decl.active else None
+        if decl.active and decl.target_id.startswith(PlaceZone.TARGET_PREFIX):
+            # Logged once per declaration: `place_region` itself runs on every publish.
+            zone = self.place_zones.get(decl.target_id)
+            log.info(
+                "object_tracker.place_zone_declared",
+                target_id=decl.target_id,
+                known=zone is not None,
+                frame_ok=zone is not None and zone.region.frame_id == self.frame_id,
+            )
         queries = () if decl.destination_query is None else (decl.destination_query,)
         self._set_goal(
             "place",
@@ -727,7 +753,6 @@ class TrackerSession:
         # minted by an older standing query. Reconcile ownership after every feed.
         self._rekey_live_tracks()
         for oid, fit in out.bound_fits:
-            self._grow(oid)
             self._check_drop(oid, fit, hands)
         self._expire_released()
         self._prune_ambiguous()
@@ -795,7 +820,8 @@ class TrackerSession:
 
         What the HAL producer confirms (``WORKSPACE_MIN_COVER`` of its footprint occupied
         on the newest grid, the same box re-stamped with the grid's ``source_stamp``),
-        here for ``tracking`` / ``on``, where the producer stands down: without it the
+        here for ``tracking`` / ``on`` (both modes: a declared box, confirmed, never shaped by
+        a track), where the producer stands down: without it the
         kernel's workspace contact never applies. A box in another frame is not
         confirmed; the kernel ages the stamp out when grids stop.
         """
@@ -809,21 +835,31 @@ class TrackerSession:
         return box.model_copy(update={"stamp_ns": self.grid_stamp_ns}) if covered else None
 
     def place_region(self) -> PlaceRegion | None:
-        """The live place declaration's destination as the tracker holds it, or ``None``.
+        """The live place declaration's destination region, or ``None``.
 
         The HAL's place producer measures a flat support under the payload, which a bowl
-        never is (``partial_support`` / ``no_surface``, no region armed in 9 of 9), and in
-        ``tracking`` / ``on`` the tracker publishes the declaration. So it stands in as it does for
-        ``workspace_region``: the one CONFIRMED / OCCLUDED DESTINATION track labelled as the
+        never is (``partial_support`` / ``no_surface``, no region armed in 9 of 9), so the
+        tracker stands in. ``None`` without a held payload or a grid: fail closed.
+
+        A declaration whose ``target_id`` names a declared zone (``zone:<name>``, a shelf slot
+        no detector grounds) gets that ``PlaceZone``'s box, stamped with the newest grid's
+        ``source_stamp``; an unknown zone or one in another frame than the grid is ``None``.
+        A declared, not measured, region: Safety-WG review, a hazard-log row and an ADR-0097
+        amendment owed. This is the only place region in ``tracking``.
+
+        ``on`` only: otherwise the one CONFIRMED / OCCLUDED DESTINATION track labelled as the
         declaration's ``destination_query``, its containing box stamped with its last map
-        confirmation (the kernel ages it out on ``place_region_max_age_s``). ``None`` without a held
-        payload, a grid, a destination query or exactly one such track: fail closed. Safety-WG
-        review owed.
+        confirmation (the kernel ages it out on ``place_region_max_age_s``); ``None`` without
+        a destination query or exactly one such track.
         """
         decl, grid = self.place_declaration, self.grid
-        if decl is None or decl.destination_query is None or grid is None:
+        if decl is None or grid is None:
             return None
         if all(b.held is None for b in self.binders.values()):
+            return None
+        if decl.target_id.startswith(PlaceZone.TARGET_PREFIX):
+            return self._zone_region(decl.target_id, grid.frame_id)
+        if self.mode is not TrackingMode.ON or decl.destination_query is None:
             return None
         label = decl.destination_query.label
         dest = [
@@ -843,59 +879,78 @@ class TrackerSession:
             }
         )
 
+    def _zone_region(self, target_id: str, grid_frame: str) -> PlaceRegion | None:
+        """The declared zone ``target_id`` names, stamped with the newest grid, or ``None``."""
+        zone = self.place_zones.get(target_id)
+        if zone is None or zone.region.frame_id != grid_frame:
+            return None
+        return zone.region.model_copy(
+            update={"stamp_ns": self.grid_stamp_ns, "evidence_ref": f"declared:{zone.name}"}
+        )
+
     def grasp_region(self) -> PlaceRegion | None:
-        """The live grasp declaration's region as the tracker measures it, or ``None``.
+        """The one target's box while it lies wholly inside the declared ``search_box``.
 
-        ``tracking`` only (``on``'s exemption provider keys on track ids instead). The one
-        CONFIRMED / OCCLUDED / BOUND TARGET track keyed to the declaration (the scope
-        ``_rekey_live_tracks`` assigns, the runner's grounding count), its containing box in
-        the grid frame, stamped with its last map confirmation (the kernel ages it out on
-        ``grasp_region_max_age_s``). ``None`` — fail closed — without a declaration, a grid,
-        exactly one such track, or within ``GraspDeclaration``'s caps (the kernel's
-        ``kMaxGraspRegionHalfExtentM`` / ``kMaxGraspRegionVolumeM3``).
-
-        Several such tracks (a ``count="all"`` query, e.g. PickOrange's three oranges) are
-        narrowed to those whose box centre lies inside the declaration's ``search_box`` (same
-        frame only); exactly one must remain.
+        ``tracking`` only (``on``'s exemption provider keys on track ids: always ``None``). A
+        track only narrows the declaration, never widens it: the region is the target track's
+        box, returned only while all eight of its corners lie inside the declaration's
+        ``search_box`` (so the allowance is never larger than what the scene declared, nor than
+        the object measured; the declared box itself would allow more than ``off``, whose HAL
+        grasp-target leg measures a region inside it). Stamped with the track's last map
+        confirmation (the kernel ages it out on ``grasp_region_max_age_s``), only while exactly
+        one CONFIRMED / OCCLUDED / BOUND TARGET track keyed to the declaration (the scope
+        ``_rekey_live_tracks`` assigns, the runner's grounding count) has its box centre inside
+        it. ``None`` -- fail closed -- without a declaration, a grid, a ``search_box`` (in the
+        grid frame), exactly one such track, a track box reaching outside the ``search_box``,
+        or within ``GraspDeclaration``'s caps (the kernel's ``kMaxGraspRegionHalfExtentM`` /
+        ``kMaxGraspRegionVolumeM3``).
 
         The region keeps being published through the hold, as a HAL-measured one is: the
         kernel latches the box the first snapshot carrying the declared attachment brings,
         ignores later moves of it, and retires the declaration for good once the payload's
         measured origin leaves that box (``ingest_grasp_declaration``,
-        ``grasp_region_moved_after_handover``, ``handover_exit``), so a box riding the hand
-        cannot extend the exemption. Safety-WG review owed (ADR-0122).
+        ``grasp_region_moved_after_handover``, ``handover_exit``). Safety-WG review owed
+        (ADR-0122).
         """
         decl, grid = self.grasp_declaration, self.grid
-        if decl is None or grid is None:
+        if decl is None or grid is None or self.mode is not TrackingMode.TRACKING:
+            return None
+        box = decl.search_box
+        if box is None or box.frame_id != grid.frame_id:
             return None
         key = declaration_key(decl.target_id, decl.stamp_ns)
+        inv = np.linalg.inv(homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw))
+        half = np.asarray(box.half_extents, dtype=np.float64)
+
+        def inside(c: Sequence[float]) -> bool:
+            local = inv @ np.array([c[0], c[1], c[2], 1.0])
+            return bool(np.all(np.abs(local[:3]) <= half))
+
         targets = [
             t
             for t in self.tracker.store.all()
             if t.role is ObjectRole.TARGET
             and t.declaration_key == key
             and t.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.BOUND)
+            and t.box.frame_id == grid.frame_id
+            and inside(t.box.pose.xyz)
         ]
-        box = decl.search_box
-        if len(targets) > 1 and box is not None and box.frame_id == grid.frame_id:
-            inv = np.linalg.inv(homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw))
-            half = np.asarray(box.half_extents, dtype=np.float64)
-
-            def inside(c: Sequence[float]) -> bool:
-                local = inv @ np.array([c[0], c[1], c[2], 1.0])
-                return bool(np.all(np.abs(local[:3]) <= half))
-
-            targets = [t for t in targets if inside(t.box.pose.xyz)]
-        if len(targets) != 1 or targets[0].box.frame_id != grid.frame_id:
+        if len(targets) != 1:
             return None
         t = targets[0]
+        tb = t.box
         cap = GraspDeclaration.MAX_HALF_EXTENT_M
-        if max(t.box.half_extents) > cap or t.box.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
+        if max(tb.half_extents) > cap or tb.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
             return None
-        return t.box.model_copy(
+        t_box = homogeneous_from_quat_xyz(tb.pose.xyz, tb.pose.quat_xyzw)
+        signs = np.array([(a, b, c) for a in (-1, 1) for b in (-1, 1) for c in (-1, 1)], float)
+        corners = (signs * np.asarray(tb.half_extents)) @ t_box[:3, :3].T + t_box[:3, 3]
+        if not all(inside(c) for c in corners):
+            return None
+        return tb.model_copy(
             update={
                 "stamp_ns": t.last_confirmed_stamp_ns,
-                "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}",
+                "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}|within:search_box",
             }
         )
 
@@ -1040,7 +1095,13 @@ class TrackerSession:
 
     # -- binding -------------------------------------------------------------------------
 
-    def _release(self, joint: str, stamp_ns: int) -> None:
+    def _positions_at(self, stamp_ns: int) -> Mapping[str, float]:
+        """The recorded joint sample nearest ``stamp_ns`` (the newest when none is recorded)."""
+        if not self._joint_history:
+            return self.positions
+        return min(self._joint_history, key=lambda s: abs(s[0] - stamp_ns))[1]
+
+    def _release(self, joint: str, stamp_ns: int, *, let_go_ns: int | None = None) -> None:
         binder = self.binders[joint]
         held = binder.held
         self._monitors.pop(joint, None)
@@ -1053,7 +1114,10 @@ class TrackerSession:
         if held.outcome is BindOutcome.TRACKED and self._joints <= self.positions.keys():
             oid = held.attachment.object_id
             track = self.tracker.store.get(oid)
-            pose = binder.object_pose(self.positions)
+            # The hand where it let go, not where the (late) decision finds it: a jaw-open
+            # release is decided a dwell after the opening, the retreat may have begun.
+            q_let_go = self._positions_at(stamp_ns if let_go_ns is None else let_go_ns)
+            pose = binder.object_pose(q_let_go)
             if track is not None:
                 support = self._support_under(pose, track.box.half_extents, track.support_z)
                 released = release_track(
@@ -1065,7 +1129,18 @@ class TrackerSession:
                     stamp_ns=stamp_ns,
                 )
                 if released is not None:
-                    self._released[oid] = (held.attachment, stamp_ns)
+                    # `tracking`: frozen where it was let go and declared released
+                    # (`released_by_link`), so the kernel freezes it and runs the window; left on
+                    # the hand it rode the retreating hand 1.0-1.5 s, up to 20 cm (2026-11-02).
+                    # `on`: the exemption provider releases it inside the kernel, earlier, keyed
+                    # on the hand-attached record, so the record stays as held.
+                    record = held.attachment
+                    if self.mode is TrackingMode.TRACKING:
+                        t_hand = binder.hand.t_frame_from_attach(self.frame_id, q_let_go)
+                        record = freeze_released_attachment(
+                            record, base_link=self.frame_id, t_base_from_link=t_hand
+                        )
+                    self._released[oid] = (record, stamp_ns)
                     self._known_at_release[oid] = frozenset(
                         t.object_id for t in self.tracker.store.all()
                     )
@@ -1092,19 +1167,6 @@ class TrackerSession:
         if not len(col):
             return fallback_z
         return float(col[:, 2].max()) + self.grid.resolution / 2.0
-
-    def _grow(self, object_id: str) -> None:
-        """In-hand growth on a fit of the bound ``object_id`` (map protrusion)."""
-        if self.grid is None or not self._joints <= self.positions.keys():
-            return
-        for binder in self.binders.values():
-            held = binder.held
-            if held is not None and held.attachment.object_id == object_id:
-                grown = binder.grow_by_protrusion(
-                    self.tracker.store, self.grid, self.positions, self._now_ns
-                )
-                if grown is not None:
-                    self.attachment_changes += 1
 
     def _prune_ambiguous(self) -> None:
         """Drop each candidate a post-lift re-fit shows stayed behind from an ambiguous union."""

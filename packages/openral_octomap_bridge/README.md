@@ -313,8 +313,9 @@ still checks remaining cells normally.
 
 **Consequence for a deploy without the object tracker (decided posture: fail closed).**
 Only the #418 object tracker (`DeployRuntime.object_tracking: tracking` or `on`, sim-only
-until Safety-WG review) publishes `tracked_object` attachments, so identity clearing
-applies to its bindings in both modes; its `pinch_fallback` holds stay mapped. With `object_tracking` `off`
+until Safety-WG review) publishes `tracked_object` attachments, and identity clearing
+applies to its bindings under `tracking` and `on` (`tracked_clear_enabled`, set by the launch
+whenever the tracker runs); its `pinch_fallback` holds stay mapped. With `object_tracking: off`
 — every real arm today, the MuJoCo digital twin (`MujocoArmHAL`) and an Isaac
 sidecar scene — the attachment the HAL's vision leg or the sim bridge publishes is
 geometry-only, so nothing the arm holds is cleared
@@ -322,8 +323,7 @@ from the world grid, nor filtered from the self-filter's cloud: the payload stay
 mapped obstacle and the kernel may stop the arm on the object in its own hand, during
 the carry and at the place. That stop is the accepted cost. There is deliberately no
 pose-based fallback clear, because a pose does not say which cells are the payload's.
-A run that must carry an object with world collision on needs `object_tracking: tracking`
-or `on` (sim) until a real-cell tracker posture is reviewed. (A MuJoCo `SimAttachedHAL` scene is
+A run that must carry an object with world collision on needs the object tracker (`object_tracking: tracking` or `on`, sim) until a real-cell tracker posture is reviewed. (A MuJoCo `SimAttachedHAL` scene is
 the exception that does not need the bridge: it masks the payload bodies out of its
 rendered depth, so they never enter the map.)
 
@@ -418,6 +418,7 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite, ≤ 0, or above the kernel's 2.0 s deadline cap (`kMaxOctreeAgeS`) publishes nothing. |
 | `static_points_file` | `""` | Base-frame surface points of declared static geometry, marked occupied in every published grid. Only adds occupancy; empty = off; a file that fails to load is fatal. |
 | `attached_clear_enabled` | `true` | Enable identity-validated tracked-object clearing. Attachments with region, segmentation, pinch, unknown, or ambiguous evidence stay occupied. |
+| `tracked_clear_enabled` | `false` | Fail closed: no track drives a clear (identity clear of a `tracked_object` binding, released-box window, carry sweep / vacated box). The attachment revision is still acknowledged. `deploy_e2e.launch.py` sets it for `object_tracking: tracking` and `on`; `off` leaves a carried payload mapped. |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
 | `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
 | `payload_sweep_clear_service` | `""` (off) | octomap_server `~/clear_bbox`; identity-validated track sweeps, vacated boxes, and release-window clearing only. Geometry-only attachment evidence never authorizes octree clearing. |
@@ -445,7 +446,7 @@ Real and non-Isaac paths retain the manifest cadence. Nanosecond bounds round up
 to the smallest integer count that represents the configured period; no timing
 margin is added. `velocity_padding_dt_s` (`0.02`), `trailing_sweep_s` (`0.0`),
 `tf_timeout_s` (`0.05`), `joint_state_history_s`
-(`2.0`), `attached_filter_enabled` (`true`, unique tracked-object bindings only), `attached_state_timeout_s` (`0.5`),
+(`2.0`), `attached_filter_enabled` (`true`, unique tracked-object bindings only), `tracked_clear_enabled` (`false`; the self-filter drops a bound payload's points only when true, i.e. `object_tracking: tracking` or `on`), `attached_state_timeout_s` (`0.5`),
 `joint_states_topic` (`/joint_states`), `world_state_topic`
 (`/openral/world_state_fast`), and the robot mask's `robot_mask_enabled`
 (`false`), `robot_mask_cameras` / `robot_mask_depth_topics` /

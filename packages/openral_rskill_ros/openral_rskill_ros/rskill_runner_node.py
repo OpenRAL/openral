@@ -433,6 +433,14 @@ if _ROS2_AVAILABLE:
             # place allowance. Default off; the deploy launch turns it on with
             # the HAL's `vision_attachment_place_target_enabled`.
             self.declare_parameter("place_approach_enabled", False)
+            # The station's declared place zones (DeployScene.place_zones, a JSON list of
+            # core.PlaceZone). With `place_approach_enabled` and `object_tracking: tracking`, a
+            # goal whose prompt names exactly one (`place_zone_for_prompt`) gets
+            # `target_id="zone:<name>"` instead of "surface"; the object tracker publishes that
+            # zone's box as the place region. `on` names no zone: it uses the tracked
+            # destination.
+            # A prompt naming none keeps "surface" (no zone armed). Empty = no zones.
+            self.declare_parameter("place_zones_json", "")
             # Issue #418: the deploy's DeployRuntime.object_tracking (off | tracking |
             # on). Not "off": the declarations armed per goal also carry the standing
             # `object_queries_json` (a JSON list of core.ObjectQuery — TARGET/CONTEXT ones
@@ -2567,27 +2575,55 @@ if _ROS2_AVAILABLE:
                 return PlaceDeclaration.model_validate_json(raw)
             if self.get_parameter("place_approach_enabled").get_parameter_value().bool_value:
                 return self._goal_scope_place_declaration(
-                    float(getattr(request, "deadline_s", 0.0))
+                    float(getattr(request, "deadline_s", 0.0)),
+                    prompt=str(getattr(request, "prompt", "")),
                 )
             return None
 
-        def _goal_scope_place_declaration(self, deadline_s: float) -> Any:
+        def _goal_scope_place_declaration(self, deadline_s: float, *, prompt: str = "") -> Any:
             """The goal-scope place declaration (``place_approach_enabled``).
 
             Names no target surface, no object and no search box: the HAL's
             place-target leg measures the surface under whichever payload is
-            carried and scopes the region to it. The backstop is the goal
+            carried and scopes the region to it. Under ``object_tracking: tracking``, when
+            ``prompt`` names exactly one of the station's declared ``place_zones_json`` zones,
+            ``target_id`` is that zone's ``zone:<name>`` instead, and the object tracker
+            publishes its box as the place region (Safety-WG review owed); ``on`` names no
+            zone (it uses the tracked destination); a prompt naming none, or several, keeps
+            ``"surface"`` and is logged. The backstop is the goal
             deadline (120 s when unset), capped at 120 s — the grasp side's
             ``GraspDeclaration.MAX_TIMEOUT_S``, not ``PlaceDeclaration``'s looser
             600 s schema ceiling: a goal-scope declaration names nothing, so it
             gets the tighter bound. The runner retracts it at goal end anyway.
             Mirror of ``_goal_scope_grasp_declaration``.
             """
-            from openral_core import GraspDeclaration, PlaceDeclaration
+            from openral_core import (
+                GraspDeclaration,
+                PlaceDeclaration,
+                PlaceZone,
+                place_zone_for_prompt,
+            )
+            from pydantic import TypeAdapter
 
+            target_id = "surface"
+            raw = self.get_parameter("place_zones_json").get_parameter_value().string_value
+            mode = self.get_parameter("object_tracking").get_parameter_value().string_value
+            # A zone is the place allowance of `tracking` only: under `on` it would shadow the
+            # tracked destination (`TrackerSession.place_region` resolves a zone first).
+            if raw and mode == "tracking":
+                zones = TypeAdapter(list[PlaceZone]).validate_json(raw)
+                zone = place_zone_for_prompt(prompt, zones)
+                if zone is not None:
+                    target_id = zone.target_id
+                else:
+                    self.get_logger().warning(
+                        f"rskill_runner.place_zone_unnamed: the prompt {prompt!r} names no "
+                        f"single declared zone of {sorted(z.name for z in zones)}; no zone "
+                        "is armed for this goal"
+                    )
             ceiling = GraspDeclaration.MAX_TIMEOUT_S
             return PlaceDeclaration(
-                target_id="surface",
+                target_id=target_id,
                 timeout_s=min(deadline_s, ceiling) if deadline_s > 0.0 else ceiling,
                 stamp_ns=0,
             )

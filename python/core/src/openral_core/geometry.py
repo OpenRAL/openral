@@ -30,11 +30,12 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from openral_core.schemas import Pose6D
+from openral_core.schemas import AttachedCollisionObject, Pose6D
 
 __all__ = [
     "ViewAxis",
     "compute_gaze_pose",
+    "freeze_released_attachment",
     "homogeneous_from_quat_xyz",
     "look_at_quat_wxyz",
     "quat_xyzw_to_yaw",
@@ -281,3 +282,64 @@ def compute_gaze_pose(
     """
     w, x, y, z = look_at_quat_wxyz(camera_xyz, target_xyz, up=up, view_axis=view_axis)
     return Pose6D(xyz=camera_xyz, quat_xyzw=(x, y, z, w), frame_id=frame_id)
+
+
+def freeze_released_attachment(
+    held: AttachedCollisionObject,
+    *,
+    base_link: str,
+    t_base_from_link: NDArray[np.float64],
+) -> AttachedCollisionObject:
+    """Re-express a released payload as a record fixed in the base frame.
+
+    The kernel places an attached object at ``link_world[attach_link] ·
+    pose_in_link`` for every configuration a candidate predicts, so a record
+    left on the hand would ride the retreating hand through the whole chunk while
+    the real object stays put. Attached to the collision model's root link (the
+    manifest's ``base_frame``, a link FK never moves) it stays where it was
+    released, and ``released_by_link`` names the hand that let it go: the kernel
+    then treats it as a frozen payload (2026-11-02, Spark ``v_off_dr``: read as a
+    carried payload, the frozen banana latched a world stop on the bowl 170 ms after
+    release). It is never checked against the world, stays an obstacle to every robot
+    link, and the hand plus ``touch_links`` are exempt against it only until the
+    kernel measures them clear or its release timeout passes.
+
+    ``touch_links`` become the held record's attach link plus its touch links —
+    exactly the links the held record already exempted (the hand and the jaws
+    are in contact with the payload at release).
+
+    Args:
+        held: The attachment the gripper held until it let go.
+        base_link: The collision model's root link (``RobotDescription.base_frame``).
+        t_base_from_link: ``(4, 4)`` pose of ``held.attach_link`` in ``base_link``
+            when the gripper let go.
+
+    ``support_contact`` is dropped: a held payload's own witness is the grasp-time
+    ``map_support_under:*`` one (``region_attachment``), a claim about where the payload
+    rested at ATTACH, and a frozen payload is not checked against the world at all.
+
+    Returns:
+        The frozen record: same object, geometry, evidence and force attestation, no
+        support witness; base-frame pose; ``released_by_link`` the held attach link;
+        ``evidence_ref`` suffixed ``|frozen_release``.
+    """
+    pose = t_base_from_link @ homogeneous_from_quat_xyz(
+        held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+    )
+    w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
+    touch = [held.attach_link, *(link for link in held.touch_links if link != held.attach_link)]
+    return AttachedCollisionObject.model_validate(
+        {
+            **held.model_dump(),
+            "attach_link": base_link,
+            "touch_links": touch,
+            "pose_in_link": {
+                "xyz": tuple(float(v) for v in pose[:3, 3]),
+                "quat_xyzw": (x, y, z, w),
+                "frame_id": base_link,
+            },
+            "evidence_ref": f"{held.evidence_ref or held.object_id}|frozen_release",
+            "support_contact": None,
+            "released_by_link": held.attach_link,
+        }
+    )

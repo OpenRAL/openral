@@ -466,3 +466,42 @@ def test_a_context_query_is_seeded_beside_the_targets_seed() -> None:
     grown = [h + _CONTEXT_SEED_MARGIN_M for h in box.half_extents]
     assert context["seed"]["half_extents"] == pytest.approx(grown)
     assert context["seed"]["pose"]["xyz"] == pytest.approx(list(box.pose.xyz))
+
+
+@pytest.mark.parametrize(("base", "mode"), [(_PICK_ORANGE, "sim"), (_REAL, "real")])
+def test_deploy_forwards_the_stations_declared_place_zones(
+    tmp_path: Path, base: Path, mode: str
+) -> None:
+    """``DeployScene.place_zones`` (the restock shelf fixture) reach the launch as one JSON
+    list (``place_zones_json``) for the runner and the tracker; none declared, none sent.
+    ``deploy run`` (``hal_mode="real"``) shares ``deploy sim``'s resolver and forwards them
+    the same way."""
+    import json
+
+    import yaml
+
+    fixture = _REPO / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
+    zones = yaml.safe_load(fixture.read_text())["place_zones"]
+    scene = yaml.safe_load(base.read_text())
+    config = tmp_path / "with_zones.yaml"
+    config.write_text(yaml.safe_dump({**scene, "place_zones": zones}))
+    argv = _argv(config, mode, {"object_tracking": "off"})
+    (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("place_zones_json:=")]
+    assert [z["name"] for z in json.loads(raw)] == [z["name"] for z in zones]
+    bare = tmp_path / "no_zones.yaml"  # PickOrange declares its own "plate" zone
+    bare.write_text(yaml.safe_dump({k: v for k, v in scene.items() if k != "place_zones"}))
+    assert not [a for a in _argv(bare, mode, {"object_tracking": "off"}) if "place_zones" in a]
+
+
+def test_deploy_refuses_place_zones_on_a_robot_whose_base_moves(tmp_path: Path) -> None:
+    """A zone is a box fixed in the robot base frame: on a mobile manipulator it would ride
+    the base away from the furniture it names, so the deploy refuses it."""
+    import yaml
+
+    fixture = _REPO / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
+    zones = yaml.safe_load(fixture.read_text())["place_zones"]
+    scene = yaml.safe_load((_REPO / "scenes/deploy/isaac_panda_mobile_urdf.yaml").read_text())
+    config = tmp_path / "mobile_with_zones.yaml"
+    config.write_text(yaml.safe_dump({**scene, "place_zones": zones}))
+    with pytest.raises(ROSConfigError, match="mobile_manipulator"):
+        _argv(config, "sim", {})

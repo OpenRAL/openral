@@ -45,6 +45,8 @@ class _LaunchModule(Protocol):
         wrist_links: int = 1,
     ) -> dict[str, object]: ...
 
+    def _tracked_clear_enabled(self, object_tracking: str) -> bool: ...
+
     def _hand_rules_to_provider(self, kernel_params: dict[str, object]) -> dict[str, object]: ...
 
     def _object_tracking(
@@ -249,3 +251,10 @@ def test_the_launch_and_the_replay_tool_move_the_same_rules(launch_module: _Laun
     assert krd._MOVED_RULES_OFF == launch_module._PROVIDER_MOVED_RULES_OFF
     assert krd._MIRRORED_PREFIXES == launch_module._PROVIDER_MIRRORED_PREFIXES
     assert krd._PROVIDER_ONLY_RULES == launch_module._PROVIDER_ONLY_RULES
+
+
+@pytest.mark.parametrize(("mode", "expected"), [("off", False), ("tracking", True), ("on", True)])
+def test_track_driven_map_clears_follow_the_tracker(
+    launch_module: _LaunchModule, mode: str, expected: bool
+) -> None:
+    assert launch_module._tracked_clear_enabled(mode) is expected

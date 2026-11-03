@@ -124,6 +124,46 @@ def test_a_tracker_without_hal_mode_refuses_to_configure() -> None:
             node.destroy_node()
 
 
+def test_the_tracker_loads_the_stations_declared_place_zones() -> None:
+    """``place_zones_json`` (``DeployScene.place_zones``): the session resolves a
+    ``zone:<name>`` place declaration against them; a malformed list refuses configure."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    import json
+    from pathlib import Path
+
+    import yaml
+    from openral_world_state_ros.object_tracker_node import make_object_tracker_node
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.parameter import Parameter
+
+    from tests.integration._tracker_rig import ROBOT
+
+    fixture = Path(__file__).parents[2] / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
+    zones = yaml.safe_load(fixture.read_text())["place_zones"]
+    for raw, ok in ((json.dumps(zones), True), ('[{"name": "Upper Slot"}]', False)):
+        with tracker_rig():
+            node = make_object_tracker_node()
+            try:
+                node.set_parameters(
+                    [
+                        Parameter("robot_yaml", value=ROBOT),
+                        Parameter("mode", value="tracking"),
+                        Parameter("hal_mode", value="sim"),
+                        Parameter("cameras", value=["top"]),
+                        Parameter("grounding_wait_s", value=5.0),
+                        Parameter("place_zones_json", value=raw),
+                    ]
+                )
+                configured = node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+                assert configured is ok
+                if ok:
+                    assert "zone:upper_slot_2" in node.session.place_zones
+                    assert len(node.session.place_zones) == len(zones)
+            finally:
+                node.destroy_node()
+
+
 def test_on_publishes_no_grasp_region() -> None:
     """``on``: the exemption provider keys on track ids; the declaration carries no region."""
     pytest.importorskip("rclpy")

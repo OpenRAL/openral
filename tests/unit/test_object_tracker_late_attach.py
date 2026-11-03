@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from openral_core import ObjectRole, TrackStatus
-from openral_world_state.object_tracker.binding import BindOutcome, GraspBinder
-from openral_world_state.object_tracker.session import TrackerSession
+from openral_world_state.object_tracker.binding import BindOutcome, GraspBinder, _t
+from openral_world_state.object_tracker.session import TrackerSession, TrackingMode
 
 from tests.unit._object_tracker_fixtures import ROBOTS, arm_at_hold
 from tests.unit.test_object_tracker_binding import _grid, _hand_step
@@ -248,8 +248,13 @@ def test_a_provisional_track_binds_late_as_a_provisional_payload_carried_with_th
     s, binder, carried, q_up = _run("so101_follower", lift_m=0.05, follows=True, provisional=True)
     assert binder.held is not None and binder.held.outcome is BindOutcome.PROVISIONAL
     assert set(binder.held.candidates) <= s._held_ids()  # never aged
-    boxes = binder._held_boxes(q_up)
-    near = min(np.linalg.norm(b[0] - carried) for b in boxes)
+    t_obj = binder.hand.t_frame_from_attach(binder.frame_id, q_up) @ _t(
+        binder.held.attachment.pose_in_link
+    )
+    near = min(
+        np.linalg.norm((t_obj @ _t(p.pose_in_object))[:3, 3] - carried)
+        for p in binder.held.attachment.primitives
+    )
     assert near < 0.05, (
         near
     )  # the measured box rides with the hand: a primitive sits at the carried object
@@ -315,6 +320,7 @@ def test_the_place_region_is_the_one_grounded_destination_while_a_payload_is_hel
     )
 
     s, binder, carried, _ = _run("so101_follower", lift_m=0.05, follows=True)
+    s.mode = TrackingMode.ON  # the destination-track path is `on` only
     joint = ROBOTS["so101_follower"][0]
 
     def bowl(dx: float) -> str:
@@ -453,3 +459,66 @@ def test_an_attach_stamped_just_before_the_hold_read_still_binds_from_the_lookba
     held = s.binders[joint].held
     assert held is not None and held.outcome is BindOutcome.TRACKED, held
     assert held.candidates == (oid,)
+
+
+def _restock_zones() -> list[Any]:
+    """The OpenArm restock shelf's declared zones (the in-tree fixture)."""
+    from pathlib import Path
+
+    import yaml
+    from openral_core import PlaceZone
+    from pydantic import TypeAdapter
+
+    path = Path(__file__).parents[2] / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
+    return TypeAdapter(list[PlaceZone]).validate_python(
+        yaml.safe_load(path.read_text())["place_zones"]
+    )
+
+
+def test_a_declared_place_zone_is_the_place_region_only_while_a_payload_is_held() -> None:
+    """A shelf slot no detector grounds: a declaration naming ``zone:<name>`` gets the declared
+    box, stamped with the newest grid, while a payload is held; an unknown zone, a zone in
+    another frame than the grid, or no payload is ``None`` (fail closed)."""
+    from openral_core import PlaceDeclaration, place_zone_for_prompt
+
+    s, binder, _, _ = _run("so101_follower", lift_m=0.05, follows=True)
+    joint = ROBOTS["so101_follower"][0]
+    zones = _restock_zones()
+    zone = place_zone_for_prompt("restock box x3 into upper slot 2", zones)
+    assert zone is not None and zone.target_id == "zone:upper_slot_2"
+
+    def declare(target_id: str) -> None:
+        s.on_place_declaration(
+            PlaceDeclaration(target_id=target_id, timeout_s=60.0, stamp_ns=10 * _S)
+        )
+
+    # The fixture is in openarm_base; this session's grid is not: never applied elsewhere.
+    s.place_zones = {z.target_id: z for z in zones}
+    declare(zone.target_id)
+    assert binder.held is not None and s.place_region() is None, "frame mismatch"
+    # The same box declared in the grid's frame arms.
+    frame = s.frame_id
+    local = zone.model_copy(
+        update={
+            "region": zone.region.model_copy(
+                update={
+                    "frame_id": frame,
+                    "pose": zone.region.pose.model_copy(update={"frame_id": frame}),
+                }
+            )
+        }
+    )
+    s.place_zones = {local.target_id: local}
+    region = s.place_region()
+    assert region is not None
+    assert region.stamp_ns == s.grid_stamp_ns > 0
+    assert (region.pose, region.half_extents) == (local.region.pose, local.region.half_extents)
+    assert region.evidence_ref == "declared:upper_slot_2"
+    declare("zone:upper_slot_9")
+    assert s.place_region() is None, "unknown zone"
+    declare("surface")
+    assert s.place_region() is None, "no zone, no destination query: nothing"
+    declare(local.target_id)
+    assert s.place_region() is not None
+    s._release(joint, 12 * _S)
+    assert binder.held is None and s.place_region() is None, "no payload, no place"

@@ -131,7 +131,14 @@ adapters. Quick reference:
 - A `DeployScene` is a `scene:` block plus optional deploy context:
   `robot_id`, `robot_unit`, `base_pose`, `hal`, `sensors`, `drivers`,
   `runtime`, `safety`, `composition`, `extra_allowed_collision_pairs`,
-  `grasp_declaration` / `place_declaration`, `memory_dir`, `seed`.
+  `grasp_declaration` / `place_declaration`, `place_zones`, `memory_dir`, `seed`.
+- `place_zones` declares named place zones on the cell's fixed furniture (shelf slots,
+  `PlaceZone`): under `object_tracking: tracking`, a goal whose prompt names one ("into
+  upper slot 2") gets that box as its place region from the object tracker while a payload
+  is held (`on` uses the tracked destination instead). Fixed-base stations only: a deploy
+  refuses them on a robot whose `embodiment_kind` is not `manipulator` / `bimanual`.
+  Declared, not measured; Safety-WG review owed. `scenes/deploy/place_zones/` holds paste-in lists, e.g. the
+  OpenArm restock shelf.
 - A `SimScene` is a `DeployScene` + required `task:` block (+ optional
   `n_episodes`, `record_video`, `save_dir`, `metadata`).
 - A `BenchmarkScene` is a `SimScene` with `metadata: BenchmarkMetadata`

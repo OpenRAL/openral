@@ -264,6 +264,8 @@ private:
   // every world-state message. No-op without a provider: the open kernel never
   // releases on its own decision.
   void apply_tracked_release();
+  /// A producer-released record (`released_by_link`): frozen, its window kept by the kernel.
+  void apply_declared_release(const std::vector<openral_msgs::msg::AttachedCollisionObject>& wire);
   // Issue #418 — record the live grasp declaration's `declaration_key`
   // (active, a target, `timeout_s` in range, not retired), for a provider's
   // DeclarationView. Ingest path only.
@@ -504,6 +506,9 @@ private:
   // looks at the received flag, and a default (system-time) stamp throws.
   rclcpp::Time attached_stamp_{0, 0, RCL_ROS_TIME};
   std::uint64_t attached_revision_{0};
+  /// Hash of the accepted attached set's (object_id, epoch, attach_link): a revision edge retakes
+  /// the embedded-residue snapshot only when it changes (or a provider is loaded).
+  std::size_t attached_set_identity_{0};
   bool attached_contact_snapshot_pending_{false};
   bool attached_contact_active_{false};
   /// Identity of the support-contact attestation currently armed for one
@@ -605,6 +610,23 @@ private:
   std::chrono::steady_clock::time_point binding_last_warn_{};
   std::uint8_t support_witness_live_{0};  ///< bit i: object i's witness is still live
   std::vector<SupportWitnessKey> support_witness_keys_;
+  /// A producer-released record's window (`apply_declared_release`), keyed on the record's
+  /// (object id, epoch, stamp). Capacity = max attached objects, assigned at configure.
+  struct ReleasedRecord {
+    bool used{false};
+    bool seen{false};  ///< on the last accepted wire
+    bool closed{false};
+    std::string object_id;
+    std::uint32_t epoch{0};
+    std::int64_t stamp_ns{0};
+    std::int64_t opened_ns{0};
+  };
+  std::vector<ReleasedRecord> released_records_;
+  /// Per accepted attachment, the wire's `released_by_link` resolved to a collision link (-1 =
+  /// held). Node-side, so the provider-visible `AttachedObject` keeps its layout.
+  std::vector<int> attached_released_by_;
+  /// Per collision link: FK never moves it (no dof on its chain but the zeroed mobile-base ones).
+  std::vector<std::uint8_t> link_static_;
   double support_witness_max_patch_radius_m_{0.0};
   double support_witness_max_penetration_m_{0.0};
   /// Place-phase declaration state (ADR-0097 + its 2026-08-14 amendment).

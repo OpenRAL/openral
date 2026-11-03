@@ -21,9 +21,10 @@
 // punch the blind shell into the wrong place, which is the unsafe direction.
 //
 // A held payload is removed only with the same unique `tracked_object`
-// binding the voxel bridge requires. Region, segmentation, fallback, stale,
-// malformed, or ambiguous attachments leave their returns in the cloud: their
-// geometry alone does not prove that those sensor points belong to the object.
+// binding the voxel bridge requires, and only when `tracked_clear_enabled` (default false:
+// the launch sets it whenever the object tracker runs, `object_tracking: tracking` or `on`).
+// Region, segmentation, fallback, stale, malformed, or ambiguous attachments leave their returns in
+// the cloud: their geometry alone does not prove that those sensor points belong to the object.
 //
 // `cloud_out` carries x/y/z only, whatever the input carries: octomap reads
 // nothing else. An input with more fields (a coloured sim cloud's `rgb`) also
@@ -140,6 +141,13 @@ public:
     history_s_ = this->declare_parameter<double>("joint_state_history_s", 2.0);
     attached_enabled_ = this->declare_parameter<bool>("attached_filter_enabled", true);
     attached_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
+    // A tracked-object payload's points are dropped only when a track drives it: default
+    // OFF (fail closed), on whenever the launch runs the tracker (`tracking` or `on`).
+    // Read once here, so read-only: a runtime set would report a value the gate ignores.
+    rcl_interfaces::msg::ParameterDescriptor startup_only;
+    startup_only.read_only = true;
+    tracked_clear_enabled_ =
+        this->declare_parameter<bool>("tracked_clear_enabled", false, startup_only);
     const auto joint_states_topic =
         this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
     const auto world_state_topic =
@@ -539,7 +547,8 @@ private:
 
   void add_payload_primitives(const rclcpp::Time& stamp, const tf2::Transform& cloud_from_root) {
     const auto state = world_state_;
-    if (!attached_enabled_ || state == nullptr || state->attached_objects.empty()) {
+    if (!attached_enabled_ || !tracked_clear_enabled_ || state == nullptr ||
+        state->attached_objects.empty()) {
       return;
     }
     const rclcpp::Time state_stamp(state->header.stamp, this->get_clock()->get_clock_type());
@@ -836,6 +845,7 @@ private:
   double tf_timeout_s_{0.05};
   double history_s_{2.0};
   bool attached_enabled_{true};
+  bool tracked_clear_enabled_{false};
   double attached_timeout_s_{0.5};
 
   std::vector<tf2::Transform> link_world_;

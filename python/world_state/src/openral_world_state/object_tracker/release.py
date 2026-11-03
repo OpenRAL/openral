@@ -48,6 +48,8 @@ class JawReleaseMonitor:
         >>> m = JawReleaseMonitor(hold=0.45, closed=0.0, release_gap=0.075, release_dwell_ns=10)
         >>> m.observe(0.99, 0), m.observe(0.99, 5), m.observe(0.99, 10)
         (False, False, True)
+        >>> m.opened_ns
+        0
     """
 
     hold: float
@@ -56,6 +58,11 @@ class JawReleaseMonitor:
     release_dwell_ns: int
     _since_ns: int | None = None
     _last_ns: int | None = None
+
+    @property
+    def opened_ns(self) -> int | None:
+        """When the jaw first read open in the current run (the let-go), or ``None``."""
+        return self._since_ns
 
     @classmethod
     def for_hand(cls, hand: HandModel, *, hold: float, release_dwell_s: float) -> JawReleaseMonitor:

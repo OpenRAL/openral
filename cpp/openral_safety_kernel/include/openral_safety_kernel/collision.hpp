@@ -938,6 +938,7 @@ struct AttachedObjectInput {
   std::string attach_link;               ///< attach-link name (resolved against link_names)
   std::vector<std::string> touch_links;  ///< touch-link names (resolved against link_names)
   std::vector<AttachedPrimitiveInput> primitives;  ///< one or more owned primitives
+  std::string released_by_link;                    ///< wire `released_by_link` ("" = held)
   bool has_support_witness{false};                 ///< wire `support_contact_valid`
   Vec3 support_point{};                            ///< attested contact point, object frame
   Vec3 support_normal{};                     ///< outward support normal, object frame (normalised)

@@ -4328,7 +4328,8 @@ class PlaceDeclaration(BaseModel):
             ``geometry`` must be empty.
         destination_query: Optional class the destination belongs to (a plate, a
             bowl; issue #418), with role ``DESTINATION``. The tracker grounds it; it
-            arms nothing. A shelf slot stays a ``search_box``.
+            arms nothing. A shelf slot is a declared ``PlaceZone``
+            instead, named by ``target_id`` ``zone:<name>``.
 
     Example:
         >>> declaration = PlaceDeclaration(
@@ -4509,6 +4510,110 @@ class PlaceDeclaration(BaseModel):
         msg.destination_query_valid = self.destination_query is not None  # type: ignore[attr-defined]
         if self.destination_query is not None:
             self.destination_query.fill_idl(msg.destination_query)  # type: ignore[attr-defined]
+
+
+#: A place-zone name: lower-case words joined by ``_`` (``upper_slot_2``).
+_ZONE_NAME = r"^[a-z0-9]+(?:_[a-z0-9]+)*$"
+
+
+class PlaceZone(BaseModel):
+    """A named place zone on fixed station furniture (a shelf slot), declared by the station.
+
+    The destination of a prompt such as "restock box x3 into upper slot 2" is a position on a
+    fixed shelf, which an open-vocabulary detector cannot ground (unlike a plate, a tracked
+    ``DESTINATION`` object). A station declares such positions here
+    (``DeployScene.place_zones``); the rSkill runner names the one a goal's prompt names as its
+    goal-scope ``PlaceDeclaration.target_id`` (``zone:<name>``, ``place_zone_for_prompt``) and
+    the Layer-2 object tracker publishes ``region`` as the declaration's place region while a
+    payload is held (``TrackerSession.place_region``). The zone arms nothing on its own.
+
+    **A declared, not measured, region** — a deliberate exception to ADR-0097's
+    producer-measured rule, sound only for furniture fixed in the robot base frame (a
+    fixed-base station). Safety-WG review, a hazard-log row and an ADR amendment are owed.
+
+    Attributes:
+        name: The zone's name, lower-case words joined by ``_`` (``upper_slot_2``).
+        aliases: Other names a prompt may use (``upper_2``), same form.
+        region: The zone's box in the robot base frame (the voxel grid's); ``geometry`` empty,
+            ``pose`` in ``region.frame_id``.
+
+    Example:
+        >>> zone = PlaceZone(
+        ...     name="upper_slot_2",
+        ...     aliases=("upper_2",),
+        ...     region=PlaceRegion(
+        ...         frame_id="openarm_base",
+        ...         pose=Pose6D(
+        ...             xyz=(0.527, 0.214, -0.178),
+        ...             quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ...             frame_id="openarm_base",
+        ...         ),
+        ...         half_extents=(0.188, 0.062, 0.064),
+        ...     ),
+        ... )
+        >>> zone.target_id
+        'zone:upper_slot_2'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: ``PlaceDeclaration.target_id`` prefix naming a declared zone.
+    TARGET_PREFIX: ClassVar[str] = "zone:"
+
+    name: Annotated[str, StringConstraints(pattern=_ZONE_NAME)]
+    aliases: tuple[Annotated[str, StringConstraints(pattern=_ZONE_NAME)], ...] = ()
+    region: PlaceRegion
+
+    @model_validator(mode="after")
+    def _validate_zone(self) -> Self:
+        if self.region.geometry:
+            raise ValueError(f"PlaceZone {self.name!r}: region.geometry must be empty.")
+        # The tracker frame-checks `region.frame_id` only, and the IDL drops the pose's own
+        # frame: a pose written in another frame would arm the box at the wrong place.
+        if self.region.pose.frame_id != self.region.frame_id:
+            raise ValueError(
+                f"PlaceZone {self.name!r}: region.pose is in {self.region.pose.frame_id!r}, "
+                f"not the region's {self.region.frame_id!r}."
+            )
+        return self
+
+    @property
+    def target_id(self) -> str:
+        """The ``PlaceDeclaration.target_id`` naming this zone."""
+        return f"{self.TARGET_PREFIX}{self.name}"
+
+
+def place_zone_for_prompt(prompt: str, zones: Sequence[PlaceZone]) -> PlaceZone | None:
+    """The one declared zone a prompt names, or ``None`` (fail closed).
+
+    Deterministic: the prompt is lower-cased with every non-alphanumeric run read as ``_``
+    ("upper slot 2" → ``upper_slot_2``), and a zone matches when its name or an alias occurs
+    in it as whole words. No zone, or several different ones, named → ``None``: the goal
+    then arms no zone, never "any declared zone".
+
+    Example:
+        >>> zone = PlaceZone.model_validate(
+        ...     {
+        ...         "name": "upper_slot_2",
+        ...         "region": {
+        ...             "frame_id": "openarm_base",
+        ...             "pose": {
+        ...                 "xyz": [0.5, 0.2, -0.2],
+        ...                 "quat_xyzw": [0, 0, 0, 1],
+        ...                 "frame_id": "openarm_base",
+        ...             },
+        ...             "half_extents": [0.1, 0.06, 0.06],
+        ...         },
+        ...     }
+        ... )
+        >>> place_zone_for_prompt("Restock box x3 into upper slot 2", [zone]).name
+        'upper_slot_2'
+        >>> place_zone_for_prompt("restock box x3 into upper slot 20", [zone]) is None
+        True
+    """
+    text = "_" + re.sub(r"[^a-z0-9]+", "_", prompt.lower()).strip("_") + "_"
+    named = [z for z in zones if any(f"_{n}_" in text for n in (z.name, *z.aliases))]
+    return named[0] if len(named) == 1 else None
 
 
 class GraspDeclaration(BaseModel):
@@ -5104,8 +5209,9 @@ class AttachedCollisionPrimitive(BaseModel):
             2.3-3.9x the entire world-voxel quantisation term, and 97 % of
             15 mm-arm stops were payload-vs-world (issue #266).
         geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``
-            (the tracked or single provisional object's own fitted geometry), ``grown`` (cells
-            observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of
+            (the tracked or single provisional object's own fitted geometry), ``grown`` (retired
+            2026-11-02: the tracker no longer grows a payload; the code stays readable on the
+            wire, nothing produces it) or ``fallback`` (the pinch volume, or boxes of
             candidates that may not be the held object; the default, and what a reader treats an
             unknown code as). Only measured and grown primitives can explain the payload's own
             cells to the exemption provider's payload-own rule
@@ -5280,6 +5386,13 @@ class AttachedCollisionObject(BaseModel):
             every producer that does not track.
         geometry_revision: Revision of the bound geometry within one binding; the
             kernel unions revisions, so bound geometry only grows. ``0`` = first.
+        released_by_link: ``None`` while the object is held. Set, the payload was let go
+            by that robot link: ``attach_link`` is a link the robot never moves (its root)
+            and ``pose_in_link`` the pose where it was released. The safety kernel then
+            treats it as a frozen payload: never checked against the world, still an
+            obstacle to every robot link, the releasing link and ``touch_links`` exempt
+            against it only until the kernel measures them clear or its release timeout
+            passes. The kernel refuses one on a link the robot moves.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -5300,9 +5413,16 @@ class AttachedCollisionObject(BaseModel):
     contact_force: ContactForceWitness | None = None
     epoch: int = Field(default=0, ge=0)
     geometry_revision: int = Field(default=0, ge=0)
+    released_by_link: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _validate_attachment(self) -> AttachedCollisionObject:
+        if self.released_by_link == self.attach_link:
+            raise ValueError(
+                "AttachedCollisionObject.released_by_link names the link that let the payload "
+                "go; a released payload is attached to a link the robot never moves "
+                f"({self.attach_link!r})."
+            )
         if self.pose_in_link.frame_id != self.attach_link:
             raise ValueError(
                 "AttachedCollisionObject.pose_in_link.frame_id must equal attach_link "
@@ -5381,6 +5501,7 @@ class AttachedCollisionObject(BaseModel):
             ),
             epoch=int(getattr(msg, "epoch", 0)),
             geometry_revision=int(getattr(msg, "geometry_revision", 0)),
+            released_by_link=str(getattr(msg, "released_by_link", "")) or None,
         )
 
     def fill_idl(self, msg: object, *, primitive_factory: Callable[[], object]) -> None:
@@ -5425,6 +5546,7 @@ class AttachedCollisionObject(BaseModel):
             self.contact_force.fill_idl(msg.contact_force)  # type: ignore[attr-defined]
         msg.epoch = int(self.epoch)  # type: ignore[attr-defined]
         msg.geometry_revision = int(self.geometry_revision)  # type: ignore[attr-defined]
+        msg.released_by_link = self.released_by_link or ""  # type: ignore[attr-defined]
 
 
 class TrackStatus(StrEnum):
@@ -12596,6 +12718,24 @@ class DeployScene(BaseModel):
     reasoner-grounded — the LLM names an ``ExecuteRskillTool.grasp_target``, the
     reasoner grounds its ``search_box`` from perception, and the goal carries the
     declaration (design §2.2)."""
+    place_zones: list[PlaceZone] = Field(default_factory=list)
+    """Named place zones on the cell's fixed furniture (shelf slots), see ``PlaceZone``.
+
+    ``openral deploy sim`` / ``deploy run`` forward them (``place_zones_json``, from the
+    shared ``resolve_launch_invocation``) to the rSkill runner, whose
+    goal-scope place declaration names the one zone the goal's prompt names
+    (``place_zone_for_prompt``), and to the object tracker, which publishes it as the place
+    region while a payload is held (sim only: ``deploy run`` refuses every tracking mode
+    until Safety-WG sign-off). Names and aliases are unique across zones. Empty = no
+    zone; a prompt naming none arms none. Declared, not measured: Safety-WG review owed."""
+
+    @model_validator(mode="after")
+    def _unique_zone_names(self) -> Self:
+        names = [n for z in self.place_zones for n in (z.name, *z.aliases)]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"place_zones names/aliases must be unique; repeated: {dupes}.")
+        return self
 
     @model_validator(mode="before")
     @classmethod

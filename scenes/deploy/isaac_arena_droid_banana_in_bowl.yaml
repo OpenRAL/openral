@@ -161,6 +161,17 @@ grasp_declaration:
 
 # Committed posture: world collision on (octomap over exterior_depth + the kernel's
 # voxel check), no SLAM / Nav2 (a fixed-base arm at a table).
+# Declared place zone (2026-11-01 mode split): under `object_tracking: tracking` the place
+# allowance comes only from a declared zone the prompt names ("bowl"), never from the tracked
+# bowl. The grader's `in_bowl` region around the bowl's spawn (stage == panda_link0 here, as
+# the banana's search_box shows), lowered 2 cm so the bowl's floor voxels are inside. `on`
+# ignores it and uses the tracked destination. SIM-ONLY, Safety-WG review owed.
+place_zones:
+  - name: bowl
+    region:
+      frame_id: panda_link0
+      pose: {xyz: [0.5611, 0.1526, 0.04785], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: panda_link0}
+      half_extents: [0.0807, 0.0806, 0.065]
 runtime:
   # The VLA emits no success signal: Robometer-4B (the deploy default reward model) scores
   # the exterior camera beside it, and the critic producer turns its success into a Tier-C
@@ -185,11 +196,13 @@ runtime:
   payload_sweep_clear_enabled: true
   # Open path (ADR-0121 step 3): `tracking`. The #418 tracker grounds the seedless target
   # query within `grounding_wait_s` (source time), owns the attachment set (the held
-  # payload is the tracker's box, cleared from the voxel map by tracked identity) and
-  # measures the grasp region (the target track's box until the hand holds it), the place
-  # region (the tracked bowl; the runner arms its goal-scope place declaration) and the
-  # workspace region; the kernel applies its open box rules over them (ADR-0115 grasp
-  # allowance, ADR-0097/0098 place allowance, #349 workspace contact). The HAL grasp- and
+  # payload is the tracker's box; its own cells are cleared by identity while it is bound and
+  # the released box is frozen by the kernel, `released_by_link`)
+  # and takes every allowance from a declaration (2026-11-01 mode split): the grasp region is
+  # the banana's track box only while it lies inside the declared search_box, the place
+  # region the declared `bowl` zone above, the workspace the declared workspace_box; the
+  # kernel applies its open box rules over them (ADR-0115 grasp allowance, ADR-0097/0098
+  # place allowance, #349 workspace contact). The HAL grasp- and
   # place-target legs stand down. `on` + `exemption_provider:` (OpenRAL Pro, ADR-0121) adds
   # the tracker-keyed Pro rules, as the successful Spark runs R365/R389 (2026-10-23) used
   # (A/B R388 off: the banana dropped on the table vs R389: in the bowl).

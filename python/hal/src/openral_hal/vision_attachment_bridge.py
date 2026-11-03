@@ -146,7 +146,7 @@ from openral_core import (
 )
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
-from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.geometry import freeze_released_attachment, homogeneous_from_quat_xyz
 from openral_core.kinematics import (
     bounding_half_extents,
     box_gap_lower_bound_m,
@@ -439,70 +439,6 @@ def _link_boxes(description: RobotDescription, link: str) -> tuple[_FramedBox, .
         )
         for geom in description.collision_geometry
         if geom.link_name == link
-    )
-
-
-def freeze_released_attachment(
-    held: AttachedCollisionObject,
-    *,
-    base_link: str,
-    t_base_from_link: NDArray[np.float64],
-) -> AttachedCollisionObject:
-    """Re-express a released payload as a record fixed in the base frame.
-
-    The kernel places an attached object at ``link_world[attach_link] ·
-    pose_in_link`` for every configuration a candidate predicts, so a record
-    left on the hand would ride the retreating hand through the whole chunk while
-    the real object stays put. Attached to the collision model's root link (the
-    manifest's ``base_frame``: identity FK, no primitives of its own) it stays
-    where it was released in every predicted configuration, and the attach-link
-    skip exempts nothing.
-
-    ``touch_links`` become the held record's attach link plus its touch links —
-    exactly the links the held record already exempted (the hand and the jaws
-    are in contact with the payload at release); every other link, and the
-    world, is still checked against it.
-
-    Args:
-        held: The attachment the gripper held until DETACH.
-        base_link: The collision model's root link (``RobotDescription.base_frame``).
-        t_base_from_link: ``(4, 4)`` pose of ``held.attach_link`` in ``base_link``
-            at the DETACH stamp.
-
-    ``support_contact`` is dropped: a held payload's own witness is the grasp-time
-    ``map_support_under:*`` one (``region_attachment``), a claim about where the payload
-    rested at ATTACH. Released before it retired (lifted less than its rise tolerance),
-    it would ride the record at the release pose — its band misplaced above the support
-    — for the whole window though the payload no longer rests there. The place leg's
-    set-down witness is not on the held payload: ``PlaceTargetLeg.decorate`` puts it on
-    whatever carries the object's (id, stamp) at each publish, the record included, so
-    the place support stays exempt through the window.
-
-    Returns:
-        The frozen record: same object, geometry, evidence and force attestation, no
-        support witness; base-frame pose; ``evidence_ref`` suffixed ``|frozen_release``.
-    """
-    from openral_core import AttachedCollisionObject as _Attached
-    from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
-
-    pose = t_base_from_link @ homogeneous_from_quat_xyz(
-        held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
-    )
-    w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
-    touch = [held.attach_link, *(link for link in held.touch_links if link != held.attach_link)]
-    return _Attached.model_validate(
-        {
-            **held.model_dump(),
-            "attach_link": base_link,
-            "touch_links": touch,
-            "pose_in_link": {
-                "xyz": tuple(float(v) for v in pose[:3, 3]),
-                "quat_xyzw": (x, y, z, w),
-                "frame_id": base_link,
-            },
-            "evidence_ref": f"{held.evidence_ref or held.object_id}|frozen_release",
-            "support_contact": None,
-        }
     )
 
 

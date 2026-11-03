@@ -160,6 +160,51 @@ def test_support_witness_rides_on_the_attachment_and_round_trips() -> None:
     assert decoded.support_contact.max_penetration_m == pytest.approx(0.00137)
 
 
+def _released() -> AttachedCollisionObject:
+    """The baguette let go by ``panda_link7``, frozen on the PandaMobile's root link."""
+    import numpy as np
+    from openral_core.geometry import freeze_released_attachment
+
+    robot = RobotDescription.from_yaml(_ROBOT_YAML)
+    return freeze_released_attachment(
+        _attachment(), base_link=robot.base_frame, t_base_from_link=np.eye(4)
+    )
+
+
+def test_a_held_attachment_declares_no_release() -> None:
+    assert _attachment().released_by_link is None
+
+
+def test_a_frozen_release_names_the_link_that_let_it_go_and_round_trips() -> None:
+    released = _released()
+    assert released.released_by_link == "panda_link7"
+    assert released.attach_link == RobotDescription.from_yaml(_ROBOT_YAML).base_frame
+    assert "panda_link7" in released.touch_links
+    decoded = AttachedCollisionObject.model_validate_json(released.model_dump_json())
+    assert decoded == released
+
+
+def test_a_release_by_its_own_attach_link_is_refused() -> None:
+    # Released means re-attached to a link the robot never moves, never left on the hand.
+    payload = _attachment().model_dump()
+    payload["released_by_link"] = "panda_link7"
+    with pytest.raises(ValidationError, match="released_by_link names the link"):
+        AttachedCollisionObject.model_validate(payload)
+
+
+def test_a_release_round_trips_through_the_idl() -> None:
+    msg_mod = pytest.importorskip("openral_msgs.msg")
+    released = _released()
+    msg = msg_mod.AttachedCollisionObject()
+    released.fill_idl(msg, primitive_factory=msg_mod.AttachedCollisionPrimitive)
+    assert msg.released_by_link == "panda_link7"
+    assert AttachedCollisionObject.from_idl(msg).released_by_link == "panda_link7"
+    held = msg_mod.AttachedCollisionObject()
+    _attachment().fill_idl(held, primitive_factory=msg_mod.AttachedCollisionPrimitive)
+    assert held.released_by_link == ""
+    assert AttachedCollisionObject.from_idl(held).released_by_link is None
+
+
 def test_support_witness_rejects_a_non_unit_normal() -> None:
     payload = _witness().model_dump()
     payload["contact_normal_in_object"] = (0.0, 0.0, 4.0)

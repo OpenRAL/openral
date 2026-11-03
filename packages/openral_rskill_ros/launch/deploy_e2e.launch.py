@@ -1534,6 +1534,26 @@ def _workspace_explained_cells(
     return object_tracking == "on" and workspace_contact_enabled and requested
 
 
+def _tracked_clear_enabled(object_tracking: str) -> bool:
+    """Whether a track may drive a map clear (bridge and self-filter ``tracked_clear_enabled``).
+
+    The clears are the identity clear, the released-box window, the carry sweep / vacated
+    box, and the self-filter's payload point drop.
+
+    Every mode with the object tracker (``tracking`` and ``on``). The clears follow one
+    unique ``tracked_object`` binding (an identity, not a geometry), and the tracker freezes
+    a released payload where it was let go, so the released-box window clears what the
+    kernel still checks. Without them the carried object's own re-observed cells stop the
+    arm on itself (2026-11-02 audit). ``off`` has no tracker identity, so its HAL payload
+    stays a mapped obstacle. Safety-WG review owed.
+
+    Example:
+        >>> [_tracked_clear_enabled(m) for m in ("off", "tracking", "on")]
+        [False, True, True]
+    """
+    return object_tracking in ("tracking", "on")
+
+
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
     """The octomap bridge's payload octree-clearing params (``payload_sweep_clear_enabled``).
 
@@ -2332,6 +2352,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
     object_queries_json = LaunchConfiguration("object_queries_json").perform(context)
+    place_zones_json = LaunchConfiguration("place_zones_json").perform(context)
     declared_object_catalog_json = LaunchConfiguration("declared_object_catalog_json").perform(
         context
     )
@@ -3505,6 +3526,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # Issue #418: the scene task's standing ObjectQuery s; inert while the
                 # runner's object_tracking is "off".
                 "object_queries_json": object_queries_json,
+                # The station's declared place zones: the goal-scope place declaration
+                # names the one the prompt names (`zone:<name>`).
+                "place_zones_json": place_zones_json,
                 "object_tracking": object_tracking,
                 # Issue #418 step 1.4: the runner waits for its TARGET queries to ground
                 # and, under grounding_required, refuses the goal. Checked present above
@@ -3540,7 +3564,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # relaxation (the region is the destination track's containing box),
                 # SIM-ONLY (`deploy run` refuses tracking); Safety-WG review and a
                 # hazard-log row are owed (#418). Spark A/B R388 (off: the banana dropped
-                # on the table) vs R389 (on: the banana in the bowl).
+                # on the table) vs R389 (on: the banana in the bowl). In `tracking` the
+                # tracker's `place_region()` is declaration-only (the destination track's
+                # box is never used), so this arms only with a declared place zone; with
+                # none, the declaration carries no region and no allowance is granted.
                 "place_approach_enabled": object_tracking != "off"
                 or (
                     vision_attachment_enabled
@@ -4312,6 +4339,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                 runtime_period_from_hal=self_filter_period_from_hal,
                             ),
                             "trailing_sweep_s": _self_filter_trailing_sweep_s(hal_mode),
+                            # A tracked payload's points are dropped whenever the tracker runs.
+                            "tracked_clear_enabled": _tracked_clear_enabled(object_tracking),
                             "use_sim_time": use_sim_time,
                         }
                     ],
@@ -4397,6 +4426,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # kernel's voxel deadline can fail closed (Entry 033).
                     "max_octree_age_s": max_octree_age_s,
                     "released_clear_timeout_s": tracked_release_timeout_s,
+                    # Track-driven map clears (identity, released box, sweep): `tracking` and `on`.
+                    "tracked_clear_enabled": _tracked_clear_enabled(object_tracking),
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
@@ -4691,6 +4722,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # The kernel's hand-link set: one wrist definition for both.
                     "wrist_links": workspace_contact_wrist_links,
                     "object_queries_json": object_queries_json,
+                    # The station's declared place zones: the region of a place
+                    # declaration naming one (`TrackerSession.place_region`).
+                    "place_zones_json": place_zones_json,
                     "declared_object_catalog_json": declared_object_catalog_json,
                     "object_surface_model_json": object_surface_model_json,
                     # The declared static geometry (the kernel's cells file): a body wholly
@@ -5113,6 +5147,16 @@ def generate_launch_description() -> LaunchDescription:
                 "JSON list of openral_core.ObjectQuery (issue #418) the skill_runner "
                 "attaches to each goal's grasp (TARGET/CONTEXT) and place (DESTINATION) "
                 "declaration when object tracking is on. Empty = none."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "place_zones_json",
+            default_value="",
+            description=(
+                "JSON list of openral_core.PlaceZone (DeployScene.place_zones): named place "
+                "zones on fixed station furniture. The skill_runner's goal-scope place "
+                "declaration names the one the prompt names; the object tracker publishes its "
+                "box as the place region while a payload is held. Empty = none."
             ),
         ),
         DeclareLaunchArgument(

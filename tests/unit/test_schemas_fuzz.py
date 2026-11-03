@@ -68,6 +68,7 @@ from openral_core.schemas import (
     PlaceDeclaration,
     PlaceRegion,
     PlaceTargetRef,
+    PlaceZone,
     Pose6D,
     QuantizationBackend,
     QuantizationConfig,
@@ -355,6 +356,17 @@ _place_declaration_st = st.builds(
     active=st.booleans(),
     region=st.none() | _grasp_region_st,
     search_box=st.none() | _grasp_region_st,
+)
+
+_zone_name = st.from_regex(r"[a-z0-9]{1,6}(_[a-z0-9]{1,6}){0,3}", fullmatch=True)
+_place_zone_st = st.builds(
+    PlaceZone,
+    name=_zone_name,
+    aliases=st.lists(_zone_name, max_size=3).map(tuple),
+    # A zone's pose is in its region's frame (PlaceZone refuses a mismatch).
+    region=_grasp_region_st.map(
+        lambda r: r.model_copy(update={"pose": r.pose.model_copy(update={"frame_id": r.frame_id})})
+    ),
 )
 
 _grasp_target_ref_st = st.builds(
@@ -749,6 +761,13 @@ def test_fuzz_execute_rskill_tool_with_targets(instance: ExecuteRskillTool) -> N
 def test_fuzz_place_declaration(instance: PlaceDeclaration) -> None:
     """PlaceDeclaration (with an optional search box) round-trips and validates."""
     _round_trip_and_validate(PlaceDeclaration, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_place_zone_st)
+def test_fuzz_place_zone(instance: PlaceZone) -> None:
+    """PlaceZone round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(PlaceZone, instance)
 
 
 @_FUZZ_SETTINGS
