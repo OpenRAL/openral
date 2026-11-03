@@ -513,6 +513,8 @@ def _detected_part(
     would be swapped for the neighbour. Safety-WG review owed: dropped points no longer bound the
     box.
     """
+    if not measured.any():  # every non-robot pixel in the filter's uncertain band
+        return None
     pts, win = _grid_points(measured, depth_m, intrinsics, t_base_from_cam)
     act = measured[win] & (pts[..., 2] > support_z + resolution)
     right = act[:, 1:] & act[:, :-1]

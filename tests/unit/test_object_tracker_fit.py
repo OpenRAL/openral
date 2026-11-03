@@ -376,3 +376,18 @@ def test_a_mask_over_the_strip_the_carton_stands_on_is_boxed_to_the_carton() -> 
     assert max(fit.box.half_extents[:2]) <= 0.03 + RES, fit.box.half_extents
     assert _in_box(surface_samples(carton), fit.box).all()
     assert fit.assumptions["support_dropped_points"] > 0
+
+
+def test_a_mask_all_in_the_robot_filters_uncertain_band_still_fits_with_a_part_box() -> None:
+    """Review of #479: with no pixel the filter is sure of, the fit falls back to the whole mask,
+    and a refit's part box picked parts from an empty mask (``rows.min()`` of nothing raised and
+    took down the whole tracker step). No measured part: every point is kept."""
+    rig = _RIGS["openarm_head"]
+    x, y = rig.centre_xy
+    carton = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
+    _, labels = render([carton], rig)
+    rows, cols = np.nonzero(labels == 1)
+    prompt = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    robot = np.where(labels == 1, UNCERTAIN_PIXEL, 0).astype(np.uint8)
+    fit = _fit(rig, [carton], robot_mask=robot, params=FitParams(), part_box=prompt)
+    assert fit.refusal == "" and "spill_dropped_points" not in fit.assumptions
