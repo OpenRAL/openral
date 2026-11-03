@@ -358,3 +358,21 @@ def test_a_consistent_growth_that_adds_height_stays_refused() -> None:
     fit = ContainingFit(box=taller, tight=None, support_z=_SUPPORT_Z, surface=np.zeros((0, 3)))
     for n in range(3 * tracker_mod._GROWTH_VOTES):
         assert _refuse(tr, t, fit, (n + 1) * _NS)
+
+
+def test_an_admitted_growth_a_later_gate_refuses_keeps_the_reference_and_the_admission() -> None:
+    """Review of #479: the admission cleared the reference and spent the track's one admission
+    before ``_refuse_refit``'s later gates ran. An OCCLUDED track's unmoved refit is refused
+    there, which left the box with no size reference (the next fit, a spill too, became it)
+    and the consistent growth could never be admitted again."""
+    tr, t = _tracker(TrackStatus.OCCLUDED)
+    first = _first(tr, t)
+    grown = _scaled(t.box, 1.8)
+    for n in range(tracker_mod._GROWTH_VOTES):
+        assert tr._refuse_refit(t, grown, frozenset(), t.box.pose.xyz, _SUPPORT_Z, _grid(), (),
+                                _frame((n + 1) * _NS), False)  # fmt: skip
+    assert tr._first_extent[t.object_id][0] == first
+    assert not tr._growth_admitted.get(t.object_id)
+    seen = t.model_copy(update={"status": TrackStatus.CONFIRMED})  # in view again
+    tr.store.replace(seen)
+    assert not _refuse(tr, seen, grown, (tracker_mod._GROWTH_VOTES + 1) * _NS)

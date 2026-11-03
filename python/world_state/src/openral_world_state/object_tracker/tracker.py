@@ -1241,7 +1241,8 @@ class ObjectTracker:
         provisional one re-dates it in the store). Each gate logs.
         """
         oid = old.object_id
-        if self._overgrown(oid, fit, moved) and not self._admit_growth(
+        grown = self._overgrown(oid, fit, moved)
+        if grown and not self._admit_growth(
             old, fit, cells, centroid, support_z, grid, hands, frame
         ):
             if self._redate_if_inside(old, fit, grid, frame, _REDATE_SPILL_FRACTION):
@@ -1302,6 +1303,16 @@ class ObjectTracker:
                 # track would go SPLIT and its next fit take a new id (a swap).
                 log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
                 return True
+        if grown and fit.box is not None:
+            # Admitted and past every later gate: the fit is committed and replaces the
+            # reference (``_commit_fit``). Taken earlier, a later gate's refusal left the track
+            # with no reference and its one admission spent (review of #479).
+            self._first_extent.pop(oid, None)
+            self._growth_votes.pop(oid, None)
+            self._growth_admitted[oid] = True
+            log.info("object_tracker.refit_growth_admitted", object_id=oid,
+                     extent_m=round(2.0 * max(fit.box.half_extents[:2]), 3),
+                     height_m=round(2.0 * fit.box.half_extents[2], 3))  # fmt: skip
         return False
 
     def _admit_growth(
@@ -1315,7 +1326,7 @@ class ObjectTracker:
         hands: Sequence[PlaceRegion],
         frame: CameraFrame,
     ) -> bool:
-        """Admit a growth-refused clear refit as the track's new size reference; whether admitted.
+        """Whether a growth-refused clear refit may become the track's new size reference.
 
         A first fit from a partial mask holds the reference small for good: restock seeds 111 and
         112 (2026-11-01/02), an 8.2 cm carton first fitted at 6 cm refused every 10.6 cm full
@@ -1334,9 +1345,9 @@ class ObjectTracker:
 
         Once per track: a spill that feeds its own prompt (a larger box prompts a larger mask)
         cannot ratchet the box (restock 2026-10-30: 14 -> 24 -> 39 cm). The admitted fit
-        replaces the reference. *Ceiling*: an object whose first clear fit missed its top stays
-        short; growth onto an untracked object of the same height that the map sees as one body
-        is admitted once. Safety-WG review owed.
+        replaces the reference once ``_refuse_refit``'s later gates pass it too. *Ceiling*: an
+        object whose first clear fit missed its top stays short; growth onto an untracked object
+        of the same height that the map sees as one body is admitted once. Safety-WG review owed.
         """
         oid = old.object_id
         ref = self._first_extent.get(oid)
@@ -1376,11 +1387,6 @@ class ObjectTracker:
         if verdict.kind == "map_split":
             log.info("object_tracker.refit_growth_blocked", object_id=oid, by="map_split")
             return False
-        self._first_extent.pop(oid, None)
-        self._growth_votes.pop(oid, None)
-        self._growth_admitted[oid] = True
-        log.info("object_tracker.refit_growth_admitted", object_id=oid,
-                 extent_m=round(ext[0], 3), height_m=round(ext[1], 3))  # fmt: skip
         return True
 
     def _overgrown(self, oid: str, fit: ContainingFit, moved: bool) -> bool:
