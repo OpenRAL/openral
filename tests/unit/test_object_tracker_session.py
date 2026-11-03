@@ -728,6 +728,27 @@ def test_the_session_clock_follows_a_source_clock_reset() -> None:
     assert s.now_ns == 2 * _S
 
 
+def test_input_queued_before_a_sim_reset_neither_lifts_the_clock_nor_blocks_new_grids() -> None:
+    """Review of #479: after the joint stamps go back, a frame or grid still queued from before
+    the reset carries the old (larger) time. It must not lift ``now_ns`` back into the old
+    epoch, and the newest-grid gate must not refuse every new grid until sim time passes the
+    old one."""
+    s = _session("droid_franka_robotiq")
+    _, q, _ = arm_at_hold("droid_franka_robotiq")
+    depth, _ = render([], _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    s.on_joint_state(q, 100 * _S)
+    s.on_grid(grid, 100 * _S)
+    s.on_joint_state(q, 2 * _S)  # the sim reset
+    assert s.grid is None and s.grid_stamp_ns == 0
+    s.on_grid(grid, 99 * _S)  # queued before the reset
+    assert s.now_ns == 2 * _S
+    assert s.grid is None
+    s.on_grid(grid, 2 * _S)  # the new epoch's first grid
+    assert s.grid is grid and s.grid_stamp_ns == 2 * _S
+    assert s.now_ns == 2 * _S
+
+
 def test_a_grid_a_second_behind_the_joint_states_does_not_move_the_session_clock_back() -> None:
     """Review of #479: only a joint state resets the clock. A frame or grid that lags (the node
     holds a frame up to a second for its transform) is late, not a sim reset: read as one, the

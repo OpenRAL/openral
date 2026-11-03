@@ -295,6 +295,7 @@ class TrackerSession:
         self._derived: set[str] = set()
         self._goals: dict[str, _Goal | None] = {"grasp": None, "place": None, "deploy": None}
         self._now_ns = 0
+        self._clock_reset = False  # the joint stamps went back at least once (a sim reset)
 
     # -- inputs ------------------------------------------------------------------------
 
@@ -302,6 +303,14 @@ class TrackerSession:
     def now_ns(self) -> int:
         """The newest source stamp seen since the joint stamps last went back (a sim reset)."""
         return self._now_ns
+
+    def _from_old_epoch(self, stamp_ns: int) -> bool:
+        """Whether ``stamp_ns`` predates the last sim reset: past it by more than a reset step.
+
+        Inputs lag the joint clock, never lead it, so after a reset a stamp that far ahead of
+        it was taken before the reset (a frame or answer still queued in the node).
+        """
+        return self._clock_reset and stamp_ns > self._now_ns + _CLOCK_RESET_NS
 
     def _tick(self, stamp_ns: int, *, may_reset: bool = False) -> None:
         if may_reset and stamp_ns < self._now_ns - _CLOCK_RESET_NS:
@@ -311,6 +320,17 @@ class TrackerSession:
             # states only: a camera frame or grid can lag a second or more (the node holds a
             # frame up to ``_MASK_TF_WAIT_S`` for its transform) and is late, not a reset.
             self._now_ns = stamp_ns
+            self._clock_reset = True
+            # Source-time state from before the reset would gate or mislead the new epoch:
+            # the newest-grid gate would refuse every grid until sim time passed the old one,
+            # and a late ATTACH would look up hand poses from the last episode.
+            self.grid, self.grid_stamp_ns = None, 0
+            kept = [h for h in self._joint_history if h[0] <= stamp_ns]
+            self._joint_history.clear()
+            self._joint_history.extend(kept)
+        if self._from_old_epoch(stamp_ns):
+            # A frame, grid or answer queued before the reset never lifts the clock back.
+            return
         self._now_ns = max(self._now_ns, stamp_ns)
         for goal in self._goals.values():
             if goal is not None and goal.start_ns is None and self._now_ns > 0:
@@ -398,6 +418,9 @@ class TrackerSession:
         """Keep the newest grid in the tracks' frame; another frame is logged and ignored."""
         if grid.frame_id != self.frame_id:
             log.warning("object_tracker.grid_frame", grid=grid.frame_id, tracks=self.frame_id)
+            return
+        if self._from_old_epoch(source_stamp_ns):
+            log.info("object_tracker.grid_before_reset_ignored", stamp_ns=source_stamp_ns)
             return
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
