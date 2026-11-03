@@ -67,3 +67,11 @@ def test_a_zone_refuses_a_malformed_name_and_target_geometry() -> None:
     ]
     with pytest.raises(ValidationError, match="geometry must be empty"):
         PlaceZone.model_validate({**zone.model_dump(), "region": region})
+
+
+def test_a_zone_refuses_a_pose_in_another_frame_than_its_region() -> None:
+    zone = _zones()[0]
+    region = zone.region.model_dump()
+    region["pose"]["frame_id"] = "world"
+    with pytest.raises(ValidationError, match="not the region's"):
+        PlaceZone.model_validate({**zone.model_dump(), "region": region})

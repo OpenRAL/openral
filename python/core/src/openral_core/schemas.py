@@ -4534,7 +4534,8 @@ class PlaceZone(BaseModel):
     Attributes:
         name: The zone's name, lower-case words joined by ``_`` (``upper_slot_2``).
         aliases: Other names a prompt may use (``upper_2``), same form.
-        region: The zone's box in the robot base frame (the voxel grid's); ``geometry`` empty.
+        region: The zone's box in the robot base frame (the voxel grid's); ``geometry`` empty,
+            ``pose`` in ``region.frame_id``.
 
     Example:
         >>> zone = PlaceZone(
@@ -4567,6 +4568,13 @@ class PlaceZone(BaseModel):
     def _validate_zone(self) -> Self:
         if self.region.geometry:
             raise ValueError(f"PlaceZone {self.name!r}: region.geometry must be empty.")
+        # The tracker frame-checks `region.frame_id` only, and the IDL drops the pose's own
+        # frame: a pose written in another frame would arm the box at the wrong place.
+        if self.region.pose.frame_id != self.region.frame_id:
+            raise ValueError(
+                f"PlaceZone {self.name!r}: region.pose is in {self.region.pose.frame_id!r}, "
+                f"not the region's {self.region.frame_id!r}."
+            )
         return self
 
     @property
