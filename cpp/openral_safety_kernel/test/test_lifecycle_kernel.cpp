@@ -7303,6 +7303,28 @@ TEST_F(LifecycleKernelTest, AnAcceptedNonPositionChunkForgetsTheHoldAnchor) {
   EXPECT_GE(logs.count("anchor=measured anchor_why=no_command"), 1U) << logs.joined();
 }
 
+// #480 review: a BODY_TWIST chunk moves the base only (it carries no joint_names), so it keeps
+// the arm's hold anchor: the next brake still holds at the accepted arm command.
+TEST_F(LifecycleKernelTest, ABaseTwistChunkKeepsTheArmHoldAnchor) {
+  LogCapture logs;
+  std::unique_ptr<GraspRig> slot;
+  GraspRig& rig = *hold_rig(slot, "kernel_ws_hold_body_twist");
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.6))) << logs.joined();
+  openral_msgs::msg::ActionChunk twist = grasp_chunk(0.0);
+  twist.control_mode = 7;  // BODY_TWIST, at rest
+  twist.n_dof = 6;
+  twist.flat = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  ASSERT_TRUE(rig.send_once(&b, 0.52, twist)) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, 0.52, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.6) << "held at the accepted command: " << logs.joined();
+  EXPECT_EQ(logs.count("anchor_why=no_command"), 0U) << logs.joined();
+}
+
 // Review of #480: a chunk that records no anchor forgets the anchors of the joints IT commands
 // only. Two arms slot-dispatched: j0's position slot records its anchor; j1's velocity slot is
 // accepted next; j0's brake still holds at j0's accepted command, not at the measured pose.

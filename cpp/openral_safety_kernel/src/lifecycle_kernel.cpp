@@ -2782,10 +2782,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     // #480 review: an arm chunk published without recording a hold anchor (velocity,
     // Cartesian, torque, or a position chunk outside the geometry checks) moves the arm off
     // the recorded command, so a later brake must not hold (move the arm back) there: forget
-    // it. Gripper / dex-hand / composite chunks command no arm joint and keep it.
+    // it. Gripper / dex-hand / composite / base-twist chunks command no arm joint and keep it.
     const bool arm_free_mode =
         mode == ControlMode::kGripperBinary || mode == ControlMode::kGripperPosition ||
-        mode == ControlMode::kDexHandJoint || mode == ControlMode::kCompositeMode;
+        mode == ControlMode::kDexHandJoint || mode == ControlMode::kCompositeMode ||
+        mode == ControlMode::kBodyTwist;
     if (!hold_recorded && !arm_free_mode) {
       if (msg->joint_names.empty()) {  // a full-row chunk commands every joint
         std::fill(workspace_hold_set_.begin(), workspace_hold_set_.end(), std::uint8_t{0});
