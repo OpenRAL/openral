@@ -282,19 +282,27 @@ def test_episode_grade_is_the_worst_placement(scene_mod: Any) -> None:
     assert scene_mod.worst_grade(["complete", "fail"], _SCORES) == "fail"
 
 
-def test_rest_timer_needs_a_still_object(scene_mod: Any) -> None:
-    dt, speed = 1 / 30, 0.02
-    rest = 0.0
-    rest = scene_mod.rest_after(rest, None, dt, speed)  # first graded step: no history
-    for _ in range(30):
-        rest = scene_mod.rest_after(rest, 0.0002, dt, speed)
-    assert rest == pytest.approx(1.0)
-    assert scene_mod.rest_after(rest, 0.01, dt, speed) == 0.0  # 0.3 m/s: moving again
-    turn = np.radians(10.0)
-    assert scene_mod.rest_after(rest, 0.0, dt, speed, np.radians(0.1), turn) > rest  # 3 deg/s
-    assert (
-        scene_mod.rest_after(rest, 0.0, dt, speed, np.radians(1.0), turn) == 0.0
-    )  # 30 deg/s: spinning
+def test_rest_is_judged_over_the_settle_window(scene_mod: Any) -> None:
+    dt, settle, speed, turn = 1 / 30, 1.0, 0.02, np.radians(10.0)
+    q = scene_mod._yaw_quat(0.0)
+
+    def window(step_m: float, n: int = 31, yaw_step: float = 0.0) -> list[Any]:
+        return [
+            (i * dt, np.array([i * step_m, 0.0, 0.0]), scene_mod._yaw_quat(i * yaw_step))
+            for i in range(n)
+        ]
+
+    assert scene_mod.settled(window(0.0002), settle, speed, turn)  # 6 mm/s for 1 s
+    assert not scene_mod.settled(window(0.0002, n=30), settle, speed, turn)  # not 1 s yet
+    assert not scene_mod.settled(window(0.001), settle, speed, turn)  # 30 mm/s: still moving
+    assert not scene_mod.settled(window(0.0, yaw_step=np.radians(1.0)), settle, speed, turn)
+    assert scene_mod.settled(window(0.0, yaw_step=np.radians(0.1)), settle, speed, turn)
+    # Spark ev_tracking_rs_10 (2026-11-02): a carton resting in its slot jittered 0.5 mm per
+    # 30 Hz tick (16 mm/s apparent, 14 % of ticks over 20 mm/s) yet stayed within 0.7 mm over
+    # every second; the per-tick timer never reached 1 s and the placement never graded.
+    jitter = [(i * dt, np.array([0.0007 if i % 2 else 0.0, 0.0, 0.0]), q) for i in range(31)]
+    assert scene_mod.settled(jitter, settle, speed, turn)
+    assert not scene_mod.settled([], settle, speed, turn)
     assert scene_mod._quat_angle(
         scene_mod._yaw_quat(0.0), scene_mod._yaw_quat(0.2)
     ) == pytest.approx(0.2)
@@ -318,9 +326,8 @@ def test_a_reset_returns_the_scene_to_its_boot_rubric(scene_mod: Any) -> None:
     scene._objects = []  # no pose_noise object to redraw
     scene._boot_placement_success = None
     scene._placement_by_prompt = {"put it there": {"placements": [], "grades": _RUBRIC}}
-    scene._rest_s = {}
-    scene._last_pos = {}
-    scene._last_quat = {}
+    scene._rest_window = {}
+    scene._grade_clock_s = 0.0
     scene._activate_placement_success(None)
     assert scene.set_task("put it there")["graded"] is True
     scene._placement_grade = "complete"

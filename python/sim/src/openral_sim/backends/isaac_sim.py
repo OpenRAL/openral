@@ -1219,12 +1219,13 @@ class IsaacPlacementSuccess(BaseModel):
     """Graded task success for placement prompts (``IsaacSimOptions.placement_success``).
 
     ``tasks`` maps a prompt -- the scene's ``task.instruction``, verbatim -- to the
-    objects it asks to place. Each object is graded once it rests: moving slower than
-    ``rest_speed_m_s`` and turning slower than ``rest_turn_deg_s`` for ``settle_s`` of
-    sim time (a moving object is ``fail``). The rubric is the scene's ``grades``
-    (``IsaacPlacementGrade``, best first, first match wins; ``fail`` scores 0 when none
-    matches); the default is ``DEFAULT_PLACEMENT_GRADES``: ``complete`` 1.0 (in the
-    target, upright -- its declared up axis within ``upright_tol_deg`` of world up),
+    objects it asks to place. Each object is graded once it rests: over the last
+    ``settle_s`` of sim time it stays within ``rest_speed_m_s * settle_s`` and
+    ``rest_turn_deg_s * settle_s`` of where it started (the rates averaged over the window,
+    so contact jitter does not count as motion; a moving object is ``fail``). The rubric is
+    the scene's ``grades`` (``IsaacPlacementGrade``, best first, first match wins; ``fail``
+    scores 0 when none matches); the default is ``DEFAULT_PLACEMENT_GRADES``: ``complete``
+    1.0 (in the target, upright -- its declared up axis within ``upright_tol_deg`` of world up),
     ``partial`` 0.5 (in the target, fallen), ``semi`` 0.25 (in an adjacent region).
 
     The episode's grade is its worst placement's, or ``some_placed`` (when set) once at
@@ -1262,7 +1263,7 @@ class IsaacPlacementSuccess(BaseModel):
     settle_s: float = Field(default=1.0, ge=0.0)
     rest_speed_m_s: float = Field(default=0.02, gt=0.0)
     rest_turn_deg_s: float = Field(default=10.0, gt=0.0)
-    # An object touching any robot body is not placed (its rest timer restarts): without
+    # An object touching any robot body is not placed (its rest window restarts): without
     # it, a gripper holding the object still inside the target for settle_s passes.
     require_released: bool = False
     some_placed: IsaacSomePlaced | None = None
