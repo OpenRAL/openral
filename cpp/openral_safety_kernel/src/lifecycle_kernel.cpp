@@ -779,10 +779,21 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
     grasp_extra_links_.set(index);
   }
-  // Issue #418 K5: the bounds of the release window the kernel opens on a provider's release
-  // decision (validated at the provider's load). The decision itself is the provider's.
+  // Issue #418 K5: the bounds of the release window the kernel opens on a release decision.
+  // The open kernel opens one too (a producer-declared release, #481), so the bounds are
+  // checked here, not only at a provider's load: a NaN or huge timeout would never close the
+  // window. Same range as `load_exemption_provider`; refused, never clamped.
   release_clear_m_ = this->get_parameter("tracked_release_clear_m").as_double();
   release_timeout_s_ = this->get_parameter("tracked_release_timeout_s").as_double();
+  if (!std::isfinite(release_clear_m_) || release_clear_m_ <= 0.0 || release_clear_m_ > 0.1 ||
+      !std::isfinite(release_timeout_s_) || release_timeout_s_ <= 0.0 ||
+      release_timeout_s_ > 10.0) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "tracked_release_clear_m must be in (0, 0.1] and tracked_release_timeout_s in "
+                 "(0, 10]");
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
   // Region measurement age bounds (kernel-region-age). Resolved after the
   // collision model so `attached_collision_enabled_` (the place allowance's
   // switch) and the voxel deadline are both known. Refused, never clamped.

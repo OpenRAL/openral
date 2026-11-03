@@ -277,6 +277,28 @@ TEST_F(LifecycleKernelTest, ParameterPathFailsOnJointArrayLengthMismatch) {
   EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE);
 }
 
+TEST_F(LifecycleKernelTest, AnOpenKernelRefusesUnboundedReleaseWindowParameters) {
+  // #481 review: the open kernel opens a release window on a producer-declared release, so its
+  // bounds are checked at configure, not only at a provider's load. A NaN timeout would never
+  // close the window.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<std::pair<const char*, double>> bad = {
+      {"tracked_release_timeout_s", nan},  {"tracked_release_timeout_s", 0.0},
+      {"tracked_release_timeout_s", 11.0}, {"tracked_release_clear_m", nan},
+      {"tracked_release_clear_m", 0.0},    {"tracked_release_clear_m", 0.2}};
+  for (const auto& [name, value] : bad) {
+    rclcpp::NodeOptions opts;
+    auto params = minimal_envelope_params();
+    params.emplace_back(name, value);
+    opts.parameter_overrides(params);
+    auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_bad_release", opts);
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                   "unconfigured");
+    EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+        << name << "=" << value;
+  }
+}
+
 TEST_F(LifecycleKernelTest, ParameterPathFailsOnANaNOrNegativePerModeBound) {
   // A NaN bound would pass every chunk (`x > NaN` is false); a negative one
   // would refuse every chunk. Both must fail configure; +inf stays legal.
