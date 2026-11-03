@@ -103,10 +103,15 @@ def test_three_identical_oranges_tie_moves_nothing() -> None:
     centroid = tuple(fit.surface.mean(axis=0))
     assert associate(tr.store.all(), centroid, voxel_m=RES) == (None, "tie")
     out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall + 1, results=[union])
-    same = {k: v.model_copy(update={"stamp_ns": 0}) for k, v in boxes.items()}
-    assert {
-        o.object_id: o.box.model_copy(update={"stamp_ns": 0}) for o in out.tracked.objects
-    } == same
+    # Moves nothing: the refreshed box is a re-fit of the same surface, equal up to float
+    # rounding (bit-identical on one host, 1e-17 apart on CI), never a moved or grown box.
+    after = {o.object_id: o.box for o in out.tracked.objects}
+    assert after.keys() == boxes.keys()
+    for oid, box in boxes.items():
+        moved = after[oid]
+        assert moved.pose.xyz == pytest.approx(box.pose.xyz, abs=1e-9), oid
+        assert moved.pose.quat_xyzw == pytest.approx(box.pose.quat_xyzw, abs=1e-9), oid
+        assert moved.half_extents == pytest.approx(box.half_extents, abs=1e-9), oid
     assert {
         o.object_id for o in out.tracked.objects if o.box.stamp_ns != boxes[o.object_id].stamp_ns
     } <= {req.object_id}
