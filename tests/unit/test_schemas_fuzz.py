@@ -363,7 +363,10 @@ _place_zone_st = st.builds(
     PlaceZone,
     name=_zone_name,
     aliases=st.lists(_zone_name, max_size=3).map(tuple),
-    region=_grasp_region_st,
+    # A zone's pose is in its region's frame (PlaceZone refuses a mismatch).
+    region=_grasp_region_st.map(
+        lambda r: r.model_copy(update={"pose": r.pose.model_copy(update={"frame_id": r.frame_id})})
+    ),
 )
 
 _grasp_target_ref_st = st.builds(
