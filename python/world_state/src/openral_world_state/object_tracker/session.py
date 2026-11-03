@@ -300,14 +300,16 @@ class TrackerSession:
 
     @property
     def now_ns(self) -> int:
-        """The newest source stamp seen since the source clock last went back (a sim reset)."""
+        """The newest source stamp seen since the joint stamps last went back (a sim reset)."""
         return self._now_ns
 
-    def _tick(self, stamp_ns: int) -> None:
-        if stamp_ns < self._now_ns - _CLOCK_RESET_NS:
+    def _tick(self, stamp_ns: int, *, may_reset: bool = False) -> None:
+        if may_reset and stamp_ns < self._now_ns - _CLOCK_RESET_NS:
             # The source clock went back (a sim reset), as ``JawStallDetector.update`` reads it:
             # a running maximum from before it would stamp every jaw command ahead of every
-            # jaw sample, and the stall-derived ATTACH would never fire (review of #479).
+            # jaw sample, and the stall-derived ATTACH would never fire (review of #479). Joint
+            # states only: a camera frame or grid can lag a second or more (the node holds a
+            # frame up to ``_MASK_TF_WAIT_S`` for its transform) and is late, not a reset.
             self._now_ns = stamp_ns
         self._now_ns = max(self._now_ns, stamp_ns)
         for goal in self._goals.values():
@@ -425,7 +427,7 @@ class TrackerSession:
         for joint, binder in self.binders.items():
             if joint in positions:  # the most open jaw before closure bounds a fallback
                 binder.observe_jaw(positions[joint])
-        self._tick(stamp_ns)
+        self._tick(stamp_ns, may_reset=True)
         for joint, monitor in list(self._monitors.items()):
             jaw = positions.get(joint)
             if jaw is not None and monitor.observe(jaw, stamp_ns):

@@ -726,3 +726,15 @@ def test_the_session_clock_follows_a_source_clock_reset() -> None:
     assert s.now_ns == 100 * _S
     s.on_joint_state(q, 2 * _S)  # the sim reset: source time restarts
     assert s.now_ns == 2 * _S
+
+
+def test_a_grid_a_second_behind_the_joint_states_does_not_move_the_session_clock_back() -> None:
+    """Review of #479: only a joint state resets the clock. A frame or grid that lags (the node
+    holds a frame up to a second for its transform) is late, not a sim reset: read as one, the
+    rest of that step ran, and published its snapshot, at the older time."""
+    s = _session("droid_franka_robotiq")
+    _, q, _ = arm_at_hold("droid_franka_robotiq")
+    s.on_joint_state(q, 100 * _S)
+    depth, _ = render([], _RIG)
+    s.on_grid(grid_from_depth(depth, _RIG), 98 * _S)
+    assert s.now_ns == 100 * _S
