@@ -533,17 +533,21 @@ def test_the_goal_scope_place_backstop_never_exceeds_120_s(
 
 
 @pytest.mark.parametrize(
-    ("prompt", "target_id"),
+    ("prompt", "mode", "target_id"),
     [
-        ("restock box x3 into upper slot 2", "zone:upper_slot_2"),
-        ("restock box x3 onto the shelf", "surface"),  # names no zone: none armed
+        ("restock box x3 into upper slot 2", "tracking", "zone:upper_slot_2"),
+        ("restock box x3 onto the shelf", "tracking", "surface"),  # names no zone: none armed
+        # `on` takes the tracked destination: a zone would shadow it in the tracker.
+        ("restock box x3 into upper slot 2", "on", "surface"),
+        ("restock box x3 into upper slot 2", "off", "surface"),
     ],
 )
 def test_the_goal_scope_place_declaration_names_the_zone_its_prompt_names(
-    prompt: str, target_id: str
+    prompt: str, mode: str, target_id: str
 ) -> None:
-    """The station's declared zones (the restock shelf fixture): the prompt's slot becomes
-    the goal-scope declaration's ``zone:<name>`` target, which the tracker resolves."""
+    """The station's declared zones (the restock shelf fixture): under ``tracking`` the
+    prompt's slot becomes the goal-scope declaration's ``zone:<name>`` target, which the
+    tracker resolves; no other mode names a zone."""
     import json
     from pathlib import Path
 
@@ -551,7 +555,8 @@ def test_the_goal_scope_place_declaration_names_the_zone_its_prompt_names(
 
     fixture = Path(__file__).parents[3] / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
     zones = json.dumps(yaml.safe_load(fixture.read_text())["place_zones"])
-    with _harness("", approach=True, params={"place_zones_json": zones}) as (_, runtime, _seen):
+    params = {"place_zones_json": zones, "object_tracking": mode, "grounding_wait_s": 0.2}
+    with _harness("", approach=True, params=params) as (_, runtime, _seen):
         declaration = runtime.skill_runner_node._goal_scope_place_declaration(30.0, prompt=prompt)
     assert declaration.target_id == target_id
     assert declaration.region is None, "dispatch never publishes a region"

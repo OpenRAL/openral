@@ -434,9 +434,11 @@ if _ROS2_AVAILABLE:
             # the HAL's `vision_attachment_place_target_enabled`.
             self.declare_parameter("place_approach_enabled", False)
             # The station's declared place zones (DeployScene.place_zones, a JSON list of
-            # core.PlaceZone). With `place_approach_enabled`, a goal whose prompt names exactly
-            # one (`place_zone_for_prompt`) gets `target_id="zone:<name>"` instead of
-            # "surface"; the object tracker publishes that zone's box as the place region.
+            # core.PlaceZone). With `place_approach_enabled` and `object_tracking: tracking`, a
+            # goal whose prompt names exactly one (`place_zone_for_prompt`) gets
+            # `target_id="zone:<name>"` instead of "surface"; the object tracker publishes that
+            # zone's box as the place region. `on` names no zone: it uses the tracked
+            # destination.
             # A prompt naming none keeps "surface" (no zone armed). Empty = no zones.
             self.declare_parameter("place_zones_json", "")
             # Issue #418: the deploy's DeployRuntime.object_tracking (off | tracking |
@@ -2583,10 +2585,11 @@ if _ROS2_AVAILABLE:
 
             Names no target surface, no object and no search box: the HAL's
             place-target leg measures the surface under whichever payload is
-            carried and scopes the region to it. When ``prompt`` names exactly one of the
-            station's declared ``place_zones_json`` zones, ``target_id`` is that zone's
-            ``zone:<name>`` instead, and the object tracker publishes its box as the place
-            region (Safety-WG review owed); a prompt naming none, or several, keeps
+            carried and scopes the region to it. Under ``object_tracking: tracking``, when
+            ``prompt`` names exactly one of the station's declared ``place_zones_json`` zones,
+            ``target_id`` is that zone's ``zone:<name>`` instead, and the object tracker
+            publishes its box as the place region (Safety-WG review owed); ``on`` names no
+            zone (it uses the tracked destination); a prompt naming none, or several, keeps
             ``"surface"`` and is logged. The backstop is the goal
             deadline (120 s when unset), capped at 120 s — the grasp side's
             ``GraspDeclaration.MAX_TIMEOUT_S``, not ``PlaceDeclaration``'s looser
@@ -2604,7 +2607,10 @@ if _ROS2_AVAILABLE:
 
             target_id = "surface"
             raw = self.get_parameter("place_zones_json").get_parameter_value().string_value
-            if raw:
+            mode = self.get_parameter("object_tracking").get_parameter_value().string_value
+            # A zone is the place allowance of `tracking` only: under `on` it would shadow the
+            # tracked destination (`TrackerSession.place_region` resolves a zone first).
+            if raw and mode == "tracking":
                 zones = TypeAdapter(list[PlaceZone]).validate_json(raw)
                 zone = place_zone_for_prompt(prompt, zones)
                 if zone is not None:

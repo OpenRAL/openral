@@ -133,8 +133,9 @@ adapters. Quick reference:
   `runtime`, `safety`, `composition`, `extra_allowed_collision_pairs`,
   `grasp_declaration` / `place_declaration`, `place_zones`, `memory_dir`, `seed`.
 - `place_zones` declares named place zones on the cell's fixed furniture (shelf slots,
-  `PlaceZone`): a goal whose prompt names one ("into upper slot 2") gets that box as its
-  place region from the object tracker while a payload is held. Declared, not measured;
+  `PlaceZone`): under `object_tracking: tracking`, a goal whose prompt names one ("into
+  upper slot 2") gets that box as its place region from the object tracker while a payload
+  is held (`on` uses the tracked destination instead). Declared, not measured;
   Safety-WG review owed. `scenes/deploy/place_zones/` holds paste-in lists, e.g. the
   OpenArm restock shelf.
 - A `SimScene` is a `DeployScene` + required `task:` block (+ optional
