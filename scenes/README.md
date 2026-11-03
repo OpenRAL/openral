@@ -135,8 +135,9 @@ adapters. Quick reference:
 - `place_zones` declares named place zones on the cell's fixed furniture (shelf slots,
   `PlaceZone`): under `object_tracking: tracking`, a goal whose prompt names one ("into
   upper slot 2") gets that box as its place region from the object tracker while a payload
-  is held (`on` uses the tracked destination instead). Declared, not measured;
-  Safety-WG review owed. `scenes/deploy/place_zones/` holds paste-in lists, e.g. the
+  is held (`on` uses the tracked destination instead). Fixed-base stations only: a deploy
+  refuses them on a robot whose `embodiment_kind` is not `manipulator` / `bimanual`.
+  Declared, not measured; Safety-WG review owed. `scenes/deploy/place_zones/` holds paste-in lists, e.g. the
   OpenArm restock shelf.
 - A `SimScene` is a `DeployScene` + required `task:` block (+ optional
   `n_episodes`, `record_video`, `save_dir`, `metadata`).

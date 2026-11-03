@@ -491,3 +491,17 @@ def test_deploy_forwards_the_stations_declared_place_zones(
     bare = tmp_path / "no_zones.yaml"  # PickOrange declares its own "plate" zone
     bare.write_text(yaml.safe_dump({k: v for k, v in scene.items() if k != "place_zones"}))
     assert not [a for a in _argv(bare, mode, {"object_tracking": "off"}) if "place_zones" in a]
+
+
+def test_deploy_refuses_place_zones_on_a_robot_whose_base_moves(tmp_path: Path) -> None:
+    """A zone is a box fixed in the robot base frame: on a mobile manipulator it would ride
+    the base away from the furniture it names, so the deploy refuses it."""
+    import yaml
+
+    fixture = _REPO / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
+    zones = yaml.safe_load(fixture.read_text())["place_zones"]
+    scene = yaml.safe_load((_REPO / "scenes/deploy/isaac_panda_mobile_urdf.yaml").read_text())
+    config = tmp_path / "mobile_with_zones.yaml"
+    config.write_text(yaml.safe_dump({**scene, "place_zones": zones}))
+    with pytest.raises(ROSConfigError, match="mobile_manipulator"):
+        _argv(config, "sim", {})

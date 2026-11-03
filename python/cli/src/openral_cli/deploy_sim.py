@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Final
 
 import typer
 import yaml
-from openral_core import POLICY_KINDS
+from openral_core import POLICY_KINDS, EmbodimentKind
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_core.gpu import detect_gpu_vram_gb
 from rich.console import Console
@@ -101,6 +101,8 @@ class _HalSpec:
 
 
 _GENERIC_HAL_PACKAGE: Final = "openral_hal_node"
+#: Kinds whose base never moves, so a base-frame box stays on the furniture it names.
+_FIXED_BASE_KINDS: Final = frozenset({EmbodimentKind.MANIPULATOR, EmbodimentKind.BIMANUAL})
 
 
 def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
@@ -2017,8 +2019,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
         )
     # The station's declared place zones (shelf slots): the runner names the one a goal's
-    # prompt names, the object tracker publishes its box as the place region.
+    # prompt names, the object tracker publishes its box as the place region. A zone is a
+    # base-frame box, sound only where the base cannot move (`PlaceZone`): refused otherwise.
     if deploy_scene is not None and deploy_scene.place_zones:
+        if description.embodiment_kind not in _FIXED_BASE_KINDS:
+            raise ROSConfigError(
+                f"place_zones on a {description.embodiment_kind.value!r} robot "
+                f"({robot_id!r}): a zone is a box fixed in the robot base frame, declared "
+                "only for a fixed-base station (PlaceZone)."
+            )
         zones = "[" + ",".join(z.model_dump_json() for z in deploy_scene.place_zones) + "]"
         argv_template.append(f"place_zones_json:={zones}")
     # The grasp-phase sibling (real pick-and-place design §2.1), same path.
