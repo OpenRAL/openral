@@ -63,6 +63,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
 from openral_core.kinematics import Box, bounding_half_extents
 from openral_core.schemas import DOP_AXES, MAX_TIGHT_HULL_VERTICES, TightCollisionGeometry
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 from openral_world_state.object_tracker.pinch import HandModel, PinchVolume
 
@@ -73,12 +74,13 @@ GeometrySource = Literal["fallback", "measured", "grown"]
 
 log = structlog.get_logger(__name__)
 
+_B = load_tracking_thresholds().binding
 #: Kernel cap on one object's primitives (K4); mirrors ``AttachedCollisionObject``.
 MAX_PRIMITIVES = 16
 #: Confidence of a tracked binding: the same as ``region_attachment``'s measured region.
-TRACKED_CONFIDENCE = 0.7
+TRACKED_CONFIDENCE = _B.tracked_confidence
 #: Confidence of a pinch fallback: the same as the HAL's jaw-span fallback.
-FALLBACK_CONFIDENCE = 0.2
+FALLBACK_CONFIDENCE = _B.fallback_confidence
 _EPS_M = 1e-6
 _NS = 1_000_000_000
 _FREE = {TrackStatus.TENTATIVE, TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT}
@@ -89,7 +91,7 @@ _UNCONFIRMED = {TrackStatus.TENTATIVE, TrackStatus.SPLIT}
 _UNIT = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], float)
 #: Tracked objects whose box centre lies this close (m, horizontally) to the pinch centre give
 #: an untracked grasp the support it happened over. *Calibration point.*
-_SUPPORT_NEAR_M = 0.15
+_SUPPORT_NEAR_M = _B.support_near_m
 
 
 class TrackStoreLike(Protocol):

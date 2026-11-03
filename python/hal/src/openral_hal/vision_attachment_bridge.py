@@ -155,6 +155,7 @@ from openral_core.kinematics import edge_chain as _edge_chain
 from openral_core.kinematics import joint_motion as _joint_motion
 from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 from openral_core.perception_geometry import lattice_from_msg
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 from openral_hal._grasp_target_leg import GraspTargetLeg, _locked
 from openral_hal._grasp_trigger import (
@@ -202,6 +203,9 @@ __all__ = [
     "region_attachment",
     "resolve_segment_outcome",
 ]
+
+#: The release window's clearance and lifetime: the one value the tracker and kernel use too.
+_RELEASE = load_tracking_thresholds().release
 
 #: Service the perception-side segmenter node offers by default.
 DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
@@ -1143,8 +1147,9 @@ class VisionAttachmentConfig:
     grasp_target_approach_m: float | None = None
     grasp_target_margin_m: float = VisionAttachmentRuntime.DEFAULT_GRASP_TARGET_MARGIN_M
     grasp_target_premeasure: bool = False
-    release_clear_m: float = 0.04
-    release_timeout_s: float = 3.0
+    # One release clearance and lifetime everywhere: the tracking thresholds file, `release`.
+    release_clear_m: float = _RELEASE.clear_m
+    release_timeout_s: float = _RELEASE.clear_timeout_s
     grid_max_age_s: float = 1.0
     mask_depth_max_skew_s: float = 0.1
     place_target_enabled: bool = False

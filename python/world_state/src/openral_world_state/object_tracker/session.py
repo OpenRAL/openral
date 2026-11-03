@@ -66,6 +66,7 @@ from openral_core.perception_geometry import (
     VoxelLattice,
     region_covers_occupied,
 )
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 from openral_world_state.object_tracker.binding import (
     Binding,
@@ -99,48 +100,51 @@ __all__ = [
 log = structlog.get_logger(__name__)
 
 _NS = 1_000_000_000
+_R = load_tracking_thresholds().release
+_L = load_tracking_thresholds().late_bind
+
 #: The jaw-open release dwell (source seconds) the kernel (K5) and the tracker share; the
 #: deploy launch passes it to both. *Calibration point.*
-RELEASE_DWELL_S = 0.3
+RELEASE_DWELL_S = _R.dwell_s
 #: Default released-binding lifetime (source seconds); MUST equal the kernel's
 #: ``tracked_release_timeout_s`` and the voxel bridge's ``released_clear_timeout_s``.
-RELEASED_CLEAR_TIMEOUT_S = 3.0
+RELEASED_CLEAR_TIMEOUT_S = _R.clear_timeout_s
 #: A late ATTACH (the object may already be moving) is bound at the hand pose of the hold when
 #: the hold began at least this long before the event (0: every ATTACH with a hold read takes
 #: this path, so a prompt one gets the grasp-pose lookback too; a 0.067 s
 #: ATTACH fell to the plain bind after the lift and bound the pinch fallback) ...
-_LATE_MIN_NS = 0
+_LATE_MIN_NS = round(_L.min_s * _NS)
 #: ... and at most this long before it, ...
-_LATE_MAX_NS = 3 * _NS
+_LATE_MAX_NS = round(_L.max_s * _NS)
 #: ... the hand has travelled no further than this since the hold (m; an ordinary
 #: 15 cm lift before a late ATTACH skipped the late bind at 0.12 and bound the
 #: pinch fallback; restock scene 08 2026-11-01 lifted 21 cm in 1 s while the jaw still crept
 #: closed on the carton, the stall read fired after it and 0.18 bound the pinch fallback; a
 #: wrong late bind is a phantom payload, released by `_check_drop`). *Calibration point.* ...
-_LATE_MAX_TRAVEL_M = 0.25
+_LATE_MAX_TRAVEL_M = _L.max_travel_m
 #: ... (the grasp pose: the hold's, or the newest this long before it with the pinch in a box)
-_LATE_LOOKBACK_NS = 1 * _NS
+_LATE_LOOKBACK_NS = round(_L.lookback_s * _NS)
 #: ... and the track was last fitted within this long of the hold start.
-_LATE_CONFIRM_NS = 1_500_000_000
+_LATE_CONFIRM_NS = round(_L.confirm_s * _NS)
 #: Every hand's pinch box this far (m, box to box) from every target box lets the completion
 #: check ask its judge: off the object. The release window's clearance (centre distance less the
 #: pinch box's half diagonal, 9.8 cm on the Robotiq) put the hand 18 cm away (the
 #: banana lay placed and released 6 s of sim time, the judge never asked).
-_JUDGE_CLEAR_M = 0.02
+_JUDGE_CLEAR_M = _R.judge_clear_m
 #: Every hand collision box this far (m) from a released box ends its release window early:
 #: the kernel's own FK separation (``tracked_release_clear_m``, 0.04), past which it holds the
 #: frozen box as a plain obstacle. Retiring later left that box blocking the regrasp of an
 #: object never lifted (the window closed by separation at 7.9 s, the release stayed on the
 #: wire, the jaw met the frozen box at 9.0 s).
-_RELEASE_CLEAR_M = 0.04
+_RELEASE_CLEAR_M = _R.clear_m
 #: Consecutive in-hand fits away from every hand box that read as a drop (`_check_drop`).
-_DROP_FITS = 2
+_DROP_FITS = _R.drop_fits
 #: A track a late ATTACH may revive and bind (once it has confirmed).
 _LATE_STATUSES = frozenset(
     {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT, TrackStatus.LOST}
 )
 #: A joint sample further than this from a stamp is not the pose then.
-_JOINT_SAMPLE_MAX_AGE_NS = 250_000_000
+_JOINT_SAMPLE_MAX_AGE_NS = round(_R.joint_sample_max_age_s * _NS)
 
 
 #: A source stamp this far behind the newest one is a reset clock, not a late message.

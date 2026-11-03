@@ -58,6 +58,7 @@ from openral_core import (
 from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
 from openral_core.perception_geometry import backproject_masked_depth
 from openral_core.schemas import DOP_AXES, TightCollisionGeometry
+from openral_core.tracking_thresholds import load_tracking_thresholds
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
@@ -76,6 +77,9 @@ UNCERTAIN_PIXEL = 128
 
 _DOP_DIRS = 16  # 4 x 16 = 64 vertices = TrackedObject.MAX_HULL_VERTICES
 _YAW_STEP_DEG = 1.0
+
+
+_F = load_tracking_thresholds().fit
 
 
 class FitParams(BaseModel):
@@ -106,15 +110,15 @@ class FitParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    k_px: int = Field(default=2, ge=1)
-    w_occ_px: int = Field(default=4, ge=0)
-    eps_m: float = Field(default=0.005, ge=0.0)
-    occluder_tol_m: float = Field(default=0.01, gt=0.0)
-    min_points: int = Field(default=20, ge=4)
-    min_depth_valid: float = Field(default=0.5, ge=0.0, le=1.0)
-    min_depth_m: float = Field(default=0.05, ge=0.0)
-    max_depth_m: float = Field(default=5.0, gt=0.0)
-    extent: Literal["measured", "containing"] = "measured"
+    k_px: int = Field(default=_F.k_px, ge=1)
+    w_occ_px: int = Field(default=_F.w_occ_px, ge=0)
+    eps_m: float = Field(default=_F.eps_m, ge=0.0)
+    occluder_tol_m: float = Field(default=_F.occluder_tol_m, gt=0.0)
+    min_points: int = Field(default=_F.min_points, ge=4)
+    min_depth_valid: float = Field(default=_F.min_depth_valid, ge=0.0, le=1.0)
+    min_depth_m: float = Field(default=_F.min_depth_m, ge=0.0)
+    max_depth_m: float = Field(default=_F.max_depth_m, gt=0.0)
+    extent: Literal["measured", "containing"] = _F.extent
 
 
 @dataclass(frozen=True)
