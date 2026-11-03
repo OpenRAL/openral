@@ -15,6 +15,7 @@ import math
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import FitKind, ObjectQuery, ObjectRole, PlaceRegion
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_world_state.object_tracker import (
@@ -25,14 +26,14 @@ from openral_world_state.object_tracker import (
     intersect_views,
 )
 
-from tests.unit._tracker_scenes import RES, RIGS, Rig, box, render, step, surface_samples
+from tests.unit._tracker_scenes import RES, RIGS, Rig, Solid, box, render, step, surface_samples
 
 pytest.importorskip("scipy", reason="the multi-view rigs import scipy-backed helpers")
 _turned = pytest.importorskip("tests.unit.test_object_tracker_multi_view")._turned
 
 
-def _fit(rig: Rig, solids: list[object], labels_in: tuple[int, ...] = (1,)) -> ContainingFit:
-    depth, labels = render(solids, rig)  # type: ignore[arg-type]
+def _fit(rig: Rig, solids: list[Solid], labels_in: tuple[int, ...] = (1,)) -> ContainingFit:
+    depth, labels = render(solids, rig)
     return containing_fit(
         np.isin(labels, labels_in),
         depth,
@@ -47,14 +48,19 @@ def _fit(rig: Rig, solids: list[object], labels_in: tuple[int, ...] = (1,)) -> C
     )
 
 
-def _inside(points: np.ndarray, region: PlaceRegion | None, tol: float = 1e-6) -> np.ndarray:
+def _inside(
+    points: NDArray[np.float64], region: PlaceRegion | None, tol: float = 1e-6
+) -> NDArray[np.bool_]:
     assert region is not None
     t = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
     local = (points - t[:3, 3]) @ t[:3, :3]
-    return np.all(np.abs(local) <= np.asarray(region.half_extents) + tol, axis=1)
+    inside: NDArray[np.bool_] = np.all(
+        np.abs(local) <= np.asarray(region.half_extents) + tol, axis=1
+    )
+    return inside
 
 
-def _carton(rig: Rig, dx: float = 0.0) -> object:
+def _carton(rig: Rig, dx: float = 0.0) -> Solid:
     x, y = rig.centre_xy
     return box((x + dx, y, rig.support_z + 0.04), (0.041, 0.024, 0.04), 0.4)
 
@@ -74,7 +80,7 @@ def test_a_second_measured_view_adds_the_side_the_first_could_not_see(rig_name: 
     # never smaller than either view: every point either camera measured is boxed
     assert _inside(first.surface, out.fit.box).all()
     assert _inside(second.surface, out.fit.box).all()
-    solid = surface_samples(carton)  # type: ignore[arg-type]
+    solid = surface_samples(carton)
     assert _inside(solid, out.fit.box, 0.01).mean() >= _inside(solid, first.box, 0.01).mean()
 
 
@@ -88,7 +94,7 @@ def test_a_second_views_spill_onto_a_neighbour_is_not_boxed(rig_name: str) -> No
     out = intersect_views(
         [(first, top.t), (spilled, side.t)], resolution=RES, frame_id=top.frame, stamp_ns=1
     )
-    far = surface_samples(neighbour)  # type: ignore[arg-type]
+    far = surface_samples(neighbour)
     # the neighbour's far half is outside the primary's cone, so it never joins the box
     assert out.fit.box is not None
     assert not _inside(far, out.fit.box, 0.0).all()
