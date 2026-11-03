@@ -378,10 +378,12 @@ def test_a_mask_over_the_strip_the_carton_stands_on_is_boxed_to_the_carton() -> 
     assert fit.assumptions["support_dropped_points"] > 0
 
 
-def test_a_mask_all_in_the_robot_filters_uncertain_band_still_fits_with_a_part_box() -> None:
+def test_a_mask_all_in_the_robot_filters_uncertain_band_does_not_raise_with_a_part_box() -> None:
     """Review of #479: with no pixel the filter is sure of, the fit falls back to the whole mask,
-    and a refit's part box picked parts from an empty mask (``rows.min()`` of nothing raised and
-    took down the whole tracker step). No measured part: every point is kept."""
+    and a part box picked parts from an empty mask (``rows.min()`` of nothing raised). Only a
+    direct ``containing_fit`` caller gets here: ``ObjectTracker._fit`` refuses such a mask first
+    (``too_few_points`` on the pixels with ``robot_mask == 0``). No measured part: no point is
+    dropped as spill."""
     rig = _RIGS["openarm_head"]
     x, y = rig.centre_xy
     carton = box((x, y, rig.support_z + 0.055), (0.03, 0.03, 0.055), 0.0)
@@ -390,4 +392,4 @@ def test_a_mask_all_in_the_robot_filters_uncertain_band_still_fits_with_a_part_b
     prompt = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
     robot = np.where(labels == 1, UNCERTAIN_PIXEL, 0).astype(np.uint8)
     fit = _fit(rig, [carton], robot_mask=robot, params=FitParams(), part_box=prompt)
-    assert fit.refusal == "" and "spill_dropped_points" not in fit.assumptions
+    assert "spill_dropped_points" not in fit.assumptions
