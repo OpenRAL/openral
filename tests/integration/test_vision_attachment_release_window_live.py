@@ -26,19 +26,28 @@ margin on 20 mm cells, attached check on at margin 0 as the vision leg turns it 
 octomap bridge here, so the grid is published the way payload clearing would leave it — an
 explicit assumption: WITHOUT the payload's cells while the frozen record is on
 ``/openral/world_state_fast`` (``payload_clearing.hpp`` clears any attached object present on
-that message) and WITH them once it is gone. Rows, all at the release configuration (the first
-waypoint of a retreat):
+that message) and WITH them once it is gone. The frozen record names the link that let it go
+(``released_by_link``), so the kernel (#481) freezes it in the base frame, never checks it
+against the world, keeps it an obstacle to every robot link, and exempts the releasing and touch
+links against it only for its release window (0.04 m clear or ``tracked_release_timeout_s``).
+Rows, all at the release configuration (the first waypoint of a retreat):
 
 ==============================================================  =============================
 row                                                             verdict
 ==============================================================  =============================
 frozen record published, payload cells cleared                  ACCEPTED
-frozen record published, a shelf cell under the payload         REFUSED, ``attach:<id>``
+frozen record published, a shelf cell under the payload         ACCEPTED, logged frozen in base
+a released record inside the torso (not a touch link)           REFUSED, ``attached:<id>`` vs
+                                                                ``openarm_body_link0``
+a released record on the finger pair, window open               ACCEPTED
+the same record once the window closed on its timeout           REFUSED, ``attached:<id>`` vs a
+                                                                releasing/touch link
 record dropped, payload cells re-marked                         REFUSED, ``*_finger_pair``
 ==============================================================  =============================
 
-The first row is what the window buys; the second shows a frozen payload is still checked
-against the world (nothing is exempted); the third is the defect the window closes.
+The first row is what the window buys; the second that a static record on a static cell is not a
+world stop (Spark ``v_off_dr``); the third and fifth that only the releasing and touch links are
+exempt, and only for the window; the last is the defect the window closes.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (the kernel test also on a colcon-built
 ``openral_safety_kernel``). ``scripts/ros_live_tests.sh`` is the runner.
@@ -111,6 +120,27 @@ def _hand_at_zero(description: Any) -> NDArray[np.float64]:
         link = edge.parent_link
     assert link == _BASE
     return t
+
+
+def _box_centre_at_zero(description: Any, link: str) -> tuple[float, float, float]:
+    """``openarm_base <- centre of ``link``'s first collision box`` at q = 0, from the lowered
+    collision model the kernel loads (link origins composed; joint motion = identity)."""
+    from openral_core.kinematics import transform_from_xyz_rpy
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    params: Any = collision_params_from_description(description)
+    names: list[str] = list(params["collision_link_names"])
+    parents: list[int] = list(params["collision_parent"])
+    origins: list[float] = list(params["collision_origin_xyzrpy"])
+    box = list(params["collision_box_link"]).index(names.index(link))
+    box_origin = list(params["collision_box_origin_xyzrpy"])[6 * box : 6 * box + 6]
+    t = transform_from_xyz_rpy(tuple(box_origin[:3]), tuple(box_origin[3:]))
+    i = names.index(link)
+    while i >= 0:
+        o = origins[6 * i : 6 * i + 6]
+        t = transform_from_xyz_rpy(tuple(o[:3]), tuple(o[3:])) @ t
+        i = parents[i]
+    return (float(t[0, 3]), float(t[1, 3]), float(t[2, 3]))
 
 
 def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
@@ -403,6 +433,8 @@ _PAYLOAD_CENTRE = (0.0, 0.18, -0.625)
 _PAYLOAD_HALF = (0.019, 0.039, 0.024)
 _Q = [0.0] * 16
 _OBJECT_ID = "grasped_payload:left_gripper"
+#: The kernel's ``tracked_release_timeout_s`` default, which the deploy launch forwards.
+_RELEASE_TIMEOUT_S = 3.0
 
 
 def _kernel_params(description: Any) -> dict[str, object]:
@@ -432,6 +464,7 @@ def _kernel_params(description: Any) -> dict[str, object]:
     params["attached_collision_enabled"] = True
     params["attached_collision_margin_m"] = 0.0
     params["attached_collision_deadline_ms"] = 1000.0
+    params["tracked_release_timeout_s"] = _RELEASE_TIMEOUT_S
     return params
 
 
@@ -618,14 +651,32 @@ def test_the_kernel_accepts_the_retreat_only_while_the_frozen_record_is_publishe
                             break
                     spin(0.4)
 
-                def refused(trace: str) -> dict[str, Any]:
+                def refused(trace: str, kind: str = "world") -> dict[str, Any]:
                     assert trace not in safe, f"{trace} reached /openral/safe_action"
                     assert estops, f"{trace} must fire /openral/estop"
                     trigger = failures[-1]
                     assert trigger.kind == FailureTrigger.KIND_COLLISION
                     evidence: dict[str, Any] = json.loads(trigger.evidence_json)
-                    assert evidence["collision_kind"] == "world"
+                    assert evidence["collision_kind"] == kind, evidence
                     return evidence
+
+                def kernel_log() -> str:
+                    return log_path.read_text(encoding="utf-8", errors="replace")
+
+                def released_at(centre: tuple[float, float, float], half: float) -> Any:
+                    """The frozen record moved to ``centre`` (a ``half`` cube), freshly stamped:
+                    a new release, so the kernel opens a new window for it."""
+                    return frozen.model_copy(
+                        update={
+                            "primitives": [
+                                frozen.primitives[0].model_copy(
+                                    update={"shape": BoxShape(half_extents_m=(half,) * 3)}
+                                )
+                            ],
+                            "pose_in_link": frozen.pose_in_link.model_copy(update={"xyz": centre}),
+                            "stamp_ns": time.time_ns(),
+                        }
+                    )
 
                 # ── Window open: frozen record published, its cells cleared → ACCEPTED ─────
                 state.update(occupied=frozenset(), objects=[frozen], revision=1)
@@ -634,13 +685,53 @@ def test_the_kernel_accepts_the_retreat_only_while_the_frozen_record_is_publishe
                 assert "frozen-cleared" in safe, "the frozen record must let the retreat start"
                 assert not estops
 
-                # ── Window open, a shelf cell under the payload → the payload is checked ───
+                # ── A shelf cell under the frozen payload → ACCEPTED: the record names the
+                # link that let it go (`released_by_link`), so the kernel freezes it in the base
+                # frame and never checks it against the world (#481) — a static box on a static
+                # cell is the same at every commanded configuration ─────────────────────────
+                assert (
+                    f"safety.released_payload object={_OBJECT_ID} by={_HAND}: frozen in base"
+                    in kernel_log()
+                ), kernel_log()
                 state.update(occupied=_SHELF_CELLS)
                 spin(0.6)
-                send("frozen-shelf", expect_accept=False)
-                evidence = refused("frozen-shelf")
+                send("frozen-shelf", expect_accept=True)
+                assert "frozen-shelf" in safe, "a frozen record is not checked against the world"
+                assert not estops
+                assert f"a=attached:{_OBJECT_ID}" not in kernel_log(), kernel_log()
+
+                # ── It is still an obstacle to every other robot link: a released record
+                # inside the torso → REFUSED on the torso ─────────────────────────────────
+                torso = "openarm_body_link0"
+                state.update(
+                    occupied=frozenset(),
+                    objects=[released_at(_box_centre_at_zero(description, torso), 0.01)],
+                )
+                spin(0.6)
+                send("frozen-in-torso", expect_accept=False)
+                evidence = refused("frozen-in-torso", kind="self")
                 assert evidence["link_a"] == f"attached:{_OBJECT_ID}", evidence
-                assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _SHELF_CELLS}
+                assert evidence["link_b_or_object"] == torso, evidence
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── On the left finger pair: exempt while the window is open (ACCEPTED),
+                # REFUSED on a releasing/touch link once it closes on its timeout ──────────
+                on_finger = released_at(_box_centre_at_zero(description, _FINGER), 0.01)
+                state.update(objects=[on_finger])
+                spin(0.6)
+                send("frozen-on-finger-window", expect_accept=True)
+                assert "frozen-on-finger-window" in safe, "the window exempts the touch links"
+                assert not estops
+                spin(_RELEASE_TIMEOUT_S)
+                closed = (
+                    f"safety.released_payload_closed object={_OBJECT_ID} reason=timeout: "
+                    "a plain obstacle from here"
+                )
+                assert closed in kernel_log(), kernel_log()
+                send("frozen-on-finger-closed", expect_accept=False)
+                evidence = refused("frozen-on-finger-closed", kind="self")
+                assert evidence["link_a"] == f"attached:{_OBJECT_ID}", evidence
+                assert evidence["link_b_or_object"] in (_HAND, _FINGER, _FOLLOWER), evidence
                 reset_kernel_estop(reset_client, executor, spin, estops)
 
                 # ── Window closed while the jaws are still there: cells re-marked → STOP ───
