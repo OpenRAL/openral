@@ -137,6 +137,12 @@ class ContainingFit:
         provisional: The robot touches the mask and reaches past the occluder band, so the
             fit may under-contain what it hides (A4 not held): good for exemptions and
             identity clearing only (``TrackedObject.provisional``), never a payload.
+        cone: ``(origin (3,), rays (16, 3))``, base frame: the camera centre and the rays
+            through the dilated silhouette's 16-direction outer polygon. The solid lies in
+            this cone whatever ``extent`` boxed; ``multi_view`` cuts and gates with it. ``None``
+            when refused before the silhouette was traced.
+        extent: The ``FitParams.extent`` that boxed it, empty when not known (``multi_view``
+            combines a ``"measured"`` fit by union, any other by intersection).
     """
 
     box: PlaceRegion | None
@@ -146,6 +152,8 @@ class ContainingFit:
     assumptions: dict[str, float | bool] = field(default_factory=dict)
     refusal: str = ""
     provisional: bool = False
+    cone: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
+    extent: str = ""
 
 
 def _dilate(mask: NDArray[np.bool_], px: int) -> NDArray[np.bool_]:
@@ -419,11 +427,7 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
         # The samples are pixel centres: the solid's rim lies up to a sample spacing past the
         # outermost ones, so the hull is grown by the half cell the box is padded by, or by that
         # spacing where it is wider (a slanted top far from the camera).
-        pad = 0.5 * resolution
-        rim = _outer_polygon(surface[:, :2], grow=max(pad, gap))
-        verts = np.concatenate(
-            [np.column_stack((rim, np.full(len(rim), z))) for z in (support_z, top + pad)]
-        )
+        verts = _measured_prism(surface, support_z, resolution, gap)
     else:
         verts = _clipped_vertices(
             origin, rays, z_front, z_support, footprint, support_z, top, ceiling
@@ -431,7 +435,24 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     # A measured hull already carries the half-cell pad; the cone's vertices do not.
     box_pad_res = 0.0 if p.extent == "measured" else resolution
     fit = _boxed(verts, surface, support_z, box_pad_res, frame_id, stamp_ns, notes)
-    return replace(fit, provisional=provisional) if provisional and fit.box is not None else fit
+    cone = (origin, rays)
+    return replace(fit, provisional=provisional, cone=cone, extent=p.extent) if fit.box else fit
+
+
+def _measured_prism(
+    surface: NDArray[np.float64], support_z: float, resolution: float, gap: float = 0.0
+) -> NDArray[np.float64]:
+    """The ``extent="measured"`` hull vertices of ``surface``: its rim, support to top.
+
+    The samples are pixel centres, so the rim is grown by half a cell or by the sample
+    spacing ``gap`` where that is wider (``containing_fit``'s measured branch).
+    """
+    pad = 0.5 * resolution
+    rim = _outer_polygon(surface[:, :2], grow=max(pad, gap))
+    top = float(surface[:, 2].max())
+    return np.concatenate(
+        [np.column_stack((rim, np.full(len(rim), z))) for z in (support_z, top + pad)]
+    )
 
 
 def _off_support(
