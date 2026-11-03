@@ -305,7 +305,9 @@ class TrackerSession:
                 )
         self._joints = frozenset(j.name for j in description.joints)
         # (stamp_ns, complete joint state): the hand pose at the start of a hold, for a late ATTACH.
-        self._joint_history: deque[tuple[int, dict[str, float]]] = deque(maxlen=480)
+        self._joint_history: deque[tuple[int, dict[str, float]]] = deque(
+            maxlen=load_tracking_thresholds().late_bind.joint_history_len
+        )
         self.positions: dict[str, float] = {}
         self.grid: VoxelLattice | None = None
         self.grid_stamp_ns = 0

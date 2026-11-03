@@ -76,7 +76,7 @@ log = structlog.get_logger(__name__)
 
 _B = load_tracking_thresholds().binding
 #: Kernel cap on one object's primitives (K4); mirrors ``AttachedCollisionObject``.
-MAX_PRIMITIVES = 16
+MAX_PRIMITIVES = load_tracking_thresholds().caps.bound_primitives
 #: Confidence of a tracked binding: the same as ``region_attachment``'s measured region.
 TRACKED_CONFIDENCE = _B.tracked_confidence
 #: Confidence of a pinch fallback: the same as the HAL's jaw-span fallback.

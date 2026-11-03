@@ -315,7 +315,7 @@ class _Candidate(NamedTuple):
 
 
 #: Source seconds between INFO reports of one ``(key, reason)`` refusal.
-REFUSAL_LOG_PERIOD_S = 5.0
+REFUSAL_LOG_PERIOD_S = _T.refusal_log_period_s
 #: Source seconds within which fits of one track from different cameras are combined
 #: (``intersect_views``): the object must not have moved between them. *Calibration point.*
 VIEW_WINDOW_S = _T.view_window_s
@@ -325,13 +325,13 @@ LOCATE_ROI_PAD = _T.locate_roi_pad
 #: A detector box more than this fraction ROBOT pixels is re-prompted on what it hides.
 ROBOT_BOX_FRACTION = _T.robot_box_fraction
 #: Negative point prompts placed on the robot in such a box.
-ROBOT_BOX_NEGATIVES = 3
+ROBOT_BOX_NEGATIVES = _T.robot_box_negatives
 #: A prompt box scored under this grounds a track that is logged when it confirms.
 LOW_PROMPT_SCORE = _T.low_prompt_score
 #: How far under the voxel-measured support top the camera's own support returns may lie and
 #: still read as ON the layer boundary (``ObjectTracker._support_seen``). Sim depth is exact;
 #: a real camera's noise is larger. *Calibration point.*
-_SUPPORT_SEEN_TOL_M = 0.001
+_SUPPORT_SEEN_TOL_M = _T.support_seen_tol_m
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 # The roles a hand touches by design: the object it picks and the one it places into
@@ -889,7 +889,7 @@ class ObjectTracker:
         if int(ring.sum()) < p.support_min_cells:
             return support_z
         lo, seen, hi = (float(v) for v in np.percentile(pts[ring, 2], (10, 50, 90)))
-        if hi - lo > 0.25 * res or seen < top - _SUPPORT_SEEN_TOL_M:
+        if hi - lo > _T.support_flatness_res_fraction * res or seen < top - _SUPPORT_SEEN_TOL_M:
             return support_z  # not one flat surface (a partial mask's own body), or inside
         # The layer above the measured top, under those returns: occupied in the map too?
         up = pts[ring].copy()
@@ -2197,9 +2197,9 @@ class ObjectTracker:
 
 
 #: Pixels within which a free region counts as beside the robot (past the uncertain band).
-_BESIDE_PX = 8
+_BESIDE_PX = _T.beside_px
 #: Fewest pixels a region beside the robot needs to be prompted on.
-_BESIDE_MIN_PX = 10
+_BESIDE_MIN_PX = _T.beside_min_px
 
 
 def _most_hidden(region: NDArray[np.bool_], robot: NDArray[np.bool_]) -> NDArray[np.bool_] | None:

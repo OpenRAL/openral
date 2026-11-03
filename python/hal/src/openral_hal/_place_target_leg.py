@@ -94,6 +94,7 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.perception_geometry import VoxelLattice
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 from openral_hal._grasp_target_leg import _locked
 
@@ -118,8 +119,8 @@ __all__ = [
 #: The kernel's ADR-0092 D6 witness caps (``support_witness_max_patch_radius_m`` /
 #: ``support_witness_max_penetration_m``); a witness past either fails the kernel's
 #: whole attachment message closed, so the producer never emits one.
-_MAX_PATCH_RADIUS_M = 0.5
-_MAX_PENETRATION_M = 0.01
+_MAX_PATCH_RADIUS_M = load_tracking_thresholds().caps.support_witness_max_patch_radius_m
+_MAX_PENETRATION_M = load_tracking_thresholds().caps.support_witness_max_penetration_m
 
 #: A proximity witness is never a full-confidence contact claim. Not a calibrated
 #: probability; the kernel does not read it.

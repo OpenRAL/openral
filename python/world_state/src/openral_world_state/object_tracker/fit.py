@@ -76,10 +76,10 @@ ROBOT_PIXEL = 255
 UNCERTAIN_PIXEL = 128
 
 _DOP_DIRS = 16  # 4 x 16 = 64 vertices = TrackedObject.MAX_HULL_VERTICES
-_YAW_STEP_DEG = 1.0
 
 
 _F = load_tracking_thresholds().fit
+_YAW_STEP_DEG = _F.yaw_step_deg
 
 
 class FitParams(BaseModel):

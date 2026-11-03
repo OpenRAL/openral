@@ -302,6 +302,7 @@ from openral_core.perception_geometry import (
     target_seed_from_voxels,
     track_region,
 )
+from openral_core.tracking_thresholds import load_tracking_thresholds
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import AttachedCollisionObject, IntrinsicsPinhole
@@ -328,25 +329,27 @@ _RATE_BAND_HZ = (2.0, 5.0)
 #: Tilt tolerance for the search box: its z axis must be the base frame's.
 _GRAVITY_TOL = 1e-6
 
+_HAL = load_tracking_thresholds().hal
+
 # Upper bounds that keep the gates meaningful (CLAUDE.md §1.2: chosen, not measured).
 #: A contact link's hand point this far from the held region is not plausibly the hand
 #: occluding it; a larger margin lets any nearby arm pose excuse a shrunken re-fit.
-_MAX_OCCLUDER_MARGIN_M = 0.10
+_MAX_OCCLUDER_MARGIN_M = _HAL.max_occluder_margin_m
 #: Deeper than this, the column reaches whole furniture levels below the target (a
 #: bench under a shelf) and the scan's "first ringed layer" stops meaning "under it".
-_MAX_SUPPORT_SEARCH_BELOW_M = 0.5
+_MAX_SUPPORT_SEARCH_BELOW_M = _HAL.max_support_search_below_m
 #: The freeze holds a region with no fresh evidence; the kernel ages a grasp region out
 #: at ``grasp_region_max_age_s`` = 2 x its voxel deadline (deploy passes 2 x
 #: ``world_voxel_deadline_s``; ``grid_max_age_s`` is that deadline), so a longer freeze
 #: would publish a region the kernel already refuses (the place leg's ceiling too).
-_MAX_FREEZE_GRID_AGES = 2.0
+_MAX_FREEZE_GRID_AGES = _HAL.max_freeze_grid_ages
 #: Instance pre-measurement (``premeasure=True``): at most this many ``SegmentInView``
 #: prompts per second — the segmenter shares the GPU with the policy. *Calibration point.*
-_PREMEASURE_MAX_HZ = 2.0
+_PREMEASURE_MAX_HZ = _HAL.premeasure_max_hz
 #: How far around a hand's TCPs instances are pre-measured, in approach distances: the
 #: band the hand crosses *before* it arms, so the instance it arms on is already tracked.
 #: *Calibration point.*
-_PREMEASURE_REACH_APPROACHES = 2.0
+_PREMEASURE_REACH_APPROACHES = _HAL.premeasure_reach_approaches
 
 
 _P = ParamSpec("_P")
