@@ -28,8 +28,15 @@ row                                                    verdict
 =====================================================  ========================================
 place leg on: witness armed while held, carried on    ACCEPTED (support-contact exemption
 the frozen record                                     covers the patch)
-place leg off: frozen record with no witness          REFUSED, ``attached:<id>`` vs a voxel
+place leg off: frozen record with no witness          ACCEPTED (#481: a declared release is
+                                                      frozen in base, never world-checked)
 =====================================================  ========================================
+
+Both rows also pin the kernel's release window on this record: it logs the record frozen in
+base by ``openarm_left_link7`` and closes the window on separation (the hand at the measured
+``q = 0`` is clear of it), after which no link is exempt against it. The touch-link and
+non-touch-link refusals against a frozen record are pinned by
+``test_vision_attachment_release_window_live.py``.
 
 The kernel refreshes its witness latch only when it checks a candidate, against the measured
 configuration; no candidate is sent while the hand holds the payload (the synthetic hand TF is
@@ -45,7 +52,6 @@ Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (and a colcon-built ``openral_safety_kernel
 
 from __future__ import annotations
 
-import json
 import os
 import pathlib
 import tempfile
@@ -414,15 +420,27 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                         errors="replace"
                     )
                 else:
-                    assert _wait_until(lambda: bool(failures) and bool(estops), timeout_s=10.0)
+                    # #481: the record names the link that let it go, so the kernel freezes it
+                    # in the base frame and never checks it against the world — the table cells
+                    # under its edge are no stop with or without a witness.
+                    assert _wait_until(lambda: trace in safe, timeout_s=10.0), (
+                        f"the retreat was refused: {[f.evidence_json for f in failures]}"
+                    )
                     time.sleep(0.4)
-                    assert trace not in safe
-                    trigger = failures[-1]
-                    assert trigger.kind == FailureTrigger.KIND_COLLISION
-                    evidence = json.loads(trigger.evidence_json)
-                    assert evidence["collision_kind"] == "world", evidence
-                    assert evidence["link_a"] == f"attached:{_OBJECT_ID}", evidence
-                    assert str(evidence["link_b_or_object"]).startswith("voxel_"), evidence
+                    assert not estops and not failures
+                kernel_log = log_path.read_text(errors="replace")
+                assert (
+                    f"safety.released_payload object={_OBJECT_ID} by={_LINK7}: frozen in base"
+                    in kernel_log
+                ), kernel_log
+                # The hand at the measured configuration (q = 0, not the synthetic hand TF) is
+                # well clear of the record: the window closes on separation, and from there
+                # nothing is exempt against it.
+                assert (
+                    f"safety.released_payload_closed object={_OBJECT_ID} reason=separation"
+                    in kernel_log
+                ), kernel_log
+                assert f"a=attached:{_OBJECT_ID}" not in kernel_log, kernel_log
                 assert aggregator_errors == []
             finally:
                 # Stop the executor first: a timer callback waiting on the bridge lock must
