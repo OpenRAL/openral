@@ -863,6 +863,33 @@ def test_an_accepted_chunk_does_not_mask_the_drop_that_stalled_the_apply_wait() 
     assert reason[1] is ROSPerceptionStale, reason
 
 
+def test_a_republished_standing_drop_is_not_a_new_drop() -> None:
+    """The kernel republishes its standing status every second: a repeat of a drop that began
+    before the tick was published must not end that tick's apply-wait (review of #487)."""
+    import time
+
+    from openral_msgs.msg import SafetyStatus
+
+    def _status(code: int) -> SafetyStatus:
+        msg = SafetyStatus()
+        msg.drop_reason = code
+        msg.detail = "collision_advisory"
+        msg.latched = False
+        return msg
+
+    with _compose_harness(resolver=lambda **_k: _make_constant_skill()) as (_e, runtime, _s, _o):
+        runner = runtime.skill_runner_node
+        runner._on_safety_status(_status(SafetyStatus.DROP_PLACE_ADVISORY))
+        published = time.monotonic()  # the retry's first tick goes out after the drop
+        runner._on_safety_status(_status(SafetyStatus.DROP_PLACE_ADVISORY))  # 1 Hz repeat
+        assert runner._safety_drop_reason(published) is None
+        runner._on_safety_status(_status(SafetyStatus.DROP_NONE))
+        runner._on_safety_status(_status(SafetyStatus.DROP_PLACE_ADVISORY))  # a new refusal
+        reason = runner._safety_drop_reason(published)
+
+    assert reason is not None and "drop_place_advisory" in reason[0], reason
+
+
 def test_a_failed_goal_carries_the_kernel_evidence_that_explains_it() -> None:
     """``Result.evidence_json`` carries the kernel report matching the failure, and only it.
 

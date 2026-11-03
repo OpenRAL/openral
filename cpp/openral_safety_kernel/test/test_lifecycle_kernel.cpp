@@ -3694,6 +3694,7 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   }
 
   const LogCapture logs;
+  StatusSpy status(helper);
   const int passed_before = safe_count.load();
   const std::uint64_t dropped_before = node->chunks_dropped();
   const int estops_before = estop_count.load();
@@ -3723,6 +3724,14 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
       << logs.joined();
   EXPECT_EQ(logs.count("safety.collision kind="), 0U)
       << "and never as an ordinary collision stop:\n"
+      << logs.joined();
+  // Spark bkB_on_rs_08 (2026-11-02): the refusal published no status, so the runner waited its
+  // whole 8 s apply timeout for a tick the kernel had already dropped. It is a typed,
+  // non-latching drop on the status topic like every other one.
+  spin_until(exec, [&] {
+    return status.saw(false, openral_msgs::msg::SafetyStatus::DROP_PLACE_ADVISORY);
+  });
+  EXPECT_TRUE(status.saw(false, openral_msgs::msg::SafetyStatus::DROP_PLACE_ADVISORY))
       << logs.joined();
 
   // Drain this node's spans before it goes away. `on_cleanup` is where

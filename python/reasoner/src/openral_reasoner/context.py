@@ -248,6 +248,11 @@ _CONTROLLER_STATE_REFLECTIONS: dict[str, str] = {
         "the scene exceeds the safety kernel's capacity (too many occupied voxels), so it "
         "refuses every motion here — report it to the operator; retrying will not help."
     ),
+    "drop_place_advisory": (
+        "the safety kernel refused the set-down a few millimetres past the place allowance, "
+        "without a stop — retry the place once from a slightly higher approach; after three "
+        "refusals in a row the next one is a latched stop."
+    ),
     "drop_attached_overflow": (
         "the safety kernel cannot track what the robot is carrying (attachment over "
         "capacity), so it refuses every motion — report it to the operator; retrying will "
