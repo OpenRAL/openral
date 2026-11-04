@@ -6,10 +6,10 @@ clears it), and every later goal was rejected with nothing in the log. This prov
 real DDS graph with the real ``SafetyPassthroughNode`` (which serves the same
 ``/openral/estop_reset`` contract as the C++ kernel) and the real ``RskillRunnerNode``:
 
-1. a latched runner rejects a goal sent through a real action client AND says why at
-   WARNING, naming the recovery command;
-2. ``openral estop reset`` run as a real subprocess, inside the kernel's cooldown, is
+1. ``openral estop reset`` run as a real subprocess, inside the kernel's cooldown, is
    refused (exit 1) and broadcasts nothing — the runner stays latched;
+2. a latched runner rejects a goal sent through a real action client AND says why at
+   WARNING, naming the recovery command;
 3. after the cooldown the same command clears the kernel AND the runner.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``.
@@ -32,8 +32,10 @@ pytestmark = pytest.mark.skipif(
     reason="live rclpy graph — set OPENRAL_TEST_ROS_LIVE=1 and source install/setup.bash first.",
 )
 
-# Long enough that the first CLI call lands inside it, short enough to wait out.
-_COOLDOWN_S = 3.0
+# Long enough that the first CLI call lands inside it, short enough to wait out. The CLI
+# spends ~1 s starting and up to 2 s announcing the reset on /openral/operator_action (#478)
+# before it calls the service, so 3 s let the "refused" call land after the cooldown on CI.
+_COOLDOWN_S = 10.0
 
 
 def _wait_until(predicate: Any, *, timeout_s: float = 10.0) -> bool:
@@ -45,7 +47,9 @@ def _wait_until(predicate: Any, *, timeout_s: float = 10.0) -> bool:
     return bool(predicate())
 
 
-def _openral_estop_reset() -> subprocess.CompletedProcess[str]:
+def _openral_estop_reset(
+    *, service_timeout_s: float = 15.0, discovery_wait_s: float = 10.0
+) -> subprocess.CompletedProcess[str]:
     """Run the real CLI in its own process (its own rclpy context and DDS participant)."""
     return subprocess.run(
         [
@@ -55,9 +59,9 @@ def _openral_estop_reset() -> subprocess.CompletedProcess[str]:
             "estop",
             "reset",
             "--service-timeout-s",
-            "15",
+            str(service_timeout_s),
             "--discovery-wait-s",
-            "10",
+            str(discovery_wait_s),
         ],
         capture_output=True,
         text=True,
@@ -121,7 +125,24 @@ def test_estop_reset_cli_clears_kernel_then_runner_and_rejection_is_loud(
         ), "the e-stop never latched both the kernel and the runner"
         latched_at = time.monotonic()
 
-        # 1. A real goal is rejected, and the reason reaches the log at WARNING.
+        # 1. Inside the cooldown the kernel refuses; nothing is broadcast. First, and with
+        # the CLI's waits bounded (~1 s start + 2 s announce + 2 s service wait + 2 s call),
+        # so the call cannot drift past the cooldown.
+        refused = _openral_estop_reset(service_timeout_s=2.0, discovery_wait_s=2.0)
+        assert refused.returncode == 1, (
+            f"{refused.stdout}{refused.stderr}(answered "
+            f"{time.monotonic() - latched_at:.2f} s after the latch; cooldown {_COOLDOWN_S} s)"
+        )
+        # The kernel's reason, not the subprocess's exit time: the CLI may finish shutting
+        # down after the cooldown although the kernel refused inside it.
+        assert "REFUSED" in refused.stderr and "cooldown not elapsed" in refused.stderr, (
+            refused.stderr
+        )
+        assert safety._estopped is True
+        time.sleep(0.5)  # anything the CLI might have broadcast would have landed by now
+        assert runner._estop_latched is True, "a refused kernel reset must not clear the runner"
+
+        # 2. A real goal is rejected, and the reason reaches the log at WARNING.
         assert action_client.wait_for_server(timeout_sec=10.0)
         future = action_client.send_goal_async(ExecuteRskill.Goal())
         assert _wait_until(future.done), "the runner never answered the goal"
@@ -137,15 +158,6 @@ def test_estop_reset_cli_clears_kernel_then_runner_and_rejection_is_loud(
         )
         line = next(ln for ln in "".join(logged).splitlines() if "e-stop latched" in ln)
         assert "WARN" in line and "openral estop reset" in line, line
-
-        # 2. Inside the cooldown the kernel refuses; nothing is broadcast.
-        assert time.monotonic() - latched_at < _COOLDOWN_S, "test too slow for its cooldown"
-        refused = _openral_estop_reset()
-        assert refused.returncode == 1, refused.stdout + refused.stderr
-        assert "REFUSED" in refused.stderr
-        assert safety._estopped is True
-        time.sleep(0.5)  # anything the CLI might have broadcast would have landed by now
-        assert runner._estop_latched is True, "a refused kernel reset must not clear the runner"
 
         # 3. After the cooldown: kernel first, then the runner via /openral/estop_cleared.
         time.sleep(max(0.0, _COOLDOWN_S - (time.monotonic() - latched_at)) + 0.2)

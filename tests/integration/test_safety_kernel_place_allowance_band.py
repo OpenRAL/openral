@@ -787,9 +787,12 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
     half-cell embedded residue the kernel exempts — and the support witness's band, riding
     with a payload commanded 19 mm below the measured pose, dropped below it. Built by the
     producer's own ``region_attachment`` on a 1-DoF vertical carriage at the real cell's 0 mm
-    attached margin, one attachment revision per row (a fresh snapshot at the measured q):
+    attached margin, each row a fresh attach (a detach, then the payload: a new snapshot at
+    the measured q):
 
     * tight payload, pressed 19 mm: REFUSED on the boundary cell (the i50 stop);
+    * the closed payload re-published as the same object without a detach, same press:
+      REFUSED on the boundary cell — the kernel keeps the residue taken at attach (#481);
     * closed payload (``_kernel_closure``, what ``GraspTargetLeg.kernel_region`` publishes
       and the bridge now attaches), same press: ACCEPTED — the boundary cell is residue;
     * the closed payload raised into a foreign cell outside the closure: REFUSED on it;
@@ -821,9 +824,9 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
         WorldStateStamped,
     )
     from rclpy.executors import SingleThreadedExecutor
-    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import JointState
-    from std_msgs.msg import Empty
+    from std_msgs.msg import Empty, UInt64
     from std_srvs.srv import Trigger
 
     rig = _carriage_rig(axis_xyz=(0.0, 0.0, 1.0))
@@ -862,6 +865,17 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                 )
                 state_pub = helper.create_publisher(
                     WorldStateStamped, "/openral/world_state_fast", reliable_kl1
+                )
+                applied: list[int] = []
+                helper.create_subscription(
+                    UInt64,
+                    "/openral/attachment_state_applied",
+                    lambda m: applied.append(int(m.data)),
+                    QoSProfile(
+                        depth=1,
+                        reliability=ReliabilityPolicy.RELIABLE,
+                        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                    ),
                 )
                 joint_pub = helper.create_publisher(JointState, "/joint_states", 10)
                 reset_client = helper.create_client(Trigger, "/openral/estop_reset")
@@ -930,21 +944,38 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                     assert held.support_contact is not None
                     return held
 
-                def publish_attachment(held: Any) -> None:
-                    """A new attachment revision: the kernel re-snapshots at the measured q."""
+                def publish_set(objects: list[Any]) -> None:
+                    """One attachment revision carrying ``objects``."""
                     nonlocal revision
                     revision += 1
-                    obj = AttachedCollisionObject()
-                    held.fill_idl(obj, primitive_factory=AttachedCollisionPrimitive)
                     state = WorldStateStamped()
                     state.header.frame_id = "base"
                     state.header.stamp = helper.get_clock().now().to_msg()
                     state.stamp_ns = helper.get_clock().now().nanoseconds
-                    state.attached_objects = [obj]
+                    state.attached_objects = objects
                     state.attachment_revision = revision
                     state.attachment_stamp_ns = state.stamp_ns
-                    state_pub.publish(state)
-                    spin(0.4)
+                    # The kernel's world-state subscription is KeepLast(1): a revision it
+                    # never applied (a dropped detach) would leave the old residue in
+                    # place. Republish until it acks this revision.
+                    end = time.time() + 5.0
+                    while time.time() < end:
+                        state_pub.publish(state)
+                        spin(0.2)
+                        if applied and applied[-1] == revision:
+                            return
+                    raise AssertionError(f"kernel never applied attachment revision {revision}")
+
+                def publish_attachment(held: Any, *, fresh: bool = True) -> None:
+                    """``held`` at a new revision. ``fresh``: detach first, so it is a new
+                    attach and the kernel re-snapshots its residue at the measured q; the
+                    same object re-published without a detach keeps the residue taken at
+                    attach (#481, ``safety.attached_residue_kept``)."""
+                    if fresh:
+                        publish_set([])
+                    obj = AttachedCollisionObject()
+                    held.fill_idl(obj, primitive_factory=AttachedCollisionPrimitive)
+                    publish_set([obj])
 
                 def send(trace: str, q: float, *, refused_on: tuple[int, ...] = ()) -> None:
                     """One candidate; accepted, or refused on one of the ``refused_on`` cells."""
@@ -992,6 +1023,14 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                 # ── The tight held fit as the payload: i50's stop ─────────────
                 publish_attachment(payload(closed=False))
                 send("tight-pressed", _C_Q_PRESS, refused_on=(_C_BOUNDARY,))
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── The same object closed without a re-attach: the residue taken at
+                # attach stays, so the boundary cell still stops it (#481) ──
+                publish_attachment(payload(closed=True), fresh=False)
+                send("closed-pressed-kept", _C_Q_PRESS, refused_on=(_C_BOUNDARY,))
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+                assert "safety.attached_residue_kept reason=same_objects" in log, log
                 reset_kernel_estop(reset_client, executor, spin, estops)
 
                 # ── Closed over the cells it touches: the boundary is residue ──
@@ -1053,7 +1092,7 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                 )
                 send("bloated-pressed-closed-patch", _C_Q_PRESS, refused_on=_C_SUPPORT)
                 log = log_path.read_text(encoding="utf-8", errors="replace")
-                assert log.count("safety.support_witness_armed object=approach:carriage:1") == 5
+                assert log.count("safety.support_witness_armed object=approach:carriage:1") == 6
             finally:
                 rclpy.shutdown()
         except AssertionError as exc:
