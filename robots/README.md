@@ -7,7 +7,7 @@ scenes, the eval registry, the HAL itself) validates against. The
 time and auto-registers each one; `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` is
 looked up first, for out-of-tree manifests.
 
-There are 22 robot directories, each with a `robot.yaml` and most with a
+There are 23 robot directories, each with a `robot.yaml` and most with a
 `README.md` of provenance notes (kinematic source, MJCF wiring, sim-vs-real
 caveats). `hal.real` is the source of truth for real-hardware support:
 `null`/absent means sim-only (no HAL, no HIL tests, no physical rig).
@@ -29,6 +29,7 @@ from it (most arms below), and several embodiments (`aloha_agilex`, `gr1`,
 | `google_robot` | Google Everyday Robot mobile manipulator (discontinued 2023; coarse kinematic approximation) | `google_robot`, `everyday_robot`, `rt1`, `rt2`, `oxe` | no today — no scene currently binds it; the `simpler_env/google_robot_*` benchmark suite was removed because the upstream ManiSkill3 GoogleRobot envs are unregistered (`NameNotFound`) | no (`hal.real` null) | [README.md](google_robot/README.md) |
 | `gr1` | Fourier GR-1 humanoid — arms + waist + Fourier dex hands (legs/head disabled) | `gr1`, `fourier_gr1`, `humanoid`, `robocasa` | yes — `fixed_robot="gr1"` scene adapter (RoboCasa GR1 Tabletop Tasks backend) | no (`hal.real` null) | no README |
 | `h1` | Unitree H1 humanoid, bipedal floating base | `h1`, `unitree_h1`, `humanoid` | yes — `H1MujocoHAL` (mujoco_menagerie MJCF) | no (`hal.real` null) | [README.md](h1/README.md) |
+| `openamr_v2` | OpenAMRobot 2.0: differential mobile base + 350 mm DOLD lift + two Enactic OpenArm v2.0 arms (upstream pre-release; composed URDF vendored from `openamr-upperbody-sw`) | `openamr`, `openamr_v2`, `openarm`, `bimanual`, `mobile_base` | yes — `OpenAMRv2MujocoHAL` (MJCF built from the vendored URDF at first use) + Isaac Sim (`isaac_openamr_v2_warehouse`) | no (`hal.real` null; hardware from 2027-04) | [README.md](openamr_v2/README.md) |
 | `openarm` | Enactic OpenArm v2 bimanual arms (manifest's own `name:` is `openarm_v2`, directory is `openarm`) | `openarm`, `openarm_v2`, `enactic`, `bimanual` | yes — derived `MujocoArmHAL` (`sim:` block; class form `OpenArmMujocoHAL`) | yes — `OpenArmRealHAL` | [README.md](openarm/README.md) |
 | `panda_mobile` | Franka Panda 7-DoF arm on a 3-DoF holonomic base (RoboCasa's default robot composition; 2-D LiDAR SLAM) | `panda_mobile`, `robocasa`, `franka`, `panda`, `mobile_base` | yes — `PandaMobileHAL` (RoboCasa/robosuite backend) | no (`hal.real` null) | no README |
 | `panda_mobile_vslam` | Lidar-less visual-SLAM twin of `panda_mobile` — localises/maps from two base-mounted RGB cameras via cuVSLAM instead of a `LaserScan` | `panda_mobile`, `robocasa`, `franka`, `panda`, `mobile_base` | yes — `PandaMobileHAL` (RoboCasa/robosuite backend) | no (`hal.real` null) | no README |

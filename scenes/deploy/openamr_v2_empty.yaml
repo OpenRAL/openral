@@ -1,0 +1,33 @@
+# OpenAMRobot 2.0 in an empty MuJoCo world: the bare digital twin (no props).
+#
+# The twin (base + DOLD lift + two OpenArm v2 arms) is built from
+# robots/openamr_v2/openamr_v2.urdf on first launch and cached under
+# $OPENRAL_CACHE_DIR/openamr_v2/; the first launch also fetches the pinned
+# openarm_description and openamr-platform-sw clones for the meshes.
+#
+#   openral deploy sim --config scenes/deploy/openamr_v2_empty.yaml
+#
+# Drive the base (differential: vx and wz only; a vy is refused) and move the lift:
+#
+#   ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.2}, angular: {z: 0.3}}"
+#
+# Every perception and nav leg is off: there is nothing to see or map here.
+scene:
+  id: openamr_v2_empty
+robot_id: openamr_v2
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

@@ -1,0 +1,1480 @@
+<?xml version="1.0"?>
+<robot name="openamrobot">
+  <material name="chassis_steel">
+    <color rgba="0.352 0.352 0.352 1" />
+  </material>
+  <material name="chassis_cover">
+    <color rgba="0.352 0.352 0.352 1" />
+  </material>
+  <material name="equipment_dark">
+    <color rgba="0.2 0.2 0.22 1" />
+  </material>
+  <material name="hub_motor_dark">
+    <color rgba="0.12 0.12 0.13 1" />
+  </material>
+  <material name="caster_grey">
+    <color rgba="0.55 0.56 0.58 1" />
+  </material>
+  <material name="imu_board">
+    <color rgba="0.05 0.12 0.07 1" />
+  </material>
+  <link name="base_footprint" />
+  <joint name="base_footprint_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.098" />
+    <parent link="base_footprint" />
+    <child link="base_link" />
+  </joint>
+  <link name="base_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.0130206782008723 -0.0172284113080805 0.0442737724499705" />
+      <mass value="4.17533781895232" />
+      <inertia ixx="0.0556823489058236" ixy="1.55280027163122E-06" ixz="-7.03613595852389E-05" iyy="0.0914894501493208" iyz="2.61486872412502E-05" izz="0.135705995449285" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/base_chassis.stl" />
+      </geometry>
+      <material name="chassis_steel" />
+    </visual>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/base_covers.stl" />
+      </geometry>
+      <material name="chassis_cover" />
+    </visual>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/base_equipment.stl" />
+      </geometry>
+      <material name="equipment_dark" />
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0.077" />
+      <geometry>
+        <box size="0.780 0.580 0.240" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="fl_caster_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00137751441938117 1.75682554387491E-06 0.000943582234356817" />
+      <mass value="0.0219398692551679" />
+      <inertia ixx="5.47013223781611E-06" ixy="7.49140758780352E-10" ixz="-4.69358577988126E-07" iyy="5.29653308929842E-06" iyz="9.7174897982222E-10" izz="8.07647021403621E-06" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/caster.stl" />
+      </geometry>
+      <material name="caster_grey" />
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 -0.022" />
+      <geometry>
+        <box size="0.060 0.060 0.040" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="fl_caster_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.27505 0.215 -0.043833" />
+    <parent link="base_link" />
+    <child link="fl_caster_link" />
+    <axis xyz="0 0 1" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="fl_wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-6.39569062432788E-07 0.000112518782016985 0.00254643003871692" />
+      <mass value="0.0267291642645555" />
+      <inertia ixx="3.7398971674153E-06" ixy="-2.27443217252895E-10" ixz="6.56739699964409E-12" iyy="3.6803685469895E-06" iyz="-2.07598523671399E-11" izz="3.74071666197272E-06" />
+    </inertial>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <sphere radius="0.026" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="fl_wheel_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.015 0 -0.027746" />
+    <parent link="fl_caster_link" />
+    <child link="fl_wheel_link" />
+    <axis xyz="0 1 0" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="fr_caster_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.001377514419381 1.75682554379164E-06 0.000943582234356991" />
+      <mass value="0.0219398692551674" />
+      <inertia ixx="5.47013223781604E-06" ixy="7.491407587617E-10" ixz="-4.69358577988093E-07" iyy="5.29653308929836E-06" iyz="9.71748979803426E-10" izz="8.07647021403615E-06" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/caster.stl" />
+      </geometry>
+      <material name="caster_grey" />
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 -0.022" />
+      <geometry>
+        <box size="0.060 0.060 0.040" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="fr_caster_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.27505 -0.215 -0.043833" />
+    <parent link="base_link" />
+    <child link="fr_caster_link" />
+    <axis xyz="0 0 1" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="fr_wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-7.06559357133152E-07 -5.5142527616292E-07 0.00254642490100031" />
+      <mass value="0.0241949191842345" />
+      <inertia ixx="3.24977626996243E-06" ixy="-2.27443225645868E-10" ixz="6.5668525167282E-12" iyy="3.65583795395343E-06" iyz="-2.07598384413479E-11" izz="3.25059576514846E-06" />
+    </inertial>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <sphere radius="0.026" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="fr_wheel_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.015 0 -0.027746" />
+    <parent link="fr_caster_link" />
+    <child link="fr_wheel_link" />
+    <axis xyz="0 1 0" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="br_caster_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.001377514419381 1.7568255438194E-06 0.000943582234356914" />
+      <mass value="0.0219398692551676" />
+      <inertia ixx="5.47013223781607E-06" ixy="7.49140758766451E-10" ixz="-4.69358577988097E-07" iyy="5.29653308929839E-06" iyz="9.7174897977481E-10" izz="8.07647021403621E-06" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/caster.stl" />
+      </geometry>
+      <material name="caster_grey" />
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 -0.022" />
+      <geometry>
+        <box size="0.060 0.060 0.040" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="br_caster_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.27495 -0.215 -0.043833" />
+    <parent link="base_link" />
+    <child link="br_caster_link" />
+    <axis xyz="0 0 1" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="br_wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-7.06559360075243E-07 -5.51425279493589E-07 0.0025464249010014" />
+      <mass value="0.0241949191842423" />
+      <inertia ixx="3.24977626996335E-06" ixy="-2.27443226363324E-10" ixz="6.56685281184266E-12" iyy="3.65583795395474E-06" iyz="-2.07598381632197E-11" izz="3.25059576515051E-06" />
+    </inertial>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <sphere radius="0.026" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="br_wheel_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.015 0 -0.027746" />
+    <parent link="br_caster_link" />
+    <child link="br_wheel_link" />
+    <axis xyz="0 1 0" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="bl_caster_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00137751441938105 1.75682554365286E-06 0.000943582234356866" />
+      <mass value="0.0219398692551676" />
+      <inertia ixx="5.4701322378161E-06" ixy="7.49140758741953E-10" ixz="-4.69358577988104E-07" iyy="5.29653308929842E-06" iyz="9.71748979762017E-10" izz="8.07647021403621E-06" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/caster.stl" />
+      </geometry>
+      <material name="caster_grey" />
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 -0.022" />
+      <geometry>
+        <box size="0.060 0.060 0.040" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="bl_caster_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.27495 0.215 -0.043833" />
+    <parent link="base_link" />
+    <child link="bl_caster_link" />
+    <axis xyz="0 0 1" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="bl_wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-7.06559361574044E-07 -5.51425277522943E-07 0.00254642490100057" />
+      <mass value="0.0241949191842375" />
+      <inertia ixx="3.24977626996275E-06" ixy="-2.27443226792169E-10" ixz="6.56685274690658E-12" iyy="3.65583795395393E-06" iyz="-2.07598383426284E-11" izz="3.25059576514932E-06" />
+    </inertial>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <sphere radius="0.026" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="bl_wheel_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.015 0 -0.027746" />
+    <parent link="bl_caster_link" />
+    <child link="bl_wheel_link" />
+    <axis xyz="0 1 0" />
+    <dynamics damping="0.001" friction="0.001" />
+  </joint>
+  <link name="left_wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="6.28502999154333E-07 -0.0039870676124848 -0.000569790977384271" />
+      <mass value="1.06112497715273" />
+      <inertia ixx="0.00339900487986557" ixy="-1.58838850523255E-08" ixz="-5.99560271951721E-08" iyy="0.00642634969436629" iyz="-1.66764633557271E-07" izz="0.0033973895137008" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/hub_motor_wheel.stl" />
+      </geometry>
+      <material name="hub_motor_dark" />
+    </visual>
+    <collision>
+      <origin rpy="1.5707963 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.046" radius="0.100" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_wheel_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0.200 0" />
+    <parent link="base_link" />
+    <child link="left_wheel_link" />
+  </joint>
+  <link name="right_wheel_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-6.2850299915387E-07 0.0039870676124848 -0.000569790977384271" />
+      <mass value="1.06112497715273" />
+      <inertia ixx="0.00339900487986557" ixy="-1.58838850523222E-08" ixz="5.99560271951723E-08" iyy="0.00642634969436629" iyz="1.66764633557271E-07" izz="0.0033973895137008" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/hub_motor_wheel.stl" />
+      </geometry>
+      <material name="hub_motor_dark" />
+    </visual>
+    <collision>
+      <origin rpy="1.5707963 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.046" radius="0.100" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_wheel_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 -0.200 0" />
+    <parent link="base_link" />
+    <child link="right_wheel_link" />
+  </joint>
+  <link name="lidar_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.028276907815542 0.000919025220279201 -0.0114509307164145" />
+      <mass value="0.167633664227307" />
+      <inertia ixx="5.11992170336187E-05" ixy="4.49443876491344E-07" ixz="1.5052713226636E-07" iyy="5.97364216311163E-05" iyz="5.02504950673121E-08" izz="0.000100924865484583" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/lidar.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 -0.00765" />
+      <geometry>
+        <cylinder length="0.0413" radius="0.0278" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lidar_joint" type="fixed">
+    <origin rpy="0 0 3.141592653589793" xyz="0.330 0 0.124" />
+    <parent link="base_link" />
+    <child link="lidar_link" />
+    <axis xyz="0 0 0" />
+  </joint>
+  <link name="camera_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.08 0.04" />
+      </geometry>
+      <material name="camera_black">
+        <color rgba="0.1 0.1 0.1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.08 0.04" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.05" />
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+    </inertial>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.35 0 0.20" />
+    <parent link="base_link" />
+    <child link="camera_link" />
+  </joint>
+  <link name="camera_optical_frame" />
+  <joint name="camera_optical_joint" type="fixed">
+    <origin rpy="-1.5707963 0 -1.5707963" xyz="0 0 0" />
+    <parent link="camera_link" />
+    <child link="camera_optical_frame" />
+  </joint>
+  <material name="sensor_black">
+    <color rgba="0.1 0.1 0.1 1" />
+  </material>
+  <link name="base_camera_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/base_camera.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+  </link>
+  <joint name="base_camera_joint" type="fixed">
+    <origin rpy="0 -0.1745 0" xyz="0.387 0 0.046" />
+    <parent link="base_link" />
+    <child link="base_camera_link" />
+  </joint>
+  <link name="base_camera_color_optical_frame" />
+  <joint name="base_camera_color_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="base_camera_link" />
+    <child link="base_camera_color_optical_frame" />
+  </joint>
+  <link name="base_camera_depth_optical_frame" />
+  <joint name="base_camera_depth_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="base_camera_link" />
+    <child link="base_camera_depth_optical_frame" />
+  </joint>
+  <link name="imu_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/imu.stl" />
+      </geometry>
+      <material name="imu_board" />
+    </visual>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <origin rpy="0 0 -1.5707963267948966" xyz="0.0544 0 0.1210" />
+    <parent link="base_link" />
+    <child link="imu_link" />
+  </joint>
+  <link name="us_front_left">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/ultrasonic.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+  </link>
+  <joint name="us_front_left_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.3906 0.13 -0.0066" />
+    <parent link="base_link" />
+    <child link="us_front_left" />
+  </joint>
+  <link name="us_front_right">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/ultrasonic.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+  </link>
+  <joint name="us_front_right_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.3906 -0.13 -0.0066" />
+    <parent link="base_link" />
+    <child link="us_front_right" />
+  </joint>
+  <link name="us_rear_left">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/ultrasonic.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+  </link>
+  <joint name="us_rear_left_joint" type="fixed">
+    <origin rpy="0 0 3.141592653589793" xyz="-0.3886 0.13 -0.0066" />
+    <parent link="base_link" />
+    <child link="us_rear_left" />
+  </joint>
+  <link name="us_rear_right">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/ultrasonic.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+  </link>
+  <joint name="us_rear_right_joint" type="fixed">
+    <origin rpy="0 0 3.141592653589793" xyz="-0.3886 -0.13 -0.0066" />
+    <parent link="base_link" />
+    <child link="us_rear_right" />
+  </joint>
+  <link name="tof_front">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/tof.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+  </link>
+  <joint name="tof_front_joint" type="fixed">
+    <origin rpy="0 0.3491 0" xyz="0.399 0 -0.0066" />
+    <parent link="base_link" />
+    <child link="tof_front" />
+  </joint>
+  <link name="tof_rear">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openamrobot_description/meshes/visual/tof.stl" />
+      </geometry>
+      <material name="sensor_black" />
+    </visual>
+  </link>
+  <joint name="tof_rear_joint" type="fixed">
+    <origin rpy="0 0.3491 3.141592653589793" xyz="-0.399 0 -0.0066" />
+    <parent link="base_link" />
+    <child link="tof_rear" />
+  </joint>
+  <material name="placeholder_geometry">
+    <color rgba="0.78 0.64 0.45 1.0" />
+  </material>
+  <link name="lift_column_base_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0.265" />
+      <mass value="11.7" />
+      <inertia ixx="0.2773875" ixy="0" ixz="0" iyy="0.33003750000000004" iyz="0" izz="0.059669999999999994" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0.265" />
+      <geometry>
+        <box size="0.24 0.06 0.53" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_column_fixed_stage">
+      <origin rpy="0 0 0" xyz="0 0 0.265" />
+      <geometry>
+        <box size="0.24 0.06 0.53" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lift_column_base_joint" type="fixed">
+    <parent link="base_footprint" />
+    <child link="lift_column_base_link" />
+    <origin rpy="0 0 0" xyz="0.06 0 0.304" />
+  </joint>
+  <link name="lift_carriage_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 -0.175" />
+      <geometry>
+        <box size="0.2095 0.051 0.35" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_column_moving_stage">
+      <origin rpy="0 0 0" xyz="0 0 -0.175" />
+      <geometry>
+        <box size="0.2095 0.051 0.35" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lift_joint" type="prismatic">
+    <parent link="lift_column_base_link" />
+    <child link="lift_carriage_link" />
+    <origin rpy="0 0 0" xyz="0 0 0.53" />
+    <axis xyz="0 0 1" />
+    <limit effort="800.0" lower="0.0" upper="0.35" velocity="0.018" />
+  </joint>
+  <link name="adapter_plate_link">
+    <visual>
+      <geometry>
+        <box size="0.36 0.1 0.01" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="adapter_plate">
+      <geometry>
+        <box size="0.36 0.1 0.01" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="adapter_plate_joint" type="fixed">
+    <parent link="lift_carriage_link" />
+    <child link="adapter_plate_link" />
+    <origin rpy="0 0 0" xyz="0.06 0 0.005" />
+  </joint>
+  <link name="arm_profile_link">
+    <visual>
+      <geometry>
+        <box size="0.12 0.06 0.34" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.12 0.06 0.34" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="arm_profile_joint" type="fixed">
+    <parent link="adapter_plate_link" />
+    <child link="arm_profile_link" />
+    <origin rpy="0 0 0" xyz="0.12 0 0.17500000000000002" />
+  </joint>
+  <link name="head_camera_mount_link" />
+  <joint name="head_camera_mount_joint" type="fixed">
+    <parent link="lift_carriage_link" />
+    <child link="head_camera_mount_link" />
+    <origin rpy="0 0 0" xyz="0.222 0.0 0.389" />
+  </joint>
+  <link name="head_camera_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.013 0 0" />
+      <mass value="0.0629" />
+      <inertia ixx="8.612320416666666e-05" ixy="0" ixz="0" iyy="8.557020833333332e-06" iyz="0" izz="8.492810416666668e-05" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.013 0 0" />
+      <geometry>
+        <box size="0.0265 0.1245 0.0305" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_head_camera_body">
+      <origin rpy="0 0 0" xyz="-0.013 0 0" />
+      <geometry>
+        <box size="0.0265 0.1245 0.0305" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="head_camera_pitch_joint" type="fixed">
+    <parent link="head_camera_mount_link" />
+    <child link="head_camera_link" />
+    <origin rpy="0 0.5235987755982988 0" xyz="0 0 0" />
+  </joint>
+  <link name="head_camera_optical_frame" />
+  <joint name="head_camera_optical_joint" type="fixed">
+    <parent link="head_camera_link" />
+    <child link="head_camera_optical_frame" />
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+  </joint>
+  <link name="getac_tablet_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <mass value="0.59" />
+      <inertia ixx="0.0037954719666666668" ixy="0" ixz="0" iyy="0.0011185318333333332" iyz="0" izz="0.002707399866666667" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.0176 0.234 0.1498" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_getac_tablet">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.0176 0.234 0.1498" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="getac_tablet_joint" type="fixed">
+    <parent link="arm_profile_link" />
+    <child link="getac_tablet_link" />
+    <origin rpy="0 0 0" xyz="0.0688 0 0.06599999999999998" />
+  </joint>
+  <link name="head_light_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <mass value="0.11" />
+      <inertia ixx="0.00023148583333333335" ixy="0" ixz="0" iyy="6.315833333333334e-06" iyz="0" izz="0.00023250333333333335" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.02 0.158 0.017" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_head_light">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.02 0.158 0.017" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="head_light_joint" type="fixed">
+    <parent link="arm_profile_link" />
+    <child link="head_light_link" />
+    <origin rpy="0 0 0" xyz="0.06999999999999999 0 -0.047400000000000025" />
+  </joint>
+  <link name="second_estop_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.025 0 0" />
+      <geometry>
+        <box size="0.046 0.03 0.047" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_second_estop_contact_block">
+      <origin rpy="0 0 0" xyz="-0.025 0 0" />
+      <geometry>
+        <box size="0.046 0.03 0.047" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.008999999999999998 0 0" />
+      <geometry>
+        <box size="0.022 0.022 0.022" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_second_estop_collar">
+      <origin rpy="0 0 0" xyz="0.008999999999999998 0 0" />
+      <geometry>
+        <box size="0.022 0.022 0.022" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.026999999999999996 0 0" />
+      <geometry>
+        <box size="0.014 0.04 0.04" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_second_estop_head">
+      <origin rpy="0 0 0" xyz="0.026999999999999996 0 0" />
+      <geometry>
+        <box size="0.014 0.04 0.04" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="second_estop_joint" type="fixed">
+    <parent link="lift_column_base_link" />
+    <child link="second_estop_link" />
+    <origin rpy="0 0 3.141592653589793" xyz="-0.16799999999999998 0 0.47200000000000003" />
+  </joint>
+  <link name="lift_stop_sensor_l1000_link">
+    <visual>
+      <origin rpy="0 1.5707963267948966 0" xyz="0.024 0 0" />
+      <geometry>
+        <cylinder length="0.048" radius="0.006" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_stop_sensor">
+      <origin rpy="0 1.5707963267948966 0" xyz="0.024 0 0" />
+      <geometry>
+        <cylinder length="0.048" radius="0.006" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.0 -0.013 0" />
+      <geometry>
+        <box size="0.04 0.004 0.025" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_sensor_bracket_face_leg">
+      <origin rpy="0 0 0" xyz="0.0 -0.013 0" />
+      <geometry>
+        <box size="0.04 0.004 0.025" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.018000000000000002 0.005000000000000001 0" />
+      <geometry>
+        <box size="0.004 0.04 0.025" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_sensor_bracket_sensor_leg">
+      <origin rpy="0 0 0" xyz="0.018000000000000002 0.005000000000000001 0" />
+      <geometry>
+        <box size="0.004 0.04 0.025" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lift_stop_sensor_l1000_joint" type="fixed">
+    <parent link="lift_column_base_link" />
+    <child link="lift_stop_sensor_l1000_link" />
+    <origin rpy="0 0 0" xyz="-0.095 0.045 0.12" />
+  </joint>
+  <link name="lift_stop_sensor_l1175_link">
+    <visual>
+      <origin rpy="0 1.5707963267948966 0" xyz="0.024 0 0" />
+      <geometry>
+        <cylinder length="0.048" radius="0.006" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_stop_sensor">
+      <origin rpy="0 1.5707963267948966 0" xyz="0.024 0 0" />
+      <geometry>
+        <cylinder length="0.048" radius="0.006" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.0 -0.013 0" />
+      <geometry>
+        <box size="0.04 0.004 0.025" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_sensor_bracket_face_leg">
+      <origin rpy="0 0 0" xyz="0.0 -0.013 0" />
+      <geometry>
+        <box size="0.04 0.004 0.025" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.018000000000000002 0.005000000000000001 0" />
+      <geometry>
+        <box size="0.004 0.04 0.025" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_sensor_bracket_sensor_leg">
+      <origin rpy="0 0 0" xyz="0.018000000000000002 0.005000000000000001 0" />
+      <geometry>
+        <box size="0.004 0.04 0.025" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lift_stop_sensor_l1175_joint" type="fixed">
+    <parent link="lift_column_base_link" />
+    <child link="lift_stop_sensor_l1175_link" />
+    <origin rpy="0 0 0" xyz="-0.095 0.045 0.295" />
+  </joint>
+  <link name="lift_stop_sensor_l1350_link">
+    <visual>
+      <origin rpy="0 1.5707963267948966 0" xyz="0.024 0 0" />
+      <geometry>
+        <cylinder length="0.048" radius="0.006" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_stop_sensor">
+      <origin rpy="0 1.5707963267948966 0" xyz="0.024 0 0" />
+      <geometry>
+        <cylinder length="0.048" radius="0.006" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.0 -0.013 0" />
+      <geometry>
+        <box size="0.04 0.004 0.025" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_sensor_bracket_face_leg">
+      <origin rpy="0 0 0" xyz="0.0 -0.013 0" />
+      <geometry>
+        <box size="0.04 0.004 0.025" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.018000000000000002 0.005000000000000001 0" />
+      <geometry>
+        <box size="0.004 0.04 0.025" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_sensor_bracket_sensor_leg">
+      <origin rpy="0 0 0" xyz="0.018000000000000002 0.005000000000000001 0" />
+      <geometry>
+        <box size="0.004 0.04 0.025" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lift_stop_sensor_l1350_joint" type="fixed">
+    <parent link="lift_column_base_link" />
+    <child link="lift_stop_sensor_l1350_link" />
+    <origin rpy="0 0 0" xyz="-0.095 0.045 0.47" />
+  </joint>
+  <link name="head_camera_bracket_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0.003" />
+      <geometry>
+        <box size="0.03 0.03 0.006" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_head_camera_bracket_foot">
+      <origin rpy="0 0 0" xyz="0 0 0.003" />
+      <geometry>
+        <box size="0.03 0.03 0.006" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0.01949999999999999" />
+      <geometry>
+        <box size="0.012 0.03 0.03899999999999998" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_head_camera_bracket_post">
+      <origin rpy="0 0 0" xyz="0 0 0.01949999999999999" />
+      <geometry>
+        <box size="0.012 0.03 0.03899999999999998" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="head_camera_bracket_joint" type="fixed">
+    <parent link="head_camera_mount_link" />
+    <child link="head_camera_bracket_link" />
+    <origin rpy="0 0 0" xyz="-0.03 0 -0.03899999999999998" />
+  </joint>
+  <link name="lift_flag_rod_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 -0.215" />
+      <geometry>
+        <box size="0.02 0.02 0.43" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_flag_rod">
+      <origin rpy="0 0 0" xyz="0 0 -0.215" />
+      <geometry>
+        <box size="0.02 0.02 0.43" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lift_flag_rod_joint" type="fixed">
+    <parent link="adapter_plate_link" />
+    <child link="lift_flag_rod_link" />
+    <origin rpy="0 0 0" xyz="-0.16899999999999998 0.06999999999999999 -0.005" />
+  </joint>
+  <link name="lift_flag_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.002 0.045 0.02" />
+      </geometry>
+      <material name="placeholder_geometry" />
+    </visual>
+    <collision name="placeholder_lift_flag">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <box size="0.002 0.045 0.02" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lift_flag_joint" type="fixed">
+    <parent link="lift_flag_rod_link" />
+    <child link="lift_flag_link" />
+    <origin rpy="0 0 0" xyz="0.010999999999999996 -0.012499999999999997 -0.41" />
+  </joint>
+  <link name="openarm_left_base_link">
+    <visual name="openarm_left_base_link_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/base_link.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_base_link_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/base_link.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.00253123748061566 0.0258185540330169 2.70658291858903e-05" />
+      <mass value="1.1432284943239561" />
+      <inertia ixx="0.00113607806226198" ixy="-3.81487993180929e-07" ixz="1.09161247709715e-08" iyy="0.00159935208714031" iyz="-2.7521421737084e-08" izz="0.000750541980863571" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_base_link_mount_joint" type="fixed">
+    <origin rpy="0.0 0.0 0.0" xyz="0.18 0.031 0.166" />
+    <parent link="lift_carriage_link" />
+    <child link="openarm_left_base_link" />
+  </joint>
+  <link name="openarm_left_link1">
+    <visual name="openarm_left_link1_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link1.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_link1_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link1.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000900350355624244 0.0444659716892874 2.88441021165683e-05" />
+      <mass value="1.1416684646202298" />
+      <inertia ixx="0.0010943212038551" ixy="-9.41628673674543e-06" ixz="4.53422182483102e-08" iyy="0.000759199728161993" iyz="-6.66755698859637e-08" izz="0.000670659201019629" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_joint1" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0.0625 0" />
+    <parent link="openarm_left_base_link" />
+    <child link="openarm_left_link1" />
+    <axis xyz="0 1 0" />
+    <limit effort="40" lower="-3.4907" upper="1.3963" velocity="16.755" />
+  </joint>
+  <link name="openarm_left_link2">
+    <visual name="openarm_left_link2_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link2.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_link2_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link2.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.0247184924346635 -7.60578399428002e-08 -0.0312643102292087" />
+      <mass value="0.2775092746011571" />
+      <inertia ixx="0.000153588833784759" ixy="2.94422592188677e-10" ixz="5.21056076779068e-06" iyy="0.000113062180225725" iyz="-3.75816911469744e-10" izz="8.22999351863579e-05" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_joint2" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0.0600000000000001 0" />
+    <parent link="openarm_left_link1" />
+    <child link="openarm_left_link2" />
+    <axis xyz="-1 0 0" />
+    <limit effort="40" lower="-3.3161" upper="0.17453" velocity="16.755" />
+  </joint>
+  <link name="openarm_left_link3">
+    <visual name="openarm_left_link3_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link3.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_link3_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link3.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00300861804638783 -0.000514813312550808 -0.109368241429434" />
+      <mass value="1.073863338202347" />
+      <inertia ixx="0.00128939636591746" ixy="-2.29951046666492e-07" ixz="-6.76161926984358e-05" iyy="0.00114018992179734" iyz="-1.06260802872572e-05" izz="0.000559765478676303" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_joint3" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.0662500000000008" />
+    <parent link="openarm_left_link2" />
+    <child link="openarm_left_link3" />
+    <axis xyz="0 0 -1" />
+    <limit effort="27" lower="-1.5708" upper="1.5708" velocity="5.4454" />
+  </joint>
+  <link name="openarm_left_link4">
+    <visual name="openarm_left_link4_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link4.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_link4_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link4.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00310326243752606 -0.00136538979048502 -0.0574601379354351" />
+      <mass value="0.6348534566833373" />
+      <inertia ixx="0.0004690036047182" ixy="5.63626910265645e-06" ixz="-1.77877991597693e-06" iyy="0.000433926270522842" iyz="3.41757797773822e-06" izz="0.000245211429759716" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_joint4" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.15375" />
+    <parent link="openarm_left_link3" />
+    <child link="openarm_left_link4" />
+    <axis xyz="0 -1 0" />
+    <limit effort="27" lower="0" upper="2.4435" velocity="5.4454" />
+  </joint>
+  <link name="openarm_left_link5">
+    <visual name="openarm_left_link5_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link5.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_link5_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link5.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.000737188580130584 0.000412406544351845 -0.047093829077211" />
+      <mass value="0.6156588026168502" />
+      <inertia ixx="0.000279653368752989" ixy="-3.31745289972445e-06" ixz="7.68097311403736e-07" iyy="0.000334599623120095" iyz="1.49934409279756e-07" izz="0.000176662464388138" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_joint5" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.0955000000000005" />
+    <parent link="openarm_left_link4" />
+    <child link="openarm_left_link5" />
+    <axis xyz="0 0 -1" />
+    <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+  </joint>
+  <link name="openarm_left_link6">
+    <visual name="openarm_left_link6_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link6.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_link6_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link6.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="2.27438423593244e-05 -0.00068649602098908 5.44000494765995e-05" />
+      <mass value="0.475202773187987" />
+      <inertia ixx="0.000179275941446964" ixy="-6.58439346712228e-08" ixz="-3.37101167120887e-08" iyy="0.000136247512758587" iyz="-3.32253600295544e-08" izz="0.000135340695937386" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_joint6" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.120499999999998" />
+    <parent link="openarm_left_link5" />
+    <child link="openarm_left_link6" />
+    <axis xyz="0 -1 0" />
+    <limit effort="7" lower="-0.7854" upper="0.7854" velocity="20.944" />
+  </joint>
+  <joint name="openarm_left_joint7" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="openarm_left_link6" />
+    <child link="openarm_left_ee_base_link" />
+    <axis xyz="1 0 0" />
+    <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+  </joint>
+  <link name="openarm_left_ee_base_link">
+    <visual name="openarm_left_ee_base_link_visual">
+      <origin rpy="0.0 -0.0 0.0" xyz="0.0205 -0.0 0.0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/visual/ee_base_link.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_ee_base_link_collision">
+      <origin rpy="0.0 -0.0 0.0" xyz="0.0205 -0.0 0.0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/collision/ee_base_link.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 -0.0 0.0" xyz="0.0137902 -0.0084073 -0.05938" />
+      <mass value="0.52832" />
+      <inertia ixx="0.00021911" ixy="-4.1683e-06" ixz="1.4043e-06" iyy="0.00015627" iyz="1.5124e-06" izz="0.0001659" />
+    </inertial>
+  </link>
+  <link name="openarm_left_ee_link1">
+    <visual name="openarm_left_ee_link1_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/visual/finger_inner.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_ee_link1_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/collision/finger_inner.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.0124990911725494 -0.00176592789915655 -0.0241663193888537" />
+      <mass value="0.125979047366671" />
+      <inertia ixx="3.61105363396623e-05" ixy="-1.35880208293387e-06" ixz="7.13916341634141e-06" iyy="3.62137424319396e-05" iyz="3.60343788693423e-06" izz="1.74958961632907e-05" />
+    </inertial>
+  </link>
+  <link name="openarm_left_ee_link2">
+    <visual name="openarm_left_ee_link2_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/visual/finger_outer.dae" scale="1 -1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_left_ee_link2_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/collision/finger_outer.stl" scale="1 -1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.012796 0.0020183 -0.026792" />
+      <mass value="0.11372" />
+      <inertia ixx="3.4565e-05" ixy="1.3392e-06" ixz="7.1576e-06" iyy="3.5306e-05" iyz="-3.7172e-06" izz="1.6571e-05" />
+    </inertial>
+  </link>
+  <joint name="openarm_left_finger_joint1" type="revolute">
+    <origin rpy="0.0 -0.0 0.0" xyz="-0.0014300000000005003 -0.0180000000000009 -0.0680000000000174" />
+    <parent link="openarm_left_ee_base_link" />
+    <child link="openarm_left_ee_link1" />
+    <axis xyz="-1 0 0" />
+    <limit effort="7" lower="0" upper="0.7854" velocity="5" />
+  </joint>
+  <joint name="openarm_left_finger_joint2" type="revolute">
+    <origin rpy="0.0 -0.0 0.0" xyz="-0.0014300000000005003 0.0180000000000012 -0.0680000000000215" />
+    <parent link="openarm_left_ee_base_link" />
+    <child link="openarm_left_ee_link2" />
+    <axis xyz="1 0 0" />
+    <limit effort="7" lower="0" upper="0.7854" velocity="5" />
+    <mimic joint="openarm_left_finger_joint1" multiplier="1" offset="0" />
+  </joint>
+  <link name="openarm_left_grasp_frame" />
+  <joint name="openarm_left_grasp_frame_joint" type="fixed">
+    <origin rpy="-0.0 1.570796326794893 0.0" xyz="-0.0014300000000008993 -0.0 -0.138000000000019" />
+    <parent link="openarm_left_ee_base_link" />
+    <child link="openarm_left_grasp_frame" />
+  </joint>
+  <link name="openarm_right_base_link">
+    <visual name="openarm_right_base_link_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/base_link.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_base_link_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/base_link.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.00253123748061566 -0.0258185540330169 2.70658291858903e-05" />
+      <mass value="1.1432284943239561" />
+      <inertia ixx="0.00113607806226198" ixy="3.81487993180929e-07" ixz="1.09161247709715e-08" iyy="0.00159935208714031" iyz="2.7521421737084e-08" izz="0.000750541980863571" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_base_link_mount_joint" type="fixed">
+    <origin rpy="0.0 0.0 0.0" xyz="0.18 -0.031 0.166" />
+    <parent link="lift_carriage_link" />
+    <child link="openarm_right_base_link" />
+  </joint>
+  <link name="openarm_right_link1">
+    <visual name="openarm_right_link1_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link1.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_link1_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link1.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000900350355624244 -0.0444659716892874 2.88441021165683e-05" />
+      <mass value="1.1416684646202298" />
+      <inertia ixx="0.0010943212038551" ixy="9.41628673674543e-06" ixz="4.53422182483102e-08" iyy="0.000759199728161993" iyz="6.66755698859637e-08" izz="0.000670659201019629" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_joint1" type="revolute">
+    <origin rpy="0 0 0" xyz="0 -0.0625 0" />
+    <parent link="openarm_right_base_link" />
+    <child link="openarm_right_link1" />
+    <axis xyz="0 -1 0" />
+    <limit effort="40" lower="-1.3963" upper="3.4907" velocity="16.755" />
+  </joint>
+  <link name="openarm_right_link2">
+    <visual name="openarm_right_link2_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link2.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_link2_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link2.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.0247184924346635 7.60578399428002e-08 -0.0312643102292087" />
+      <mass value="0.2775092746011571" />
+      <inertia ixx="0.000153588833784759" ixy="-2.94422592188677e-10" ixz="5.21056076779068e-06" iyy="0.000113062180225725" iyz="3.75816911469744e-10" izz="8.22999351863579e-05" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_joint2" type="revolute">
+    <origin rpy="0 0 0" xyz="0 -0.0600000000000001 0" />
+    <parent link="openarm_right_link1" />
+    <child link="openarm_right_link2" />
+    <axis xyz="-1 0 0" />
+    <limit effort="40" lower="-0.17453" upper="3.3161" velocity="16.755" />
+  </joint>
+  <link name="openarm_right_link3">
+    <visual name="openarm_right_link3_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link3.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_link3_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link3.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00300861804638783 -0.000514813312550808 -0.109368241429434" />
+      <mass value="1.073863338202347" />
+      <inertia ixx="0.00128939636591746" ixy="-2.29951046666492e-07" ixz="-6.76161926984358e-05" iyy="0.00114018992179734" iyz="-1.06260802872572e-05" izz="0.000559765478676303" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_joint3" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.0662500000000008" />
+    <parent link="openarm_right_link2" />
+    <child link="openarm_right_link3" />
+    <axis xyz="0 0 -1" />
+    <limit effort="27" lower="-1.5708" upper="1.5708" velocity="5.4454" />
+  </joint>
+  <link name="openarm_right_link4">
+    <visual name="openarm_right_link4_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link4.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_link4_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link4.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00310326243752606 -0.00136538979048502 -0.0574601379354351" />
+      <mass value="0.6348534566833373" />
+      <inertia ixx="0.0004690036047182" ixy="5.63626910265645e-06" ixz="-1.77877991597693e-06" iyy="0.000433926270522842" iyz="3.41757797773822e-06" izz="0.000245211429759716" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_joint4" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.15375" />
+    <parent link="openarm_right_link3" />
+    <child link="openarm_right_link4" />
+    <axis xyz="0 -1 0" />
+    <limit effort="27" lower="0" upper="2.4435" velocity="5.4454" />
+  </joint>
+  <link name="openarm_right_link5">
+    <visual name="openarm_right_link5_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link5.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_link5_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link5.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.000737188580130584 -0.000412406544351845 -0.047093829077211" />
+      <mass value="0.6156588026168502" />
+      <inertia ixx="0.000279653368752989" ixy="3.31745289972445e-06" ixz="7.68097311403736e-07" iyy="0.000334599623120095" iyz="-1.49934409279756e-07" izz="0.000176662464388138" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_joint5" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.0955000000000005" />
+    <parent link="openarm_right_link4" />
+    <child link="openarm_right_link5" />
+    <axis xyz="0 0 -1" />
+    <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+  </joint>
+  <link name="openarm_right_link6">
+    <visual name="openarm_right_link6_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link6.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_link6_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link6.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="2.27438423593244e-05 0.00068649602098908 5.44000494765995e-05" />
+      <mass value="0.475202773187987" />
+      <inertia ixx="0.000179275941446964" ixy="6.58439346712228e-08" ixz="-3.37101167120887e-08" iyy="0.000136247512758587" iyz="3.32253600295544e-08" izz="0.000135340695937386" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_joint6" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 -0.120499999999998" />
+    <parent link="openarm_right_link5" />
+    <child link="openarm_right_link6" />
+    <axis xyz="0 1 0" />
+    <limit effort="7" lower="-0.7854" upper="0.7854" velocity="20.944" />
+  </joint>
+  <joint name="openarm_right_joint7" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="openarm_right_link6" />
+    <child link="openarm_right_ee_base_link" />
+    <axis xyz="1 0 0" />
+    <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+  </joint>
+  <link name="openarm_right_ee_base_link">
+    <visual name="openarm_right_ee_base_link_visual">
+      <origin rpy="0.0 -0.0 0.0" xyz="0.0205 0.0 0.0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/visual/ee_base_link.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_ee_base_link_collision">
+      <origin rpy="0.0 -0.0 0.0" xyz="0.0205 0.0 0.0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/collision/ee_base_link.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 -0.0 0.0" xyz="0.0137902 0.0084073 -0.05938" />
+      <mass value="0.52832" />
+      <inertia ixx="0.00021911" ixy="4.1683e-06" ixz="1.4043e-06" iyy="0.00015627" iyz="-1.5124e-06" izz="0.0001659" />
+    </inertial>
+  </link>
+  <link name="openarm_right_ee_link1">
+    <visual name="openarm_right_ee_link1_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/visual/finger_inner.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_ee_link1_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/collision/finger_inner.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.0124990911725494 0.00176592789915655 -0.0241663193888537" />
+      <mass value="0.125979047366671" />
+      <inertia ixx="3.61105363396623e-05" ixy="1.35880208293387e-06" ixz="7.13916341634141e-06" iyy="3.62137424319396e-05" iyz="-3.60343788693423e-06" izz="1.74958961632907e-05" />
+    </inertial>
+  </link>
+  <link name="openarm_right_ee_link2">
+    <visual name="openarm_right_ee_link2_visual">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/visual/finger_outer.dae" scale="1 1 1" />
+      </geometry>
+    </visual>
+    <collision name="openarm_right_ee_link2_collision">
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="package://openarm_description/assets/end_effector/pinch_gripper/meshes/collision/finger_outer.stl" scale="1 1 1" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.012796 -0.0020183 -0.026792" />
+      <mass value="0.11372" />
+      <inertia ixx="3.4565e-05" ixy="-1.3392e-06" ixz="7.1576e-06" iyy="3.5306e-05" iyz="3.7172e-06" izz="1.6571e-05" />
+    </inertial>
+  </link>
+  <joint name="openarm_right_finger_joint1" type="revolute">
+    <origin rpy="0.0 -0.0 0.0" xyz="-0.0014300000000005003 0.0180000000000009 -0.0680000000000174" />
+    <parent link="openarm_right_ee_base_link" />
+    <child link="openarm_right_ee_link1" />
+    <axis xyz="-1 0 0" />
+    <limit effort="7" lower="-0.7854" upper="0" velocity="5" />
+  </joint>
+  <joint name="openarm_right_finger_joint2" type="revolute">
+    <origin rpy="0.0 -0.0 0.0" xyz="-0.0014300000000005003 -0.0180000000000012 -0.0680000000000215" />
+    <parent link="openarm_right_ee_base_link" />
+    <child link="openarm_right_ee_link2" />
+    <axis xyz="1 0 0" />
+    <limit effort="7" lower="-0.7854" upper="0" velocity="5" />
+    <mimic joint="openarm_right_finger_joint1" multiplier="1" offset="0" />
+  </joint>
+  <link name="openarm_right_grasp_frame" />
+  <joint name="openarm_right_grasp_frame_joint" type="fixed">
+    <origin rpy="-0.0 1.570796326794893 0.0" xyz="-0.0014300000000008993 0.0 -0.138000000000019" />
+    <parent link="openarm_right_ee_base_link" />
+    <child link="openarm_right_grasp_frame" />
+  </joint>
+  <link name="left_wrist_camera_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.04 0.04" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_wrist_camera_joint" type="fixed">
+    <parent link="openarm_left_ee_base_link" />
+    <child link="left_wrist_camera_link" />
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.05 -0.03" />
+  </joint>
+  <link name="left_wrist_camera_optical_frame" />
+  <joint name="left_wrist_camera_optical_joint" type="fixed">
+    <parent link="left_wrist_camera_link" />
+    <child link="left_wrist_camera_optical_frame" />
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+  </joint>
+  <link name="right_wrist_camera_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.04 0.04" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_wrist_camera_joint" type="fixed">
+    <parent link="openarm_right_ee_base_link" />
+    <child link="right_wrist_camera_link" />
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 -0.05 -0.03" />
+  </joint>
+  <link name="right_wrist_camera_optical_frame" />
+  <joint name="right_wrist_camera_optical_joint" type="fixed">
+    <parent link="right_wrist_camera_link" />
+    <child link="right_wrist_camera_optical_frame" />
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+  </joint>
+</robot>

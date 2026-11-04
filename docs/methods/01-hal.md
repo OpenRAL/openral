@@ -469,6 +469,28 @@ _MuJoCo digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured 
 - module const `_ANVIL_GRIPPER_VELOCITY_LIMIT: float` (L149)
 - const `ANVIL_OPENARM_V2_DESCRIPTION = RobotDescription(...)` (L215) — Sim baseline (`name="anvil_openarm_v2"`, 16 revolute joints, Anvil's J1/J6 ranges, two wrist RGB `SensorSpec`s). `sdk_kind="open"`, `hal.sim=None` (derived `MujocoArmHAL`), `hal.real=None` (sim-only; a real driver wrapper is a tracked follow-up). Drift-guarded against `robots/anvil_openarm_v2/robot.yaml`.
 
+### `python/hal/src/openral_hal/openamr_v2.py`
+_MuJoCo digital twin for OpenAMRobot 2.0 (differential base + DOLD lift + two OpenArm v2 arms). The joint path is the stock manifest-driven `MujocoArmHAL`; the class adds the planar base._
+
+- `class OpenAMRv2MujocoHAL(MujocoArmHAL)` — 20-DoF (3 planar base, lift, 2 × (7 arm + gripper)) twin of the MJCF `openarm:openamr_v2` builds. `BODY_TWIST` arc-integrates `(vx, wz)` over `body_twist_dt_s` and places the base kinematically (qpos + ctrl); a non-zero `vy`/`vz`/`wx`/`wy` raises `ROSConfigError` (differential base). Every other mode goes to `MujocoArmHAL`. (L42)
+  - `__init__(*, description, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05)` — `description` is required (`build_hal` threads the loaded manifest; no in-code mirror). (L70)
+  - `base_pose -> tuple[float, float, float]` (property) — `(x, y, yaw)` from the base joints' qpos. (L99)
+  - `base_twist -> tuple[float, ...]` (property) — last commanded body twist; zeroed by any other action and by `idle_step`. (L107)
+  - `send_action(action)` — `BODY_TWIST` to the base, everything else to the joint path. (L111)
+  - `idle_step(wall_dt_s=None) -> bool` — HOLD step; zeroes `base_twist`. (L144)
+- module const `_UNACTUATED_TWIST_EPS` (L36) — tolerance for a twist component the differential base cannot actuate.
+
+### `python/hal/src/openral_hal/_openamr_v2_assets.py`
+_Build the OpenAMRobot 2.0 MJCF from the vendored `robots/openamr_v2/openamr_v2.urdf` (upstream ships no MJCF)._
+
+- `ensure_openamr_v2_mjcf(urdf_path=OPENAMR_V2_URDF) -> str` — Imports the URDF with MuJoCo's compiler (`package://` meshes via `resolve_package_uri`, OpenArm `.dae` visuals swapped for their collision `.stl`), adds `base_x`/`base_y`/`base_yaw` joints on `base_footprint`, one `<position>` actuator per manifest joint (OpenArm v2 motor-class gains; stiff lift and base), the mimic-finger equalities, `head`/`wrist_left`/`wrist_right` cameras on the URDF optical frames and a visual-only checker floor. Robot geoms collide with the world, not each other. Cached under `$OPENRAL_CACHE_DIR/openamr_v2/<sha>/`, keyed on the URDF and this module's source; atomic write. Raises `ROSConfigError` for a missing URDF, an unresolvable mesh or a MuJoCo compile error. Resolved through `resolve_asset("openarm:openamr_v2", "mjcf")`. (L184)
+- const `OPENAMR_V2_URDF: Path` (L43) — the vendored URDF in the repo checkout.
+
+### `python/hal/src/openral_hal/_openamr_platform_assets.py`
+_Fetch `openamrobot_description` (the OpenAMRobot base meshes) from `openAMRobot/openamr-platform-sw` (MIT code, CERN-OHL-P-2.0 CAD)._
+
+- `ensure_openamrobot_description() -> Path` (L29) — Idempotently clones the platform repo at the commit `openamr-upperbody-sw` pins and returns `ros2/src/openamrobot_description`. Raises `ROSConfigError` when the clone fails or the package is missing. Registered in `PUBLIC_ROS_PACKAGES`.
+
 ### `python/hal/src/openral_hal/_pinned_clone.py`
 
 - `fetch_pinned_clone(repo_url, sha, repo_dir, *, submodule=None, what=…) -> None` — The shared staged-clone + atomic-rename dance for pinned-SHA asset fetchers: shallow clone into a staging dir, checkout the pinned SHA, optional submodule init, `os.rename` into place (loser of a concurrent race discarded). Raises `ROSConfigError` when `git` is missing or any step fails. Reuse watch: the canonical pinned-clone fetcher. (L30)
@@ -490,9 +512,9 @@ _Fetch Enactic's public `openarm_description` ROS package (Apache-2.0) — the `
 ### `python/hal/src/openral_hal/ros_package_overlay.py`
 _Make fetched public ROS description packages resolvable by ROS tools (`resource_retriever` in `foxglove_bridge`), which find `package://` roots only through the ament index._
 
-- `PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]]` (L31) — known public description packages → fetcher returning the package root (`openarm_description` → `ensure_openarm_description`). The one registry; `openral_sim.backends.isaac_sim._fetch_public_package` reads it.
-- `fetch_public_package(pkg) -> Path | None` (L38) — the known public package's root (fetched if needed), `None` for any other.
-- `public_package_overlay(urdf_xml) -> Path | None` (L57) — an ament prefix at `$OPENRAL_CACHE_DIR/ament_overlay` registering every public package the URDF's `package://` URIs name that no `AMENT_PREFIX_PATH` entry indexes; `None` when none is needed. `deploy_e2e.launch.py` prepends it to `foxglove_bridge`'s `AMENT_PREFIX_PATH` so the 3D panel can fetch the URDF meshes.
+- `PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]]` (L32) — known public description packages → fetcher returning the package root (`openarm_description` → `ensure_openarm_description`, `openamrobot_description` → `ensure_openamrobot_description`). The one registry; `openral_sim.backends.isaac_sim._fetch_public_package` reads it.
+- `fetch_public_package(pkg) -> Path | None` (L40) — the known public package's root (fetched if needed), `None` for any other.
+- `public_package_overlay(urdf_xml) -> Path | None` (L59) — an ament prefix at `$OPENRAL_CACHE_DIR/ament_overlay` registering every public package the URDF's `package://` URIs name that no `AMENT_PREFIX_PATH` entry indexes; `None` when none is needed. `deploy_e2e.launch.py` prepends it to `foxglove_bridge`'s `AMENT_PREFIX_PATH` so the 3D panel can fetch the URDF meshes.
 
 ### `python/hal/src/openral_hal/_openarm_v2_assets.py`
 _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions` bumps its own pin to match._

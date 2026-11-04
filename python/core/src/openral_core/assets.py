@@ -307,6 +307,9 @@ def _resolve_openarm(variant: str, kind: AssetKind) -> Path:
     * ``anvil_v2_bimanual`` — the Anvil OpenARM 2.0 bimanual MJCF (v2 plus
       Anvil's J1/J6 range deltas and the wrist support bracket), fetched by
       ``openral_hal._anvil_openarm_v2_assets.ensure_anvil_openarm_v2_mjcf``.
+    * ``openamr_v2`` — the OpenAMRobot 2.0 twin (base + lift + two OpenArm v2
+      arms), built from the vendored URDF by
+      ``openral_hal._openamr_v2_assets.ensure_openamr_v2_mjcf``.
     """
     if kind != "mjcf":
         raise AssetRefError(f"openarm:{variant} is mjcf-only, not {kind}")
@@ -318,8 +321,13 @@ def _resolve_openarm(variant: str, kind: AssetKind) -> Path:
         from openral_hal._anvil_openarm_v2_assets import ensure_anvil_openarm_v2_mjcf
 
         return Path(ensure_anvil_openarm_v2_mjcf())
+    if variant == "openamr_v2":
+        from openral_hal._openamr_v2_assets import ensure_openamr_v2_mjcf
+
+        return Path(ensure_openamr_v2_mjcf())
     raise AssetRefError(
-        f"unknown openarm variant {variant!r}; expected 'bimanual' or 'anvil_v2_bimanual'"
+        f"unknown openarm variant {variant!r}; expected 'bimanual', 'anvil_v2_bimanual' "
+        "or 'openamr_v2'"
     )
 
 
