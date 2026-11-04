@@ -824,9 +824,9 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
         WorldStateStamped,
     )
     from rclpy.executors import SingleThreadedExecutor
-    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import JointState
-    from std_msgs.msg import Empty
+    from std_msgs.msg import Empty, UInt64
     from std_srvs.srv import Trigger
 
     rig = _carriage_rig(axis_xyz=(0.0, 0.0, 1.0))
@@ -865,6 +865,17 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                 )
                 state_pub = helper.create_publisher(
                     WorldStateStamped, "/openral/world_state_fast", reliable_kl1
+                )
+                applied: list[int] = []
+                helper.create_subscription(
+                    UInt64,
+                    "/openral/attachment_state_applied",
+                    lambda m: applied.append(int(m.data)),
+                    QoSProfile(
+                        depth=1,
+                        reliability=ReliabilityPolicy.RELIABLE,
+                        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                    ),
                 )
                 joint_pub = helper.create_publisher(JointState, "/joint_states", 10)
                 reset_client = helper.create_client(Trigger, "/openral/estop_reset")
@@ -944,8 +955,16 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                     state.attached_objects = objects
                     state.attachment_revision = revision
                     state.attachment_stamp_ns = state.stamp_ns
-                    state_pub.publish(state)
-                    spin(0.4)
+                    # The kernel's world-state subscription is KeepLast(1): a revision it
+                    # never applied (a dropped detach) would leave the old residue in
+                    # place. Republish until it acks this revision.
+                    end = time.time() + 5.0
+                    while time.time() < end:
+                        state_pub.publish(state)
+                        spin(0.2)
+                        if applied and applied[-1] == revision:
+                            return
+                    raise AssertionError(f"kernel never applied attachment revision {revision}")
 
                 def publish_attachment(held: Any, *, fresh: bool = True) -> None:
                     """``held`` at a new revision. ``fresh``: detach first, so it is a new
