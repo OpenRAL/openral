@@ -235,6 +235,11 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
 # ``openral_hal.panda_mobile._PLANAR_TWIST_EPS``.
 _PLANAR_TWIST_EPS = 1e-6
 
+# How long a /cmd_vel-style BODY_TWIST setpoint keeps driving a kinematic base
+# with no new command: diff_drive_controller's cmd_vel_timeout default (0.5 s).
+# A publisher that dies stops the base within this window.
+_BASE_TWIST_HOLD_NS = 500_000_000
+
 
 def _refuse_lateral_twist(description: RobotDescription, *actions: Action) -> None:
     """Refuse a BODY_TWIST with lateral velocity on a manifest-declared differential base.
@@ -489,6 +494,12 @@ class SimAttachedHAL:
     _last_frame_sim_ns: int | None = None
     # ``release_env`` ran (the kept-alive sidecar was handed over).
     _env_released: bool = False
+    # Velocity setpoint of a kinematic base stepped through env.step (the Isaac
+    # base): an ungrouped BODY_TWIST sets it and every idle step integrates it
+    # until _held_twist_until_ns (see _apply_body_twist_via_env_step). Immutable
+    # defaults; instances rebind them.
+    _held_twist: tuple[float, float, float] | None = None
+    _held_twist_until_ns: int = 0
 
     def __init__(
         self,
@@ -1016,7 +1027,10 @@ class SimAttachedHAL:
         # a skill is still actively trying to drive, and the idle stepper must
         # not race its env.step. This is the single choke point every real
         # action passes (both _on_safe_action and _on_cmd_vel reach here).
-        self._last_action_ns = time.monotonic_ns()
+        # Except a base velocity setpoint (_is_base_twist_setpoint): it steps
+        # nothing itself, so the idle stepper must keep running to move the base.
+        if not self._is_base_twist_setpoint(action):
+            self._last_action_ns = time.monotonic_ns()
         if not self._connected:
             raise ROSRuntimeError("SimAttachedHAL.send_action called before connect().")
         if self._estop_latched:
@@ -1703,9 +1717,11 @@ class SimAttachedHAL:
         zero vector is a HOLD for the sim's velocity/OSC-delta controllers but
         would command "drive every joint to 0 rad" on a real absolute-position
         arm. Does not touch ``_last_env_action`` — an idle HOLD is orthogonal
-        to the last skill command — but zeroes ``_last_body_twist``: the HOLD
-        step leaves the base still, so ``/odom`` must stop reporting the last
-        commanded twist.
+        to the last skill command. A held base setpoint (an ungrouped
+        ``BODY_TWIST`` on a base the env integrates, the Isaac kinematic base) is
+        packed into the twist slots and reported as ``base_twist`` until
+        ``_BASE_TWIST_HOLD_NS`` after its last command; otherwise the base is
+        still and ``base_twist`` is zero.
 
         Caveat: zero is a true HOLD only for velocity/OSC-delta/composite
         controllers. A position-controlled native backend (``so101_box``)
@@ -1771,9 +1787,15 @@ class SimAttachedHAL:
                 f"SimAttachedHAL.idle_step: backend idle_action width "
                 f"{idle_action.shape[0]} != env_action_dim {self._env_action_dim}."
             )
+        held = self._held_twist
+        if held is not None and time.monotonic_ns() >= self._held_twist_until_ns:
+            held = self._held_twist = None  # the setpoint timed out: the base stops
+        if held is not None:
+            idle_action[-3:] = held  # a held /cmd_vel setpoint keeps driving the base
         stepped = self._step_and_cache(idle_action, source="idle_step")
         if stepped:
-            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            vx, vy, wz = held if held is not None else (0.0, 0.0, 0.0)
+            self._last_body_twist = (vx, vy, 0.0, 0.0, 0.0, wz)
         return stepped
 
     # ── Per-mode → composite-controller slot mapping ──────────
@@ -2097,17 +2119,26 @@ class SimAttachedHAL:
                 "Does this robot declare a planar base (base_joints)?"
             )
         vx_body, vy_body, _vz, _wx, _wy, wz = row
-        # Latch the commanded twist for the /odom publisher (base_link frame).
+        # A velocity setpoint, as a real base controller takes /cmd_vel: held and
+        # integrated by every idle step (idle_step) until _BASE_TWIST_HOLD_NS after
+        # the last command. Stepping the env once per message instead tied the
+        # distance driven, and the sim clock, to the message rate: at 20 Hz the
+        # base covered 2/3 of the commanded distance per wall second, /odom's twist
+        # flickered to zero on the idle steps between, and Nav2 (on sim time,
+        # whose clock only its own commands advanced) drove past its goals.
+        del action
+        self._held_twist = (float(vx_body), float(vy_body), float(wz))
+        self._held_twist_until_ns = time.monotonic_ns() + _BASE_TWIST_HOLD_NS
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
-        if self._env_packs:
-            env_action = self._action_packer(
-                action, self.description, self._env_action_dim, self._last_env_action
-            )
-            self._last_env_action = env_action.copy()
-        else:
-            env_action = np.zeros(self._env_action_dim, dtype=np.float32)
-            env_action[-3:] = (vx_body, vy_body, wz)
-        self._step_and_cache(env_action, source="cmd_vel")
+
+    def _is_base_twist_setpoint(self, action: Action) -> bool:
+        """An ungrouped BODY_TWIST for a base the env integrates (Isaac kinematic base)."""
+        return (
+            action.control_mode is ControlMode.BODY_TWIST
+            and int(action.tick_group_size) <= 1
+            and not callable(getattr(self._env, "step_action_group", None))
+            and self._mujoco_handles() is None
+        )
 
     def _merge_refreshed_obs(self, refreshed: Any) -> None:  # noqa: ANN401  # reason: Observation is dict[str, Any]
         """Merge a post-BODY_TWIST ``refresh_obs`` result into ``_last_obs``.
@@ -2148,6 +2179,7 @@ class SimAttachedHAL:
     def estop(self) -> None:
         """Latch e-stop. Subsequent send_action calls are dropped."""
         self._estop_latched = True
+        self._held_twist = None
         self._pending_action_key = None
         self._pending_actions.clear()
 

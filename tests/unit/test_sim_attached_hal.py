@@ -1035,10 +1035,10 @@ def test_body_twist_rejects_non_planar_components() -> None:
 
 
 def test_body_twist_without_mujoco_handles_steps_env() -> None:
-    """BODY_TWIST on a non-MuJoCo env (handles=None) with base dims routes through
-    ``env.step``: the scene integrates the base inside the step, so the
-    HAL packs ``(vx, vy, wz)`` into the FINAL three action slots (zeroing the
-    arm/gripper) instead of the MuJoCo direct-qpos path."""
+    """BODY_TWIST on a non-MuJoCo env (handles=None) with base dims is a velocity
+    setpoint: it steps nothing itself (the idle stepper keeps running), and every
+    idle ``env.step`` integrates it, packed into the FINAL three action slots
+    (arm/gripper at the idle HOLD), until the 0.5 s hold lapses."""
     env = FakeSimEnv(action_dim=11, handles=None)
     hal = SimAttachedHAL(env, _two_dof_description())
     hal.connect()
@@ -1049,6 +1049,9 @@ def test_body_twist_without_mujoco_handles_steps_env() -> None:
             body_twist=[[0.5, -0.2, 0.0, 0.0, 0.0, 0.3]],  # vx, vy, _, _, _, wz
         )
     )
+    assert env.step_calls == 0, "a setpoint must not step the env per message"
+    assert hal.last_action_ns == 0, "a setpoint must not pause the idle stepper"
+    assert hal.idle_step()
     assert env.last_action is not None
     # Base twist in the final 3 slots; arm/gripper slots held at zero.
     assert tuple(round(float(x), 3) for x in env.last_action[-3:]) == (0.5, -0.2, 0.3)

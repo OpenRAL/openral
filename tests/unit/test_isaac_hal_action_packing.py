@@ -185,21 +185,28 @@ def test_hal_drives_panda_mobile_arm_gripper_and_base_into_their_own_slots(
         arm = [0.0, 0.5, 0.0, -1.0, 0.0, 1.0, 0.0]
         hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[arm]))
         hal.send_action(Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[1.0]))
+        before = len(_rows(recorded))
         hal.send_action(
             Action(
                 control_mode=ControlMode.BODY_TWIST,
                 body_twist=[(0.5, 0.0, 0.0, 0.0, 0.0, 0.0)],
             )
         )
+        assert len(_rows(recorded)) == before, "a /cmd_vel setpoint steps nothing itself"
+        hal.idle_step()
+        hal.idle_step()
+        time.sleep(0.6)  # past the 0.5 s setpoint hold (diff_drive cmd_vel_timeout)
         hal.idle_step()
     finally:
         hal.disconnect()
         env.close()  # stops the sidecar — a leaked one is adopted by the next test
-    joint, grip, twist, idle = _rows(recorded)[-4:]
+    joint, grip, held1, held2, stopped = _rows(recorded)[-5:]
     _nan_eq(np.asarray(joint), [*arm, NAN, 0.0, 0.0, 0.0])  # base untouched
     _nan_eq(np.asarray(grip), [*arm, 1.0, 0.0, 0.0, 0.0])  # gripper slot, not wz
-    _nan_eq(np.asarray(twist), [*arm, 1.0, 0.5, 0.0, 0.0])  # the arm holds
-    _nan_eq(np.asarray(idle), [NAN] * 8 + [0.0, 0.0, 0.0])  # idle HOLDs, never 0 rad
+    # Every idle step integrates the held twist (joints HOLD), then the hold expires.
+    _nan_eq(np.asarray(held1), [NAN] * 8 + [0.5, 0.0, 0.0])
+    _nan_eq(np.asarray(held2), [NAN] * 8 + [0.5, 0.0, 0.0])
+    _nan_eq(np.asarray(stopped), [NAN] * 8 + [0.0, 0.0, 0.0])  # idle HOLDs, never 0 rad
 
 
 def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
@@ -349,6 +356,7 @@ def test_reconnect_drops_pre_reset_targets(recorded: Path) -> None:
                 body_twist=[(0.2, 0.0, 0.0, 0.0, 0.0, 0.0)],
             )
         )
+        hal.idle_step()  # the setpoint is integrated by the next step
     finally:
         hal.disconnect()
         env.close()
