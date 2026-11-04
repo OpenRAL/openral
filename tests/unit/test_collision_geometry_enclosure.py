@@ -190,13 +190,6 @@ _UNCOVERED_TWIN_BODIES: dict[str, str] = {
     # are not in the kernel's model. Pre-existing; needs the MJCF finger sweep
     # the OpenArm uses, on a URDF-lowered robot.
     "franka_panda": "panda_finger_pair (the fingers) carries no primitive",
-    # The arm geometry is robots/openarm's, reused unchanged (fitted to the
-    # OpenArm MJCF's meshes); this twin carries openarm_description's meshes.
-    # Measured 2026-11-04: every arm BOX holds those meshes with >= 0.63 mm
-    # headroom, but the exact hulls miss them by 0.13-0.69 mm per link and by
-    # 13.0 mm on link6 (a corner at (-38, -32, 0) mm the OpenArm MJCF mesh
-    # chamfers). Safety-WG decision owed: refit the hulls or accept.
-    "openamr_v2": "OpenArm hulls miss openarm_description meshes (<=13 mm, link6)",
 }
 
 

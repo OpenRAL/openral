@@ -103,12 +103,26 @@ Open before the first real run:
   sensors' forks). No arm link is exempted against any body part. Owed: a
   Safety-WG review and a private hazard-log entry for the model and those
   rows. Known holes:
-  - The OpenArm hulls were fitted to the OpenArm MJCF's meshes. This robot's
-    twin loads openarm_description's meshes, and the hulls miss them by
-    0.13 to 0.69 mm per link and by 13.0 mm on link6. The boxes still hold
-    them with at least 0.63 mm. `test_collision_geometry_enclosure.py`
-    marks this robot as a strict xfail until the hulls are refitted or the
-    gap is accepted.
+  - **link6 hull gap: found here, already on master, fixed for both robots.**
+    Enactic ships two different link6 shapes. The `enactic/openarm_mujoco` v2
+    mesh, which OpenArm's collision model was fitted to, fit its hull with 0 mm
+    to spare. The `enactic/openarm_description` link6, which `robots/openarm`'s
+    own URDF uses (robot_state_publisher, Foxglove, the Isaac import), was
+    10.6 mm (CAD visual) to 13.0 mm (collision STL) outside it, at one corner
+    around (−38, −24 to −32, +1 to +3.5) mm in the link frame. No mirroring
+    explains it: the shapes differ. link3 and link5 were 1.8 mm outside, the
+    other links 0.1 to 0.4 mm. The MJCF lowering now fits each link to the union
+    of its MJCF and URDF meshes (`urdf_lowering._urdf_link_meshes`).
+    `robots/openarm` was re-lowered with it and this robot re-copied.
+    - Box growth: at most 1.9 mm per half-extent (link6
+      [29.9, 32.2, 34.1] → [30.0, 34.1, 35.1] mm, link5 y/z +1.2/+1.0 mm).
+    - The 28-pair OpenArm ACM is unchanged.
+    - `test_collision_geometry_urdf_enclosure.py` holds both robots' URDF meshes
+      inside their primitives.
+    - Owed: Safety-WG review (a slightly larger arm can stop earlier near
+      obstacles) and a hazard-log update for robots/openarm. Which shape the
+      physical link6 has is still worth confirming with Enactic: the union covers
+      both.
   - Not modelled: the wrist cameras. They are visual-only placeholder cubes
     in the URDF.
 - **Upstream placeholders.** Upstream marks these as placeholders: the wrist

@@ -1733,6 +1733,85 @@ def _static_link_meshes(
     return out
 
 
+def _urdf_link_meshes(
+    robot: RobotDescription, link_body: Mapping[str, int], manifest_dir: Path | None
+) -> dict[str, Any]:
+    """The URDF geometry of every MJCF-mapped link, in the link frame.
+
+    The MJCF twin and the URDF can carry different meshes for the same physical
+    link. OpenArm's link6 is 10.6 mm larger at one corner in
+    ``enactic/openarm_description`` (its URDF: what robot_state_publisher,
+    Foxglove and the Isaac import draw) than in ``enactic/openarm_mujoco`` (its
+    MJCF twin). A primitive fitted to the twin alone under-covers the URDF's
+    link. ``fit_collision_geometry_from_mjcf`` therefore fits each link to the
+    union of both. A union only grows a primitive, so the kernel is at least as
+    conservative as before.
+
+    A manifest link is matched to the URDF link that a joint of the same
+    ``sim_joint_name`` (or name) connects, its child or parent. The joint's URDF
+    origin must equal the manifest's (``_TWIN_FRAME_TOL``), or the two frames
+    differ and nothing is unioned: that raises. Fails closed like
+    ``_static_link_meshes``: geometry that does not load raises. A link the URDF
+    has no geometry for, or a robot with no URDF, contributes nothing.
+
+    Raises:
+        ROSConfigError: A joint origin disagrees, or URDF geometry does not load.
+    """
+    import numpy as np
+    import trimesh
+    import yourdfpy  # reason: yourdfpy ships no stubs; mypy.ini ignores its imports
+
+    urdf_path = _resolved_urdf_path(robot, manifest_dir)
+    if urdf_path is None:
+        return {}
+    model: Any = yourdfpy.URDF.load(
+        urdf_path,
+        build_scene_graph=False,
+        build_collision_scene_graph=False,
+        load_meshes=False,
+        load_collision_meshes=False,
+    )
+    pairs: dict[str, str] = {}
+    joints: list[JointSpec | MimicJoint] = [*robot.joints, *robot.mimic_joints]
+    for joint in joints:
+        urdf_joint = model.joint_map.get(joint.sim_joint_name or joint.name)
+        if urdf_joint is None:
+            continue
+        want = _xyzrpy_matrix((*joint.origin_xyz, *joint.origin_rpy))
+        got = _origin_matrix(urdf_joint.origin)
+        if not np.allclose(want, got, atol=_TWIN_FRAME_TOL):
+            raise ROSConfigError(
+                f"{robot.name}: joint {joint.name!r} has origin {joint.origin_xyz} "
+                f"{joint.origin_rpy} in the manifest but a different one in {urdf_path}; "
+                "the URDF link frames do not match the twin's, so their geometry cannot "
+                "be unioned"
+            )
+        pairs.setdefault(joint.child_link, urdf_joint.child)
+        pairs.setdefault(joint.parent_link, urdf_joint.parent)
+    handler = _static_mesh_filename_handler(urdf_path)
+    out: dict[str, Any] = {}
+    for link_name, urdf_link_name in pairs.items():
+        link = model.link_map.get(urdf_link_name)
+        if link_name not in link_body or link is None:
+            continue
+        parts: list[Any] = []
+        for el in list(getattr(link, "collisions", None) or []) + list(
+            getattr(link, "visuals", None) or []
+        ):
+            part = _collision_local_mesh(el, handler)
+            if part is None or len(part.vertices) == 0:
+                mesh_ref = getattr(getattr(el, "geometry", None), "mesh", None)
+                raise ROSConfigError(
+                    f"{robot.name}/{link_name}: URDF geometry "
+                    f"{getattr(mesh_ref, 'filename', '<unsupported geometry>')!r} did not load; "
+                    "a link is never fitted to part of its URDF geometry"
+                )
+            parts.append(part.apply_transform(_origin_matrix(el.origin)))
+        if parts:
+            out[link_name] = trimesh.util.concatenate(parts)
+    return out
+
+
 def _fixed_link_world(
     robot: RobotDescription, link_body: Mapping[str, int], body_tf: Callable[[int], _Arr]
 ) -> dict[str, _Arr]:
@@ -2116,6 +2195,10 @@ def fit_collision_geometry_from_mjcf(
     rigidly in its own body frame like every other link, and the kernel poses
     it at the gripper's value (``docs/reference/finger-mimic-geometry.md``).
 
+    When the manifest declares a URDF, each mapped link is fitted to the union of
+    its MJCF geometry and its URDF geometry (``_urdf_link_meshes``): the kernel
+    then encloses both the twin's shape and the one ROS tools and Isaac draw.
+
     A STATIC link — a ``fixed_attachments`` child the MJCF has no body for (the
     OpenArm torso) — is fitted to its URDF geometry instead
     (``_static_link_meshes``), with the same fitter and the same ``tight_links``
@@ -2156,6 +2239,7 @@ def fit_collision_geometry_from_mjcf(
 
     at_rest()
     tight = _as_tight_links(tight_links)
+    urdf_meshes = _urdf_link_meshes(robot, link_body, manifest_dir)
     geometry: list[LinkCollisionGeometry] = []
     # Parents too: a chain's root link (each OpenArm arm's ``link0``) is only
     # ever a parent, and a bimanual robot has one root per arm.
@@ -2190,6 +2274,9 @@ def fit_collision_geometry_from_mjcf(
             )
             at_rest()
             mesh = trimesh.util.concatenate(parts) if parts else None
+        if link in urdf_meshes:  # the URDF's shape of the same link (_urdf_link_meshes)
+            urdf = urdf_meshes[link]
+            mesh = urdf if mesh is None else trimesh.util.concatenate([mesh, urdf])
         if mesh is None:
             continue
         geometry.extend(_fit_link(link, mesh, tight))
