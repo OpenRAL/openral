@@ -1012,6 +1012,12 @@ if _ROS2_AVAILABLE:
 
             try:
                 self._hal = self._create_hal()
+                # A HAL that needs this node for its own topics (a ComposedHAL's
+                # ROS base part) declares `attach_ros_node`; it must have the node
+                # before connect, which is where it checks for it.
+                attach_ros_node = getattr(self._hal, "attach_ros_node", None)
+                if callable(attach_ros_node):
+                    attach_ros_node(self)
                 self._hal.connect()
             except (ROSConfigError, ROSRuntimeError) as exc:
                 self.get_logger().error(f"HAL connect failed: {exc}")

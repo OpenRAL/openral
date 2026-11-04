@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -128,3 +129,77 @@ def test_every_manifest_camera_renders(hal: OpenAMRv2MujocoHAL) -> None:
                 sensor.intrinsics.width,
                 3,
             )
+
+
+def _openarm_slot_tick(
+    description: RobotDescription, policy_action: np.ndarray[Any, Any], tick: int
+) -> list[Action]:
+    """One OpenArm π0.5 tick through the runner's real codec + slot dispatch."""
+    import importlib.util
+
+    from openral_rskill._policy_io import PolicyIOCodec
+
+    from tests.unit.test_openarm_skill_on_openamr_v2 import openarm_pi05_manifest
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py"
+    )
+    spec = importlib.util.spec_from_file_location("_sim_rskill_runner_amr", src)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    manifest = openarm_pi05_manifest()
+    assert manifest.action_contract is not None
+    actions = runner._policy_action_to_actions(
+        policy_action,
+        codec=PolicyIOCodec.from_manifest(manifest, description),
+        slots=manifest.action_contract.slots,
+        description=description,
+        cartesian_delta_scale=None,
+    )
+    assert isinstance(actions, list) and len(actions) == 4
+    for action in actions:
+        action.tick_index = tick
+        action.runner_session_id = 0x5EED
+    return actions
+
+
+def test_openarm_slot_tick_holds_base_and_lift(hal: OpenAMRv2MujocoHAL) -> None:
+    """An OpenArm 4-slot tick drives arms + grippers; the base and lift hold their targets."""
+    names = [j.name for j in hal.description.joints]
+    raised = list(hal.read_state().position)
+    raised[names.index("lift_joint")] = 0.30
+    lift = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[raised])
+    for _ in range(150):
+        hal.send_action(lift)
+    for _ in range(20):
+        hal.send_action(_twist(0.2, 0.0))
+    pose_before = hal.base_pose
+    # Left j2 -0.5, j4 1.0, gripper 0.6; right j2 0.5, j4 1.0, gripper -0.6.
+    policy = np.zeros(16, dtype=np.float32)
+    policy[[1, 3, 7, 9, 11, 15]] = [-0.5, 1.0, 0.6, 0.5, 1.0, -0.6]
+    for tick in range(1, 301):
+        for action in _openarm_slot_tick(hal.description, policy, tick):
+            hal.send_action(action)
+    state = hal.read_state().position
+    for k, joint in enumerate(
+        [f"left_joint{i}" for i in range(1, 8)]
+        + ["left_gripper"]
+        + [f"right_joint{i}" for i in range(1, 8)]
+        + ["right_gripper"]
+    ):
+        assert state[names.index(joint)] == pytest.approx(float(policy[k]), abs=5e-3), joint
+    assert state[names.index("lift_joint")] == pytest.approx(0.30, abs=5e-3)
+    assert hal.base_pose == pytest.approx(pose_before, abs=1e-3)
+
+
+def test_a_slot_group_leaving_an_arm_uncommanded_is_refused(hal: OpenAMRv2MujocoHAL) -> None:
+    """Holding is for the base and lift only: a group without the right arm is refused."""
+    group = _openarm_slot_tick(hal.description, np.zeros(16, dtype=np.float32), 1)
+    del group[2]  # the right-arm JOINT_POSITION slot
+    for action in group:
+        action.tick_group_size = 3
+    with pytest.raises(ROSConfigError, match="right_joint1"):
+        for action in group:
+            hal.send_action(action)

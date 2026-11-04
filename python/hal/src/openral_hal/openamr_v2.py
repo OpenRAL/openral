@@ -49,6 +49,11 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
     hold it. The arms and lift keep their last targets. A non-zero ``vy`` is refused,
     because the base is differential (``base_kinematics: differential``).
 
+    A slot group that leaves the base and lift (``role: base`` / ``torso``)
+    uncommanded holds them at their current ctrl targets, so an OpenArm rSkill's
+    arms-and-grippers tick runs unchanged; an uncommanded arm or gripper joint is
+    still refused.
+
     Args:
         description: The loaded ``robots/openamr_v2/robot.yaml``; ``build_hal``
             threads it.
@@ -93,6 +98,10 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
         )
         self._body_twist_dt_s = body_twist_dt_s
         self._base_names: list[str] = list(description.base_joints)
+        # An arms-only slot group (a 16-D OpenArm rSkill) holds the base and lift.
+        self._hold_if_uncommanded = frozenset(
+            j.name for j in description.joints if j.role in ("base", "torso")
+        )
         self._last_body_twist: tuple[float, float, float, float, float, float] = (0.0,) * 6
 
     @property

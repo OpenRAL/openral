@@ -246,6 +246,62 @@ def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
     _nan_eq(np.asarray(rows[-1]), [0.3] * 7 + [0.7] + [-0.3] * 7 + [-0.7])
 
 
+def test_an_openarm_tick_drives_openamr_v2_and_holds_lift_and_base(recorded: Path) -> None:
+    """A 16-D OpenArm rSkill tick on OpenAMRobot 2.0: the arms move by name, the lift
+    HOLDs (NaN) and the base stays still, all in one env step."""
+    desc = _desc("openamr_v2")
+    names = [j.name for j in desc.joints]
+    left = [f"left_joint{i}" for i in range(1, 8)]
+    right = [f"right_joint{i}" for i in range(1, 8)]
+
+    def padded(value: float, sel: list[str]) -> list[list[float]]:
+        row = [0.0] * len(names)
+        for name in sel:
+            row[names.index(name)] = value
+        return [row]
+
+    def slot(**kw: object) -> Action:
+        return Action(tick_index=1, tick_group_size=4, **kw)
+
+    hal, env = _hal("openamr_v2", "isaac_openamr_v2_warehouse.yaml")
+    try:
+        before = len(_rows(recorded))
+        for action in (
+            slot(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=padded(0.3, left),
+                joint_names=left,
+            ),
+            slot(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.7], ee_name="left_gripper"),
+            slot(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=padded(-0.3, right),
+                joint_names=right,
+            ),
+            slot(
+                control_mode=ControlMode.GRIPPER_POSITION, gripper=[-0.7], ee_name="right_gripper"
+            ),
+        ):
+            hal.send_action(action)
+        with pytest.raises(ROSConfigError, match="differential"):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.BODY_TWIST,
+                    body_twist=[(0.0, 0.2, 0.0, 0.0, 0.0, 0.0)],
+                )
+            )
+    finally:
+        hal.disconnect()
+        env.close()
+    rows = _rows(recorded)
+    assert len(rows) == before + 1, "a slot tick must commit as one env step; vy never steps"
+    # Layout: lift, left arm, left gripper, right arm, right gripper, then (vx, vy, wz).
+    _nan_eq(
+        np.asarray(rows[-1]),
+        [NAN, *[0.3] * 7, 0.7, *[-0.3] * 7, -0.7, 0.0, 0.0, 0.0],
+    )
+
+
 def test_a_mobile_manipulation_tick_keeps_its_twist(recorded: Path) -> None:
     """Twist + arm + gripper slots of ONE tick commit as one step with the twist
     intact (a later slot must not zero what an earlier one packed)."""

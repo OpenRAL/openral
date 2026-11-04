@@ -2675,11 +2675,22 @@ def _urdf_has_collision_geometry(urdf_path: str) -> bool:
     hand-authored manifest capsules are kept. ``lower_link_geometry`` warns per
     missing mesh, so the unusable URDF is never silently dropped.
 
-    Resolves every link (so a partially resolving link raises here exactly as
-    in ``lower_link_geometry``) but fits none: the answer is whether any link
-    yields geometry, which does not depend on the fit.
+    Resolves every link but fits none: the answer is whether any link yields
+    geometry, which does not depend on the fit. A link that resolves only
+    partially (``openamr_v2``'s ``base_link``: a box ``<collision>`` beside
+    ``package://openamrobot_description`` visual meshes nothing serves) makes
+    the URDF **not usable** (False), with a warning naming the link:
+    ``lower_link_geometry`` refuses that URDF, so a robot with an MJCF twin
+    lowers from the twin. Without one, ``select_lowering`` still routes it to
+    the URDF path, where the same refusal surfaces; the raise in
+    ``lower_link_geometry`` itself is unchanged. (``_link_clouds`` raises
+    ``ROSConfigError`` for that partial resolution and nothing else.)
     """
-    return len(list(_link_clouds(urdf_path, {}, None))) > 0
+    try:
+        return len(list(_link_clouds(urdf_path, {}, None))) > 0
+    except ROSConfigError as exc:
+        warnings.warn(f"{urdf_path}: not usable for lowering: {exc}", stacklevel=2)
+        return False
 
 
 def select_lowering(robot: RobotDescription, *, manifest_dir: Path | None = None) -> LoweringSource:
@@ -2698,7 +2709,8 @@ def select_lowering(robot: RobotDescription, *, manifest_dir: Path | None = None
     * ``"mjcf"`` — no usable URDF geometry but an MJCF exists: keep the
       manifest's hand-authored capsules and sweep the ACM with mujoco FK
       (openarm, whose vendored URDF's collision meshes are ``package://`` refs
-      that don't resolve). An SRDF on such a robot does NOT flip it to the URDF
+      that don't resolve; ``openamr_v2``, whose URDF resolves only partly,
+      ``_urdf_has_collision_geometry``). An SRDF on such a robot does NOT flip it to the URDF
       path (there is no geometry to lower there); instead
       ``lower_robot_from_mjcf`` unions the SRDF's ``disable_collisions``
       into its sweep, so deliberate hand exemptions carry an explicit,

@@ -32,6 +32,7 @@ import hashlib
 import math
 import os
 import re
+import shutil
 import uuid
 from pathlib import Path
 
@@ -64,20 +65,37 @@ def _actuated_joints() -> list[tuple[str, tuple[float, float, float, float, floa
     return out
 
 
-def _mujoco_urdf(urdf_xml: str) -> str:
-    """``urdf_xml`` with every mesh made an absolute STL path MuJoCo can load."""
+def _mujoco_urdf(urdf_xml: str, alias_dir: Path) -> str:
+    """``urdf_xml`` with every mesh made an absolute STL path MuJoCo can load.
+
+    MuJoCo's URDF compiler names a mesh asset after its file and ignores ``scale``
+    when it reuses one. The OpenArm macro draws the left arm from the same STLs as the
+    right, mirrored with ``scale="1 -1 1"``, so both arms would get whichever mirror
+    came first (the right arm's collision meshes ended up as the left's). Each
+    distinct (file, scale) pair therefore gets its own file name: a symlink under
+    ``alias_dir`` that lives with the cached MJCF.
+    """
     from openral_core.assets import AssetRefError, resolve_package_uri  # noqa: PLC0415
 
+    aliases: dict[tuple[str, str], str] = {}
+
     def _sub(match: re.Match[str]) -> str:
-        uri = match.group(1)
+        uri, rest = match.group(1), match.group(2)
         if uri.endswith(".dae"):
             uri = uri.replace("/visual/", "/collision/")[: -len(".dae")] + ".stl"
         try:
-            return f'filename="{resolve_package_uri(uri)}"'
+            path = resolve_package_uri(uri)
         except AssetRefError as exc:
             raise ROSConfigError(f"openamr_v2 MJCF build: {exc}") from exc
+        scale = re.search(r'scale="([^"]+)"', rest)
+        key = (str(path), scale.group(1) if scale else "1 1 1")
+        if key not in aliases:
+            alias = alias_dir / f"{path.stem}_{len(aliases)}{path.suffix}"
+            alias.symlink_to(path)
+            aliases[key] = str(alias)
+        return f'<mesh filename="{aliases[key]}"{rest}'
 
-    xml = re.sub(r'filename="(package://[^"]+)"', _sub, urdf_xml)
+    xml = re.sub(r'<mesh filename="(package://[^"]+)"([^>]*>)', _sub, urdf_xml)
     compiler = (
         '<mujoco><compiler discardvisual="false" fusestatic="false" '
         'strippath="false" angle="radian"/></mujoco>'
@@ -85,10 +103,10 @@ def _mujoco_urdf(urdf_xml: str) -> str:
     return re.sub(r"(<robot\b[^>]*>)", r"\1" + compiler, xml, count=1)
 
 
-def _build(urdf_xml: str) -> str:
+def _build(urdf_xml: str, alias_dir: Path) -> str:
     import mujoco  # noqa: PLC0415  # reason: optional sim-only dep
 
-    spec = mujoco.MjSpec.from_string(_mujoco_urdf(urdf_xml))
+    spec = mujoco.MjSpec.from_string(_mujoco_urdf(urdf_xml, alias_dir))
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     # Room for a full-HD offscreen render (the default framebuffer is 640x480).
     spec.visual.global_.offwidth, spec.visual.global_.offheight = 1920, 1080
@@ -185,8 +203,9 @@ def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
     """Return the cached OpenAMRobot 2.0 MJCF path, building it on first use.
 
     The cache key hashes the URDF and this module's source, so an edited
-    URDF or builder never serves a stale twin. The write is atomic (a unique
-    temp file renamed into place), so concurrent workers never read a partial file.
+    URDF or builder never serves a stale twin. The entry (MJCF plus mesh aliases) is
+    built in a staging dir and renamed into place, so concurrent workers never read
+    a partial one.
 
     Raises:
         ROSConfigError: The URDF is missing, a mesh cannot be resolved, or
@@ -207,12 +226,21 @@ def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
     out = base / "openamr_v2" / key / "openamr_v2.xml"
     if out.is_file():
         return str(out)
+    # Build in a private staging dir (the MJCF plus its mesh aliases), point the
+    # MJCF at the final dir, then rename the dir into place whole: a concurrent
+    # worker sees the finished entry or none, never a partial one.
+    staging = out.parent.with_name(f".{key}.{uuid.uuid4().hex}")
+    (staging / "meshes").mkdir(parents=True)
     try:
-        xml = _build(urdf_xml)
+        xml = _build(urdf_xml, staging / "meshes")
+        (staging / out.name).write_text(xml.replace(str(staging), str(out.parent)))
+        try:
+            staging.rename(out.parent)
+        except OSError:
+            if not out.is_file():  # not a concurrent winner: a real failure
+                raise
     except ValueError as exc:  # mujoco's spec/compile errors
         raise ROSConfigError(f"openamr_v2 MJCF build failed: {exc}") from exc
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f".{uuid.uuid4().hex}.xml")
-    tmp.write_text(xml)
-    tmp.replace(out)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return str(out)

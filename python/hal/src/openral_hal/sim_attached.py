@@ -234,6 +234,32 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
 # above this is rejected with ROSConfigError. Mirror of
 # ``openral_hal.panda_mobile._PLANAR_TWIST_EPS``.
 _PLANAR_TWIST_EPS = 1e-6
+
+
+def _refuse_lateral_twist(description: RobotDescription, *actions: Action) -> None:
+    """Refuse a BODY_TWIST with lateral velocity on a manifest-declared differential base.
+
+    The sim bases integrate any planar twist (the Isaac kinematic base, the MuJoCo
+    qpos write), so a differential robot would slide sideways in sim, which it cannot
+    do on hardware. Raise rather than drop the vy, so the caller sees the command it
+    sent is not executable.
+    """
+    if description.base_kinematics != "differential":
+        return
+    rows = [
+        row
+        for action in actions
+        if action.control_mode is ControlMode.BODY_TWIST
+        for row in action.body_twist or []
+    ]
+    for row in rows:
+        if len(row) > 1 and abs(float(row[1])) > _PLANAR_TWIST_EPS:
+            raise ROSConfigError(
+                f"SimAttachedHAL: '{description.name}' has a differential base; a "
+                f"BODY_TWIST with vy={float(row[1])} cannot be executed."
+            )
+
+
 # Atomic action-group fail-loud bounds: after this many CONSECUTIVE
 # incomplete-group drops send_action raises (the sim has not stepped once —
 # a slot-count contract mismatch or a persistently-rejected slot), and a
@@ -1017,6 +1043,7 @@ class SimAttachedHAL:
                 raise ROSConfigError(
                     "SimAttachedHAL.send_action: empty Action.body_twist for BODY_TWIST."
                 )
+            _refuse_lateral_twist(self.description, action)
             row = list(action.body_twist[0])
             # MuJoCo integrates the base by direct qpos write (skips env.step so the
             # arm dynamics don't churn). A non-MuJoCo backend (Isaac kinematic base)
@@ -1270,6 +1297,7 @@ class SimAttachedHAL:
                 if self._env_packs
                 else np.zeros(int(self._env_action_dim or 0), dtype=np.float32)
             )
+            _refuse_lateral_twist(self.description, *actions)
             for action in actions:
                 if (
                     previous is not None  # always, unless the env packs by name
