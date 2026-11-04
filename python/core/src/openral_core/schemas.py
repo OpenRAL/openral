@@ -9508,12 +9508,15 @@ class RSkillManifest(BaseModel):
     # (``_check_n_action_steps_within_chunk``).
     n_action_steps: int | None = Field(default=None, gt=0)
     # Optional initial joint pose the policy expects an episode to
-    # start from. The list is ``state_contract.dim``-long and uses the
-    # checkpoint's own ``action_feature_names`` order (i.e. the same
-    # order the policy emits actions in — *not* the robot.yaml URDF
-    # order). Units are radians. Sim adapters apply this as the qpos
-    # at ``reset()`` and the live HAL can use it as the calibration
-    # target.
+    # start from, in radians. The deploy runner
+    # (``rskill_runner_node.expand_starting_pose``) accepts two widths:
+    # one value per ``RobotDescription.joints`` entry, in robot.yaml
+    # order; or one value per joint the ``action_contract.slots`` name
+    # (``openral_rskill._policy_io.slot_state_joint_names``: slot range
+    # order, i.e. the policy's own order), which sets those joints by
+    # name and holds every other joint (a mobile base, a lift) at its
+    # measured position. Sim adapters apply this as the qpos at
+    # ``reset()``.
     #
     # When omitted, sim adapters fall back to a kinematic default
     # (e.g. elbows at +π/2). There is no implicit "centre-of-training"

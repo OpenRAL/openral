@@ -2163,6 +2163,7 @@ if _ROS2_AVAILABLE:
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
             bounds = self._starting_pose_bounds()
+            description = self._description
             deadline = time.monotonic() + float(
                 self.get_parameter("action_applied_timeout_s").value
             )
@@ -2171,12 +2172,14 @@ if _ROS2_AVAILABLE:
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return False
                 js = self._aggregator.snapshot().joint_state
-                if (
-                    js is not None
-                    and int(js.stamp_ns) >= starting_pose_wall_ns
-                    and starting_pose_reached(
-                        self._joint_positions_in_manifest_order(js, names), pose, bounds
-                    )
+                measured = (
+                    self._joint_positions_in_manifest_order(js, names)
+                    if js is not None and int(js.stamp_ns) >= starting_pose_wall_ns
+                    else None
+                )
+                # A slot-subset pose holds the other joints at their measured value.
+                if measured is not None and starting_pose_reached(
+                    measured, expand_starting_pose(pose, manifest, description, measured), bounds
                 ):
                     self.get_logger().info(
                         "rskill_runner.starting_pose_verified "
@@ -2203,15 +2206,19 @@ if _ROS2_AVAILABLE:
             )
             if not starting_pose:
                 return None
-            from openral_core.exceptions import ROSConfigError
-
             target = [float(value) for value in starting_pose]
             assert self._description is not None
-            if len(target) != len(self._description.joints):
-                raise ROSConfigError(
-                    f"starting_pose has {len(target)} values; robot {self._description.name!r} "
-                    f"has {len(self._description.joints)} joints"
+            names = [joint.name for joint in self._description.joints]
+            if len(target) != len(names):
+                # A pose over only the slot-named joints (an OpenArm skill on the
+                # OpenAMR v2): the other joints hold where they are measured. A pose
+                # of neither width is refused before the HAL is read.
+                measured = (
+                    self._joint_positions_in_manifest_order(self._hal.read_state(), names)
+                    if self._hal is not None
+                    else []
                 )
+                target = expand_starting_pose(target, manifest, self._description, measured)
             if self.get_parameter("approach_skill_id").get_parameter_value().string_value:
                 return self._dispatch_moveit_approach(target, goal_handle)
             return self._interpolate_starting_pose(target, goal_handle)
@@ -3857,6 +3864,52 @@ def starting_pose_joint_bounds(
             speed = min(speed, float(joint.velocity_limit))
         bounds.append((speed, tolerance))
     return bounds
+
+
+def expand_starting_pose(
+    pose: Sequence[float],
+    manifest: RSkillManifest | None,
+    description: RobotDescription,
+    measured: Sequence[float],
+) -> list[float]:
+    """A manifest ``starting_pose`` as one target per ``RobotDescription.joints`` entry.
+
+    A pose as long as the robot's joints is already that. A pose as long as the joints
+    the skill's ``action_contract.slots`` name (``slot_state_joint_names``, slot range
+    order: an OpenArm skill's 16-D pose on the OpenAMR v2) sets those joints by name;
+    every other joint (base, lift) keeps its ``measured`` position, so it holds.
+
+    Raises:
+        ROSConfigError: The pose fits neither width, or ``measured`` is not one value
+            per robot joint.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> expand_starting_pose([0.1] * 6, None, desc, [0.0] * 6)
+        [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+    """
+    names = [j.name for j in description.joints]
+    target = [float(v) for v in pose]
+    if len(target) == len(names):
+        return target
+    from openral_rskill._policy_io import slot_state_joint_names
+
+    slot_names = slot_state_joint_names(manifest, description)
+    if slot_names is None or len(target) != len(slot_names):
+        raise ROSConfigError(
+            f"starting_pose has {len(target)} values; robot {description.name!r} has "
+            f"{len(names)} joints and the skill's slots name "
+            f"{'none' if slot_names is None else len(slot_names)}"
+        )
+    if len(measured) != len(names):
+        raise ROSConfigError(
+            f"measured joint state has {len(measured)} values; expected {len(names)}"
+        )
+    out = [float(v) for v in measured]
+    for name, value in zip(slot_names, target, strict=True):
+        out[names.index(name)] = value
+    return out
 
 
 def starting_pose_reached(

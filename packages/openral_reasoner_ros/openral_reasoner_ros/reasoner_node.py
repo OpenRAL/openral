@@ -2861,6 +2861,24 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     "``openral sim run --rskill ...``."
                 )
             else:
+                # A slot contract naming a strict subset of the robot's joints
+                # (an OpenArm skill on the OpenAMR v2's base + lift + OpenArm):
+                # the runner's codec gathers exactly those joints by name.
+                from openral_rskill._policy_io import slot_state_joint_names
+
+                try:
+                    slot_names = slot_state_joint_names(m, description)
+                except ROSConfigError as exc:
+                    slot_names = None
+                    self.get_logger().warning(f"palette: rSkill {m.name!r}: {exc}")
+                if slot_names is not None:
+                    self.get_logger().info(
+                        f"palette: admitting rSkill {m.name!r}: its action_contract "
+                        f"slots name {len(slot_names)} of this robot's {n_joints} "
+                        "joints; the runner feeds the policy those joints by name."
+                    )
+                    state_compatible.append(m)
+                    continue
                 self.get_logger().warning(
                     f"palette: dropping rSkill {m.name!r} "
                     f"(model_family={m.model_family!r}): "

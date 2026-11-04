@@ -312,6 +312,10 @@ class MujocoArmHAL(HALBase):
         # none a whole-robot command. They are staged here and applied as ONE
         # step once the tick is complete, for every twin in this hierarchy.
         self._slot_group = SlotGroupStager()
+        # Joints a slot group may leave uncommanded; they keep their current ctrl
+        # target (``compose_slot_group(hold=...)``). Empty = every joint must be
+        # commanded. ``OpenAMRv2MujocoHAL`` lists its base and lift.
+        self._hold_if_uncommanded: frozenset[str] = frozenset()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -773,7 +777,9 @@ class MujocoArmHAL(HALBase):
             group = self._slot_group.stage(action)
             if group is None:
                 return
-            action = compose_slot_group_action(group, self._joint_names)
+            action = compose_slot_group_action(
+                group, self._joint_names, hold=self._held_ctrl_targets()
+            )
         else:
             # Ungrouped ticked actions (starting-pose ramp, approach) share the
             # watermark, so a restarted runner's renumbering is seen here too.
@@ -986,6 +992,15 @@ class MujocoArmHAL(HALBase):
         if not action.joint_targets or not action.joint_targets[0]:
             raise ROSConfigError("action.joint_targets[0] is required.")
         self._validate_action_dims(action, len(self._joint_names))
+
+    def _held_ctrl_targets(self) -> dict[str, float]:
+        """Current ctrl target of each ``_hold_if_uncommanded`` joint."""
+        assert self._data is not None
+        return {
+            name: float(self._data.ctrl[self._actuator_index[name]])
+            for name in self._hold_if_uncommanded
+            if name in self._actuator_index
+        }
 
     def _last_arm_targets(self, action: Action) -> list[float]:
         assert action.joint_targets is not None

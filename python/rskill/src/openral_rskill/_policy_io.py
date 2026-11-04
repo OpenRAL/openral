@@ -13,6 +13,10 @@ Conversion order:
 * state (robot -> policy): permute robot order -> policy order, then per channel
   ``scale * value + offset`` for a joint ``action_contract.joint_calibration`` names,
   else ``gripper * gripper_scale`` or ``degrees(joint)`` (degrees checkpoints only).
+* state, slot path on a robot with MORE joints than the slots name (an OpenArm skill
+  on the OpenAMR v2's base + lift + OpenArm): gather the slot-named joints by name
+  (``slot_state_joint_names``) before converting, so the policy never reads a base or
+  lift joint as an arm joint.
 * action, joint path (policy -> robot): per channel ``(value - offset) / scale`` for a
   calibrated joint, else ``gripper / gripper_scale`` or ``radians(joint)``, written back
   in robot order; ``clamp`` then pulls each joint
@@ -48,12 +52,14 @@ if TYPE_CHECKING:
         RSkillManifest,
     )
 
-__all__ = ["PolicyIOCodec"]
+__all__ = ["PolicyIOCodec", "slot_state_joint_names"]
 
 _log = structlog.get_logger(__name__)
 
 # Slot control modes whose channels are joint angles (or angular rates).
 _ANGULAR_SLOT_MODES = frozenset({ControlMode.JOINT_POSITION, ControlMode.JOINT_VELOCITY})
+_JOINT_SLOT_MODES = _ANGULAR_SLOT_MODES | {ControlMode.JOINT_TORQUE}
+_GRIPPER_SLOT_MODES = frozenset({ControlMode.GRIPPER_POSITION, ControlMode.GRIPPER_BINARY})
 # Strictly inside the envelope: the safety kernel rejects ``value > limit`` on open
 # intervals, so clamping to the exact limit would still trip it after float round-trips.
 _CLAMP_EPS = 1e-3
@@ -100,6 +106,93 @@ def _adapter_feature_names(adapter: object) -> tuple[list[str], int | None]:
     return names, dim
 
 
+def _ee_joint(ee: str, description: RobotDescription) -> str | None:
+    """The robot joint a gripper slot's ``ee`` drives, ``None`` when it is no joint.
+
+    ``ee`` naming a joint is the HAL convention (``_slot_group.slot_group_targets``
+    places a gripper slot at the joint its ``ee_name`` names). An ``ee`` naming only an
+    ``EndEffectorSpec`` resolves to the robot's single gripper joint; with several, the
+    manifest carries no link from end effector to joint, so none is guessed. A gripper
+    that is no joint at all (Galaxea A1: six arm joints) has no state channel.
+    """
+    if any(j.name == ee for j in description.joints):
+        return ee
+    grippers = [j.name for j in description.joints if _is_gripper_joint(j)]
+    if any(e.name == ee for e in description.end_effectors) and len(grippers) == 1:
+        return grippers[0]
+    return None
+
+
+def slot_state_joint_names(
+    manifest: RSkillManifest | None, description: RobotDescription | None
+) -> list[str] | None:
+    """The robot joints a slot contract's policy state reads, in policy (slot range) order.
+
+    A joint-space slot contract names its joints: each ``JOINT_*`` slot its
+    ``joint_names``, each one-channel ``GRIPPER_*`` slot the joint its ``ee`` drives
+    (``_ee_joint``). Read in range order that is the policy's state vector, which is
+    what lets a 16-D OpenArm skill run on a robot that adds base and lift joints.
+
+    Returns:
+        The joint names, or ``None`` when the contract does not determine the state:
+        no slots / no description, a slot that names no joint (Cartesian, twist,
+        discard, an unnamed whole-robot slot, a multi-channel gripper, a gripper
+        ``ee`` that resolves to no joint), or a ``state_contract.dim`` other than
+        the name count.
+
+    Raises:
+        ROSConfigError: A ``JOINT_*`` slot names a joint the robot lacks.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription, RSkillManifest
+        >>> raw = RSkillManifest.from_yaml("rskills/pi05-libero-int8/rskill.yaml")
+        >>> raw = raw.model_dump(mode="json", exclude={"state_contract"})
+        >>> raw["action_contract"] = {
+        ...     "dim": 2,
+        ...     "slots": [
+        ...         {
+        ...             "range": [0, 0],
+        ...             "control_mode": "joint_position",
+        ...             "joint_names": ["left_joint1"],
+        ...         },
+        ...         {"range": [1, 1], "control_mode": "gripper_position", "ee": "left_gripper"},
+        ...     ],
+        ... }
+        >>> robot = RobotDescription.from_yaml("robots/openamr_v2/robot.yaml")
+        >>> slot_state_joint_names(RSkillManifest.model_validate(raw), robot)
+        ['left_joint1', 'left_gripper']
+    """
+    ac = manifest.action_contract if manifest is not None else None
+    if ac is None or not ac.slots or description is None:
+        return None
+    assert manifest is not None  # ac came from it
+    robot_names = {j.name for j in description.joints}
+    names: list[str] = []
+    for slot in sorted(ac.slots, key=lambda s: s.range[0]):
+        lo, hi = slot.range
+        if slot.discard:
+            return None
+        if slot.control_mode in _GRIPPER_SLOT_MODES and lo == hi and slot.ee:
+            joint = _ee_joint(slot.ee, description)
+            if joint is None:
+                return None
+            names.append(joint)
+        elif slot.control_mode in _JOINT_SLOT_MODES and slot.joint_names:
+            unknown = [n for n in slot.joint_names if n not in robot_names]
+            if unknown:
+                raise ROSConfigError(
+                    f"rSkill {manifest.name!r}: slot {list(slot.range)} names joints "
+                    f"{unknown} that robot {description.name!r} does not have"
+                )
+            names.extend(slot.joint_names)
+        else:
+            return None
+    dim = manifest.state_contract.dim if manifest.state_contract is not None else None
+    if dim is not None and dim != len(names):
+        return None
+    return names
+
+
 class PolicyIOCodec(BaseModel):
     """Typed policy <-> robot conversion, built by :meth:`from_manifest`.
 
@@ -121,6 +214,10 @@ class PolicyIOCodec(BaseModel):
             kernel bounds its GRIPPER_POSITION channel to (``EndEffectorSpec.
             resolved_command_range``); a GRIPPER_POSITION slot's ``ee`` channel is
             clamped strictly inside it.
+        state_index: Robot joint index per policy state channel when the slot
+            contract names a strict subset of the robot's joints
+            (``slot_state_joint_names``); ``to_policy_state`` gathers these. ``None``
+            = the state is the whole robot vector.
 
     Example:
         >>> import numpy as np
@@ -146,11 +243,12 @@ class PolicyIOCodec(BaseModel):
     joint_limits: list[tuple[float, float] | None] = Field(default_factory=list)
     calibration: list[tuple[float, float] | None] = Field(default_factory=list)
     gripper_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    state_index: list[int] | None = None
     # End effectors already reported for a clamp wider than the epsilon (once each).
     _clamp_warned: set[str] = PrivateAttr(default_factory=set)
 
     @classmethod
-    def from_manifest(
+    def from_manifest(  # noqa: PLR0912  # reason: one linear precedence ladder (slot subset > joint_names > feature names > identity); splitting it hides the order
         cls,
         manifest: RSkillManifest | None,
         description: RobotDescription | None,
@@ -218,6 +316,24 @@ class PolicyIOCodec(BaseModel):
             for ee in description.end_effectors
             if ee.actuated and ee.kind != "tool" and (rng := ee.resolved_command_range())
         }
+        state_names = slot_state_joint_names(manifest, description)
+        if state_names is not None and len(state_names) < len(robot_names):
+            # The slots name a strict subset of the robot (no joint_names /
+            # joint_calibration with slots, by schema): gather it by name. A slot set
+            # covering every joint keeps the order logic below unchanged.
+            idx = [robot_names.index(n) for n in state_names]
+            _log.info("policy_io.slot_state_subset", skill=name, state_joints=state_names)
+            return cls(
+                joint_units_are_degrees=degrees,
+                gripper_scale=gripper_scale,
+                policy_is_gripper=[robot_grip[i] for i in idx],
+                policy_joint_names=state_names,
+                robot_joint_names=robot_names,
+                robot_is_gripper=robot_grip,
+                joint_limits=limits,
+                gripper_ranges=gripper_ranges,
+                state_index=idx,
+            )
         declared = ac.joint_names if ac is not None else None
         if declared is not None:
             unknown = [n for n in declared if n not in robot_names]
@@ -341,6 +457,7 @@ class PolicyIOCodec(BaseModel):
             and self.gripper_scale == 1.0
             and not any(c is not None for c in self.calibration)
             and (perm is None or perm == list(range(len(perm))))
+            and self.state_index is None
         )
 
     def _is_policy_gripper(self, j: int) -> bool:
@@ -350,7 +467,21 @@ class PolicyIOCodec(BaseModel):
         return self.calibration[j] if j < len(self.calibration) else None
 
     def to_policy_state(self, robot_state: NDArray[Any]) -> NDArray[Any]:
-        """Robot-order radians state -> policy-order, policy-unit state."""
+        """Robot-order radians state -> policy-order, policy-unit state.
+
+        With ``state_index`` the slot-named joints are gathered first (a robot whose
+        state is wider than the policy's); a state too short for them is refused.
+
+        Raises:
+            ROSConfigError: ``robot_state`` lacks a joint ``state_index`` reads.
+        """
+        if self.state_index is not None:
+            if robot_state.shape[0] <= max(self.state_index):
+                raise ROSConfigError(
+                    f"robot state has {robot_state.shape[0]} values; the policy reads "
+                    f"joints {self.policy_joint_names} at indices {self.state_index}"
+                )
+            robot_state = robot_state[self.state_index]
         n = robot_state.shape[0]
         out = robot_state.copy()
         for i, j in enumerate(_effective_perm(self.robot_to_policy, n)):
