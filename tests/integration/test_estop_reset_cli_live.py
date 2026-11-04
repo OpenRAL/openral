@@ -133,8 +133,11 @@ def test_estop_reset_cli_clears_kernel_then_runner_and_rejection_is_loud(
             f"{refused.stdout}{refused.stderr}(answered "
             f"{time.monotonic() - latched_at:.2f} s after the latch; cooldown {_COOLDOWN_S} s)"
         )
-        assert time.monotonic() - latched_at < _COOLDOWN_S, "test too slow for its cooldown"
-        assert "REFUSED" in refused.stderr
+        # The kernel's reason, not the subprocess's exit time: the CLI may finish shutting
+        # down after the cooldown although the kernel refused inside it.
+        assert "REFUSED" in refused.stderr and "cooldown not elapsed" in refused.stderr, (
+            refused.stderr
+        )
         assert safety._estopped is True
         time.sleep(0.5)  # anything the CLI might have broadcast would have landed by now
         assert runner._estop_latched is True, "a refused kernel reset must not clear the runner"
