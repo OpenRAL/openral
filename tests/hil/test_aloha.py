@@ -6,9 +6,11 @@ They must not run in standard CI.  Gated by the ``[self-hosted, lab-aloha]``
 runner label — no such runner is registered and there is no physical ALOHA
 rig, so this file has never run against hardware.
 
-The topic defaults below are ``AlohaHAL``'s, and issue #250 established that
-a real ALOHA exposes none of them: bring-up starts ``xs_sdk``, not a
-``controller_manager``. Both move together when #250 is fixed.
+The bridge speaks the ``xs_sdk`` contract ``AlohaHAL`` emits (issue #250):
+``/<ns>/commands/joint_group`` (arm), ``/<ns>/commands/joint_single``
+(gripper) and per-namespace ``/<ns>/joint_states``. The namespaces, motor
+names and gripper range are stock-Interbotix defaults, not yet read off a
+cell — confirm them before the first powered run.
 
 Environment:
     ALOHA_LEFT_PORT: USB serial port of the left Interbotix arm (default
@@ -17,16 +19,8 @@ Environment:
         ``/dev/ttyDXL_right``).
     ALOHA_REQUIRE_HW: when set to ``"1"``, missing hardware fails instead
         of skipping.
-    ALOHA_LEFT_ARM_TOPIC / ALOHA_RIGHT_ARM_TOPIC: Override for the
-        per-arm ``JointTrajectory`` command topic
-        (defaults to ``/left_arm/arm_controller/joint_trajectory`` and
-        ``/right_arm/arm_controller/joint_trajectory``).
-    ALOHA_LEFT_GRIPPER_TOPIC / ALOHA_RIGHT_GRIPPER_TOPIC: Override for the
-        per-arm gripper command topic (defaults to
-        ``/left_arm/gripper_controller/command`` and
-        ``/right_arm/gripper_controller/command``).
-    ALOHA_STATE_TOPIC: Override for the aggregated joint-state topic
-        (defaults to ``/joint_states``).
+    ALOHA_LEFT_NS / ALOHA_RIGHT_NS: ``xs_sdk`` follower namespaces
+        (defaults ``follower_left`` / ``follower_right``).
 
 Safety rules mirror the retained real-arm HIL fixtures: every action is
 bounded, idempotent teardown is mandatory, and E-stop remains reachable.
@@ -50,19 +44,10 @@ from openral_hal.aloha import ALOHA_DESCRIPTION, AlohaHAL
 ALOHA_LEFT_PORT = os.environ.get("ALOHA_LEFT_PORT", "/dev/ttyDXL_left")
 ALOHA_RIGHT_PORT = os.environ.get("ALOHA_RIGHT_PORT", "/dev/ttyDXL_right")
 ALOHA_REQUIRE_HW = os.environ.get("ALOHA_REQUIRE_HW", "0") == "1"
-ALOHA_LEFT_ARM_TOPIC = os.environ.get(
-    "ALOHA_LEFT_ARM_TOPIC", "/left_arm/arm_controller/joint_trajectory"
+ALOHA_NAMESPACES = (
+    os.environ.get("ALOHA_LEFT_NS", "follower_left"),
+    os.environ.get("ALOHA_RIGHT_NS", "follower_right"),
 )
-ALOHA_RIGHT_ARM_TOPIC = os.environ.get(
-    "ALOHA_RIGHT_ARM_TOPIC", "/right_arm/arm_controller/joint_trajectory"
-)
-ALOHA_LEFT_GRIPPER_TOPIC = os.environ.get(
-    "ALOHA_LEFT_GRIPPER_TOPIC", "/left_arm/gripper_controller/command"
-)
-ALOHA_RIGHT_GRIPPER_TOPIC = os.environ.get(
-    "ALOHA_RIGHT_GRIPPER_TOPIC", "/right_arm/gripper_controller/command"
-)
-ALOHA_STATE_TOPIC = os.environ.get("ALOHA_STATE_TOPIC", "/joint_states")
 
 
 def _both_ports_present() -> bool:
@@ -81,6 +66,10 @@ pytestmark = [
         importlib.util.find_spec("rclpy") is None,
         reason="rclpy not installed — ALOHA HIL needs a live ROS 2 stack.",
     ),
+    pytest.mark.skipif(
+        importlib.util.find_spec("interbotix_xs_msgs") is None,
+        reason="interbotix_xs_msgs not installed — ALOHA HIL needs interbotix_ros_xseries.",
+    ),
 ]
 
 
@@ -90,14 +79,10 @@ def aloha_hal() -> Iterator[AlohaHAL]:
     from tests.hil._aloha_ros_transport import make_aloha_hil_transport  # reason: HIL-only
 
     _node, transport, cleanup = make_aloha_hil_transport(
-        node_name="openral_hil_aloha",
-        left_arm_command_topic=ALOHA_LEFT_ARM_TOPIC,
-        right_arm_command_topic=ALOHA_RIGHT_ARM_TOPIC,
-        left_gripper_command_topic=ALOHA_LEFT_GRIPPER_TOPIC,
-        right_gripper_command_topic=ALOHA_RIGHT_GRIPPER_TOPIC,
-        joint_state_topic=ALOHA_STATE_TOPIC,
+        node_name="openral_hil_aloha", arm_namespaces=ALOHA_NAMESPACES
     )
     hal = AlohaHAL(
+        arm_namespaces=ALOHA_NAMESPACES,
         publish_fn=transport.publish,
         state_fn=transport.state,
     )
