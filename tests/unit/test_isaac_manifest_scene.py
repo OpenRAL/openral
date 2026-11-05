@@ -1470,7 +1470,7 @@ def test_a_lidar_inside_the_chassis_collider_still_sees_the_wall(
     """
     resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
 
-    def closest_inside(start, _d, span):  # type: ignore[no-untyped-def]  # reason: PhysX shape
+    def closest_inside(start: object, _d: object, span: float) -> dict[str, object]:
         del start, span
         return {"hit": True, "distance": 0.0, "rigidBody": "/panda/base_link"}
 
