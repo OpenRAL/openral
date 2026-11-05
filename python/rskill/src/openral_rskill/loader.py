@@ -1191,7 +1191,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
        in-tree OpenRAL repo root.
     2. **HF Hub repo id mapped to local skill** — ``<org>/rskill-<name>`` is
        mapped to ``<repo_root>/rskills/<name>/rskill.yaml`` if that file
-       exists.
+       exists, else to the in-tree manifest whose ``name`` equals the repo id.
     3. **HF Hub repo id** — anything else is treated as a Hub repo and the
        manifest is downloaded via ``huggingface_hub.hf_hub_download``.
 
@@ -1224,6 +1224,16 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
         manifest = RSkillManifest.from_yaml(str(yaml_path))
         _RSKILL_MANIFEST_CACHE[uri] = manifest
         return manifest
+
+    # An HF Hub repo id whose rSkill ships in-tree under a different directory name
+    # (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`` lives in
+    # ``rskills/smolvla-libero``) resolves to that manifest by its ``name``, so the
+    # in-tree copy wins over a possibly older published one without a network call.
+    if "/" in uri:
+        for _dir_name, intree in discover_intree_rskills():
+            if intree.name == uri:
+                _RSKILL_MANIFEST_CACHE[uri] = intree
+                return intree
 
     # Fall through to HF Hub.
     try:
