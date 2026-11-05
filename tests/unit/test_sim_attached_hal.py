@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from itertools import pairwise
 from typing import Any
 
@@ -1058,6 +1059,15 @@ def test_body_twist_without_mujoco_handles_steps_env() -> None:
     assert all(float(x) == 0.0 for x in env.last_action[:-3])
     # Latched for the /odom publisher (vx, vy, vz, wx, wy, wz).
     assert hal.base_twist == (0.5, -0.2, 0.0, 0.0, 0.0, 0.3)
+    # Every idle step integrates it, not just the first.
+    assert hal.idle_step()
+    assert env.step_calls == 2
+    assert tuple(round(float(x), 3) for x in env.last_action[-3:]) == (0.5, -0.2, 0.3)
+    # Once the 0.5 s hold lapses with no new command, the base stops.
+    time.sleep(0.55)
+    assert hal.idle_step()
+    assert all(float(x) == 0.0 for x in env.last_action[-3:])
+    assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
 def test_body_twist_without_base_dims_raises_runtime_error() -> None:
