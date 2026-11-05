@@ -60,7 +60,9 @@ def _r1pro() -> RobotDescription:
 
 
 def _verdict(manifest: RSkillManifest, n_joints: int, *, published: bool = True) -> str:
-    return _state_contract_verdict(manifest, n_joints, policy_state_published=published)
+    # Typed through a local: without rclpy (CI's mypy lane) the import resolves to Any.
+    verdict: str = _state_contract_verdict(manifest, n_joints, policy_state_published=published)
+    return verdict
 
 
 def test_fixture_state_dim_differs_from_the_joint_count() -> None:
