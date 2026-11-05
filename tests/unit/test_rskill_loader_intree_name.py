@@ -39,13 +39,14 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_hub_id_resolves_in_tree_past_a_malformed_manifest(
     checkout: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The broken manifest sorts first; the lookup still finds smolvla, silently."""
+    """The broken manifest sorts first; the lookup still finds smolvla without reporting it."""
     manifest = loader.load_rskill_manifest(_SMOLVLA_ID)
     assert manifest.name == _SMOLVLA_ID
     assert manifest.weights_uri == "hf://lerobot/smolvla_libero"  # the in-tree config
+    # The broken manifest is skipped silently. (The DEBUG resolution event may reach
+    # stdout when structlog is unconfigured; it names the resolved file, not the broken one.)
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
+    assert "aaa-half-edited" not in captured.out + captured.err
 
 
 def test_name_index_skips_unknown_and_malformed(checkout: Path) -> None:
