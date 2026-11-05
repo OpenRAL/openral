@@ -159,7 +159,7 @@ class HeldJointsHAL:
             name=[j.name for j in self.description.joints],
             position=list(self._positions),
             velocity=[0.0] * len(self._positions),
-            effort=[0.0] * len(self._positions),
+            effort=[],  # nothing measures it (JointState: never zero-filled)
         )
 
     def send_action(self, action: Action) -> None:
@@ -352,7 +352,12 @@ class ComposedHAL:
     # ── state ────────────────────────────────────────────────────────────────
 
     def read_state(self) -> JointState:
-        """Every part's state merged into ``description.joints`` order, by name."""
+        """Every part's state merged into ``description.joints`` order, by name.
+
+        ``effort`` is all joints or none (``JointState``): it is merged only when
+        every part measures it, else empty. A part without effort (odometry, a held
+        lift) is never zero-filled, since a torque observer reads 0.0 as unloaded.
+        """
         pos: dict[str, float] = {}
         vel: dict[str, float] = {}
         eff: dict[str, float] = {}
@@ -363,7 +368,8 @@ class ComposedHAL:
             for k, name in enumerate(names):
                 pos[name] = js.position[k]
                 vel[name] = js.velocity[k] if js.velocity else 0.0
-                eff[name] = js.effort[k] if js.effort else 0.0
+                if js.effort:
+                    eff[name] = js.effort[k]
             stamps.append(js.stamp_ns)
         names = [j.name for j in self.description.joints]
         self._last_positions = pos
@@ -372,7 +378,7 @@ class ComposedHAL:
             name=names,
             position=[pos[n] for n in names],
             velocity=[vel[n] for n in names],
-            effort=[eff[n] for n in names],
+            effort=[eff[n] for n in names] if all(n in eff for n in names) else [],
         )
 
     # ── actions ──────────────────────────────────────────────────────────────

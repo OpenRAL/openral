@@ -75,6 +75,7 @@ class PlatformBaseHAL:
         self._differential = description.base_kinematics == "differential"
         self._node: Any = None
         self._pub: Any = None
+        self._sub: Any = None
         self._lock = threading.Lock()
         self._pose: tuple[float, float, float] | None = None
         self._twist: tuple[float, float, float, float, float, float] = (0.0,) * 6
@@ -89,7 +90,7 @@ class PlatformBaseHAL:
 
         self._node = node
         self._twist_type = Twist
-        node.create_subscription(
+        self._sub = node.create_subscription(
             Odometry,
             self._odom_topic,
             self._on_odom,
@@ -115,10 +116,21 @@ class PlatformBaseHAL:
         self._connected = True
 
     def disconnect(self) -> None:
-        """Stop the base and release; idempotent."""
+        """Stop the base and release its ROS endpoints; idempotent.
+
+        The endpoints live on the lifecycle node, which outlives this HAL across a
+        cleanup/configure cycle, so a kept subscription would feed a dead instance
+        beside the new one's.
+        """
         if self._connected and self._pub is not None:
             self._pub.publish(self._twist_type())
         self._connected = False
+        if self._node is not None:
+            if self._sub is not None:
+                self._node.destroy_subscription(self._sub)
+            if self._pub is not None:
+                self._node.destroy_publisher(self._pub)
+        self._sub = self._pub = None
 
     @property
     def base_pose(self) -> tuple[float, float, float]:
@@ -156,7 +168,7 @@ class PlatformBaseHAL:
             name=list(self.description.base_joints or []),
             position=[x, y, yaw],
             velocity=[c * vx - s * vy, s * vx + c * vy, wz],
-            effort=[0.0, 0.0, 0.0],
+            effort=[],  # odometry measures no effort; never zero-filled (JointState)
             # Wall clock, as every HAL stamps JointState; arrival stays monotonic for
             # the staleness check.
             stamp_ns=time.time_ns() - int(age_s * 1e9),

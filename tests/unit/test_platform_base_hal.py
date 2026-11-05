@@ -233,3 +233,32 @@ def test_the_odom_timer_survives_missing_odometry(
         assert seen == []
     finally:
         bridge.teardown()
+
+
+def test_effort_is_unmeasured_never_zero(ros_init: None) -> None:
+    """Odometry and a held lift measure no effort: empty, never 0.0 (a torque observer
+    reads 0.0 as an unloaded joint), and the composite keeps that absence."""
+    node = rclpy.create_node("composed_effort_test")
+    try:
+        hal = _composite(node)
+        odom_pub = node.create_publisher(Odometry, "/test_platform/odom", 10)
+        for _ in range(5):
+            odom_pub.publish(_odom(0.0, 0.0, 0.0, 0.0, 0.0))
+            _spin(node, 0.05)
+        assert hal._parts[0].read_state().effort == []
+        assert hal.read_state().effort == []
+    finally:
+        node.destroy_node()
+
+
+def test_disconnect_releases_the_ros_endpoints(
+    rig: tuple[Any, PlatformBaseHAL, Any, list[Any]],
+) -> None:
+    """The lifecycle node outlives the HAL; a kept subscription would feed a dead one."""
+    node, hal, _, _ = rig
+    assert node.count_publishers("/test_platform/cmd_vel") == 1
+    subs = node.count_subscribers("/test_platform/odom")
+    hal.disconnect()
+    assert node.count_publishers("/test_platform/cmd_vel") == 0
+    assert node.count_subscribers("/test_platform/odom") == subs - 1
+    hal.disconnect()  # idempotent

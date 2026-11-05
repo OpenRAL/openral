@@ -65,8 +65,12 @@ def test_every_urdf_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     arm_links = {ln: 0 for ln in by_link if ln.startswith("openarm_")}
     try:
         meshes = _urdf_link_meshes(robot, arm_links, manifest.parent)
-    except ROSConfigError as exc:  # pinned mesh clone unreachable (offline host)
-        pytest.skip(f"{robot_id}: URDF meshes unavailable: {exc}")
+    except ROSConfigError as exc:
+        from openral_core.assets import AssetRefError
+
+        if not isinstance(exc.__cause__, AssetRefError):
+            raise  # a joint-origin mismatch or unloadable geometry is a regression
+        pytest.skip(f"{robot_id}: URDF meshes unavailable (asset fetch): {exc}")
     assert meshes, f"{robot_id}: no arm link matched a URDF link"
     worst: dict[str, float] = {}
     for link, mesh in meshes.items():
