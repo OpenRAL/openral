@@ -6070,6 +6070,7 @@
       "properties": {
         "rationale": {
           "default": "",
+          "description": "Optional one line on why you chose this call; recorded on the trace.",
           "title": "Rationale",
           "type": "string"
         },
@@ -6080,22 +6081,26 @@
           "type": "string"
         },
         "rskill_id": {
+          "description": "Id of an installed skill.",
           "minLength": 1,
           "title": "Rskill Id",
           "type": "string"
         },
         "prompt": {
           "default": "",
+          "description": "Task instruction for the skill, e.g. 'put the red cube in the blue bowl'. A VLA skill conditions on it.",
           "title": "Prompt",
           "type": "string"
         },
         "goal_params_json": {
           "default": "",
+          "description": "JSON object of the skill's typed goal parameters, as a string. Leave empty for VLA skills, which ignore it.",
           "title": "Goal Params Json",
           "type": "string"
         },
         "deadline_s": {
           "default": 0.0,
+          "description": "Hard deadline in seconds; 0 = the skill's default.",
           "minimum": 0.0,
           "title": "Deadline S",
           "type": "number"
@@ -6111,6 +6116,7 @@
             }
           ],
           "default": null,
+          "description": "Execution ceiling in seconds: short for a quick grab, long for a precise insertion. Null = the reward model's default.",
           "title": "Patience S"
         },
         "progress_tolerance": {
@@ -6124,6 +6130,7 @@
             }
           ],
           "default": null,
+          "description": "Override the reward model's plateau tolerance when progress is noisy. Null = its default.",
           "title": "Progress Tolerance"
         },
         "grasp_target": {

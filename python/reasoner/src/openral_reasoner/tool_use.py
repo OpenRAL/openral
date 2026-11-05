@@ -26,11 +26,12 @@ allowed at this process boundary.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import structlog
 from openral_core import (
@@ -57,6 +58,8 @@ from openral_core.exceptions import (
     ROSReasonerInvalidPlan,
 )
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
 
 if TYPE_CHECKING:
     from openral_reasoner.palette import RSkillToolEntry, ToolPalette
@@ -1008,47 +1011,75 @@ def _format_skill_tool_description(entry: RSkillToolEntry) -> str:
     return " ".join(parts)
 
 
+# The argument type of ``GenerateJsonSchema.field_title_should_be_set``; pydantic
+# defines it only in a private module, so it is spelled out here.
+_CoreSchemaOrField = (
+    core_schema.CoreSchema
+    | core_schema.ModelField
+    | core_schema.DataclassField
+    | core_schema.TypedDictField
+    | core_schema.ComputedField
+)
+
+
+class _LLMSchemaGenerator(GenerateJsonSchema):
+    """Emit tool schemas without the parts only a Python reader needs.
+
+    Drops every ``title`` and every model / enum docstring ``description``;
+    field descriptions are untouched.
+    """
+
+    def field_title_should_be_set(self, schema: _CoreSchemaOrField) -> bool:
+        """Never title a field."""
+        return False
+
+    def model_schema(self, schema: core_schema.ModelSchema) -> JsonSchemaValue:
+        """A model's schema without its title or docstring."""
+        out = super().model_schema(schema)
+        out.pop("title", None)
+        out.pop("description", None)
+        return out
+
+    def enum_schema(self, schema: core_schema.EnumSchema) -> JsonSchemaValue:
+        """An enum's schema without its title or docstring."""
+        out = super().enum_schema(schema)
+        out.pop("title", None)
+        out.pop("description", None)
+        return out
+
+
+@functools.cache
+def _llm_schema_json(model: type[BaseModel]) -> str:
+    """The stripped schema as JSON, built once per class; a str cannot be mutated."""
+    return json.dumps(model.model_json_schema(schema_generator=_LLMSchemaGenerator))
+
+
 def _llm_schema(model: type[BaseModel]) -> dict[str, Any]:
     """``model.model_json_schema()`` minus what only a Python reader needs.
 
     Pydantic copies each model's docstring into the schema as its
     ``description`` and adds a ``title`` to every node. Both ride along on
     every tool of every tick, and a docstring is written for developers
-    (``Attributes:``, ``Example:``, design-note references), not the LLM: the
-    tool's own ``description`` and the per-field descriptions are the
-    LLM-facing text. Shipping them made each per-skill tool ~9.4K characters,
-    a 44K-token ``franka_panda`` palette, and Cosmos3-Edge tool-call
-    runaways (issue #440). Field descriptions are kept.
+    (``Attributes:``, ``Example:``, design-note references), not the LLM.
+    Shipping them made each per-skill tool ~9.4K characters, a 44K-token
+    ``franka_panda`` palette, and Cosmos3-Edge tool-call runaways (issue #440).
+    What the LLM needs to know about a field lives in its
+    ``Field(description=...)``, which is kept; every field of a reasoner tool
+    must carry one (enforced in ``tests/unit/test_tool_use_wire_payload.py``).
+
+    Built once per model class and cached as an immutable JSON string; each
+    call returns a fresh dict, since callers splice per-skill properties into it.
 
     >>> from openral_core import ExecuteRskillTool
     >>> s = _llm_schema(ExecuteRskillTool)
     >>> "title" in s or "description" in s or "description" in s["$defs"]["GraspTargetRef"]
     False
-    >>> "description" in s["properties"]["grasp_target"]
+    >>> "description" in s["properties"]["patience_s"]
     True
+    >>> s is _llm_schema(ExecuteRskillTool)
+    False
     """
-    schema = model.model_json_schema()
-
-    def strip(node: object) -> None:
-        # Recurse only through schema keywords, so a field named ``title`` or a
-        # ``default`` / ``enum`` value carrying a ``title`` key is left alone.
-        if not isinstance(node, dict):
-            return
-        node.pop("title", None)
-        for key in ("properties", "$defs"):
-            for sub in node.get(key, {}).values():
-                strip(sub)
-        for key in ("items", "additionalProperties", "not"):
-            strip(node.get(key))
-        for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
-            for sub in node.get(key, []):
-                strip(sub)
-
-    schema.pop("description", None)
-    for definition in schema.get("$defs", {}).values():
-        definition.pop("description", None)
-    strip(schema)
-    return schema
+    return cast("dict[str, Any]", json.loads(_llm_schema_json(model)))
 
 
 def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, object]]:  # noqa: PLR0912  # reason: a flat one-branch-per-optional-tool-group table is clearer than nesting
@@ -1557,6 +1588,23 @@ class AnthropicToolUseClient:
         # rebuilding per call throws away the HTTP connection pool and pays
         # a fresh TLS handshake on every reasoner tick.
         self._sdk_client: Any = None
+        # The rendered tool list for the last palette seen. The palette only
+        # changes on a registry refresh (``set_palette`` installs a new object),
+        # so rendering once per palette object instead of once per tick is exact.
+        self._rendered: tuple[ToolPalette, list[dict[str, object]]] | None = None
+
+    def _tools(self, palette: ToolPalette) -> list[dict[str, object]]:
+        """Anthropic tool schemas for ``palette``, rendered once per palette object."""
+        if self._rendered is None or self._rendered[0] is not palette:
+            tools = _tool_palette_to_anthropic_tools(palette)
+            # Prompt caching: the tool schemas + system brief are large and
+            # static between ticks; a cache breakpoint after them lets Anthropic
+            # reuse the prefix across the 0.2 Hz tick stream instead of
+            # re-ingesting it every call. Only the per-tick context stays uncached.
+            if tools:
+                tools[-1]["cache_control"] = {"type": "ephemeral"}
+            self._rendered = (palette, tools)
+        return self._rendered[1]
 
     def _client(self) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — anthropic.Anthropic, lazy-imported
         """The cached ``anthropic.Anthropic`` instance (lazy import + construct)."""
@@ -1585,14 +1633,7 @@ class AnthropicToolUseClient:
     ) -> ReasonerToolCall:
         """Call Anthropic and decode the resulting tool payload."""
         client = self._client()
-        tools = _tool_palette_to_anthropic_tools(palette)
-        # Prompt caching: the tool schemas + system brief are large and
-        # static between ticks (the palette only changes on a registry
-        # refresh); a cache breakpoint after each lets Anthropic reuse the
-        # prefix across the 0.2 Hz tick stream instead of re-ingesting it
-        # every call. Only the per-tick context_text stays uncached.
-        if tools:
-            tools[-1]["cache_control"] = {"type": "ephemeral"}
+        tools = self._tools(palette)
         system_blocks = [
             {
                 "type": "text",
@@ -1727,6 +1768,14 @@ class OpenAICompatibleToolUseClient:
         # SDK client built once on first use and reused across ticks (see
         # AnthropicToolUseClient._client for the rationale).
         self._sdk_client: Any = None
+        # Rendered tools for the last palette seen (see AnthropicToolUseClient._tools).
+        self._rendered: tuple[ToolPalette, list[dict[str, object]]] | None = None
+
+    def _tools(self, palette: ToolPalette) -> list[dict[str, object]]:
+        """OpenAI tool schemas for ``palette``, rendered once per palette object."""
+        if self._rendered is None or self._rendered[0] is not palette:
+            self._rendered = (palette, _tool_palette_to_openai_tools(palette))
+        return self._rendered[1]
 
     def _client(self) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — openai.OpenAI, lazy-imported
         """The cached ``openai.OpenAI`` instance (lazy import + construct)."""
@@ -1754,7 +1803,7 @@ class OpenAICompatibleToolUseClient:
     ) -> ReasonerToolCall:
         """Call the OpenAI-compatible endpoint and decode the tool call."""
         client = self._client()
-        tools = _tool_palette_to_openai_tools(palette)
+        tools = self._tools(palette)
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": context_text},

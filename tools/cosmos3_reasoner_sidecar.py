@@ -463,7 +463,7 @@ def main() -> int:
         type=int,
         default=None,
         help="Context window (default 8192, 32768 on a Jetson; or "
-        "$OPENRAL_COSMOS3_MAX_MODEL_LEN). Real palettes are 17K+ tokens.",
+        "$OPENRAL_COSMOS3_MAX_MODEL_LEN). Real palettes are 10-26K tokens.",
     )
     p.add_argument(
         "--gpu-memory-utilization",
