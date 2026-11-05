@@ -137,8 +137,8 @@ def slot_state_joint_names(
         The joint names, or ``None`` when the contract does not determine the state:
         no slots / no description, a slot that names no joint (Cartesian, twist,
         discard, an unnamed whole-robot slot, a multi-channel gripper, a gripper
-        ``ee`` that resolves to no joint), or a ``state_contract.dim`` other than
-        the name count.
+        ``ee`` that resolves to no joint), or a ``state_contract.dim`` that is unset
+        (the skill keeps the full joint vector) or other than the name count.
 
     Raises:
         ROSConfigError: A ``JOINT_*`` slot names a joint the robot lacks.
@@ -146,7 +146,8 @@ def slot_state_joint_names(
     Example:
         >>> from openral_core.schemas import RobotDescription, RSkillManifest
         >>> raw = RSkillManifest.from_yaml("rskills/pi05-libero-int8/rskill.yaml")
-        >>> raw = raw.model_dump(mode="json", exclude={"state_contract"})
+        >>> raw = raw.model_dump(mode="json")
+        >>> raw["state_contract"] = {**raw["state_contract"], "dim": 2}
         >>> raw["action_contract"] = {
         ...     "dim": 2,
         ...     "slots": [
@@ -187,8 +188,10 @@ def slot_state_joint_names(
             names.extend(slot.joint_names)
         else:
             return None
+    # Only a declared state width can say the policy reads this subset; without one
+    # the skill keeps the full joint vector.
     dim = manifest.state_contract.dim if manifest.state_contract is not None else None
-    if dim is not None and dim != len(names):
+    if dim is None or dim != len(names):
         return None
     return names
 

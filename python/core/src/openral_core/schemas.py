@@ -9508,14 +9508,17 @@ class RSkillManifest(BaseModel):
     # (``_check_n_action_steps_within_chunk``).
     n_action_steps: int | None = Field(default=None, gt=0)
     # Optional initial joint pose the policy expects an episode to
-    # start from, in radians. The deploy runner
+    # start from, in each joint's native unit (radians for revolute,
+    # metres for prismatic). The deploy runner
     # (``rskill_runner_node.expand_starting_pose``) accepts two widths:
     # one value per ``RobotDescription.joints`` entry, in robot.yaml
     # order; or one value per joint the ``action_contract.slots`` name
     # (``openral_rskill._policy_io.slot_state_joint_names``: slot range
     # order, i.e. the policy's own order), which sets those joints by
     # name and holds every other joint (a mobile base, a lift) at its
-    # measured position. Sim adapters apply this as the qpos at
+    # measured position. When the two widths are equal (the slots name
+    # every robot joint), the pose is read in robot.yaml order. Sim
+    # adapters apply this as the qpos at
     # ``reset()``.
     #
     # When omitted, sim adapters fall back to a kinematic default

@@ -220,3 +220,22 @@ def test_a_starting_pose_of_neither_width_is_refused(
 ) -> None:
     with pytest.raises(ROSConfigError, match="starting_pose has 15 values"):
         runner_mod.expand_starting_pose([0.0] * 15, openarm_pi05_manifest(), amr, [0.0] * 20)
+
+
+def test_a_held_joint_past_its_limit_does_not_refuse_the_pose(
+    runner_mod: ModuleType, amr: RobotDescription
+) -> None:
+    """A lift read 2 mm below 0 is held, not commanded: only named joints are range-checked."""
+    names = [j.name for j in amr.joints]
+    measured = [0.0] * len(names)
+    measured[names.index("lift_joint")] = -0.002
+    full = runner_mod.expand_starting_pose([0.0] * 16, openarm_pi05_manifest(), amr, measured)
+    held = frozenset(names) - frozenset(slot_state_joint_names(openarm_pi05_manifest(), amr) or ())
+    assert "lift_joint" in held
+    runner_mod.validate_starting_pose(amr, full, held_joints=held)
+    with pytest.raises(ROSConfigError, match="lift_joint"):
+        runner_mod.validate_starting_pose(amr, full)  # named, it would be out of range
+    named = list(full)
+    named[names.index("left_joint1")] = 99.0
+    with pytest.raises(ROSConfigError, match="left_joint1"):
+        runner_mod.validate_starting_pose(amr, named, held_joints=held)

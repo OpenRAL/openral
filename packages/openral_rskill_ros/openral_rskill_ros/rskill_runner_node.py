@@ -2209,6 +2209,7 @@ if _ROS2_AVAILABLE:
             target = [float(value) for value in starting_pose]
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
+            held: frozenset[str] = frozenset()
             if len(target) != len(names):
                 # A pose over only the slot-named joints (an OpenArm skill on the
                 # OpenAMR v2): the other joints hold where they are measured. A pose
@@ -2219,9 +2220,14 @@ if _ROS2_AVAILABLE:
                     else []
                 )
                 target = expand_starting_pose(target, manifest, self._description, measured)
+                from openral_rskill._policy_io import slot_state_joint_names
+
+                held = frozenset(names) - frozenset(
+                    slot_state_joint_names(manifest, self._description) or ()
+                )
             if self.get_parameter("approach_skill_id").get_parameter_value().string_value:
                 return self._dispatch_moveit_approach(target, goal_handle)
-            return self._interpolate_starting_pose(target, goal_handle)
+            return self._interpolate_starting_pose(target, goal_handle, held_joints=held)
 
         def _dispatch_moveit_approach(
             self, pose: list[float], goal_handle: Any
@@ -2357,10 +2363,19 @@ if _ROS2_AVAILABLE:
             )
 
         def _interpolate_starting_pose(
-            self, pose: list[float], goal_handle: Any
+            self,
+            pose: list[float],
+            goal_handle: Any,
+            *,
+            held_joints: frozenset[str] = frozenset(),
         ) -> tuple[int, str] | None:
-            """Publish a bounded starting-pose ramp through the safety kernel."""
-            from openral_core.exceptions import ROSConfigError
+            """Publish a bounded starting-pose ramp through the safety kernel.
+
+            ``held_joints`` are joints the pose did not name (``expand_starting_pose``
+            set them to their measured value, so the ramp holds them): their target is
+            not range-checked, since a held joint read just past a declared limit would
+            otherwise abort a goal that never moves it.
+            """
             from openral_core.schemas import Action, ControlMode
             from openral_msgs.action import ExecuteRskill
 
@@ -2368,21 +2383,7 @@ if _ROS2_AVAILABLE:
             assert self._hal is not None
             names = [joint.name for joint in self._description.joints]
             target = [float(value) for value in pose]
-            if len(target) != len(names):
-                raise ROSConfigError(
-                    f"starting_pose has {len(target)} values; robot {self._description.name!r} "
-                    f"has {len(names)} joints"
-                )
-            for joint, value in zip(self._description.joints, target, strict=True):
-                if not math.isfinite(value):
-                    raise ROSConfigError(f"starting_pose[{joint.name!r}] is not finite")
-                if joint.position_limits is not None and not (
-                    joint.position_limits[0] <= value <= joint.position_limits[1]
-                ):
-                    raise ROSConfigError(
-                        f"starting_pose[{joint.name!r}]={value:g} is outside "
-                        f"{joint.position_limits!r}"
-                    )
+            validate_starting_pose(self._description, target, held_joints=held_joints)
 
             self._raise_if_safety_aborted("moving to starting_pose")
             current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
@@ -3910,6 +3911,45 @@ def expand_starting_pose(
     for name, value in zip(slot_names, target, strict=True):
         out[names.index(name)] = value
     return out
+
+
+def validate_starting_pose(
+    description: RobotDescription,
+    target: Sequence[float],
+    *,
+    held_joints: Collection[str] = (),
+) -> None:
+    """Refuse a robot-order ``starting_pose`` target the ramp must not publish.
+
+    Every value must be finite, and every joint the pose named must lie inside its
+    ``position_limits``. ``held_joints`` (not named by a slot-subset pose, so set to
+    their measured value by ``expand_starting_pose``) skip the range check: the ramp
+    holds them, and a reading just past a declared limit must not abort the goal.
+
+    Raises:
+        ROSConfigError: Wrong width, a non-finite value, or a named joint out of range.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> validate_starting_pose(desc, [0.0] * 6)
+    """
+    if len(target) != len(description.joints):
+        raise ROSConfigError(
+            f"starting_pose has {len(target)} values; robot {description.name!r} "
+            f"has {len(description.joints)} joints"
+        )
+    for joint, value in zip(description.joints, target, strict=True):
+        if not math.isfinite(value):
+            raise ROSConfigError(f"starting_pose[{joint.name!r}] is not finite")
+        if (
+            joint.name not in held_joints
+            and joint.position_limits is not None
+            and not (joint.position_limits[0] <= value <= joint.position_limits[1])
+        ):
+            raise ROSConfigError(
+                f"starting_pose[{joint.name!r}]={value:g} is outside {joint.position_limits!r}"
+            )
 
 
 def starting_pose_reached(
