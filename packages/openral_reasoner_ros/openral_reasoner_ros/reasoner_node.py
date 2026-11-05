@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 import rclpy
 from openral_core import (
     POLICY_KINDS,
+    ROS_WRAPPER_KINDS,
     SIM_EXECUTABLE_CONTROL_MODES,
     ControllerEvidence,
     ControlMode,
@@ -785,6 +786,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # ``--enable-object-detector``. Distinct from ``lifecycle_peer_node_ids`` (which only
         # surfaces peers to the LLM tool palette, not auto-managed).
         self.declare_parameter("vram_lifecycle_peers", [""])
+        # Policies the deploy CLI's reward VRAM preflight refused at launch: the pair (policy +
+        # reward model) exceeds the GPU's FREE VRAM measured before any OpenRAL model loaded,
+        # so evicting lifecycle peers can never make room. Refused here at dispatch even when
+        # the live probe below is skipped (peers configured) and the pair fits the card's
+        # total (#475). Default empty; set by ``deploy sim`` / ``deploy run``.
+        self.declare_parameter("vram_refused_rskill_ids", [""])
         # Active object search, Phase 2b deployment wiring — absolute path to a persisted
         # persistent-spatial-memory scene graph (``SceneGraph`` JSON written by
         # ``SpatialMemory.save``). When set (and no ``spatial_memory`` backend
@@ -1119,6 +1126,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # (read from ``vram_lifecycle_peers`` at configure) and the subset actually deactivated for
         # the in-flight skill (reactivated on its result).
         self._vram_lifecycle_peers: list[str] = []
+        self._vram_refused_rskill_ids: frozenset[str] = frozenset()
         self._deactivated_vram_peers: list[str] = []
         # Pending skill-goal deadline timers, keyed by goal-uuid bytes so
         # the result callback can cancel the deadline timer when the
@@ -1382,6 +1390,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             .string_array_value
             if p
         ]
+        self._vram_refused_rskill_ids = frozenset(
+            p
+            for p in self.get_parameter("vram_refused_rskill_ids")
+            .get_parameter_value()
+            .string_array_value
+            if p
+        )
 
         # Seed the palette from the `rskills/` search paths + the
         # robot's manifest if both ROS parameters are set. This lets a
@@ -2671,7 +2686,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         graph_topics = {name for name, _ in topic_names_and_types}
         ros_server_available: list[RSkillManifest] = []
         for m in capability_matched:
-            if m.kind not in {"ros_action", "ros_service"}:
+            if m.kind not in ROS_WRAPPER_KINDS:
                 ros_server_available.append(m)
                 continue
             integration = m.ros_integration
@@ -4634,7 +4649,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         On a miss, refuses + publishes a ``FailureTrigger`` (bounded retries →
         handoff) rather than OOM mid-run. Returns ``True`` when refused (caller
-        must not send the goal). Two tiers, both refusing with the same
+        must not send the goal). Three tiers, all refusing with the same
         ``vram_insufficient`` evidence:
 
         1. Live free-VRAM probe (needs ``active_min_vram_gb`` + a readable
@@ -4647,12 +4662,35 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
            ``vram_lifecycle_peers`` are configured (their eviction frees VRAM
            the probe can't see), when the manifest declares no size, or when
            free VRAM is unreadable.
+        0. Launch preflight verdict (``vram_refused_rskill_ids``): a policy the deploy
+           CLI refused against the free VRAM before any model loaded is refused
+           outright — tier 1 is skipped under lifecycle peers and tier 2 budgets
+           against the card's total, so neither would catch it.
         2. Static VLA+reward pair fit: when a reward model is active and GPU
            total is known, the pair must fit the card.
 
         Skipped entirely (dispatch proceeds) when the skill is not a VLA / not
         installed.
         """
+        if call.rskill_id in self._vram_refused_rskill_ids:
+            detail = (
+                f"policy {call.rskill_id!r} was refused by the launch preflight: it cannot "
+                "co-reside with the reward model in the GPU VRAM that was free before any "
+                "OpenRAL model loaded, so evicting lifecycle peers cannot make room. "
+                "Relaunch with more free VRAM or pick a smaller skill."
+            )
+            self.get_logger().error(f"dispatch: refusing execute_rskill — {detail}")
+            self._publish_skill_failure(
+                kind=_KIND_CONTROLLER,
+                rskill_id=call.rskill_id,
+                evidence=ControllerEvidence(
+                    controller_name=call.rskill_id,
+                    state="vram_insufficient",
+                    detail=detail[:480],
+                ),
+                traceparent=traceparent,
+            )
+            return True
         vla = self._manifest_for_rskill(call.rskill_id)
         if vla is None or vla.kind not in POLICY_KINDS:
             return False

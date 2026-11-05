@@ -26,7 +26,7 @@ from openral_cli.deploy_sim import (
     _preflight_reward_vram_fit,
     _resolve_reward_monitor_manifest,
 )
-from openral_core import RobotDescription
+from openral_core import POLICY_KINDS, RobotDescription
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _FRANKA = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
@@ -34,6 +34,7 @@ _ROBOMETER = _REPO_ROOT / "rskills" / "robometer-4b" / "rskill.yaml"
 
 
 def _franka() -> RobotDescription:
+    """The real ``robots/franka_panda`` manifest."""
     return RobotDescription.from_yaml(str(_FRANKA))
 
 
@@ -91,13 +92,17 @@ def test_preflight_skipped_when_no_reward_active() -> None:
 
 def test_preflight_passes_on_8gb_card() -> None:
     """On an 8 GB card at least one VLA (smolvla 1.2 + robometer 5.5 = 6.7) fits, so the
-    preflight proceeds (some larger VLAs are warned about, but the deploy is runnable)."""
-    _preflight_reward_vram_fit(
+    preflight proceeds; the larger and undeclared VLAs come back as refused, the fitting
+    one does not."""
+    refused = _preflight_reward_vram_fit(
         repo_root=_REPO_ROOT,
         description=_franka(),
         reward_manifest_path=str(_ROBOMETER),
         gpu_budget_gb=8.0,
-    )  # does not raise
+    )
+    assert "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16" not in refused
+    assert "OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4" in refused  # 7.0 GB
+    assert "OpenRAL/rskill-act-franka_panda-libero-fp32" in refused  # undeclared
 
 
 def test_preflight_hard_exits_when_no_vla_fits(tmp_path: pathlib.Path) -> None:
@@ -129,13 +134,15 @@ _MOVEIT_JOINTS = _REPO_ROOT / "rskills" / "rskill-moveit-joints" / "rskill.yaml"
 
 
 def _panda_mobile() -> RobotDescription:
+    """The real ``robots/panda_mobile`` manifest (mobile base + lidar, so Nav2 matches)."""
     return RobotDescription.from_yaml(str(_PANDA_MOBILE))
 
 
 def test_preflight_passes_when_nav2_wrapper_runnable(capsys: pytest.CaptureFixture[str]) -> None:
-    """No VLA fits, but the Nav2 `ros_action` skill is runnable: launch proceeds, and every
-    policy — too large or undeclared — is still reported refused."""
-    _preflight_reward_vram_fit(
+    """No VLA fits, but the Nav2 `ros_action` skill is runnable: launch proceeds, every
+    policy — too large or undeclared — is reported and returned as refused, and the
+    message names the server the wrapper needs."""
+    refused = _preflight_reward_vram_fit(
         repo_root=_REPO_ROOT,
         description=_panda_mobile(),
         reward_manifest_path=str(_ROBOMETER),
@@ -144,8 +151,14 @@ def test_preflight_passes_when_nav2_wrapper_runnable(capsys: pytest.CaptureFixtu
     out = " ".join(capsys.readouterr().out.split())
     assert "cannot fit beside the reward model" in out
     assert "do not declare min_vram_gb" in out
-    assert "rskill-nav2-mobile_base-navigate_to_pose" in out
+    assert "rskill-nav2-mobile_base-navigate_to_pose → ros_action /navigate_to_pose" in out
     assert "preflight failed" not in out
+    policies = {
+        m.name
+        for m in _capability_matched_manifests(_REPO_ROOT, _panda_mobile())
+        if m.kind in POLICY_KINDS
+    }
+    assert set(refused) == policies
 
 
 def test_preflight_passes_when_moveit_wrappers_runnable() -> None:
@@ -160,6 +173,11 @@ def test_preflight_passes_when_moveit_wrappers_runnable() -> None:
 
 
 def _copy_with_kind(src: pathlib.Path, dst_root: pathlib.Path, kind: str) -> None:
+    """Copy a real in-tree manifest into ``dst_root/rskills/`` with only ``kind`` changed.
+
+    The tree ships no WAM or ``ros_service`` manifest; swapping the discriminator on a
+    real VLA / Nav2 manifest keeps every other field a real fixture.
+    """
     text = src.read_text(encoding="utf-8")
     old = next(line for line in text.splitlines() if line.startswith("kind:"))
     dst = dst_root / "rskills" / src.parent.name / "rskill.yaml"
@@ -220,9 +238,10 @@ def test_preflight_policy_only_palette_without_fit_fails(tmp_path: pathlib.Path)
 def test_preflight_no_policy_in_palette_skips(tmp_path: pathlib.Path) -> None:
     """A wrapper-only palette has no policy to pair, so the gate stays a no-op."""
     _copy_with_kind(_NAV2, tmp_path, "ros_action")
-    _preflight_reward_vram_fit(
+    refused = _preflight_reward_vram_fit(
         repo_root=tmp_path,
         description=_panda_mobile(),
         reward_manifest_path=str(_ROBOMETER),
         gpu_budget_gb=8.0,
     )
+    assert refused == []

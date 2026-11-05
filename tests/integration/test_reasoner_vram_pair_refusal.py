@@ -404,3 +404,54 @@ def test_execute_rskill_refused_when_live_free_vram_is_below_vla_min(
     )
     assert "free right now" in vram_failures[0].evidence_json
     assert not executed, "the goal reached the action server despite the free-VRAM refusal"
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_execute_rskill_refused_when_launch_preflight_refused_it() -> None:
+    """A policy the deploy CLI's preflight refused stays refused at dispatch (#475).
+
+    The two runtime tiers both miss this case: with a VRAM lifecycle peer configured (the
+    object detector, on by default) the live free-VRAM probe is skipped, and the static
+    pair check budgets against the card's TOTAL (8.0 GB here; smolvla + robometer = 7.2 GB
+    with margin fits it). Only ``vram_refused_rskill_ids`` — the launch-time verdict
+    against FREE VRAM — refuses it. The id reaches the node as a ROS parameter read at
+    configure, the way ``deploy_e2e.launch.py`` sets it.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import ExecuteRskillTool, RSkillManifest
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.parameter import Parameter
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    call = ExecuteRskillTool(rskill_id=_VLA_ID, prompt="pick up the teapot", deadline_s=0.0)
+    rclpy.init()
+    try:
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[]),
+            palette=ToolPalette(execute_rskill_ids=frozenset({_VLA_ID})),
+            tick_hz=2.0,
+        )
+        reasoner.set_parameters(
+            [
+                Parameter("vram_refused_rskill_ids", value=[_VLA_ID]),
+                Parameter("vram_lifecycle_peers", value=["openral_ros_image_detector"]),
+            ]
+        )
+        reasoner.trigger_configure()
+        reasoner._reward_manifest = RSkillManifest.from_yaml(str(_ROBOMETER))
+        reasoner._gpu_total_vram_gb = 8.0  # the pair fits the card's total
+        reasoner._manifests_by_id[_VLA_ID] = RSkillManifest.from_yaml(str(_SMOLVLA))
+
+        refused = reasoner._refuse_unfittable_vla(call, traceparent=None)
+        # Control: without the launch verdict the same dispatch passes both runtime tiers.
+        reasoner._vram_refused_rskill_ids = frozenset()
+        passed_without_verdict = not reasoner._refuse_unfittable_vla(call, traceparent=None)
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert refused, "the preflight-refused policy was let through to dispatch"
+    assert passed_without_verdict, "control failed: the runtime tiers refused on their own"
