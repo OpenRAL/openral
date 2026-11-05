@@ -13,7 +13,7 @@ _Drives a lifecycle node through `configure` → `activate` after `ros2 launch` 
 - `_GOAL_STATES: dict[str, set[str]]` (L44) — per-transition FSM states that mean it landed; `inactive` is not evidence an ACTIVATE advanced.
 - `_POLL_SLICE_S: float` (L47) — slice of the `change_state` wait between `get_state` reads.
 - `_STATE_TO_TRANSITION: dict[str, list[int]]` (L36) — `--target` → the `Transition` constants to drive in order (`inactive` = CONFIGURE; `active` = CONFIGURE then ACTIVATE).
-- `main() -> int` (L146) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`.
+- `main() -> int` (L146) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`. Exits 0 only when the final `get_state` reads `--target` (1 otherwise, an unreadable state included): `deploy_e2e.launch.py` gates Nav2 on the HAL autostart's exit code.
 
 ### `tools/profile_policy_load.py`
 _One-shot wall-time breakdown of a single policy load. Drives `openral_sim.factory.make_policy` against an in-tree rSkill manifest and prints a phase-by-phase summary. Use when a launch or `openral sim run` is slow to first action, to see where the seconds go._
