@@ -39,6 +39,8 @@ from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
 
+from openral_hal import _openamr_platform_assets, _openarm_description_assets
+
 __all__ = ["OPENAMR_V2_URDF", "compose_openamr_v2_walls_mjcf", "ensure_openamr_v2_mjcf"]
 
 #: The vendored, xacro-expanded URDF (repo checkout layout, as ``panda_mobile``).
@@ -202,10 +204,10 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
 def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
     """Return the cached OpenAMRobot 2.0 MJCF path, building it on first use.
 
-    The cache key hashes the URDF and this module's source, so an edited
-    URDF or builder never serves a stale twin. The entry (MJCF plus mesh aliases) is
-    built in a staging dir and renamed into place, so concurrent workers never read
-    a partial one.
+    The cache key hashes the URDF, this module's source and both mesh-clone pins,
+    so an edited URDF or builder, or a bumped pin, never serves a stale twin. The
+    entry (MJCF plus mesh aliases) is built in a staging dir and renamed into place,
+    so concurrent workers never read a partial one.
 
     Raises:
         ROSConfigError: The URDF is missing, a mesh cannot be resolved, or
@@ -221,7 +223,9 @@ def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
         raise ROSConfigError(f"openamr_v2 URDF not found: {urdf_path}")
     urdf_xml = urdf_path.read_text()
     builder = Path(__file__).read_bytes()  # an edited builder never serves a stale twin
-    key = hashlib.sha256(builder + urdf_xml.encode()).hexdigest()[:16]
+    # The mesh aliases point into the pinned clones: a bumped pin is a new entry.
+    pins = f"{_openarm_description_assets._PINNED_SHA}:{_openamr_platform_assets._PINNED_SHA}"
+    key = hashlib.sha256(builder + urdf_xml.encode() + pins.encode()).hexdigest()[:16]
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
     out = base / "openamr_v2" / key / "openamr_v2.xml"
     if out.is_file():
