@@ -1,6 +1,6 @@
 """Unit tests for the LLM wire payload: OpenAI shape, wait tool, slug collisions.
 
-Covers three wire-level fixes:
+Covers the wire-level contracts:
 
 1. The OpenAI ``tools`` conversion must not leak Anthropic's ``input_schema``
    key alongside ``parameters`` (strict endpoints 400 on it; lenient ones
@@ -9,19 +9,23 @@ Covers three wire-level fixes:
    to ``openral_core.WaitTool``.
 3. Slug-colliding rskill ids (``a.b`` vs ``a_b``) get distinct tool names and
    the decoder resolves each back to the right skill.
+4. A lifecycle transition may only target a node in the palette.
 5. Tool schemas carry no Pydantic docstrings or titles, which held the
-   ``franka_panda`` palette at 44K tokens and broke Cosmos3-Edge (#440).
+   ``franka_panda`` palette at 44K tokens and broke Cosmos3-Edge (#440), and
+   every field the LLM fills carries its own description instead.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import cast, get_args
 
 import pytest
+import yaml
 from openral_core import (
     LifecycleTransitionTool,
+    ReasonerToolCall,
     RobotDescription,
     RSkillAction,
     RSkillManifest,
@@ -31,10 +35,12 @@ from openral_core.exceptions import ROSReasonerInvalidPlan
 from openral_reasoner.palette import RSkillToolEntry, ToolPalette, build_tool_palette
 from openral_reasoner.tool_use import (
     _decode_tool_payload,
+    _llm_schema,
     _skill_id_to_tool_name,
     _tool_palette_to_anthropic_tools,
     _tool_palette_to_openai_tools,
 )
+from pydantic import BaseModel
 
 
 def _entry(rskill_id: str) -> RSkillToolEntry:
@@ -164,8 +170,12 @@ def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
     characters (about 2.7 per token on that tokenizer) so the test needs no
     model download; it fails when the palette regrows past ~30K tokens.
     """
+    # Validate only the franka manifests, so an unrelated broken manifest fails its own
+    # tests rather than this one.
     manifests = [
-        RSkillManifest.from_yaml(str(p)) for p in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml"))
+        RSkillManifest.from_yaml(str(p))
+        for p in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml"))
+        if "franka_panda" in (yaml.safe_load(p.read_text()).get("embodiment_tags") or [])
     ]
     robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
     palette = build_tool_palette(
@@ -182,3 +192,22 @@ def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
     assert '"title": "' not in wire
     assert "Attributes:" not in wire and "Example:" not in wire
     assert len(wire) < 80_000
+
+
+@pytest.mark.parametrize("model", get_args(get_args(ReasonerToolCall)[0]), ids=lambda m: m.__name__)
+def test_every_reasoner_tool_field_is_described(model: type[BaseModel]) -> None:
+    """Field descriptions are the only field guidance the LLM gets (docstrings are stripped).
+
+    Covers every ``ReasonerToolCall`` variant and the models nested in it
+    (``GraspTargetRef``, ``GroundedSubtask``, ...). The ``tool`` discriminator is
+    exempt: it is a constant the decoder fills from the tool name.
+    """
+    schema = _llm_schema(model)
+    nodes = [schema, *schema.get("$defs", {}).values()]
+    missing = [
+        name
+        for node in nodes
+        for name, prop in node.get("properties", {}).items()
+        if name != "tool" and not prop.get("description")
+    ]
+    assert not missing, f"{model.__name__}: fields without a description: {missing}"

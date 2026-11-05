@@ -14946,6 +14946,7 @@ class _ReasonerToolBase(BaseModel):
     rationale: str = Field(
         default="",
         validation_alias=AliasChoices("rationale", "rational"),
+        description="Optional one line on why you chose this call; recorded on the trace.",
     )
     """Optional one-line LLM rationale recorded on the reasoner span and trace.
 
@@ -15122,12 +15123,40 @@ class ExecuteRskillTool(_ReasonerToolBase):
     """
 
     tool: Literal["execute_rskill"] = "execute_rskill"
-    rskill_id: str = Field(min_length=1)
-    prompt: str = ""
-    goal_params_json: str = ""
-    deadline_s: float = Field(default=0.0, ge=0.0)
-    patience_s: float | None = Field(default=None, gt=0.0)
-    progress_tolerance: float | None = Field(default=None, ge=0.0)
+    rskill_id: str = Field(min_length=1, description="Id of an installed skill.")
+    prompt: str = Field(
+        default="",
+        description=(
+            "Task instruction for the skill, e.g. 'put the red cube in the blue bowl'. A VLA "
+            "skill conditions on it."
+        ),
+    )
+    goal_params_json: str = Field(
+        default="",
+        description=(
+            "JSON object of the skill's typed goal parameters, as a string. Leave empty for "
+            "VLA skills, which ignore it."
+        ),
+    )
+    deadline_s: float = Field(
+        default=0.0, ge=0.0, description="Hard deadline in seconds; 0 = the skill's default."
+    )
+    patience_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Execution ceiling in seconds: short for a quick grab, long for a precise "
+            "insertion. Null = the reward model's default."
+        ),
+    )
+    progress_tolerance: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "Override the reward model's plateau tolerance when progress is noisy. "
+            "Null = its default."
+        ),
+    )
     grasp_target: GraspTargetRef | None = Field(
         default=None,
         description=(
@@ -15168,8 +15197,10 @@ class ReloadGstPipelineTool(_ReasonerToolBase):
     """
 
     tool: Literal["reload_gst_pipeline"] = "reload_gst_pipeline"
-    sensor_id: str = Field(min_length=1)
-    pipeline_yaml: str = Field(min_length=1)
+    sensor_id: str = Field(min_length=1, description="Name of the camera to reconfigure.")
+    pipeline_yaml: str = Field(
+        min_length=1, description="Full YAML body of the new SensorReaderConfig."
+    )
 
 
 class LifecycleTransitionTool(_ReasonerToolBase):
@@ -15192,8 +15223,12 @@ class LifecycleTransitionTool(_ReasonerToolBase):
     """
 
     tool: Literal["lifecycle_transition"] = "lifecycle_transition"
-    node: str = Field(min_length=1)
-    transition: Literal["configure", "activate", "deactivate", "cleanup"]
+    node: str = Field(
+        min_length=1, description="Fully-qualified ROS node name, e.g. '/openral/hal/so100'."
+    )
+    transition: Literal["configure", "activate", "deactivate", "cleanup"] = Field(
+        description="Lifecycle transition to request."
+    )
 
 
 class EmitPromptTool(_ReasonerToolBase):
@@ -15219,9 +15254,15 @@ class EmitPromptTool(_ReasonerToolBase):
     """
 
     tool: Literal["emit_prompt"] = "emit_prompt"
-    target_topic: str = Field(min_length=2, pattern=r"^/")
-    text: str = Field(min_length=1)
-    metadata_json: str = ""
+    target_topic: str = Field(
+        min_length=2,
+        pattern=r"^/",
+        description="Absolute topic to publish on, e.g. '/openral/prompt'.",
+    )
+    text: str = Field(min_length=1, description="Prompt text to publish.")
+    metadata_json: str = Field(
+        default="", description="Optional JSON object of metadata; empty when none."
+    )
 
 
 class RecallObjectTool(_ReasonerToolBase):
@@ -15242,8 +15283,10 @@ class RecallObjectTool(_ReasonerToolBase):
     """
 
     tool: Literal["recall_object"] = "recall_object"
-    query: str = Field(min_length=1)
-    limit: int = Field(default=5, ge=1, le=100)
+    query: str = Field(
+        min_length=1, description="Name or description of the object, e.g. 'the red mug'."
+    )
+    limit: int = Field(default=5, ge=1, le=100, description="Maximum ranked matches.")
 
 
 class ResolvePlaceTool(_ReasonerToolBase):
@@ -15260,7 +15303,10 @@ class ResolvePlaceTool(_ReasonerToolBase):
     """
 
     tool: Literal["resolve_place"] = "resolve_place"
-    reference: str = Field(min_length=1)
+    reference: str = Field(
+        min_length=1,
+        description="Place, room or agent reference, e.g. 'the kitchen' or 'where I was standing'.",
+    )
 
 
 class LocateInViewTool(_ReasonerToolBase):
@@ -15304,9 +15350,17 @@ class LocateInViewTool(_ReasonerToolBase):
     """
 
     tool: Literal["locate_in_view"] = "locate_in_view"
-    query: str = Field(min_length=1)
-    camera: str = ""
-    detector: str = ""
+    query: str = Field(
+        min_length=1,
+        description=(
+            "Concrete object noun(s), comma-separated for several ('cup, bowl'). A collective "
+            "phrase such as 'everything' or 'the objects on the table' matches nothing."
+        ),
+    )
+    camera: str = Field(default="", description="Camera to look through; empty = the default.")
+    detector: str = Field(
+        default="", description="Locator alias; leave blank for the deployment default."
+    )
 
 
 class QuerySceneTool(_ReasonerToolBase):
@@ -15338,8 +15392,11 @@ class QuerySceneTool(_ReasonerToolBase):
     """
 
     tool: Literal["query_scene"] = "query_scene"
-    question: str = Field(min_length=1)
-    camera: str = ""
+    question: str = Field(
+        min_length=1,
+        description="Question about the current view, e.g. 'Has the robot grasped the red mug?'.",
+    )
+    camera: str = Field(default="", description="Camera to look through; empty = the default.")
 
 
 class QueryTaskProgressTool(_ReasonerToolBase):
@@ -15370,8 +15427,8 @@ class QueryTaskProgressTool(_ReasonerToolBase):
     """
 
     tool: Literal["query_task_progress"] = "query_task_progress"
-    window_s: float = Field(gt=0.0, default=8.0)
-    task: str = ""
+    window_s: float = Field(gt=0.0, default=8.0, description="Seconds of recent frames to assess.")
+    task: str = Field(default="", description="Task instruction override; empty = the active goal.")
 
 
 MemorySection: TypeAlias = Literal[
@@ -15412,11 +15469,18 @@ class MemoryWriteTool(_ReasonerToolBase):
     """
 
     tool: Literal["memory_write"] = "memory_write"
-    op: Literal["add", "update", "supersede", "delete"]
-    section: MemorySection
-    content: str = ""
-    importance: float = Field(default=0.5, ge=0.0, le=1.0)
-    target: str | None = None
+    op: Literal["add", "update", "supersede", "delete"] = Field(
+        description="'add' a new fact; 'update', 'supersede' or 'delete' act on 'target'."
+    )
+    section: MemorySection = Field(description="Memory section to edit.")
+    content: str = Field(
+        default="", description="The fact as one distilled line; required unless deleting."
+    )
+    importance: float = Field(default=0.5, ge=0.0, le=1.0, description="Salience, 0 to 1.")
+    target: str | None = Field(
+        default=None,
+        description="Existing entry to act on; required for update, supersede and delete.",
+    )
 
     @model_validator(mode="after")
     def _check_op_fields(self) -> MemoryWriteTool:
@@ -15444,9 +15508,9 @@ class MemorySearchTool(_ReasonerToolBase):
     """
 
     tool: Literal["memory_search"] = "memory_search"
-    query: str = Field(min_length=1)
-    section: MemorySection | None = None
-    limit: int = Field(default=5, ge=1, le=100)
+    query: str = Field(min_length=1, description="Keywords to search the archive for.")
+    section: MemorySection | None = Field(default=None, description="Optional section filter.")
+    limit: int = Field(default=5, ge=1, le=100, description="Maximum results.")
 
 
 # The smallest actionable unit is a verb applied to exactly ONE
@@ -15508,8 +15572,20 @@ class GroundedSubtask(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    object_ref: str = Field(min_length=1)
-    text: str = Field(min_length=1)
+    object_ref: str = Field(
+        min_length=1,
+        description=(
+            "The ONE specific object or place this subtask acts on, e.g. 'milk'. Never a "
+            "quantifier or generic plural such as 'all objects'."
+        ),
+    )
+    text: str = Field(
+        min_length=1,
+        description=(
+            "Instruction the skill receives; must name object_ref, e.g. 'pick up the milk and "
+            "put it in the basket'."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_grounded(self) -> GroundedSubtask:
@@ -15574,8 +15650,13 @@ class DecomposeMissionTool(_ReasonerToolBase):
     """
 
     tool: Literal["decompose_mission"] = "decompose_mission"
-    subtasks: list[GroundedSubtask] = Field(min_length=1)
-    target_task_id: str = ""
+    subtasks: list[GroundedSubtask] = Field(
+        min_length=1, description="Ordered subtasks, one specific object each."
+    )
+    target_task_id: str = Field(
+        default="",
+        description="Active task id to subdivide, e.g. 't2'; empty replaces the whole queue.",
+    )
 
     def rendered_subtasks(self) -> list[str]:
         """The ordered subtask instruction strings for ``MissionState``."""

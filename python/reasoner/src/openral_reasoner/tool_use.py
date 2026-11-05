@@ -26,6 +26,8 @@ allowed at this process boundary.
 from __future__ import annotations
 
 import base64
+import copy
+import functools
 import hashlib
 import json
 import os
@@ -1008,47 +1010,75 @@ def _format_skill_tool_description(entry: RSkillToolEntry) -> str:
     return " ".join(parts)
 
 
+# JSON Schema keywords whose value is a map of name -> subschema / one subschema /
+# a list of subschemas. ``_llm_schema`` recurses only through these, so a field
+# named ``title`` or a ``default`` / ``enum`` value carrying a ``title`` key is
+# never touched.
+_SUBSCHEMA_MAPS = ("properties", "$defs", "patternProperties", "dependentSchemas")
+_SUBSCHEMA_ONE = (
+    "items",
+    "additionalProperties",
+    "not",
+    "if",
+    "then",
+    "else",
+    "contains",
+    "propertyNames",
+)
+_SUBSCHEMA_LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
+
+
+def _strip_titles(node: object) -> None:
+    """Drop every Pydantic ``title`` from a JSON Schema tree, in place."""
+    if not isinstance(node, dict):
+        return
+    node.pop("title", None)
+    for key in _SUBSCHEMA_MAPS:
+        for sub in node.get(key, {}).values():
+            _strip_titles(sub)
+    for key in _SUBSCHEMA_ONE:
+        _strip_titles(node.get(key))
+    for key in _SUBSCHEMA_LISTS:
+        for sub in node.get(key, []):
+            _strip_titles(sub)
+
+
+@functools.cache
+def _llm_schema_cached(model: type[BaseModel]) -> dict[str, Any]:
+    schema = model.model_json_schema()
+    schema.pop("description", None)
+    for definition in schema.get("$defs", {}).values():
+        definition.pop("description", None)
+    _strip_titles(schema)
+    return schema
+
+
 def _llm_schema(model: type[BaseModel]) -> dict[str, Any]:
     """``model.model_json_schema()`` minus what only a Python reader needs.
 
     Pydantic copies each model's docstring into the schema as its
     ``description`` and adds a ``title`` to every node. Both ride along on
     every tool of every tick, and a docstring is written for developers
-    (``Attributes:``, ``Example:``, design-note references), not the LLM: the
-    tool's own ``description`` and the per-field descriptions are the
-    LLM-facing text. Shipping them made each per-skill tool ~9.4K characters,
-    a 44K-token ``franka_panda`` palette, and Cosmos3-Edge tool-call
-    runaways (issue #440). Field descriptions are kept.
+    (``Attributes:``, ``Example:``, design-note references), not the LLM.
+    Shipping them made each per-skill tool ~9.4K characters, a 44K-token
+    ``franka_panda`` palette, and Cosmos3-Edge tool-call runaways (issue #440).
+    What the LLM needs to know about a field lives in its
+    ``Field(description=...)``, which is kept; every field of a reasoner tool
+    must carry one (enforced in ``tests/unit/test_tool_use_wire_payload.py``).
+
+    Built once per model class; each call returns a fresh copy, since callers
+    splice per-skill properties into it.
 
     >>> from openral_core import ExecuteRskillTool
     >>> s = _llm_schema(ExecuteRskillTool)
     >>> "title" in s or "description" in s or "description" in s["$defs"]["GraspTargetRef"]
     False
-    >>> "description" in s["properties"]["grasp_target"]
+    >>> "description" in s["properties"]["patience_s"]
     True
+    >>> s is _llm_schema(ExecuteRskillTool)
+    False
     """
-    schema = model.model_json_schema()
-
-    def strip(node: object) -> None:
-        # Recurse only through schema keywords, so a field named ``title`` or a
-        # ``default`` / ``enum`` value carrying a ``title`` key is left alone.
-        if not isinstance(node, dict):
-            return
-        node.pop("title", None)
-        for key in ("properties", "$defs"):
-            for sub in node.get(key, {}).values():
-                strip(sub)
-        for key in ("items", "additionalProperties", "not"):
-            strip(node.get(key))
-        for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
-            for sub in node.get(key, []):
-                strip(sub)
-
-    schema.pop("description", None)
-    for definition in schema.get("$defs", {}).values():
-        definition.pop("description", None)
-    strip(schema)
-    return schema
+    return copy.deepcopy(_llm_schema_cached(model))
 
 
 def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, object]]:  # noqa: PLR0912  # reason: a flat one-branch-per-optional-tool-group table is clearer than nesting
