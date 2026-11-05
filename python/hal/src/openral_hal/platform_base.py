@@ -148,12 +148,18 @@ class PlatformBaseHAL:
             raise ROSRuntimeError("PlatformBaseHAL.read_state() while not connected.")
         (x, y, yaw), arrival = self._fresh()
         vx, vy, _, _, _, wz = self.base_twist
+        # Odometry twist is in the body frame; base_x/base_y are odom-frame coordinates,
+        # so their rates are the body velocity rotated by yaw.
+        c, s = math.cos(yaw), math.sin(yaw)
+        age_s = max(time.monotonic() - arrival, 0.0)
         return JointState(
             name=list(self.description.base_joints or []),
             position=[x, y, yaw],
-            velocity=[vx, vy, wz],
+            velocity=[c * vx - s * vy, s * vx + c * vy, wz],
             effort=[0.0, 0.0, 0.0],
-            stamp_ns=int(arrival * 1e9),
+            # Wall clock, as every HAL stamps JointState; arrival stays monotonic for
+            # the staleness check.
+            stamp_ns=time.time_ns() - int(age_s * 1e9),
         )
 
     def send_action(self, action: Action) -> None:

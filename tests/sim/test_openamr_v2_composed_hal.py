@@ -156,11 +156,18 @@ def test_whole_robot_row_is_split_by_name(hal: ComposedHAL) -> None:
 def test_a_held_joint_refuses_to_move(hal: ComposedHAL) -> None:
     names = [j.name for j in hal.description.joints]
     row = list(hal.read_state().position)
+    before = list(hal.read_state().position)
     row[names.index("lift_joint")] = 0.3
+    row[names.index("left_joint1")] += 0.4
     with pytest.raises(ROSConfigError, match="no command"):
         hal.send_action(
             Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[row])
         )
+    # The refusal comes before any part moves: the arm keeps its pose.
+    after = hal.read_state().position
+    assert after[names.index("left_joint1")] == pytest.approx(
+        before[names.index("left_joint1")], abs=1e-3
+    )
 
 
 def test_estop_stops_every_part_and_raises(hal: ComposedHAL) -> None:

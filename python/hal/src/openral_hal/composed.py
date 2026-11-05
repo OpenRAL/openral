@@ -118,7 +118,7 @@ class HeldJointsHAL:
     def read_state(self) -> JointState:
         """The declared positions, stamped now."""
         return JointState(
-            stamp_ns=time.monotonic_ns(),
+            stamp_ns=time.time_ns(),  # wall clock, as every HAL stamps JointState
             name=[j.name for j in self.description.joints],
             position=list(self._positions),
             velocity=[0.0] * len(self._positions),
@@ -328,7 +328,7 @@ class ComposedHAL:
             for slot in group:
                 for i, sub in self._split(slot):
                     by_part.setdefault(i, []).append(sub)
-            for i, subs in by_part.items():
+            for i, subs in sorted(by_part.items(), key=lambda kv: self._actuates(kv[0])):
                 for sub in subs:
                     self._parts[i].send_action(
                         sub.model_copy(update={"tick_group_size": len(subs)})
@@ -336,9 +336,16 @@ class ComposedHAL:
             self._slot_group.commit(group, applied=applied)
             return
         self._slot_group.admit(action)
-        for i, sub in self._split(action):
+        for i, sub in sorted(self._split(action), key=lambda pair: self._actuates(pair[0])):
             self._parts[i].send_action(sub)
         self._slot_group.commit_tick(action)
+
+    def _actuates(self, i: int) -> bool:
+        """Sort key: held parts (validation only) dispatch before parts that move.
+
+        A held part's refusal then raises before any part has applied its share.
+        """
+        return not isinstance(self._parts[i], HeldJointsHAL)
 
     def _split(self, action: Action) -> list[tuple[int, Action]]:
         mode = action.control_mode

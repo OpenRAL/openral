@@ -86,6 +86,10 @@ def test_state_is_the_odometry_pose(rig: tuple[Any, PlatformBaseHAL, Any, list[A
     assert state.position == pytest.approx([1.5, -0.5, 0.7])
     assert hal.base_twist[0] == pytest.approx(0.2)
     assert hal.base_twist[5] == pytest.approx(0.1)
+    # Joint rates are odom-frame: body vx=0.2 at yaw 0.7 splits across base_x/base_y.
+    assert state.velocity == pytest.approx([0.2 * math.cos(0.7), 0.2 * math.sin(0.7), 0.1])
+    # Wall-clock stamp (the lifecycle republisher's domain), within a second of now.
+    assert abs(state.stamp_ns - time.time_ns()) < 1_000_000_000
     _spin(node, 0.6)
     with pytest.raises(ROSPerceptionStale):
         hal.read_state()  # odometry stopped: stale, never the last value forever
