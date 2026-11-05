@@ -1906,11 +1906,21 @@ class IsaacManifestScene(IsaacSceneBase):
         # it). Read after placement, a base_frame that IS a URDF link (SO-101 `base`)
         # returned the spawn pose, so _world_from_base applied the spawn twice.
         self._root_to_base = self._link_offset(self._spec.get("base_frame"))
-        # The lidar frame in the root frame, read at the import pose for the same reason.
-        if self._lidar is not None and self._lidar.get("parent_frame"):
-            self._root_to_lidar = self._link_offset(self._lidar["parent_frame"]) @ mount_matrix(
-                self._lidar.get("static_transform_xyz_rpy")
-            )
+        # The lidar frame in the root frame, read at the import pose for the same reason,
+        # when the lidar rides a link of the imported robot (OpenAMR's lidar_link). A
+        # parent_frame that is no URDF link keeps the base-frame fan at `_scan_z`:
+        # panda_mobile's Isaac model is the arm alone with its root on the floor, so its
+        # manifest mount (base_link - 0.40 m, for RoboCasa's 0.70 m platform) would cast
+        # the fan 0.40 m under the floor.
+        lidar = self._lidar or {}
+        if lidar.get("parent_frame"):
+            try:
+                path: str | None = self._link_prim_path(lidar["parent_frame"])
+            except ValueError:
+                path = None
+            if path is not None:
+                mount = mount_matrix(lidar.get("static_transform_xyz_rpy"))
+                self._root_to_lidar = np.matmul(self._relative_to_root(path), mount)
         from isaacsim.core.utils.stage import get_current_stage
 
         # World.reset() initializes physics before the post-reset teleport.
