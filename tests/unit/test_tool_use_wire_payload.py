@@ -179,10 +179,13 @@ _TOOL_CHAR_BUDGET = int(
 
 
 def _manifests_for(robot_tags: set[str]) -> list[RSkillManifest]:
-    """Validate only the manifests the robot can match, by the same tag rule the palette uses.
+    """Validate only the manifests ``build_tool_palette`` could admit for the robot.
 
-    A manifest that does not parse to a mapping, or names none of the robot's tags,
-    is left to its own tests instead of failing this one.
+    That is every detector, whatever its tags (the palette surfaces continuous and
+    on-demand detectors in the ``locate_in_view`` description before its tag check),
+    plus every other manifest naming one of the robot's tags. A file that does not
+    parse to a mapping, or that the palette would drop anyway, is left to its own
+    tests instead of failing this one.
     """
     manifests = []
     for path in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml")):
@@ -190,8 +193,11 @@ def _manifests_for(robot_tags: set[str]) -> list[RSkillManifest]:
             raw = yaml.safe_load(path.read_text())
         except yaml.YAMLError:
             continue  # not this test's subject; the manifest's own tests report it
-        tags = raw.get("embodiment_tags") if isinstance(raw, dict) else None
-        if isinstance(tags, list) and robot_tags & set(tags):
+        if not isinstance(raw, dict):
+            continue
+        tags = raw.get("embodiment_tags")
+        tag_match = isinstance(tags, list) and bool(robot_tags & set(tags))
+        if raw.get("kind") == "detector" or tag_match:
             manifests.append(RSkillManifest.from_yaml(str(path)))
     return manifests
 
@@ -215,6 +221,9 @@ def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
         memory_available=True,
     )
     assert len(palette.skills) >= 10, "fixture drift: expected the franka VLA + MoveIt skills"
+    assert palette.continuous_detectors and palette.on_demand_detectors, (
+        "fixture drift: the any-tagged detectors must reach the locate_in_view description"
+    )
     wire = json.dumps(_tool_palette_to_openai_tools(palette))
     # A Pydantic ``title`` is a string value; a field named ``title`` maps to a schema object.
     assert '"title": "' not in wire
