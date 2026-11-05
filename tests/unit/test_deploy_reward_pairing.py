@@ -20,13 +20,14 @@ import pathlib
 
 import pytest
 import typer
+import yaml
 from openral_cli.deploy_sim import (
     _DEFAULT_REWARD_RSKILL_DIR,
     _capability_matched_manifests,
     _preflight_reward_vram_fit,
     _resolve_reward_monitor_manifest,
 )
-from openral_core import POLICY_KINDS, RobotDescription
+from openral_core import POLICY_KINDS, RobotDescription, RSkillManifest
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _FRANKA = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
@@ -175,8 +176,8 @@ def test_preflight_passes_when_moveit_wrappers_runnable() -> None:
 def _copy_with_kind(src: pathlib.Path, dst_root: pathlib.Path, kind: str) -> None:
     """Copy a real in-tree manifest into ``dst_root/rskills/`` with only ``kind`` changed.
 
-    The tree ships no WAM or ``ros_service`` manifest; swapping the discriminator on a
-    real VLA / Nav2 manifest keeps every other field a real fixture.
+    Used for policies: the tree ships no WAM manifest, and a WAM obeys the same manifest
+    rules as a VLA, so swapping the discriminator on a real VLA keeps a valid fixture.
     """
     text = src.read_text(encoding="utf-8")
     old = next(line for line in text.splitlines() if line.startswith("kind:"))
@@ -185,15 +186,51 @@ def _copy_with_kind(src: pathlib.Path, dst_root: pathlib.Path, kind: str) -> Non
     dst.write_text(text.replace(old, f'kind: "{kind}"', 1), encoding="utf-8")
 
 
+# Real ROS 2 services of the same backends, for the `ros_service` variants (the tree ships
+# no `ros_service` rSkill): Nav2's costmap clear and move_group's planning service.
+_SERVICES = {
+    _NAV2: ("nav2_msgs", "ClearEntireCostmap", "/global_costmap/clear_entirely_global_costmap"),
+    _MOVEIT_JOINTS: ("moveit_msgs", "GetMotionPlan", "/plan_kinematic_path"),
+}
+
+
+def _copy_wrapper(src: pathlib.Path, dst_root: pathlib.Path, kind: str) -> str:
+    """Copy a real wrapped-ROS manifest as ``kind``; return the interface it wraps.
+
+    ``ros_action`` keeps the manifest as shipped. ``ros_service`` rewires
+    ``ros_integration`` to that backend's real service (``_SERVICES``), so the fixture
+    is a valid service manifest, not an action interface with a service discriminator.
+    """
+    data = yaml.safe_load(src.read_text(encoding="utf-8"))
+    if kind == "ros_service":
+        package, interface_type, interface_name = _SERVICES[src]
+        data["kind"] = "ros_service"
+        data["ros_integration"] = {
+            "package": package,
+            "interface_type": interface_type,
+            "interface_name": interface_name,
+            "default_goal_json": "{}",
+        }
+    dst = dst_root / "rskills" / src.parent.name / "rskill.yaml"
+    dst.parent.mkdir(parents=True)
+    dst.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    manifest = RSkillManifest.from_yaml(str(dst))
+    assert manifest.kind == kind and manifest.ros_integration is not None
+    return manifest.ros_integration.interface_name
+
+
 @pytest.mark.parametrize("policy_kind", ["vla", "wam"])
 @pytest.mark.parametrize("wrapper_kind", ["ros_action", "ros_service"])
 def test_preflight_policy_and_wrapper_kind_matrix(
-    tmp_path: pathlib.Path, policy_kind: str, wrapper_kind: str
+    tmp_path: pathlib.Path,
+    policy_kind: str,
+    wrapper_kind: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A non-fitting VLA or WAM beside a runnable `ros_action` or `ros_service` skill
-    does not fail the gate."""
+    does not fail the gate, and the preflight names the interface the wrapper needs."""
     _copy_with_kind(_RLDX_RC365, tmp_path, policy_kind)
-    _copy_with_kind(_NAV2, tmp_path, wrapper_kind)
+    interface = _copy_wrapper(_NAV2, tmp_path, wrapper_kind)
     kinds = {m.kind for m in _capability_matched_manifests(tmp_path, _panda_mobile())}
     assert kinds == {policy_kind, wrapper_kind}
     _preflight_reward_vram_fit(
@@ -202,6 +239,8 @@ def test_preflight_policy_and_wrapper_kind_matrix(
         reward_manifest_path=str(_ROBOMETER),
         gpu_budget_gb=8.0,
     )
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"→ {wrapper_kind} {interface}" in out
 
 
 @pytest.mark.parametrize("policy_kind", ["vla", "wam"])
@@ -212,7 +251,7 @@ def test_preflight_ineligible_wrapper_does_not_bypass_gate(
     """A MoveIt wrapper targets arm embodiments, not `panda_mobile`, so the reasoner palette
     rejects it — it must not keep the gate open for a non-fitting policy."""
     _copy_with_kind(_RLDX_RC365, tmp_path, policy_kind)
-    _copy_with_kind(_MOVEIT_JOINTS, tmp_path, wrapper_kind)
+    _copy_wrapper(_MOVEIT_JOINTS, tmp_path, wrapper_kind)
     with pytest.raises(typer.Exit) as exc:
         _preflight_reward_vram_fit(
             repo_root=tmp_path,
@@ -237,7 +276,7 @@ def test_preflight_policy_only_palette_without_fit_fails(tmp_path: pathlib.Path)
 
 def test_preflight_no_policy_in_palette_skips(tmp_path: pathlib.Path) -> None:
     """A wrapper-only palette has no policy to pair, so the gate stays a no-op."""
-    _copy_with_kind(_NAV2, tmp_path, "ros_action")
+    _copy_wrapper(_NAV2, tmp_path, "ros_action")
     refused = _preflight_reward_vram_fit(
         repo_root=tmp_path,
         description=_panda_mobile(),
