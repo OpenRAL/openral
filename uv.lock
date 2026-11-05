@@ -2991,7 +2991,7 @@ so100 = [
 requires-dist = [
     { name = "lerobot", extras = ["feetech"], specifier = ">=0.6.1" },
     { name = "lerobot", extras = ["feetech"], marker = "extra == 'so100'", specifier = ">=0.6.1" },
-    { name = "mujoco", marker = "extra == 'arm-sim'", specifier = ">=3.0" },
+    { name = "mujoco", marker = "extra == 'arm-sim'", specifier = ">=3.8.0" },
     { name = "onnxruntime", marker = "extra == 'arm-sim'", specifier = ">=1.17" },
     { name = "openral-core", editable = "python/core" },
     { name = "openral-sensors", editable = "python/sensors" },
