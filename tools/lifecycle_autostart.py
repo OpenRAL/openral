@@ -229,7 +229,9 @@ def main() -> int:
         print(
             f"lifecycle-autostart: {args.node} reached state={current!r} (target={args.target!r})"
         )
-        return 0
+        # A caller gates on the exit code (deploy_e2e releases Nav2 on 0): only a
+        # confirmed target state is success.
+        return 0 if current == args.target else 1
     finally:
         node.destroy_node()
         rclpy.shutdown()
