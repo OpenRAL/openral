@@ -119,7 +119,7 @@ beside a π0.5 VLA, is in openral-pro `docs/reference/cosmos3-edge-jetson.md`.
 |---|---|---|---|
 | `--gpu-memory-utilization` | 0.90 | 0.15 | On unified memory this is a fraction of the whole board, checked as free at start-up. 0.90 asks a Thor for 110 GiB and refuses to boot next to a resident VLA (`Free memory on device cuda:0 (86.63/122.82 GiB) on startup is less than desired`). |
 | `--kv-cache-memory-bytes` | unset | `4G` | Sizes the KV cache directly (37,440 BF16 tokens), so the utilization above only gates start-up. |
-| `--max-model-len` | 8192 | 32768 | Real palettes are 17K+ tokens (`so100_follower` 17,181; with the read-only query tools 21,357). |
+| `--max-model-len` | 8192 | 32768 | Real palettes are 9–23K tokens (`so100_follower` 9,201; `franka_panda` with the read-only query tools 22,478). Before OpenRAL/openral#440 they were 17–48K. |
 | `--enforce-eager` | on | off | Eager mode exists for 8 GB of VRAM. On Thor, CUDA graphs cost nothing in boot time once the compile cache is warm. On Orin, BF16 with CUDA graphs ran a warm tick in 3.7 s. |
 
 Weights stay BF16. Quantized serving is OpenRAL Pro's: the sidecar appends
@@ -148,9 +148,39 @@ With openral-pro's `cosmos3_serving` module installed, the same run printed
 is largest beside a running VLA (median tick 3.5–4.7 s against 8.2 s for
 BF16); see the openral-pro reference page.
 
-Palettes over ~32K tokens (`franka_panda`: 44,047, or 48,223 with the query
-tools) do not work on Edge at any window. With a 64K window, every serving
-configuration gave 0–2 valid calls out of 8.
+Palettes over ~32K tokens do not work on Edge at any window. Before
+OpenRAL/openral#440, `franka_panda` was 44,047 tokens (48,223 with the query
+tools), and with a 64K window every serving configuration gave 0–2 valid calls
+out of 8. About 90% of each per-skill tool was Pydantic class docstrings and
+`title`s, written for Python readers and repeated on every skill.
+`_tool_palette_to_anthropic_tools` now sends schemas without them (field
+descriptions stay), counted with Edge's tokenizer:
+
+| palette | tools | before | after |
+|---|---|---|---|
+| `so100_follower`, skills only | 9 | 17,185 | 9,201 |
+| `so100_follower` + query tools | 14 | 21,361 | 11,382 |
+| `franka_panda`, skills only | 19 | 44,051 | 20,297 |
+| `franka_panda` + query tools | 24 | 48,227 | 22,478 |
+
+That alone does not make `franka_panda` usable. Live on Thor (vLLM 0.28.0,
+BF16, 64K window, the checkpoint's own sampling, 512-token cap), valid ticks
+out of 20 from openral-pro's `tools/cosmos3_edge_bench.py`:
+
+| prompt | tools | tokens | before | after |
+|---|---|---|---|---|
+| `so100_follower` | 9 | 17K → 9K | 17 | 19 |
+| `so100_follower` + query tools | 14 | 11K | — | 19 |
+| `franka_panda` | 19 | 44K → 20K | 3 | 7 |
+| `franka_panda` + query tools | 24 | 48K → 23K | 2 | 0 |
+| `franka_panda` + query tools, 4 of its 14 skills | 14 | 11K | — | 19 |
+
+Ticks got faster (a franka runaway now stops at 12.5 s, not 18.2 s), but the
+failures are the same whitespace runaways inside the tool-call JSON. They
+follow the number of near-identical skill tools, not the token count: 17K
+tokens with 4 skills decodes, 20K with 14 does not, and the query tools are
+harmless. Temperature 0.6 did not help (1/20 and 2/20 for the query-tool
+palette). Large palettes still need a smaller set of skills per tick.
 
 ## Risks and open questions
 
