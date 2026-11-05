@@ -116,6 +116,7 @@ _DEPLOY_STEMS: list[str] = [
     "libero_object",
     "libero_pnp",
     "openamr_v2_empty",
+    "openamr_v2_walls",
     "openarm_bench",
     "openarm_tabletop",
     "openarm_real_autonomous",

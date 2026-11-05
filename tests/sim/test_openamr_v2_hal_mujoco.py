@@ -203,3 +203,55 @@ def test_a_slot_group_leaving_an_arm_uncommanded_is_refused(hal: OpenAMRv2Mujoco
     with pytest.raises(ROSConfigError, match="right_joint1"):
         for action in group:
             hal.send_action(action)
+
+
+def _room_wall_range(x: float, y: float, heading: float) -> float:
+    """Distance from ``(x, y)`` along ``heading`` to the walled room's inner faces (+/-9.9 m)."""
+    c, s = math.cos(heading), math.sin(heading)
+    hits = [(9.9 * math.copysign(1.0, c) - x) / c] if abs(c) > 1e-9 else []
+    hits += [(9.9 * math.copysign(1.0, s) - y) / s] if abs(s) > 1e-9 else []
+    return min(hits)
+
+
+def test_scan_from_the_lidar_mount_matches_the_walled_room(description: RobotDescription) -> None:
+    """The ray-cast /scan fan rides lidar_link (0.33 m ahead, turned by yaw pi) as the base drives.
+
+    Before the fix the fan was cast from the world origin at heading 0 whatever the
+    base did (the base joints carry no ``sim_joint_name``, so the RoboCasa default
+    names resolved nothing), and its first hit was the robot's own lidar at 0.33 m.
+    """
+    from openral_hal._openamr_v2_assets import compose_openamr_v2_walls_mjcf
+    from openral_sim.backends.robocasa import synthesize_laser_scan_2d
+
+    try:
+        xml, meshdir = compose_openamr_v2_walls_mjcf()
+    except ROSConfigError as exc:  # pinned mesh clone unreachable (offline host)
+        pytest.skip(f"openamr_v2 twin unavailable: {exc}")
+    scene = meshdir.parent / "test_walls_scene.xml"
+    scene.write_text(xml)
+    hal = OpenAMRv2MujocoHAL(description=description, mjcf_path=str(scene))
+    hal.connect()
+    try:
+        for _ in range(60):  # 1.5 m forward
+            hal.send_action(_twist(0.5, 0.0))
+        for _ in range(40):  # then a quarter turn left
+            hal.send_action(_twist(0.0, math.pi / 4))
+        lidar = description.lidar_sensor
+        assert lidar is not None
+        model, data = hal.mujoco_handles()  # type: ignore[misc]  # reason: connected twin
+        ranges = synthesize_laser_scan_2d(
+            model=model,
+            data=data,
+            n_beams=360,
+            max_range_m=lidar.range_max_m,
+            origin_body_name=lidar.parent_frame,
+            mount_xyz_rpy=lidar.static_transform_xyz_rpy,
+        )
+        x, y, yaw = hal.base_pose
+        lx, ly, lyaw = x + 0.33 * math.cos(yaw), y + 0.33 * math.sin(yaw), yaw + math.pi
+        for beam in (0, 90, 180, 270):  # cardinal beams miss the pillars from here
+            angle = math.radians(beam - 180)
+            assert ranges[beam] == pytest.approx(_room_wall_range(lx, ly, lyaw + angle), abs=0.02)
+        assert float(ranges.min()) > 1.0, "a beam hit the robot itself"
+    finally:
+        hal.disconnect()

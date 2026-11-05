@@ -38,7 +38,7 @@ from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
 
-__all__ = ["OPENAMR_V2_URDF", "ensure_openamr_v2_mjcf"]
+__all__ = ["OPENAMR_V2_URDF", "compose_openamr_v2_walls_mjcf", "ensure_openamr_v2_mjcf"]
 
 #: The vendored, xacro-expanded URDF (repo checkout layout, as ``panda_mobile``).
 OPENAMR_V2_URDF: Path = Path(__file__).resolve().parents[4] / "robots/openamr_v2/openamr_v2.urdf"
@@ -244,3 +244,42 @@ def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return str(out)
+
+
+# (name, centre xy, half-extents xy): walls of a 20 m x 20 m room around the
+# spawn pose, plus pillars that break its symmetry so scan matching has one fit.
+_ROOM_WALLS: tuple[tuple[str, tuple[float, float], tuple[float, float]], ...] = (
+    ("wall_east", (10.0, 0.0), (0.1, 10.1)),
+    ("wall_west", (-10.0, 0.0), (0.1, 10.1)),
+    ("wall_north", (0.0, 10.0), (10.1, 0.1)),
+    ("wall_south", (0.0, -10.0), (10.1, 0.1)),
+    ("pillar_a", (6.0, 3.0), (0.3, 0.3)),
+    ("pillar_b", (-4.0, 6.5), (0.5, 0.25)),
+    ("pillar_c", (3.0, -7.0), (0.25, 0.6)),
+)
+_WALL_HEIGHT_M = 1.5
+
+
+def compose_openamr_v2_walls_mjcf() -> tuple[str, Path]:
+    """The twin inside a 20 m walled room with three pillars (``composition`` hook).
+
+    A ground-truth world for odometry, ``/scan`` and SLAM: every wall and pillar
+    is at a known pose (``_ROOM_WALLS``), so a scan or map can be checked against it.
+
+    Returns:
+        ``(xml, meshdir)``: the scene MJCF and the twin's mesh-alias dir.
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim-only dep
+
+    twin = Path(ensure_openamr_v2_mjcf())
+    spec = mujoco.MjSpec.from_file(str(twin))
+    for name, (x, y), (hx, hy) in _ROOM_WALLS:
+        spec.worldbody.add_geom(
+            name=name,
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            pos=[x, y, _WALL_HEIGHT_M / 2],
+            size=[hx, hy, _WALL_HEIGHT_M / 2],
+            rgba=[0.75, 0.62, 0.45, 1.0],
+        )
+    spec.compile()
+    return str(spec.to_xml()), twin.parent / "meshes"

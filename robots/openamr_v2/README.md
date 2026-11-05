@@ -49,6 +49,12 @@ normalised:
   `OpenAMRv2MujocoHAL` drives it. The 20-D action is: 3 planar base joints, the
   lift, then for each arm 7 joints and a gripper. `BODY_TWIST` takes `vx` and
   `wz` only. Run `openral deploy sim --config scenes/deploy/openamr_v2_empty.yaml`.
+- **MuJoCo, walled room:** `scenes/deploy/openamr_v2_walls.yaml` puts the twin in a
+  20 m room with three pillars at known poses and runs SLAM and Nav2. The base is
+  kinematic, so odometry is exact and any map→odom drift is SLAM's error. A 4 m
+  Nav2 goal: map and odom agree within 0.02 m and Nav2 stops at the goal. Before
+  `/scan` published missed beams as `+inf`, the map under-counted travel by ~14 %
+  (3.72 m mapped, 4.31 m driven) and Nav2 overshot, as it did in the Isaac aisle.
 - **Isaac Sim:** run `scenes/deploy/isaac_openamr_v2_warehouse.yaml`, which
   places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`.
 
