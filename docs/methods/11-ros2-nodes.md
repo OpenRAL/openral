@@ -170,6 +170,22 @@ _Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`);
   - `on_shutdown(state) -> TransitionCallbackReturn` (L92) — Forces cleanup (delegates to `on_cleanup`).
 - `main(args=None) -> int` (L122) — Entry point for `ros2 run openral_human_estop forwarder_node`.
 
+### `packages/openral_compliance/openral_compliance/recorder_node.py`
+
+- `OPERATOR_ACTION_TOPIC: str = "/openral/operator_action"` (L75) — Where channels announce who is acting (`openral_msgs/OperatorAction`); the recorder pairs an announcement within `STOP_EXPLAIN_WINDOW_S` with an e-stop reset or a `param_set`.
+- `DISK_CHECK_PERIOD_S: float = 30.0` (L78) — Period of the free-space check on the compliance log's filesystem.
+- `DISK_WARN_FREE_FRACTION: float = 0.2` (L79) — Below this free fraction under the log the recorder warns; it stops the machine only when a write fails.
+- `STOP_EXPLAIN_WINDOW_S: float = 2.0` (L84) — How far apart, either way, a latch and the safety failure that explains it may arrive.
+- `explains(drop_reason, failure_kind) -> bool` (L97) — Whether a `FailureTrigger` of `failure_kind` can cause a `SafetyStatus` latch with `drop_reason`: external e-stop ↔ human/timeout, the kernel's fail-closed input drops ↔ perception, otherwise the matching kind.
+- `class ComplianceRecorderNode(LifecycleNode)` (L148) — Turns failure-bus triggers, safety-status latches/resets, operator actions and lifecycle transitions into `openral_core.ComplianceRecord`s, written to the on-robot `ComplianceLog` and emitted over OTLP. Publishes only a stop (`/openral/estop` + a safety `FailureTrigger`) when a record cannot be written, or on deactivate under `stop_when_inactive`. Parameters `run_mode`, `stop_when_inactive`.
+  - `on_configure(state) -> TransitionCallbackReturn` (L185) — Opens the log (`FAILURE` when it cannot), the failure-bus / safety-status / operator-action subscriptions, the stop publishers and the disk timer.
+  - `on_activate(state) -> TransitionCallbackReturn` (L241) — Starts recording: a `SessionRecord` start plus a `SoftwareInventoryRecord`.
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L252) — Closes the session; with `stop_when_inactive` also publishes the stop.
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L261) — Releases subscriptions, publishers and the timer, and forgets the latch state.
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L280) — Delegates to `on_cleanup`.
+  - `close_session() -> None` (L284) — Idempotent: records a stop or reset still waiting for its cause, then the session end. `main` calls it on SIGINT, where rclpy skips the shutdown transition.
+- `main(args=None) -> int` (L533) — Entry point for `ros2 run openral_compliance recorder_node.py`.
+
 ### `packages/openral_safety_watchdog/openral_safety_watchdog/`
 
 - `estop_qos() -> QoSProfile` (_qos.py L19) — QoS for `/openral/estop`: `RELIABLE` / `VOLATILE` / `KEEP_LAST=10`.
