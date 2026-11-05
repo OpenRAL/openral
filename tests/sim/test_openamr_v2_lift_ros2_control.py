@@ -20,6 +20,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_core import Action, ControlMode, RobotDescription
@@ -57,7 +58,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
         yield
 
 
-def _composite():  # type: ignore[no-untyped-def]  # reason: returns (ComposedHAL, transport class)
+def _composite() -> tuple[Any, Any]:  # (ComposedHAL, RosControlTransport), imported lazily
     """openamr_v2 narrowed to the lift and the left arm, each a stock ``RosControlHAL``."""
     from openral_hal.composed import ComposedHAL
     from openral_hal.ros_control_transport import RosControlTransport
@@ -121,7 +122,7 @@ def test_the_lift_moves_through_lift_controller_beside_the_arm(stack: None) -> N
 
         def _arrived() -> bool:
             got = hal.read_state().position
-            return max(abs(a - b) for a, b in zip(got, target, strict=True)) < 1e-3
+            return bool(max(abs(a - b) for a, b in zip(got, target, strict=True)) < 1e-3)
 
         assert wait_until(spin, _arrived, 10.0), list(hal.read_state().position)
         state = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))
