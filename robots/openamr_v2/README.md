@@ -91,8 +91,16 @@ The base lidar is the RPLIDAR S3 (upstream `real_bringup.launch.py lidar_model:=
 Its datasheet range is 0.05–40 m at 70 % reflectivity (15 m at 10 %, 5 m at 2 %).
 slam_toolbox maps out to its `max_laser_range` (12 m). A return between 12 m and 40 m
 still clears free space out to 12 m (Karto `AddScan`). A beam with no return at all
-(`+inf`) clears nothing. With the 12 m fan clipped at 12 m, the warehouse aisle ahead of
-the spawn had no return inside range, so the first map showed only the side wedges.
+(`+inf`) clears nothing.
+
+In Isaac the lidar sits inside the chassis collision box (`lidar_link` at x 0.33 m,
+z 0.124 m; the box spans x ±0.39 m, z up to 0.197 m). PhysX reports a ray that starts
+inside a shape as a hit at distance 0. The scan used to step 1 mm past each self hit and
+give up after 8 steps, so almost every beam read "no return". In
+`warehouse_multiple_shelves`, 66 of 360 beams returned, which is why the first map
+showed only side wedges and nothing ahead. In `full_warehouse`, no beam returned and
+the map stayed empty. The scan now uses PhysX's every-hit query and drops the robot's own
+hits (`resolve_beam_range`).
 
 ## HALs
 

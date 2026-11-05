@@ -1434,3 +1434,72 @@ def test_openamr_lidar_fan_is_cast_from_its_mount_not_the_base(
     base = scan(None)
     assert float(base[180]) == pytest.approx(3.0)
     assert float(base[0]) == pytest.approx(12.0)
+
+
+def _world_all(inside: str | None, *bodies: tuple[float, str]) -> object:
+    """PhysX's ``raycast_all(start, dir, span, report_fn)`` over bodies at +x distances.
+
+    ``inside`` is a collider the ray STARTS in (PhysX reports it at distance 0, the
+    initial overlap); ``bodies`` are ``(x_from_origin_m, prim_path)`` ahead.
+    """
+    from types import SimpleNamespace
+
+    def raycast_all(start: tuple[float, float, float], _d: object, span: float, report) -> bool:  # type: ignore[no-untyped-def]  # reason: PhysX callback shape
+        if inside is not None:
+            report(SimpleNamespace(distance=0.0, rigid_body=inside, collision=inside))
+        for x, prim in sorted(bodies):
+            distance = x - start[0]
+            if 0.0 <= distance <= span and not report(
+                SimpleNamespace(distance=distance, rigid_body=prim, collision=prim)
+            ):
+                break
+        return True
+
+    return raycast_all
+
+
+def test_a_lidar_inside_the_chassis_collider_still_sees_the_wall(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenAMR's lidar sits inside the chassis collision box (Isaac, 2026-11-05).
+
+    PhysX reports a ray that starts inside a shape as a hit at distance 0. The
+    closest-hit walk stepped 1 mm per self hit and read range_max for the beam (no
+    beam returned in full_warehouse; the SLAM map stayed empty). With every hit
+    reported, the robot's own are dropped and the wall is the range.
+    """
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    def closest_inside(start, _d, span):  # type: ignore[no-untyped-def]  # reason: PhysX shape
+        del start, span
+        return {"hit": True, "distance": 0.0, "rigidBody": "/panda/base_link"}
+
+    stuck = resolve_beam_range(closest_inside, range_min_m=0.05, **_BEAM)
+    assert stuck == pytest.approx(12.0), "the closest-hit walk cannot leave a collider it starts in"
+    got = resolve_beam_range(
+        closest_inside,
+        range_min_m=0.05,
+        raycast_all=_world_all(
+            "/panda/base_link", (0.30, "/panda/wheel_left"), (3.0, "/World/wall")
+        ),
+        **_BEAM,
+    )
+    assert got == pytest.approx(3.0, abs=1e-6)
+
+
+def test_raycast_all_keeps_a_near_world_hit_and_misses_read_range_max(
+    _manifest_scene_mod: object,
+) -> None:
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    near = resolve_beam_range(
+        None,
+        range_min_m=0.05,
+        raycast_all=_world_all("/panda/base_link", (0.25, "/World/toe_kick"), (3.0, "/World/w")),
+        **_BEAM,
+    )
+    assert near == pytest.approx(0.25, abs=1e-6)
+    empty = resolve_beam_range(
+        None, range_min_m=0.05, raycast_all=_world_all("/panda/base_link"), **_BEAM
+    )
+    assert empty == pytest.approx(12.0)

@@ -1482,8 +1482,18 @@ def resolve_beam_range(
     z: float,
     range_min_m: float,
     range_max_m: float,
+    raycast_all: Any = None,
 ) -> float:
     """One lidar beam's range, with the robot's own body skipped by IDENTITY.
+
+    With ``raycast_all(start, dir, span, report_fn)`` (PhysX's every-hit query; the
+    sidecar passes it) the beam is the nearest hit that is not the robot. That is the
+    only correct form when the sensor sits INSIDE one of the robot's colliders, as
+    OpenAMR's lidar does (inside the chassis collision box): PhysX reports a ray
+    starting inside a shape as a hit at distance 0, so the walk below, stepping
+    ``_SCAN_SELF_SKIP_EPS_M`` per self hit, never left the box and read ``range_max_m``
+    for almost every beam (66 of 360 beams returned in warehouse_multiple_shelves,
+    none in full_warehouse, and the SLAM map stayed empty).
 
     Pure: ``raycast_closest(start, dir, span)`` is a PhysX scene-query callable,
     so the walk is testable without a Kit app. Returns Isaac's hit dict
@@ -1526,6 +1536,21 @@ def resolve_beam_range(
     ox, oy = float(origin_xy[0]), float(origin_xy[1])
     travelled = float(range_min_m)
     own_prefix = robot_prim.rstrip("/") + "/"
+    if raycast_all is not None:
+        span = float(range_max_m) - travelled
+        nearest = [span]
+
+        def report(hit: Any) -> bool:  # reason: PhysX SceneQueryHits
+            body = str(getattr(hit, "rigid_body", "") or getattr(hit, "collision", ""))
+            if not (body == robot_prim or body.startswith(own_prefix)):
+                nearest[0] = min(nearest[0], float(hit.distance))
+            return True  # keep reporting every hit along the ray
+
+        if span > 0.0:
+            raycast_all(
+                (ox + travelled * cx, oy + travelled * cy, float(z)), (cx, cy, 0.0), span, report
+            )
+        return min(travelled + nearest[0], float(range_max_m))
     for _ in range(_SCAN_MAX_SELF_SKIPS):
         span = float(range_max_m) - travelled
         if span <= 0.0:
@@ -2326,6 +2351,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 z=z,
                 range_min_m=rmin,
                 range_max_m=rmax,
+                raycast_all=getattr(self._scan_query, "raycast_all", None),
             )
         return out
 
