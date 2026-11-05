@@ -943,7 +943,30 @@ def _resolve_reward_monitor_manifest(
     return str(target_path.resolve())
 
 
-def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA classification (fit / oom / undeclared) + the three notify branches read clearest inline
+def _runnable_wrapped_ros_skills(matched: list[RSkillManifest]) -> list[RSkillManifest]:
+    """Capability-matched wrapped-ROS rSkills that pass every reasoner check runnable pre-launch.
+
+    Mirrors the reasoner's ``on_configure`` seed for ``kind: ros_action``/``ros_service``
+    (``ReasonerNode._maybe_seed_palette_from_search_paths``): the capability / role /
+    license palette (already applied to ``matched``), a ``ros_integration`` block and the
+    import-deps probe. The state-contract and action-mode filters exempt wrapped-ROS
+    kinds. The one check left — the server advertised on the ROS graph — needs the graph
+    up: Nav2 comes up with this launch, while MoveIt's ``move_group`` and other backends
+    are brought up by the operator, so the reasoner applies it at ``on_configure`` and
+    logs any skill it drops.
+    """
+    from openral_sim.policy_deps import filter_importable_manifests
+
+    return filter_importable_manifests(
+        [
+            m
+            for m in matched
+            if m.kind in {"ros_action", "ros_service"} and m.ros_integration is not None
+        ]
+    )
+
+
+def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy classification (fit / oom / undeclared) + the notify branches read clearest inline
     *,
     repo_root: Path,
     description: RobotDescription,
@@ -951,21 +974,24 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
     gpu_budget_gb: float,
     commercial_deployment: bool = False,
 ) -> None:
-    """Fail fast before launch when no VLA can co-reside with the reward model.
+    """Fail fast before launch when the reward model would leave nothing runnable.
 
-    A VLA emits no success signal of its own, so it must run with its reward model
-    resident alongside it. The reasoner enforces this per-VLA at
-    dispatch (``_refuse_unfittable_vla``) — but only *after* ROS is up. This is the
-    pre-LAUNCH gate: build the same capability-matched VLA palette the reasoner
-    will, and run ``openral_core.schemas.assert_vla_reward_fits`` for each VLA
-    against the reward model + the GPU budget.
+    A policy (``kind`` in ``POLICY_KINDS``: VLA or WAM) emits no success signal of its
+    own, so it must run with its reward model resident alongside it. The reasoner
+    enforces this per-policy at dispatch (``_refuse_unfittable_vla``) — but only *after*
+    ROS is up. This is the pre-LAUNCH gate: build the same capability-matched palette
+    the reasoner will, and run ``openral_core.schemas.assert_vla_reward_fits`` for each
+    policy against the reward model + the GPU budget.
 
-    The contract mirrors ``_preflight_palette_deps``: it is advisory per-VLA
-    (the reasoner drops a non-fitting VLA from dispatch anyway) and a HARD gate only
-    when the palette would be empty of *runnable* policies — i.e. **no** matched VLA
-    can dispatch with the reward model resident. In that case the deploy could
-    actuate nothing, so we notify and ``typer.Exit(1)`` before bringing up ROS
-    instead of booting a graph that dispatches a VLA blind or OOMs mid-run.
+    The contract mirrors ``_preflight_palette_deps``: per-policy refusal is advisory
+    (the reasoner refuses a non-fitting or undeclared policy at dispatch anyway). The
+    HARD gate fires only when the *runnable* palette would be empty — **no** matched
+    policy fits beside the reward model **and** no matched wrapped-ROS skill
+    (``ros_action``/``ros_service``) survives the reasoner's eligibility checks
+    (``_runnable_wrapped_ros_skills``). Wrapped-ROS skills need no VRAM and no reward model, so one
+    runnable wrapper keeps the deploy able to act; with none, we notify and
+    ``typer.Exit(1)`` before bringing up ROS instead of booting a graph that dispatches
+    a policy blind or OOMs mid-run.
 
     ``gpu_budget_gb`` is *free* VRAM at launch (nothing of ours is loaded yet), not
     total — so a desktop compositor or a sibling worktree's process holding GBs is
@@ -974,7 +1000,7 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
 
     Skipped (returns) when ``gpu_budget_gb <= 0.0`` (budget unreadable — defer to the
     reasoner's runtime check), when no reward model is active, or when the robot has
-    no capability-matched VLA palette to check.
+    no capability-matched policy to check.
     """
     if gpu_budget_gb <= 0.0 or not reward_manifest_path:
         return
@@ -991,13 +1017,10 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
         )
         raise typer.Exit(code=1) from exc
 
-    vlas = [
-        m
-        for m in _capability_matched_manifests(
-            repo_root, description, commercial_deployment=commercial_deployment
-        )
-        if m.kind in POLICY_KINDS
-    ]
+    matched = _capability_matched_manifests(
+        repo_root, description, commercial_deployment=commercial_deployment
+    )
+    vlas = [m for m in matched if m.kind in POLICY_KINDS]
     if not vlas:
         return
 
@@ -1011,18 +1034,21 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
             oom.append(f"{vla.name}: {exc}")
         except ROSConfigError:
             # min_vram_gb undeclared for the active dtype — the pair cannot be
-            # verified, so the reasoner will refuse this VLA at dispatch too.
+            # verified, so the reasoner will refuse this policy at dispatch too.
             undeclared.append(vla.name)
         else:
             fits.append(f"{vla.name} ({combined:.2f} GB)")
 
-    if not fits:
+    wrappers = [] if fits else _runnable_wrapped_ros_skills(matched)
+
+    if not fits and not wrappers:
         _console.print()
         _console.print(
-            "[red]preflight failed:[/red] no capability-matched VLA can co-reside with "
+            "[red]preflight failed:[/red] no capability-matched policy can co-reside with "
             f"the reward model {reward.name!r} on this GPU "
-            f"({gpu_budget_gb:.2f} GB free at launch) — every paired policy would be "
-            "refused at dispatch, so the deploy could actuate nothing."
+            f"({gpu_budget_gb:.2f} GB free at launch), and no runnable wrapped-ROS skill "
+            "remains — every policy would be refused at dispatch, so the deploy could "
+            "actuate nothing."
         )
         for line in oom:
             _console.print(f"  • too large: {line}")
@@ -1032,32 +1058,40 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
                 f"{undeclared!r}"
             )
         _console.print(
-            "  Remedies: use a smaller-footprint VLA/reward pair or a larger GPU; "
-            "declare min_vram_gb on the VLA manifest(s); or run with "
-            "--no-enable-reward-monitor (accepting the VLA runs without a live reward "
+            "  Remedies: use a smaller-footprint policy/reward pair or a larger GPU; "
+            "declare min_vram_gb on the policy manifest(s); or run with "
+            "--no-enable-reward-monitor (accepting the policy runs without a live reward "
             "signal)."
         )
         raise typer.Exit(code=1)
 
     if oom:
         _console.print(
-            f"[yellow]preflight:[/yellow] {len(oom)} VLA(s) cannot fit beside the reward "
-            f"model {reward.name!r} in {gpu_budget_gb:.2f} GB free and will be refused at "
-            "dispatch:"
+            f"[yellow]preflight:[/yellow] {len(oom)} policy(ies) cannot fit beside the "
+            f"reward model {reward.name!r} in {gpu_budget_gb:.2f} GB free and will be "
+            "refused at dispatch:"
         )
         for line in oom:
             _console.print(f"  • {line}")
     if undeclared:
         _console.print(
-            f"[yellow]preflight:[/yellow] {len(undeclared)} VLA(s) do not declare "
+            f"[yellow]preflight:[/yellow] {len(undeclared)} policy(ies) do not declare "
             "min_vram_gb for their active dtype, so the reward pairing cannot be "
             f"verified and the reasoner will refuse them while a reward model is active "
             f": {undeclared!r}"
         )
-    _console.print(
-        f"[green]preflight:[/green] {len(fits)} VLA(s) fit beside reward "
-        f"{reward.name!r} in {gpu_budget_gb:.2f} GB free: {fits!r}"
-    )
+    if fits:
+        _console.print(
+            f"[green]preflight:[/green] {len(fits)} policy(ies) fit beside reward "
+            f"{reward.name!r} in {gpu_budget_gb:.2f} GB free: {fits!r}"
+        )
+    else:
+        _console.print(
+            f"[yellow]preflight:[/yellow] no policy fits beside reward {reward.name!r} in "
+            f"{gpu_budget_gb:.2f} GB free; launching with "
+            f"{len(wrappers)} runnable wrapped-ROS skill(s) only: "
+            f"{[m.name for m in wrappers]!r}"
+        )
 
 
 def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resolve sequence (robot_id → manifest → per-feature slam/nav2/octomap + sim/real hal_mode gating); splitting hurts readability

@@ -207,8 +207,13 @@ gpu_total_gb, margin_gb=0.5)` raises `ROSConfigError` (undeclared) or
 `_refuse_unfittable_vla` drops a non-fitting VLA from the palette, and the
 runner re-checks before `from_pretrained` as defense-in-depth. The deploy CLI
 adds a **pre-launch** preflight (`_preflight_reward_vram_fit`, torch-free
-`nvidia-smi` probe) that hard-exits only when *no* capability-matched VLA
-fits — **`deploy sim` / `deploy run` only**, not `benchmark` / `sim run`.
+`nvidia-smi` probe) that hard-exits only when *no* capability-matched policy
+(VLA or WAM) fits **and** no runnable wrapped-ROS skill remains. A
+`ros_action`/`ros_service` skill (Nav2, MoveIt, …) needs no VRAM and no reward
+model, so one that passes the reasoner's palette checks keeps the launch open; the
+reasoner still drops it at `on_configure` if its server is not on the ROS graph.
+Policies that do not fit are still refused at dispatch. The gate runs in **`deploy sim` / `deploy run` only**, not in
+`benchmark` / `sim run`.
 
 **Why.** A VLA without a reward model is blind to its own success, so it should
 never run alone. Sizes are knowable from the manifests; an oversized pair should
