@@ -58,6 +58,31 @@ normalised:
 - **Isaac Sim:** run `scenes/deploy/isaac_openamr_v2_warehouse.yaml`, which
   places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`.
 
+## Head camera
+
+The head camera is a ZED Mini (`head_zed` depth + `top` RGB, the key OpenArm rSkills
+read as `observation.images.top`) with OpenArm's intrinsics, on upstream's head mount
+(`head_camera_link`, on its bracket above the lift carriage, pitched 30° down). OpenArm's
+own measured mount cannot carry over. The arm bases sit on the lift carriage as on the
+OpenArm body, so the same mount relative to the arms puts the camera inside upstream's
+Getac tablet: their centres are 1.5 cm apart, and every depth ray hit the tablet. The
+view is therefore not OpenArm's: about 13 cm higher, and pitched 30° down instead of
+65.6°. An OpenArm rSkill sees its workspace from another angle than it was trained on.
+`tests/unit/test_openamr_v2_head_zed.py` checks the intrinsics, the TF/sim agreement,
+and that no pixel of the view lands on the robot.
+
+## Costmap clearing
+
+`scenes/deploy/openamr_v2_walls_clearing.yaml` adds two boxes that sink out of the
+lidar plane about 80 s into the run (sim time).
+- **Box 0** has the east wall behind it. Once it was gone, the beam returned off the
+  wall at 10 m, and Nav2 cleared its cells in both costmaps (100 → 0).
+- **Box 1** is on a bearing with nothing within the lidar's 12 m range. Its beams now
+  read `+inf`, which Nav2 discards, so its cells stayed lethal.
+
+A real lidar behaves the same way: an obstacle that vanishes in front of open space is
+not cleared until a return passes through its cells.
+
 ## HALs
 
 - **sim:** `OpenAMRv2MujocoHAL` drives one MJCF of the whole robot. In Isaac,

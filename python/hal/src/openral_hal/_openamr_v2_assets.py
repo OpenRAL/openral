@@ -18,8 +18,9 @@ once per URDF revision and caches the result under
   finger kp 30 kv 0.2). The lift takes that file's ``position_lifter`` kv and
   forcerange with a stiffer kp (see ``_LIFT_KP``). The base gains are stiff
   tracking gains for a kinematic base, not motor data.
-* add the mimic-finger equality, the head and wrist cameras on the URDF optical
-  frames, and a visual-only floor.
+* add the mimic-finger equality, the wrist cameras on the URDF optical frames,
+  and a visual-only floor. The head ZED is spliced by the generic camera rig
+  from the manifest's ``sim_placement`` (OpenArm's mount).
 
 Robot geoms collide with the world but not with each other (``contype`` 2 /
 ``conaffinity`` 1), as in the bare OpenArm twin. Self-collision is the safety
@@ -163,7 +164,6 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
     # Optical frames are REP-103 (z forward, y down); a MuJoCo camera looks
     # down -z with +y up, so a half-turn about x maps one onto the other.
     for camera, frame_body in (
-        ("head", "head_camera_optical_frame"),
         ("wrist_left", "left_wrist_camera_optical_frame"),
         ("wrist_right", "right_wrist_camera_optical_frame"),
     ):
@@ -260,11 +260,27 @@ _ROOM_WALLS: tuple[tuple[str, tuple[float, float], tuple[float, float]], ...] = 
 _WALL_HEIGHT_M = 1.5
 
 
-def compose_openamr_v2_walls_mjcf() -> tuple[str, Path]:
+# A transient box: 2 m tall on a vertical slide, pulled by a joint spring towards a
+# rest 3 m below the floor through heavy damping (time constant damping / stiffness
+# = 90 s), so it stands in the lidar plane while the graph comes up and leaves it
+# ~80 s of sim time after connect: a costmap obstacle that disappears. A spring, not
+# gravity: the deploy twin runs with gravity off (robot.yaml hal.sim params).
+_TRANSIENT_HALF = (0.1, 0.1, 1.0)
+_TRANSIENT_REST_M, _TRANSIENT_STIFFNESS, _TRANSIENT_DAMPING = -3.0, 10.0, 900.0
+
+
+def compose_openamr_v2_walls_mjcf(
+    sinking_boxes: list[list[float]] | None = None,
+) -> tuple[str, Path]:
     """The twin inside a 20 m walled room with three pillars (``composition`` hook).
 
     A ground-truth world for odometry, ``/scan`` and SLAM: every wall and pillar
-    is at a known pose (``_ROOM_WALLS``), so a scan or map can be checked against it.
+    is at a known pose (``_ROOM_WALLS``), so a scan or a map can be checked against it.
+
+    Args:
+        sinking_boxes: ``[x, y]`` centres of 0.2 m x 0.2 m x 2 m boxes that start
+            standing and sink through the floor, leaving the lidar plane ~80 s of
+            sim time after connect: obstacles a costmap must clear.
 
     Returns:
         ``(xml, meshdir)``: the scene MJCF and the twin's mesh-alias dir.
@@ -280,6 +296,24 @@ def compose_openamr_v2_walls_mjcf() -> tuple[str, Path]:
             pos=[x, y, _WALL_HEIGHT_M / 2],
             size=[hx, hy, _WALL_HEIGHT_M / 2],
             rgba=[0.75, 0.62, 0.45, 1.0],
+        )
+    for i, (x, y) in enumerate(sinking_boxes or ()):
+        body = spec.worldbody.add_body(name=f"sinking_box_{i}", pos=[x, y, _TRANSIENT_HALF[2]])
+        body.add_joint(
+            name=f"sinking_box_{i}_z",
+            type=mujoco.mjtJoint.mjJNT_SLIDE,
+            axis=[0, 0, 1],
+            stiffness=[_TRANSIENT_STIFFNESS, 0.0, 0.0],
+            springref=_TRANSIENT_REST_M,
+            damping=[_TRANSIENT_DAMPING, 0.0, 0.0],
+            range=[_TRANSIENT_REST_M, 0.0],
+            limited=mujoco.mjtLimited.mjLIMITED_TRUE,
+        )
+        body.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=list(_TRANSIENT_HALF),
+            mass=1.0,
+            rgba=[0.85, 0.25, 0.2, 1.0],
         )
     spec.compile()
     return str(spec.to_xml()), twin.parent / "meshes"
