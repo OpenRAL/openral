@@ -237,7 +237,7 @@ def test_scan_from_the_lidar_mount_matches_the_walled_room(description: RobotDes
         for _ in range(40):  # then a quarter turn left
             hal.send_action(_twist(0.0, math.pi / 4))
         lidar = description.lidar_sensor
-        assert lidar is not None
+        assert lidar is not None and lidar.range_max_m is not None
         model, data = hal.mujoco_handles()  # type: ignore[misc]  # reason: connected twin
         ranges = synthesize_laser_scan_2d(
             model=model,
