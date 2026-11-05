@@ -1377,3 +1377,49 @@ def test_droid_followers_track_the_measured_leader(
     assert out[dof_index[g["leader"]]] == pytest.approx(0.7)  # the leader keeps its command
     assert out[dof_index["panda_joint1"]] == pytest.approx(0.7)
     assert target[dof_index[g["followers"][0]["dof"]]] == pytest.approx(0.7)  # a copy
+
+
+def test_openamr_lidar_fan_is_cast_from_its_mount_not_the_base(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenAMR's lidar sits 0.33 m ahead of the base, turned by yaw pi.
+
+    The sidecar cast the fan from the base at base heading while /scan is stamped in
+    the lidar frame, so every return came out mirrored front to back and SLAM mapped
+    forward driving as reverse (Isaac warehouse, 2026-11-05: odom +6.97 m, map -4.72 m).
+    """
+    mod: Any = _manifest_scene_mod
+    manifest = Path(__file__).resolve().parents[2] / "robots" / "openamr_v2" / "robot.yaml"
+    desc = RobotDescription.from_yaml(str(manifest))
+    lidar = _sensor_dict(next(s for s in desc.sensors if s.name == "base_scan"))
+    assert lidar["parent_frame"] == "lidar_link"
+    # lidar_link in the root frame, from the vendored URDF: base_footprint -> base_link
+    # -> lidar_link (0.330, 0, 0.124, yaw pi); the mount itself is identity.
+    root_to_lidar = mod.mount_matrix([0.33, 0.0, 0.124, 0.0, 0.0, np.pi]) @ mod.mount_matrix(
+        lidar["static_transform_xyz_rpy"]
+    )
+    x, y, z, yaw = mod.lidar_world_pose((0.0, 0.0, 0.0, 0.0), root_to_lidar)
+    assert (x, y) == pytest.approx((0.33, 0.0))
+
+    def wall_ahead(start: tuple[float, float, float], d: Any, span: float) -> Any:
+        if d[0] <= 1e-9:
+            return None
+        dist = (3.0 - start[0]) / d[0]
+        return {"hit": True, "distance": dist, "rigidBody": "/wall"} if 0 <= dist <= span else None
+
+    def beam(angle_in_lidar_frame: float) -> float:
+        return float(
+            mod.resolve_beam_range(
+                wall_ahead,
+                robot_prim="/openamr",
+                origin_xy=(x, y),
+                angle_rad=angle_in_lidar_frame + yaw,
+                z=z,
+                range_min_m=0.0,
+                range_max_m=12.0,
+            )
+        )
+
+    # The lidar frame faces backwards: its -pi beam looks along the robot's +x.
+    assert beam(-np.pi) == pytest.approx(3.0 - 0.33)
+    assert beam(0.0) == pytest.approx(12.0)  # behind the robot: nothing

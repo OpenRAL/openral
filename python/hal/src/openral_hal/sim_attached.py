@@ -2433,7 +2433,7 @@ class SimAttachedHAL:
         """Return the 2-D LaserScan range fan, or ``None``.
 
         A non-MuJoCo backend that ray-casts a 2-D lidar (the Isaac scene)
-        surfaces the per-beam ranges (``base_link`` frame, ``angle_min=-π`` →
+        surfaces the per-beam ranges (the lidar's own frame, ``angle_min=-π`` →
         ``angle_max=+π``, the bridge's convention) under the ``"scan"`` obs slot.
         ``SimSensorBridge._compute_scan_ranges`` reads it for ``/scan``. ``None``
         when the backend renders no lidar (MuJoCo backends ray-cast instead).

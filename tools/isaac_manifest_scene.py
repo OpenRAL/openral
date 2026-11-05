@@ -1072,6 +1072,59 @@ def compose_planar(
     return (sx + c * ox - s * oy, sy + s * ox + c * oy, sz, syaw + oyaw)
 
 
+def mount_matrix(xyz_rpy: list[float] | None) -> NDArray[np.float64]:
+    """4x4 pose of a manifest ``static_transform_xyz_rpy`` (ROS fixed-axis rpy); identity for None.
+
+    Example:
+        >>> mount_matrix([0.33, 0.0, 0.1, 0.0, 0.0, 0.0])[:3, 3].tolist()
+        [0.33, 0.0, 0.1]
+    """
+    out = np.eye(4)
+    if not xyz_rpy:
+        return out
+    x, y, z, roll, pitch, yaw = (float(v) for v in xyz_rpy)
+    cr, sr, cp, sp, cy, sy = (
+        np.cos(roll),
+        np.sin(roll),
+        np.cos(pitch),
+        np.sin(pitch),
+        np.cos(yaw),
+        np.sin(yaw),
+    )
+    rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    out[:3, :3] = rz @ ry @ rx
+    out[:3, 3] = (x, y, z)
+    return out
+
+
+def lidar_world_pose(
+    base: tuple[float, float, float, float], root_to_lidar: NDArray[np.float64]
+) -> tuple[float, float, float, float]:
+    """World ``(x, y, z, yaw)`` of a planar lidar fan: the base pose composed with its mount.
+
+    ``base`` is the robot root's world ``(x, y, z, yaw)`` (``compose_planar``);
+    ``root_to_lidar`` the 4x4 lidar frame in the root frame (its link's import pose
+    times the manifest mount). The fan is cast from here and published in the lidar
+    frame, so a mount ahead of the base or turned on it (OpenAMR: 0.33 m ahead, yaw
+    pi) is what the scan's frame_id says. Cast from the base instead, OpenAMR's scan
+    came out mirrored front to back, and SLAM mapped forward driving as reverse.
+
+    Example:
+        >>> import math
+        >>> m = mount_matrix([0.33, 0.0, 0.2, 0.0, 0.0, math.pi])
+        >>> x, y, z, yaw = lidar_world_pose((1.0, 2.0, 0.0, math.pi / 2), m)
+        >>> round(x, 6), round(y, 6), round(z, 6), round(yaw, 6)
+        (1.0, 2.33, 0.2, 4.712389)
+    """
+    bx, by, bz, byaw = base
+    c, s = float(np.cos(byaw)), float(np.sin(byaw))
+    ox, oy, oz = (float(v) for v in root_to_lidar[:3, 3])
+    yaw = float(np.arctan2(root_to_lidar[1, 0], root_to_lidar[0, 0]))
+    return (bx + c * ox - s * oy, by + s * ox + c * oy, bz + oz, byaw + yaw)
+
+
 def look_at_matrix(eye: NDArray[np.float64], target: NDArray[np.float64]) -> NDArray[np.float64]:
     """Rotation whose columns are a camera's x (forward), y (left), z (up) axes aimed at ``target``.
 
@@ -1717,15 +1770,17 @@ class IsaacManifestScene(IsaacSceneBase):
         # holds the live Camera objects keyed by sensor name (built in `build`).
         self._cam_meta: list[dict[str, Any]] = self._plan_cameras()
         self._cameras: dict[str, Any] = {}
-        # 2-D lidar: a PhysX raycast fan from the base produces real /scan ranges
-        # against the scene's obstacles (built in `build` when the manifest
-        # declares a lidar_2d sensor). `_scan_z` is the beam height above the floor
-        # the robot stands on (the spawn z).
+        # 2-D lidar: a PhysX raycast fan produces real /scan ranges against the
+        # scene's obstacles (built in `build` when the manifest declares a lidar_2d
+        # sensor). It is cast from `_root_to_lidar` (the lidar frame in the robot
+        # root frame, read at build); `_scan_z` is the beam height above the floor
+        # the robot stands on, used only when the lidar declares no parent_frame.
         self._lidar: dict[str, Any] | None = next(
             (s for s in robot_spec.get("sensors", []) if s.get("modality") == "lidar_2d"), None
         )
         self._scan_query: Any = None
         self._scan_z = 0.30
+        self._root_to_lidar: NDArray[np.float64] | None = None
         # DOF mapping, resolved post-reset once dof_names is populated.
         self._dof_index: dict[str, int] = {}
         self._arm_dof_idx: list[int] = []
@@ -1851,6 +1906,11 @@ class IsaacManifestScene(IsaacSceneBase):
         # it). Read after placement, a base_frame that IS a URDF link (SO-101 `base`)
         # returned the spawn pose, so _world_from_base applied the spawn twice.
         self._root_to_base = self._link_offset(self._spec.get("base_frame"))
+        # The lidar frame in the root frame, read at the import pose for the same reason.
+        if self._lidar is not None and self._lidar.get("parent_frame"):
+            self._root_to_lidar = self._link_offset(self._lidar["parent_frame"]) @ mount_matrix(
+                self._lidar.get("static_transform_xyz_rpy")
+            )
         from isaacsim.core.utils.stage import get_current_stage
 
         # World.reset() initializes physics before the post-reset teleport.
@@ -2215,10 +2275,11 @@ class IsaacManifestScene(IsaacSceneBase):
             )
 
     def _scan_ranges(self) -> NDArray[np.float32] | None:
-        """A 2-D LaserScan range fan via PhysX raycasts from the base.
+        """A 2-D LaserScan range fan via PhysX raycasts from the lidar's mount.
 
-        ``n_channels`` beams over ``[-π, π]`` (bridge convention) in the
-        base_link frame, rotated to world by base yaw; each ray starts at
+        ``n_channels`` beams over ``[-π, π]`` (bridge convention) in the lidar
+        frame the scan is published in (``lidar_world_pose``), or in the base
+        frame at ``_scan_z`` for a lidar with no parent_frame; each ray starts at
         ``range_min_m``. Self-hits (the robot's own body) are skipped by
         identity per beam — see ``resolve_beam_range`` for the resolution
         and the #194 rationale. ``None`` when the manifest declares no lidar.
@@ -2228,8 +2289,12 @@ class IsaacManifestScene(IsaacSceneBase):
         n = int(self._lidar.get("n_channels") or 360)
         rmin = float(self._lidar.get("range_min_m") or 0.0)
         rmax = float(self._lidar.get("range_max_m") or 12.0)
-        bx, by, bz, byaw = compose_planar(self._spawn, self._base_pose)
-        z = bz + float(self._scan_z)
+        base = compose_planar(self._spawn, self._base_pose)
+        if self._root_to_lidar is not None:
+            bx, by, z, byaw = lidar_world_pose(base, self._root_to_lidar)
+        else:
+            bx, by, bz, byaw = base
+            z = bz + float(self._scan_z)
         out = np.empty(n, dtype=np.float32)
         step = 2.0 * np.pi / n
         for i in range(n):
