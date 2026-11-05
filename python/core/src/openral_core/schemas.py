@@ -14939,6 +14939,13 @@ class _ReasonerToolBase(BaseModel):
 
     All variants are ``frozen=True`` and ``extra="forbid"`` so the LLM
     cannot smuggle ad-hoc fields onto the wire.
+
+    **A field's ``Field(description=...)`` is the only text the LLM sees about
+    it**: the reasoner sends tool schemas without class docstrings
+    (``openral_reasoner.tool_use._llm_schema``), and a unit test fails any
+    field without a description. Change a field's meaning there first; each
+    variant's ``Attributes:`` section adds implementation detail (dispatch,
+    validation, ROS wiring) for Python readers and must agree with it.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)

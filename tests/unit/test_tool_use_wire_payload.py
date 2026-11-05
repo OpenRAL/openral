@@ -12,7 +12,8 @@ Covers the wire-level contracts:
 4. A lifecycle transition may only target a node in the palette.
 5. Tool schemas carry no Pydantic docstrings or titles, which held the
    ``franka_panda`` palette at 44K tokens and broke Cosmos3-Edge (#440), and
-   every field the LLM fills carries its own description instead.
+   every field the LLM fills carries its own description instead. The clients
+   render a palette's tools once, not on every tick.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from openral_core import (
 from openral_core.exceptions import ROSReasonerInvalidPlan
 from openral_reasoner.palette import RSkillToolEntry, ToolPalette, build_tool_palette
 from openral_reasoner.tool_use import (
+    AnthropicToolUseClient,
+    OpenAICompatibleToolUseClient,
     _decode_tool_payload,
     _llm_schema,
     _skill_id_to_tool_name,
@@ -161,25 +164,50 @@ def test_lifecycle_transition_outside_palette_node_ids_is_refused() -> None:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+# Cosmos3-Edge's window on a Jetson and what else rides in it, from
+# docs/reference/cosmos3-edge-reasoner.md. Tool JSON tokenizes at 3.27 characters
+# per token on Edge's tokenizer (measured on the so100 and franka palettes).
+_WINDOW_TOKENS = 32_768
+_REPLY_CAP_TOKENS = 512
+_SYSTEM_PROMPT_TOKENS = 3_005
+_TICK_CONTEXT_TOKENS = 2_000  # the per-tick world-state snapshot, generously
+_TOOL_CHARS_PER_TOKEN = 3.27
+_TOOL_CHAR_BUDGET = int(
+    (_WINDOW_TOKENS - _REPLY_CAP_TOKENS - _SYSTEM_PROMPT_TOKENS - _TICK_CONTEXT_TOKENS)
+    * _TOOL_CHARS_PER_TOKEN
+)
+
+
+def _manifests_for(robot_tags: set[str]) -> list[RSkillManifest]:
+    """Validate only the manifests the robot can match, by the same tag rule the palette uses.
+
+    A manifest that does not parse to a mapping, or names none of the robot's tags,
+    is left to its own tests instead of failing this one.
+    """
+    manifests = []
+    for path in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml")):
+        try:
+            raw = yaml.safe_load(path.read_text())
+        except yaml.YAMLError:
+            continue  # not this test's subject; the manifest's own tests report it
+        tags = raw.get("embodiment_tags") if isinstance(raw, dict) else None
+        if isinstance(tags, list) and robot_tags & set(tags):
+            manifests.append(RSkillManifest.from_yaml(str(path)))
+    return manifests
+
+
 def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
-    """The full ``franka_panda`` palette stays well inside a 32K-token window.
+    """The full ``franka_panda`` palette fits Cosmos3-Edge's 32K-token Jetson window.
 
     Before #440 every per-skill tool carried ``ExecuteRskillTool``'s and its
-    ``$defs``' class docstrings plus a ``title`` per node: 168K characters,
-    48K Cosmos3-Edge tokens, and 0-2 valid tool calls in 8. The budget is
-    characters (about 2.7 per token on that tokenizer) so the test needs no
-    model download; it fails when the palette regrows past ~30K tokens.
+    ``$defs``' class docstrings plus a ``title`` per node: 168K characters and
+    48K Edge tokens. The budget is in characters so the test needs no model
+    download. Fitting the window is necessary, not sufficient: Edge still fails
+    on 14 franka skills at 25K tokens (#494).
     """
-    # Validate only the franka manifests, so an unrelated broken manifest fails its own
-    # tests rather than this one.
-    manifests = [
-        RSkillManifest.from_yaml(str(p))
-        for p in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml"))
-        if "franka_panda" in (yaml.safe_load(p.read_text()).get("embodiment_tags") or [])
-    ]
     robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
     palette = build_tool_palette(
-        installed_skills=manifests,
+        installed_skills=_manifests_for(set(robot.capabilities.embodiment_tags)),
         robot_capabilities=robot.capabilities,
         detector_available=True,
         scene_query_available=True,
@@ -191,7 +219,26 @@ def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
     # A Pydantic ``title`` is a string value; a field named ``title`` maps to a schema object.
     assert '"title": "' not in wire
     assert "Attributes:" not in wire and "Example:" not in wire
-    assert len(wire) < 80_000
+    assert len(wire) < _TOOL_CHAR_BUDGET, (
+        f"franka palette is {len(wire)} characters ({len(palette.skills)} skills), over the "
+        f"{_TOOL_CHAR_BUDGET} that fit a 32K window; offer fewer skills per tick (#494) rather "
+        "than raising the budget"
+    )
+
+
+def test_clients_render_tools_once_per_palette() -> None:
+    """A tick reuses the rendered tools; a new palette (registry refresh) re-renders."""
+    first = _palette("OpenRAL/rskill-smolvla-so100-pick-fp16")
+    second = _palette("OpenRAL/rskill-smolvla-so100-place-fp16")
+    openai_client = OpenAICompatibleToolUseClient(model_id="local", base_url="http://127.0.0.1:1")
+    anthropic_client = AnthropicToolUseClient(model_id="claude-opus-4-8", api_key="unused")
+    for client in (openai_client, anthropic_client):
+        tools = client._tools(first)
+        assert client._tools(first) is tools
+        assert client._tools(second) is not tools
+    anthropic_tools = anthropic_client._tools(first)
+    assert anthropic_tools[-1]["cache_control"] == {"type": "ephemeral"}
+    assert sum("cache_control" in t for t in anthropic_tools) == 1
 
 
 @pytest.mark.parametrize("model", get_args(get_args(ReasonerToolCall)[0]), ids=lambda m: m.__name__)
