@@ -9,16 +9,26 @@ Covers three wire-level fixes:
    to ``openral_core.WaitTool``.
 3. Slug-colliding rskill ids (``a.b`` vs ``a_b``) get distinct tool names and
    the decoder resolves each back to the right skill.
+5. Tool schemas carry no Pydantic docstrings or titles, which held the
+   ``franka_panda`` palette at 44K tokens and broke Cosmos3-Edge (#440).
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import cast
 
 import pytest
-from openral_core import LifecycleTransitionTool, RSkillAction, WaitTool
+from openral_core import (
+    LifecycleTransitionTool,
+    RobotDescription,
+    RSkillAction,
+    RSkillManifest,
+    WaitTool,
+)
 from openral_core.exceptions import ROSReasonerInvalidPlan
-from openral_reasoner.palette import RSkillToolEntry, ToolPalette
+from openral_reasoner.palette import RSkillToolEntry, ToolPalette, build_tool_palette
 from openral_reasoner.tool_use import (
     _decode_tool_payload,
     _skill_id_to_tool_name,
@@ -138,3 +148,37 @@ def test_lifecycle_transition_outside_palette_node_ids_is_refused() -> None:
             arguments={"node": "/openral_deadman_watchdog", "transition": "deactivate"},
             palette=palette,
         )
+
+
+# ── 5. Palette size (#440) ───────────────────────────────────────────────────
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
+    """The full ``franka_panda`` palette stays well inside a 32K-token window.
+
+    Before #440 every per-skill tool carried ``ExecuteRskillTool``'s and its
+    ``$defs``' class docstrings plus a ``title`` per node: 168K characters,
+    48K Cosmos3-Edge tokens, and 0-2 valid tool calls in 8. The budget is
+    characters (about 2.7 per token on that tokenizer) so the test needs no
+    model download; it fails when the palette regrows past ~30K tokens.
+    """
+    manifests = [
+        RSkillManifest.from_yaml(str(p)) for p in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml"))
+    ]
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
+    palette = build_tool_palette(
+        installed_skills=manifests,
+        robot_capabilities=robot.capabilities,
+        detector_available=True,
+        scene_query_available=True,
+        task_progress_available=True,
+        memory_available=True,
+    )
+    assert len(palette.skills) >= 10, "fixture drift: expected the franka VLA + MoveIt skills"
+    wire = json.dumps(_tool_palette_to_openai_tools(palette))
+    # A Pydantic ``title`` is a string value; a field named ``title`` maps to a schema object.
+    assert '"title": "' not in wire
+    assert "Attributes:" not in wire and "Example:" not in wire
+    assert len(wire) < 80_000

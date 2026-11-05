@@ -1008,6 +1008,49 @@ def _format_skill_tool_description(entry: RSkillToolEntry) -> str:
     return " ".join(parts)
 
 
+def _llm_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """``model.model_json_schema()`` minus what only a Python reader needs.
+
+    Pydantic copies each model's docstring into the schema as its
+    ``description`` and adds a ``title`` to every node. Both ride along on
+    every tool of every tick, and a docstring is written for developers
+    (``Attributes:``, ``Example:``, design-note references), not the LLM: the
+    tool's own ``description`` and the per-field descriptions are the
+    LLM-facing text. Shipping them made each per-skill tool ~9.4K characters,
+    a 44K-token ``franka_panda`` palette, and Cosmos3-Edge tool-call
+    runaways (issue #440). Field descriptions are kept.
+
+    >>> from openral_core import ExecuteRskillTool
+    >>> s = _llm_schema(ExecuteRskillTool)
+    >>> "title" in s or "description" in s or "description" in s["$defs"]["GraspTargetRef"]
+    False
+    >>> "description" in s["properties"]["grasp_target"]
+    True
+    """
+    schema = model.model_json_schema()
+
+    def strip(node: object) -> None:
+        # Recurse only through schema keywords, so a field named ``title`` or a
+        # ``default`` / ``enum`` value carrying a ``title`` key is left alone.
+        if not isinstance(node, dict):
+            return
+        node.pop("title", None)
+        for key in ("properties", "$defs"):
+            for sub in node.get(key, {}).values():
+                strip(sub)
+        for key in ("items", "additionalProperties", "not"):
+            strip(node.get(key))
+        for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            for sub in node.get(key, []):
+                strip(sub)
+
+    schema.pop("description", None)
+    for definition in schema.get("$defs", {}).values():
+        definition.pop("description", None)
+    strip(schema)
+    return schema
+
+
 def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, object]]:  # noqa: PLR0912  # reason: a flat one-branch-per-optional-tool-group table is clearer than nesting
     """Render the palette as Anthropic ``tools`` schemas.
 
@@ -1036,7 +1079,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
     tools: list[dict[str, object]] = []
 
     if palette.skills:
-        execute_schema = ExecuteRskillTool.model_json_schema()
+        execute_schema = _llm_schema(ExecuteRskillTool)
         per_skill_schema = _drop_property(execute_schema, "rskill_id")
         for entry in palette.skills:
             # When the manifest declares ``goal_params_schema``,
@@ -1075,7 +1118,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "Invoke an installed rSkill. Allowed rskill_id values: "
                     f"{sorted(palette.execute_rskill_ids)!r}."
                 ),
-                "input_schema": ExecuteRskillTool.model_json_schema(),
+                "input_schema": _llm_schema(ExecuteRskillTool),
             },
         )
 
@@ -1107,7 +1150,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
         ),
     ):
         tools.append(
-            {"name": kind, "description": description, "input_schema": cls.model_json_schema()},
+            {"name": kind, "description": description, "input_schema": _llm_schema(cls)},
         )
 
     # The two read-only spatial-memory query tools are surfaced only
@@ -1137,7 +1180,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 {
                     "name": q_kind,
                     "description": q_description,
-                    "input_schema": q_cls.model_json_schema(),
+                    "input_schema": _llm_schema(q_cls),
                 },
             )
 
@@ -1197,7 +1240,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             {
                 "name": "locate_in_view",
                 "description": description,
-                "input_schema": LocateInViewTool.model_json_schema(),
+                "input_schema": _llm_schema(LocateInViewTool),
             },
         )
 
@@ -1221,7 +1264,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "Optionally name a 'camera' to pick a viewpoint; empty uses the default "
                     "camera. No actuation."
                 ),
-                "input_schema": QuerySceneTool.model_json_schema(),
+                "input_schema": _llm_schema(QuerySceneTool),
             },
         )
 
@@ -1244,7 +1287,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "instead. Optionally override 'task'; empty reuses the active goal. "
                     "No actuation."
                 ),
-                "input_schema": QueryTaskProgressTool.model_json_schema(),
+                "input_schema": _llm_schema(QueryTaskProgressTool),
             },
         )
 
@@ -1272,7 +1315,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "transient world state (live poses, battery) — that lives in world state. "
                     "No actuation."
                 ),
-                "input_schema": MemoryWriteTool.model_json_schema(),
+                "input_schema": _llm_schema(MemoryWriteTool),
             },
         )
         tools.append(
@@ -1285,7 +1328,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "e.g. where an object USED to be. Optionally restrict to a 'section'. "
                     "No actuation."
                 ),
-                "input_schema": MemorySearchTool.model_json_schema(),
+                "input_schema": _llm_schema(MemorySearchTool),
             },
         )
 
@@ -1309,7 +1352,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 "again). Use this instead of burning execute_rskill attempts on a task one "
                 "skill cannot finish. No actuation — it only edits the task ledger."
             ),
-            "input_schema": DecomposeMissionTool.model_json_schema(),
+            "input_schema": _llm_schema(DecomposeMissionTool),
         },
     )
     return tools
