@@ -136,21 +136,22 @@ _REPO_ROOT = _resolve_repo_root()
 
 
 def _resolve_rskills_dir() -> str:
-    """The ``rskills/`` tree the reasoner palette is seeded from.
+    """The ``rskills/`` tree the reasoner palette and the skill runner are seeded from.
 
-    Honours ``$OPENRAL_REPO_ROOT`` the way the CLI's ``_repo_root_from`` does: the
+    Honours ``$OPENRAL_REPO_ROOT`` through ``openral_rskill.loader.repo_root_override``,
+    the rule the CLI's ``_repo_root_from`` and the loader's in-tree resolution share: the
     deploy preflights (palette deps, the reward VRAM gate) read that checkout's skills,
-    and a reasoner seeded from another tree could lack the skill that let the gate
-    pass. Only the skill tree moves; ``_REPO_ROOT`` stays this launch's checkout (its
-    ``.venv`` and lifecycle autostart). An override without ``robots/`` + ``rskills/``
-    is ignored here — the CLI already refuses it before launch.
+    and a reasoner seeded from another tree could lack the skill that let the gate pass.
+    Only the skill tree moves; ``_REPO_ROOT`` stays this launch's checkout (its ``.venv``
+    and lifecycle autostart). An invalid override is ignored here — the CLI refuses it
+    before launch.
     """
-    env_root = os.environ.get("OPENRAL_REPO_ROOT")
-    if env_root:
-        candidate = pathlib.Path(env_root).expanduser().resolve()
-        if (candidate / "robots").is_dir() and (candidate / "rskills").is_dir():
-            return str(candidate / "rskills")
-    return str(_REPO_ROOT / "rskills")
+    try:
+        from openral_rskill.loader import repo_root_override
+    except ImportError:  # pragma: no cover  # reason: workspace not on the path
+        return str(_REPO_ROOT / "rskills")
+    override = repo_root_override()
+    return str((override or _REPO_ROOT) / "rskills")
 
 
 _RSKILLS_DIR = _resolve_rskills_dir()

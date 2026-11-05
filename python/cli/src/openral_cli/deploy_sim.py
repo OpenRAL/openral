@@ -355,11 +355,14 @@ def _repo_root_from(start: Path) -> Path:
                 return ancestor
         return None
 
-    env_root = os.environ.get("OPENRAL_REPO_ROOT")
+    from openral_rskill.loader import REPO_ROOT_ENV, repo_root_override
+
+    env_root = os.environ.get(REPO_ROOT_ENV)
     if env_root:
+        override = repo_root_override()
+        if override is not None:
+            return override
         candidate = Path(env_root).expanduser().resolve()
-        if (candidate / "robots").is_dir() and (candidate / "rskills").is_dir():
-            return candidate
         raise ROSConfigError(
             f"OPENRAL_REPO_ROOT={env_root} does not look like an OpenRAL checkout; "
             f"expected {candidate} to contain both robots/ and rskills/."
