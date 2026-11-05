@@ -8687,7 +8687,9 @@ RSkillKind: TypeAlias = Literal[
   ``ExecuteRskill`` policy.
 """
 
-_ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
+ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
+"""Kinds that wrap an existing ROS 2 action / service server: no weights, no VRAM, and
+dispatchable only while their ``ros_integration.interface_name`` is on the ROS graph."""
 # Kinds the policy adapter path runs: a WAM acts exactly like a VLA (it also
 # imagines future frames, which the adapter keeps for itself).
 POLICY_KINDS: frozenset[str] = frozenset({"vla", "wam"})
@@ -9738,7 +9740,7 @@ class RSkillManifest(BaseModel):
                 )
             return self
 
-        if self.kind in _ROS_WRAPPER_KINDS:
+        if self.kind in ROS_WRAPPER_KINDS:
             if self.ros_integration is None:
                 raise ValueError(
                     f"RSkillManifest({self.name!r}): kind={self.kind!r} requires "

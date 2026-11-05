@@ -147,10 +147,11 @@ class TestSingleSkillResolution:
         )
         assert result.exit_code == 1  # franka_panda manifest vs so100 host
         payload = json.loads(result.output)
-        assert (
-            payload["rows"][0]["repo_id"]
-            == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
-        )
+        row = payload["rows"][0]
+        assert row["repo_id"] == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
+        # Loaded from rskills/smolvla-libero (no Hub call): the check reached the
+        # embodiment verdict instead of failing at manifest load.
+        assert row["failure_kind"] == "embodiment_tag"
 
     def test_rskill_uri_scheme_is_stripped(self, so100_robot_yaml: Path) -> None:
         """``<id>`` is normalised before resolution."""

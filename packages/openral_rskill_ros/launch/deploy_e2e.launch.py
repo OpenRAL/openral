@@ -133,7 +133,28 @@ def _resolve_repo_root() -> pathlib.Path:
 
 
 _REPO_ROOT = _resolve_repo_root()
-_RSKILLS_DIR = str(_REPO_ROOT / "rskills")
+
+
+def _resolve_rskills_dir() -> str:
+    """The ``rskills/`` tree the reasoner palette and the skill runner are seeded from.
+
+    Honours ``$OPENRAL_REPO_ROOT`` through ``openral_rskill.loader.repo_root_override``,
+    the rule the CLI's ``_repo_root_from`` and the loader's in-tree resolution share: the
+    deploy preflights (palette deps, the reward VRAM gate) read that checkout's skills,
+    and a reasoner seeded from another tree could lack the skill that let the gate pass.
+    Only the skill tree moves; ``_REPO_ROOT`` stays this launch's checkout (its ``.venv``
+    and lifecycle autostart). An invalid override is ignored here — the CLI refuses it
+    before launch.
+    """
+    try:
+        from openral_rskill.loader import repo_root_override
+    except ImportError:  # pragma: no cover  # reason: workspace not on the path
+        return str(_REPO_ROOT / "rskills")
+    override = repo_root_override()
+    return str((override or _REPO_ROOT) / "rskills")
+
+
+_RSKILLS_DIR = _resolve_rskills_dir()
 
 _VENV_RAL = _REPO_ROOT / ".venv" / "bin" / "openral"
 _RAL_EXECUTABLE = str(_VENV_RAL) if _VENV_RAL.exists() else "openral"
@@ -2514,6 +2535,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         context
     ).lower() in ("1", "true", "yes")
     reward_monitor_manifest = LaunchConfiguration("reward_monitor_manifest").perform(context)
+    # Comma-separated policy ids the CLI's reward VRAM preflight refused at launch (#475).
+    vram_refused_rskill_ids = [
+        rid
+        for rid in LaunchConfiguration("vram_refused_rskill_ids").perform(context).split(",")
+        if rid.strip()
+    ]
     reward_monitor_task = LaunchConfiguration("reward_monitor_task").perform(context)
     reward_monitor_score_window_s = float(
         LaunchConfiguration("reward_monitor_score_window_s").perform(context)
@@ -3216,6 +3243,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # (launch_ros rejects an empty typed array); the reasoner defaults to [].
     if vram_lifecycle_peers:
         reasoner_params["vram_lifecycle_peers"] = vram_lifecycle_peers
+    # Same empty-array rule; the reasoner refuses these at dispatch (#475).
+    if vram_refused_rskill_ids:
+        reasoner_params["vram_refused_rskill_ids"] = [r.strip() for r in vram_refused_rskill_ids]
     # Preload a persisted scene graph as the reasoner's read-only
     # spatial-memory query backend when a path is provided.
     if spatial_memory_path:
@@ -5835,6 +5865,16 @@ def generate_launch_description() -> LaunchDescription:
                 "the in-tree rskills/robometer-4b/rskill.yaml. weights_uri may be "
                 "hf://org/repo or local:///abs/path (a pre-quantized NF4 checkpoint "
                 "loaded directly as 4-bit). Ignored unless enable_reward_monitor."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "vram_refused_rskill_ids",
+            default_value="",
+            description=(
+                "Comma-separated policy rSkill ids the deploy CLI's reward VRAM preflight "
+                "refused (policy + reward model exceed the free VRAM at launch). The "
+                "reasoner refuses them at dispatch. Set by openral deploy sim/run; "
+                "empty = none."
             ),
         ),
         DeclareLaunchArgument(
