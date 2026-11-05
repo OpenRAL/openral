@@ -66,3 +66,12 @@ def test_repo_root_override_requires_both_trees(
     assert loader.intree_repo_root() == _REPO_ROOT
     monkeypatch.delenv(loader.REPO_ROOT_ENV)
     assert loader.intree_repo_root() == _REPO_ROOT
+
+
+def test_local_dir_of_a_hub_id_is_its_in_tree_directory(checkout: Path) -> None:
+    """``resolve_rskill_local_dir`` agrees with ``load_rskill_manifest`` on a Hub id, so
+    ``openral benchmark run`` writes ``eval/`` into ``rskills/smolvla-libero/``."""
+    assert loader.resolve_rskill_local_dir(_SMOLVLA_ID) == (
+        checkout.resolve() / "rskills" / "smolvla-libero"
+    )
+    assert loader.resolve_rskill_local_dir("OpenRAL/rskill-not-in-tree") is None

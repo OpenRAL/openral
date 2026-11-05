@@ -1002,13 +1002,19 @@ def resolve_rskill_local_dir(uri: str) -> Path | None:
 
     Used by ``openral benchmark run`` to write the ``RSkillEvalResult``
     JSON into ``<skill_dir>/eval/<benchmark_id>.json`` regardless of the
-    user's cwd or which URI form they typed. Hub-only references that
-    have no in-tree shim resolve to ``None`` and the caller is expected
-    to fall back to a cwd-relative default.
+    user's cwd or which URI form they typed. A Hub repo id resolves the way
+    ``load_rskill_manifest`` does — to the in-tree manifest whose ``name`` it
+    is — so both agree on which skill directory a Hub id means. Hub-only
+    references resolve to ``None`` and the caller is expected to fall back to
+    a cwd-relative default.
     """
     for candidate in _candidate_local_paths(uri):
         if candidate.is_dir() and (candidate / "rskill.yaml").is_file():
             return candidate.resolve()
+    if "/" in uri:
+        intree_path = _intree_manifest_path_by_name(uri)
+        if intree_path is not None:
+            return intree_path.parent.resolve()
     return None
 
 
