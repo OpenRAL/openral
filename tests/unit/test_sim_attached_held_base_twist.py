@@ -120,3 +120,34 @@ def test_a_grouped_lateral_twist_is_refused_before_the_env_packs_it(
     with pytest.raises(ROSConfigError, match="differential base"):
         hal.send_action(_grip(0.5, **common))
     assert env.stepped == []
+
+
+def test_estop_reports_the_base_stopped(rig: tuple[SimAttachedHAL, _PackingSim]) -> None:
+    hal, _env = rig
+    hal.send_action(_twist(0.3, 0.0, 0.2))
+    hal.idle_step()
+    assert hal.base_twist[0] == pytest.approx(0.3)
+    hal.estop()
+    assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+class _PersistentHoldSim(_PackingSim):
+    """A backend whose idle_action hands back its own persistent hold vector."""
+
+    def __init__(self, n_joints: int) -> None:
+        super().__init__(n_joints)
+        self.hold = np.zeros(_DIM, dtype=np.float32)
+
+    def idle_action(self) -> NDArray[np.float32]:
+        return self.hold
+
+
+def test_a_held_twist_never_writes_into_the_backends_hold_vector() -> None:
+    description = RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
+    env = _PersistentHoldSim(len(description.joints))
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+    hal.send_action(_twist(0.3, 0.0, 0.2))
+    hal.idle_step()
+    assert env.stepped[-1][-3:].tolist() == pytest.approx([0.3, 0.0, 0.2])
+    assert env.hold.tolist() == [0.0] * _DIM  # the backend's own vector is untouched

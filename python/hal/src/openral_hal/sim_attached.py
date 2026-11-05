@@ -1800,6 +1800,7 @@ class SimAttachedHAL:
             )
         held = self._live_held_twist()
         if held is not None:
+            idle_action = idle_action.copy()  # never write into a backend's own hold vector
             idle_action[-3:] = held  # a held /cmd_vel setpoint keeps driving the base
         stepped = self._step_and_cache(idle_action, source="idle_step")
         if stepped:
@@ -2215,6 +2216,7 @@ class SimAttachedHAL:
         """Latch e-stop. Subsequent send_action calls are dropped."""
         self._estop_latched = True
         self._held_twist = None
+        self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # /odom: the base is stopped
         self._pending_action_key = None
         self._pending_actions.clear()
 
