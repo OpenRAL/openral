@@ -1115,6 +1115,24 @@ def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list[LaunchDesc
     ]
 
 
+def _after_hal_active(
+    hal_autostart: ExecuteProcess, entity: LaunchDescriptionEntity
+) -> RegisterEventHandler:
+    """Launch ``entity`` once the HAL's poll-based autostart exits 0 (HAL read ACTIVE).
+
+    A process exit is a local launch event. An ``OnStateTransition`` on the HAL rides
+    its ``transition_event`` topic instead, which a launch subscription that discovery
+    has not matched yet misses: on 2026-11-05 a deploy left the HAL active and Nav2
+    never launched. A non-zero exit (HAL never reached ACTIVE) launches nothing.
+    """
+    return RegisterEventHandler(
+        OnProcessExit(
+            target_action=hal_autostart,
+            on_exit=lambda event, _ctx: [entity] if event.returncode == 0 else [],
+        )
+    )
+
+
 def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProcess:
     """Drive ``/<node_name>`` to ACTIVE with the poll-based ``tools/lifecycle_autostart.py``.
 
@@ -3934,27 +3952,26 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     hal_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
     from openral_hal.sim_bringup import hal_transition_timeout_s
 
-    autostart.append(
-        ExecuteProcess(
-            cmd=[
-                sys.executable,
-                hal_autostart_path,
-                "--node",
-                f"/{hal_node_name}",
-                "--target",
-                "active",
-                "--service-timeout-s",
-                "60.0",
-                # Derived from the scene, not fixed: a sidecar backend boots
-                # inside ``on_configure`` and a measured cold Isaac Sim boot
-                # runs past the old 300 s literal. See
-                # ``openral_hal.sim_bringup.hal_transition_timeout_s``.
-                "--transition-timeout-s",
-                hal_transition_timeout_s(deploy_config),
-            ],
-            output="log",
-        )
+    hal_autostart = ExecuteProcess(
+        cmd=[
+            sys.executable,
+            hal_autostart_path,
+            "--node",
+            f"/{hal_node_name}",
+            "--target",
+            "active",
+            "--service-timeout-s",
+            "60.0",
+            # Derived from the scene, not fixed: a sidecar backend boots
+            # inside ``on_configure`` and a measured cold Isaac Sim boot
+            # runs past the old 300 s literal. See
+            # ``openral_hal.sim_bringup.hal_transition_timeout_s``.
+            "--transition-timeout-s",
+            hal_transition_timeout_s(deploy_config),
+        ],
+        output="log",
     )
+    autostart.append(hal_autostart)
 
     # robot_state_publisher: when robot.yaml carries an ``assets.urdf`` ref, launch
     # ``robot_state_publisher`` so the per-link arm + sensor TF chain lands on ``/tf``
@@ -4231,20 +4248,20 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # base_link to odom" and the lifecycle bond fails. The HAL
         # publishes that TF only after ``on_activate``, which on a
         # robocasa-kitchen boot lags Nav2's autostart by ~10–20 s.
-        # Gate the Nav2 include on the HAL's transition to ACTIVE
-        # so TF is already streaming when Nav2 sub-nodes wake up.
+        # Gate the Nav2 include on the HAL reaching ACTIVE so TF is
+        # already streaming when Nav2 sub-nodes wake up. The gate is the HAL
+        # autostart helper's clean exit (it exits 0 once get_state reads
+        # active), a local process event. An ``OnStateTransition`` on the HAL
+        # rides its ``transition_event`` topic, which a not-yet-discovered
+        # launch subscription misses: on 2026-11-05 a walled-room deploy left
+        # the HAL active and Nav2 never launched.
         extra_nodes.append(
-            RegisterEventHandler(
-                OnStateTransition(
-                    target_lifecycle_node=hal,
-                    goal_state="active",
-                    entities=[
-                        _build_nav2_include(
-                            robot_yaml, use_sim_time=use_sim_time, slam_backend=slam_backend
-                        )
-                    ],
+            _after_hal_active(
+                hal_autostart,
+                _build_nav2_include(
+                    robot_yaml, use_sim_time=use_sim_time, slam_backend=slam_backend
                 ),
-            ),
+            )
         )
         # reasoner_node seeds its rSkill palette at on_configure (~5 s after launch), long
         # before Nav2 finishes its 15-30 s lifecycle bringup. The graph-availability filter
