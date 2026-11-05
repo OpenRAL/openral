@@ -5,9 +5,10 @@
 # * box 0 at (1.3, -0.3): once it is gone, the beams on its bearing return off the
 #   east wall (~9.6 m), so Nav2's obstacle layer must ray-trace its cells free.
 # * box 1 at (1.18, 0.85): on the 45 deg bearing from the lidar, where the corner is
-#   ~14 m away, past the 12 m range. Once it is gone those beams return nothing and
-#   are published as +inf, which Nav2 discards, so nothing clears its cells: the
-#   one case a real lidar leaves a stale obstacle too.
+#   ~14 m away. With the 12 m A1-class range this was the stale-obstacle case (no
+#   return, +inf, nothing cleared, as on a real lidar). The RPLIDAR S3's 40 m reaches
+#   that corner, so its cells now clear like box 0's (not re-run since the range
+#   change); a beam with nothing inside 40 m would still leave a stale obstacle.
 #
 #   openral deploy sim --config scenes/deploy/openamr_v2_walls_clearing.yaml
 scene:

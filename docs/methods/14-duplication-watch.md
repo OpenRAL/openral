@@ -193,7 +193,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 - **`_connect` / `_rpc` / `_try_ping` (`LocateAnythingDetector` / `QwenSceneVlm`) — `backends/gstreamer/_zmq_sidecar.ZmqSidecarMixin`** (was item 40).
 - **Policy adapter loader seams** — `policies/_policy_loading.load_manifest_for_spec` / `lazy_import_lerobot` and the `_quantization` dtype helpers; see the DRY section.
 - **`NDArrayOrNone` alias** — `look_at_rskill` imports `pose_goal_rskill`'s.
-- **`from_yaml(cls, path)` ×6** — `openral_core.schemas._load_yaml_model`; `SimScene` / `BenchmarkScene` inherit `DeployScene.from_yaml`.
+- **`from_yaml(cls, path)` ×6** — `openral_core.schemas._load_yaml_model`; `SimScene` / `BenchmarkScene` inherit `DeployScene.from_yaml`. `RobotDescription.from_yaml` reads through the same `safe_load` but keeps its own body: it resolves `collision_geometry_imports` from the sibling manifests before validation, which only the file path allows.
 - **`_resolve_cameras` in three perception nodes** — `openral_perception_ros.camera_topics.resolve_camera_topics`.
 - **Hand-built `/openral/cameras/<name>/<kind>` strings at ~40 sites** (sim bridge, sensor leg, world-state `camera_topic_prefix`, deploy launch, Foxglove layout + allowlist, vision-attachment bridge, record profiles, perception/SLAM node defaults) — `openral_core.camera_topic` / `CAMERA_TOPIC_PREFIX` (ADR-0108); `tests/unit/test_camera_topic_layout.py` fails on a new one.
 - **`homogeneous_from_quat_xyz`** — moved from `openral_world_state.object_lift` to `openral_core.geometry`; world-state keeps a thin wrapper.

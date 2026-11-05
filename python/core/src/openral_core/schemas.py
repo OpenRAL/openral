@@ -2645,6 +2645,58 @@ class LinkCollisionGeometry(BaseModel):
         return self
 
 
+class CollisionGeometryImport(BaseModel):
+    """Collision volumes taken from another robot's manifest, renamed onto this robot's links.
+
+    A robot built from another robot (an OpenArm on a mobile platform) reuses that
+    robot's lowered, Safety-WG-reviewed arm geometry instead of a copy that drifts
+    when the source is re-lowered. ``RobotDescription.from_yaml`` resolves it: every
+    ``collision_geometry`` entry of ``robots/<robot>/robot.yaml`` whose ``link_name``
+    is a ``link_map`` key is appended with ``link_name`` renamed to the value. The
+    link frames must be identical in both robots (same joint origins and axes), since
+    the volumes are expressed in them.
+
+    Example:
+        >>> CollisionGeometryImport(robot="openarm", link_map={"openarm_left_link1": "l1"}).robot
+        'openarm'
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    robot: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
+    """Source manifest id: ``robots/<robot>/robot.yaml`` beside this one."""
+    link_map: dict[str, str] = Field(min_length=1)
+    """Source ``link_name`` -> this robot's link; only these links are imported."""
+
+
+def _resolve_collision_geometry_imports(data: dict[str, Any], path: Path) -> dict[str, Any]:
+    """``data`` with every ``collision_geometry_imports`` entry appended, renamed.
+
+    Raises:
+        ValueError: An import names a link its source has no geometry for, or a
+            target link that ``data`` already authors geometry for.
+    """
+    authored = {g.get("link_name") for g in data.get("collision_geometry") or []}
+    out = list(data.get("collision_geometry") or [])
+    for raw in data.get("collision_geometry_imports") or []:
+        imp = CollisionGeometryImport.model_validate(raw)
+        source = RobotDescription.from_yaml(str(path.parent.parent / imp.robot / "robot.yaml"))
+        for src_link, link in imp.link_map.items():
+            if link in authored:
+                raise ValueError(
+                    f"collision_geometry for {link!r} is both authored and imported from "
+                    f"{imp.robot!r}; keep one source"
+                )
+            entries = [g for g in source.collision_geometry if g.link_name == src_link]
+            if not entries:
+                raise ValueError(
+                    f"collision_geometry_imports: robot {imp.robot!r} has no geometry for "
+                    f"link {src_link!r}"
+                )
+            out += [{**g.model_dump(mode="json"), "link_name": link} for g in entries]
+    return {**data, "collision_geometry": out}
+
+
 class FixedAttachment(BaseModel):
     """A rigid, zero-DoF parent→child link attachment in the kinematic tree.
 
@@ -3129,6 +3181,9 @@ class RobotDescription(BaseModel):
     # existing manifests loadable; ``joints`` stays normative for the chain, so
     # URDF/SRDF contribute geometry + ACM only (no dual source of truth).
     collision_geometry: list[LinkCollisionGeometry] = Field(default_factory=list)
+    # Geometry reused from another manifest (``CollisionGeometryImport``), resolved
+    # into ``collision_geometry`` by ``from_yaml``; kept for provenance.
+    collision_geometry_imports: list[CollisionGeometryImport] = Field(default_factory=list)
     allowed_collision_pairs: list[tuple[str, str]] = Field(default_factory=list)
     # Rigid (zero-DoF) links of the kinematic tree that ``joints`` cannot
     # carry — ``joints`` is consumed unfiltered as a DoF vector, so a fixed
@@ -3510,6 +3565,26 @@ class RobotDescription(BaseModel):
         return tuple(out)
 
     @model_validator(mode="after")
+    def _validate_collision_geometry_imports_resolved(self) -> RobotDescription:
+        """Every imported link has geometry: the imports were resolved, not dropped.
+
+        Only ``from_yaml`` can resolve them (it knows the sibling manifests), so a
+        manifest validated from a bare dict would otherwise reach the kernel with no
+        volumes on the imported links. Refused here instead.
+        """
+        have = {g.link_name for g in self.collision_geometry}
+        missing = sorted(
+            {link for imp in self.collision_geometry_imports for link in imp.link_map.values()}
+            - have
+        )
+        if missing:
+            raise ValueError(
+                f"collision_geometry_imports are unresolved for links {missing}; load the "
+                "manifest with RobotDescription.from_yaml, which reads the source manifests"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_force_observer(self) -> RobotDescription:
         """The observer's links and joints, and every torque ceiling, name real ones.
 
@@ -3719,10 +3794,19 @@ class RobotDescription(BaseModel):
             FileNotFoundError: If ``path`` does not exist.
             pydantic.ValidationError: If the YAML fails schema validation.
 
+        ``collision_geometry_imports`` are resolved here, from the sibling manifests
+        beside ``path`` (``CollisionGeometryImport``).
+
         Example:
             >>> # RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
         """
-        return _load_yaml_model(cls, path)
+        from openral_core._safe_yaml import safe_load  # noqa: PLC0415  # reason: deferred
+
+        with open(path, encoding="utf-8") as fh:
+            data = safe_load(fh)
+        if isinstance(data, dict) and data.get("collision_geometry_imports"):
+            data = _resolve_collision_geometry_imports(data, Path(path))
+        return cls.model_validate(data)
 
     def validate_for_e2e_pipeline(self) -> None:
         """Assert this manifest carries every field the e2e ROS graph needs.

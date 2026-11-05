@@ -7,7 +7,7 @@
 #
 #   openral deploy sim --config scenes/deploy/openamr_v2_walls.yaml
 #
-# The lidar (12 m, as the RPLIDAR A1) sees every wall from anywhere in the room.
+# The lidar (40 m, the RPLIDAR S3) sees every wall from anywhere in the room.
 scene:
   id: openamr_v2_walls
 robot_id: openamr_v2
