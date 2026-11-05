@@ -700,6 +700,7 @@ if _ROS2_AVAILABLE:
             self._ros_control_transport: Any = None
             self._interbotix_transport: Any = None
             self._policy_state_pub: Any = None
+            self._policy_state_qos: Any = None
             # Identity of the last ProprioFrame whose policy_state was
             # published. Frames are immutable and freshly constructed per
             # ``env.step`` capture, so publishing only on a NEW frame makes
@@ -1072,7 +1073,7 @@ if _ROS2_AVAILABLE:
                 QoSReliabilityPolicy,
             )
             from sensor_msgs.msg import JointState as RosJointState
-            from std_msgs.msg import Empty, Float32MultiArray, UInt64
+            from std_msgs.msg import Empty, UInt64
 
             control_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.RELIABLE,
@@ -1102,11 +1103,12 @@ if _ROS2_AVAILABLE:
                 )
             self._publisher = self.create_publisher(RosJointState, "~/joint_states", control_qos)
             self._open_urdf_joint_state_pub(RosJointState, control_qos)
-            self._policy_state_pub = self.create_publisher(
-                Float32MultiArray,
-                "/openral/policy_state",
-                control_qos,
-            )
+            # /openral/policy_state is advertised lazily, on the first frame that carries
+            # one (`_publish_policy_state`): the reasoner's palette admits a
+            # `use_world_state_policy_state` skill only while a publisher exists, so an
+            # always-on publisher on a backend that never fills it would admit a skill
+            # whose every dispatch fails (issue #474).
+            self._policy_state_qos = control_qos
             self._action_applied_pub = self.create_publisher(
                 UInt64,
                 "/openral/action_applied",
@@ -1269,6 +1271,7 @@ if _ROS2_AVAILABLE:
             if self._policy_state_pub is not None:
                 self.destroy_publisher(self._policy_state_pub)
                 self._policy_state_pub = None
+            self._policy_state_qos = None
             self._policy_state_last_frame = None
             return TransitionCallbackReturn.SUCCESS
 
@@ -1545,8 +1548,12 @@ if _ROS2_AVAILABLE:
             self._publish_policy_state()
 
         def _publish_policy_state(self) -> None:
-            """Publish the latest frame's policy state, once per new frame."""
-            if self._policy_state_pub is None:
+            """Publish the latest frame's policy state, once per new frame.
+
+            Creates the ``/openral/policy_state`` publisher on the first frame that carries
+            a policy state, so the topic is on the graph only when the backend produces one.
+            """
+            if self._policy_state_qos is None:
                 return
             frame = self._proprio.latest() if self._proprio is not None else None
             # Publish only when the frame is NEW (one publish per env.step
@@ -1559,6 +1566,12 @@ if _ROS2_AVAILABLE:
             ):
                 from std_msgs.msg import Float32MultiArray
 
+                if self._policy_state_pub is None:
+                    self._policy_state_pub = self.create_publisher(
+                        Float32MultiArray,
+                        "/openral/policy_state",
+                        self._policy_state_qos,
+                    )
                 policy_msg = Float32MultiArray()
                 policy_msg.data = list(frame.policy_state)
                 self._policy_state_pub.publish(policy_msg)

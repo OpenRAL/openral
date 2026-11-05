@@ -41,7 +41,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -349,6 +349,12 @@ _SKILL_FAILURE_KIND_NAMES: dict[int, str] = {
 _EXECUTE_SKILL_SERVER_PROBE_S: float = 0.1
 _EXECUTE_SKILL_SERVER_RETRY_S: float = 0.25
 _LIFECYCLE_SERVER_PROBE_S: float = 0.1
+# The HAL advertises this topic only once its backend produces a policy state; a
+# `use_world_state_policy_state` skill enters the palette only while it has a publisher.
+# While such a skill is capability-matched, the publisher's presence is re-checked every
+# _POLICY_STATE_WATCH_S and the palette re-seeded when it appears or goes (#474).
+_POLICY_STATE_TOPIC = "/openral/policy_state"
+_POLICY_STATE_WATCH_S: float = 1.0
 _LOCATE_FAILURE_REASON_MAX = 128
 
 # Reasoner+supervisor design, 2026-05-25 amendment — trigger taxonomy. Maps each failure
@@ -466,6 +472,59 @@ def _action_executable(
     else:
         executable = {ControlMode(m) for m in description.capabilities.supported_control_modes}
     return {ControlMode(m) for m in required} <= executable
+
+
+_StateContractVerdict = Literal[
+    "admit", "assembler", "policy_state", "no_policy_state", "no_assembler", "dim_mismatch"
+]
+
+
+def _state_contract_verdict(
+    manifest: RSkillManifest, n_joints: int, *, policy_state_published: bool
+) -> _StateContractVerdict:
+    """How the palette's state-contract filter treats a skill on an ``n_joints`` robot.
+
+    Pure helper (no ROS spin). Mirrors the skill runner's ``obs["state"]`` selection in
+    ``_make_policy_adapter_skill``. A ``reads_world_state_policy_state`` skill has
+    ``WorldState.policy_state`` read and validated on every step (missing, stale or not
+    ``state_contract.dim`` wide all raise), even when a registered wrapped-layout
+    assembler then overwrites ``obs["state"]``; so it needs a live
+    ``/openral/policy_state`` publisher whatever its layout, and its ``dim`` is never
+    compared with the joint count. A wrapped layout always needs a registered assembler
+    unless the policy state feeds it instead (the runner assembles only for a registered
+    layout, with the ``tf_lookup`` it wires at configure). Any other skill reads the
+    joint vector, so a declared ``dim`` must match ``n_joints``; an unset ``dim`` means
+    "the joint vector", as the runner's warm-up path defaults it.
+
+    Args:
+        manifest: The rSkill manifest.
+        n_joints: The target robot's joint count.
+        policy_state_published: Whether ``/openral/policy_state`` has a publisher.
+
+    Returns:
+        ``"admit"``, ``"assembler"`` or ``"policy_state"`` admit the skill (no
+        constraint or a matching joint vector; a registered assembler builds the state;
+        the runner feeds ``WorldState.policy_state``). ``"no_policy_state"``,
+        ``"no_assembler"`` and ``"dim_mismatch"`` drop it.
+    """
+    if manifest.kind not in POLICY_KINDS:
+        return "admit"
+    sc = manifest.state_contract
+    layout = sc.layout if sc is not None else None
+    reads_policy_state = manifest.reads_world_state_policy_state
+    if reads_policy_state and not policy_state_published:
+        return "no_policy_state"
+    if layout in _WRAPPED_TASK_SPACE_LAYOUTS:
+        # Deferred import keeps the module-load path off the openral_state_adapter tree.
+        from openral_state_adapter import registered_layouts
+
+        if layout in registered_layouts():
+            return "assembler"
+        return "policy_state" if reads_policy_state else "no_assembler"
+    if reads_policy_state:
+        return "policy_state"
+    joint_vector_fits = sc is None or sc.dim is None or sc.dim == n_joints
+    return "admit" if joint_vector_fits else "dim_mismatch"
 
 
 # Minimum seconds between operator-visible (WARNING) execute_rskill feedback
@@ -1085,6 +1144,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # and the one-shot timer that re-probes for it.
         self._execute_server_wait_deadline: float | None = None
         self._execute_server_retry_timer: Any = None
+        # Re-seeds the palette when /openral/policy_state gains or loses its publisher, armed
+        # while a `use_world_state_policy_state` skill is capability-matched (#474). The
+        # flag is the presence the last seed decided on.
+        self._policy_state_watch: Any = None
+        self._policy_state_published_at_seed = False
         # Dispatch-phase watchdog: bounds the send→goal-response window the
         # busy latch opens. rclpy futures never time out on their own, so a
         # runner (or VRAM peer) that dies AFTER the readiness probe but before
@@ -1612,6 +1676,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 timer.cancel()
         self._pending_skill_deadlines.clear()
         self._abandon_execute_server_wait()
+        self._cancel_policy_state_watch()
         if self._execute_rskill_client is not None:
             self._execute_rskill_client.destroy()
             self._execute_rskill_client = None
@@ -2730,71 +2795,85 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # state for state_layout=..., got 10-D``. Pre-filtering at palette seed turns that 5 Hz
         # dispatch failure into a single boot-time warning. Wrapped-ROS skills
         # (``kind: ros_action``/``ros_service``) bypass this — they don't consume
-        # ``observation.state``, so any state_contract on them is informational.
+        # ``observation.state``, so any state_contract on them is informational. A skill
+        # whose manifest sets ``policy_extras.use_world_state_policy_state`` is fed
+        # ``WorldState.policy_state`` instead of the joint vector: it is gated on a live
+        # ``/openral/policy_state`` publisher, not on the joint count (issue #474). The HAL
+        # and the reasoner autostart independently, so a skill dropped for a missing
+        # publisher is re-admitted by ``_watch_for_policy_state`` once one appears, and an
+        # admitted one dropped again if the HAL deactivates and takes its publisher down.
         n_joints = len(description.joints)
+        policy_state_published = self.count_publishers(_POLICY_STATE_TOPIC) > 0
         state_compatible: list[RSkillManifest] = []
         for m in capability_matched:
-            sc = m.state_contract
-            # An unset dim on a raw contract means "the robot's joint vector", as the
-            # runner's warm-up path defaults it. A wrapped layout always goes through the
-            # assembler check below, whether or not it declares a dim.
-            if (
-                m.kind in POLICY_KINDS
-                and sc is not None
-                and (
-                    sc.dim != n_joints
-                    if sc.dim is not None
-                    else sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS
+            verdict = _state_contract_verdict(
+                m, n_joints, policy_state_published=policy_state_published
+            )
+            sc_dim = m.state_contract.dim if m.state_contract is not None else None
+            sc_layout = m.state_contract.layout if m.state_contract is not None else None
+            if verdict == "admit":
+                state_compatible.append(m)
+            elif verdict == "assembler":
+                # The skill_runner injects a live TF lookup at step time so the
+                # manifest-declared bindings resolve against the real /tf graph.
+                self.get_logger().info(
+                    f"palette: admitting rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    f"wrapped task-space layout {sc_layout!r} "
+                    f"(dim={sc_dim}) has a registered assembler "
+                    "in openral_state_adapter. "
+                    "The skill_runner will assemble observation."
+                    "state from live /tf at step time."
                 )
-            ):
-                if sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS:
-                    # admit-with-adapter when the layout's
-                    # assembler is registered in the openral_state_adapter
-                    # registry. The skill_runner injects a live TF lookup
-                    # at step time so the manifest-declared bindings
-                    # resolve against the real /tf graph.
-                    # Defer the import — keeps the reasoner_node
-                    # module-load path off the openral_state_adapter
-                    # tree until we actually consult it.
-                    from openral_state_adapter import registered_layouts
-
-                    if sc.layout in registered_layouts():
-                        self.get_logger().info(
-                            f"palette: admitting rSkill {m.name!r} "
-                            f"(model_family={m.model_family!r}): "
-                            f"wrapped task-space layout {sc.layout!r} "
-                            f"(dim={sc.dim}) has a registered assembler "
-                            "in openral_state_adapter. "
-                            "The skill_runner will assemble observation."
-                            "state from live /tf at step time."
-                        )
-                        state_compatible.append(m)
-                        continue
-                    # Informational drop: the layout is a task-space
-                    # composite the in-tree deploy_sim path doesn't
-                    # synthesise — no assembler is registered. Register
-                    # one under python/state_adapter/src/openral_state_adapter
-                    # /layouts/<layout>.py to admit this rSkill.
-                    self.get_logger().info(
-                        f"palette: skipping rSkill {m.name!r} "
-                        f"(model_family={m.model_family!r}): targets "
-                        f"wrapped task-space layout {sc.layout!r} "
-                        f"(dim={sc.dim}); no assembler registered "
-                        "in openral_state_adapter for this layout. "
-                        "Add one or run via "
-                        "``openral sim run --rskill ...``."
-                    )
-                else:
-                    self.get_logger().warning(
-                        f"palette: dropping rSkill {m.name!r} "
-                        f"(model_family={m.model_family!r}): "
-                        f"state_contract.dim={sc.dim} (layout={sc.layout!r}) "
-                        f"is incompatible with this robot's joint count "
-                        f"({n_joints}). Pick a state-compatible rSkill "
-                        f"for ``deploy sim``."
-                    )
-                continue
-            state_compatible.append(m)
+                state_compatible.append(m)
+            elif verdict == "policy_state":
+                self.get_logger().info(
+                    f"palette: admitting rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    "policy_extras.use_world_state_policy_state feeds it "
+                    f"WorldState.policy_state from {_POLICY_STATE_TOPIC} instead of this "
+                    f"robot's {n_joints}-joint vector; the skill_runner checks that "
+                    f"vector against state_contract.dim={sc_dim} at step time."
+                )
+                state_compatible.append(m)
+            elif verdict == "no_policy_state":
+                self.get_logger().warning(
+                    f"palette: dropping rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    "policy_extras.use_world_state_policy_state needs "
+                    f"WorldState.policy_state, but {_POLICY_STATE_TOPIC} has no "
+                    "publisher (this deployment's HAL backend produces none, or has "
+                    "not published yet). Re-checking every "
+                    f"{_POLICY_STATE_WATCH_S:g} s."
+                )
+            elif verdict == "no_assembler":
+                # Informational drop: the layout is a task-space composite the in-tree
+                # deploy_sim path doesn't synthesise. Register an assembler under
+                # python/state_adapter/src/openral_state_adapter/layouts/<layout>.py
+                # to admit this rSkill.
+                self.get_logger().info(
+                    f"palette: skipping rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): targets "
+                    f"wrapped task-space layout {sc_layout!r} "
+                    f"(dim={sc_dim}); no assembler registered "
+                    "in openral_state_adapter for this layout. "
+                    "Add one or run via "
+                    "``openral sim run --rskill ...``."
+                )
+            else:
+                self.get_logger().warning(
+                    f"palette: dropping rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    f"state_contract.dim={sc_dim} (layout={sc_layout!r}) "
+                    f"is incompatible with this robot's joint count "
+                    f"({n_joints}). Pick a state-compatible rSkill "
+                    f"for ``deploy sim``."
+                )
+        if any(m.reads_world_state_policy_state for m in capability_matched):
+            self._policy_state_published_at_seed = policy_state_published
+            self._arm_policy_state_watch()
+        else:
+            self._cancel_policy_state_watch()
 
         # Action-mode executability filter (deploy-path-aware action-mode palette gate): drop VLA
         # rSkills whose action vector drives a ControlMode the deploy path can't execute. The
@@ -4974,6 +5053,48 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         self._execute_server_retry_timer = self.create_timer(_EXECUTE_SKILL_SERVER_RETRY_S, _retry)
         return True
+
+    def _arm_policy_state_watch(self) -> None:
+        """Re-check ``/openral/policy_state`` every ``_POLICY_STATE_WATCH_S`` (idempotent)."""
+        if self._policy_state_watch is None:
+            self._policy_state_watch = self.create_timer(
+                _POLICY_STATE_WATCH_S, self._watch_for_policy_state
+            )
+
+    def _watch_for_policy_state(self) -> None:
+        """Re-seed the palette when ``/openral/policy_state`` gains or loses its publisher.
+
+        The seed re-arms (or cancels) this watch, so it runs as long as a policy-state skill
+        is capability-matched: a HAL that deactivates destroys its publisher, and the skill
+        must leave the palette before its last sample goes stale under a dispatch.
+        """
+        published = self.count_publishers(_POLICY_STATE_TOPIC) > 0
+        if published == self._policy_state_published_at_seed:
+            return
+        change = "appeared" if published else "disappeared"
+        old_count = len(self._palette.execute_rskill_ids)
+        try:
+            self._maybe_seed_palette_from_search_paths()
+        except Exception as exc:  # reason: a timer callback must not kill the executor
+            self.get_logger().error(
+                f"palette refresh ({_POLICY_STATE_TOPIC} {change}) failed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+            # Settle on the new presence so a failing seed is not retried every second.
+            self._policy_state_published_at_seed = published
+            return
+        self.get_logger().info(
+            f"palette refreshed ({_POLICY_STATE_TOPIC} {change}): "
+            f"{old_count} → {len(self._palette.execute_rskill_ids)} skills",
+        )
+
+    def _cancel_policy_state_watch(self) -> None:
+        """Cancel and destroy the policy-state watch timer, if any."""
+        timer = self._policy_state_watch
+        self._policy_state_watch = None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
 
     def _cancel_execute_server_retry(self) -> None:
         """Cancel and destroy the pending re-probe timer, if any."""

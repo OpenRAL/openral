@@ -4852,10 +4852,7 @@ def _make_policy_adapter_skill(
             sc = getattr(self.manifest, "state_contract", None)
             layout = getattr(sc, "layout", None) if sc is not None else None
             bindings = getattr(sc, "bindings", None) if sc is not None else None
-            use_policy_state = bool(
-                getattr(self.manifest, "policy_extras", {}).get("use_world_state_policy_state")
-            )
-            if use_policy_state:
+            if manifest.reads_world_state_policy_state:
                 raw_policy_state = getattr(world_state, "policy_state", None)
                 if raw_policy_state is None:
                     raise ROSRuntimeError(
