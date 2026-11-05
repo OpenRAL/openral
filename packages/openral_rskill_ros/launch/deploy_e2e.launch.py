@@ -133,7 +133,27 @@ def _resolve_repo_root() -> pathlib.Path:
 
 
 _REPO_ROOT = _resolve_repo_root()
-_RSKILLS_DIR = str(_REPO_ROOT / "rskills")
+
+
+def _resolve_rskills_dir() -> str:
+    """The ``rskills/`` tree the reasoner palette is seeded from.
+
+    Honours ``$OPENRAL_REPO_ROOT`` the way the CLI's ``_repo_root_from`` does: the
+    deploy preflights (palette deps, the reward VRAM gate) read that checkout's skills,
+    and a reasoner seeded from another tree could lack the skill that let the gate
+    pass. Only the skill tree moves; ``_REPO_ROOT`` stays this launch's checkout (its
+    ``.venv`` and lifecycle autostart). An override without ``robots/`` + ``rskills/``
+    is ignored here — the CLI already refuses it before launch.
+    """
+    env_root = os.environ.get("OPENRAL_REPO_ROOT")
+    if env_root:
+        candidate = pathlib.Path(env_root).expanduser().resolve()
+        if (candidate / "robots").is_dir() and (candidate / "rskills").is_dir():
+            return str(candidate / "rskills")
+    return str(_REPO_ROOT / "rskills")
+
+
+_RSKILLS_DIR = _resolve_rskills_dir()
 
 _VENV_RAL = _REPO_ROOT / ".venv" / "bin" / "openral"
 _RAL_EXECUTABLE = str(_VENV_RAL) if _VENV_RAL.exists() else "openral"
