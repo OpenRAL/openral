@@ -9514,7 +9514,8 @@ class RSkillManifest(BaseModel):
     # one value per ``RobotDescription.joints`` entry, in robot.yaml
     # order; or one value per joint the ``action_contract.slots`` name
     # (``openral_rskill._policy_io.slot_state_joint_names``: slot range
-    # order, i.e. the policy's own order), which sets those joints by
+    # order, i.e. the policy's own order; it needs a declared
+    # ``state_contract.dim`` equal to that joint count), which sets those joints by
     # name and holds every other joint (a mobile base, a lift) at its
     # measured position. When the two widths are equal (the slots name
     # every robot joint), the pose is read in robot.yaml order. Sim
