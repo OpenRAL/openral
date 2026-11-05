@@ -371,3 +371,20 @@ _Completion check (2026-10-22): on the reward monitor's success stream (`CriticS
 
 - `class CompletionCheckNode` (L79) — `rclpy.node.Node`; params `success_threshold` (0.6), `cooldown_s` (10.0), `cameras` (`["exterior", "wrist"]`; the launch passes every publishing RGB camera), `settle_s` (0.5), `query_timeout_s` (90.0), `judge` (`scene_vlm` | `reasoner`: the reasoner's model via `build_tool_use_client_from_env`, one `describe_image` on `tiled_jpeg` of the cameras' latest frames; launch `completion_check_judge`, `DeployRuntime.completion_check_judge`), `flip_180` (False; the launch mirrors `OPENRAL_DASHBOARD_FLIP_180`, the reasoner judge's tiles are rotated upright). A worker thread runs one check at a time; a check that raises is logged and the worker takes the next one (#421 review).
 - `main(args=None) -> None` (L312) — Console entry point (installed as `lib/openral_reasoner_ros/completion_check_node.py`); spins on a two-thread `MultiThreadedExecutor`.
+
+### `packages/openral_compliance/openral_compliance/recorder_node.py`
+_Compliance recorder lifecycle node (#467/#468). Turns what the graph already publishes into `openral_core.ComplianceRecord`s: `/openral/failure/<source>` → `FailureRecord`; each `/openral/safety_status` transition into `latched` → `SafetyStopRecord` linked to the safety failure that explains it; each latch clearing → `InterventionRecord(estop_reset)` attributed via `/openral/operator_action`; activate / deactivate → `SessionRecord` start / end plus a `SoftwareInventoryRecord`. Records go to the on-robot log (#469) and out as OTLP log records. Not on the actuation path; the one thing it publishes is a stop when a record cannot be written._
+
+- const `OPERATOR_ACTION_TOPIC = "/openral/operator_action"` (L75) — Where channels announce who is acting (`openral_msgs/OperatorAction`).
+- const `DISK_CHECK_PERIOD_S = 30.0` (L78) — Period of the free-space check under the compliance log.
+- const `DISK_WARN_FREE_FRACTION = 0.2` (L79) — Below this free fraction the recorder warns (it stops when writes fail).
+- const `STOP_EXPLAIN_WINDOW_S = 2.0` (L84) — How far apart a latch and the safety failure that explains it may arrive, either way; also the window for matching an `OperatorAction` to a reset.
+- `explains(drop_reason: int, failure_kind: int) -> bool` (L97) — Whether a `FailureTrigger` kind can be the cause of a latch with this `SafetyStatus` drop reason (external e-stop ← human/timeout; fail-closed input drops ← perception; otherwise kinds must match).
+- `class ComplianceRecorderNode(LifecycleNode)` (L148) — Params `run_mode` (`"sim"`/`"hardware"`, for the `SessionRecord`) and `stop_when_inactive` (real hardware: deactivating the recorder stops the machine). Only an ACTIVE node records.
+  - `on_configure(state) -> TransitionCallbackReturn` (L185) — Opens the compliance log (refuses to configure when it cannot) and the failure-bus, safety-status and operator-action subscriptions.
+  - `on_activate(state) -> TransitionCallbackReturn` (L241) — Opens the session and records the software inventory.
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L252) — Stops recording and closes the session; with `stop_when_inactive`, publishes the stop.
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L261) — Closes the session, releases subscriptions/publishers and forgets the latch state.
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L280) — Closes an open session, then cleans up.
+  - `close_session() -> None` (L284) — Records a stop still waiting for its cause, then the session's end; stops recording. Idempotent; `main` calls it on SIGINT, where rclpy skips the shutdown transition.
+- `main(args: list[str] | None = None) -> int` (L533) — Entry point for `ros2 run openral_compliance recorder_node.py`; configures observability, spins, and closes the session on exit.
