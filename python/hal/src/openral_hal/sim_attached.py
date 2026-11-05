@@ -767,6 +767,8 @@ class SimAttachedHAL:
         # along as the next pack's ``prev`` (an absolute-target env would move
         # the arm back to its pre-reset pose on the first base twist).
         self._last_env_action = None
+        # Nor may a held base setpoint drive the new episode.
+        self._held_twist = None
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -1069,10 +1071,6 @@ class SimAttachedHAL:
                 self._apply_body_twist_via_env_step(row, action)
             self._last_applied_action = action
             return
-        # A non-BODY_TWIST action means the base is no longer being
-        # velocity-commanded — clear the latched twist so /odom doesn't
-        # report a stale base velocity through an arm-only step.
-        self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         # Robosuite composite controllers expose part-name
         # → action-slot mapping via ``cc._action_split_indexes``. The
         # legacy ``pack_action_for_env`` hardcoded the PandaMobile+BASIC
@@ -1114,6 +1112,9 @@ class SimAttachedHAL:
                 f"head=[{head}]",
                 flush=True,
             )
+        # A non-BODY_TWIST action leaves the base still, unless a held /cmd_vel
+        # setpoint is live (arm actions suppress the idle stepper that applies it).
+        env_action = self._drive_held_twist(env_action)
         self._step_and_cache(env_action, source="send_action")
         self._last_applied_action = action
 
@@ -1206,9 +1207,7 @@ class SimAttachedHAL:
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
             )
-        actions = list(self._pending_actions)
-        self._pending_actions.clear()
-        self._pending_action_key = None
+        actions = self._take_pending_group()
         if group_step is None:
             self._step_packed_action_group(actions)
             self._commit_group(actions, tick, session)
@@ -1266,6 +1265,17 @@ class SimAttachedHAL:
         except ROSConfigError:
             self._last_applied_action = gripper_targets_action(actions, self.description)
 
+    def _take_pending_group(self) -> list[Action]:
+        """Hand over the complete staged group, refusing a lateral twist on a diff base.
+
+        The check runs before either the env packer or ``step_action_group`` sees it.
+        """
+        actions = list(self._pending_actions)
+        self._pending_actions.clear()
+        self._pending_action_key = None
+        _refuse_lateral_twist(self.description, *actions)
+        return actions
+
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
         has_twist = any(action.control_mode is ControlMode.BODY_TWIST for action in actions)
@@ -1311,7 +1321,6 @@ class SimAttachedHAL:
                 if self._env_packs
                 else np.zeros(int(self._env_action_dim or 0), dtype=np.float32)
             )
-            _refuse_lateral_twist(self.description, *actions)
             for action in actions:
                 if (
                     previous is not None  # always, unless the env packs by name
@@ -1333,6 +1342,8 @@ class SimAttachedHAL:
                 self._last_env_action = env_action.copy()
         if env_action is None:
             raise ROSConfigError("SimAttachedHAL: packed action group produced no env action.")
+        # A twist-free group keeps a live /cmd_vel setpoint driving.
+        env_action = self._drive_held_twist(env_action, twist_commanded=has_twist)
         self._step_and_cache(env_action, source="send_action_group")
 
     def _step_and_cache(self, env_action: NDArray[np.float32], *, source: str) -> bool:
@@ -1787,9 +1798,7 @@ class SimAttachedHAL:
                 f"SimAttachedHAL.idle_step: backend idle_action width "
                 f"{idle_action.shape[0]} != env_action_dim {self._env_action_dim}."
             )
-        held = self._held_twist
-        if held is not None and time.monotonic_ns() >= self._held_twist_until_ns:
-            held = self._held_twist = None  # the setpoint timed out: the base stops
+        held = self._live_held_twist()
         if held is not None:
             idle_action[-3:] = held  # a held /cmd_vel setpoint keeps driving the base
         stepped = self._step_and_cache(idle_action, source="idle_step")
@@ -2130,6 +2139,32 @@ class SimAttachedHAL:
         self._held_twist = (float(vx_body), float(vy_body), float(wz))
         self._held_twist_until_ns = time.monotonic_ns() + _BASE_TWIST_HOLD_NS
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
+
+    def _drive_held_twist(
+        self, env_action: NDArray[np.float32], *, twist_commanded: bool = False
+    ) -> NDArray[np.float32]:
+        """``env_action`` with a live held setpoint in its twist slots, else the base still.
+
+        Sets ``_last_body_twist`` to what the step drives. A copy when it writes, so the
+        setpoint never latches into the packer's ``prev``. A step that commands its own
+        twist (``twist_commanded``) is returned untouched.
+        """
+        if twist_commanded:
+            return env_action
+        held = self._live_held_twist()
+        if held is None:
+            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            return env_action
+        out = env_action.copy()
+        out[-3:] = held
+        self._last_body_twist = (held[0], held[1], 0.0, 0.0, 0.0, held[2])
+        return out
+
+    def _live_held_twist(self) -> tuple[float, float, float] | None:
+        """The held base setpoint, or ``None`` once it has timed out (the base stops)."""
+        if self._held_twist is not None and time.monotonic_ns() >= self._held_twist_until_ns:
+            self._held_twist = None
+        return self._held_twist
 
     def _is_base_twist_setpoint(self, action: Action) -> bool:
         """An ungrouped BODY_TWIST for a base the env integrates (Isaac kinematic base)."""
