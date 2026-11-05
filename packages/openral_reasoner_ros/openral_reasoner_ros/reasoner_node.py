@@ -467,6 +467,48 @@ def _action_executable(
     return {ControlMode(m) for m in required} <= executable
 
 
+def _state_contract_verdict(manifest: RSkillManifest, n_joints: int) -> str:
+    """How the palette's state-contract filter treats a skill on an ``n_joints`` robot.
+
+    Pure helper (no ROS spin). Mirrors where the skill runner's
+    ``_make_policy_adapter_skill`` takes ``obs["state"]`` from, in its precedence order:
+    a registered wrapped-layout assembler wins over
+    ``policy_extras.use_world_state_policy_state``, which wins over the robot's joint
+    vector. So the joint-count comparison only rejects a skill that reads joint state.
+    A skill fed ``WorldState.policy_state`` is admitted whatever its declared ``dim``;
+    the runner still raises if that vector is missing, stale or the wrong size.
+
+    Args:
+        manifest: The rSkill manifest.
+        n_joints: The target robot's joint count.
+
+    Returns:
+        ``"admit"`` (no state constraint, or the dim matches the joint vector),
+        ``"assembler"`` (a registered wrapped-layout assembler builds the state),
+        ``"policy_state"`` (the runner feeds ``WorldState.policy_state``),
+        ``"no_assembler"`` (wrapped layout with no registered assembler) or
+        ``"dim_mismatch"`` (joint-state skill whose ``dim`` differs from ``n_joints``).
+        Only the last two drop the skill.
+    """
+    sc = manifest.state_contract
+    if manifest.kind not in POLICY_KINDS or sc is None:
+        return "admit"
+    wrapped = sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS
+    # An unset dim on a raw contract means "the robot's joint vector", as the runner's
+    # warm-up path defaults it. A wrapped layout always goes through the assembler check.
+    if (sc.dim == n_joints) if sc.dim is not None else not wrapped:
+        return "admit"
+    if wrapped:
+        # Deferred import keeps the module-load path off the openral_state_adapter tree.
+        from openral_state_adapter import registered_layouts
+
+        if sc.layout in registered_layouts():
+            return "assembler"
+    if manifest.policy_extras.get("use_world_state_policy_state"):
+        return "policy_state"
+    return "no_assembler" if wrapped else "dim_mismatch"
+
+
 # Minimum seconds between operator-visible (WARNING) execute_rskill feedback
 # log lines; the raw per-chunk stream continues at DEBUG.
 _FEEDBACK_LOG_PERIOD_S: float = 1.0
@@ -2715,71 +2757,65 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # state for state_layout=..., got 10-D``. Pre-filtering at palette seed turns that 5 Hz
         # dispatch failure into a single boot-time warning. Wrapped-ROS skills
         # (``kind: ros_action``/``ros_service``) bypass this — they don't consume
-        # ``observation.state``, so any state_contract on them is informational.
+        # ``observation.state``, so any state_contract on them is informational. A skill
+        # whose manifest sets ``policy_extras.use_world_state_policy_state`` is fed
+        # ``WorldState.policy_state`` instead of the joint vector, so its dim is checked by
+        # the runner at step time, not against the joint count here (issue #474).
         n_joints = len(description.joints)
         state_compatible: list[RSkillManifest] = []
         for m in capability_matched:
             sc = m.state_contract
-            # An unset dim on a raw contract means "the robot's joint vector", as the
-            # runner's warm-up path defaults it. A wrapped layout always goes through the
-            # assembler check below, whether or not it declares a dim.
-            if (
-                m.kind in POLICY_KINDS
-                and sc is not None
-                and (
-                    sc.dim != n_joints
-                    if sc.dim is not None
-                    else sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS
-                )
-            ):
-                if sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS:
-                    # admit-with-adapter when the layout's
-                    # assembler is registered in the openral_state_adapter
-                    # registry. The skill_runner injects a live TF lookup
-                    # at step time so the manifest-declared bindings
-                    # resolve against the real /tf graph.
-                    # Defer the import — keeps the reasoner_node
-                    # module-load path off the openral_state_adapter
-                    # tree until we actually consult it.
-                    from openral_state_adapter import registered_layouts
-
-                    if sc.layout in registered_layouts():
-                        self.get_logger().info(
-                            f"palette: admitting rSkill {m.name!r} "
-                            f"(model_family={m.model_family!r}): "
-                            f"wrapped task-space layout {sc.layout!r} "
-                            f"(dim={sc.dim}) has a registered assembler "
-                            "in openral_state_adapter. "
-                            "The skill_runner will assemble observation."
-                            "state from live /tf at step time."
-                        )
-                        state_compatible.append(m)
-                        continue
-                    # Informational drop: the layout is a task-space
-                    # composite the in-tree deploy_sim path doesn't
-                    # synthesise — no assembler is registered. Register
-                    # one under python/state_adapter/src/openral_state_adapter
-                    # /layouts/<layout>.py to admit this rSkill.
-                    self.get_logger().info(
-                        f"palette: skipping rSkill {m.name!r} "
-                        f"(model_family={m.model_family!r}): targets "
-                        f"wrapped task-space layout {sc.layout!r} "
-                        f"(dim={sc.dim}); no assembler registered "
-                        "in openral_state_adapter for this layout. "
-                        "Add one or run via "
-                        "``openral sim run --rskill ...``."
-                    )
-                else:
-                    self.get_logger().warning(
-                        f"palette: dropping rSkill {m.name!r} "
-                        f"(model_family={m.model_family!r}): "
-                        f"state_contract.dim={sc.dim} (layout={sc.layout!r}) "
-                        f"is incompatible with this robot's joint count "
-                        f"({n_joints}). Pick a state-compatible rSkill "
-                        f"for ``deploy sim``."
-                    )
+            verdict = _state_contract_verdict(m, n_joints)
+            if verdict == "admit":
+                state_compatible.append(m)
                 continue
-            state_compatible.append(m)
+            assert sc is not None  # reason: every non-admit verdict needs a state_contract
+            if verdict == "assembler":
+                # The skill_runner injects a live TF lookup at step time so the
+                # manifest-declared bindings resolve against the real /tf graph.
+                self.get_logger().info(
+                    f"palette: admitting rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    f"wrapped task-space layout {sc.layout!r} "
+                    f"(dim={sc.dim}) has a registered assembler "
+                    "in openral_state_adapter. "
+                    "The skill_runner will assemble observation."
+                    "state from live /tf at step time."
+                )
+                state_compatible.append(m)
+            elif verdict == "policy_state":
+                self.get_logger().info(
+                    f"palette: admitting rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    f"state_contract.dim={sc.dim} differs from this robot's joint "
+                    f"count ({n_joints}), but policy_extras."
+                    "use_world_state_policy_state feeds it WorldState.policy_state; "
+                    "the skill_runner checks that vector's dim at step time."
+                )
+                state_compatible.append(m)
+            elif verdict == "no_assembler":
+                # Informational drop: the layout is a task-space composite the in-tree
+                # deploy_sim path doesn't synthesise. Register an assembler under
+                # python/state_adapter/src/openral_state_adapter/layouts/<layout>.py
+                # to admit this rSkill.
+                self.get_logger().info(
+                    f"palette: skipping rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): targets "
+                    f"wrapped task-space layout {sc.layout!r} "
+                    f"(dim={sc.dim}); no assembler registered "
+                    "in openral_state_adapter for this layout. "
+                    "Add one or run via "
+                    "``openral sim run --rskill ...``."
+                )
+            else:
+                self.get_logger().warning(
+                    f"palette: dropping rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    f"state_contract.dim={sc.dim} (layout={sc.layout!r}) "
+                    f"is incompatible with this robot's joint count "
+                    f"({n_joints}). Pick a state-compatible rSkill "
+                    f"for ``deploy sim``."
+                )
 
         # Action-mode executability filter (deploy-path-aware action-mode palette gate): drop VLA
         # rSkills whose action vector drives a ControlMode the deploy path can't execute. The
