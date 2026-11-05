@@ -36,6 +36,28 @@
       <type>UDPv4</type>
     </transport_descriptor>
   </transport_descriptors>
+  <!--
+    Service replies (rmw_fastrtps loads the profile named "service" for every service's
+    response writer). Before sending a reply, rmw_fastrtps waits for the client's reply
+    reader to be discovered, for at most this writer's max_blocking_time (Fast DDS
+    default: 100 ms), and otherwise drops the reply ("failed to send response ...
+    (timeout): client will not receive response"). On a ~30-process deploy graph,
+    discovery can take longer than that. Nav2's lifecycle manager waits on change_state
+    with no timeout, so one dropped reply left Nav2 unconfigured for the whole run
+    (2026-11-04/05: controller_server, collision_monitor and bt_navigator, on Spark and
+    on a laptop). 5 s lets discovery finish. Only service response writers are
+    affected; topic writers keep the default.
+  -->
+  <data_writer profile_name="service">
+    <qos>
+      <reliability>
+        <max_blocking_time>
+          <sec>5</sec>
+          <nanosec>0</nanosec>
+        </max_blocking_time>
+      </reliability>
+    </qos>
+  </data_writer>
   <participant profile_name="openral_large_data" is_default_profile="true">
     <rtps>
       <userTransports>
