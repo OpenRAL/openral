@@ -41,7 +41,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -348,6 +348,11 @@ _SKILL_FAILURE_KIND_NAMES: dict[int, str] = {
 _EXECUTE_SKILL_SERVER_PROBE_S: float = 0.1
 _EXECUTE_SKILL_SERVER_RETRY_S: float = 0.25
 _LIFECYCLE_SERVER_PROBE_S: float = 0.1
+# The HAL advertises this topic only once its backend produces a policy state; a
+# `use_world_state_policy_state` skill enters the palette only while it has a publisher,
+# and a skill dropped for its absence is re-checked every _POLICY_STATE_WATCH_S (#474).
+_POLICY_STATE_TOPIC = "/openral/policy_state"
+_POLICY_STATE_WATCH_S: float = 1.0
 _LOCATE_FAILURE_REASON_MAX = 128
 
 # Reasoner+supervisor design, 2026-05-25 amendment — trigger taxonomy. Maps each failure
@@ -467,46 +472,57 @@ def _action_executable(
     return {ControlMode(m) for m in required} <= executable
 
 
-def _state_contract_verdict(manifest: RSkillManifest, n_joints: int) -> str:
+_StateContractVerdict = Literal[
+    "admit", "assembler", "policy_state", "no_policy_state", "no_assembler", "dim_mismatch"
+]
+
+
+def _state_contract_verdict(
+    manifest: RSkillManifest, n_joints: int, *, policy_state_published: bool
+) -> _StateContractVerdict:
     """How the palette's state-contract filter treats a skill on an ``n_joints`` robot.
 
-    Pure helper (no ROS spin). Mirrors where the skill runner's
-    ``_make_policy_adapter_skill`` takes ``obs["state"]`` from, in its precedence order:
-    a registered wrapped-layout assembler wins over
-    ``policy_extras.use_world_state_policy_state``, which wins over the robot's joint
-    vector. So the joint-count comparison only rejects a skill that reads joint state.
-    A skill fed ``WorldState.policy_state`` is admitted whatever its declared ``dim``;
-    the runner still raises if that vector is missing, stale or the wrong size.
+    Pure helper (no ROS spin). Mirrors the skill runner's ``obs["state"]`` selection in
+    ``_make_policy_adapter_skill``. A ``reads_world_state_policy_state`` skill has
+    ``WorldState.policy_state`` read and validated on every step (missing, stale or not
+    ``state_contract.dim`` wide all raise), even when a registered wrapped-layout
+    assembler then overwrites ``obs["state"]``; so it needs a live
+    ``/openral/policy_state`` publisher whatever its layout, and its ``dim`` is never
+    compared with the joint count. A wrapped layout always needs a registered assembler
+    unless the policy state feeds it instead (the runner assembles only for a registered
+    layout, with the ``tf_lookup`` it wires at configure). Any other skill reads the
+    joint vector, so a declared ``dim`` must match ``n_joints``; an unset ``dim`` means
+    "the joint vector", as the runner's warm-up path defaults it.
 
     Args:
         manifest: The rSkill manifest.
         n_joints: The target robot's joint count.
+        policy_state_published: Whether ``/openral/policy_state`` has a publisher.
 
     Returns:
-        ``"admit"`` (no state constraint, or the dim matches the joint vector),
-        ``"assembler"`` (a registered wrapped-layout assembler builds the state),
-        ``"policy_state"`` (the runner feeds ``WorldState.policy_state``),
-        ``"no_assembler"`` (wrapped layout with no registered assembler) or
-        ``"dim_mismatch"`` (joint-state skill whose ``dim`` differs from ``n_joints``).
-        Only the last two drop the skill.
+        ``"admit"``, ``"assembler"`` or ``"policy_state"`` admit the skill (no
+        constraint or a matching joint vector; a registered assembler builds the state;
+        the runner feeds ``WorldState.policy_state``). ``"no_policy_state"``,
+        ``"no_assembler"`` and ``"dim_mismatch"`` drop it.
     """
+    if manifest.kind not in POLICY_KINDS:
+        return "admit"
     sc = manifest.state_contract
-    if manifest.kind not in POLICY_KINDS or sc is None:
-        return "admit"
-    wrapped = sc.layout in _WRAPPED_TASK_SPACE_LAYOUTS
-    # An unset dim on a raw contract means "the robot's joint vector", as the runner's
-    # warm-up path defaults it. A wrapped layout always goes through the assembler check.
-    if (sc.dim == n_joints) if sc.dim is not None else not wrapped:
-        return "admit"
-    if wrapped:
+    layout = sc.layout if sc is not None else None
+    reads_policy_state = manifest.reads_world_state_policy_state
+    if reads_policy_state and not policy_state_published:
+        return "no_policy_state"
+    if layout in _WRAPPED_TASK_SPACE_LAYOUTS:
         # Deferred import keeps the module-load path off the openral_state_adapter tree.
         from openral_state_adapter import registered_layouts
 
-        if sc.layout in registered_layouts():
+        if layout in registered_layouts():
             return "assembler"
-    if manifest.policy_extras.get("use_world_state_policy_state"):
+        return "policy_state" if reads_policy_state else "no_assembler"
+    if reads_policy_state:
         return "policy_state"
-    return "no_assembler" if wrapped else "dim_mismatch"
+    joint_vector_fits = sc is None or sc.dim is None or sc.dim == n_joints
+    return "admit" if joint_vector_fits else "dim_mismatch"
 
 
 # Minimum seconds between operator-visible (WARNING) execute_rskill feedback
@@ -1120,6 +1136,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # and the one-shot timer that re-probes for it.
         self._execute_server_wait_deadline: float | None = None
         self._execute_server_retry_timer: Any = None
+        # Re-seeds the palette once /openral/policy_state gains a publisher, armed while a
+        # `use_world_state_policy_state` skill is dropped for the lack of one (#474).
+        self._policy_state_watch: Any = None
         # Dispatch-phase watchdog: bounds the send→goal-response window the
         # busy latch opens. rclpy futures never time out on their own, so a
         # runner (or VRAM peer) that dies AFTER the readiness probe but before
@@ -1639,6 +1658,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 timer.cancel()
         self._pending_skill_deadlines.clear()
         self._abandon_execute_server_wait()
+        self._cancel_policy_state_watch()
         if self._execute_rskill_client is not None:
             self._execute_rskill_client.destroy()
             self._execute_rskill_client = None
@@ -2759,25 +2779,30 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # (``kind: ros_action``/``ros_service``) bypass this — they don't consume
         # ``observation.state``, so any state_contract on them is informational. A skill
         # whose manifest sets ``policy_extras.use_world_state_policy_state`` is fed
-        # ``WorldState.policy_state`` instead of the joint vector, so its dim is checked by
-        # the runner at step time, not against the joint count here (issue #474).
+        # ``WorldState.policy_state`` instead of the joint vector: it is gated on a live
+        # ``/openral/policy_state`` publisher, not on the joint count (issue #474). The HAL
+        # and the reasoner autostart independently, so a skill dropped for a missing
+        # publisher is re-checked by ``_watch_for_policy_state`` until one appears.
         n_joints = len(description.joints)
+        policy_state_published = self.count_publishers(_POLICY_STATE_TOPIC) > 0
+        awaiting_policy_state = False
         state_compatible: list[RSkillManifest] = []
         for m in capability_matched:
-            sc = m.state_contract
-            verdict = _state_contract_verdict(m, n_joints)
+            verdict = _state_contract_verdict(
+                m, n_joints, policy_state_published=policy_state_published
+            )
+            sc_dim = m.state_contract.dim if m.state_contract is not None else None
+            sc_layout = m.state_contract.layout if m.state_contract is not None else None
             if verdict == "admit":
                 state_compatible.append(m)
-                continue
-            assert sc is not None  # reason: every non-admit verdict needs a state_contract
-            if verdict == "assembler":
+            elif verdict == "assembler":
                 # The skill_runner injects a live TF lookup at step time so the
                 # manifest-declared bindings resolve against the real /tf graph.
                 self.get_logger().info(
                     f"palette: admitting rSkill {m.name!r} "
                     f"(model_family={m.model_family!r}): "
-                    f"wrapped task-space layout {sc.layout!r} "
-                    f"(dim={sc.dim}) has a registered assembler "
+                    f"wrapped task-space layout {sc_layout!r} "
+                    f"(dim={sc_dim}) has a registered assembler "
                     "in openral_state_adapter. "
                     "The skill_runner will assemble observation."
                     "state from live /tf at step time."
@@ -2787,12 +2812,23 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 self.get_logger().info(
                     f"palette: admitting rSkill {m.name!r} "
                     f"(model_family={m.model_family!r}): "
-                    f"state_contract.dim={sc.dim} differs from this robot's joint "
-                    f"count ({n_joints}), but policy_extras."
-                    "use_world_state_policy_state feeds it WorldState.policy_state; "
-                    "the skill_runner checks that vector's dim at step time."
+                    "policy_extras.use_world_state_policy_state feeds it "
+                    f"WorldState.policy_state from {_POLICY_STATE_TOPIC} instead of this "
+                    f"robot's {n_joints}-joint vector; the skill_runner checks that "
+                    f"vector against state_contract.dim={sc_dim} at step time."
                 )
                 state_compatible.append(m)
+            elif verdict == "no_policy_state":
+                awaiting_policy_state = True
+                self.get_logger().warning(
+                    f"palette: dropping rSkill {m.name!r} "
+                    f"(model_family={m.model_family!r}): "
+                    "policy_extras.use_world_state_policy_state needs "
+                    f"WorldState.policy_state, but {_POLICY_STATE_TOPIC} has no "
+                    "publisher (this deployment's HAL backend produces none, or has "
+                    "not published yet). Re-checking every "
+                    f"{_POLICY_STATE_WATCH_S:g} s."
+                )
             elif verdict == "no_assembler":
                 # Informational drop: the layout is a task-space composite the in-tree
                 # deploy_sim path doesn't synthesise. Register an assembler under
@@ -2801,8 +2837,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 self.get_logger().info(
                     f"palette: skipping rSkill {m.name!r} "
                     f"(model_family={m.model_family!r}): targets "
-                    f"wrapped task-space layout {sc.layout!r} "
-                    f"(dim={sc.dim}); no assembler registered "
+                    f"wrapped task-space layout {sc_layout!r} "
+                    f"(dim={sc_dim}); no assembler registered "
                     "in openral_state_adapter for this layout. "
                     "Add one or run via "
                     "``openral sim run --rskill ...``."
@@ -2811,11 +2847,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 self.get_logger().warning(
                     f"palette: dropping rSkill {m.name!r} "
                     f"(model_family={m.model_family!r}): "
-                    f"state_contract.dim={sc.dim} (layout={sc.layout!r}) "
+                    f"state_contract.dim={sc_dim} (layout={sc_layout!r}) "
                     f"is incompatible with this robot's joint count "
                     f"({n_joints}). Pick a state-compatible rSkill "
                     f"for ``deploy sim``."
                 )
+        if awaiting_policy_state:
+            self._arm_policy_state_watch()
+        else:
+            self._cancel_policy_state_watch()
 
         # Action-mode executability filter (deploy-path-aware action-mode palette gate): drop VLA
         # rSkills whose action vector drives a ControlMode the deploy path can't execute. The
@@ -4972,6 +5012,40 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         self._execute_server_retry_timer = self.create_timer(_EXECUTE_SKILL_SERVER_RETRY_S, _retry)
         return True
+
+    def _arm_policy_state_watch(self) -> None:
+        """Re-check ``/openral/policy_state`` every ``_POLICY_STATE_WATCH_S`` (idempotent)."""
+        if self._policy_state_watch is None:
+            self._policy_state_watch = self.create_timer(
+                _POLICY_STATE_WATCH_S, self._watch_for_policy_state
+            )
+
+    def _watch_for_policy_state(self) -> None:
+        """Re-seed the palette once ``/openral/policy_state`` gains a publisher."""
+        if self.count_publishers(_POLICY_STATE_TOPIC) == 0:
+            return
+        self._cancel_policy_state_watch()
+        old_count = len(self._palette.execute_rskill_ids)
+        try:
+            self._maybe_seed_palette_from_search_paths()
+        except Exception as exc:  # reason: a timer callback must not kill the executor
+            self.get_logger().error(
+                f"palette refresh ({_POLICY_STATE_TOPIC} appeared) failed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self.get_logger().info(
+            f"palette refreshed ({_POLICY_STATE_TOPIC} appeared): "
+            f"{old_count} → {len(self._palette.execute_rskill_ids)} skills",
+        )
+
+    def _cancel_policy_state_watch(self) -> None:
+        """Cancel and destroy the policy-state watch timer, if any."""
+        timer = self._policy_state_watch
+        self._policy_state_watch = None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
 
     def _cancel_execute_server_retry(self) -> None:
         """Cancel and destroy the pending re-probe timer, if any."""

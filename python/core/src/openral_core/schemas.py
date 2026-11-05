@@ -10009,6 +10009,18 @@ class RSkillManifest(BaseModel):
         # resolve time.
         return self
 
+    @property
+    def reads_world_state_policy_state(self) -> bool:
+        """Whether the skill runner feeds this policy ``WorldState.policy_state``.
+
+        Set by ``policy_extras.use_world_state_policy_state`` (truthiness, as the
+        runner reads it). Such a policy never receives the robot's joint vector, so
+        the reasoner's palette gates it on a live ``/openral/policy_state`` publisher
+        instead of on the joint count. The one reader of the key: the runner's
+        ``obs["state"]`` selection and the palette's state-contract gate both call it.
+        """
+        return bool(self.policy_extras.get("use_world_state_policy_state"))
+
     @classmethod
     def from_yaml(cls, path: str) -> RSkillManifest:
         """Load and validate an ``rskill.yaml`` from disk.

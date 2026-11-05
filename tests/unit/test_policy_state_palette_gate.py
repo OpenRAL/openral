@@ -31,6 +31,12 @@ from openral_rskill.loader import load_rskill_manifest
 _ROOT = Path(__file__).resolve().parents[2]
 _RADIO = _ROOT / "rskills" / "gr00t-n17-b1k-turning-on-radio"
 _R1PRO = _ROOT / "robots" / "r1pro" / "robot.yaml"
+_RC365 = _ROOT / "rskills" / "rldx1-ft-rc365-nf4" / "rskill.yaml"
+
+
+def _validated(manifest: RSkillManifest, **update: object) -> RSkillManifest:
+    """Re-validate with ``update`` applied, so ``kind`` validators run for real."""
+    return RSkillManifest.model_validate({**manifest.model_dump(), **update})
 
 
 def _radio(kind: str = "vla", *, flag: bool = True) -> RSkillManifest:
@@ -38,33 +44,54 @@ def _radio(kind: str = "vla", *, flag: bool = True) -> RSkillManifest:
     extras = dict(manifest.policy_extras)
     if not flag:
         extras.pop("use_world_state_policy_state")
-    return manifest.model_copy(update={"kind": kind, "policy_extras": extras})
+    return _validated(manifest, kind=kind, policy_extras=extras)
+
+
+def _rc365(*, flag: bool) -> RSkillManifest:
+    manifest = RSkillManifest.from_yaml(str(_RC365))
+    return _validated(
+        manifest,
+        policy_extras={**manifest.policy_extras, "use_world_state_policy_state": flag},
+    )
 
 
 def _r1pro() -> RobotDescription:
     return RobotDescription.from_yaml(str(_R1PRO))
 
 
+def _verdict(manifest: RSkillManifest, n_joints: int, *, published: bool = True) -> str:
+    return _state_contract_verdict(manifest, n_joints, policy_state_published=published)
+
+
 def test_fixture_state_dim_differs_from_the_joint_count() -> None:
     manifest, robot = _radio(), _r1pro()
-    assert manifest.policy_extras["use_world_state_policy_state"] is True
+    assert manifest.reads_world_state_policy_state
     assert manifest.state_contract is not None
     assert manifest.state_contract.dim != len(robot.joints)
 
 
 @pytest.mark.parametrize("kind", ["vla", "wam"])
-def test_policy_state_skill_survives_the_palette(kind: str) -> None:
+def test_policy_state_skill_survives_when_the_topic_is_published(kind: str) -> None:
+    manifest = _radio(kind)
+    assert manifest.kind == kind
+    assert _verdict(manifest, len(_r1pro().joints)) == "policy_state"
+
+
+@pytest.mark.parametrize("kind", ["vla", "wam"])
+def test_policy_state_skill_drops_without_a_publisher(kind: str) -> None:
+    """A backend that produces no policy state: every dispatch would fail, so drop it."""
     n_joints = len(_r1pro().joints)
-    assert _state_contract_verdict(_radio(kind), n_joints) == "policy_state"
+    assert _verdict(_radio(kind), n_joints, published=False) == "no_policy_state"
 
 
 @pytest.mark.parametrize("kind", ["vla", "wam"])
 def test_joint_state_dim_mismatch_still_drops(kind: str) -> None:
     n_joints = len(_r1pro().joints)
-    assert _state_contract_verdict(_radio(kind, flag=False), n_joints) == "dim_mismatch"
+    assert _verdict(_radio(kind, flag=False), n_joints) == "dim_mismatch"
     disabled = _radio(kind, flag=False)
     disabled.policy_extras["use_world_state_policy_state"] = False
-    assert _state_contract_verdict(disabled, n_joints) == "dim_mismatch"
+    assert not disabled.reads_world_state_policy_state
+    assert _verdict(disabled, n_joints) == "dim_mismatch"
 
 
 def test_raw_contract_without_dim_keeps_the_joint_vector_default() -> None:
@@ -73,17 +100,24 @@ def test_raw_contract_without_dim_keeps_the_joint_vector_default() -> None:
     raw = manifest.model_copy(
         update={"state_contract": manifest.state_contract.model_copy(update={"dim": None})}
     )
-    assert _state_contract_verdict(raw, len(_r1pro().joints)) == "admit"
+    assert _verdict(raw, len(_r1pro().joints), published=False) == "admit"
 
 
 def test_registered_assembler_wins_over_the_flag() -> None:
     """The runner's layout assembler runs after the policy_state read and overwrites it."""
-    path = _ROOT / "rskills" / "rldx1-ft-rc365-nf4" / "rskill.yaml"
-    manifest = RSkillManifest.from_yaml(str(path))
-    flagged = manifest.model_copy(
-        update={"policy_extras": {**manifest.policy_extras, "use_world_state_policy_state": True}}
-    )
-    assert _state_contract_verdict(flagged, len(_r1pro().joints)) == "assembler"
+    assert _verdict(_rc365(flag=True), len(_r1pro().joints)) == "assembler"
+
+
+def test_flag_needs_the_publisher_even_when_an_assembler_wins() -> None:
+    """The runner reads and checks policy_state before the assembler overwrites it."""
+    assert _verdict(_rc365(flag=True), len(_r1pro().joints), published=False) == ("no_policy_state")
+
+
+def test_wrapped_layout_matching_the_joint_count_still_needs_its_assembler() -> None:
+    """A wrapped layout's dim equal to the joint count is a coincidence, not a fit."""
+    manifest = _rc365(flag=False)
+    assert manifest.state_contract is not None and manifest.state_contract.dim is not None
+    assert _verdict(manifest, manifest.state_contract.dim) == "assembler"
 
 
 class _Adapter:
