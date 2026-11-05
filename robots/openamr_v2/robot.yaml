@@ -438,6 +438,19 @@ hal:
           # arms from this value, so it must match the real lift before any motion.
           params:
             positions: {lift_joint: 0.0}
+          # A COMMANDED lift, for when upstream exposes it on real hardware: upstream's
+          # mock and Gazebo profiles already drive lift_joint through `lift_controller`
+          # (a position JointTrajectoryController, ros2_control.xacro issue #17); its
+          # real profile declares no interface yet (the lift firmware owns it and
+          # enforces register LIFT: lift motion only with the arms stowed and the base
+          # stopped). Replace the entry above with this one, on the arms'
+          # controller_manager; ComposedHAL merges both ros2_control parts onto one
+          # transport and /openral/estop deactivates lift_controller with the arms'.
+          # Live-tested: tests/sim/test_openamr_v2_lift_ros2_control.py. Before using it
+          # on hardware: Safety-WG sign-off, and the LIFT interlock in the firmware.
+          #   - entry: "openral_hal.ros_control:RosControlHAL"
+          #     joints: ["lift_joint"]
+          #     params: {controller_name: "lift_controller"}
 
 # Head: a ZED Mini with OpenArm's intrinsics (robots/openarm/robot.yaml `head_zed` and
 # `top`, so the policy raster and field of view match), on upstream's own head mount:

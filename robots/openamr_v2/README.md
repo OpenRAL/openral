@@ -110,7 +110,17 @@ the spawn had no return inside range, so the first map showed only the side wedg
     base through `MobileBaseBridge` (`/cmd_vel` → `BODY_TWIST` → this part).
   - **lift:** `HeldJointsHAL` at a declared height. The real lift has no
     ros2_control interface (its firmware owns it), so a command that would move it
-    is refused.
+    is refused. When upstream exposes it, the lift becomes a stock `RosControlHAL` on
+    `lift_controller` (upstream's mock and Gazebo profiles already have that
+    controller, a position `JointTrajectoryController`). The swap is one `parts` entry,
+    shown commented in `robot.yaml`. `ComposedHAL` merges it with the arm onto one
+    ros2_control transport, and `/openral/estop` deactivates `lift_controller` with the
+    arm controllers. `tests/sim/test_openamr_v2_lift_ros2_control.py` runs this against
+    a real `controller_manager` with mock hardware. In sim the lift is already
+    commanded: the MuJoCo twin and Isaac drive `lift_joint` from `JOINT_POSITION`.
+    Upstream's firmware enforces register LIFT (lift motion only with the arms stowed
+    and the base stopped). OpenRAL does not enforce it, so the commanded lift waits on
+    that interlock and Safety-WG sign-off.
 
 Open before the first real run:
 

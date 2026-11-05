@@ -24,10 +24,11 @@ Routing, all by name, never by position:
   others noted on it), so a failed base stop is never reported as a clean stop.
 
 The composite also forwards the optional surfaces the lifecycle node probes
-structurally: the ros2_control transport seam (delegated to its one
-``RosControlDrivable`` part; with none or several those calls raise
-``ROSConfigError``, while ``last_stop_report`` reads ``None`` and ``estop_recovery``
-is absent), ``attach_ros_node``, and ``base_pose``/``base_twist``.
+structurally: the ros2_control transport seam (merged over its ``RosControlDrivable``
+parts, which share one controller_manager and one transport: the OpenArm arms and,
+when upstream exposes it on real hardware, the lift's ``lift_controller``; with none,
+those calls raise ``ROSConfigError``, while ``last_stop_report`` reads ``None`` and
+``estop_recovery`` is absent), ``attach_ros_node``, and ``base_pose``/``base_twist``.
 """
 
 from __future__ import annotations
@@ -37,7 +38,8 @@ import inspect
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import structlog
 from openral_core import RobotDescription
@@ -545,91 +547,179 @@ class ComposedHAL:
 
     # ros2_control transport seam (RosControlDrivable / ControllerStoppable). The
     # lifecycle node checks these protocols with static lookup, so they are real
-    # members, delegated to the one ros2_control part (the OpenArm arm).
+    # members. With several ros2_control parts on one controller_manager (the OpenArm
+    # arms and, once upstream exposes it, the lift's lift_controller) they are merged:
+    # one transport, every part's controllers, each part reading its own joints.
 
-    def _ros_part(self) -> Any:  # noqa: ANN401  # reason: structural ros2_control HAL
-        part = self._ros_part_or_none()
-        if part is None:
-            raise ROSConfigError(
-                f"ComposedHAL '{self.description.name}': the ros2_control seam needs exactly "
-                "one ros2_control part."
-            )
-        return part
-
-    def _ros_part_or_none(self) -> Any:  # noqa: ANN401  # reason: structural ros2_control HAL
+    def _ros_parts(self) -> list[Any]:
         from openral_hal.ros_control_transport import RosControlDrivable  # noqa: PLC0415
 
-        parts = [p for p in self._parts if isinstance(p, RosControlDrivable)]
-        return parts[0] if len(parts) == 1 else None
+        return [p for p in self._parts if isinstance(p, RosControlDrivable)]
 
-    def command_bindings(self) -> Any:  # noqa: ANN401  # reason: delegated
-        """The arm part's controller command topics."""
-        return self._ros_part().command_bindings()
+    def _require_ros_parts(self) -> list[Any]:
+        parts = self._ros_parts()
+        if not parts:
+            raise ROSConfigError(
+                f"ComposedHAL '{self.description.name}': no ros2_control part, so there is "
+                "no ros2_control seam to wire."
+            )
+        return parts
+
+    def command_bindings(self) -> Any:  # noqa: ANN401  # reason: dict[str, ControllerKind]
+        """Every ros2_control part's controller command topics; a shared topic is refused."""
+        merged: dict[str, Any] = {}
+        for part in self._require_ros_parts():
+            for topic, kind in part.command_bindings().items():
+                if topic in merged:
+                    raise ROSConfigError(f"ComposedHAL: two ros2_control parts command {topic!r}.")
+                merged[topic] = kind
+        return merged
 
     def ros2_control_joint_names(self) -> list[str]:
-        """The arm part's URDF joint names on ``/joint_states``."""
-        names: list[str] = self._ros_part().ros2_control_joint_names()
+        """Every ros2_control part's URDF joint names on ``/joint_states``, in part order."""
+        names = [n for part in self._require_ros_parts() for n in part.ros2_control_joint_names()]
+        if len(set(names)) != len(names):
+            raise ROSConfigError(f"ComposedHAL: ros2_control joint named twice in {names}.")
         return names
 
     @property
     def joint_state_topic(self) -> str:
-        """The arm part's ``JointState`` topic."""
-        topic: str = self._ros_part().joint_state_topic
-        return topic
+        """The parts' shared ``JointState`` topic (one controller_manager)."""
+        topics = {str(part.joint_state_topic) for part in self._require_ros_parts()}
+        if len(topics) != 1:
+            raise ROSConfigError(
+                f"ComposedHAL: ros2_control parts read different joint-state topics {topics}; "
+                "one transport reads one."
+            )
+        return topics.pop()
 
-    def attach_transport(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401  # reason: delegated
-        """Wire the arm part to the live ros2_control transport."""
-        self._ros_part().attach_transport(*args, **kwargs)
+    def attach_transport(
+        self,
+        publish_fn: Callable[[str, dict[str, object]], None],
+        state_fn: Callable[[], dict[str, object]],
+        stamp_fn: Callable[[], float] | None = None,
+    ) -> None:
+        """Wire every ros2_control part to the one live transport.
+
+        The transport's state covers all their joints (``ros2_control_joint_names``);
+        each part is handed only its own, by name, since a part reads the state by
+        index in its own joint order.
+        """
+        for part in self._require_ros_parts():
+            part.attach_transport(
+                publish_fn, _project_state(state_fn, part.ros2_control_joint_names()), stamp_fn
+            )
 
     def controller_names(self) -> list[str]:
-        """Controllers ``/openral/estop`` deactivates (the arm part's)."""
-        names: list[str] = self._ros_part().controller_names()
-        return names
+        """Controllers ``/openral/estop`` deactivates (every ros2_control part's)."""
+        return [c for part in self._require_ros_parts() for c in part.controller_names()]
 
     def vendor_stop_services(self) -> list[str]:
-        """The arm part's vendor stop services."""
-        services: list[str] = self._ros_part().vendor_stop_services()
-        return services
+        """Every ros2_control part's vendor stop services."""
+        return [s for part in self._require_ros_parts() for s in part.vendor_stop_services()]
 
     def vendor_stop_topics(self) -> list[str]:
-        """The arm part's vendor stop topics."""
-        topics: list[str] = self._ros_part().vendor_stop_topics()
-        return topics
+        """Every ros2_control part's vendor stop topics."""
+        return [t for part in self._require_ros_parts() for t in part.vendor_stop_topics()]
 
-    def attach_controller_stop(self, seam: Any) -> None:  # noqa: ANN401  # reason: delegated
-        """Give the arm part the controller-stop seam."""
-        self._ros_part().attach_controller_stop(seam)
+    def attach_controller_stop(self, seam: Any) -> None:  # noqa: ANN401  # reason: ControllerStopSeam
+        """Give every ros2_control part the controller-stop seam."""
+        for part in self._require_ros_parts():
+            part.attach_controller_stop(seam)
 
     @property
-    def estop_recovery(self) -> Any:  # noqa: ANN401  # reason: EStopRecovery of the arm part
-        """How the arm part recovers from an e-stop (the only part with motors to re-arm).
+    def estop_recovery(self) -> Any:  # noqa: ANN401  # reason: EStopRecovery
+        """``RESETTABLE`` only when every ros2_control part is; else ``RESTART_REQUIRED``.
 
-        Raises ``AttributeError`` without exactly one ros2_control part, so
+        Raises ``AttributeError`` without a ros2_control part, so
         ``getattr(hal, "estop_recovery", default)`` falls back as for any HAL without it.
         """
-        part = self._ros_part_or_none()
-        if part is None:
+        from openral_hal.protocol import EStopRecovery  # noqa: PLC0415
+
+        parts = self._ros_parts()
+        if not parts:
             raise AttributeError("estop_recovery")
-        return part.estop_recovery
+        if all(p.estop_recovery is EStopRecovery.RESETTABLE for p in parts):
+            return EStopRecovery.RESETTABLE
+        return EStopRecovery.RESTART_REQUIRED
 
     def reset_estop(self) -> None:
-        """Re-arm the arm part after an e-stop."""
-        self._ros_part().reset_estop()
+        """Re-arm every ros2_control part; refused unless all are ``RESETTABLE``."""
+        from openral_core.exceptions import ROSRuntimeError  # noqa: PLC0415
+
+        from openral_hal.protocol import EStopRecovery  # noqa: PLC0415
+
+        if self.estop_recovery is not EStopRecovery.RESETTABLE:
+            raise ROSRuntimeError(
+                f"ComposedHAL '{self.description.name}': a ros2_control part declares "
+                "estop_recovery=restart_required; restart the lifecycle node and re-align."
+            )
+        for part in self._require_ros_parts():
+            part.reset_estop()
 
     @property
     def last_stop_report(self) -> Any:  # noqa: ANN401  # reason: DownstreamStopReport | None
-        """The arm part's downstream stop report, marked as covering the arm only.
+        """The ros2_control parts' stop reports, merged, naming what they do not cover.
 
-        Only the ros2_control part can acknowledge a stop. The other parts' stops
-        (a zero twist to the platform, a lift nothing drives) have no
-        acknowledgement, so ``detail`` names them instead of claiming them.
+        ``stopped`` only when every ros2_control part's stop was acknowledged. The
+        other parts' stops (a zero twist to the platform, a held lift) have no
+        acknowledgement, so ``detail`` names them instead of claiming them. ``None``
+        ("unproven") without a ros2_control part or before every part has a report.
         """
-        part = self._ros_part_or_none()
-        report = None if part is None else part.last_stop_report
-        if report is None:
-            return None  # "unproven", read inside the lifecycle node's e-stop handler
-        others = [p for p in self._parts if p is not part]
-        note = "covers the ros2_control arm only; unacknowledged parts: " + ", ".join(
-            type(p).__name__ for p in others
+        reports = [p.last_stop_report for p in self._ros_parts()]
+        if not reports or any(r is None for r in reports):
+            return None  # read inside the lifecycle node's e-stop handler: never raise
+        ros = self._ros_parts()
+        others = [type(p).__name__ for p in self._parts if not any(p is r for r in ros)]
+        details = [r.detail for r in reports if r.detail]
+        if others:
+            details.append(
+                "covers the ros2_control parts only; unacknowledged parts: " + ", ".join(others)
+            )
+        return dataclasses.replace(
+            reports[0],
+            stopped=all(r.stopped for r in reports),
+            controllers=tuple(c for r in reports for c in r.controllers),
+            controller_states=MappingProxyType(
+                {k: v for r in reports for k, v in r.controller_states.items()}
+            ),
+            vendor_stop=", ".join(r.vendor_stop for r in reports if r.vendor_stop),
+            detail="; ".join(details),
         )
-        return dataclasses.replace(report, detail=f"{report.detail}; {note}".lstrip("; "))
+
+
+def _project_state(
+    state_fn: Callable[[], dict[str, object]], names: Sequence[str]
+) -> Callable[[], dict[str, object]]:
+    """``state_fn`` narrowed to ``names``, by name, in that order.
+
+    Example:
+        >>> full = lambda: {
+        ...     "name": ["a", "b"],
+        ...     "position": [1.0, 2.0],
+        ...     "velocity": [0.0, 0.5],
+        ...     "effort": [],
+        ... }
+        >>> _project_state(full, ["b"])()
+        {'name': ['b'], 'position': [2.0], 'velocity': [0.5], 'effort': []}
+    """
+
+    def projected() -> dict[str, object]:
+        raw = state_fn()
+        index = {str(n): i for i, n in enumerate(cast("Sequence[object]", raw.get("name") or []))}
+        missing = [n for n in names if n not in index]
+        if missing:
+            raise ROSConfigError(f"ComposedHAL: joint state has no {missing}.")
+
+        def pick(key: str) -> list[object]:
+            values = list(cast("Sequence[object]", raw.get(key) or []))
+            return [values[index[n]] for n in names] if len(values) == len(index) else []
+
+        return {
+            "name": list(names),
+            "position": pick("position"),
+            "velocity": pick("velocity"),
+            "effort": pick("effort"),
+        }
+
+    return projected

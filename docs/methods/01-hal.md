@@ -56,13 +56,13 @@ _Internal MuJoCo-backed HAL implementation shared by UR / Franka / SO-100 / G1 /
   - `_resolve_time_base() -> None` [private] — Called by `connect` (issue #358): (L399) with no pinned `settle_steps` and a declared `description.control_rate_hz`, derives the physics steps per action via `openral_core.physics_steps_per_tick` (shrinking `opt.timestep` so the period is a whole number of steps, logged as `hal.time_base.timestep_shrunk`), holds it with `check_time_base`, sets `_step_while_active = False` so the bridge's wall-time idle stepper yields to an active skill, and logs `sim.time_base` once. A pinned count is honoured and logged as `hal.time_base.pinned`; a manifest without a rate keeps the legacy single step (`hal.time_base.unresolved`) — neither is timing-faithful and both stay wall-paced.
   - **(property)** `sim_dt_per_tick_s -> float | None` — Sim seconds one `send_action` advances once held to the control rate; (L463) `None` before connect, with a pinned `settle_steps`, or without a declared rate.
   - `clock_authority() -> ClockAuthority` (L522) — Return `ClockAuthority.simulation("mujoco", timestep_s=<sim_dt_per_tick_s, else model.opt.timestep>)` while connected, otherwise `ClockAuthority.host_wall()`.
-  - `idle_step(wall_dt_s=None) -> bool` (L934) — Sim-only HOLD stepper that keeps cameras/joint-state live while idle; leaves `ctrl` at its last commanded pose and, with `wall_dt_s`, advances that wall-time slice (capped by `_IDLE_STEP_CAP`). Returns `False` after disconnect/e-stop, so it can never drive an e-stopped robot.
-  - **(property)** `last_action_ns -> int` (L925) — `time.monotonic_ns()` of the last `send_action` (`0` if never actuated). Read by `SimSensorBridge.should_idle_step` to yield the idle stepper to a recently-commanded skill; mirrors `SimAttachedHAL.last_action_ns`.
-  - `reset_to_pose(pose: list[float]) -> None` — Maintenance/test snap of `qpos` with `ctrl` re-seeded; gripper values are mapped through `SimGripperDescription.ctrl_range` so they stay in the HAL's normalized units. Skill startup instead uses the runner's checked ramp or MoveIt. (L830)
-  - `estop() -> None` (L903) — Discard any half-staged slot group (keeping the committed-tick watermark), zero `ctrl` and raise `ROSEStopRequested`.
-  - **(classmethod)** `from_description(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> MujocoArmHAL` — Manifest-driven constructor: builds the HAL's MJCF path, qpos/qvel/actuator maps and gripper config from `description.sim`, removing the need for per-robot subclasses. (L1198)
-  - **(staticmethod)** `_sim_kwargs_for(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> _MujocoArmInitKwargs` — Translates `description.sim` into the `__init__` kwarg dict; default 1:1 joint→qpos/actuator mapping from `description.joints`, offset 7/6 when `sim.floating_base=True`. Used by `from_description` and `_init_from_description`. (L1122)
-  - **(instance method)** `_init_from_description(description, *, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5) -> None` — Shared seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA, OpenArm, Rizon4, G1, H1, SO-100) forwards to instead of hand-rolling `super().__init__(DESC, **_sim_kwargs_for(DESC, …))`. (L1251)
+  - `idle_step(wall_dt_s=None) -> bool` (L941) — Sim-only HOLD stepper that keeps cameras/joint-state live while idle; leaves `ctrl` at its last commanded pose and, with `wall_dt_s`, advances that wall-time slice (capped by `_IDLE_STEP_CAP`). Returns `False` after disconnect/e-stop, so it can never drive an e-stopped robot.
+  - **(property)** `last_action_ns -> int` (L932) — `time.monotonic_ns()` of the last `send_action` (`0` if never actuated). Read by `SimSensorBridge.should_idle_step` to yield the idle stepper to a recently-commanded skill; mirrors `SimAttachedHAL.last_action_ns`.
+  - `reset_to_pose(pose: list[float]) -> None` — Maintenance/test snap of `qpos` with `ctrl` re-seeded; gripper values are mapped through `SimGripperDescription.ctrl_range` so they stay in the HAL's normalized units. Skill startup instead uses the runner's checked ramp or MoveIt. (L837)
+  - `estop() -> None` (L910) — Discard any half-staged slot group (keeping the committed-tick watermark), zero `ctrl` and raise `ROSEStopRequested`.
+  - **(classmethod)** `from_description(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> MujocoArmHAL` — Manifest-driven constructor: builds the HAL's MJCF path, qpos/qvel/actuator maps and gripper config from `description.sim`, removing the need for per-robot subclasses. (L1205)
+  - **(staticmethod)** `_sim_kwargs_for(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> _MujocoArmInitKwargs` — Translates `description.sim` into the `__init__` kwarg dict; default 1:1 joint→qpos/actuator mapping from `description.joints`, offset 7/6 when `sim.floating_base=True`. Used by `from_description` and `_init_from_description`. (L1129)
+  - **(instance method)** `_init_from_description(description, *, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5) -> None` — Shared seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA, OpenArm, Rizon4, G1, H1, SO-100) forwards to instead of hand-rolling `super().__init__(DESC, **_sim_kwargs_for(DESC, …))`. (L1258)
   - private: `_require_connected`, `_validate_action`, `_last_arm_targets`, `_apply_arm_targets`, `_apply_gripper_targets`, `_read_gripper_value`, `_gripper_command_to_raw`, `_reset_gripper_qpos`, `_effective_actuator_index_for`
 - module const `_IDLE_STEP_CAP = 200` (L140) — Upper bound (physics steps) on how much sim time one `idle_step` wall-time tick may advance, so an executor stall cannot fast-forward the world by seconds.
 
@@ -484,52 +484,52 @@ _MuJoCo digital twin for OpenAMRobot 2.0 (differential base + DOLD lift + two Op
 ### `python/hal/src/openral_hal/composed.py`
 _One robot HAL composed from part HALs that each own a disjoint set of its joints, by name: an existing arm HAL on a base, without re-implementing either (OpenAMRobot 2.0's real HAL is `OpenArmRealHAL` + `PlatformBaseHAL` + `HeldJointsHAL`)._
 
-- `class ComposedHAL` — `ComposedHAL(*, description, parts, staleness_limit_s=None, **overrides)`; `parts` from `hal.parameters.defaults.parts`, each a `ComposedPartSpec` (a `robot` part is built from its own manifest; `description` threaded when the constructor names it); `staleness_limit_s` and every override reach the parts whose constructor takes them, over their `params`. Every joint owned by exactly one part, else `ROSConfigError`. `read_state` merges parts by name (oldest stamp; `effort` only when every part measures it, else empty, never zero-filled) and caches the positions; joint rows (padded to robot dof or one per name) are split and re-padded per part; ADR-0102 slot groups are staged here and each part receives only its slots as a group of that size (`last_applied_action` fills uncommanded joints from the cached read, never a fresh one); `GRIPPER_*` by `ee_name`; `BODY_TWIST` to the part with `base_joints`. Every share is first offered to its part's optional `check_action`, so a held lift or twist-only base refuses before any part moves. `estop` stops every part and raises `ROSEStopRequested`, or re-raises the first part's other error (later ones noted). `urdf_joint_states_from_hal = True`. Exposes `base_pose`/`base_twist`, slot-watermark members, `discard_staged_slots`, `attach_ros_node`, and the `RosControlDrivable`/`ControllerStoppable`/`DownstreamStopReporting` members, delegated to its one ros2_control part (`last_stop_report` is that part's report with `detail` naming the parts it does not cover, `None` without exactly one such part; `estop_recovery` is then absent). (L188)
-  - `connect()` — Connect every part; a failure disconnects the ones already up. (L302)
-  - `disconnect()` — Disconnect every part (idempotent per the protocol). (L314)
-  - `estop()` — Stop every part, then raise. (L320)
-  - `read_state()` — Every part's state merged into ``description.joints`` order, by name. (L354)
-  - `send_action(action)` — Route ``action`` to the part(s) that own what it commands (see module doc). (L386)
-  - `base_pose` [@property] — The base part's ``(x, y, yaw)``. (L500)
-  - `base_twist` [@property] — The base part's last body twist. (L508)
-  - `last_committed_tick` [@property] — Tick of the last slot group applied here (all parts). (L516)
-  - `last_committed_session` [@property] — Runner session of that tick. (L521)
-  - `last_applied_action` [@property] — The last whole-robot command applied (a slot group composed, see send_action). (L526)
-  - `discard_staged_slots()` — Drop half-staged slots here and in every part that stages its own. (L530)
-  - `attach_ros_node(node)` — Hand the lifecycle node to every part that needs one (e.g. a ROS base). (L539)
-  - `command_bindings()` — The arm part's controller command topics. (L565)
-  - `ros2_control_joint_names()` — The arm part's URDF joint names on ``/joint_states``. (L569)
-  - `joint_state_topic` [@property] — The arm part's ``JointState`` topic. (L575)
-  - `attach_transport()` — Wire the arm part to the live ros2_control transport. (L580)
-  - `controller_names()` — Controllers ``/openral/estop`` deactivates (the arm part's). (L584)
-  - `vendor_stop_services()` — The arm part's vendor stop services. (L589)
-  - `vendor_stop_topics()` — The arm part's vendor stop topics. (L594)
-  - `attach_controller_stop(seam)` — Give the arm part the controller-stop seam. (L599)
-  - `estop_recovery` [@property] — How the arm part recovers from an e-stop (the only part with motors to re-arm). (L604)
-  - `reset_estop()` — Re-arm the arm part after an e-stop. (L615)
-  - `last_stop_report` [@property] — The arm part's downstream stop report, marked as covering the arm only. (L620)
-- `class ComposedPartSpec(BaseModel)` — One `parts` entry: `entry`, `robot?`, `joints?`, `params`; unknown keys refused, `robot` or `joints` required. (L83)
-- `class HeldJointsHAL` — `HeldJointsHAL(*, description, positions)`: a part for joints with no command or state interface (the real OpenAMR lift); reports the declared positions and refuses any command that would move them (`check_action`, which `ComposedHAL` asks first). (L113)
-  - `check_action(action) -> None` — Refuses anything but a `JOINT_POSITION` equal to the declared positions; `send_action` is this check. (L169)
-  - `connect()` — Nothing to open; the declared positions are the state. (L147)
-  - `disconnect()` — Idempotent. (L151)
-  - `read_state()` — The declared positions, stamped now. (L155)
-  - `send_action(action)` — Accept only a joint target equal to the declared position. (L165)
-  - `estop()` — Nothing to de-energise here; report the stop like every HAL. (L183)
+- `class ComposedHAL` — `ComposedHAL(*, description, parts, staleness_limit_s=None, **overrides)`; `parts` from `hal.parameters.defaults.parts`, each a `ComposedPartSpec` (a `robot` part is built from its own manifest; `description` threaded when the constructor names it); `staleness_limit_s` and every override reach the parts whose constructor takes them, over their `params`. Every joint owned by exactly one part, else `ROSConfigError`. `read_state` merges parts by name (oldest stamp; `effort` only when every part measures it, else empty, never zero-filled) and caches the positions; joint rows (padded to robot dof or one per name) are split and re-padded per part; ADR-0102 slot groups are staged here and each part receives only its slots as a group of that size (`last_applied_action` fills uncommanded joints from the cached read, never a fresh one); `GRIPPER_*` by `ee_name`; `BODY_TWIST` to the part with `base_joints`. Every share is first offered to its part's optional `check_action`, so a held lift or twist-only base refuses before any part moves. `estop` stops every part and raises `ROSEStopRequested`, or re-raises the first part's other error (later ones noted). `urdf_joint_states_from_hal = True`. Exposes `base_pose`/`base_twist`, slot-watermark members, `discard_staged_slots`, `attach_ros_node`, and the `RosControlDrivable`/`ControllerStoppable`/`DownstreamStopReporting` members, merged over its ros2_control parts on one controller_manager (the OpenArm arms, a `RosControlHAL` lift on `lift_controller`): bindings, joint names and controllers concatenated (a shared topic or joint refused, one joint-state topic required), `attach_transport` hands each part its own joints by name (`_project_state`), `estop_recovery` is `RESETTABLE` only when every part is, `last_stop_report` merges the parts' reports (`stopped` only when all were acknowledged, `detail` naming the non-ros2_control parts; `None` without a ros2_control part or before every report exists; `estop_recovery` is then absent). (L190)
+  - `connect()` — Connect every part; a failure disconnects the ones already up. (L304)
+  - `disconnect()` — Disconnect every part (idempotent per the protocol). (L316)
+  - `estop()` — Stop every part, then raise. (L322)
+  - `read_state()` — Every part's state merged into ``description.joints`` order, by name. (L356)
+  - `send_action(action)` — Route ``action`` to the part(s) that own what it commands (see module doc). (L388)
+  - `base_pose` [@property] — The base part's ``(x, y, yaw)``. (L502)
+  - `base_twist` [@property] — The base part's last body twist. (L510)
+  - `last_committed_tick` [@property] — Tick of the last slot group applied here (all parts). (L518)
+  - `last_committed_session` [@property] — Runner session of that tick. (L523)
+  - `last_applied_action` [@property] — The last whole-robot command applied (a slot group composed, see send_action). (L528)
+  - `discard_staged_slots()` — Drop half-staged slots here and in every part that stages its own. (L532)
+  - `attach_ros_node(node)` — Hand the lifecycle node to every part that needs one (e.g. a ROS base). (L541)
+  - `command_bindings()` — The arm part's controller command topics. (L568)
+  - `ros2_control_joint_names()` — The arm part's URDF joint names on ``/joint_states``. (L578)
+  - `joint_state_topic` [@property] — The arm part's ``JointState`` topic. (L586)
+  - `attach_transport()` — Wire the arm part to the live ros2_control transport. (L596)
+  - `controller_names()` — Controllers ``/openral/estop`` deactivates (the arm part's). (L613)
+  - `vendor_stop_services()` — The arm part's vendor stop services. (L617)
+  - `vendor_stop_topics()` — The arm part's vendor stop topics. (L621)
+  - `attach_controller_stop(seam)` — Give the arm part the controller-stop seam. (L625)
+  - `estop_recovery` [@property] — How the arm part recovers from an e-stop (the only part with motors to re-arm). (L631)
+  - `reset_estop()` — Re-arm the arm part after an e-stop. (L646)
+  - `last_stop_report` [@property] — The arm part's downstream stop report, marked as covering the arm only. (L661)
+- `class ComposedPartSpec(BaseModel)` — One `parts` entry: `entry`, `robot?`, `joints?`, `params`; unknown keys refused, `robot` or `joints` required. (L85)
+- `class HeldJointsHAL` — `HeldJointsHAL(*, description, positions)`: a part for joints with no command or state interface (the real OpenAMR lift); reports the declared positions and refuses any command that would move them (`check_action`, which `ComposedHAL` asks first). (L115)
+  - `check_action(action) -> None` — Refuses anything but a `JOINT_POSITION` equal to the declared positions; `send_action` is this check. (L171)
+  - `connect()` — Nothing to open; the declared positions are the state. (L149)
+  - `disconnect()` — Idempotent. (L153)
+  - `read_state()` — The declared positions, stamped now. (L157)
+  - `send_action(action)` — Accept only a joint target equal to the declared position. (L167)
+  - `estop()` — Nothing to de-energise here; report the stop like every HAL. (L185)
 
 ### `python/hal/src/openral_hal/platform_base.py`
 _A mobile base driven by its own platform stack, through its odometry and twist topics._
 
 - `class PlatformBaseHAL` — `PlatformBaseHAL(*, description, odom_topic="/platform/odom", cmd_vel_topic="/platform/cmd_vel", staleness_limit_s=0.5)`: joints are the three `base_joints`, positioned at the odometry pose; `BODY_TWIST` → `geometry_msgs/Twist` (non-zero `vy` refused on a differential base; `check_action` refuses every other mode, without publishing); stale or absent odometry raises `ROSPerceptionStale`; `effort` is empty (unmeasured); `disconnect` destroys its subscription and publisher on the node; `estop` publishes zero twist and raises. Needs `attach_ros_node(node)` before `connect`. (L45)
-  - `check_action(action) -> tuple[float, ...]` — Refuses a non-`BODY_TWIST` or an unactuable twist and returns the twist; publishes nothing, needs no connection. (L186)
+  - `check_action(action) -> tuple[float, ...]` — Refuses a non-`BODY_TWIST` or an unactuable twist and returns the twist; publishes nothing, needs no connection. (L188)
   - `attach_ros_node(node)` — Create the odometry subscription and twist publisher on ``node``. (L85)
   - `connect()` — Require the node; odometry freshness is checked at ``read_state``. (L109)
   - `disconnect()` — Stop the base and release; idempotent. (L118)
-  - `base_pose` [@property] — The latest odometry ``(x, y, yaw)``. (L136)
-  - `base_twist` [@property] — The latest odometry body twist. (L141)
-  - `read_state()` — The base joints at the odometry pose. (L157)
-  - `send_action(action)` — Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``. (L177)
-  - `estop()` — Command zero twist, then raise. (L207)
+  - `base_pose` [@property] — The latest odometry ``(x, y, yaw)``. (L138)
+  - `base_twist` [@property] — The latest odometry body twist. (L143)
+  - `read_state()` — The base joints at the odometry pose. (L159)
+  - `send_action(action)` — Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``. (L179)
+  - `estop()` — Command zero twist, then raise. (L209)
 
 ### `python/hal/src/openral_hal/_openamr_v2_assets.py`
 _Build the OpenAMRobot 2.0 MJCF from the vendored `robots/openamr_v2/openamr_v2.urdf` (upstream ships no MJCF)._
