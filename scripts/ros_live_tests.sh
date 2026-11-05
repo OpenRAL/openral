@@ -62,6 +62,9 @@ TARGETS=(
     # shoulder block is refused as a self hit naming openarm_body_link0, and
     # the rest pose (pedestals inside the torso, SRDF-exempt) is accepted.
     tests/integration/test_safety_kernel_openarm_torso.py
+    tests/integration/test_safety_kernel_openamr_v2_body.py
+    # A 16-D OpenArm slot tick on OpenAMR reaches the reasoner palette's state subset.
+    tests/integration/test_reasoner_palette_slot_state_subset.py
     # Issue #373: the real kernel's external-torque observer on the MuJoCo OpenArm
     # (lowered force_observer model): no stop in free motion, a stop on a push
     # and on a deliberate arm/box collision. Needs mujoco in the venv.
