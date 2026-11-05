@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+import yaml
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError, ROSError
 from openral_core.schemas import (
     ComputeSpec,
@@ -1030,18 +1031,15 @@ def _candidate_local_paths(uri: str) -> list[Path]:
     add(candidate)
 
     # Re-anchor at the repo root so ``rskills/<name>`` works from any cwd.
-    repo_root = find_repo_root_from(Path(__file__))
+    repo_root = intree_repo_root()
     if repo_root is not None:
         add(repo_root / candidate)
         # Bare-name form: ``smolvla-libero`` → ``<repo>/rskills/smolvla-libero``.
+        # The HF Hub form ``<org>/rskill-<name>`` resolves by manifest ``name`` in
+        # ``load_rskill_manifest`` (``_intree_manifest_path_by_name``): in-tree
+        # directory names do not follow the repo id.
         if "/" not in uri:
             add(repo_root / "rskills" / candidate)
-        # HF Hub form ``<org>/rskill-<name>`` → in-tree ``rskills/<name>``.
-        if "/" in uri:
-            tail = uri.rsplit("/", 1)[1]
-            stripped = tail.removeprefix("rskill-").removeprefix("rskill_")
-            if stripped:
-                add(repo_root / "rskills" / stripped)
 
     return forms
 
@@ -1057,7 +1055,7 @@ def discover_intree_rskills() -> list[tuple[str, RSkillManifest]]:
         List of ``(rskill_name, manifest)`` tuples, one per
         ``rskills/<name>/rskill.yaml`` on disk.
     """
-    repo_root = find_repo_root_from(Path(__file__))
+    repo_root = intree_repo_root()
     if repo_root is None:
         return []
     rskills_dir = repo_root / "rskills"
@@ -1075,6 +1073,51 @@ def discover_intree_rskills() -> list[tuple[str, RSkillManifest]]:
             continue
         out.append((child.name, manifest))
     return out
+
+
+REPO_ROOT_ENV = "OPENRAL_REPO_ROOT"
+"""Env var naming the OpenRAL checkout whose ``robots/`` + ``rskills/`` trees to use."""
+
+
+def repo_root_override() -> Path | None:
+    """The checkout ``$OPENRAL_REPO_ROOT`` names, when it holds ``robots/`` + ``rskills/``.
+
+    The one validity rule the CLI (``openral_cli.deploy_sim._repo_root_from``, which
+    refuses an invalid override), the deploy launch's skill tree and the in-tree
+    resolution here share. Returns ``None`` when unset or invalid.
+    """
+    env_root = os.environ.get(REPO_ROOT_ENV)
+    if not env_root:
+        return None
+    candidate = Path(env_root).expanduser().resolve()
+    if (candidate / "robots").is_dir() and (candidate / "rskills").is_dir():
+        return candidate
+    return None
+
+
+def intree_repo_root() -> Path | None:
+    """The checkout in-tree rSkills resolve from: ``repo_root_override()``, else this package's."""
+    return repo_root_override() or find_repo_root_from(Path(__file__))
+
+
+def _intree_manifest_path_by_name(name: str) -> Path | None:
+    """The in-tree ``rskill.yaml`` whose ``name`` equals ``name``, without validating any.
+
+    Reads only each manifest's top-level ``name``; an unreadable or malformed file is
+    skipped silently — it is not the one asked for, and a contributor's half-edited
+    manifest must not break resolving every other id.
+    """
+    repo_root = intree_repo_root()
+    if repo_root is None:
+        return None
+    for path in sorted((repo_root / "rskills").glob("*/rskill.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError):
+            continue
+        if isinstance(data, dict) and data.get("name") == name:
+            return path
+    return None
 
 
 def find_repo_root_from(start: Path) -> Path | None:
@@ -1105,7 +1148,7 @@ def intree_embodiment_tags() -> frozenset[str]:
     Without a checkout only ``SKILL_ONLY_EMBODIMENT_TAGS`` is returned.
     """
     tags = set(SKILL_ONLY_EMBODIMENT_TAGS)
-    repo_root = find_repo_root_from(Path(__file__))
+    repo_root = intree_repo_root()
     if repo_root is not None:
         for path in sorted((repo_root / "robots").glob("*/robot.yaml")):
             tags.update(RobotDescription.from_yaml(str(path)).capabilities.embodiment_tags)
@@ -1120,7 +1163,7 @@ def known_benchmark_ids() -> frozenset[str] | None:
     ``aloha_transfer_cube`` ids). ``openral_core.BenchmarkName`` is an open id;
     this is the set ``RSkillManifest.benchmarks`` keys are checked against.
     """
-    repo_root = find_repo_root_from(Path(__file__))
+    repo_root = intree_repo_root()
     if repo_root is None:
         return None
     return frozenset(
@@ -1189,9 +1232,9 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
        ``rskills/smolvla-libero/rskill.yaml``, or any absolute path. Tried
        both relative to the current working directory and relative to the
        in-tree OpenRAL repo root.
-    2. **HF Hub repo id mapped to local skill** — ``<org>/rskill-<name>`` is
-       mapped to ``<repo_root>/rskills/<name>/rskill.yaml`` if that file
-       exists, else to the in-tree manifest whose ``name`` equals the repo id.
+    2. **HF Hub repo id mapped to local skill** — ``<org>/rskill-<name>`` maps
+       to the in-tree manifest whose ``name`` equals the repo id (the in-tree
+       root honours ``$OPENRAL_REPO_ROOT``; see ``intree_repo_root``).
     3. **HF Hub repo id** — anything else is treated as a Hub repo and the
        manifest is downloaded via ``huggingface_hub.hf_hub_download``.
 
@@ -1225,15 +1268,18 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
         _RSKILL_MANIFEST_CACHE[uri] = manifest
         return manifest
 
-    # An HF Hub repo id whose rSkill ships in-tree under a different directory name
-    # (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`` lives in
-    # ``rskills/smolvla-libero``) resolves to that manifest by its ``name``, so the
-    # in-tree copy wins over a possibly older published one without a network call.
+    # An HF Hub repo id whose rSkill ships in-tree (``OpenRAL/rskill-smolvla-franka_panda-
+    # libero_spatial-bf16`` lives in ``rskills/smolvla-libero``) resolves to that manifest
+    # by its ``name``: the in-tree copy wins over a possibly older published one, without
+    # a network call. Logged (DEBUG: CLI commands print JSON on stdout, where structlog's
+    # stock renderer also writes), since it changes which config a Hub id runs with.
     if "/" in uri:
-        for _dir_name, intree in discover_intree_rskills():
-            if intree.name == uri:
-                _RSKILL_MANIFEST_CACHE[uri] = intree
-                return intree
+        intree_path = _intree_manifest_path_by_name(uri)
+        if intree_path is not None:
+            log.debug("rskill.manifest_resolved_in_tree", uri=uri, path=str(intree_path))
+            manifest = RSkillManifest.from_yaml(str(intree_path))
+            _RSKILL_MANIFEST_CACHE[uri] = manifest
+            return manifest
 
     # Fall through to HF Hub.
     try:

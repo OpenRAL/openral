@@ -12,6 +12,7 @@ dependencies = [
     "openral-world-state==0.3.1",     # reason: LookAtRskill — compute_gaze_pose / rotation_to_quat_wxyz / homogeneous_from_quat_xyz
     # x-release-please-end
     "huggingface_hub>=0.20",       # reason: rSkill.from_pretrained downloads manifests + weights from HF Hub
+    "PyYAML>=6.0",                 # reason: in-tree manifest name index (loader._intree_manifest_path_by_name)
     "structlog>=24.1",             # reason: structured logging per CLAUDE.md §2
 ]
 

@@ -3081,6 +3081,7 @@ dependencies = [
     { name = "openral-core" },
     { name = "openral-observability" },
     { name = "openral-world-state" },
+    { name = "pyyaml" },
     { name = "structlog" },
 ]
 
@@ -3090,6 +3091,7 @@ requires-dist = [
     { name = "openral-core", editable = "python/core" },
     { name = "openral-observability", editable = "python/observability" },
     { name = "openral-world-state", editable = "python/world_state" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "structlog", specifier = ">=24.1" },
 ]
 
