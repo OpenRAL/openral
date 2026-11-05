@@ -239,3 +239,33 @@ def test_a_held_joint_past_its_limit_does_not_refuse_the_pose(
     named[names.index("left_joint1")] = 99.0
     with pytest.raises(ROSConfigError, match="left_joint1"):
         runner_mod.validate_starting_pose(amr, named, held_joints=held)
+
+
+def test_the_ramp_never_commands_the_held_base_and_lift(
+    runner_mod: ModuleType, amr: RobotDescription
+) -> None:
+    """Each waypoint names only the 16 slot joints, zero-padded at the held ones.
+
+    Commanding the base and lift at their measured values (the old ramp) sent a joint
+    target to the real base part, which takes only twists (it raised after the arm had
+    moved), and put odometry past ``base_x``'s ±50 m (or a yaw wrapped to -pi) before
+    the kernel's position-limit check, which e-stopped a goal that never moves the base.
+    """
+    names = [j.name for j in amr.joints]
+    current = [0.0] * len(names)
+    current[names.index("base_x")] = 75.0  # odometry past the declared ±50 m
+    current[names.index("base_yaw")] = -3.14159265  # wrapped just below -3.14159
+    current[names.index("lift_joint")] = 0.2
+    target = runner_mod.expand_starting_pose([0.2] * 16, openarm_pi05_manifest(), amr, current)
+    held = frozenset(names) - frozenset(slot_state_joint_names(openarm_pi05_manifest(), amr) or ())
+    action = runner_mod.starting_pose_waypoint_action(names, current, target, 0.5, held_joints=held)
+    assert action.joint_names == OPENARM_JOINTS
+    row = action.joint_targets[0]
+    assert [row[names.index(n)] for n in ("base_x", "base_y", "base_yaw", "lift_joint")] == [
+        0.0
+    ] * 4
+    assert [row[names.index(n)] for n in OPENARM_JOINTS] == pytest.approx([0.1] * 16)
+    for joint, value in zip(amr.joints, row, strict=True):  # the kernel range-checks every dof
+        if joint.name in held:
+            lo, hi = joint.position_limits or (-np.inf, np.inf)
+            assert lo <= value <= hi, joint.name

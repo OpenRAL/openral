@@ -16,34 +16,41 @@ Routing, all by name, never by position:
   OpenArm tick it would get on the OpenArm itself.
 * ``GRIPPER_*``: the part that has the end effector (``ee_name``).
 * ``BODY_TWIST``: the part that declares ``base_joints``.
-* ``estop``: every part is stopped. ``ROSEStopRequested`` still propagates, and a
-  part that fails to stop cannot keep the others energised.
+* Before any part is commanded, every part that can refuse its share
+  (``check_action``: a held lift, a base that takes only twists) is asked, so a
+  refusal never lands after another part already moved.
+* ``estop``: every part is stopped. Then ``ROSEStopRequested`` is raised, unless a
+  part's stop failed with another error: that error propagates instead (the
+  others noted on it), so a failed base stop is never reported as a clean stop.
 
 The composite also forwards the optional surfaces the lifecycle node probes
 structurally: the ros2_control transport seam (delegated to its one
 ``RosControlDrivable`` part; with none or several those calls raise
-``ROSConfigError``), ``attach_ros_node``, and ``base_pose``/``base_twist``.
+``ROSConfigError``, while ``last_stop_report`` reads ``None`` and ``estop_recovery``
+is absent), ``attach_ros_node``, and ``base_pose``/``base_twist``.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import structlog
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 from openral_core.schemas import Action, ControlMode, JointState
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from openral_hal._slot_group import SlotGroupStager, slot_group_targets
 
 if TYPE_CHECKING:
     from openral_hal.protocol import HAL
 
-__all__ = ["ComposedHAL", "HeldJointsHAL"]
+__all__ = ["ComposedHAL", "ComposedPartSpec", "HeldJointsHAL"]
 
 log = structlog.get_logger(__name__)
 
@@ -71,6 +78,36 @@ def _import(entry: str) -> Callable[..., Any]:
     if not callable(obj):
         raise ROSConfigError(f"ComposedHAL part entry {entry!r} is not callable.")
     return obj
+
+
+class ComposedPartSpec(BaseModel):
+    """One ``hal.parameters.defaults.parts`` entry of a ``ComposedHAL`` manifest.
+
+    Unknown keys are refused, so a typo (``param:``) fails at load instead of
+    silently starting a part on its default topics or buses.
+
+    Example:
+        >>> ComposedPartSpec(entry="openral_hal.composed:HeldJointsHAL", joints=["lift_joint"])
+        ... # doctest: +ELLIPSIS
+        ComposedPartSpec(entry='openral_hal.composed:HeldJointsHAL', robot=None, ...)
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    entry: str
+    """``"module:Class"`` of the part HAL."""
+    robot: str | None = None
+    """Build the part from ``robots/<robot>/robot.yaml``."""
+    joints: list[str] | None = None
+    """Without ``robot``: the robot joints the part owns."""
+    params: dict[str, Any] = {}
+    """The part constructor's keyword arguments."""
+
+    @model_validator(mode="after")
+    def _robot_or_joints(self) -> ComposedPartSpec:
+        if not self.robot and not self.joints:
+            raise ValueError(f"part {self.entry!r} needs 'robot' or 'joints'")
+        return self
 
 
 class HeldJointsHAL:
@@ -127,6 +164,10 @@ class HeldJointsHAL:
 
     def send_action(self, action: Action) -> None:
         """Accept only a joint target equal to the declared position."""
+        self.check_action(action)
+
+    def check_action(self, action: Action) -> None:
+        """Refuse anything but a joint target equal to the declared position."""
         if action.control_mode != ControlMode.JOINT_POSITION.value or not action.joint_targets:
             raise ROSConfigError(
                 f"HeldJointsHAL: {action.control_mode} cannot drive held joints "
@@ -158,39 +199,61 @@ class ComposedHAL:
     * ``params`` (optional): the part constructor's keyword arguments. ``description``
       is threaded when the constructor names it.
 
-    Every robot joint must be owned by exactly one part.
+    (``ComposedPartSpec`` types an entry.) Every robot joint must be owned by exactly
+    one part. ``staleness_limit_s`` (the manifest's
+    ``safety.joint_state_staleness_limit_s``, threaded by ``build_hal``) and any other
+    keyword (a ``deploy run`` transport override such as a CAN interface) reach every
+    part whose constructor takes them, over that part's ``params``.
 
     Raises:
         ROSConfigError: Malformed ``parts``, overlapping or missing joint ownership,
             or a part manifest whose joints this robot does not have.
     """
 
+    # The vendor joint_state_broadcaster covers only the ros2_control part's joints,
+    # so the HAL node publishes the URDF-named state of every joint itself
+    # (``resolver.vendor_publishes_urdf_joint_states``).
+    urdf_joint_states_from_hal: ClassVar[bool] = True
+
     def __init__(
-        self, *, description: RobotDescription, parts: Sequence[Mapping[str, Any]]
+        self,
+        *,
+        description: RobotDescription,
+        parts: Sequence[Mapping[str, Any]],
+        staleness_limit_s: float | None = None,
+        **overrides: Any,  # noqa: ANN401  # reason: per-part constructor kwargs
     ) -> None:
         """Build every part; nothing connects until ``connect``."""
         if not parts:
             raise ROSConfigError(f"ComposedHAL for '{description.name}' needs at least one part.")
+        try:
+            specs = [ComposedPartSpec.model_validate(dict(p)) for p in parts]
+        except ValidationError as exc:
+            raise ROSConfigError(f"ComposedHAL '{description.name}' parts: {exc}") from exc
+        if staleness_limit_s is not None:
+            overrides["staleness_limit_s"] = staleness_limit_s
         self.description = description
         robot_joints = [j.name for j in description.joints]
         self._parts: list[HAL] = []
         self._owner: dict[str, int] = {}
-        for i, spec in enumerate(parts):
+        for i, spec in enumerate(specs):
             part_desc = self._part_description(description, spec)
             for name in (j.name for j in part_desc.joints):
                 if name not in robot_joints:
                     raise ROSConfigError(
-                        f"ComposedHAL part {spec.get('entry')!r} owns {name!r}, which "
+                        f"ComposedHAL part {spec.entry!r} owns {name!r}, which "
                         f"'{description.name}' does not have."
                     )
                 if name in self._owner:
                     raise ROSConfigError(f"ComposedHAL: joint {name!r} is owned by two parts.")
                 self._owner[name] = i
-            ctor = _import(str(spec["entry"]))
-            kwargs = dict(spec.get("params") or {})
-            import inspect  # noqa: PLC0415
-
-            if "description" in inspect.signature(ctor).parameters:
+            ctor = _import(spec.entry)
+            accepted = inspect.signature(ctor).parameters
+            kwargs = {
+                **spec.params,
+                **{k: v for k, v in overrides.items() if k in accepted},
+            }
+            if "description" in accepted:
                 kwargs["description"] = part_desc
             self._parts.append(ctor(**kwargs))
         unowned = [n for n in robot_joints if n not in self._owner]
@@ -204,23 +267,21 @@ class ComposedHAL:
             raise ROSConfigError("ComposedHAL: more than one part declares base_joints.")
         self._base: int | None = bases[0] if bases else None
         self._slot_group = SlotGroupStager()
+        # Last read position of every joint (read_state), for last_applied_action.
+        self._last_positions: dict[str, float] = {}
 
     @staticmethod
-    def _part_description(robot: RobotDescription, spec: Mapping[str, Any]) -> RobotDescription:
-        if "entry" not in spec:
-            raise ROSConfigError(f"ComposedHAL part {dict(spec)} has no 'entry'.")
-        if spec.get("robot"):
-            path = _repo_robots_dir() / str(spec["robot"]) / "robot.yaml"
+    def _part_description(robot: RobotDescription, spec: ComposedPartSpec) -> RobotDescription:
+        if spec.robot:
+            path = _repo_robots_dir() / spec.robot / "robot.yaml"
             if not path.is_file():
                 raise ROSConfigError(f"ComposedHAL part manifest not found: {path}")
             return RobotDescription.from_yaml(str(path))
-        names = list(spec.get("joints") or [])
-        if not names:
-            raise ROSConfigError(f"ComposedHAL part {spec['entry']!r} needs 'robot' or 'joints'.")
+        names = list(spec.joints or [])
         by_name = {j.name: j for j in robot.joints}
         missing = [n for n in names if n not in by_name]
         if missing:
-            raise ROSConfigError(f"ComposedHAL part {spec['entry']!r}: unknown joints {missing}.")
+            raise ROSConfigError(f"ComposedHAL part {spec.entry!r}: unknown joints {missing}.")
         base = robot.base_joints if set(robot.base_joints or []) <= set(names) else None
         return robot.model_copy(
             update={
@@ -259,21 +320,34 @@ class ComposedHAL:
     def estop(self) -> None:
         """Stop every part, then raise.
 
-        Each part's ``estop`` raises ``ROSEStopRequested`` by contract, so the
-        calls are chained through ``finally``: every part is stopped whatever an
-        earlier one raised, and the last exception propagates. Nothing is caught.
+        Each part's ``estop`` raises ``ROSEStopRequested`` by contract. Every part
+        is stopped whatever an earlier one raised. If they all stopped,
+        ``ROSEStopRequested`` is raised. If any part's stop failed with another
+        error, the first such error is re-raised (any later failures noted on it),
+        so the caller's "hardware estop failed" path runs.
         """
         self._slot_group.discard()
-
-        def _stop(i: int) -> None:
-            if i == len(self._parts):
-                raise ROSEStopRequested(f"Emergency stop on robot '{self.description.name}'.")
+        failures: list[BaseException] = []
+        for part in self._parts:
             try:
-                self._parts[i].estop()
-            finally:
-                _stop(i + 1)
-
-        _stop(0)
+                part.estop()
+            except ROSEStopRequested:
+                continue  # the contract's success signal, re-raised once below
+            except (
+                BaseException
+            ) as exc:  # reason: every part must still be stopped; re-raised below
+                exc.add_note(f"ComposedHAL: e-stop of part {type(part).__name__} failed.")
+                failures.append(exc)
+        if failures:
+            for later in failures[1:]:
+                failures[0].add_note(f"also failed: {type(later).__name__}: {later}")
+            log.error(
+                "hal.composed.estop_failed",
+                robot=self.description.name,
+                failures=[f"{type(e).__name__}: {e}" for e in failures],
+            )
+            raise failures[0]
+        raise ROSEStopRequested(f"Emergency stop on robot '{self.description.name}'.")
 
     # ── state ────────────────────────────────────────────────────────────────
 
@@ -292,6 +366,7 @@ class ComposedHAL:
                 eff[name] = js.effort[k] if js.effort else 0.0
             stamps.append(js.stamp_ns)
         names = [j.name for j in self.description.joints]
+        self._last_positions = pos
         return JointState(
             stamp_ns=min(stamps),  # the oldest part bounds the state's freshness
             name=names,
@@ -310,12 +385,18 @@ class ComposedHAL:
                 return
             # The tick's whole-robot command, for consumers of last_applied_action
             # (the vision attachment bridge): the slots' targets by name, every joint
-            # they leave uncommanded (base, held lift) at its measured position.
+            # they leave uncommanded (base, held lift) at its last read position. Not
+            # re-read here: an arms-only tick must not fail on base odometry.
             names = [j.name for j in self.description.joints]
-            measured = self.read_state().position
+            targets = slot_group_targets(group, names)
+            if any(
+                t is None and n not in self._last_positions
+                for t, n in zip(targets, names, strict=True)
+            ):
+                self.read_state()
             row = [
-                m if t is None else t
-                for t, m in zip(slot_group_targets(group, names), measured, strict=True)
+                self._last_positions[n] if t is None else t
+                for t, n in zip(targets, names, strict=True)
             ]
             applied = Action(
                 control_mode=ControlMode.JOINT_POSITION,
@@ -328,24 +409,30 @@ class ComposedHAL:
             for slot in group:
                 for i, sub in self._split(slot):
                     by_part.setdefault(i, []).append(sub)
-            for i, subs in sorted(by_part.items(), key=lambda kv: self._actuates(kv[0])):
-                for sub in subs:
-                    self._parts[i].send_action(
-                        sub.model_copy(update={"tick_group_size": len(subs)})
-                    )
+            self._dispatch(
+                [
+                    (i, sub.model_copy(update={"tick_group_size": len(subs)}))
+                    for i, subs in by_part.items()
+                    for sub in subs
+                ]
+            )
             self._slot_group.commit(group, applied=applied)
             return
         self._slot_group.admit(action)
-        for i, sub in sorted(self._split(action), key=lambda pair: self._actuates(pair[0])):
-            self._parts[i].send_action(sub)
+        self._dispatch(self._split(action))
         self._slot_group.commit_tick(action)
 
-    def _actuates(self, i: int) -> bool:
-        """Sort key: held parts (validation only) dispatch before parts that move.
+    def _dispatch(self, shares: list[tuple[int, Action]]) -> None:
+        """Ask every part that can refuse (``check_action``) first, then send all.
 
-        A held part's refusal then raises before any part has applied its share.
+        A held lift or a twist-only base then refuses before any part has moved.
         """
-        return not isinstance(self._parts[i], HeldJointsHAL)
+        for i, sub in shares:
+            check = getattr(self._parts[i], "check_action", None)
+            if check is not None:
+                check(sub)
+        for i, sub in shares:
+            self._parts[i].send_action(sub)
 
     def _split(self, action: Action) -> list[tuple[int, Action]]:
         mode = action.control_mode
@@ -455,15 +542,19 @@ class ComposedHAL:
     # members, delegated to the one ros2_control part (the OpenArm arm).
 
     def _ros_part(self) -> Any:  # noqa: ANN401  # reason: structural ros2_control HAL
+        part = self._ros_part_or_none()
+        if part is None:
+            raise ROSConfigError(
+                f"ComposedHAL '{self.description.name}': the ros2_control seam needs exactly "
+                "one ros2_control part."
+            )
+        return part
+
+    def _ros_part_or_none(self) -> Any:  # noqa: ANN401  # reason: structural ros2_control HAL
         from openral_hal.ros_control_transport import RosControlDrivable  # noqa: PLC0415
 
         parts = [p for p in self._parts if isinstance(p, RosControlDrivable)]
-        if len(parts) != 1:
-            raise ROSConfigError(
-                f"ComposedHAL '{self.description.name}': the ros2_control seam needs exactly "
-                f"one ros2_control part, found {len(parts)}."
-            )
-        return parts[0]
+        return parts[0] if len(parts) == 1 else None
 
     def command_bindings(self) -> Any:  # noqa: ANN401  # reason: delegated
         """The arm part's controller command topics."""
@@ -505,8 +596,15 @@ class ComposedHAL:
 
     @property
     def estop_recovery(self) -> Any:  # noqa: ANN401  # reason: EStopRecovery of the arm part
-        """How the arm part recovers from an e-stop (the only part with motors to re-arm)."""
-        return self._ros_part().estop_recovery
+        """How the arm part recovers from an e-stop (the only part with motors to re-arm).
+
+        Raises ``AttributeError`` without exactly one ros2_control part, so
+        ``getattr(hal, "estop_recovery", default)`` falls back as for any HAL without it.
+        """
+        part = self._ros_part_or_none()
+        if part is None:
+            raise AttributeError("estop_recovery")
+        return part.estop_recovery
 
     def reset_estop(self) -> None:
         """Re-arm the arm part after an e-stop."""
@@ -520,10 +618,11 @@ class ComposedHAL:
         (a zero twist to the platform, a lift nothing drives) have no
         acknowledgement, so ``detail`` names them instead of claiming them.
         """
-        report = self._ros_part().last_stop_report
+        part = self._ros_part_or_none()
+        report = None if part is None else part.last_stop_report
         if report is None:
-            return None
-        others = [p for p in self._parts if p is not self._ros_part()]
+            return None  # "unproven", read inside the lifecycle node's e-stop handler
+        others = [p for p in self._parts if p is not part]
         note = "covers the ros2_control arm only; unacknowledged parts: " + ", ".join(
             type(p).__name__ for p in others
         )

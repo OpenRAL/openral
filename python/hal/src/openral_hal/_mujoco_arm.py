@@ -784,6 +784,14 @@ class MujocoArmHAL(HALBase):
             # Ungrouped ticked actions (starting-pose ramp, approach) share the
             # watermark, so a restarted runner's renumbering is seen here too.
             self._slot_group.admit(action)
+            if action.joint_names and set(action.joint_names) != set(self._joint_names):
+                # A row naming a subset (the ramp of a slot-subset starting_pose) is
+                # zero-padded at the joints it leaves out; compose it like a one-slot
+                # group, so those joints hold (or the row is refused) instead of
+                # being driven to the padding.
+                action = compose_slot_group_action(
+                    [action], self._joint_names, hold=self._held_ctrl_targets()
+                )
         self._validate_action(action)
 
         assert self._data is not None and self._model is not None

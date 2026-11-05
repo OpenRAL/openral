@@ -166,6 +166,17 @@ class PlatformBaseHAL:
         """Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``."""
         if not self._connected or self._pub is None:
             raise ROSRuntimeError("PlatformBaseHAL.send_action() while not connected.")
+        vx, vy, _vz, _wx, _wy, wz = self.check_action(action)
+        msg = self._twist_type()
+        msg.linear.x, msg.linear.y, msg.angular.z = vx, vy, wz
+        self._pub.publish(msg)
+
+    def check_action(self, action: Action) -> tuple[float, float, float, float, float, float]:
+        """Refuse anything but an actuable ``BODY_TWIST``; return its twist.
+
+        ``ComposedHAL`` asks this before commanding any part, so a joint target for
+        the base (a whole-robot row) is refused before the arm has moved.
+        """
         if action.control_mode != ControlMode.BODY_TWIST.value:
             raise ROSConfigError(
                 f"PlatformBaseHAL drives the base by BODY_TWIST only; got {action.control_mode}."
@@ -179,9 +190,7 @@ class PlatformBaseHAL:
                 f"PlatformBaseHAL ({self.description.base_kinematics} base) cannot actuate "
                 f"{(vx, vy, vz, wx, wy, wz)}."
             )
-        msg = self._twist_type()
-        msg.linear.x, msg.linear.y, msg.angular.z = vx, vy, wz
-        self._pub.publish(msg)
+        return (vx, vy, vz, wx, wy, wz)
 
     def estop(self) -> None:
         """Command zero twist, then raise.

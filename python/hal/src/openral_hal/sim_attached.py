@@ -236,8 +236,9 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
 _PLANAR_TWIST_EPS = 1e-6
 
 # How long a /cmd_vel-style BODY_TWIST setpoint keeps driving a kinematic base
-# with no new command: diff_drive_controller's cmd_vel_timeout default (0.5 s).
-# A publisher that dies stops the base within this window.
+# with no new command: diff_drive_controller's cmd_vel_timeout default (0.5 s), in
+# sim time when the backend has a clock (_twist_hold_clock_ns). A publisher that
+# dies stops the base within this window.
 _BASE_TWIST_HOLD_NS = 500_000_000
 
 
@@ -2138,7 +2139,7 @@ class SimAttachedHAL:
         # whose clock only its own commands advanced) drove past its goals.
         del action
         self._held_twist = (float(vx_body), float(vy_body), float(wz))
-        self._held_twist_until_ns = time.monotonic_ns() + _BASE_TWIST_HOLD_NS
+        self._held_twist_until_ns = self._twist_hold_clock_ns() + _BASE_TWIST_HOLD_NS
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
 
     def _drive_held_twist(
@@ -2163,9 +2164,23 @@ class SimAttachedHAL:
 
     def _live_held_twist(self) -> tuple[float, float, float] | None:
         """The held base setpoint, or ``None`` once it has timed out (the base stops)."""
-        if self._held_twist is not None and time.monotonic_ns() >= self._held_twist_until_ns:
+        if (
+            self._held_twist is not None
+            and self._twist_hold_clock_ns() >= self._held_twist_until_ns
+        ):
             self._held_twist = None
         return self._held_twist
+
+    def _twist_hold_clock_ns(self) -> int:
+        """The clock the held setpoint expires on: sim time when the backend has one.
+
+        Nav2 publishes /cmd_vel on sim time. Below real time a wall-clock hold lapsed
+        between its commands, so the base stopped and odom's twist dropped to zero
+        between them; on sim time the hold spans the same sim interval as on hardware.
+        A clock-less backend falls back to the monotonic wall clock.
+        """
+        sim_ns = self.sim_time_ns()
+        return time.monotonic_ns() if sim_ns is None else sim_ns
 
     def _is_base_twist_setpoint(self, action: Action) -> bool:
         """An ungrouped BODY_TWIST for a base the env integrates (Isaac kinematic base)."""

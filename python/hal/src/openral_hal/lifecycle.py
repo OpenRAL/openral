@@ -1040,15 +1040,18 @@ if _ROS2_AVAILABLE:
             return self.on_configure_post_hal()
 
         def _open_urdf_joint_state_pub(self, msg_type: Any, qos: Any) -> None:  # noqa: ANN401  # reason: rclpy message/QoS types are untyped
-            """Open ``~/urdf_joint_states`` when ``urdf_joint_names`` is set (no ros2_control).
+            """Open ``~/urdf_joint_states`` when ``urdf_joint_names`` is set.
 
             A real ros2_control robot's vendor broadcaster already publishes the
-            URDF names, so the renamed stream is never opened beside it.
+            URDF names, so the renamed stream is never opened beside it, unless the
+            HAL says the broadcaster covers only some joints
+            (``urdf_joint_states_from_hal``, ``resolver.vendor_publishes_urdf_joint_states``).
             """
             urdf_names = list(
                 self.get_parameter("urdf_joint_names").get_parameter_value().string_array_value
             )
-            if self._ros_control_transport is not None or not any(urdf_names):
+            partial = bool(getattr(self._hal, "urdf_joint_states_from_hal", False))
+            if (self._ros_control_transport is not None and not partial) or not any(urdf_names):
                 return
             assert self._hal is not None
             if len(urdf_names) != len(self._hal.description.joints):

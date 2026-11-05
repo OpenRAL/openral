@@ -187,9 +187,21 @@ class MobileBaseBridge:
             pose_6dof = frame.base_pose_6dof
             bt: tuple[float, ...] = frame.base_twist
         else:
+            from openral_core.exceptions import ROSPerceptionStale
+
             getter = getattr(self._hal, "base_pose_6dof", None)
-            pose_6dof = getter() if getter is not None else None
-            base_pose = self._hal.base_pose
+            try:
+                pose_6dof = getter() if getter is not None else None
+                base_pose = self._hal.base_pose
+            except ROSPerceptionStale as exc:
+                # A real base's odometry can be late (none yet at activation, an EKF
+                # pause). Publishing nothing lets odom -> base go stale, so Nav2 stops
+                # on its own TF timeout; raising here would kill the HAL node's
+                # executor and leave the base on its last twist.
+                self._node.get_logger().warning(
+                    f"mobile_base_bridge: no /odom published: {exc}", throttle_duration_sec=2.0
+                )
+                return
             bt = getattr(self._hal, "base_twist", (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
         # Prefer a 6-DoF proprio (robocasa base pos+quat) so base_z carries the

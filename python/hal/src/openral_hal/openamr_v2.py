@@ -8,8 +8,9 @@ reads (``base_pose`` / ``base_twist``) and ``BODY_TWIST``.
 
 Subclassing ``OpenArmMujocoHAL`` would buy nothing: that class only binds the
 OpenArm manifest. The arms here differ only by their joint names in the
-manifest. The real ``OpenArmRealHAL`` hard-codes 16 joints and four controllers;
-a real OpenAMR HAL is future work (hardware from 2027-04).
+manifest. The real robot is ``openral_hal.composed.ComposedHAL`` (the manifest's
+``hal.real``), which reuses ``OpenArmRealHAL`` unchanged beside a platform base and
+a held lift; it has not run on hardware (units ship 2027-04).
 """
 
 from __future__ import annotations

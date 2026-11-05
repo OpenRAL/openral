@@ -2372,11 +2372,13 @@ if _ROS2_AVAILABLE:
             """Publish a bounded starting-pose ramp through the safety kernel.
 
             ``held_joints`` are joints the pose did not name (``expand_starting_pose``
-            set them to their measured value, so the ramp holds them): their target is
-            not range-checked, since a held joint read just past a declared limit would
-            otherwise abort a goal that never moves it.
+            set them to their measured value). The ramp does not command them: each
+            waypoint names only the other joints and is zero-padded at the held ones
+            (the ADR-0102 slot-row form), so the kernel takes their measured value and
+            the HAL holds them. A held joint is therefore never range-checked, sent to a
+            part that cannot take a joint target (a platform base), or placed at a
+            measured value just past its declared limit.
             """
-            from openral_core.schemas import Action, ControlMode
             from openral_msgs.action import ExecuteRskill
 
             assert self._description is not None
@@ -2402,19 +2404,11 @@ if _ROS2_AVAILABLE:
                 self._raise_if_safety_aborted("moving to starting_pose")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return (int(ExecuteRskill.Result.FAILURE_CANCELLED), "cancelled")
-                alpha = index / steps
-                waypoint = [
-                    start + delta * alpha for start, delta in zip(current, deltas, strict=True)
-                ]
                 self._current_tick_index = self._next_tick_index
                 self._next_tick_index += 1
                 self._hal.send_action(
-                    Action(
-                        control_mode=ControlMode.JOINT_POSITION,
-                        horizon=1,
-                        joint_targets=[waypoint],
-                        joint_names=names,
-                        stamp_ns=time.time_ns(),
+                    starting_pose_waypoint_action(
+                        names, current, target, index / steps, held_joints=held_joints
                     )
                 )
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
@@ -3911,6 +3905,45 @@ def expand_starting_pose(
     for name, value in zip(slot_names, target, strict=True):
         out[names.index(name)] = value
     return out
+
+
+def starting_pose_waypoint_action(
+    names: Sequence[str],
+    current: Sequence[float],
+    target: Sequence[float],
+    alpha: float,
+    *,
+    held_joints: Collection[str] = (),
+) -> Action:
+    """One starting-pose ramp waypoint, ``alpha`` of the way from ``current`` to ``target``.
+
+    The joints in ``held_joints`` are not commanded: the action names only the others
+    and is zero-padded at the held ones (the ADR-0102 slot-row form), so the safety
+    kernel places them at their measured value and the HAL holds them. A platform base
+    that takes only twists never receives a joint target, and a held joint measured
+    past its limit is never published.
+
+    Example:
+        >>> a = starting_pose_waypoint_action(
+        ...     ["base_x", "j1"], [3.0, 0.0], [3.0, 1.0], 0.5, held_joints={"base_x"}
+        ... )
+        >>> a.joint_names, a.joint_targets
+        (['j1'], [[0.0, 0.5]])
+    """
+    from openral_core.schemas import Action
+
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[
+            [
+                0.0 if name in held_joints else start + (end - start) * alpha
+                for name, start, end in zip(names, current, target, strict=True)
+            ]
+        ],
+        joint_names=[name for name in names if name not in held_joints],
+        stamp_ns=time.time_ns(),
+    )
 
 
 def validate_starting_pose(

@@ -255,3 +255,32 @@ def test_scan_from_the_lidar_mount_matches_the_walled_room(description: RobotDes
         assert float(ranges.min()) > 1.0, "a beam hit the robot itself"
     finally:
         hal.disconnect()
+
+
+def test_a_ramp_row_naming_the_arms_holds_the_base_and_lift(hal: OpenAMRv2MujocoHAL) -> None:
+    """The starting-pose ramp of a 16-D OpenArm pose names the 16 joints, zero-padded.
+
+    The twin holds the base and lift it leaves out at their targets instead of
+    driving them to the padding.
+    """
+    names = [j.name for j in hal.description.joints]
+    raised = list(hal.read_state().position)
+    raised[names.index("lift_joint")] = 0.30
+    lift = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[raised])
+    for _ in range(150):
+        hal.send_action(lift)
+    for _ in range(20):
+        hal.send_action(_twist(0.2, 0.3))
+    pose_before = hal.base_pose
+    arm = [n for n in names if n not in ("base_x", "base_y", "base_yaw", "lift_joint")]
+    row = [0.0] * len(names)
+    row[names.index("left_joint4")] = 0.8
+    ramp = Action(
+        control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[row], joint_names=arm
+    )
+    for _ in range(150):
+        hal.send_action(ramp)
+    state = hal.read_state().position
+    assert state[names.index("left_joint4")] == pytest.approx(0.8, abs=5e-3)
+    assert state[names.index("lift_joint")] == pytest.approx(0.30, abs=5e-3)
+    assert hal.base_pose == pytest.approx(pose_before, abs=1e-3)

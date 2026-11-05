@@ -118,3 +118,118 @@ def test_estop_commands_zero_twist_and_raises(
         hal.estop()
     _spin(node, 0.3)
     assert (got[-1].linear.x, got[-1].angular.z) == (0.0, 0.0)
+
+
+def _composite(node: Any) -> Any:  # reason: ComposedHAL, imported lazily
+    """Base + held lift, composed over the openamr_v2 manifest narrowed to those joints."""
+    from openral_hal.composed import ComposedHAL
+
+    robot = RobotDescription.from_yaml(str(_MANIFEST))
+    keep = {*(robot.base_joints or []), "lift_joint"}
+    description = robot.model_copy(
+        update={"joints": [j for j in robot.joints if j.name in keep], "end_effectors": []}
+    )
+    hal = ComposedHAL(
+        description=description,
+        parts=[
+            {
+                "entry": "openral_hal.platform_base:PlatformBaseHAL",
+                "joints": list(robot.base_joints or []),
+                "params": {
+                    "odom_topic": "/test_platform/odom",
+                    "cmd_vel_topic": "/test_platform/cmd_vel",
+                },
+            },
+            {
+                "entry": "openral_hal.composed:HeldJointsHAL",
+                "joints": ["lift_joint"],
+                "params": {"positions": {"lift_joint": 0.1}},
+            },
+        ],
+        staleness_limit_s=0.2,
+    )
+    hal.attach_ros_node(node)
+    hal.connect()
+    return hal
+
+
+def test_a_failed_base_stop_is_not_reported_as_a_clean_stop(ros_init: None) -> None:
+    """The base's zero-twist publish fails: that error propagates, not ROSEStopRequested.
+
+    Raising the success-shaped ROSEStopRequested over it sent the lifecycle node down its
+    "hardware estop completed" path with the base never told to stop.
+    """
+    node = rclpy.create_node("composed_estop_test")
+    try:
+        hal = _composite(node)
+        base = hal._parts[0]
+        node.destroy_publisher(base._pub)  # the platform publisher is gone
+        with pytest.raises(Exception) as caught:  # reason: rclpy's own error type
+            hal.estop()
+        assert not isinstance(caught.value, ROSEStopRequested)
+        assert any("PlatformBaseHAL" in note for note in caught.value.__notes__)
+    finally:
+        node.destroy_node()
+
+
+def test_a_tick_that_leaves_the_base_alone_does_not_need_fresh_odometry(
+    ros_init: None,
+) -> None:
+    """``last_applied_action`` fills uncommanded joints from the last read, not a new one.
+
+    Re-reading every part on each slot tick tied the arms to base odometry: one EKF
+    pause past the staleness window failed every arm tick.
+    """
+    from openral_core import Action
+
+    node = rclpy.create_node("composed_tick_test")
+    try:
+        hal = _composite(node)
+        odom_pub = node.create_publisher(Odometry, "/test_platform/odom", 10)
+        for _ in range(5):
+            odom_pub.publish(_odom(2.0, 1.0, 0.5, 0.0, 0.0))
+            _spin(node, 0.05)
+        hal.read_state()
+        time.sleep(0.3)  # odometry is now past the 0.2 s window
+        with pytest.raises(ROSPerceptionStale):
+            hal.read_state()
+        common = {"horizon": 1, "tick_index": 1, "tick_group_size": 2, "runner_session_id": 3}
+        hal.send_action(  # a held-lift slot and a zero twist: no base joint target
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=[[0.0, 0.0, 0.0, 0.1]],
+                joint_names=["lift_joint"],
+                **common,
+            )
+        )
+        hal.send_action(_twist(0.0, 0.0, 0.0).model_copy(update=common))
+        applied = hal.last_applied_action
+        assert applied is not None and applied.joint_targets is not None
+        assert applied.joint_targets[-1] == pytest.approx([2.0, 1.0, 0.5, 0.1])
+    finally:
+        node.destroy_node()
+
+
+def test_the_odom_timer_survives_missing_odometry(
+    rig: tuple[Any, PlatformBaseHAL, Any, list[Any]],
+) -> None:
+    """No platform odometry yet: the bridge skips /odom instead of killing the executor.
+
+    ``base_pose`` raises ``ROSPerceptionStale``; out of an rclpy timer callback that ended
+    ``spin`` and the HAL node, with the base on its last twist.
+    """
+    from openral_hal.mobile_base_bridge import MobileBaseBridge
+
+    node, hal, _, _ = rig
+    seen: list[Any] = []
+    node.create_subscription(Odometry, "/odom", seen.append, 10)
+    bridge = MobileBaseBridge(node, hal, _base_description())
+    bridge.setup()
+    try:
+        with pytest.raises(ROSPerceptionStale):
+            _ = hal.base_pose
+        bridge._publish_odom()  # the timer's body; must not raise
+        _spin(node, 0.2)
+        assert seen == []
+    finally:
+        bridge.teardown()

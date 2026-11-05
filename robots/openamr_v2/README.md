@@ -77,11 +77,22 @@ and that no pixel of the view lands on the robot.
 lidar plane about 80 s into the run (sim time).
 - **Box 0** has the east wall behind it. Once it was gone, the beam returned off the
   wall at 10 m, and Nav2 cleared its cells in both costmaps (100 → 0).
-- **Box 1** is on a bearing with nothing within the lidar's 12 m range. Its beams now
-  read `+inf`, which Nav2 discards, so its cells stayed lethal.
+- **Box 1** was measured with the earlier 12 m range, on a bearing with nothing inside
+  it. Its beams read `+inf`, which Nav2 discards, so its cells stayed lethal. The
+  manifest now declares the RPLIDAR S3's 40 m, which reaches that corner (~14 m), so
+  box 1 is expected to clear like box 0; that has not been re-run.
 
-A real lidar behaves the same way: an obstacle that vanishes in front of open space is
-not cleared until a return passes through its cells.
+A real lidar behaves the same way: an obstacle that vanishes in front of open space
+(nothing inside the range) is not cleared until a return passes through its cells.
+
+## Lidar range
+
+The base lidar is the RPLIDAR S3 (upstream `real_bringup.launch.py lidar_model:=s3`).
+Its datasheet range is 0.05–40 m at 70 % reflectivity (15 m at 10 %, 5 m at 2 %).
+slam_toolbox maps out to its `max_laser_range` (12 m). A return between 12 m and 40 m
+still clears free space out to 12 m (Karto `AddScan`). A beam with no return at all
+(`+inf`) clears nothing. With the 12 m fan clipped at 12 m, the warehouse aisle ahead of
+the spawn had no return inside range, so the first map showed only the side wedges.
 
 ## HALs
 
@@ -116,15 +127,24 @@ Open before the first real run:
   what the safety kernel places the arms from. It must match the real lift before
   any motion, and a lift moved by its firmware is not seen. Reading the lift's stop
   sensors would replace the declaration.
-- **CAN interfaces.** `openral detect` fills CAN interfaces only for top-level
-  `hal.parameters.defaults` keys. The arm part's `left_can_interface` /
-  `right_can_interface` sit inside `parts[0].params` and stay at their defaults.
+- **CAN interfaces.** A top-level `left_can_interface` / `right_can_interface` (a
+  `deploy run` transport override, or a top-level `hal.parameters.defaults` key, the
+  ones `openral detect` fills) reaches the arm part over its `params`: `ComposedHAL`
+  hands every keyword to the parts whose constructor takes it. So does the manifest's
+  `safety.joint_state_staleness_limit_s` (0.1 s), which bounds the odometry age too.
+- **Platform command timeout.** If the HAL node dies, nothing republishes
+  `/platform/cmd_vel`, and the base keeps its last twist unless the platform stops on
+  its own. The platform's twist input must have a command timeout (micro-ROS firmware
+  or `twist_mux`), as `diff_drive_controller`'s `cmd_vel_timeout` gives. Stale
+  odometry no longer kills the node (`MobileBaseBridge` skips the `/odom` tick, and
+  Nav2 stops on the stale TF), but the timeout is still the last line.
 
 ## Known gaps
 
 - **Collision model: reused, not refitted; Safety-WG sign-off owed.** The arms
-  carry `robots/openarm`'s `collision_geometry` unchanged (box + hull per link,
-  only the link names translated); the body is one box per URDF link, bounded
+  import `robots/openarm`'s `collision_geometry` at load (`collision_geometry_imports`:
+  box + hull per link, only the link names translated), so an OpenArm re-lowering
+  reaches this robot; the body is one box per URDF link, bounded
   from the MuJoCo twin's geoms (+1 mm), with `base_link`'s box covering the
   whole chassis subtree. The ACM is `openral collision lower --acm-only`
   (mjcf route: `select_lowering` now treats the partially resolving URDF as
@@ -162,5 +182,6 @@ Open before the first real run:
   accepted any hardware physically yet. Re-sync at v2.0.0 (2026-12-18).
 - **Placeholder sensors.** Camera intrinsics here are nominal, and the base
   speed caps (`safety.max_base_*`) are a conservative placeholder envelope.
-- **Isaac base is holonomic.** The Isaac kinematic base integrates any twist,
-  so it does not refuse `vy`; only the MuJoCo HAL refuses it.
+- **Isaac base is kinematic.** The Isaac base integrates any planar twist, so the
+  HAL refuses `vy` before it reaches the sidecar (`SimAttachedHAL`, on the manifest's
+  `base_kinematics: differential`), as the MuJoCo twin and `PlatformBaseHAL` do.

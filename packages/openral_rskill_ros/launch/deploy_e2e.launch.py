@@ -2345,11 +2345,13 @@ def _rsp_urdf_joint_map(
     needs a renamed, re-unit copy on ``~/urdf_joint_states`` that robot_state_publisher
     alone reads (``urdf_joint_map``), or no moving link reaches /tf, or the jaw sits at
     the wrong angle (the SO-101's was 21.5 deg off, PickOrange g19). A ros2_control arm's
-    vendor broadcaster publishes the URDF's own names and units: ``None``.
+    vendor broadcaster publishes the URDF's own names and units: ``None``. A composed
+    HAL whose broadcaster covers only the arm (OpenAMR v2: no lift or base state there)
+    gets the map, so the lift and everything on it reach /tf.
     """
-    from openral_hal.resolver import ros_control_hal, urdf_joint_map
+    from openral_hal.resolver import urdf_joint_map, vendor_publishes_urdf_joint_states
 
-    if description.assets.urdf is None or ros_control_hal(
+    if description.assets.urdf is None or vendor_publishes_urdf_joint_states(
         description, mode="real" if hal_mode == "real" else "sim"
     ):
         return None

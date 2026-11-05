@@ -1070,6 +1070,32 @@ def test_body_twist_without_mujoco_handles_steps_env() -> None:
     assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+def test_the_held_base_setpoint_expires_on_sim_time() -> None:
+    """With a sim clock the 0.5 s hold is sim time: Nav2 publishes on sim time.
+
+    On wall time a sim below real time let the hold lapse between Nav2's commands, so
+    the base stopped and /odom's twist dropped to zero between them.
+    """
+    env = FakeSimEnv(action_dim=11, handles=None, has_sim_clock=True, sim_dt_ns=100_000_000)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.BODY_TWIST,
+            horizon=1,
+            body_twist=[[0.4, 0.0, 0.0, 0.0, 0.0, 0.0]],
+        )
+    )
+    time.sleep(0.55)  # past 0.5 s of wall time, but no sim time has passed
+    for _ in range(5):  # 5 steps x 0.1 s of sim time: still inside the hold
+        assert hal.idle_step()
+        assert env.last_action is not None
+        assert float(env.last_action[-3]) == pytest.approx(0.4)
+    assert hal.idle_step()  # 0.5 s of sim time after the command: it lapsed
+    assert env.last_action is not None
+    assert all(float(x) == 0.0 for x in env.last_action[-3:])
+
+
 def test_body_twist_without_base_dims_raises_runtime_error() -> None:
     """A non-MuJoCo env too small to carry a base twist (``env_action_dim < 3``,
     i.e. the robot declares no planar base) → ROSRuntimeError, never silent."""

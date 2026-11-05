@@ -153,6 +153,26 @@ def test_whole_robot_row_is_split_by_name(hal: ComposedHAL) -> None:
     assert hal.read_state().position[names.index("left_joint4")] == pytest.approx(1.0, abs=0.02)
 
 
+def test_a_ramp_row_naming_the_arm_never_reaches_the_base_and_lift(hal: ComposedHAL) -> None:
+    """The starting-pose ramp names only the 16 arm joints, zero-padded at the held ones.
+
+    A held part would refuse the padding (0.0 is not where it is held), so this passes
+    only if the base and lift parts receive nothing.
+    """
+    names = [j.name for j in hal.description.joints]
+    arm = [n for n in names if n not in _HELD]
+    row = [0.0] * len(names)
+    row[names.index("right_joint4")] = 0.7
+    ramp = Action(
+        control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[row], joint_names=arm
+    )
+    for _ in range(90):
+        hal.send_action(ramp)
+    state = dict(zip(names, hal.read_state().position, strict=True))
+    assert state["right_joint4"] == pytest.approx(0.7, abs=0.02)
+    assert {k: state[k] for k in _HELD} == _HELD
+
+
 def test_a_held_joint_refuses_to_move(hal: ComposedHAL) -> None:
     names = [j.name for j in hal.description.joints]
     row = list(hal.read_state().position)

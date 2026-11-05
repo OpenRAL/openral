@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import struct
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -203,8 +204,13 @@ def scan_ranges_on_wire(ranges: Sequence[float], *, max_range_m: float) -> list[
     Example:
         >>> scan_ranges_on_wire([1.5, 12.0, 12.0001], max_range_m=12.0)
         [1.5, inf, inf]
+        >>> scan_ranges_on_wire([5.599999904632568], max_range_m=5.6)  # float32(5.6)
+        [inf]
     """
-    return [float(r) if r < max_range_m else math.inf for r in ranges]
+    # The ray-casters clamp in float32; float32(5.6) is just below the float64 5.6, so
+    # the clamp must be compared at float32 precision or it reads as a return.
+    limit = min(max_range_m, struct.unpack("f", struct.pack("f", max_range_m))[0])
+    return [float(r) if r < limit else math.inf for r in ranges]
 
 
 def should_idle_step(

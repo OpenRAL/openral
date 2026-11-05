@@ -225,6 +225,27 @@ def ros_control_hal(description: RobotDescription, *, mode: HalMode) -> bool:
     return all(hasattr(cls, m) for m in members)
 
 
+def vendor_publishes_urdf_joint_states(description: RobotDescription, *, mode: HalMode) -> bool:
+    """Whether a vendor ``joint_state_broadcaster`` publishes EVERY URDF joint's state.
+
+    True for a ``ros_control_hal`` robot whose ros2_control HAL owns all of its joints.
+    A HAL class that sets ``urdf_joint_states_from_hal = True`` (``ComposedHAL``: an
+    arm on ros2_control beside a base and lift that are not) is not covered by the
+    broadcaster, so the HAL publishes the URDF-named state itself, or the joints
+    outside the broadcaster never reach ``robot_state_publisher``.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> amr = RobotDescription.from_yaml("robots/openamr_v2/robot.yaml")
+        >>> vendor_publishes_urdf_joint_states(amr, mode="real")
+        False
+    """
+    if not ros_control_hal(description, mode=mode):
+        return False
+    assert description.hal.real is not None
+    return not getattr(_import_object(description.hal.real), "urdf_joint_states_from_hal", False)
+
+
 class UrdfJointMap(BaseModel):
     """What ``robot_state_publisher`` is sent per manifest joint: name and URDF-unit value.
 
