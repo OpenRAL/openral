@@ -1921,6 +1921,15 @@ class IsaacManifestScene(IsaacSceneBase):
             if path is not None:
                 mount = mount_matrix(lidar.get("static_transform_xyz_rpy"))
                 self._root_to_lidar = np.matmul(self._relative_to_root(path), mount)
+        if self._lidar is not None:
+            if self._root_to_lidar is not None:
+                where = (
+                    f"mount on {lidar['parent_frame']!r}: root-frame xyz "
+                    f"{np.round(self._root_to_lidar[:3, 3], 3).tolist()}"
+                )
+            else:
+                where = f"base frame, {self._scan_z:.2f} m above the spawn z"
+            print(f"[isaac_manifest_scene] lidar fan: {where}", flush=True)
         from isaacsim.core.utils.stage import get_current_stage
 
         # World.reset() initializes physics before the post-reset teleport.
