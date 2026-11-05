@@ -25,12 +25,12 @@ def _import_launch_module() -> ModuleType:
 
 @pytest.mark.parametrize(("returncode", "launched"), [(0, True), (1, False)])
 def test_nav2_include_follows_the_hal_autostart_exit(returncode: int, launched: bool) -> None:
+    mod = _import_launch_module()  # skips first when launch / launch_ros are absent
     from launch import LaunchContext
     from launch.actions import ExecuteProcess, LogInfo
     from launch.event_handlers import OnProcessExit
     from launch.events.process import ProcessExited
 
-    mod = _import_launch_module()
     autostart = ExecuteProcess(cmd=["true"])
     nav2 = LogInfo(msg="nav2")
     handler = mod._after_hal_active(autostart, nav2).event_handler

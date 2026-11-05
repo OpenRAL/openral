@@ -1398,28 +1398,39 @@ def test_openamr_lidar_fan_is_cast_from_its_mount_not_the_base(
     root_to_lidar = mod.mount_matrix([0.33, 0.0, 0.124, 0.0, 0.0, np.pi]) @ mod.mount_matrix(
         lidar["static_transform_xyz_rpy"]
     )
-    x, y, z, yaw = mod.lidar_world_pose((0.0, 0.0, 0.0, 0.0), root_to_lidar)
+    x, y, z, _yaw = mod.lidar_world_pose((0.0, 0.0, 0.0, 0.0), root_to_lidar)
     assert (x, y) == pytest.approx((0.33, 0.0))
 
+    assert z == pytest.approx(0.124)
+
     def wall_ahead(start: tuple[float, float, float], d: Any, span: float) -> Any:
+        """The PhysX query (`raycast_closest`), over a wall at world x = 3 m."""
         if d[0] <= 1e-9:
             return None
         dist = (3.0 - start[0]) / d[0]
         return {"hit": True, "distance": dist, "rigidBody": "/wall"} if 0 <= dist <= span else None
 
-    def beam(angle_in_lidar_frame: float) -> float:
-        return float(
-            mod.resolve_beam_range(
-                wall_ahead,
-                robot_prim="/openamr",
-                origin_xy=(x, y),
-                angle_rad=angle_in_lidar_frame + yaw,
-                z=z,
-                range_min_m=0.0,
-                range_max_m=12.0,
-            )
-        )
+    from types import SimpleNamespace
 
-    # The lidar frame faces backwards: its -pi beam looks along the robot's +x.
-    assert beam(-np.pi) == pytest.approx(3.0 - 0.33)
-    assert beam(0.0) == pytest.approx(12.0)  # behind the robot: nothing
+    def scan(root_to_lidar: Any) -> Any:
+        """The scene's own `_scan_ranges`, on the state `build` leaves it in."""
+        scene = SimpleNamespace(
+            _scan_query=SimpleNamespace(raycast_closest=wall_ahead),
+            _lidar={"n_channels": 360, "range_min_m": 0.0, "range_max_m": 12.0},
+            _spawn=(0.0, 0.0, 0.0, 0.0),
+            _base_pose=[0.0, 0.0, 0.0],
+            _root_to_lidar=root_to_lidar,
+            _scan_z=0.30,
+            _robot_prim="/openamr",
+        )
+        return mod.IsaacManifestScene._scan_ranges(scene)
+
+    mounted = scan(root_to_lidar)
+    # The lidar frame faces backwards: its -pi beam (index 0) looks along the robot's
+    # +x, from 0.33 m ahead of the base; its 0 beam (index 180) looks behind: nothing.
+    assert float(mounted[0]) == pytest.approx(3.0 - 0.33)
+    assert float(mounted[180]) == pytest.approx(12.0)
+    # The old base-frame fan: the wall shows up at the 0 beam, 3 m out (mirrored).
+    base = scan(None)
+    assert float(base[180]) == pytest.approx(3.0)
+    assert float(base[0]) == pytest.approx(12.0)

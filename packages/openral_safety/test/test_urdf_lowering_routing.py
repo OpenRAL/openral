@@ -32,7 +32,7 @@ from openral_safety.urdf_lowering import (
 pytest.importorskip("yourdfpy")
 pytest.importorskip("trimesh")
 
-_ROBOTS = Path("robots")
+_ROBOTS = Path(__file__).resolve().parents[3] / "robots"
 _OPENAMR_URDF = _ROBOTS / "openamr_v2" / "openamr_v2.urdf"
 
 # robot -> route; None = select_lowering raises ROSConfigError (no lowerable asset).
