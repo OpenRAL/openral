@@ -3968,6 +3968,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # ``openral_hal.sim_bringup.hal_transition_timeout_s``.
             "--transition-timeout-s",
             hal_transition_timeout_s(deploy_config),
+            # An absent HAL must exit non-zero: a zero exit releases the Nav2 gate
+            # (_after_hal_active), which needs an ACTIVE HAL and its odom TF.
+            "--required",
         ],
         output="log",
     )
