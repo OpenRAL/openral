@@ -217,6 +217,9 @@ ISOLATED_TARGETS=(
     # 2026-10-25: "assert 1 == 0" publishers, "no zed_camera_link -> optical").
     # MuJoCo twins: rendered under MUJOCO_GL (see above).
     tests/integration/test_sim_depth_registered_colour_live.py
+    # Asserts /openral/policy_state has NO publisher before it adds one; a HAL an
+    # earlier test left behind would admit the skill early (#474).
+    tests/integration/test_reasoner_palette_policy_state_gate.py
     # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
     # HALs with attach mechanics (kernel fails closed on an unstamped set).
     tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
@@ -330,8 +333,10 @@ ISOLATED_TARGETS=(
     tests/unit/test_hal_lifecycle_error_logging.py
     tests/unit/test_hal_lifecycle_manifest.py
     tests/unit/test_hal_lifecycle_shutdown_verdict.py
+    tests/unit/test_hal_policy_state_publisher.py
     tests/unit/test_lifecycle_autostart.py
     tests/unit/test_lifecycle_error_logging.py
+    tests/unit/test_policy_state_palette_gate.py
     tests/unit/test_real_bringup_include.py
     tests/unit/test_reasoner_execute_prompt.py
     tests/unit/test_reasoner_gpu_probe.py
