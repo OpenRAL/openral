@@ -193,19 +193,26 @@ def test_hal_drives_panda_mobile_arm_gripper_and_base_into_their_own_slots(
             )
         )
         assert len(_rows(recorded)) == before, "a /cmd_vel setpoint steps nothing itself"
-        hal.idle_step()
-        hal.idle_step()
-        time.sleep(0.6)  # past the 0.5 s setpoint hold (diff_drive cmd_vel_timeout)
+        t0 = hal.sim_time_ns()
+        assert t0 is not None, "the Isaac sidecar reports its sim clock"
+        time.sleep(0.6)  # wall time alone does not expire the hold: it is sim time
+        # Step past the 0.5 s setpoint hold (diff_drive cmd_vel_timeout) in sim time.
+        while (hal.sim_time_ns() or 0) - t0 < 500_000_000:
+            assert hal.idle_step()
         hal.idle_step()
     finally:
         hal.disconnect()
         env.close()  # stops the sidecar — a leaked one is adopted by the next test
-    joint, grip, held1, held2, stopped = _rows(recorded)[-5:]
+    rows = _rows(recorded)
+    joint, grip = rows[before - 2 : before]
     _nan_eq(np.asarray(joint), [*arm, NAN, 0.0, 0.0, 0.0])  # base untouched
     _nan_eq(np.asarray(grip), [*arm, 1.0, 0.0, 0.0, 0.0])  # gripper slot, not wz
-    # Every idle step integrates the held twist (joints HOLD), then the hold expires.
-    _nan_eq(np.asarray(held1), [NAN] * 8 + [0.5, 0.0, 0.0])
-    _nan_eq(np.asarray(held2), [NAN] * 8 + [0.5, 0.0, 0.0])
+    # Every idle step inside the hold integrates the held twist (joints HOLD), then
+    # the hold expires.
+    held, stopped = rows[before:-1], rows[-1]
+    assert len(held) >= 2
+    for row in held:
+        _nan_eq(np.asarray(row), [NAN] * 8 + [0.5, 0.0, 0.0])
     _nan_eq(np.asarray(stopped), [NAN] * 8 + [0.0, 0.0, 0.0])  # idle HOLDs, never 0 rad
 
 

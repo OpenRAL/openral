@@ -122,15 +122,17 @@ class PlatformBaseHAL:
         cleanup/configure cycle, so a kept subscription would feed a dead instance
         beside the new one's.
         """
-        if self._connected and self._pub is not None:
-            self._pub.publish(self._twist_type())
-        self._connected = False
-        if self._node is not None:
-            if self._sub is not None:
-                self._node.destroy_subscription(self._sub)
-            if self._pub is not None:
-                self._node.destroy_publisher(self._pub)
-        self._sub = self._pub = None
+        try:
+            if self._connected and self._pub is not None:
+                self._pub.publish(self._twist_type())
+        finally:  # a failed stop publish still releases this HAL's endpoints
+            self._connected = False
+            if self._node is not None:
+                if self._sub is not None:
+                    self._node.destroy_subscription(self._sub)
+                if self._pub is not None:
+                    self._node.destroy_publisher(self._pub)
+            self._sub = self._pub = None
 
     @property
     def base_pose(self) -> tuple[float, float, float]:

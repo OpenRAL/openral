@@ -22,7 +22,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
 pytest.importorskip("yourdfpy")
 pytest.importorskip("mujoco")
@@ -189,7 +188,7 @@ _WITH_GEOMETRY = [p for p in ROBOTS if "collision_geometry:" in p.read_text(enco
 def test_lowering_output_unchanged(manifest: Path) -> None:
     """Re-lowering a robot reproduces its committed collision model exactly
     (via the standardized-description-asset resolver)."""
-    desc = RobotDescription.model_validate(yaml.safe_load(manifest.read_text()))
+    desc = RobotDescription.from_yaml(str(manifest))
     if not desc.collision_geometry:
         pytest.skip("no collision_geometry to regress")
 

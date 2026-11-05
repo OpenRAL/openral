@@ -32,7 +32,6 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 pytest.importorskip("openral_safety")
 
-import yaml  # noqa: E402
 from openral_core import RobotDescription  # noqa: E402
 from openral_safety.mjcf_lowering import lower_collision_params  # noqa: E402
 
@@ -52,7 +51,7 @@ def test_mjcf_lowering_yields_live_dof_index(manifest: pathlib.Path) -> None:
     """A robot's MJCF lowers to a live FK (real dof_index) or the disabled sentinel."""
     from openral_core.assets import resolve_asset
 
-    robot = RobotDescription.model_validate(yaml.safe_load(manifest.read_text()))
+    robot = RobotDescription.from_yaml(str(manifest))
     if not robot.collision_geometry or robot.assets is None or not robot.assets.mjcf:
         pytest.skip(f"{manifest.parent.name}: no MJCF + collision geometry")
     try:

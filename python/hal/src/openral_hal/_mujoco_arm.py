@@ -789,8 +789,15 @@ class MujocoArmHAL(HALBase):
                 # zero-padded at the joints it leaves out; compose it like a one-slot
                 # group, so those joints hold (or the row is refused) instead of
                 # being driven to the padding.
+                # Keep the tick fields, so commit_tick advances the watermark and a
+                # replay of this ramp tick is refused.
                 action = compose_slot_group_action(
                     [action], self._joint_names, hold=self._held_ctrl_targets()
+                ).model_copy(
+                    update={
+                        "tick_index": action.tick_index,
+                        "runner_session_id": action.runner_session_id,
+                    }
                 )
         self._validate_action(action)
 

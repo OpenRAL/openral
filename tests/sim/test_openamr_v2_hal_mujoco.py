@@ -284,3 +284,23 @@ def test_a_ramp_row_naming_the_arms_holds_the_base_and_lift(hal: OpenAMRv2Mujoco
     assert state[names.index("left_joint4")] == pytest.approx(0.8, abs=5e-3)
     assert state[names.index("lift_joint")] == pytest.approx(0.30, abs=5e-3)
     assert hal.base_pose == pytest.approx(pose_before, abs=1e-3)
+
+
+def test_a_replayed_ramp_tick_is_refused(hal: OpenAMRv2MujocoHAL) -> None:
+    """A subset-named ramp row keeps its tick, so the watermark refuses its replay."""
+    from openral_core.exceptions import ROSRuntimeError
+
+    names = [j.name for j in hal.description.joints]
+    arm = [n for n in names if n not in ("base_x", "base_y", "base_yaw", "lift_joint")]
+    ramp = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[[0.0] * len(names)],
+        joint_names=arm,
+        tick_index=5,
+        runner_session_id=9,
+    )
+    hal.send_action(ramp)
+    assert hal.last_committed_tick == 5
+    with pytest.raises(ROSRuntimeError):
+        hal.send_action(ramp)
