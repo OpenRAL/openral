@@ -27,6 +27,7 @@ structurally: the ros2_control transport seam (delegated to its one
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -503,3 +504,20 @@ class ComposedHAL:
     def reset_estop(self) -> None:
         """Re-arm the arm part after an e-stop."""
         self._ros_part().reset_estop()
+
+    @property
+    def last_stop_report(self) -> Any:  # noqa: ANN401  # reason: DownstreamStopReport | None
+        """The arm part's downstream stop report, marked as covering the arm only.
+
+        Only the ros2_control part can acknowledge a stop. The other parts' stops
+        (a zero twist to the platform, a lift nothing drives) have no
+        acknowledgement, so ``detail`` names them instead of claiming them.
+        """
+        report = self._ros_part().last_stop_report
+        if report is None:
+            return None
+        others = [p for p in self._parts if p is not self._ros_part()]
+        note = "covers the ros2_control arm only; unacknowledged parts: " + ", ".join(
+            type(p).__name__ for p in others
+        )
+        return dataclasses.replace(report, detail=f"{report.detail}; {note}".lstrip("; "))

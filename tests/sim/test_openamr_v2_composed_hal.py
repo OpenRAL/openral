@@ -195,3 +195,28 @@ def test_real_composite_exposes_the_openarm_ros2_control_seam(
     )
     assert real.controller_names() == openarm.controller_names()  # type: ignore[attr-defined]
     assert real.ros2_control_joint_names() == openarm.ros2_control_joint_names()  # type: ignore[attr-defined]
+
+
+def test_real_composite_reports_the_arm_stop_and_names_what_it_does_not_cover(
+    description: RobotDescription,
+) -> None:
+    """The lifecycle node reads the composite's stop report like the OpenArm's.
+
+    The arm's controllers are stopped through ``SimTransport`` (the in-repo
+    controller simulator); the base and lift parts have no acknowledgement, so
+    the report must name them rather than claim them.
+    """
+    from openral_hal.ros_control import DownstreamStopReporting
+    from openral_hal.sim_transport import SimTransport
+
+    real = build_hal(description, mode="real", transport={"require_can_links": False})
+    assert isinstance(real, DownstreamStopReporting)
+    assert real.last_stop_report is None
+    controllers = real.controller_names()  # type: ignore[attr-defined]
+    real.attach_controller_stop(SimTransport(n_joints=16, controllers=controllers))  # type: ignore[attr-defined]
+    with pytest.raises(ROSEStopRequested):
+        real.estop()
+    report = real.last_stop_report
+    assert report is not None and report.stopped
+    assert set(report.controllers) == set(controllers)
+    assert "PlatformBaseHAL" in report.detail and "HeldJointsHAL" in report.detail
