@@ -349,8 +349,9 @@ _EXECUTE_SKILL_SERVER_PROBE_S: float = 0.1
 _EXECUTE_SKILL_SERVER_RETRY_S: float = 0.25
 _LIFECYCLE_SERVER_PROBE_S: float = 0.1
 # The HAL advertises this topic only once its backend produces a policy state; a
-# `use_world_state_policy_state` skill enters the palette only while it has a publisher,
-# and a skill dropped for its absence is re-checked every _POLICY_STATE_WATCH_S (#474).
+# `use_world_state_policy_state` skill enters the palette only while it has a publisher.
+# While such a skill is capability-matched, the publisher's presence is re-checked every
+# _POLICY_STATE_WATCH_S and the palette re-seeded when it appears or goes (#474).
 _POLICY_STATE_TOPIC = "/openral/policy_state"
 _POLICY_STATE_WATCH_S: float = 1.0
 _LOCATE_FAILURE_REASON_MAX = 128
@@ -1136,9 +1137,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # and the one-shot timer that re-probes for it.
         self._execute_server_wait_deadline: float | None = None
         self._execute_server_retry_timer: Any = None
-        # Re-seeds the palette once /openral/policy_state gains a publisher, armed while a
-        # `use_world_state_policy_state` skill is dropped for the lack of one (#474).
+        # Re-seeds the palette when /openral/policy_state gains or loses its publisher, armed
+        # while a `use_world_state_policy_state` skill is capability-matched (#474). The
+        # flag is the presence the last seed decided on.
         self._policy_state_watch: Any = None
+        self._policy_state_published_at_seed = False
         # Dispatch-phase watchdog: bounds the send→goal-response window the
         # busy latch opens. rclpy futures never time out on their own, so a
         # runner (or VRAM peer) that dies AFTER the readiness probe but before
@@ -2782,10 +2785,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # ``WorldState.policy_state`` instead of the joint vector: it is gated on a live
         # ``/openral/policy_state`` publisher, not on the joint count (issue #474). The HAL
         # and the reasoner autostart independently, so a skill dropped for a missing
-        # publisher is re-checked by ``_watch_for_policy_state`` until one appears.
+        # publisher is re-admitted by ``_watch_for_policy_state`` once one appears, and an
+        # admitted one dropped again if the HAL deactivates and takes its publisher down.
         n_joints = len(description.joints)
         policy_state_published = self.count_publishers(_POLICY_STATE_TOPIC) > 0
-        awaiting_policy_state = False
         state_compatible: list[RSkillManifest] = []
         for m in capability_matched:
             verdict = _state_contract_verdict(
@@ -2819,7 +2822,6 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 )
                 state_compatible.append(m)
             elif verdict == "no_policy_state":
-                awaiting_policy_state = True
                 self.get_logger().warning(
                     f"palette: dropping rSkill {m.name!r} "
                     f"(model_family={m.model_family!r}): "
@@ -2852,7 +2854,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     f"({n_joints}). Pick a state-compatible rSkill "
                     f"for ``deploy sim``."
                 )
-        if awaiting_policy_state:
+        if any(m.reads_world_state_policy_state for m in capability_matched):
+            self._policy_state_published_at_seed = policy_state_published
             self._arm_policy_state_watch()
         else:
             self._cancel_policy_state_watch()
@@ -5021,21 +5024,29 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             )
 
     def _watch_for_policy_state(self) -> None:
-        """Re-seed the palette once ``/openral/policy_state`` gains a publisher."""
-        if self.count_publishers(_POLICY_STATE_TOPIC) == 0:
+        """Re-seed the palette when ``/openral/policy_state`` gains or loses its publisher.
+
+        The seed re-arms (or cancels) this watch, so it runs as long as a policy-state skill
+        is capability-matched: a HAL that deactivates destroys its publisher, and the skill
+        must leave the palette before its last sample goes stale under a dispatch.
+        """
+        published = self.count_publishers(_POLICY_STATE_TOPIC) > 0
+        if published == self._policy_state_published_at_seed:
             return
-        self._cancel_policy_state_watch()
+        change = "appeared" if published else "disappeared"
         old_count = len(self._palette.execute_rskill_ids)
         try:
             self._maybe_seed_palette_from_search_paths()
         except Exception as exc:  # reason: a timer callback must not kill the executor
             self.get_logger().error(
-                f"palette refresh ({_POLICY_STATE_TOPIC} appeared) failed: "
+                f"palette refresh ({_POLICY_STATE_TOPIC} {change}) failed: "
                 f"{type(exc).__name__}: {exc}",
             )
+            # Settle on the new presence so a failing seed is not retried every second.
+            self._policy_state_published_at_seed = published
             return
         self.get_logger().info(
-            f"palette refreshed ({_POLICY_STATE_TOPIC} appeared): "
+            f"palette refreshed ({_POLICY_STATE_TOPIC} {change}): "
             f"{old_count} → {len(self._palette.execute_rskill_ids)} skills",
         )
 

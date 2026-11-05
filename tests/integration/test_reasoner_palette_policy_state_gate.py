@@ -3,8 +3,9 @@
 The in-tree GR00T N1.7 BEHAVIOR-1K radio skill (``state_contract.dim: 61``,
 ``use_world_state_policy_state``) on the real 22-joint R1Pro: before #474 the
 state-contract gate compared 61 with the joint count and always dropped it. It is now
-gated on a ``/openral/policy_state`` publisher instead. With none it is dropped, and
-when one appears the reasoner's watch re-seeds the palette and admits it. The HAL and
+gated on a ``/openral/policy_state`` publisher instead. With none it is dropped; when one
+appears the reasoner's watch re-seeds the palette and admits it, and when it goes (a HAL
+deactivating) the skill is dropped again. The HAL and
 the reasoner autostart independently in ``deploy_e2e``, so the publisher can show up
 after the seed. ``kind: wam`` is the same manifest re-kinded (no in-tree WAM sets the flag).
 
@@ -89,7 +90,18 @@ def test_policy_state_skill_follows_the_publisher(tmp_path: pathlib.Path, kind: 
             "the policy-state watch did not re-seed the palette once the topic appeared; "
             f"got {sorted(reasoner._palette.execute_rskill_ids)!r}"
         )
-        assert reasoner._policy_state_watch is None
+        assert reasoner._policy_state_watch is not None, "the watch must outlive admission"
+
+        # The HAL deactivates and destroys its publisher: the skill must leave the palette
+        # before its last sample goes stale under a dispatch.
+        hal_stand_in.destroy_node()
+        hal_stand_in = None
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and _SKILL_ID in reasoner._palette.execute_rskill_ids:
+            rclpy.spin_once(reasoner, timeout_sec=0.1)
+        assert _SKILL_ID not in reasoner._palette.execute_rskill_ids, (
+            "the skill stayed in the palette after /openral/policy_state lost its publisher"
+        )
 
         reasoner.trigger_cleanup()
         reasoner.destroy_node()
