@@ -1789,7 +1789,7 @@ class SimAttachedHAL:
         # which re-renders without stepping), so `_step_and_cache` keeps
         # observation caching identical across command and idle paths.
         idle_action_getter = getattr(self._env, "idle_action", None)
-        idle_action = (
+        idle_action: NDArray[np.float32] = (
             np.asarray(idle_action_getter(), dtype=np.float32).reshape(-1)
             if callable(idle_action_getter)
             else np.zeros(self._env_action_dim, dtype=np.float32)
@@ -1800,9 +1800,8 @@ class SimAttachedHAL:
                 f"{idle_action.shape[0]} != env_action_dim {self._env_action_dim}."
             )
         held = self._live_held_twist()
-        if held is not None:
-            idle_action = idle_action.copy()  # never write into a backend's own hold vector
-            idle_action[-3:] = held  # a held /cmd_vel setpoint keeps driving the base
+        if held is not None:  # a held /cmd_vel setpoint keeps driving the base
+            idle_action = self._with_twist(idle_action, held)
         stepped = self._step_and_cache(idle_action, source="idle_step")
         if stepped:
             vx, vy, wz = held if held is not None else (0.0, 0.0, 0.0)
@@ -2152,14 +2151,37 @@ class SimAttachedHAL:
         twist (``twist_commanded``) is returned untouched.
         """
         if twist_commanded:
+            # The step's own twist supersedes the setpoint: an older /cmd_vel must not
+            # resume over it (a skill's stop) on the next idle or arm step.
+            self._held_twist = None
             return env_action
         held = self._live_held_twist()
         if held is None:
             self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             return env_action
-        out = env_action.copy()
-        out[-3:] = held
         self._last_body_twist = (held[0], held[1], 0.0, 0.0, 0.0, held[2])
+        return self._with_twist(env_action, held)
+
+    def _with_twist(
+        self, env_action: NDArray[np.float32], twist: tuple[float, float, float]
+    ) -> NDArray[np.float32]:
+        """A copy of ``env_action`` with ``(vx, vy, wz)`` in the base twist slots.
+
+        An env that packs by name places it in its own layout; otherwise the default
+        packer's convention holds (the final three slots). Never writes in place, so
+        neither the packer's ``prev`` nor a backend's own hold vector latches it.
+        """
+        if self._env_packs:
+            vx, vy, wz = twist
+            return self._env.pack_action(  # type: ignore[attr-defined,no-any-return]  # reason: duck-typed env hook, checked in __init__
+                Action(
+                    control_mode=ControlMode.BODY_TWIST,
+                    body_twist=[(vx, vy, 0.0, 0.0, 0.0, wz)],
+                ),
+                env_action.copy(),
+            )
+        out = env_action.copy()
+        out[-3:] = twist
         return out
 
     def _live_held_twist(self) -> tuple[float, float, float] | None:

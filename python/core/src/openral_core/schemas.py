@@ -55,8 +55,10 @@ from openral_core.time_base import scene_control_rate_hz
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
-def _load_yaml_model(model: type[_ModelT], path: str) -> _ModelT:
-    """Load ``path`` as YAML and validate it against ``model``.
+def _load_yaml_model(
+    model: type[_ModelT], path: str, *, context: dict[str, Any] | None = None
+) -> _ModelT:
+    """Load ``path`` as YAML and validate it against ``model`` (with ``context``).
 
     Shared body for every ``from_yaml`` classmethod in this module
     (docs/methods/14-duplication-watch.md — "from_yaml classmethods").
@@ -66,7 +68,7 @@ def _load_yaml_model(model: type[_ModelT], path: str) -> _ModelT:
 
     with open(path, encoding="utf-8") as fh:
         data = safe_load(fh)
-    return model.model_validate(data)
+    return model.model_validate(data, context=context)
 
 
 # ─── Enums ─────────────────────────────────────────────────────────────────────
@@ -2672,28 +2674,45 @@ class CollisionGeometryImport(BaseModel):
 def _resolve_collision_geometry_imports(data: dict[str, Any], path: Path) -> dict[str, Any]:
     """``data`` with every ``collision_geometry_imports`` entry appended, renamed.
 
+    Idempotent: a target link whose authored geometry equals the import (a resolved
+    manifest dumped and loaded again) keeps it as is.
+
     Raises:
-        ValueError: An import names a link its source has no geometry for, or a
-            target link that ``data`` already authors geometry for.
+        ValueError: An import names a link its source has no geometry for, a target
+            link that ``data`` authors different geometry for, or a target link two
+            imports both map onto.
     """
-    authored = {g.get("link_name") for g in data.get("collision_geometry") or []}
+    authored: dict[str, list[dict[str, Any]]] = {}
+    for g in data.get("collision_geometry") or []:
+        authored.setdefault(g.get("link_name"), []).append(g)
     out = list(data.get("collision_geometry") or [])
+    targets: set[str] = set()
     for raw in data.get("collision_geometry_imports") or []:
         imp = CollisionGeometryImport.model_validate(raw)
         source = RobotDescription.from_yaml(str(path.parent.parent / imp.robot / "robot.yaml"))
         for src_link, link in imp.link_map.items():
-            if link in authored:
-                raise ValueError(
-                    f"collision_geometry for {link!r} is both authored and imported from "
-                    f"{imp.robot!r}; keep one source"
-                )
-            entries = [g for g in source.collision_geometry if g.link_name == src_link]
+            if link in targets:
+                raise ValueError(f"collision_geometry_imports map two links onto {link!r}")
+            targets.add(link)
+            entries = [
+                g.model_copy(update={"link_name": link})
+                for g in source.collision_geometry
+                if g.link_name == src_link
+            ]
             if not entries:
                 raise ValueError(
                     f"collision_geometry_imports: robot {imp.robot!r} has no geometry for "
                     f"link {src_link!r}"
                 )
-            out += [{**g.model_dump(mode="json"), "link_name": link} for g in entries]
+            if link in authored:
+                have = [type(entries[0]).model_validate(g) for g in authored[link]]
+                if have != entries:
+                    raise ValueError(
+                        f"collision_geometry for {link!r} is both authored and imported from "
+                        f"{imp.robot!r}; keep one source"
+                    )
+                continue
+            out += [g.model_dump(mode="json") for g in entries]
     return {**data, "collision_geometry": out}
 
 
@@ -3564,6 +3583,19 @@ class RobotDescription(BaseModel):
             wrist = joint_parent[wrist]
         return tuple(out)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_collision_geometry_imports_from_path(
+        cls,
+        data: Any,  # noqa: ANN401  # reason: raw pre-validation input
+        info: ValidationInfo,
+    ) -> Any:  # noqa: ANN401  # reason: raw pre-validation input
+        """Resolve the imports when the loader passed the manifest's path (``from_yaml``)."""
+        path = (info.context or {}).get("manifest_path")
+        if path is None or not isinstance(data, dict) or not data.get("collision_geometry_imports"):
+            return data
+        return _resolve_collision_geometry_imports(data, Path(path))
+
     @model_validator(mode="after")
     def _validate_collision_geometry_imports_resolved(self) -> RobotDescription:
         """Every imported link has geometry: the imports were resolved, not dropped.
@@ -3800,13 +3832,7 @@ class RobotDescription(BaseModel):
         Example:
             >>> # RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
         """
-        from openral_core._safe_yaml import safe_load  # noqa: PLC0415  # reason: deferred
-
-        with open(path, encoding="utf-8") as fh:
-            data = safe_load(fh)
-        if isinstance(data, dict) and data.get("collision_geometry_imports"):
-            data = _resolve_collision_geometry_imports(data, Path(path))
-        return cls.model_validate(data)
+        return _load_yaml_model(cls, path, context={"manifest_path": Path(path)})
 
     def validate_for_e2e_pipeline(self) -> None:
         """Assert this manifest carries every field the e2e ROS graph needs.

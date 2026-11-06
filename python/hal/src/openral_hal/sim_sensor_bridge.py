@@ -199,7 +199,11 @@ def scan_ranges_on_wire(ranges: Sequence[float], *, max_range_m: float) -> list[
     point riding with the robot, and those points dragged its scan match towards "did
     not move". In a 20 m walled MuJoCo room it under-counted travel by ~14 % (4.31 m
     true, 3.72 m mapped), and Nav2 drove past its goals. Nav2 discards ``+inf``
-    (``inf_is_valid`` off), as it does on hardware.
+    (``inf_is_valid`` off), as it does on hardware: a beam clears the costmap only
+    up to a return, so free space with nothing in range is not cleared, on the
+    real lidar as here. ``inf_is_valid`` stays off because the payload filter's
+    dropped beams are ``+inf`` too, and clearing through a payload could erase a
+    real obstacle behind it (``payload_scan_filter_node``).
 
     Example:
         >>> scan_ranges_on_wire([1.5, 12.0, 12.0001], max_range_m=12.0)

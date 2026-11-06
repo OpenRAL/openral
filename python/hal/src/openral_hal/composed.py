@@ -203,9 +203,10 @@ class ComposedHAL:
 
     (``ComposedPartSpec`` types an entry.) Every robot joint must be owned by exactly
     one part. ``staleness_limit_s`` (the manifest's
-    ``safety.joint_state_staleness_limit_s``, threaded by ``build_hal``) and any other
-    keyword (a ``deploy run`` transport override such as a CAN interface) reach every
-    part whose constructor takes them, over that part's ``params``.
+    ``safety.joint_state_staleness_limit_s``, threaded by ``build_hal``) reaches every
+    part whose constructor takes it and whose ``params`` do not set it. Any other
+    keyword (a ``deploy run`` transport override such as a CAN interface) reaches
+    every part whose constructor takes it, over that part's ``params``.
 
     Raises:
         ROSConfigError: Malformed ``parts``, overlapping or missing joint ownership,
@@ -232,8 +233,9 @@ class ComposedHAL:
             specs = [ComposedPartSpec.model_validate(dict(p)) for p in parts]
         except ValidationError as exc:
             raise ROSConfigError(f"ComposedHAL '{description.name}' parts: {exc}") from exc
-        if staleness_limit_s is not None:
-            overrides["staleness_limit_s"] = staleness_limit_s
+        # The manifest's joint-state window is a default: a part's own params win
+        # (the platform base checks odometry against its own, longer window).
+        defaults = {} if staleness_limit_s is None else {"staleness_limit_s": staleness_limit_s}
         self.description = description
         robot_joints = [j.name for j in description.joints]
         self._parts: list[HAL] = []
@@ -252,6 +254,7 @@ class ComposedHAL:
             ctor = _import(spec.entry)
             accepted = inspect.signature(ctor).parameters
             kwargs = {
+                **{k: v for k, v in defaults.items() if k in accepted},
                 **spec.params,
                 **{k: v for k, v in overrides.items() if k in accepted},
             }
@@ -394,7 +397,7 @@ class ComposedHAL:
             # The tick's whole-robot command, for consumers of last_applied_action
             # (the vision attachment bridge): the slots' targets by name, every joint
             # they leave uncommanded (base, held lift) at its last read position. Not
-            # re-read here: an arms-only tick must not fail on base odometry.
+            # re-read per tick: the runner's state read already gates on freshness.
             names = [j.name for j in self.description.joints]
             targets = slot_group_targets(group, names)
             if any(
@@ -649,6 +652,7 @@ class ComposedHAL:
 
         from openral_hal.protocol import EStopRecovery  # noqa: PLC0415
 
+        self._require_ros_parts()  # ROSConfigError, not estop_recovery's AttributeError
         if self.estop_recovery is not EStopRecovery.RESETTABLE:
             raise ROSRuntimeError(
                 f"ComposedHAL '{self.description.name}': a ros2_control part declares "

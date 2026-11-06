@@ -2768,7 +2768,11 @@ def _urdf_has_collision_geometry(urdf_path: str) -> bool:
     ``package://openamrobot_description`` visual meshes nothing serves) makes
     the URDF **not usable** (False), with a warning naming the link:
     ``lower_link_geometry`` refuses that URDF, so a robot with an MJCF twin
-    lowers from the twin. Without one, ``select_lowering`` still routes it to
+    lowers from the twin. The twin path still unions each mapped link's URDF
+    geometry (``_urdf_link_meshes``) and refuses that same partial link there:
+    "not usable" picks the source, it never licenses fitting a link to part of
+    its geometry, so lowering such a robot needs its URDF meshes served (the ROS
+    package overlay). Without a twin, ``select_lowering`` still routes it to
     the URDF path, where the same refusal surfaces; the raise in
     ``lower_link_geometry`` itself is unchanged. (``_link_clouds`` raises
     ``ROSConfigError`` for that partial resolution and nothing else.)

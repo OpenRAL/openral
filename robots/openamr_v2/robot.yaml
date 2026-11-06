@@ -432,6 +432,8 @@ hal:
           params:
             odom_topic: "/platform/odom"
             cmd_vel_topic: "/platform/cmd_vel"
+            # Its own odometry window (the 0.1 s joint-state limit would fail 10 Hz /odom).
+            staleness_limit_s: 0.5
         - entry: "openral_hal.composed:HeldJointsHAL"
           joints: ["lift_joint"]
           # Declared, not measured: L1000 (lift bottom). The safety kernel places the

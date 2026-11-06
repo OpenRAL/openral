@@ -151,3 +151,49 @@ def test_a_held_twist_never_writes_into_the_backends_hold_vector() -> None:
     hal.idle_step()
     assert env.stepped[-1][-3:].tolist() == pytest.approx([0.3, 0.0, 0.2])
     assert env.hold.tolist() == [0.0] * _DIM  # the backend's own vector is untouched
+
+
+def test_a_groups_own_twist_supersedes_the_held_setpoint(
+    rig: tuple[SimAttachedHAL, _PackingSim],
+) -> None:
+    """A skill's stop (a grouped zero twist) must not be overridden by an older /cmd_vel."""
+    hal, env = rig
+    hal.send_action(_twist(0.3, 0.0, 0.2))
+    common = {"tick_index": 3, "tick_group_size": 2, "runner_session_id": 1}
+    hal.send_action(_twist(0.0, 0.0, 0.0, **common))
+    hal.send_action(_grip(0.5, **common))
+    assert env.stepped[-1][-3:].tolist() == [0.0, 0.0, 0.0]
+    hal.idle_step()
+    assert env.stepped[-1][-3:].tolist() == [0.0, 0.0, 0.0]
+    hal.send_action(_grip(0.4))
+    assert env.stepped[-1][-3:].tolist() == [0.0, 0.0, 0.0]
+
+
+class _HeadTwistSim(_PackingSim):
+    """An env whose own layout puts the base twist first, not in the last three slots."""
+
+    def pack_action(
+        self, action: Action, prev: NDArray[np.float32] | None, carry_twist: bool = False
+    ) -> NDArray[np.float32]:
+        out = np.zeros(_DIM, dtype=np.float32) if prev is None else prev.copy()
+        if not carry_twist:
+            out[:3] = 0.0
+        if action.control_mode is ControlMode.BODY_TWIST and action.body_twist:
+            vx, vy, *_, wz = action.body_twist[0]
+            out[:3] = (vx, vy, wz)
+        elif action.control_mode is ControlMode.GRIPPER_POSITION and action.gripper:
+            out[-1] = float(action.gripper[0])
+        return out
+
+
+def test_a_held_twist_goes_where_the_env_packs_it() -> None:
+    description = RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
+    env = _HeadTwistSim(len(description.joints))
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+    hal.send_action(_twist(0.3, 0.0, 0.2))
+    hal.send_action(_grip(0.5))
+    assert env.stepped[-1][:3].tolist() == pytest.approx([0.3, 0.0, 0.2])
+    assert env.stepped[-1][-1] == pytest.approx(0.5)  # the gripper slot is not overwritten
+    hal.idle_step()
+    assert env.stepped[-1][:3].tolist() == pytest.approx([0.3, 0.0, 0.2])

@@ -104,3 +104,35 @@ def test_a_link_both_authored_and_imported_is_refused(tmp_path: Path) -> None:
 def test_import_model_refuses_unknown_keys() -> None:
     with pytest.raises(ValidationError):
         CollisionGeometryImport.model_validate({"robot": "openarm", "links": {"a": "b"}})
+
+
+def test_a_loaded_manifest_dumped_and_loaded_again_round_trips(tmp_path: Path) -> None:
+    """A resolved manifest carries the imported volumes; reloading it must not refuse them."""
+    import yaml
+
+    loaded = RobotDescription.from_yaml(str(_AMR))
+    robot_dir = tmp_path / "robots" / "openamr_v2"
+    robot_dir.mkdir(parents=True)
+    (tmp_path / "robots" / "openarm").symlink_to(_ROBOTS / "openarm")
+    (robot_dir / "robot.yaml").write_text(
+        yaml.safe_dump(loaded.model_dump(mode="json")), encoding="utf-8"
+    )
+    again = RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))
+    assert again.collision_geometry == loaded.collision_geometry
+
+
+def test_two_imports_onto_one_link_are_refused(tmp_path: Path) -> None:
+    import yaml
+
+    with _AMR.open(encoding="utf-8") as fh:
+        raw = safe_load(fh)
+    assert isinstance(raw, dict)
+    raw["collision_geometry_imports"].append(
+        {"robot": "openarm", "link_map": {"openarm_left_link2": "openarm_left_link1"}}
+    )
+    robot_dir = tmp_path / "robots" / "openamr_v2"
+    robot_dir.mkdir(parents=True)
+    (tmp_path / "robots" / "openarm").symlink_to(_ROBOTS / "openarm")
+    (robot_dir / "robot.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="map two links onto"):
+        RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))

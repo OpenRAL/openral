@@ -25,6 +25,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import Action, ControlMode
 
 from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._slot_group import compose_slot_group_action
 
 if TYPE_CHECKING:
     from openral_core import RobotDescription
@@ -119,13 +120,53 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
         return self._last_body_twist
 
     def send_action(self, action: Action) -> None:
-        """Route ``BODY_TWIST`` to the planar base; everything else to the joint path."""
+        """Route ``BODY_TWIST`` to the planar base; everything else to the joint path.
+
+        A slot group (``tick_group_size > 1``) is staged whole, like the joint path:
+        its twist slot drives the base and its other slots compose into one joint
+        step, applied together and committed once against the tick watermark.
+        """
+        if int(action.tick_group_size) > 1:
+            self._send_group(action)
+            return
         if action.control_mode != ControlMode.BODY_TWIST.value:
             self._last_body_twist = (0.0,) * 6
             super().send_action(action)
             return
         self._require_connected("send_action")
         self._validate_action(action)
+        self._slot_group.admit(action)
+        self._drive_base(action)
+        self._slot_group.commit_tick(action)
+
+    def _send_group(self, action: Action) -> None:
+        self._require_connected("send_action")
+        group = self._slot_group.stage(action)
+        if group is None:
+            return
+        twist = ControlMode.BODY_TWIST.value
+        twists = [a for a in group if a.control_mode == twist]
+        joints = [a for a in group if a.control_mode != twist]
+        if len(twists) > 1:
+            raise ROSConfigError(f"OpenAMRv2MujocoHAL: {len(twists)} BODY_TWIST slots in one tick.")
+        # Everything is validated before anything moves.
+        for t in twists:
+            self._validate_action(t)
+        composed = (
+            compose_slot_group_action(joints, self._joint_names, hold=self._held_ctrl_targets())
+            if joints
+            else None
+        )
+        if composed is not None:
+            self._validate_action(composed)
+            super().send_action(composed)  # unticked: the group commits below
+        if twists:
+            self._drive_base(twists[0])
+        else:
+            self._last_body_twist = (0.0,) * 6
+        self._slot_group.commit(group, applied=composed if composed is not None else twists[0])
+
+    def _drive_base(self, action: Action) -> None:
         import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
 
         assert self._data is not None and self._model is not None

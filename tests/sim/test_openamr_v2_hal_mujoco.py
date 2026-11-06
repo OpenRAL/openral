@@ -304,3 +304,42 @@ def test_a_replayed_ramp_tick_is_refused(hal: OpenAMRv2MujocoHAL) -> None:
     assert hal.last_committed_tick == 5
     with pytest.raises(ROSRuntimeError):
         hal.send_action(ramp)
+
+
+def test_a_mobile_manipulation_tick_moves_base_and_arms_together(
+    hal: OpenAMRv2MujocoHAL,
+) -> None:
+    """A twist slot is staged with the arm slots: nothing moves until the tick is whole."""
+    from openral_core.exceptions import ROSRuntimeError
+
+    names = [j.name for j in hal.description.joints]
+    policy = np.zeros(16, dtype=np.float32)
+    policy[1] = -0.5
+    for tick in range(1, 101):
+        arms = _openarm_slot_tick(hal.description, policy, tick)
+        twist = _twist(0.2, 0.0)
+        twist.tick_index, twist.runner_session_id = tick, 0x5EED
+        group = [twist, *arms]
+        for action in group:
+            action.tick_group_size = len(group)
+        pose = hal.base_pose
+        for action in group[:-1]:
+            hal.send_action(action)
+        assert hal.base_pose == pose  # staged, not applied
+        hal.send_action(group[-1])
+        assert hal.last_committed_tick == tick
+    assert hal.base_pose[0] > 0.5  # 100 ticks at 0.2 m/s x 0.05 s
+    assert hal.read_state().position[names.index("left_joint2")] == pytest.approx(-0.5, abs=5e-3)
+    with pytest.raises(ROSRuntimeError):  # the twist slot's tick is watermarked too
+        hal.send_action(group[0])
+
+
+def test_an_ungrouped_ticked_twist_advances_the_watermark(hal: OpenAMRv2MujocoHAL) -> None:
+    from openral_core.exceptions import ROSRuntimeError
+
+    twist = _twist(0.1, 0.0)
+    twist.tick_index, twist.runner_session_id = 7, 3
+    hal.send_action(twist)
+    assert hal.last_committed_tick == 7
+    with pytest.raises(ROSRuntimeError):
+        hal.send_action(twist)

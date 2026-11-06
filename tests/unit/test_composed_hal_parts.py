@@ -79,8 +79,24 @@ def test_build_hal_threads_the_manifest_staleness_window(amr: RobotDescription) 
 
     real = build_hal(amr, mode="real", transport={"require_can_links": False})
     assert isinstance(real, ComposedHAL)
+    from openral_hal.openarm_real import OpenArmRealHAL
+
+    arm = next(p for p in real._parts if isinstance(p, OpenArmRealHAL))
+    assert arm._staleness_limit_s == amr.safety.joint_state_staleness_limit_s
+    # The base keeps its own odometry window: 0.1 s would fail 10 Hz /odom.
     base = next(p for p in real._parts if isinstance(p, PlatformBaseHAL))
-    assert base._staleness_limit_s == amr.safety.joint_state_staleness_limit_s
+    assert base._staleness_limit_s == 0.5
+
+
+def test_a_parts_own_staleness_window_beats_the_manifest_default(
+    base_lift: RobotDescription,
+) -> None:
+    hal = ComposedHAL(
+        description=base_lift, parts=_parts({"staleness_limit_s": 0.5}), staleness_limit_s=0.1
+    )
+    base = hal._parts[0]
+    assert isinstance(base, PlatformBaseHAL)
+    assert base._staleness_limit_s == 0.5
 
 
 def test_the_base_refuses_a_joint_target_before_any_part_is_commanded(
@@ -103,6 +119,8 @@ def test_without_a_ros2_control_part_the_stop_surface_falls_back(
     assert getattr(hal, "estop_recovery", "undeclared") == "undeclared"
     with pytest.raises(ROSConfigError, match="ros2_control"):
         hal.controller_names()
+    with pytest.raises(ROSConfigError, match="ros2_control"):  # typed, not AttributeError
+        hal.reset_estop()
 
 
 def test_a_clean_stop_of_every_part_raises_estop_requested(base_lift: RobotDescription) -> None:
