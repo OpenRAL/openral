@@ -16,6 +16,7 @@ not faked.
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 
 import pytest
 
@@ -27,7 +28,7 @@ from openral_core import (
     ControlMode,
     RobotDescription,
 )
-from openral_core.assets import AssetFetchError
+from openral_core.assets import AssetFetchError, resolve_asset
 from openral_core.exceptions import ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 
@@ -70,28 +71,42 @@ _MANIFEST_DRIVEN_ROBOTS = [
     ),
     "openarm",  # bimanual: 2 grippers + seed_ctrl_from_qpos
     "anvil_openarm_v2",  # bimanual: openarm layout + Anvil J1/J6 ranges (openarm: scheme)
+    "makermods_metal",  # mimic finger at qpos 6; gripper pinned to qpos 7 (makermods: scheme)
+    "makermods_metal_station",  # bimanual: 2 x makermods_metal, explicit actuator_index
 ]
+
+
+def _repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for ancestor in (here, *here.parents):
+        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
+            return ancestor
+    raise RuntimeError("could not locate repo root from test file")
 
 
 @pytest.fixture(params=_MANIFEST_DRIVEN_ROBOTS)
 def robot_id(request: pytest.FixtureRequest) -> str:
-    """One robot id per test case (see _MANIFEST_DRIVEN_ROBOTS)."""
+    """One robot id per test case (see _MANIFEST_DRIVEN_ROBOTS).
+
+    Resolves the manifest's MJCF up front: the ``rd:`` / ``openarm:`` /
+    ``makermods:`` schemes fetch a pinned clone on first use, so an offline
+    host without a warm cache skips that parametrization (``AssetFetchError``)
+    instead of failing (CLAUDE.md §1.11). A broken reference still fails.
+    """
     robot: str = request.param
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / robot / "robot.yaml"))
+    if desc.assets.mjcf is not None:
+        try:
+            resolve_asset(desc.assets.mjcf, "mjcf")
+        except AssetFetchError as exc:
+            pytest.skip(f"{robot}: MJCF {desc.assets.mjcf!r} not fetchable on this host: {exc}")
     return robot
 
 
 @pytest.fixture
 def description(robot_id: str) -> RobotDescription:
     """The real ``robots/<id>/robot.yaml`` for the parametrised robot."""
-    from pathlib import Path
-
-    here = Path(__file__).resolve()
-    for ancestor in (here, *here.parents):
-        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
-            repo_root = ancestor
-            break
-    else:
-        raise RuntimeError("could not locate repo root from test file")
+    repo_root = _repo_root()
     return RobotDescription.from_yaml(str(repo_root / "robots" / robot_id / "robot.yaml"))
 
 
@@ -100,7 +115,7 @@ def test_manifest_has_sim_block(description: RobotDescription) -> None:
     assert description.sim is not None
     assert description.assets.mjcf is not None
     assert description.assets.mjcf.startswith(
-        ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:", "file:")
+        ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:", "makermods:", "file:")
     ), f"unexpected mjcf ref scheme: {description.assets.mjcf!r}"
 
 
@@ -145,15 +160,7 @@ def test_no_user_facing_python_required(robot_id: str) -> None:
     seam, but the assertion is implicit in the round-trip — make it
     explicit by avoiding any ``openral_hal.<robot>`` import).
     """
-    from pathlib import Path
-
-    here = Path(__file__).resolve()
-    for ancestor in (here, *here.parents):
-        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
-            repo_root = ancestor
-            break
-    else:
-        raise RuntimeError("could not locate repo root from test file")
+    repo_root = _repo_root()
 
     yaml_path = repo_root / "robots" / robot_id / "robot.yaml"
     description = RobotDescription.from_yaml(str(yaml_path))
