@@ -105,10 +105,11 @@ Python file is required**:
    `safety` blocks **plus** a `sim:` block:
 
    ```yaml
+   assets:
+     # mjcf ref schemes: rd:<robot_descriptions module> | gym_aloha:<scene>
+     #                   | openarm:<variant> | file:<relpath>
+     mjcf: "rd:<module>"
    sim:
-     # mjcf_uri schemes: robot_descriptions:<module> | gym_aloha:<scene>
-     #                    | openarm_v2:bimanual | file:<abs-path>
-     mjcf_uri: "robot_descriptions:<module>"
      floating_base: false                       # true for humanoids (G1, H1)
      # Optional joint-index overrides — only needed when the MJCF's qpos
      # order doesn't match description.joints (e.g. OpenArm skips qpos 8
