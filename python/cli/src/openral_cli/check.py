@@ -69,7 +69,7 @@ Severity = Literal["error", "warning"]
 # Asset-ref prefixes that download a package or need a sim-only dep; skipped by
 # default so the check runs offline in CI. ``file:`` / ``ros2://`` resolve
 # locally and are always checked.
-_REMOTE_ASSET_PREFIXES = ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:")
+_REMOTE_ASSET_PREFIXES = ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:", "makermods:")
 
 _SCENE_TIERS: dict[str, type[DeployScene]] = {
     "deploy": DeployScene,
@@ -404,7 +404,10 @@ def check_command(
     resolve_remote_assets: bool = typer.Option(
         False,
         "--resolve-remote-assets",
-        help="Also resolve rd:/gym_aloha:/openarm:/unitree: refs (downloads / sim deps).",
+        help=(
+            "Also resolve rd:/gym_aloha:/openarm:/unitree:/makermods: refs "
+            "(downloads / sim deps)."
+        ),
     ),
     json_out: bool = typer.Option(False, "--json", help="Emit the GraphCheckReport as JSON."),
 ) -> None:

@@ -541,10 +541,21 @@ _Fetch Enactic's public `openarm_description` ROS package (Apache-2.0) — the `
 
 - `ensure_openarm_description() -> Path` (L30) — Idempotently clones `enactic/openarm_description` at a pinned SHA into `$OPENRAL_CACHE_DIR/openarm_description/<sha>/` and returns the package root. Raises `ROSConfigError` when the clone fails or has no `package.xml`. Registered in `openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES` (Isaac import + Foxglove asset fetch).
 
+### `python/hal/src/openral_hal/_makermods_metal_assets.py`
+_Fetch the MakerMods Metal arm's `metal_description` package from `makermods-robotics/metal-python-ros` at a pinned SHA and derive the single-arm and two-arm station URDF / MJCF at runtime. Upstream ships no LICENSE file, so nothing is vendored; backs the `makermods:<metal|metal_station>` asset scheme (`openral_core.assets._resolve_makermods`)._
+
+- const `METAL_PINNED_SHA: str` (L57) — the pinned upstream commit (master at 2026-09-16); bump deliberately, never a branch.
+- const `STATION_ARM_SPACING_M: float` (L65) — **provisional** 0.60 m base-to-base spacing of the two Metal Arm Station arms (MakerMods publishes none); update together with `robots/makermods_metal_station/robot.yaml` once measured.
+- `ensure_metal_description() -> Path` (L106) — Idempotently clones the pinned repo into `$OPENRAL_CACHE_DIR/makermods_metal/<sha>/` (via `_pinned_clone.fetch_pinned_clone`) and returns the `metal_description` package root (`package.xml`, `urdf/`, `meshes/`). Raises `ROSConfigError` when `git` is missing, the clone fails, or the pinned tree lacks the package / `metal_with_gripper.urdf`. Registered in `openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`.
+- `ensure_metal_urdf() -> Path` (L193) — The single-arm URDF rooted at `base_link` (upstream `world` link and its fixed joint dropped), written once into a derived cache dir keyed by SHA + derive version. Mesh refs stay `package://metal_description/…`. Raises `ROSConfigError` (from `ensure_metal_description`).
+- `ensure_metal_station_urdf() -> Path` (L205) — The two-arm station URDF: `left_` / `right_` prefixed copies of the arm on fixed `left_mount` / `right_mount` joints at y = ±`STATION_ARM_SPACING_M`/2 under root `station_base`. Raises `ROSConfigError`.
+- `ensure_metal_mjcf() -> Path` (L323) — The single-arm MJCF, MuJoCo-compiled from the derived URDF plus OpenRAL's sim-only `<position>` actuators (joint1..6 + driven finger joint8), joint damping/armature, contact excludes, and an `<equality>` coupling finger joint7 = −joint8 (the upstream `<mimic>`). The gains say nothing about the real Damiao CAN loop. Raises `ROSConfigError` when the fetch fails or `mujoco` is not installed.
+- `ensure_metal_station_mjcf() -> Path` (L335) — The two-arm station MJCF (same derivation, per-arm prefixes; left actuators first). Raises `ROSConfigError`.
+
 ### `python/hal/src/openral_hal/ros_package_overlay.py`
 _Make fetched public ROS description packages resolvable by ROS tools (`resource_retriever` in `foxglove_bridge`), which find `package://` roots only through the ament index._
 
-- `PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]]` (L32) — known public description packages → fetcher returning the package root (`openarm_description` → `ensure_openarm_description`). The one registry; `openral_sim.backends.isaac_sim._fetch_public_package` reads it.
+- `PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]]` (L32) — known public description packages → fetcher returning the package root (`openarm_description` → `ensure_openarm_description`, `metal_description` → `ensure_metal_description`). The one registry; `openral_sim.backends.isaac_sim._fetch_public_package` reads it.
 - `fetch_public_package(pkg) -> Path | None` (L39) — the known public package's root (fetched if needed), `None` for any other.
 - `public_package_overlay(urdf_xml) -> Path | None` (L58) — an ament prefix at `$OPENRAL_CACHE_DIR/ament_overlay` registering every public package the URDF's `package://` URIs name that no `AMENT_PREFIX_PATH` entry indexes; `None` when none is needed. `deploy_e2e.launch.py` prepends it to `foxglove_bridge`'s `AMENT_PREFIX_PATH` so the 3D panel can fetch the URDF meshes.
 
