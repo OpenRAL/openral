@@ -100,7 +100,7 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
     if ref.startswith("file:"):
         return _resolve_file(ref[len("file:") :], manifest_dir)
     scheme, sep, rest = ref.partition(":")
-    loader = _ROBOT_MJCF_LOADERS.get(scheme) if sep else None
+    loader = _ROBOT_ASSET_LOADERS.get(scheme) if sep else None
     if loader is not None:
         return loader(rest, kind)
     raise AssetRefError(
@@ -369,7 +369,7 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
     # missing ``mujoco`` or an upstream tree that no longer matches the derive
     # step is a broken reference and must fail, not skip.
     try:
-        metal.ensure_metal_description()
+        metal.fetch_metal_clone()
     except ROSConfigError as exc:
         raise AssetFetchError(f"makermods:{variant} ({kind}): {exc}") from exc
     try:
@@ -383,4 +383,4 @@ def _resolve_menagerie(model: str, kind: AssetKind) -> Path:
     raise AssetRefError(f"menagerie:{model} not yet wired — widowx is sim-only via SimplerEnv")
 
 
-_ROBOT_MJCF_LOADERS: dict[str, Callable[[str, AssetKind], Path]] = _robot_loader_table()
+_ROBOT_ASSET_LOADERS: dict[str, Callable[[str, AssetKind], Path]] = _robot_loader_table()
