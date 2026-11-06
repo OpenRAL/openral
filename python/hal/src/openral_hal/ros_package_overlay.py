@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from openral_hal._openamr_platform_assets import ensure_openamrobot_description
+from openral_hal._openamrobot_platform_assets import ensure_openamrobot_description
 from openral_hal._openarm_description_assets import ensure_openarm_description
 
 __all__ = ["PUBLIC_ROS_PACKAGES", "fetch_public_package", "public_package_overlay"]

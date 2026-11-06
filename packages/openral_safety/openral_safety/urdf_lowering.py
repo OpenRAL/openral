@@ -2764,7 +2764,7 @@ def _urdf_has_collision_geometry(urdf_path: str) -> bool:
 
     Resolves every link but fits none: the answer is whether any link yields
     geometry, which does not depend on the fit. A link that resolves only
-    partially (``openamr_v2``'s ``base_link``: a box ``<collision>`` beside
+    partially (``openamrobot_v2``'s ``base_link``: a box ``<collision>`` beside
     ``package://openamrobot_description`` visual meshes nothing serves) makes
     the URDF **not usable** (False), with a warning naming the link:
     ``lower_link_geometry`` refuses that URDF, so a robot with an MJCF twin
@@ -2800,7 +2800,7 @@ def select_lowering(robot: RobotDescription, *, manifest_dir: Path | None = None
     * ``"mjcf"`` — no usable URDF geometry but an MJCF exists: keep the
       manifest's hand-authored capsules and sweep the ACM with mujoco FK
       (openarm, whose vendored URDF's collision meshes are ``package://`` refs
-      that don't resolve; ``openamr_v2``, whose URDF resolves only partly,
+      that don't resolve; ``openamrobot_v2``, whose URDF resolves only partly,
       ``_urdf_has_collision_geometry``). An SRDF on such a robot does NOT flip it to the URDF
       path (there is no geometry to lower there); instead
       ``lower_robot_from_mjcf`` unions the SRDF's ``disable_collisions``

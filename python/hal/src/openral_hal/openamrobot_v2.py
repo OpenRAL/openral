@@ -2,7 +2,7 @@
 
 The twin is a manifest-driven ``MujocoArmHAL``: the 20 manifest joints (3 planar
 base, lift, 2 x (7 arm + gripper)) map 1:1 onto the MJCF's position actuators
-(``openral_hal._openamr_v2_assets``), so ``JOINT_POSITION`` and slot groups work
+(``openral_hal._openamrobot_v2_assets``), so ``JOINT_POSITION`` and slot groups work
 unchanged. This class adds the mobile base surface that ``MobileBaseBridge``
 reads (``base_pose`` / ``base_twist``) and ``BODY_TWIST``.
 
@@ -30,7 +30,7 @@ from openral_hal._slot_group import compose_slot_group_action
 if TYPE_CHECKING:
     from openral_core import RobotDescription
 
-__all__ = ["OpenAMRv2MujocoHAL"]
+__all__ = ["OpenAMRobotV2MujocoHAL"]
 
 log = structlog.get_logger(__name__)
 
@@ -41,7 +41,7 @@ _STRAIGHT_LINE_WZ = 1e-9
 _PLANAR_BASE_DOF = 3  # x, y, yaw
 
 
-class OpenAMRv2MujocoHAL(MujocoArmHAL):
+class OpenAMRobotV2MujocoHAL(MujocoArmHAL):
     """HAL adapter for the OpenAMRobot 2.0 MuJoCo twin.
 
     ``BODY_TWIST`` Euler-integrates ``(vx, wz)`` for one ``body_twist_dt_s``
@@ -57,9 +57,9 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
     still refused.
 
     Args:
-        description: The loaded ``robots/openamr_v2/robot.yaml``; ``build_hal``
+        description: The loaded ``robots/openamrobot_v2/robot.yaml``; ``build_hal``
             threads it.
-        mjcf_path: Optional MJCF override; default builds ``openarm:openamr_v2``.
+        mjcf_path: Optional MJCF override; default builds ``openarm:openamrobot_v2``.
         settle_steps: MuJoCo steps per action; ``None`` derives one control period.
         gravity_enabled: When ``False``, gravity is zeroed at ``connect``.
         staleness_limit_s: Maximum age of a cached state.
@@ -67,8 +67,8 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
 
     Example:
         >>> from openral_core import RobotDescription  # doctest: +SKIP
-        >>> desc = RobotDescription.from_yaml("robots/openamr_v2/robot.yaml")  # doctest: +SKIP
-        >>> hal = OpenAMRv2MujocoHAL(description=desc)  # doctest: +SKIP
+        >>> desc = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")  # doctest: +SKIP
+        >>> hal = OpenAMRobotV2MujocoHAL(description=desc)  # doctest: +SKIP
         >>> hal.connect()  # doctest: +SKIP
         >>> hal.base_pose  # doctest: +SKIP
         (0.0, 0.0, 0.0)
@@ -87,10 +87,11 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
         """Initialise from the manifest; the MJCF is built/loaded at ``connect``."""
         if not description.base_joints or len(description.base_joints) != _PLANAR_BASE_DOF:
             raise ROSConfigError(
-                f"OpenAMRv2MujocoHAL needs base_joints [x, y, yaw]; got {description.base_joints}"
+                "OpenAMRobotV2MujocoHAL needs base_joints [x, y, yaw]; "
+                f"got {description.base_joints}"
             )
         if body_twist_dt_s <= 0.0:
-            raise ROSConfigError("OpenAMRv2MujocoHAL body_twist_dt_s must be > 0.")
+            raise ROSConfigError("OpenAMRobotV2MujocoHAL body_twist_dt_s must be > 0.")
         self._init_from_description(
             description,
             mjcf_path=mjcf_path,
@@ -148,7 +149,9 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
         twists = [a for a in group if a.control_mode == twist]
         joints = [a for a in group if a.control_mode != twist]
         if len(twists) > 1:
-            raise ROSConfigError(f"OpenAMRv2MujocoHAL: {len(twists)} BODY_TWIST slots in one tick.")
+            raise ROSConfigError(
+                f"OpenAMRobotV2MujocoHAL: {len(twists)} BODY_TWIST slots in one tick."
+            )
         # Everything is validated before anything moves.
         for t in twists:
             self._validate_action(t)
@@ -203,12 +206,12 @@ class OpenAMRv2MujocoHAL(MujocoArmHAL):
             return
         if not action.body_twist or len(action.body_twist[0]) != BODY_TWIST_DIM:
             raise ROSConfigError(
-                f"OpenAMRv2MujocoHAL: BODY_TWIST needs one {BODY_TWIST_DIM}-float row "
+                f"OpenAMRobotV2MujocoHAL: BODY_TWIST needs one {BODY_TWIST_DIM}-float row "
                 "(vx, vy, vz, wx, wy, wz)."
             )
         row = action.body_twist[0]
         if any(abs(row[i]) > _UNACTUATED_TWIST_EPS for i in (1, 2, 3, 4)):
             raise ROSConfigError(
-                "OpenAMRv2MujocoHAL: the base is differential: only vx and wz are "
+                "OpenAMRobotV2MujocoHAL: the base is differential: only vx and wz are "
                 f"actuated; got (vx, vy, vz, wx, wy, wz) = {tuple(row)}."
             )

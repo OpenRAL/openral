@@ -1,6 +1,6 @@
-"""OpenAMR v2's arm collision geometry is OpenArm's, imported at load and renamed.
+"""OpenAMRobot v2's arm collision geometry is OpenArm's, imported at load and renamed.
 
-``robots/openamr_v2/robot.yaml`` declares ``collision_geometry_imports`` from
+``robots/openamrobot_v2/robot.yaml`` declares ``collision_geometry_imports`` from
 ``robots/openarm`` instead of a copy, so an OpenArm re-lowering reaches this robot.
 The import is valid only because the arm link frames are the same in both
 manifests: every arm joint's and mimic's origin and axis must match.
@@ -16,7 +16,7 @@ from openral_core._safe_yaml import safe_load
 from pydantic import ValidationError
 
 _ROBOTS = Path(__file__).resolve().parents[2] / "robots"
-_AMR = _ROBOTS / "openamr_v2" / "robot.yaml"
+_AMR = _ROBOTS / "openamrobot_v2" / "robot.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +91,7 @@ def test_a_link_both_authored_and_imported_is_refused(tmp_path: Path) -> None:
             "origin_xyz_rpy": [0.0] * 6,
         }
     )
-    robot_dir = tmp_path / "robots" / "openamr_v2"
+    robot_dir = tmp_path / "robots" / "openamrobot_v2"
     robot_dir.mkdir(parents=True)
     (tmp_path / "robots" / "openarm").symlink_to(_ROBOTS / "openarm")
     import yaml
@@ -111,7 +111,7 @@ def test_a_loaded_manifest_dumped_and_loaded_again_round_trips(tmp_path: Path) -
     import yaml
 
     loaded = RobotDescription.from_yaml(str(_AMR))
-    robot_dir = tmp_path / "robots" / "openamr_v2"
+    robot_dir = tmp_path / "robots" / "openamrobot_v2"
     robot_dir.mkdir(parents=True)
     (tmp_path / "robots" / "openarm").symlink_to(_ROBOTS / "openarm")
     (robot_dir / "robot.yaml").write_text(
@@ -130,7 +130,7 @@ def test_two_imports_onto_one_link_are_refused(tmp_path: Path) -> None:
     raw["collision_geometry_imports"].append(
         {"robot": "openarm", "link_map": {"openarm_left_link2": "openarm_left_link1"}}
     )
-    robot_dir = tmp_path / "robots" / "openamr_v2"
+    robot_dir = tmp_path / "robots" / "openamrobot_v2"
     robot_dir.mkdir(parents=True)
     (tmp_path / "robots" / "openarm").symlink_to(_ROBOTS / "openarm")
     (robot_dir / "robot.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")

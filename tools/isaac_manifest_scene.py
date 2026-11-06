@@ -1107,8 +1107,8 @@ def lidar_world_pose(
     ``base`` is the robot root's world ``(x, y, z, yaw)`` (``compose_planar``);
     ``root_to_lidar`` the 4x4 lidar frame in the root frame (its link's import pose
     times the manifest mount). The fan is cast from here and published in the lidar
-    frame, so a mount ahead of the base or turned on it (OpenAMR: 0.33 m ahead, yaw
-    pi) is what the scan's frame_id says. Cast from the base instead, OpenAMR's scan
+    frame, so a mount ahead of the base or turned on it (OpenAMRobot: 0.33 m ahead, yaw
+    pi) is what the scan's frame_id says. Cast from the base instead, OpenAMRobot's scan
     came out mirrored front to back, and SLAM mapped forward driving as reverse.
 
     Example:
@@ -1489,7 +1489,7 @@ def resolve_beam_range(
     With ``raycast_all(start, dir, span, report_fn)`` (PhysX's every-hit query; the
     sidecar passes it) the beam is the nearest hit that is not the robot. That is the
     only correct form when the sensor sits INSIDE one of the robot's colliders, as
-    OpenAMR's lidar does (inside the chassis collision box): PhysX reports a ray
+    OpenAMRobot's lidar does (inside the chassis collision box): PhysX reports a ray
     starting inside a shape as a hit at distance 0, so the walk below, stepping
     ``_SCAN_SELF_SKIP_EPS_M`` per self hit, never left the box and read ``range_max_m``
     for almost every beam (66 of 360 beams returned in warehouse_multiple_shelves,
@@ -1932,7 +1932,7 @@ class IsaacManifestScene(IsaacSceneBase):
         # returned the spawn pose, so _world_from_base applied the spawn twice.
         self._root_to_base = self._link_offset(self._spec.get("base_frame"))
         # The lidar frame in the root frame, read at the import pose for the same reason,
-        # when the lidar rides a link of the imported robot (OpenAMR's lidar_link). A
+        # when the lidar rides a link of the imported robot (OpenAMRobot's lidar_link). A
         # parent_frame that is no URDF link keeps the base-frame fan at `_scan_z`:
         # panda_mobile's Isaac model is the arm alone with its root on the floor, so its
         # manifest mount (base_link - 0.40 m, for RoboCasa's 0.70 m platform) would cast

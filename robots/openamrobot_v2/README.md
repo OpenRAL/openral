@@ -1,4 +1,4 @@
-# OpenAMRobot 2.0 (`openamr_v2`)
+# OpenAMRobot 2.0 (`openamrobot_v2`)
 
 OpenAMRobot 2.0 combines an open-source differential-drive mobile base, a 350 mm
 DOLD v4 lift and two Enactic OpenArm v2.0 arms with pinch grippers. With the lift
@@ -12,13 +12,13 @@ not yet run on hardware. Upstream's dual-arm units ship from 2027-04.
 | What | Source | Licence |
 | --- | --- | --- |
 | Combined URDF | [`openAMRobot/openamr-upperbody-sw`](https://github.com/openAMRobot/openamr-upperbody-sw) @ `17cf693` (main, 2026-11-02), `ros2/src/openamrobot_upperbody_description/urdf/combined_robot.xacro` | MIT (software); CAD-derived geometry CERN-OHL-P-2.0 |
-| Base meshes | [`openAMRobot/openamr-platform-sw`](https://github.com/openAMRobot/openamr-platform-sw) @ `131e500f`, fetched on first use (`openral_hal._openamr_platform_assets`) | MIT / CERN-OHL-P-2.0 |
+| Base meshes | [`openAMRobot/openamr-platform-sw`](https://github.com/openAMRobot/openamr-platform-sw) @ `131e500f`, fetched on first use (`openral_hal._openamrobot_platform_assets`) | MIT / CERN-OHL-P-2.0 |
 | Arm and gripper meshes | [`enactic/openarm_description`](https://github.com/enactic/openarm_description), fetched on first use (our pin `c103041`; upstream builds against `14ff67b`, and the meshes are byte-identical between the two) | Apache-2.0 |
 
 The OpenAMRobot name and logos are trademarks and are excluded from upstream's
 licences.
 
-## Regenerating `openamr_v2.urdf`
+## Regenerating `openamrobot_v2.urdf`
 
 The file is `combined_robot.xacro`, expanded with its defaults
 (`column=dold_v4_350 base_plate=bp000 head_pitch=hp30 base_tilt=bt10
@@ -44,18 +44,18 @@ normalised:
 
 ## Simulation
 
-- **MuJoCo:** `assets.mjcf: openarm:openamr_v2` resolves to an MJCF that
-  `openral_hal._openamr_v2_assets` builds from this URDF and caches.
-  `OpenAMRv2MujocoHAL` drives it. The 20-D action is: 3 planar base joints, the
+- **MuJoCo:** `assets.mjcf: openarm:openamrobot_v2` resolves to an MJCF that
+  `openral_hal._openamrobot_v2_assets` builds from this URDF and caches.
+  `OpenAMRobotV2MujocoHAL` drives it. The 20-D action is: 3 planar base joints, the
   lift, then for each arm 7 joints and a gripper. `BODY_TWIST` takes `vx` and
-  `wz` only. Run `openral deploy sim --config scenes/deploy/openamr_v2_empty.yaml`.
-- **MuJoCo, walled room:** `scenes/deploy/openamr_v2_walls.yaml` puts the twin in a
+  `wz` only. Run `openral deploy sim --config scenes/deploy/openamrobot_v2_empty.yaml`.
+- **MuJoCo, walled room:** `scenes/deploy/openamrobot_v2_walls.yaml` puts the twin in a
   20 m room with three pillars at known poses and runs SLAM and Nav2. The base is
   kinematic, so odometry is exact and any map→odom drift is SLAM's error. A 4 m
   Nav2 goal: map and odom agree within 0.02 m and Nav2 stops at the goal. Before
   `/scan` published missed beams as `+inf`, the map under-counted travel by ~14 %
   (3.72 m mapped, 4.31 m driven) and Nav2 overshot, as it did in the Isaac aisle.
-- **Isaac Sim:** run `scenes/deploy/isaac_openamr_v2_warehouse.yaml`, which
+- **Isaac Sim:** run `scenes/deploy/isaac_openamrobot_v2_warehouse.yaml`, which
   places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`.
 
 ## Head camera
@@ -68,12 +68,12 @@ OpenArm body, so the same mount relative to the arms puts the camera inside upst
 Getac tablet: their centres are 1.5 cm apart, and every depth ray hit the tablet. The
 view is therefore not OpenArm's: about 13 cm higher, and pitched 30° down instead of
 65.6°. An OpenArm rSkill sees its workspace from another angle than it was trained on.
-`tests/unit/test_openamr_v2_head_zed.py` checks the intrinsics, the TF/sim agreement,
+`tests/unit/test_openamrobot_v2_head_zed.py` checks the intrinsics, the TF/sim agreement,
 and that no pixel of the view lands on the robot.
 
 ## Costmap clearing
 
-`scenes/deploy/openamr_v2_walls_clearing.yaml` adds two boxes that sink out of the
+`scenes/deploy/openamrobot_v2_walls_clearing.yaml` adds two boxes that sink out of the
 lidar plane about 80 s into the run (sim time).
 - **Box 0** has the east wall behind it. Once it was gone, the beam returned off the
   wall at 10 m, and Nav2 cleared its cells in both costmaps (100 → 0).
@@ -104,7 +104,7 @@ hits (`resolve_beam_range`).
 
 ## HALs
 
-- **sim:** `OpenAMRv2MujocoHAL` drives one MJCF of the whole robot. In Isaac,
+- **sim:** `OpenAMRobotV2MujocoHAL` drives one MJCF of the whole robot. In Isaac,
   `SimAttachedHAL` drives the imported URDF.
 - **real:** `ComposedHAL` reuses the OpenArm instead of re-implementing it. Parts
   are routed by joint name:
@@ -123,7 +123,7 @@ hits (`resolve_beam_range`).
     controller, a position `JointTrajectoryController`). The swap is one `parts` entry,
     shown commented in `robot.yaml`. `ComposedHAL` merges it with the arm onto one
     ros2_control transport, and `/openral/estop` deactivates `lift_controller` with the
-    arm controllers. `tests/sim/test_openamr_v2_lift_ros2_control.py` runs this against
+    arm controllers. `tests/sim/test_openamrobot_v2_lift_ros2_control.py` runs this against
     a real `controller_manager` with mock hardware. In sim the lift is already
     commanded: the MuJoCo twin and Isaac drive `lift_joint` from `JOINT_POSITION`.
     Upstream's firmware enforces register LIFT (lift motion only with the arms stowed
@@ -166,7 +166,7 @@ Open before the first real run:
   from the MuJoCo twin's geoms (+1 mm), with `base_link`'s box covering the
   whole chassis subtree. The ACM is `openral collision lower --acm-only`
   (mjcf route: `select_lowering` now treats the partially resolving URDF as
-  not usable for lowering) unioned with `openamr_v2.srdf`: OpenArm's six arm
+  not usable for lowering) unioned with `openamrobot_v2.srdf`: OpenArm's six arm
   rows renamed, plus six lift-internal rows (adapter plate on the column top
   at the bottom of the stroke; the position flag and its rod through the stop
   sensors' forks). No arm link is exempted against any body part. Owed: a

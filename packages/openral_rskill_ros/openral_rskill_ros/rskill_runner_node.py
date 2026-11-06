@@ -2212,7 +2212,7 @@ if _ROS2_AVAILABLE:
             held: frozenset[str] = frozenset()
             if len(target) != len(names):
                 # A pose over only the slot-named joints (an OpenArm skill on the
-                # OpenAMR v2): the other joints hold where they are measured. A pose
+                # OpenAMRobot v2): the other joints hold where they are measured. A pose
                 # of neither width is refused before the HAL is read.
                 measured = (
                     self._joint_positions_in_manifest_order(self._hal.read_state(), names)
@@ -3871,7 +3871,7 @@ def expand_starting_pose(
 
     A pose as long as the robot's joints is already that. A pose as long as the joints
     the skill's ``action_contract.slots`` name (``slot_state_joint_names``, slot range
-    order: an OpenArm skill's 16-D pose on the OpenAMR v2) sets those joints by name;
+    order: an OpenArm skill's 16-D pose on the OpenAMRobot v2) sets those joints by name;
     every other joint (base, lift) keeps its ``measured`` position, so it holds.
 
     Raises:

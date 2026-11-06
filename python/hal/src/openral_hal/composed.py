@@ -127,7 +127,7 @@ class HeldJointsHAL:
 
     Example:
         >>> from openral_core import RobotDescription
-        >>> d = RobotDescription.from_yaml("robots/openamr_v2/robot.yaml")
+        >>> d = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
         >>> part = d.model_copy(update={"joints": [j for j in d.joints if j.name == "lift_joint"]})
         >>> hal = HeldJointsHAL(description=part, positions={"lift_joint": 0.0})
         >>> hal.connect()

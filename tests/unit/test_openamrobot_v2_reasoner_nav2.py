@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """The reasoner can send OpenAMRobot 2.0 to a pose through Nav2.
 
-The path the LLM drives, minus the LLM: OpenAMR's real manifest and the in-tree rSkill
+The path the LLM drives, minus the LLM: OpenAMRobot's real manifest and the in-tree rSkill
 registry build the reasoner's palette (``build_tool_palette``); the palette becomes the
 provider tool list (``_tool_palette_to_anthropic_tools``); a tool call shaped like a
 provider's reply is decoded by the reasoner's own ``_decode_tool_payload`` into the
 ``ExecuteRskillTool`` that ``reasoner_node`` sends as an ``ExecuteRskill`` goal. The live
-leg (that goal driving Nav2 in the walled MuJoCo room) is in robots/openamr_v2/README.md.
+leg (that goal driving Nav2 in the walled MuJoCo room) is in robots/openamrobot_v2/README.md.
 """
 
 from __future__ import annotations
@@ -29,7 +29,9 @@ _NAV2 = "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"
 
 @pytest.fixture(scope="module")
 def palette() -> ToolPalette:
-    description = RobotDescription.from_yaml(str(_REPO / "robots" / "openamr_v2" / "robot.yaml"))
+    description = RobotDescription.from_yaml(
+        str(_REPO / "robots" / "openamrobot_v2" / "robot.yaml")
+    )
     manifests = [
         RSkillManifest.from_yaml(str(p)) for p in sorted((_REPO / "rskills").glob("*/rskill.yaml"))
     ]
@@ -38,7 +40,7 @@ def palette() -> ToolPalette:
     )
 
 
-def test_nav2_is_in_openamrs_palette_with_its_pose_schema(palette: ToolPalette) -> None:
+def test_nav2_is_in_openamrobots_palette_with_its_pose_schema(palette: ToolPalette) -> None:
     assert _NAV2 in palette.execute_rskill_ids
     tools = {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}
     tool = tools[_skill_id_to_tool_name(_NAV2)]

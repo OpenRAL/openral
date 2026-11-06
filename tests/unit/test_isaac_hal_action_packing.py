@@ -260,10 +260,10 @@ def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
     _nan_eq(np.asarray(rows[-1]), [0.3] * 7 + [0.7] + [-0.3] * 7 + [-0.7])
 
 
-def test_an_openarm_tick_drives_openamr_v2_and_holds_lift_and_base(recorded: Path) -> None:
+def test_an_openarm_tick_drives_openamrobot_v2_and_holds_lift_and_base(recorded: Path) -> None:
     """A 16-D OpenArm rSkill tick on OpenAMRobot 2.0: the arms move by name, the lift
     HOLDs (NaN) and the base stays still, all in one env step."""
-    desc = _desc("openamr_v2")
+    desc = _desc("openamrobot_v2")
     names = [j.name for j in desc.joints]
     left = [f"left_joint{i}" for i in range(1, 8)]
     right = [f"right_joint{i}" for i in range(1, 8)]
@@ -277,7 +277,7 @@ def test_an_openarm_tick_drives_openamr_v2_and_holds_lift_and_base(recorded: Pat
     def slot(**kw: object) -> Action:
         return Action(tick_index=1, tick_group_size=4, **kw)
 
-    hal, env = _hal("openamr_v2", "isaac_openamr_v2_warehouse.yaml")
+    hal, env = _hal("openamrobot_v2", "isaac_openamrobot_v2_warehouse.yaml")
     try:
         before = len(_rows(recorded))
         for action in (

@@ -1,18 +1,18 @@
 # OpenAMRobot 2.0 in a 20 m x 20 m walled MuJoCo room: a ground-truth world for
 # odometry, /scan and SLAM. The walls' inner faces sit at x, y = +/-9.9 m around
 # the spawn pose, with three pillars that break the room's symmetry
-# (`openral_hal._openamr_v2_assets._ROOM_WALLS`), so a scan or a /map can be
+# (`openral_hal._openamrobot_v2_assets._ROOM_WALLS`), so a scan or a /map can be
 # checked against known geometry. The twin's base is kinematic, so its odometry is
 # exact; a map -> odom transform that drifts from identity is SLAM's error.
 #
-#   openral deploy sim --config scenes/deploy/openamr_v2_walls.yaml
+#   openral deploy sim --config scenes/deploy/openamrobot_v2_walls.yaml
 #
 # The lidar (40 m, the RPLIDAR S3) sees every wall from anywhere in the room.
 scene:
-  id: openamr_v2_walls
-robot_id: openamr_v2
+  id: openamrobot_v2_walls
+robot_id: openamrobot_v2
 composition:
-  composer: "openral_hal._openamr_v2_assets:compose_openamr_v2_walls_mjcf"
+  composer: "openral_hal._openamrobot_v2_assets:compose_openamrobot_v2_walls_mjcf"
   params: {}
 runtime:
   enable_slam: true

@@ -1,7 +1,7 @@
-"""The reasoner palette keeps a 16-D OpenArm rSkill on the 20-joint OpenAMR v2.
+"""The reasoner palette keeps a 16-D OpenArm rSkill on the 20-joint OpenAMRobot v2.
 
 ``_maybe_seed_palette_from_search_paths`` drops a VLA whose ``state_contract.dim`` is not
-the robot's joint count. The OpenAMR v2 adds three base joints and a lift to the exact
+the robot's joint count. The OpenAMRobot v2 adds three base joints and a lift to the exact
 OpenArm 16, and the runner feeds an OpenArm skill exactly the joints its
 ``action_contract.slots`` name (``slot_state_joint_names``), so the palette admits it.
 A 16-D skill whose slots do not account for its state is still dropped.
@@ -25,7 +25,7 @@ import yaml
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ROBOT_YAML = _REPO_ROOT / "robots" / "openamr_v2" / "robot.yaml"
+_ROBOT_YAML = _REPO_ROOT / "robots" / "openamrobot_v2" / "robot.yaml"
 
 
 @pytest.mark.skipif(
@@ -41,7 +41,7 @@ def test_palette_admits_the_openarm_skill_and_drops_an_unaccounted_state(
     from openral_reasoner_ros import ReasonerNode
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
-    from tests.unit.test_openarm_skill_on_openamr_v2 import openarm_pi05_manifest
+    from tests.unit.test_openarm_skill_on_openamrobot_v2 import openarm_pi05_manifest
 
     keep = openarm_pi05_manifest()
     # Same checkpoint contract with the gripper slots folded into whole-vector

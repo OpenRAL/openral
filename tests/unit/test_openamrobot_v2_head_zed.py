@@ -26,7 +26,7 @@ def _sensor(robot: str, name: str) -> SensorSpec:
 
 @pytest.mark.parametrize("name", ["head_zed", "top"])
 def test_intrinsics_match_openarm(name: str) -> None:
-    amr, arm = _sensor("openamr_v2", name), _sensor("openarm", name)
+    amr, arm = _sensor("openamrobot_v2", name), _sensor("openarm", name)
     assert amr.modality == arm.modality
     assert amr.intrinsics == arm.intrinsics
     assert amr.vla_feature_key == arm.vla_feature_key
@@ -34,7 +34,7 @@ def test_intrinsics_match_openarm(name: str) -> None:
 
 @pytest.mark.parametrize("name", ["head_zed", "top"])
 def test_sim_camera_sits_at_the_tf_mount_on_upstreams_head_link(name: str) -> None:
-    zed, spec = _sensor("openamr_v2", "head_zed"), _sensor("openamr_v2", name)
+    zed, spec = _sensor("openamrobot_v2", "head_zed"), _sensor("openamrobot_v2", name)
     assert zed.parent_frame == "head_camera_link"
     assert zed.static_transform_xyz_rpy is not None
     x, y, z, roll, pitch, yaw = zed.static_transform_xyz_rpy
@@ -54,20 +54,20 @@ def test_the_head_camera_sees_the_world_not_the_robot() -> None:
     """
     mujoco = pytest.importorskip("mujoco")
     from openral_core import ROSConfigError
-    from openral_hal.openamr_v2 import OpenAMRv2MujocoHAL
+    from openral_hal.openamrobot_v2 import OpenAMRobotV2MujocoHAL
 
-    desc = RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
-    hal = OpenAMRv2MujocoHAL(description=desc)
+    desc = RobotDescription.from_yaml(str(_ROBOTS / "openamrobot_v2" / "robot.yaml"))
+    hal = OpenAMRobotV2MujocoHAL(description=desc)
     try:
         hal.connect()
     except ROSConfigError as exc:  # pinned mesh clone unreachable (offline host)
-        pytest.skip(f"openamr_v2 twin unavailable: {exc}")
+        pytest.skip(f"openamrobot_v2 twin unavailable: {exc}")
     try:
         handles = hal.mujoco_handles()
         assert handles is not None
         model, data = handles
         mujoco.mj_forward(model, data)
-        top = _sensor("openamr_v2", "top")
+        top = _sensor("openamrobot_v2", "top")
         assert top.intrinsics is not None
         k = top.intrinsics
         cam = model.camera("top").id

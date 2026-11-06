@@ -51,7 +51,7 @@
   SAFETY (CLAUDE.md §3): every row here REDUCES what the kernel checks and
   needs safety-WG sign-off to change.
 -->
-<robot name="openamr_v2">
+<robot name="openamrobot_v2">
   <disable_collisions link1="openarm_left_ee_link1" link2="openarm_left_link5" reason="OpenArm row (finger_pair/link5): meshes never closer than 16.3 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
   <disable_collisions link1="openarm_right_ee_link1" link2="openarm_right_link5" reason="OpenArm row (finger_pair/link5): meshes never closer than 16.1 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
   <disable_collisions link1="openarm_left_ee_link1" link2="openarm_left_link6" reason="OpenArm row (finger_pair/link6): meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>

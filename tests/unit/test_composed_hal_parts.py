@@ -1,7 +1,7 @@
 """``ComposedHAL`` wiring that needs no hardware and no ROS graph.
 
 The parts are the real ``HeldJointsHAL`` and ``PlatformBaseHAL`` classes over the real
-``robots/openamr_v2`` manifest, narrowed to the base and lift joints. Nothing here
+``robots/openamrobot_v2`` manifest, narrowed to the base and lift joints. Nothing here
 connects a platform.
 """
 
@@ -22,7 +22,7 @@ _BASE_LIFT = ("base_x", "base_y", "base_yaw", "lift_joint")
 
 @pytest.fixture(scope="module")
 def amr() -> RobotDescription:
-    return RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
+    return RobotDescription.from_yaml(str(_ROBOTS / "openamrobot_v2" / "robot.yaml"))
 
 
 @pytest.fixture(scope="module")

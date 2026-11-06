@@ -1,6 +1,6 @@
 """Fetch ``openamrobot_description`` from ``openAMRobot/openamr-platform-sw``.
 
-``robots/openamr_v2/openamr_v2.urdf`` names the mobile base's meshes
+``robots/openamrobot_v2/openamrobot_v2.urdf`` names the mobile base's meshes
 ``package://openamrobot_description/meshes/...``. That package lives at
 ``ros2/src/openamrobot_description`` in the public platform repo (MIT code; the
 CAD-derived meshes are CERN-OHL-P-2.0, a permissive licence). It is fetched as a

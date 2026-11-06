@@ -55,7 +55,7 @@ def _escape(geom: LinkCollisionGeometry, pts: npt.NDArray[np.float64]) -> Any:
     return np.maximum(box, tight_escape_per_point_m(geom, local))
 
 
-@pytest.mark.parametrize("robot_id", ["openarm", "openamr_v2"])
+@pytest.mark.parametrize("robot_id", ["openarm", "openamrobot_v2"])
 def test_every_urdf_mesh_vertex_is_inside_its_links_primitives(robot_id: str) -> None:
     manifest = REPO / "robots" / robot_id / "robot.yaml"
     robot = RobotDescription.from_yaml(str(manifest))

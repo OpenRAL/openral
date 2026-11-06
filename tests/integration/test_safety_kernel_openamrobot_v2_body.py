@@ -1,6 +1,6 @@
 """The real safety kernel refuses an OpenAMRobot 2.0 hand swung into the lift carriage.
 
-OpenAMR reuses OpenArm's arm primitives on a body of its own (chassis, column, lift
+OpenAMRobot reuses OpenArm's arm primitives on a body of its own (chassis, column, lift
 carriage, adapter plate, arm profile, tablet, head bracket: boxes lowered from the
 URDF), with a 51-pair ACM in which no moving arm link is exempted against any body
 part. This runs that model through the real ``safety_kernel_node`` binary with the
@@ -18,7 +18,7 @@ left hand swung behind the shoulder into the lift carriage   REFUSED, ``KIND_COL
                                                              the column's L1350 stop sensor)
 ===========================================================  =============================
 
-The refused row is the ``_REAL_COLLISIONS`` openamr_v2 case of
+The refused row is the ``_REAL_COLLISIONS`` openamrobot_v2 case of
 ``tests/unit/test_collision_geometry_zero_pose.py``. World voxels are off: this is
 the self-collision path.
 
@@ -62,8 +62,10 @@ from tests.sim.safety._kernel_subprocess import (  # noqa: E402
     terminate_kernel,
 )
 
-_ROBOT_YAML = pathlib.Path(__file__).resolve().parents[2] / "robots" / "openamr_v2" / "robot.yaml"
-_RSKILL_ID = "openral/openamr-body-self-collision"
+_ROBOT_YAML = (
+    pathlib.Path(__file__).resolve().parents[2] / "robots" / "openamrobot_v2" / "robot.yaml"
+)
+_RSKILL_ID = "openral/openamrobot-body-self-collision"
 _BODY = "lift_carriage_link"
 
 # The left hand swung behind the shoulder into the lift carriage (joints 1-7).
@@ -122,7 +124,7 @@ def test_the_kernel_refuses_a_hand_in_the_lift_carriage_and_accepts_the_rest_pos
         "fixture precondition: the manifest carries the lift carriage"
     )
 
-    node_name = f"safety_kernel_openamr_{uuid.uuid4().hex[:8]}"
+    node_name = f"safety_kernel_openamrobot_{uuid.uuid4().hex[:8]}"
     with tempfile.TemporaryDirectory() as td:
         log_path = pathlib.Path(td) / "kernel.log"
         proc = start_kernel(
@@ -136,7 +138,7 @@ def test_the_kernel_refuses_a_hand_in_the_lift_carriage_and_accepts_the_rest_pos
             time.sleep(1.5)
             rclpy.init()
             try:
-                helper = rclpy.create_node("openamr_body_helper")
+                helper = rclpy.create_node("openamrobot_body_helper")
                 assert activate_kernel_node(node_name, helper), "kernel activation failed"
                 executor = SingleThreadedExecutor()
                 executor.add_node(helper)

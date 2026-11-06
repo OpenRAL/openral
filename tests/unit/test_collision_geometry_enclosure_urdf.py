@@ -229,7 +229,7 @@ def test_every_static_link_vertex_is_inside_its_primitives_with_headroom(
     )
     refined = [g for g in geoms if g.tight_geometry is not None]
     if not refined:
-        # Box-only pieces (OpenAMR's platform links): the kernel checks the boxes
+        # Box-only pieces (OpenAMRobot's platform links): the kernel checks the boxes
         # themselves (refine_self_pair is inert without a hull), and the union and
         # headroom asserts above already hold the mesh inside them.
         return

@@ -7,7 +7,7 @@ suppress the idle stepper), a reset drops the setpoint, and a grouped lateral tw
 a differential base is refused before any backend sees it.
 
 The env is a recording fake at the ``SimRollout`` boundary (the legitimate seam) that
-packs by name like the Isaac sidecar; the description is the real openamr_v2 manifest.
+packs by name like the Isaac sidecar; the description is the real openamrobot_v2 manifest.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class _PackingSim:
 
 @pytest.fixture
 def rig() -> tuple[SimAttachedHAL, _PackingSim]:
-    description = RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
+    description = RobotDescription.from_yaml(str(_ROBOTS / "openamrobot_v2" / "robot.yaml"))
     env = _PackingSim(len(description.joints))
     hal = SimAttachedHAL(env, description)
     hal.connect()
@@ -143,7 +143,7 @@ class _PersistentHoldSim(_PackingSim):
 
 
 def test_a_held_twist_never_writes_into_the_backends_hold_vector() -> None:
-    description = RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
+    description = RobotDescription.from_yaml(str(_ROBOTS / "openamrobot_v2" / "robot.yaml"))
     env = _PersistentHoldSim(len(description.joints))
     hal = SimAttachedHAL(env, description)
     hal.connect()
@@ -187,7 +187,7 @@ class _HeadTwistSim(_PackingSim):
 
 
 def test_a_held_twist_goes_where_the_env_packs_it() -> None:
-    description = RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
+    description = RobotDescription.from_yaml(str(_ROBOTS / "openamrobot_v2" / "robot.yaml"))
     env = _HeadTwistSim(len(description.joints))
     hal = SimAttachedHAL(env, description)
     hal.connect()

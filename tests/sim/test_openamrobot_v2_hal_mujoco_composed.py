@@ -1,4 +1,4 @@
-"""``ComposedHAL`` over real parts: the OpenArm MuJoCo twin as the arm of openamr_v2.
+"""``ComposedHAL`` over real parts: the OpenArm MuJoCo twin as the arm of openamrobot_v2.
 
 The arm part is ``OpenArmMujocoHAL``, the real 16-joint OpenArm twin, unchanged. The
 base and the lift are ``HeldJointsHAL`` parts, so every assertion about routing,
@@ -37,7 +37,7 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def description() -> RobotDescription:
-    return RobotDescription.from_yaml(str(_ROBOTS / "openamr_v2" / "robot.yaml"))
+    return RobotDescription.from_yaml(str(_ROBOTS / "openamrobot_v2" / "robot.yaml"))
 
 
 def _parts() -> list[dict[str, object]]:

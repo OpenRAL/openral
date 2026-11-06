@@ -314,7 +314,7 @@ class MujocoArmHAL(HALBase):
         self._slot_group = SlotGroupStager()
         # Joints a slot group may leave uncommanded; they keep their current ctrl
         # target (``compose_slot_group(hold=...)``). Empty = every joint must be
-        # commanded. ``OpenAMRv2MujocoHAL`` lists its base and lift.
+        # commanded. ``OpenAMRobotV2MujocoHAL`` lists its base and lift.
         self._hold_if_uncommanded: frozenset[str] = frozenset()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────

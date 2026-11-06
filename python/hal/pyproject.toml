@@ -40,7 +40,7 @@ so100 = [
     "lerobot[feetech]>=0.6.1",
 ]
 arm-sim = [
-    "mujoco>=3.8.0",  # reason: MuJoCo physics engine for the HAL sim adapters; 3.8 made mjsJoint.damping a coefficient array (openamr_v2 twin)
+    "mujoco>=3.8.0",  # reason: MuJoCo physics engine for the HAL sim adapters; 3.8 made mjsJoint.damping a coefficient array (openamrobot_v2 twin)
     "onnxruntime>=1.17",  # reason: pinned G1 walking controller inference
     "robot-descriptions>=1.12.0",  # reason: source of mujoco_menagerie MJCFs (UR5e, UR10e, Panda)
 ]

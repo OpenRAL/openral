@@ -14,7 +14,7 @@ Conversion order:
   ``scale * value + offset`` for a joint ``action_contract.joint_calibration`` names,
   else ``gripper * gripper_scale`` or ``degrees(joint)`` (degrees checkpoints only).
 * state, slot path on a robot with MORE joints than the slots name (an OpenArm skill
-  on the OpenAMR v2's base + lift + OpenArm): gather the slot-named joints by name
+  on the OpenAMRobot v2's base + lift + OpenArm): gather the slot-named joints by name
   (``slot_state_joint_names``) before converting, so the policy never reads a base or
   lift joint as an arm joint.
 * action, joint path (policy -> robot): per channel ``(value - offset) / scale`` for a
@@ -159,7 +159,7 @@ def slot_state_joint_names(
         ...         {"range": [1, 1], "control_mode": "gripper_position", "ee": "left_gripper"},
         ...     ],
         ... }
-        >>> robot = RobotDescription.from_yaml("robots/openamr_v2/robot.yaml")
+        >>> robot = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
         >>> slot_state_joint_names(RSkillManifest.model_validate(raw), robot)
         ['left_joint1', 'left_gripper']
     """

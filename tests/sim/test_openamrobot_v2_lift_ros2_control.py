@@ -1,4 +1,4 @@
-"""The OpenAMR lift as a ros2_control part: ready for when upstream exposes it on real.
+"""The OpenAMRobot lift as a ros2_control part: ready for when upstream exposes it on real.
 
 Upstream (``openamr-upperbody-sw`` ``ros2_control.xacro``, issue #17) drives ``lift_joint``
 through ``lift_controller``, a position ``JointTrajectoryController``, in its mock and
@@ -37,7 +37,7 @@ from tests.integration._ros2_control_stack import (
 
 pytestmark = pytest.mark.sim
 
-_MANIFEST = Path(__file__).resolve().parents[2] / "robots" / "openamr_v2" / "robot.yaml"
+_MANIFEST = Path(__file__).resolve().parents[2] / "robots" / "openamrobot_v2" / "robot.yaml"
 _ARM = [f"left_joint{i}" for i in range(1, 8)]
 _LIFT = ["lift_joint"]
 _SKIP_REASON = unavailable()
@@ -47,7 +47,7 @@ _SKIP_REASON = unavailable()
 def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     if _SKIP_REASON is not None:
         pytest.skip(_SKIP_REASON)
-    tmp = tmp_path_factory.mktemp("openamr_lift")
+    tmp = tmp_path_factory.mktemp("openamrobot_lift")
     urdf = write_generic_system_urdf(tmp / "amr.urdf", name="amr", joints=[*_LIFT, *_ARM])
     config = write_controller_config(
         tmp / "controllers.yaml", {"left_arm_controller": _ARM, "lift_controller": _LIFT}
@@ -59,7 +59,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
 
 
 def _composite() -> tuple[Any, Any]:  # (ComposedHAL, RosControlTransport), imported lazily
-    """openamr_v2 narrowed to the lift and the left arm, each a stock ``RosControlHAL``."""
+    """openamrobot_v2 narrowed to the lift and the left arm, each a stock ``RosControlHAL``."""
     from openral_hal.composed import ComposedHAL
     from openral_hal.ros_control_transport import RosControlTransport
 
@@ -95,7 +95,7 @@ def test_the_lift_moves_through_lift_controller_beside_the_arm(stack: None) -> N
     """One transport, two controllers: a whole row moves the lift and the arm by name."""
     hal, transport_cls = _composite()
     names = [j.name for j in hal.description.joints]
-    with driver_node("openamr_lift_drive") as (node, spin):
+    with driver_node("openamrobot_lift_drive") as (node, spin):
         # As ManifestHALLifecycleNode._attach_ros_control_transport wires a real HAL.
         transport = transport_cls(
             node,

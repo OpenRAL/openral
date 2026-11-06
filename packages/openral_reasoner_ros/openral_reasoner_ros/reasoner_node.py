@@ -2862,7 +2862,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 )
             else:
                 # A slot contract naming a strict subset of the robot's joints
-                # (an OpenArm skill on the OpenAMR v2's base + lift + OpenArm):
+                # (an OpenArm skill on the OpenAMRobot v2's base + lift + OpenArm):
                 # the runner's codec gathers exactly those joints by name.
                 from openral_rskill._policy_io import slot_state_joint_names
 

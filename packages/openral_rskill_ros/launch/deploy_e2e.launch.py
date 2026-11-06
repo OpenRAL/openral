@@ -2346,7 +2346,7 @@ def _rsp_urdf_joint_map(
     alone reads (``urdf_joint_map``), or no moving link reaches /tf, or the jaw sits at
     the wrong angle (the SO-101's was 21.5 deg off, PickOrange g19). A ros2_control arm's
     vendor broadcaster publishes the URDF's own names and units: ``None``. A composed
-    HAL whose broadcaster covers only the arm (OpenAMR v2: no lift or base state there)
+    HAL whose broadcaster covers only the arm (OpenAMRobot v2: no lift or base state there)
     gets the map, so the lift and everything on it reach /tf.
     """
     from openral_hal.resolver import urdf_joint_map, vendor_publishes_urdf_joint_states

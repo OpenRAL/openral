@@ -2,7 +2,7 @@
 # lift + two Enactic OpenArm v2.0 arms with pinch grippers). Sim-only for now.
 #
 # Source: openAMRobot/openamr-upperbody-sw @ 17cf693 (main, 2026-11-02, MIT;
-# CAD-derived geometry CERN-OHL-P-2.0). `openamr_v2.urdf` is its
+# CAD-derived geometry CERN-OHL-P-2.0). `openamrobot_v2.urdf` is its
 # `combined_robot.xacro` expanded with the defaults (column=dold_v4_350,
 # base_plate=bp000, head_pitch=hp30, base_tilt=bt10, arm_package=openarm,
 # hardware_profile=mock), then normalised: the <gazebo>/<ros2_control> blocks and
@@ -12,17 +12,17 @@
 # articulations). The xacro pins openarm_description@14ff67b and
 # openamr-platform-sw@131e500f; the meshes resolve through the pinned clones in
 # openral_hal.ros_package_overlay (OpenArm meshes are byte-identical at our
-# c103041 pin). Regenerate: robots/openamr_v2/README.md.
+# c103041 pin). Regenerate: robots/openamrobot_v2/README.md.
 #
 # UPSTREAM IS PRE-RELEASE (rc.1 2026-11-20, v2.0.0 2026-12-18; nothing is
 # physically accepted yet). Upstream marks these as placeholders: the wrist
 # camera poses, the 0.400 m wheel track, the lift's velocity/effort (DOLD
 # catalogue, "provisional") and every acceleration limit. Re-sync at v2.0.0.
 #
-# The MuJoCo twin (`openarm:openamr_v2`) is built from this URDF at runtime by
-# openral_hal._openamr_v2_assets; its actuators follow `joints` order below.
+# The MuJoCo twin (`openarm:openamrobot_v2`) is built from this URDF at runtime by
+# openral_hal._openamrobot_v2_assets; its actuators follow `joints` order below.
 
-name: "openamr_v2"
+name: "openamrobot_v2"
 embodiment_kind: "mobile_manipulator"
 # REP-105: base_footprint is the URDF root, on the floor under the drive-axle
 # midpoint; MobileBaseBridge publishes odom -> base_footprint.
@@ -36,11 +36,11 @@ base_kinematics: "differential"
 
 assets:
   urdf:
-    ref: "file:openamr_v2.urdf"
-  mjcf: "openarm:openamr_v2"
+    ref: "file:openamrobot_v2.urdf"
+  mjcf: "openarm:openamrobot_v2"
   # Hand-reviewed ACM exemptions (OpenArm's arm rows, renamed), unioned into the
   # MJCF lowering - see the SRDF header for the paper trail.
-  srdf: "file:openamr_v2.srdf"
+  srdf: "file:openamrobot_v2.srdf"
 
 # Order is [forward_axis, side_axis, yaw_axis] per the schema. base_y exists for
 # the planar-base contract (and the twin's slide joint); a differential base never
@@ -358,10 +358,10 @@ capabilities:
     - "gripper_position"
     - "body_twist"
   supported_vla_embodiments:
-    - "openamr_v2"
+    - "openamrobot_v2"
   embodiment_tags:
-    - "openamr"
-    - "openamr_v2"
+    - "openamrobot"
+    - "openamrobot_v2"
     - "openarm"
     - "bimanual"
     - "mobile_base"
@@ -403,7 +403,7 @@ action_spec:
   control_freq_hz: 30.0
 
 hal:
-  sim: "openral_hal.openamr_v2:OpenAMRv2MujocoHAL"
+  sim: "openral_hal.openamrobot_v2:OpenAMRobotV2MujocoHAL"
   # Real hardware is the OpenArm on a platform, so it is composed, not re-implemented:
   # ComposedHAL routes by joint name to three parts.
   #  - arm: OpenArmRealHAL built from robots/openarm/robot.yaml, unchanged. It owns the
@@ -415,7 +415,7 @@ hal:
   #  - lift: HeldJointsHAL. The real lift has no ros2_control interface (its firmware
   #    owns it), so its height is declared, not measured.
   # NOT YET RUN ON HARDWARE (dual-arm units ship 2027-04). Open integration items are
-  # in robots/openamr_v2/README.md.
+  # in robots/openamrobot_v2/README.md.
   real: "openral_hal.composed:ComposedHAL"
   parameters:
     defaults:
@@ -448,7 +448,7 @@ hal:
           # stopped). Replace the entry above with this one, on the arms'
           # controller_manager; ComposedHAL merges both ros2_control parts onto one
           # transport and /openral/estop deactivates lift_controller with the arms'.
-          # Live-tested: tests/sim/test_openamr_v2_lift_ros2_control.py. Before using it
+          # Live-tested: tests/sim/test_openamrobot_v2_lift_ros2_control.py. Before using it
           # on hardware: Safety-WG sign-off, and the LIFT interlock in the firmware.
           #   - entry: "openral_hal.ros_control:RosControlHAL"
           #     joints: ["lift_joint"]
@@ -464,10 +464,10 @@ hal:
 # its workspace from a different angle than it was trained on.
 # Upstream models the ZED body behind `head_camera_link`'s origin (its front face is
 # at x = 0), so the lens sits 5 mm ahead of it, looking along +x
-# (tests/unit/test_openamr_v2_head_zed_matches_openarm.py).
+# (tests/unit/test_openamrobot_v2_head_zed_matches_openarm.py).
 # Wrists: frames in the URDF, upstream placeholders on placeholder poses; the twin's
 # MJCF carries a camera of each name on the matching optical frame
-# (openral_hal._openamr_v2_assets), which Isaac also mounts from.
+# (openral_hal._openamrobot_v2_assets), which Isaac also mounts from.
 sensors:
   - name: "head_zed"
     modality: "depth"
@@ -648,7 +648,7 @@ mimic_joints:
     sim_joint_name: "openarm_right_finger_joint2"
 
 # Rigid, zero-DoF links of the collision tree (NOT `joints`: those are the
-# action vector). Every row is the same-named fixed <joint> of openamr_v2.urdf,
+# action vector). Every row is the same-named fixed <joint> of openamrobot_v2.urdf,
 # copied verbatim; without them base, column, carriage and arm pedestals are
 # separate trees and the envelope loader refuses the robot. The lowering also
 # cross-checks every row against the MJCF twin (built from the same URDF):
@@ -746,7 +746,7 @@ fixed_attachments:
 # re-lowering of the OpenArm reaches this robot unchanged (CollisionGeometryImport,
 # resolved by RobotDescription.from_yaml). Every arm joint and mimic origin/axis is
 # identical between the two manifests, so the link-frame geometry is valid as is
-# (tests/unit/test_openamr_v2_collision_imports.py); the OpenArm torso
+# (tests/unit/test_openamrobot_v2_collision_imports.py); the OpenArm torso
 # (openarm_body_link0) is not imported, this robot has none.
 collision_geometry_imports:
   - robot: "openarm"

@@ -2,7 +2,7 @@
 #
 # The same generic "any Isaac stage, any manifest robot" scene as
 # isaac_panda_mobile_warehouse.yaml (see it for the field contract): the robot is
-# imported from robots/openamr_v2/openamr_v2.urdf; its meshes resolve through the
+# imported from robots/openamrobot_v2/openamrobot_v2.urdf; its meshes resolve through the
 # pinned openarm_description and openamr-platform-sw clones.
 #
 # Spawn: the aisle between Shelf_0 (x <= -8.6) and Shelf_1 (x >= -1.0), facing
@@ -13,7 +13,7 @@
 #
 # Lift drive: the sidecar's default prismatic drive (1000 N/m) would let the lift
 # sag about 12 cm under the arms. 1e5 N/m with 4000 N*s/m damping is the MuJoCo
-# twin's lift (openral_hal._openamr_v2_assets).
+# twin's lift (openral_hal._openamrobot_v2_assets).
 #
 # Licence: NVIDIA's Isaac Sim assets may be used inside Isaac Sim. They are
 # referenced from NVIDIA's asset server at run time, never converted or vendored.
@@ -24,10 +24,10 @@
 #
 # Run::
 #
-#     openral deploy sim --config scenes/deploy/isaac_openamr_v2_warehouse.yaml \
+#     openral deploy sim --config scenes/deploy/isaac_openamrobot_v2_warehouse.yaml \
 #       --no-enable-octomap --hal viewer_enabled=false
 
-robot_id: "openamr_v2"
+robot_id: "openamrobot_v2"
 
 base_pose:
   xyz: [-4.8, 0.0, 0.0]

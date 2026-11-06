@@ -1379,17 +1379,17 @@ def test_droid_followers_track_the_measured_leader(
     assert target[dof_index[g["followers"][0]["dof"]]] == pytest.approx(0.7)  # a copy
 
 
-def test_openamr_lidar_fan_is_cast_from_its_mount_not_the_base(
+def test_openamrobot_lidar_fan_is_cast_from_its_mount_not_the_base(
     _manifest_scene_mod: object,
 ) -> None:
-    """OpenAMR's lidar sits 0.33 m ahead of the base, turned by yaw pi.
+    """OpenAMRobot's lidar sits 0.33 m ahead of the base, turned by yaw pi.
 
     The sidecar cast the fan from the base at base heading while /scan is stamped in
     the lidar frame, so every return came out mirrored front to back and SLAM mapped
     forward driving as reverse (Isaac warehouse, 2026-11-05: odom +6.97 m, map -4.72 m).
     """
     mod: Any = _manifest_scene_mod
-    manifest = Path(__file__).resolve().parents[2] / "robots" / "openamr_v2" / "robot.yaml"
+    manifest = Path(__file__).resolve().parents[2] / "robots" / "openamrobot_v2" / "robot.yaml"
     desc = RobotDescription.from_yaml(str(manifest))
     lidar = _sensor_dict(next(s for s in desc.sensors if s.name == "base_scan"))
     assert lidar["parent_frame"] == "lidar_link"
@@ -1421,7 +1421,7 @@ def test_openamr_lidar_fan_is_cast_from_its_mount_not_the_base(
             _base_pose=[0.0, 0.0, 0.0],
             _root_to_lidar=root_to_lidar,
             _scan_z=0.30,
-            _robot_prim="/openamr",
+            _robot_prim="/openamrobot",
         )
         return mod.IsaacManifestScene._scan_ranges(scene)
 
@@ -1461,7 +1461,7 @@ def _world_all(inside: str | None, *bodies: tuple[float, str]) -> object:
 def test_a_lidar_inside_the_chassis_collider_still_sees_the_wall(
     _manifest_scene_mod: object,
 ) -> None:
-    """OpenAMR's lidar sits inside the chassis collision box (Isaac, 2026-11-05).
+    """OpenAMRobot's lidar sits inside the chassis collision box (Isaac, 2026-11-05).
 
     PhysX reports a ray that starts inside a shape as a hit at distance 0. The
     closest-hit walk stepped 1 mm per self hit and read range_max for the beam (no

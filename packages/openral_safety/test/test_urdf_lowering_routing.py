@@ -11,7 +11,7 @@ built from the same URDF, so it lowers from that, as the OpenArm does.
 
 The pinned route table proves the change moves no other robot: every in-tree
 manifest selects the route it selected before (measured 2026-11-04 on the
-pre-change code; openamr_v2 raised there). A new robot needs a row, which is
+pre-change code; openamrobot_v2 raised there). A new robot needs a row, which is
 the point: a route is what the C++ kernel's collision model comes from.
 Real manifests and URDFs only (CLAUDE.md §1.11).
 """
@@ -33,7 +33,7 @@ pytest.importorskip("yourdfpy")
 pytest.importorskip("trimesh")
 
 _ROBOTS = Path(__file__).resolve().parents[3] / "robots"
-_OPENAMR_URDF = _ROBOTS / "openamr_v2" / "openamr_v2.urdf"
+_OPENAMROBOT_URDF = _ROBOTS / "openamrobot_v2" / "openamrobot_v2.urdf"
 
 # robot -> route; None = select_lowering raises ROSConfigError (no lowerable asset).
 _ROUTES: dict[str, str | None] = {
@@ -47,7 +47,7 @@ _ROUTES: dict[str, str | None] = {
     "google_robot": None,
     "gr1": "sampling",
     "h1": "sampling",
-    "openamr_v2": "mjcf",  # raised on a partially resolving base_link before
+    "openamrobot_v2": "mjcf",  # raised on a partially resolving base_link before
     "openarm": "mjcf",
     "panda_mobile": "srdf",
     "panda_mobile_vslam": "srdf",
@@ -80,10 +80,10 @@ def test_every_robot_keeps_its_route(robot_id: str) -> None:
 
 
 def test_partially_resolving_urdf_is_not_usable_for_routing() -> None:
-    assert _urdf_has_collision_geometry(str(_OPENAMR_URDF)) is False
+    assert _urdf_has_collision_geometry(str(_OPENAMROBOT_URDF)) is False
 
 
 def test_partially_resolving_link_still_refuses_to_lower() -> None:
     """The routing answer never weakens the lowering's own fail-closed raise."""
     with pytest.raises(ROSConfigError, match="did not load while the rest of the link did"):
-        lower_link_geometry(str(_OPENAMR_URDF))
+        lower_link_geometry(str(_OPENAMROBOT_URDF))

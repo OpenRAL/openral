@@ -1,10 +1,10 @@
 """Build the OpenAMRobot 2.0 MuJoCo twin from its vendored URDF.
 
 Upstream (``openAMRobot/openamr-upperbody-sw``) ships one combined URDF, plus
-MoveIt and Gazebo configs, and no MJCF. ``robots/openamr_v2/openamr_v2.urdf``
+MoveIt and Gazebo configs, and no MJCF. ``robots/openamrobot_v2/openamrobot_v2.urdf``
 is that URDF with xacro already expanded. This module turns it into an MJCF
 once per URDF revision and caches the result under
-``$OPENRAL_CACHE_DIR/openamr_v2/<sha>/``. Steps:
+``$OPENRAL_CACHE_DIR/openamrobot_v2/<sha>/``. Steps:
 
 * resolve ``package://`` meshes via ``openral_core.assets.resolve_package_uri``
   (the pinned ``openarm_description`` / ``openamrobot_description`` clones). The
@@ -40,12 +40,14 @@ from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
 
-from openral_hal import _openamr_platform_assets, _openarm_description_assets
+from openral_hal import _openamrobot_platform_assets, _openarm_description_assets
 
-__all__ = ["OPENAMR_V2_URDF", "compose_openamr_v2_walls_mjcf", "ensure_openamr_v2_mjcf"]
+__all__ = ["OPENAMROBOT_V2_URDF", "compose_openamrobot_v2_walls_mjcf", "ensure_openamrobot_v2_mjcf"]
 
 #: The vendored, xacro-expanded URDF (repo checkout layout, as ``panda_mobile``).
-OPENAMR_V2_URDF: Path = Path(__file__).resolve().parents[4] / "robots/openamr_v2/openamr_v2.urdf"
+OPENAMROBOT_V2_URDF: Path = (
+    Path(__file__).resolve().parents[4] / "robots/openamrobot_v2/openamrobot_v2.urdf"
+)
 
 # (joint, kp, kv, damping, armature, frictionloss): OpenArm v2 motor classes.
 _DM8009 = (230.0, 2.7, 1.0, 0.0081, 0.2)
@@ -61,7 +63,7 @@ _LIFT_KP, _LIFT_KV, _LIFT_FORCE = 1.0e5, 4000.0, 3000.0
 
 
 def _actuated_joints() -> list[tuple[str, tuple[float, float, float, float, float]]]:
-    """The MJCF joint each actuator drives, in ``robots/openamr_v2/robot.yaml`` order."""
+    """The MJCF joint each actuator drives, in ``robots/openamrobot_v2/robot.yaml`` order."""
     out: list[tuple[str, tuple[float, float, float, float, float]]] = []
     for side in ("left", "right"):
         out += [(f"openarm_{side}_joint{i + 1}", g) for i, g in enumerate(_ARM_GAINS)]
@@ -90,7 +92,7 @@ def _mujoco_urdf(urdf_xml: str, alias_dir: Path) -> str:
         try:
             path = resolve_package_uri(uri)
         except AssetRefError as exc:
-            raise ROSConfigError(f"openamr_v2 MJCF build: {exc}") from exc
+            raise ROSConfigError(f"openamrobot_v2 MJCF build: {exc}") from exc
         scale = re.search(r'scale="([^"]+)"', rest)
         key = (str(path), scale.group(1) if scale else "1 1 1")
         if key not in aliases:
@@ -202,7 +204,7 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
     return str(spec.to_xml())
 
 
-def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
+def ensure_openamrobot_v2_mjcf(urdf_path: Path = OPENAMROBOT_V2_URDF) -> str:
     """Return the cached OpenAMRobot 2.0 MJCF path, building it on first use.
 
     The cache key hashes the URDF, this module's source and both mesh-clone pins,
@@ -215,20 +217,20 @@ def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
             MuJoCo rejects the model.
 
     Example:
-        >>> ensure_openamr_v2_mjcf(Path("/nonexistent.urdf"))
+        >>> ensure_openamrobot_v2_mjcf(Path("/nonexistent.urdf"))
         Traceback (most recent call last):
         ...
-        openral_core.exceptions.ROSConfigError: openamr_v2 URDF not found: /nonexistent.urdf
+        openral_core.exceptions.ROSConfigError: openamrobot_v2 URDF not found: /nonexistent.urdf
     """
     if not urdf_path.is_file():
-        raise ROSConfigError(f"openamr_v2 URDF not found: {urdf_path}")
+        raise ROSConfigError(f"openamrobot_v2 URDF not found: {urdf_path}")
     urdf_xml = urdf_path.read_text()
     builder = Path(__file__).read_bytes()  # an edited builder never serves a stale twin
     # The mesh aliases point into the pinned clones: a bumped pin is a new entry.
-    pins = f"{_openarm_description_assets._PINNED_SHA}:{_openamr_platform_assets._PINNED_SHA}"
+    pins = f"{_openarm_description_assets._PINNED_SHA}:{_openamrobot_platform_assets._PINNED_SHA}"
     key = hashlib.sha256(builder + urdf_xml.encode() + pins.encode()).hexdigest()[:16]
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
-    out = base / "openamr_v2" / key / "openamr_v2.xml"
+    out = base / "openamrobot_v2" / key / "openamrobot_v2.xml"
     if out.is_file():
         return str(out)
     # Build in a private staging dir (the MJCF plus its mesh aliases), point the
@@ -245,7 +247,7 @@ def ensure_openamr_v2_mjcf(urdf_path: Path = OPENAMR_V2_URDF) -> str:
             if not out.is_file():  # not a concurrent winner: a real failure
                 raise
     except ValueError as exc:  # mujoco's spec/compile errors
-        raise ROSConfigError(f"openamr_v2 MJCF build failed: {exc}") from exc
+        raise ROSConfigError(f"openamrobot_v2 MJCF build failed: {exc}") from exc
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return str(out)
@@ -274,7 +276,7 @@ _TRANSIENT_HALF = (0.1, 0.1, 1.0)
 _TRANSIENT_REST_M, _TRANSIENT_STIFFNESS, _TRANSIENT_DAMPING = -3.0, 10.0, 900.0
 
 
-def compose_openamr_v2_walls_mjcf(
+def compose_openamrobot_v2_walls_mjcf(
     sinking_boxes: list[list[float]] | None = None,
 ) -> tuple[str, Path]:
     """The twin inside a 20 m walled room with three pillars (``composition`` hook).
@@ -292,7 +294,7 @@ def compose_openamr_v2_walls_mjcf(
     """
     import mujoco  # noqa: PLC0415  # reason: optional sim-only dep
 
-    twin = Path(ensure_openamr_v2_mjcf())
+    twin = Path(ensure_openamrobot_v2_mjcf())
     spec = mujoco.MjSpec.from_file(str(twin))
     for name, (x, y), (hx, hy) in _ROOM_WALLS:
         spec.worldbody.add_geom(

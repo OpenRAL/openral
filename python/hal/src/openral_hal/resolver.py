@@ -236,7 +236,7 @@ def vendor_publishes_urdf_joint_states(description: RobotDescription, *, mode: H
 
     Example:
         >>> from openral_core import RobotDescription
-        >>> amr = RobotDescription.from_yaml("robots/openamr_v2/robot.yaml")
+        >>> amr = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
         >>> vendor_publishes_urdf_joint_states(amr, mode="real")
         False
     """

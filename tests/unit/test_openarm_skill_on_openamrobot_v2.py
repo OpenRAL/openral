@@ -1,6 +1,6 @@
-"""A 16-D OpenArm rSkill runs unchanged on the 20-joint OpenAMR v2.
+"""A 16-D OpenArm rSkill runs unchanged on the 20-joint OpenAMRobot v2.
 
-``robots/openamr_v2/robot.yaml`` leads with three base joints and the lift, then the
+``robots/openamrobot_v2/robot.yaml`` leads with three base joints and the lift, then the
 exact OpenArm 16 by logical name. The policy must read exactly its 16 joints, by name
 (``PolicyIOCodec`` gathers the slot-named joints), never the base and lift as arm
 joints; on ``robots/openarm`` (where the slot order is the robot order) nothing changes.
@@ -106,7 +106,7 @@ def openarm_pi05_manifest(**overrides: Any) -> RSkillManifest:
 
 @pytest.fixture(scope="module")
 def amr() -> RobotDescription:
-    return RobotDescription.from_yaml(str(_REPO / "robots/openamr_v2/robot.yaml"))
+    return RobotDescription.from_yaml(str(_REPO / "robots/openamrobot_v2/robot.yaml"))
 
 
 @pytest.fixture(scope="module")

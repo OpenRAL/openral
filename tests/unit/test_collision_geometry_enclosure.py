@@ -393,8 +393,8 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     assert not bad, f"{robot_id}: twin mesh vertices outside their primitives (mm): {bad}"
 
 
-def test_openamr_v2_base_box_holds_the_whole_chassis() -> None:
-    """openamr_v2's base_link box stands in for every chassis-mounted body.
+def test_openamrobot_v2_base_box_holds_the_whole_chassis() -> None:
+    """openamrobot_v2's base_link box stands in for every chassis-mounted body.
 
     The casters, wheels, lidar and cameras are not kernel links of their own
     (KNOWN_GAPS in test_collision_fleet_static_links.py says why: they are
@@ -404,13 +404,13 @@ def test_openamr_v2_base_box_holds_the_whole_chassis() -> None:
     """
     from openral_safety.urdf_lowering import _body_mesh
 
-    manifest = REPO / "robots" / "openamr_v2" / "robot.yaml"
+    manifest = REPO / "robots" / "openamrobot_v2" / "robot.yaml"
     robot = RobotDescription.from_yaml(str(manifest))
     assert robot.assets.mjcf is not None
     try:
         mjcf = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest.parent)
     except AssetRefError as exc:
-        pytest.skip(f"openamr_v2: MJCF twin unavailable on this host: {exc}")
+        pytest.skip(f"openamrobot_v2: MJCF twin unavailable on this host: {exc}")
     model = mujoco.MjModel.from_xml_path(str(mjcf))
     data = mujoco.MjData(model)
     mujoco.mj_kinematics(model, data)

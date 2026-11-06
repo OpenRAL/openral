@@ -1,4 +1,4 @@
-# The walled room (openamr_v2_walls.yaml) plus two 2 m boxes that stand in the lidar
+# The walled room (openamrobot_v2_walls.yaml) plus two 2 m boxes that stand in the lidar
 # plane while the graph comes up, then sink through the floor (~2 cm/s, gone from
 # the plane ~85 s of sim time after connect): a costmap clearing test.
 #
@@ -10,12 +10,12 @@
 #   that corner, so its cells now clear like box 0's (not re-run since the range
 #   change); a beam with nothing inside 40 m would still leave a stale obstacle.
 #
-#   openral deploy sim --config scenes/deploy/openamr_v2_walls_clearing.yaml
+#   openral deploy sim --config scenes/deploy/openamrobot_v2_walls_clearing.yaml
 scene:
-  id: openamr_v2_walls_clearing
-robot_id: openamr_v2
+  id: openamrobot_v2_walls_clearing
+robot_id: openamrobot_v2
 composition:
-  composer: "openral_hal._openamr_v2_assets:compose_openamr_v2_walls_mjcf"
+  composer: "openral_hal._openamrobot_v2_assets:compose_openamrobot_v2_walls_mjcf"
   params:
     sinking_boxes: [[1.3, -0.3], [1.18, 0.85]]
 runtime:

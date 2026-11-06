@@ -1,6 +1,6 @@
-"""Sim tests for ``openral_hal.OpenAMRv2MujocoHAL`` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.OpenAMRobotV2MujocoHAL`` against real MuJoCo physics.
 
-The twin is built from the vendored ``robots/openamr_v2/openamr_v2.urdf``
+The twin is built from the vendored ``robots/openamrobot_v2/openamrobot_v2.urdf``
 (meshes from the pinned openarm_description / openamr-platform-sw clones) and
 driven through ``build_hal``, as ``deploy sim`` does. No mocks: the base,
 lift, arms and grippers move under the MJCF's own position actuators.
@@ -25,9 +25,9 @@ else:
 
 from openral_core import Action, ControlMode, RobotDescription, ROSConfigError
 from openral_hal import build_hal
-from openral_hal.openamr_v2 import OpenAMRv2MujocoHAL
+from openral_hal.openamrobot_v2 import OpenAMRobotV2MujocoHAL
 
-_MANIFEST = Path(__file__).resolve().parents[2] / "robots" / "openamr_v2" / "robot.yaml"
+_MANIFEST = Path(__file__).resolve().parents[2] / "robots" / "openamrobot_v2" / "robot.yaml"
 
 pytestmark = [
     pytest.mark.sim,
@@ -41,13 +41,13 @@ def description() -> RobotDescription:
 
 
 @pytest.fixture
-def hal(description: RobotDescription) -> Iterator[OpenAMRv2MujocoHAL]:
+def hal(description: RobotDescription) -> Iterator[OpenAMRobotV2MujocoHAL]:
     try:
         hal = build_hal(description, mode="sim")
-        assert isinstance(hal, OpenAMRv2MujocoHAL)
+        assert isinstance(hal, OpenAMRobotV2MujocoHAL)
         hal.connect()
     except ROSConfigError as exc:  # pinned mesh clone unreachable (offline host)
-        pytest.skip(f"openamr_v2 twin unavailable: {exc}")
+        pytest.skip(f"openamrobot_v2 twin unavailable: {exc}")
     yield hal
     hal.disconnect()
 
@@ -58,7 +58,7 @@ def _twist(vx: float, wz: float, vy: float = 0.0) -> Action:
     )
 
 
-def test_body_twist_drives_the_base_on_an_arc(hal: OpenAMRv2MujocoHAL) -> None:
+def test_body_twist_drives_the_base_on_an_arc(hal: OpenAMRobotV2MujocoHAL) -> None:
     """40 x 0.05 s of (0.2 m/s, 0.5 rad/s) lands on the exact arc."""
     for _ in range(40):
         hal.send_action(_twist(0.2, 0.5))
@@ -70,13 +70,13 @@ def test_body_twist_drives_the_base_on_an_arc(hal: OpenAMRv2MujocoHAL) -> None:
     assert hal.base_twist == (0.2, 0.0, 0.0, 0.0, 0.0, 0.5)
 
 
-def test_lateral_twist_is_refused_on_a_differential_base(hal: OpenAMRv2MujocoHAL) -> None:
+def test_lateral_twist_is_refused_on_a_differential_base(hal: OpenAMRobotV2MujocoHAL) -> None:
     with pytest.raises(ROSConfigError, match="differential"):
         hal.send_action(_twist(0.0, 0.0, vy=0.1))
     assert hal.base_pose == (0.0, 0.0, 0.0)
 
 
-def test_joint_targets_converge_and_the_lift_holds(hal: OpenAMRv2MujocoHAL) -> None:
+def test_joint_targets_converge_and_the_lift_holds(hal: OpenAMRobotV2MujocoHAL) -> None:
     """Lift to 0.30 m, bend both arms, open both grippers; the base stays put."""
     names = [j.name for j in hal.description.joints]
     target = list(hal.read_state().position)
@@ -104,7 +104,7 @@ def test_lift_holds_under_gravity(description: RobotDescription) -> None:
     try:
         hal.connect()
     except ROSConfigError as exc:
-        pytest.skip(f"openamr_v2 twin unavailable: {exc}")
+        pytest.skip(f"openamrobot_v2 twin unavailable: {exc}")
     try:
         names = [j.name for j in description.joints]
         target = list(hal.read_state().position)
@@ -117,7 +117,7 @@ def test_lift_holds_under_gravity(description: RobotDescription) -> None:
         hal.disconnect()
 
 
-def test_every_manifest_camera_renders(hal: OpenAMRv2MujocoHAL) -> None:
+def test_every_manifest_camera_renders(hal: OpenAMRobotV2MujocoHAL) -> None:
     images = hal.read_images()
     for sensor in hal.description.sensors:
         if sensor.modality == "rgb":
@@ -139,7 +139,7 @@ def _openarm_slot_tick(
 
     from openral_rskill._policy_io import PolicyIOCodec
 
-    from tests.unit.test_openarm_skill_on_openamr_v2 import openarm_pi05_manifest
+    from tests.unit.test_openarm_skill_on_openamrobot_v2 import openarm_pi05_manifest
 
     src = (
         Path(__file__).resolve().parents[2]
@@ -165,7 +165,7 @@ def _openarm_slot_tick(
     return actions
 
 
-def test_openarm_slot_tick_holds_base_and_lift(hal: OpenAMRv2MujocoHAL) -> None:
+def test_openarm_slot_tick_holds_base_and_lift(hal: OpenAMRobotV2MujocoHAL) -> None:
     """An OpenArm 4-slot tick drives arms + grippers; the base and lift hold their targets."""
     names = [j.name for j in hal.description.joints]
     raised = list(hal.read_state().position)
@@ -194,7 +194,7 @@ def test_openarm_slot_tick_holds_base_and_lift(hal: OpenAMRv2MujocoHAL) -> None:
     assert hal.base_pose == pytest.approx(pose_before, abs=1e-3)
 
 
-def test_a_slot_group_leaving_an_arm_uncommanded_is_refused(hal: OpenAMRv2MujocoHAL) -> None:
+def test_a_slot_group_leaving_an_arm_uncommanded_is_refused(hal: OpenAMRobotV2MujocoHAL) -> None:
     """Holding is for the base and lift only: a group without the right arm is refused."""
     group = _openarm_slot_tick(hal.description, np.zeros(16, dtype=np.float32), 1)
     del group[2]  # the right-arm JOINT_POSITION slot
@@ -220,16 +220,16 @@ def test_scan_from_the_lidar_mount_matches_the_walled_room(description: RobotDes
     base did (the base joints carry no ``sim_joint_name``, so the RoboCasa default
     names resolved nothing), and its first hit was the robot's own lidar at 0.33 m.
     """
-    from openral_hal._openamr_v2_assets import compose_openamr_v2_walls_mjcf
+    from openral_hal._openamrobot_v2_assets import compose_openamrobot_v2_walls_mjcf
     from openral_sim.backends.robocasa import synthesize_laser_scan_2d
 
     try:
-        xml, meshdir = compose_openamr_v2_walls_mjcf()
+        xml, meshdir = compose_openamrobot_v2_walls_mjcf()
     except ROSConfigError as exc:  # pinned mesh clone unreachable (offline host)
-        pytest.skip(f"openamr_v2 twin unavailable: {exc}")
+        pytest.skip(f"openamrobot_v2 twin unavailable: {exc}")
     scene = meshdir.parent / "test_walls_scene.xml"
     scene.write_text(xml)
-    hal = OpenAMRv2MujocoHAL(description=description, mjcf_path=str(scene))
+    hal = OpenAMRobotV2MujocoHAL(description=description, mjcf_path=str(scene))
     hal.connect()
     try:
         for _ in range(60):  # 1.5 m forward
@@ -257,7 +257,7 @@ def test_scan_from_the_lidar_mount_matches_the_walled_room(description: RobotDes
         hal.disconnect()
 
 
-def test_a_ramp_row_naming_the_arms_holds_the_base_and_lift(hal: OpenAMRv2MujocoHAL) -> None:
+def test_a_ramp_row_naming_the_arms_holds_the_base_and_lift(hal: OpenAMRobotV2MujocoHAL) -> None:
     """The starting-pose ramp of a 16-D OpenArm pose names the 16 joints, zero-padded.
 
     The twin holds the base and lift it leaves out at their targets instead of
@@ -286,7 +286,7 @@ def test_a_ramp_row_naming_the_arms_holds_the_base_and_lift(hal: OpenAMRv2Mujoco
     assert hal.base_pose == pytest.approx(pose_before, abs=1e-3)
 
 
-def test_a_replayed_ramp_tick_is_refused(hal: OpenAMRv2MujocoHAL) -> None:
+def test_a_replayed_ramp_tick_is_refused(hal: OpenAMRobotV2MujocoHAL) -> None:
     """A subset-named ramp row keeps its tick, so the watermark refuses its replay."""
     from openral_core.exceptions import ROSRuntimeError
 
@@ -307,7 +307,7 @@ def test_a_replayed_ramp_tick_is_refused(hal: OpenAMRv2MujocoHAL) -> None:
 
 
 def test_a_mobile_manipulation_tick_moves_base_and_arms_together(
-    hal: OpenAMRv2MujocoHAL,
+    hal: OpenAMRobotV2MujocoHAL,
 ) -> None:
     """A twist slot is staged with the arm slots: nothing moves until the tick is whole."""
     from openral_core.exceptions import ROSRuntimeError
@@ -334,7 +334,7 @@ def test_a_mobile_manipulation_tick_moves_base_and_arms_together(
         hal.send_action(group[0])
 
 
-def test_an_ungrouped_ticked_twist_advances_the_watermark(hal: OpenAMRv2MujocoHAL) -> None:
+def test_an_ungrouped_ticked_twist_advances_the_watermark(hal: OpenAMRobotV2MujocoHAL) -> None:
     from openral_core.exceptions import ROSRuntimeError
 
     twist = _twist(0.1, 0.0)

@@ -26,7 +26,7 @@ from geometry_msgs.msg import Twist  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 from openral_hal.platform_base import PlatformBaseHAL  # noqa: E402
 
-_MANIFEST = Path(__file__).resolve().parents[2] / "robots" / "openamr_v2" / "robot.yaml"
+_MANIFEST = Path(__file__).resolve().parents[2] / "robots" / "openamrobot_v2" / "robot.yaml"
 
 
 def _base_description() -> RobotDescription:
@@ -121,7 +121,7 @@ def test_estop_commands_zero_twist_and_raises(
 
 
 def _composite(node: Any) -> Any:  # reason: ComposedHAL, imported lazily
-    """Base + held lift, composed over the openamr_v2 manifest narrowed to those joints."""
+    """Base + held lift, composed over the openamrobot_v2 manifest narrowed to those joints."""
     from openral_hal.composed import ComposedHAL
 
     robot = RobotDescription.from_yaml(str(_MANIFEST))

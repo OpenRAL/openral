@@ -47,9 +47,9 @@ KNOWN_GAPS: dict[str, dict[str, str]] = {
         "openarm_right_ee_link1": "alias: manifest openarm_right_finger_pair (the leader finger)",
         "openarm_right_ee_link2": "alias: manifest openarm_right_finger_follower (mimic link)",
     },
-    "openamr_v2": {
+    "openamrobot_v2": {
         # Folded, not missing: base_link's box bounds the whole chassis subtree
-        # (pinned by test_openamr_v2_base_box_holds_the_whole_chassis in
+        # (pinned by test_openamrobot_v2_base_box_holds_the_whole_chassis in
         # test_collision_geometry_enclosure.py). All rigid to base_link.
         link: "inside base_link's box (it bounds the whole chassis subtree)"
         for link in (
