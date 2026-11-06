@@ -14,8 +14,10 @@ read-back. For each robot it checks that
 * the normalised gripper (0 = closed, 1 = open) reads back within 0.05 of the
   command for both open and closed;
 
-and that the station's two arms (``left_`` / ``right_`` at
-``y = ±STATION_ARM_SPACING_M / 2``) are contact-free at the zero pose.
+that the manifests' ``sim:`` maps, joint origins / limits and station mounts
+match the URDF / MJCF derived from the pinned clone, and that the station's
+two arms (``left_`` / ``right_`` at ``y = ±STATION_ARM_SPACING_M / 2``) are
+contact-free at the zero pose.
 
 No mocks (CLAUDE.md §1.11): when ``mujoco`` is missing or the pinned clone
 cannot be fetched (``AssetFetchError``), the module skips with the reason.
@@ -23,6 +25,7 @@ cannot be fetched (``AssetFetchError``), the module skips with the reason.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -31,7 +34,7 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 
 from openral_core import Action, ControlMode, RobotDescription  # noqa: E402
-from openral_core.assets import AssetFetchError, resolve_asset  # noqa: E402
+from openral_core.assets import AssetFetchError, AssetKind, resolve_asset  # noqa: E402
 from openral_hal._mujoco_arm import MujocoArmHAL  # noqa: E402
 
 pytestmark = pytest.mark.sim
@@ -163,3 +166,133 @@ def test_station_arms_stay_apart_while_tracking() -> None:
             assert b1.split("_", 1)[0] == b2.split("_", 1)[0], f"inter-arm contact {b1} / {b2}"
     finally:
         hal.disconnect()
+
+
+# ── Manifest ↔ derived URDF / MJCF consistency ──────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def arm() -> RobotDescription:
+    return RobotDescription.from_yaml(str(_ROOT / "robots" / "makermods_metal" / "robot.yaml"))
+
+
+@pytest.fixture(scope="module")
+def station() -> RobotDescription:
+    return RobotDescription.from_yaml(
+        str(_ROOT / "robots" / "makermods_metal_station" / "robot.yaml")
+    )
+
+
+def _resolve(ref: str, kind: AssetKind) -> Path:
+    try:
+        path = resolve_asset(ref, kind)
+    except AssetFetchError as exc:
+        pytest.skip(f"pinned MakerMods Metal clone not fetchable on this host: {exc}")
+    assert path is not None
+    return path
+
+
+def test_station_sim_maps_match_station_mjcf(station: RobotDescription) -> None:
+    """Station qpos / actuator maps point at the MJCF joints / actuators they name."""
+    assert station.assets.mjcf is not None and station.sim is not None
+    model = mujoco.MjModel.from_xml_path(str(_resolve(station.assets.mjcf, "mjcf")))
+    assert station.sim.joint_qpos_addr is not None
+    assert station.sim.actuator_index is not None
+    assert model.nu == len(station.joints)
+    for joint in station.joints:
+        sim_name = joint.sim_joint_name or joint.name
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, sim_name)
+        assert jid >= 0, sim_name
+        assert int(model.jnt_qposadr[jid]) == station.sim.joint_qpos_addr[joint.name], joint.name
+        act = station.sim.actuator_index[joint.name]
+        assert mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, act) == sim_name
+        assert int(model.actuator_trnid[act, 0]) == jid
+    for gripper in station.sim.grippers:
+        gripper_sim = next(j.sim_joint_name for j in station.joints if j.name == gripper.joint)
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, gripper_sim)
+        assert gripper.qpos_addrs == (int(model.jnt_qposadr[jid]),)
+        assert gripper.actuator_index == station.sim.actuator_index[gripper.joint]
+        assert tuple(float(v) for v in model.jnt_range[jid]) == pytest.approx(gripper.ctrl_range)
+
+
+def test_single_arm_sim_maps_match_mjcf(arm: RobotDescription) -> None:
+    """Single-arm qpos map and default actuator order match the derived MJCF."""
+    assert arm.assets.mjcf is not None and arm.sim is not None
+    model = mujoco.MjModel.from_xml_path(str(_resolve(arm.assets.mjcf, "mjcf")))
+    assert model.nu == len(arm.joints)
+    assert arm.sim.joint_qpos_addr is not None
+    for index, joint in enumerate(arm.joints):
+        sim_name = joint.sim_joint_name or joint.name
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, sim_name)
+        assert int(model.jnt_qposadr[jid]) == arm.sim.joint_qpos_addr[joint.name]
+        assert mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index) == sim_name
+
+
+def _urdf_joints(path: Path) -> dict[str, ET.Element]:
+    return {str(j.get("name")): j for j in ET.parse(path).getroot().iter("joint")}
+
+
+def _floats(text: str | None) -> tuple[float, ...]:
+    return tuple(float(v) for v in str(text).split())
+
+
+def test_single_arm_matches_derived_urdf(arm: RobotDescription) -> None:
+    """Revolute joint origins / axes / limits equal the URDF from the pinned clone."""
+    assert arm.assets.urdf is not None and arm.assets.urdf.ref is not None
+    urdf = _urdf_joints(_resolve(arm.assets.urdf.ref, "urdf"))
+    for joint in arm.joints:
+        if joint.role == "gripper":
+            continue
+        src = urdf[joint.sim_joint_name or joint.name]
+        origin, axis, limit = src.find("origin"), src.find("axis"), src.find("limit")
+        assert origin is not None and axis is not None and limit is not None
+        assert src.get("type") == joint.joint_type.value, joint.name
+        parent, child = src.find("parent"), src.find("child")
+        assert parent is not None and child is not None
+        assert (parent.get("link"), child.get("link")) == (joint.parent_link, joint.child_link)
+        assert joint.origin_xyz == pytest.approx(_floats(origin.get("xyz")), abs=1e-6)
+        assert joint.origin_rpy == pytest.approx(_floats(origin.get("rpy")), abs=1e-9)
+        assert joint.axis_xyz == pytest.approx(_floats(axis.get("xyz")))
+        assert joint.position_limits == pytest.approx(
+            (float(str(limit.get("lower"))), float(str(limit.get("upper"))))
+        )
+        assert joint.effort_limit == pytest.approx(float(str(limit.get("effort"))))
+        assert joint.velocity_limit == pytest.approx(float(str(limit.get("velocity"))))
+
+
+def test_single_arm_gripper_matches_derived_urdf(arm: RobotDescription) -> None:
+    """The normalised gripper maps onto the URDF driven-finger travel and effort."""
+    assert arm.assets.urdf is not None and arm.assets.urdf.ref is not None
+    assert arm.sim is not None
+    urdf = _urdf_joints(_resolve(arm.assets.urdf.ref, "urdf"))
+    (gripper,) = [j for j in arm.joints if j.role == "gripper"]
+    assert gripper.sim_joint_name is not None
+    src = urdf[gripper.sim_joint_name]
+    limit, parent, child = src.find("limit"), src.find("parent"), src.find("child")
+    assert limit is not None and parent is not None and child is not None
+    assert (parent.get("link"), child.get("link")) == (gripper.parent_link, gripper.child_link)
+    travel = (float(str(limit.get("lower"))), float(str(limit.get("upper"))))
+    (sim_gripper,) = arm.sim.grippers
+    assert sim_gripper.ctrl_range == pytest.approx(travel)
+    assert sim_gripper.qpos_scale == pytest.approx(travel[1] - travel[0])
+    assert gripper.effort_limit == pytest.approx(float(str(limit.get("effort"))))
+    by_name = {a.name: a for a in arm.fixed_attachments}
+    fixed = urdf["gripper_base"]
+    origin = fixed.find("origin")
+    assert origin is not None
+    assert by_name["gripper_base"].origin_xyz == pytest.approx(_floats(origin.get("xyz")))
+    assert by_name["gripper_base"].origin_rpy == pytest.approx(_floats(origin.get("rpy")))
+
+
+def test_station_urdf_mounts_match_manifest(station: RobotDescription) -> None:
+    """The derived station URDF mounts the arms where ``fixed_attachments`` says."""
+    assert station.assets.urdf is not None and station.assets.urdf.ref is not None
+    urdf = _urdf_joints(_resolve(station.assets.urdf.ref, "urdf"))
+    for att in station.fixed_attachments:
+        src = urdf[att.name]
+        origin = src.find("origin")
+        assert origin is not None, att.name
+        assert att.origin_xyz == pytest.approx(_floats(origin.get("xyz")), abs=1e-6)
+        assert att.origin_rpy == pytest.approx(_floats(origin.get("rpy")))
+    for joint in station.joints:
+        assert (joint.sim_joint_name or joint.name) in urdf, joint.name

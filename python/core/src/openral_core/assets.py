@@ -397,7 +397,7 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
     # missing ``mujoco`` or an upstream tree that no longer matches the derive
     # step is a broken reference and must fail, not skip.
     try:
-        metal.ensure_metal_description()
+        metal.fetch_metal_clone()
     except ROSConfigError as exc:
         raise AssetFetchError(f"makermods:{variant} ({kind}): {exc}") from exc
     try:
