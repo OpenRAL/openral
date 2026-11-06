@@ -50,6 +50,7 @@ __all__ = [
     "ensure_metal_station_mjcf",
     "ensure_metal_station_urdf",
     "ensure_metal_urdf",
+    "fetch_metal_clone",
 ]
 
 #: ``makermods-robotics/metal-python-ros`` master at 2026-09-16. Keep pinned
@@ -66,11 +67,17 @@ STATION_ARM_SPACING_M: float = 0.60
 
 # Bump when the derived URDF/MJCF content changes, so a stale cache is not
 # reused (the pinned SHA alone does not cover OpenRAL's post-processing).
-_DERIVE_VERSION: str = "2"
+_DERIVE_VERSION: str = "3"
 
 _ARM_JOINTS: tuple[str, ...] = ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")
-_DRIVEN_FINGER: str = "joint8"  # upstream range [0, 0.05] m; 0 = fingers closed
-_MIMIC_FINGER: str = "joint7"  # upstream <mimic joint="joint7" multiplier="-1"> on joint8
+# Upstream, joint8 carries ``<mimic joint="joint7" multiplier="-1">``: joint7
+# ([-0.05, 0] m) is the URDF master and joint8 ([0, 0.05] m, 0 = closed) its
+# mirror. The sim actuates joint8 instead (a symmetric equality, so the physics
+# is the same) because its positive range maps directly onto the normalised
+# open-unit gripper. A real HAL or joint_states bridge must publish the URDF
+# master: joint7 = -joint8.
+_DRIVEN_FINGER: str = "joint8"
+_MIMIC_FINGER: str = "joint7"
 
 # Sim-only position-servo gains (kp N·m/rad, kv N·m·s/rad). Shoulder/elbow
 # carry the heavy links (joint2 effort limit 100 N·m in the URDF); the wrist
@@ -91,7 +98,6 @@ _KP_KV: dict[str, tuple[float, float]] = {
 _CONTACT_EXCLUDES: tuple[tuple[str, str], ...] = (("base_link", "link1"), ("link7", "link8"))
 _JOINT_DAMPING: float = 0.5
 _JOINT_ARMATURE: float = 0.02
-_FINGER_FORCE_N: float = 20.0
 
 
 def _cache_root() -> Path:
@@ -101,6 +107,21 @@ def _cache_root() -> Path:
 
 def _derived_dir() -> Path:
     return _cache_root() / f"derived-{METAL_PINNED_SHA[:12]}-v{_DERIVE_VERSION}"
+
+
+def fetch_metal_clone() -> Path:
+    """Return the pinned ``metal-python-ros`` clone root, cloning it if needed.
+
+    The fetch step alone: a failure here is the host's (offline, no ``git``),
+    while ``ensure_metal_description`` additionally checks the tree's layout.
+
+    Raises:
+        ROSConfigError: ``git`` is missing or the clone / checkout fails.
+    """
+    repo_dir = _cache_root() / METAL_PINNED_SHA
+    if not (repo_dir / _PKG_REL / "package.xml").is_file():
+        fetch_pinned_clone(_REPO_URL, METAL_PINNED_SHA, repo_dir, what="MakerMods Metal")
+    return repo_dir
 
 
 def ensure_metal_description() -> Path:
@@ -113,10 +134,8 @@ def ensure_metal_description() -> Path:
         ROSConfigError: ``git`` is missing, the clone fails, or the pinned tree
             has no ``metal_description`` package.
     """
-    repo_dir = _cache_root() / METAL_PINNED_SHA
+    repo_dir = fetch_metal_clone()
     pkg = repo_dir / _PKG_REL
-    if not (pkg / "package.xml").is_file():
-        fetch_pinned_clone(_REPO_URL, METAL_PINNED_SHA, repo_dir, what="MakerMods Metal")
     if not (pkg / "package.xml").is_file() or not (pkg / _URDF_REL).is_file():
         raise ROSConfigError(
             f"MakerMods Metal clone at {repo_dir!s} has no {_PKG_REL}/package.xml or "
@@ -140,7 +159,11 @@ def _atomic_write(path: Path, text: str) -> None:
 
 def _upstream_arm_tree() -> ET.Element:
     """The upstream URDF root with the ``world`` link and its fixed joint removed."""
-    root = ET.parse(ensure_metal_description() / _URDF_REL).getroot()
+    urdf = ensure_metal_description() / _URDF_REL
+    try:
+        root = ET.parse(urdf).getroot()
+    except ET.ParseError as exc:
+        raise ROSConfigError(f"MakerMods Metal URDF {urdf!s} is not valid XML: {exc}") from exc
     for joint in list(root.findall("joint")):
         parent = joint.find("parent")
         if parent is not None and parent.get("link") == "world":
@@ -157,10 +180,10 @@ def _arm_urdf_xml() -> str:
     return ET.tostring(root, encoding="unicode")
 
 
-def _prefixed_arm(prefix: str) -> list[ET.Element]:
+def _prefixed_arm(arm: ET.Element, prefix: str) -> list[ET.Element]:
     """Deep copies of every arm ``<link>``/``<joint>`` with names prefixed."""
     out: list[ET.Element] = []
-    for src in _upstream_arm_tree():
+    for src in arm:
         if src.tag not in ("link", "joint"):
             continue
         el = copy.deepcopy(src)
@@ -181,12 +204,13 @@ def _station_urdf_xml() -> str:
     root = ET.Element("robot", {"name": "makermods_metal_station"})
     ET.SubElement(root, "link", {"name": "station_base"})
     half = STATION_ARM_SPACING_M / 2.0
+    arm = _upstream_arm_tree()  # parsed once, deep-copied per prefix
     for prefix, y in (("left_", half), ("right_", -half)):
         mount = ET.SubElement(root, "joint", {"name": f"{prefix}mount", "type": "fixed"})
         ET.SubElement(mount, "origin", {"xyz": f"0 {y:.6f} 0", "rpy": "0 0 0"})
         ET.SubElement(mount, "parent", {"link": "station_base"})
         ET.SubElement(mount, "child", {"link": f"{prefix}base_link"})
-        root.extend(_prefixed_arm(prefix))
+        root.extend(_prefixed_arm(arm, prefix))
     return ET.tostring(root, encoding="unicode")
 
 
@@ -215,7 +239,22 @@ def ensure_metal_station_urdf() -> Path:
 
 
 def _compile_urdf_to_mjcf(urdf_xml: str, model_name: str, prefixes: tuple[str, ...]) -> str:
-    """Compile ``urdf_xml`` with MuJoCo and add actuators + finger equality."""
+    """Compile ``urdf_xml`` with MuJoCo and add actuators + finger equality.
+
+    Raises:
+        ROSConfigError: ``mujoco`` is missing, or the URDF does not compile /
+            lacks a joint range or effort limit the derive step needs (MuJoCo's
+            ``ValueError`` and XML ``ParseError`` are re-raised as this type).
+    """
+    try:
+        return _compile_urdf_to_mjcf_unchecked(urdf_xml, model_name, prefixes)
+    except (ValueError, ET.ParseError) as exc:
+        raise ROSConfigError(f"Deriving the {model_name} MJCF failed: {exc}") from exc
+
+
+def _compile_urdf_to_mjcf_unchecked(
+    urdf_xml: str, model_name: str, prefixes: tuple[str, ...]
+) -> str:
     try:
         import mujoco  # noqa: PLC0415 — sim-only optional dep, lazy
     except ImportError as exc:
@@ -267,6 +306,7 @@ def _compile_urdf_to_mjcf(urdf_xml: str, model_name: str, prefixes: tuple[str, .
     for prefix in prefixes:
         for body1, body2 in _CONTACT_EXCLUDES:
             ET.SubElement(contact, "exclude", {"body1": prefix + body1, "body2": prefix + body2})
+    efforts = _effort_limits(root)
     actuator = ET.SubElement(mjcf, "actuator")
     equality = ET.SubElement(mjcf, "equality")
     for prefix in prefixes:
@@ -279,11 +319,11 @@ def _compile_urdf_to_mjcf(urdf_xml: str, model_name: str, prefixes: tuple[str, .
                 )
             kp, kv = _KP_KV[name]
             lo, hi = (float(v) for v in str(mj_joint.get("range")).split())
-            force = (
-                _FINGER_FORCE_N
-                if name == _DRIVEN_FINGER
-                else _effort_limit(urdf_xml, prefix + name)
-            )
+            # Every actuator, the finger included, is clamped at its URDF
+            # effort limit, the same figure the manifest declares.
+            force = efforts.get(prefix + name)
+            if force is None:
+                raise ROSConfigError(f"URDF joint {prefix + name!r} declares no <limit effort>.")
             ET.SubElement(
                 actuator,
                 "position",
@@ -310,14 +350,14 @@ def _compile_urdf_to_mjcf(urdf_xml: str, model_name: str, prefixes: tuple[str, .
     return ET.tostring(mjcf, encoding="unicode")
 
 
-def _effort_limit(urdf_xml: str, joint_name: str) -> float:
-    """The URDF ``<limit effort>`` of ``joint_name`` (the actuator force clamp)."""
-    for joint in ET.fromstring(urdf_xml).iter("joint"):
-        if joint.get("name") == joint_name:
-            limit = joint.find("limit")
-            if limit is not None and limit.get("effort") is not None:
-                return float(str(limit.get("effort")))
-    raise ROSConfigError(f"URDF joint {joint_name!r} declares no <limit effort>.")
+def _effort_limits(urdf: ET.Element) -> dict[str, float]:
+    """``{joint name: <limit effort>}`` for every URDF joint that declares one."""
+    out: dict[str, float] = {}
+    for joint in urdf.iter("joint"):
+        limit = joint.find("limit")
+        if limit is not None and limit.get("effort") is not None:
+            out[str(joint.get("name"))] = float(str(limit.get("effort")))
+    return out
 
 
 def ensure_metal_mjcf() -> Path:
