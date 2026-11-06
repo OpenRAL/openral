@@ -23,8 +23,8 @@ In-tree manifests:
 
 | Class | `robot_id` |
 | --- | --- |
-| Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `rizon4`, `sawyer`, `widowx`, `galaxea_a1` |
-| Bimanual | `aloha_bimanual`, `aloha_agilex`, `openarm`, `anvil_openarm_v2` |
+| Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `rizon4`, `sawyer`, `widowx`, `galaxea_a1`, `makermods_metal` |
+| Bimanual | `aloha_bimanual`, `aloha_agilex`, `openarm`, `anvil_openarm_v2`, `makermods_metal_station` |
 | Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `google_robot`, `r1pro` |
 | Humanoid | `g1`, `h1`, `gr1` |
 
@@ -37,7 +37,8 @@ from the manifest, and only nine declare one: `so100_follower`,
 `aloha_bimanual` and `openarm`. The rest carry `hal.real: null` (or no `hal:`
 block at all) and `build_hal` raises `ROSCapabilityMismatch` under
 `hal_mode:=real`. Note the two OpenArms: `openarm` (Enactic) has
-`OpenArmRealHAL`; `anvil_openarm_v2` (Anvil) is sim-only.
+`OpenArmRealHAL`; `anvil_openarm_v2` (Anvil) is sim-only. Both MakerMods Metal manifests are sim-only too: the arm has no
+brakes, so a real HAL waits on a safety-WG-reviewed stop behaviour.
 
 ### Set a reasoner model — the graph will not plan without one
 

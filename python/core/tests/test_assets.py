@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from openral_core.assets import AssetRefError, resolve_asset
+from openral_core.assets import AssetFetchError, AssetKind, AssetRefError, resolve_asset
 
 
 def test_rd_urdf_resolves_to_existing_file() -> None:
@@ -48,6 +48,41 @@ def test_openarm_variants_are_mjcf_only() -> None:
     for ref in ("openarm:bimanual", "openarm:anvil_v2_bimanual"):
         with pytest.raises(AssetRefError, match="mjcf-only"):
             resolve_asset(ref, "urdf")
+
+
+def test_unknown_makermods_variant_raises() -> None:
+    """A typo'd ``makermods:<variant>`` is a broken ref, rejected before any fetch."""
+    for kind in ("urdf", "mjcf"):
+        with pytest.raises(AssetRefError, match="unknown makermods variant") as info:
+            resolve_asset("makermods:metal_arm", kind)
+        assert not isinstance(info.value, AssetFetchError)
+
+
+def test_makermods_has_no_srdf() -> None:
+    """Both wired variants reject ``srdf`` before any fetch happens."""
+    for ref in ("makermods:metal", "makermods:metal_station"):
+        with pytest.raises(AssetRefError, match="no srdf") as info:
+            resolve_asset(ref, "srdf")
+        assert not isinstance(info.value, AssetFetchError)
+
+
+@pytest.mark.parametrize("ref", ["makermods:metal", "makermods:metal_station"])
+@pytest.mark.parametrize("kind", ["urdf", "mjcf"])
+def test_makermods_resolves_to_existing_file(ref: str, kind: AssetKind) -> None:
+    """``makermods:`` derives a URDF / MJCF from the pinned upstream clone."""
+    if kind == "mjcf":
+        pytest.importorskip("mujoco")
+    try:
+        path = resolve_asset(ref, kind)
+    except AssetFetchError as exc:
+        pytest.skip(f"pinned MakerMods Metal clone not fetchable on this host: {exc}")
+    assert path is not None and path.is_file()
+    assert path.suffix == (".urdf" if kind == "urdf" else ".xml")
+    assert (
+        path.read_text(encoding="utf-8")
+        .lstrip()
+        .startswith("<robot" if kind == "urdf" else "<mujoco")
+    )
 
 
 def test_ros2_marker_is_passthrough_not_a_file() -> None:

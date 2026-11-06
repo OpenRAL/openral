@@ -38,6 +38,8 @@ _ROBOT_IDS: list[str] = [
     "google_robot",
     "gr1",
     "h1",
+    "makermods_metal",
+    "makermods_metal_station",
     "openarm",
     "panda_mobile",
     "panda_mobile_vslam",
