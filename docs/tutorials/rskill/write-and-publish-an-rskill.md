@@ -198,7 +198,10 @@ python tools/rskill_publisher.py rskills/pi05-pick-cube/ --publish --bump-revisi
 
 - **Repos are created private** unless you pass `--public`, which the
   publisher refuses for non-commercial weights. Otherwise flip it public on
-  the Hub when ready.
+  the Hub when ready. `--gated` (exclusive with `--public`) publishes a
+  premium rSkill: a public repo whose files sit behind Hugging Face manual
+  access approval, set and verified before any upload; allowed for
+  commercial or `proprietary` licences.
 - **Provenance is not yet signed.** Sigstore signing/verification is the
   *planned* control but is **not implemented**. Until it lands,
   `rSkill.from_pretrained` / `from_yaml` emit an `rskill.unverified_provenance`
