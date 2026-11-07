@@ -4044,8 +4044,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         req.window_s = call.window_s
         req.task = call.task
         future = client.call_async(req)
+        # The task instance asked about (``None``: no active mission task). A reply that
+        # lands after a new goal or a queue advance describes a task that is no longer
+        # active and is dropped, as ``_on_mission_verify_response`` does.
+        asked = (active.task_id, active.text) if active is not None else None
         future.add_done_callback(
-            lambda fut: self._on_query_task_progress_response(call, fut, traceparent=traceparent),
+            lambda fut: self._on_query_task_progress_response(
+                call, fut, asked=asked, traceparent=traceparent
+            ),
         )
         self.get_logger().info(
             f"dispatch: query_task_progress window_s={call.window_s} task={call.task!r}",
@@ -4056,6 +4062,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         call: QueryTaskProgressTool,
         future: Any,
         *,
+        asked: tuple[str, str] | None,
         traceparent: str | None,
     ) -> None:
         """Render a ``QueryTaskProgress`` response as a re-prompt (cascade).
@@ -4068,6 +4075,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             resp = future.result()
         except Exception as exc:  # best-effort; a failed query must not kill the tick
             self.get_logger().warning(f"dispatch: query_task_progress response failed: {exc}")
+            return
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        if asked != ((active.task_id, active.text) if active is not None else None):
+            self.get_logger().info(
+                f"dispatch: query_task_progress for {call.task!r} answered after the active "
+                "task changed; dropped as stale",
+            )
             return
         assert self._prompt_pub is not None
         if not resp.ok:
