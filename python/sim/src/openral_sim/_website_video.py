@@ -4,22 +4,27 @@ Unlike ``openral_sim._video`` (the two-band *debug* montage), this writes
 *only* the world/viewer render — the frame an operator sees in the MuJoCo
 viewer — with no VLA-input panel, no joint plot, and no burned-in overlays.
 
-The website component (``website/``) is responsible for everything visual:
-square crop (``object-fit: cover``), rounded corners, the benchmark/rSkill
-labels, and the SUCCESS/FAIL status badge are all styled DOM elements layered
-over the ``<video>``. This keeps text crisp and themeable and lets the same
-clip be restyled without re-encoding.
+The website component (``website/``) is responsible for the rest of the
+visuals: square crop (``object-fit: cover``), rounded corners, the
+benchmark/rSkill labels, and the SUCCESS/FAIL status badge are all styled DOM
+elements layered over the ``<video>``. The one burned-in element is a thin
+outcome border: grey while the episode runs, then the colour of the placement
+grade the scene reports (``EpisodeResult.frame_grades``, ``grade_colour``: green
+success, yellow half credit, orange less) from the step it is reached, and the
+episode's outcome (red on a fail) on the last frame, held for a second.
 
-The output square edge (``size``) controls only the written canvas; source
-sharpness is bounded by the scene's native render resolution. We never touch
-the policy's observation resolution, so recording does not change task outcomes.
+Frames keep their native aspect by default (a 4:3 top view is not cropped);
+``square=True`` centre-crops to the square website canvas. ``size`` (the long
+edge, or the square edge) controls only the written canvas; source sharpness
+is bounded by the scene's native render resolution. We never touch the policy's
+observation resolution, so recording does not change task outcomes.
 
 Implementation notes
 --------------------
 * Uses imageio + imageio-ffmpeg for MP4 muxing (libx264, yuv420p) — same codec
   path as ``openral_sim._video``.
-* Each frame is center-cropped to a square, then resized to ``size × size`` so
-  the file is display-ready square (the component still cover-crops, harmlessly).
+* With ``square=True`` each frame is center-cropped to a square, then resized
+  to ``size × size`` (the component still cover-crops, harmlessly).
 """
 
 from __future__ import annotations
@@ -42,6 +47,70 @@ _DEFAULT_SIZE = 1024
 _GRID_TILE_HEIGHT = 448
 #: yuv420p subsamples chroma 2x2, so every encoded side must be even (>= 2).
 _MIN_EVEN_SIDE = 2
+#: Grade colours (green success, yellow half credit, orange less, red fail) and the running grey.
+_GREEN = (40, 200, 60)
+_YELLOW = (240, 210, 30)
+_ORANGE = (245, 130, 20)
+_RED = (220, 40, 40)
+_GREY = (128, 128, 128)
+
+
+def grade_colour(score: float) -> tuple[int, int, int]:
+    """RGB for a placement score: green 1.0, yellow >= 0.5, orange > 0, red 0.
+
+    Shared by the video border and a scene's own grade overlay (the Metal marker ring), so
+    both turn the same colour on the same frame.
+
+    Example:
+        >>> [grade_colour(s) for s in (1.0, 0.5, 0.25, 0.0)]
+        [(40, 200, 60), (240, 210, 30), (245, 130, 20), (220, 40, 40)]
+    """
+    if score >= 1.0:
+        return _GREEN
+    if score >= 0.5:  # noqa: PLR2004 - restock's ``partial`` score
+        return _YELLOW
+    return _ORANGE if score > 0.0 else _RED
+
+
+def _final_colour(r: EpisodeResult) -> tuple[int, int, int]:
+    """Episode outcome: the success colour, else ``grade_colour`` of the episode's reward."""
+    return _GREEN if r.success else grade_colour(r.total_reward)
+
+
+def _frame_colour(r: EpisodeResult, i: int) -> tuple[int, int, int]:
+    """Border of frame ``i``: the grade reached so far (grey while none), the outcome last.
+
+    Indices past the last captured frame (the hold) take the outcome too.
+
+    Example:
+        >>> from openral_sim.rollout import EpisodeResult
+        >>> r = EpisodeResult(frames=[0, 0, 0], frame_grades=[None, ("partial", 0.5), None])
+        >>> [_frame_colour(r, i) for i in range(3)]
+        [(128, 128, 128), (240, 210, 30), (220, 40, 40)]
+    """
+    if i >= len(r.frames) - 1:
+        return _final_colour(r)
+    g = r.frame_grades[i] if i < len(r.frame_grades) else None
+    if g is None or g[1] <= 0.0:
+        return _GREY
+    return grade_colour(g[1])
+
+
+def _outcome_label(r: EpisodeResult) -> str:
+    """``partial 0.50`` for a graded episode, else ``success`` / ``reward 0.00``."""
+    grade = r.final_info.get("placement_grade")
+    if isinstance(grade, str):
+        return f"{grade} {r.total_reward:.2f}"
+    return "success" if r.success else f"reward {r.total_reward:.2f}"
+
+
+def _bordered(
+    frame: NDArray[np.uint8], colour: tuple[int, int, int], width: int
+) -> NDArray[np.uint8]:
+    """``frame`` with a ``width`` px ``colour`` outline (a copy)."""
+    out = np.array(frame, dtype=np.uint8)
+    out[:width], out[-width:], out[:, :width], out[:, -width:] = colour, colour, colour, colour
+    return out
 
 
 def save_world_mp4(
@@ -51,8 +120,9 @@ def save_world_mp4(
     fps: int = 20,
     size: int = _DEFAULT_SIZE,
     min_duration_s: float = 2.0,
+    square: bool = False,
 ) -> Path:
-    """Write a clean square world-view MP4 for one ``EpisodeResult``.
+    """Write a clean world-view MP4 for one ``EpisodeResult``, with its outcome border.
 
     Args:
         result: An ``EpisodeResult`` produced by ``SimRunner`` with
@@ -60,10 +130,13 @@ def save_world_mp4(
             used; ``vla_input_frames`` and ``joint_positions`` are ignored.
         path: Destination ``.mp4`` file. Parent directories are created.
         fps: Playback frame rate.
-        size: Output square edge in pixels. Each frame is center-cropped to a
-            square and resized to ``size × size``.
+        size: Output long edge in pixels (the frame keeps its aspect), or the
+            square edge with ``square``.
         min_duration_s: Minimum playback length. Short successful rollouts
-            hold the final frame so website clips remain watchable.
+            hold the final frame so website clips remain watchable. The final
+            frame is always held at least one second, in the outcome colour.
+        square: Center-crop each frame to a square (the website canvas) instead
+            of keeping its native aspect.
 
     Returns:
         The output path.
@@ -109,10 +182,10 @@ def save_world_mp4(
     try:
         frames = list(result.frames)
         min_frames = int(np.ceil(float(fps) * min_duration_s))
-        if frames and len(frames) < min_frames:
-            frames.extend([frames[-1]] * (min_frames - len(frames)))
-        for frame in frames:
-            writer.append_data(_square(frame, size))
+        frames.extend([frames[-1]] * max(fps, min_frames - len(frames)))
+        for i, frame in enumerate(frames):
+            out = _square(frame, size) if square else _fit(frame, size)
+            writer.append_data(_bordered(out, _frame_colour(result, i), max(2, size // 160)))
     finally:
         writer.close()
     return path
@@ -128,10 +201,12 @@ def write_world_grid(
     """Write every episode's world render as one tiled MP4 (``ceil(sqrt(n))`` columns).
 
     Each tile keeps its frame's aspect at ``tile_height`` px (no crop, so nothing at
-    the frame's edges is lost), carries an ``ep<i>`` label and its outcome, and holds
-    its last frame until the longest episode ends. The outline is green for a
-    successful episode, amber for a reward above zero, red otherwise -- the grade a
-    graded scene (``placement_success``) scored, read from ``EpisodeResult``.
+    the frame's edges is lost), carries an ``ep<i>`` label and its outcome (the grade
+    name and score on a graded scene: ``ep3  partial 0.50``), and holds its last frame
+    until the longest episode ends, plus one second. The outline is live: grey while
+    the episode runs, the reported grade's colour from the step it is reached, and the
+    outcome on its last frame (``grade_colour``: green success, yellow half credit,
+    orange less, red otherwise).
 
     Args:
         episodes: The rollout results; episodes without ``frames`` are skipped.
@@ -163,19 +238,15 @@ def write_world_grid(
     tile_w = round(w0 * tile_height / h0 / 2) * 2
     cols = int(np.ceil(np.sqrt(len(clips))))
     rows = int(np.ceil(len(clips) / cols))
-    longest = max(len(r.frames) for _, r in clips)
+    longest = max(len(r.frames) for _, r in clips) + fps  # + 1 s outcome hold
     border = max(2, tile_height // 60)
 
-    def tile(frame: NDArray[np.uint8], i: int, r: EpisodeResult) -> NDArray[np.uint8]:
+    def tile(t: int, i: int, r: EpisodeResult) -> NDArray[np.uint8]:
+        frame = r.frames[min(t, len(r.frames) - 1)]
         img = Image.fromarray(_rgb(frame)).resize((tile_w, tile_height), Image.Resampling.BILINEAR)
         draw = ImageDraw.Draw(img)
-        colour = (
-            (40, 200, 60) if r.success else (235, 170, 20) if r.total_reward > 0 else (220, 40, 40)
-        )
-        draw.rectangle([0, 0, tile_w - 1, tile_height - 1], outline=colour, width=border)
-        text = f"ep{i}  " + ("success" if r.success else f"reward {r.total_reward:.2f}")
-        draw.text((border + 4, border + 2), text, fill=(255, 255, 255))
-        return np.asarray(img, dtype=np.uint8)
+        draw.text((border + 4, border + 2), f"ep{i}  {_outcome_label(r)}", fill=(255, 255, 255))
+        return _bordered(np.asarray(img, dtype=np.uint8), _frame_colour(r, t), border)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     import imageio.v2 as iio
@@ -193,9 +264,8 @@ def write_world_grid(
         for t in range(longest):
             canvas = np.zeros((rows * tile_height, cols * tile_w, _RGB_CHANNELS), dtype=np.uint8)
             for k, (i, r) in enumerate(clips):
-                frame = r.frames[min(t, len(r.frames) - 1)]
                 y, x = (k // cols) * tile_height, (k % cols) * tile_w
-                canvas[y : y + tile_height, x : x + tile_w] = tile(frame, i, r)
+                canvas[y : y + tile_height, x : x + tile_w] = tile(t, i, r)
             writer.append_data(canvas)
     finally:
         writer.close()
@@ -212,6 +282,7 @@ def write_world_videos(
     size: int = _DEFAULT_SIZE,
     fps: int = 20,
     grid: bool = False,
+    square: bool = False,
 ) -> list[dict[str, Any]]:
     """Write one clean world MP4 per episode + update ``out_dir/videos.json``.
 
@@ -228,10 +299,13 @@ def write_world_videos(
         scene: Scene id for the filename + manifest (e.g. ``libero_spatial``).
         rskill: rSkill basename for the filename + manifest (e.g. ``smolvla-libero``).
         section: Website section the clip belongs to (``benchmark`` / ``sim`` / ``deploy``).
-        size: Square output edge in pixels, passed to ``save_world_mp4``.
+        size: Output long edge (square edge with ``square``) in pixels, passed to
+            ``save_world_mp4``.
         fps: Playback frame rate.
         grid: Also write ``<scene>_<rskill>_grid.mp4``, every episode tiled in one
             clip (``write_world_grid``); not a website clip, so not in the manifest.
+        square: Center-crop the per-episode clips to a square (the website canvas)
+            instead of keeping the frame's native aspect.
 
     Returns:
         The manifest records appended this call (one per written video).
@@ -260,7 +334,7 @@ def write_world_videos(
             stale.unlink()
             _drop_manifest_records(out_dir / "videos.json", {stale.name})
             print(f"  removed stale {stale}")
-        out = save_world_mp4(r, path, size=size, fps=fps)
+        out = save_world_mp4(r, path, size=size, fps=fps, square=square)
         print(f"  wrote {out}")
         records.append(
             {
@@ -323,6 +397,21 @@ def _rgb(frame: NDArray[np.uint8]) -> NDArray[np.uint8]:
     if frame.shape[2] != _RGB_CHANNELS:
         return np.repeat(frame[:, :, :1], _RGB_CHANNELS, axis=2)
     return frame
+
+
+def _fit(frame: NDArray[np.uint8], size: int) -> NDArray[np.uint8]:
+    """Resize ``frame`` (RGB, native aspect) so its long edge is ``size``; even sides."""
+    from PIL import Image
+
+    frame = _rgb(frame)
+    h, w = frame.shape[0], frame.shape[1]
+    scale = size / max(h, w)
+    out_w = max(_MIN_EVEN_SIDE, round(w * scale / 2) * 2)
+    out_h = max(_MIN_EVEN_SIDE, round(h * scale / 2) * 2)
+    if (out_h, out_w) == (h, w):
+        return np.ascontiguousarray(frame, dtype=np.uint8)
+    img = Image.fromarray(frame).resize((out_w, out_h), Image.Resampling.BILINEAR)
+    return np.asarray(img, dtype=np.uint8)
 
 
 def _square(frame: NDArray[np.uint8], size: int) -> NDArray[np.uint8]:
