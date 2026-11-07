@@ -16,6 +16,7 @@ openral:
   description: 'S2 decision procedure: locate a named object, falling back to bounded
     commonsense active search and finally human handoff. Composes recall_object, resolve_place,
     locate_in_view and NAVIGATE/OPEN skills.'
+  model_family: null
   min_vram_gb: null
   latency_ms: 5000.0
   runtime: pytorch

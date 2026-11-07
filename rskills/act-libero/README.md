@@ -21,6 +21,7 @@ openral:
   description: ACT (Zhao et al., 2023) on HuggingFaceVLA/libero. ResNet-18, 4+1 enc/dec,
     latent VAE, chunk_size=100. Two 256x256 RGB (image / image2) + 8-D state + 7-D
     action; plain chunked replay. State layout matches openral_sim's LIBERO backend.
+  model_family: act
   min_vram_gb: null
   latency_ms: 100.0
   runtime: pytorch

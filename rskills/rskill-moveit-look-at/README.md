@@ -34,6 +34,7 @@ openral:
     a collision-aware arm motion via MoveIt that points the camera's optical axis
     at look_at.target_xyz. Use after navigating to an approach pose and before locate_in_view
     / a grasp skill.
+  model_family: null
   min_vram_gb: null
   latency_ms: 2000.0
   runtime: pytorch

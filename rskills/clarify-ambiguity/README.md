@@ -17,6 +17,7 @@ openral:
     resolve it from memory/scene or ask the operator a concise question before acting
     — never guessing on an irreversible action. Composes query_scene, memory_search,
     recall_object and emit_prompt.'
+  model_family: null
   min_vram_gb: null
   latency_ms: 5000.0
   runtime: pytorch

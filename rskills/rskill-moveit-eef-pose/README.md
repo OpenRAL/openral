@@ -34,6 +34,7 @@ openral:
     (self + planning-scene collision checked). Use when you have a Cartesian end-effector
     goal (e.g. a pre-grasp pose); for a joint-space goal use rskill-moveit-multi-joints,
     and to aim a camera at a point use rskill-moveit-multi-look_at.
+  model_family: null
   min_vram_gb: null
   latency_ms: 2000.0
   runtime: pytorch

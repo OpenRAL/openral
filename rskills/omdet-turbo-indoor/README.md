@@ -25,6 +25,7 @@ openral:
     every frame without reasoner prompting, giving the world model far more classes
     than the 80 COCO categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf.
     This is the zeroshot_hf detector engine.'
+  model_family: null
   min_vram_gb: 0.6
   latency_ms: 200.0
   runtime: pytorch

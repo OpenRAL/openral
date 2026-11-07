@@ -99,7 +99,15 @@ def test_catalog_tags_and_openral_block_contract() -> None:
     ]
     assert not any(t.startswith("license:") for t in fm["tags"])
     block = fm["openral"]
-    assert list(block) == ["description", "min_vram_gb", "latency_ms", "runtime", "dtype"]
+    assert list(block) == [
+        "description",
+        "model_family",
+        "min_vram_gb",
+        "latency_ms",
+        "runtime",
+        "dtype",
+    ]
+    assert block["model_family"] == m.model_family
     assert block["description"] == " ".join(m.description.split())
     assert block["latency_ms"] == m.latency_budget.per_chunk_ms
     assert block["runtime"] == m.runtime.value

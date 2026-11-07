@@ -31,6 +31,7 @@ openral:
     end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot
     0.6.0's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits
     an 8 GB GPU). Open Model License — commercial use permitted.
+  model_family: gr00t
   min_vram_gb: null
   latency_ms: 1500.0
   runtime: pytorch

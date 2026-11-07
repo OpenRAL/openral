@@ -25,6 +25,7 @@ openral:
     producer intersects with depth to bound the carried payload. One shot per attach
     / detach / regrasp event, not per frame. Wraps facebook/sam2.1-hiera-small. Emits
     no actions and drives no actuators.
+  model_family: null
   min_vram_gb: 0.45
   latency_ms: 100.0
   runtime: pytorch

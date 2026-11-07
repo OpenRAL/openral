@@ -27,6 +27,7 @@ openral:
     The only >50% VLABench policy (pi0-fast-ft 51.2% primitive avg) is openpi/JAX
     needing conversion. See README + project memory. Use this to exercise the VLABench
     backend.'
+  model_family: smolvla
   min_vram_gb: 2.0
   latency_ms: 100.0
   runtime: pytorch

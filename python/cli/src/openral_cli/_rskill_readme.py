@@ -178,18 +178,19 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
 
 def _catalog_block(manifest: RSkillManifest) -> dict[str, Any]:
     """The ``openral:`` front-matter mapping: catalog fields readable without rskill.yaml."""
-    q = manifest.quantization
-    dtype = str(getattr(q.dtype, "value", q.dtype)) if q is not None else None
+    dtype = manifest.quantization.dtype
     vram = manifest.min_vram_gb
-    min_vram = (manifest.active_min_vram_gb() or min(vram.values())) if vram else None
-    budget = manifest.latency_budget
+    min_vram = manifest.active_min_vram_gb() if vram else None
+    if vram and min_vram is None:
+        min_vram = min(vram.values())
     runtime = manifest.runtime
     return {
         "description": " ".join(manifest.description.split()),
+        "model_family": manifest.model_family,
         "min_vram_gb": min_vram,
-        "latency_ms": budget.per_chunk_ms if budget is not None else None,
+        "latency_ms": manifest.latency_budget.per_chunk_ms,
         "runtime": str(getattr(runtime, "value", runtime)) if runtime else None,
-        "dtype": dtype,
+        "dtype": str(getattr(dtype, "value", dtype)) if dtype else None,
     }
 
 

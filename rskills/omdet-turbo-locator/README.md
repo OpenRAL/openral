@@ -25,6 +25,7 @@ openral:
     the current frame — a lightweight, real-time, Apache-2.0 in-process alternative
     to the 3B LocateAnything VLM for simple "find X" queries. Wraps omlab/omdet-turbo-swin-tiny-hf.
     This is the on-demand half of the continuous-vs-on_demand detector mode split.
+  model_family: null
   min_vram_gb: 0.6
   latency_ms: 200.0
   runtime: pytorch

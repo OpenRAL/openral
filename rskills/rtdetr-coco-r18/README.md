@@ -26,6 +26,7 @@ openral:
     ObjectsMetadata to /openral/perception/objects. 80 COCO categories. Apache-2.0
     weights. Reference latency ~20 ms on GPU, ~45 ms on CPU. This is the detector
     rSkill kind contract.
+  model_family: null
   min_vram_gb: null
   latency_ms: 50.0
   runtime: onnx

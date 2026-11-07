@@ -21,6 +21,7 @@ openral:
     used for turns / forward / back-up (Nav2 transforms via tf2 on goal accept — the
     LLM does NOT need to compose quaternions against the live pose). Result-only mode:
     Nav2 publishes cmd_vel directly; collision avoidance relies on its costmap.'
+  model_family: null
   min_vram_gb: null
   latency_ms: 60000.0
   runtime: pytorch

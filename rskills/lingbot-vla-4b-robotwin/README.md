@@ -23,6 +23,7 @@ openral:
     joint command (25-step replay). Runs in a torch-2.8 ZMQ sidecar; NF4 fits the
     4 B model in 3.65 GB, co-resident with SAPIEN on an 8 GB GPU. Verified: open-loop
     MAE 0.023 vs GT lift_pot (not mean-collapsed).'
+  model_family: lingbot_vla
   min_vram_gb: 4.5
   latency_ms: 1000.0
   runtime: pytorch

@@ -26,6 +26,7 @@ openral:
   description: OpenVLA-OFT (RLinf, PPO on ManiSkill3 PutOnPlateInScene25) WidowX bridge
     policy, evaluated on SimplerEnv WidowX carrot-on-plate. Loaded in-process via
     transformers custom-code (trust_remote_code), NF4 for 8 GB hosts. MIT license.
+  model_family: openvla
   min_vram_gb: 7.0
   latency_ms: 2000.0
   runtime: pytorch

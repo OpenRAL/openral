@@ -24,6 +24,7 @@ openral:
     synchronized front and wrist RGB views, predicts episode-relative EEF pose and
     continuous gripper chunks, and uses the tracked A1 Runtime IK contract before
     OpenRAL validates and executes the resulting joint/gripper actions.
+  model_family: lingbot_va_a1
   min_vram_gb: null
   latency_ms: 6000.0
   runtime: pytorch

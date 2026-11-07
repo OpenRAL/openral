@@ -27,6 +27,7 @@ openral:
     PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar
     with the rlbench scene backend. MIT code + checkpoints. The PerAct checkpoint
     is loaded verbatim; ships three live-verified starter tasks.
+  model_family: diffuser_actor
   min_vram_gb: 2.0
   latency_ms: 3000.0
   runtime: pytorch

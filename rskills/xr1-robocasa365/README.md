@@ -24,6 +24,7 @@ openral:
   description: Apache-2.0 XR-1 RoboCasa365 checkpoint. The adapter keeps seven frames,
     samples four at interval two, converts OpenRAL's 16-D quaternion layout to XR-1's
     14-D axis-angle state, and replays sixteen decoded actions per query.
+  model_family: xr1
   min_vram_gb: null
   latency_ms: 120000.0
   runtime: pytorch

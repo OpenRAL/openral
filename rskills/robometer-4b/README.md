@@ -30,6 +30,7 @@ openral:
     instruction it emits per-frame normalized progress (0-1) and success probability,
     queried on demand by the Reasoner. Advisory-only — never gates motors. Embodiment-agnostic.
     Apache-2.0.'
+  model_family: null
   min_vram_gb: 5.5
   latency_ms: 3000.0
   runtime: pytorch

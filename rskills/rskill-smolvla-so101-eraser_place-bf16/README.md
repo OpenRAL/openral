@@ -28,6 +28,7 @@ openral:
     20k steps on 25 teleop episodes (10 534 frames @ 30 FPS) from makermods/eraser_place_unblurry_real.
     ONE training task string — "place the erase on the blue square" (upstream typo
     included); deploy it verbatim.
+  model_family: smolvla
   min_vram_gb: 1.5
   latency_ms: 400.0
   runtime: pytorch

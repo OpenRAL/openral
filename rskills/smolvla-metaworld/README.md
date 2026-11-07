@@ -28,6 +28,7 @@ openral:
     15/50 solved at 1 ep/seed-0 (avg 0.30); see eval/metaworld_mt50.json. 4-D proprio
     / camera1 contract verified against the checkpoint (no adapter flip — lerobot''s
     MetaworldEnv already corrects the corner camera''s 180° inversion).'
+  model_family: smolvla
   min_vram_gb: null
   latency_ms: 150.0
   runtime: pytorch

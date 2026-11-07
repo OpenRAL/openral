@@ -25,6 +25,7 @@ openral:
     runs Xiaomi's pinned Transformers custom code in an isolated sidecar, supplies
     three 256x256 views plus seven arm joints and one gripper value, and replays ten
     7-D delta-EEF actions per query.
+  model_family: xr1
   min_vram_gb: null
   latency_ms: 120000.0
   runtime: pytorch

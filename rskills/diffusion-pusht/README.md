@@ -23,6 +23,7 @@ openral:
     the PushT 2-DoF pushing benchmark. Action chunks of length 8 within a horizon
     of 16. The chunk inference cost is dominated by the denoising loop, so cached
     pops are essentially free — this is the extreme test of the queue-drain contract.
+  model_family: diffusion
   min_vram_gb: null
   latency_ms: 1250.0
   runtime: pytorch

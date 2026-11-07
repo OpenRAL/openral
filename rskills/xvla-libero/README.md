@@ -25,6 +25,7 @@ openral:
     State dimensions, camera names, and normalisation statistics have not been locally
     verified — see docs/reference/vla_compatibility.md §3.1. Latency budget is a conservative
     placeholder; update after local profiling.
+  model_family: xvla
   min_vram_gb: null
   latency_ms: 200.0
   runtime: pytorch

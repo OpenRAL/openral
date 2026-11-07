@@ -17,6 +17,7 @@ openral:
     the target is within the robot''s reachable workspace (using the robot self-model
     + object pose) and stage the base or hand off if it is not. Composes recall_object,
     resolve_place, query_scene and NAVIGATE skills.'
+  model_family: null
   min_vram_gb: null
   latency_ms: 5000.0
   runtime: pytorch

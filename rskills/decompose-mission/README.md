@@ -17,6 +17,7 @@ openral:
     an ordered list of subtasks, each with its own verifiable done-condition (an internal
     TODO list), executing and verifying them in order. Composes execute_rskill, query_scene,
     query_task_progress, memory_write and memory_search.'
+  model_family: null
   min_vram_gb: null
   latency_ms: 5000.0
   runtime: pytorch

@@ -24,6 +24,7 @@ openral:
     demonstration set. Insertion is the harder ALOHA task in the original paper; the
     0.20 success rate reflects that. See the norm-stats note above re: the legacy
     safetensors-resident buffers.'
+  model_family: act
   min_vram_gb: null
   latency_ms: 25.0
   runtime: pytorch

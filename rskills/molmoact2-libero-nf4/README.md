@@ -30,6 +30,7 @@ openral:
     embodied-reasoning VLM via per-layer KV-cache conditioning. Reported LIBERO success:
     97.2% (98.1% for the -Think depth-reasoning variant). Weights are Apache-2.0 —
     commercial use permitted. See eval/libero.json.'
+  model_family: molmoact2
   min_vram_gb: 4.0
   latency_ms: 1000.0
   runtime: pytorch

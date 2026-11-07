@@ -32,6 +32,7 @@ openral:
     step. With >9 GB prefer bf16 via `policy_extras.dtype`, or openral-pro''s TensorRT
     FP8; see the README. PI permissive-research weights: commercial use needs a vendor
     agreement.'
+  model_family: pi05
   min_vram_gb: 6.4
   latency_ms: 200.0
   runtime: pytorch

@@ -29,6 +29,7 @@ openral:
     ZMQ sidecar; NF4 backbone quantization targets 8 GB GPUs. NOTE: pre-trained FOUNDATION
     checkpoint — zero-shot actions collapse to the distribution mean; post-train on
     RoboTwin first.'
+  model_family: lingbot_vla2
   min_vram_gb: 7.0
   latency_ms: 1500.0
   runtime: pytorch

@@ -35,6 +35,7 @@ openral:
     override the manifest to retarget. Use when you have a joint-space goal (e.g.
     a policy's in-distribution starting pose); for a Cartesian end-effector target
     use rskill-moveit-multi-eef_pose instead.
+  model_family: null
   min_vram_gb: null
   latency_ms: 2000.0
   runtime: pytorch

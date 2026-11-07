@@ -23,6 +23,7 @@ openral:
     via the DA3 sidecar, not a robot sensor) plus a natural-language navigation instruction
     and drives a mobile base with body-twist velocity commands, emitting STOP on arrival.
     Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).'
+  model_family: internvla_n1
   min_vram_gb: 7.0
   latency_ms: 2500.0
   runtime: pytorch

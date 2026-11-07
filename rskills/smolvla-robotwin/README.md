@@ -28,6 +28,7 @@ openral:
     action chunks of length 50 across three RGB views (head + per-wrist) driving a
     14-DoF dual-arm joint command. Runs on the RoboTwin scene backend through the
     out-of-process SAPIEN sidecar.'
+  model_family: smolvla
   min_vram_gb: null
   latency_ms: 250.0
   runtime: pytorch

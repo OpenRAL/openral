@@ -28,6 +28,7 @@ openral:
     views (wrist + overhead) matching the original LIBERO dataset convention. The
     lerobot checkpoint wrapped here matches the paper's reported configuration on
     all five architecture fields — see header comment for the rejected sibling.
+  model_family: smolvla
   min_vram_gb: 1.2
   latency_ms: 150.0
   runtime: pytorch

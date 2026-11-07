@@ -30,6 +30,7 @@ openral:
     camera streams, 16-D state (eef_rel + gripper + base), 12-D action (eef_delta
     + gripper + base + control_mode); the rldx adapter trims to 11-D for the openral
     RoboCasa env. Non-commercial license.'
+  model_family: rldx
   min_vram_gb: 7.0
   latency_ms: 1500.0
   runtime: pytorch

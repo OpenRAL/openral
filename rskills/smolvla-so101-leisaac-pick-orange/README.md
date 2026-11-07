@@ -25,6 +25,7 @@ openral:
     motor units from two RGB views (fixed front + wrist), one action per 1/60 s simulation
     step. Trained on 60 sim teleop episodes of LightwheelAI/leisaac-pick-orange; ONE
     task string — "Grab orange and place into plate".
+  model_family: smolvla
   min_vram_gb: 1.5
   latency_ms: 400.0
   runtime: pytorch

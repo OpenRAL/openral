@@ -17,6 +17,7 @@ openral:
     or subtask completes, check whether it ACTUALLY succeeded using scene/reward queries
     before the reasoner proceeds. Composes query_scene, query_task_progress, locate_in_view,
     memory_write and emit_prompt.'
+  model_family: null
   min_vram_gb: null
   latency_ms: 5000.0
   runtime: pytorch

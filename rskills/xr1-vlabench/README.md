@@ -25,6 +25,7 @@ openral:
     second, and wrist 480x480 views plus 7-D relative EE state. OpenRAL integrates
     the decoded deltas into absolute VLABench targets and replans after five of each
     ten predicted actions.
+  model_family: xr1
   min_vram_gb: 4.0
   latency_ms: 2000.0
   runtime: pytorch

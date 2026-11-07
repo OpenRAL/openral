@@ -27,6 +27,7 @@ openral:
   description: Qwen3.5-4B natively-multimodal video-language model packaged as an
     NF4 bitsandbytes vlm rSkill. Accepts RGB image or video frames plus a natural-language
     query; returns a text answer. Embodiment-agnostic. No actuators. Apache-2.0.
+  model_family: null
   min_vram_gb: 2.5
   latency_ms: 3000.0
   runtime: pytorch

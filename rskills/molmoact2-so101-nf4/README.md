@@ -31,6 +31,7 @@ openral:
     for 8 GB GPUs. Emits 6-DoF absolute joint-position chunks (size 10) for the SO-100/SO-101
     follower arm. Flow-matching action expert on Molmo2-ER VLM. Apache-2.0. norm_tag="so100_so101_molmoact2"
     travels in the manifest's image_preprocessing block (overridable via vla.extra.norm_tag).
+  model_family: molmoact2
   min_vram_gb: 4.0
   latency_ms: 1000.0
   runtime: pytorch

@@ -25,6 +25,7 @@ inference: false
 openral:
   description: RLDX-1 fine-tuned on the SIMPLER WidowX benchmark. Shares the rldx
     sidecar runtime. Non-commercial license.
+  model_family: rldx
   min_vram_gb: 7.0
   latency_ms: 1500.0
   runtime: pytorch

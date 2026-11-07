@@ -30,6 +30,7 @@ openral:
     ship under RLWRLD Model License v1.0 (non-commercial). Runs out-of-process via
     the `rldx` sidecar adapter; NF4 quantization (Qwen3-VL backbone and MSAT head)
     is required to fit on 8 GiB GPUs.
+  model_family: rldx
   min_vram_gb: 7.0
   latency_ms: 1500.0
   runtime: pytorch

@@ -28,6 +28,7 @@ openral:
   description: NVIDIA LocateAnything-3B open-vocabulary grounding detector packaged
     as an NF4 bitsandbytes PyTorch rSkill. It localizes queried objects, text, GUI
     elements, and points from RGB images without commanding actuators.
+  model_family: null
   min_vram_gb: 5.0
   latency_ms: 1000.0
   runtime: pytorch

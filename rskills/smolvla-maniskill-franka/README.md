@@ -29,6 +29,7 @@ openral:
     checkpoint loads and actuates on ManiSkill3 PickCube-v1 with a live SAPIEN viewer,
     but cannot satisfy that task's goal-placement success — the evaluated_tasks gate
     blocks the pairing (see the LiftCube-gap note).
+  model_family: smolvla
   min_vram_gb: null
   latency_ms: 200.0
   runtime: pytorch

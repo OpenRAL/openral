@@ -25,6 +25,7 @@ openral:
     RGB view and the 8-D joint + gripper state, at 15 Hz in 15-step chunks of 7 joint
     deltas plus an absolute gripper. PI permissive-research weights: commercial use
     needs a vendor agreement.'
+  model_family: pi05
   min_vram_gb: 8.1
   latency_ms: 400.0
   runtime: pytorch
