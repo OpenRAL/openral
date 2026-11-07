@@ -8,7 +8,7 @@ Public surface
 - ``rSkill``: HF Hub rSkill loader (manifest + weights + license guard).
 - ``InstalledRSkillEntry``: Local registry entry schema.
 - ``search_hub_rskills``: Free-text + facet search over an HF Hub org's
-  rSkills (``HubRSkillHit``, ``HubRSkillSearchResult``).
+  rSkills (``HubRSkillHit``, ``HubRSkillCard``, ``HubRSkillSearchResult``).
 - ``resolve_runtime_backend``: Name -> ``Runtime`` class, built-in or via the
   ``openral.runtime_backends`` entry-point group (the OpenRAL Pro extraction seam).
 - ``maybe_attach_pro_hooks``: Generic OpenRAL Pro policy-attach-hook lookup
@@ -47,12 +47,18 @@ from openral_rskill.backend_registry import (
     resolve_runtime_backend,
 )
 from openral_rskill.base import rSkillBase
-from openral_rskill.hub_search import HubRSkillHit, HubRSkillSearchResult, search_hub_rskills
+from openral_rskill.hub_search import (
+    HubRSkillCard,
+    HubRSkillHit,
+    HubRSkillSearchResult,
+    search_hub_rskills,
+)
 from openral_rskill.loader import (
     DEFAULT_REGISTRY_PATH,
     InstalledRSkillEntry,
     discover_intree_rskills,
     find_repo_root_from,
+    gated_repo_error,
     intree_embodiment_tags,
     known_benchmark_ids,
     rSkill,
@@ -62,6 +68,7 @@ from openral_rskill.runtime import NullRuntime, Runtime
 
 __all__ = [
     "DEFAULT_REGISTRY_PATH",
+    "HubRSkillCard",
     "HubRSkillHit",
     "HubRSkillSearchResult",
     "InstalledRSkillEntry",
@@ -69,6 +76,7 @@ __all__ = [
     "Runtime",
     "discover_intree_rskills",
     "find_repo_root_from",
+    "gated_repo_error",
     "gpu_allocated_mb",
     "hf_download_cached_first",
     "intree_embodiment_tags",

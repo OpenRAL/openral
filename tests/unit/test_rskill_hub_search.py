@@ -239,7 +239,7 @@ class TestSearchHubRSkills:
             result = search_hub_rskills()
         (hit,) = result.hits
         assert hit.repo_id == _ACT_ALOHA_ID
-        assert hit.manifest.name == _NOT_IN_TREE_ID
+        assert hit.manifest is not None and hit.manifest.name == _NOT_IN_TREE_ID
         assert hit.local == "in-tree"
 
     def test_manifest_name_alone_does_not_imply_in_tree(self, tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ class TestSearchHubRSkills:
             result = search_hub_rskills()
         (hit,) = result.hits
         assert hit.repo_id == mismatched_id
-        assert hit.manifest.name == _ACT_ALOHA_ID
+        assert hit.manifest is not None and hit.manifest.name == _ACT_ALOHA_ID
         assert hit.local is None
 
     def test_local_marker_installed(self, tmp_path: Path) -> None:
@@ -359,3 +359,103 @@ class TestLoaderStillWorks:
         reg = tmp_path / "rskills.json"
         with patch("openral_rskill.loader.DEFAULT_REGISTRY_PATH", reg):
             assert rSkill.list_installed() == []
+
+
+# ── Gated (OpenRAL Pro) repos: listed from their public model card ─────────────
+
+_GATED_ID = "OpenRAL/rskill-act-so101_follower-restock-bf16"
+_GATED_TAGS = [
+    "OpenRAL",
+    "rskill",
+    "rskill-kind:vla",
+    "rskill-role:s1",
+    "embodiment:so101_follower",
+    "rskill-license:proprietary",
+]
+_GATED_CARD = {
+    "license": "other",
+    "openral": {
+        "description": "Restocks a retail shelf from a tote.",
+        "min_vram_gb": 6.5,
+        "latency_ms": 120.0,
+        "runtime": "pytorch",
+        "dtype": "bf16",
+    },
+}
+
+
+def _patch_gated_hub(gated_listing: list[SimpleNamespace]) -> Any:
+    """Org listing = act-aloha (readable) + the given gated entries (manifest 403s)."""
+
+    class _Api:
+        def list_models(self, *, expand: list[str], **_: object) -> list[SimpleNamespace]:
+            assert {"gated", "cardData", "tags"} <= set(expand)
+            return [SimpleNamespace(id=_ACT_ALOHA_ID, tags=["OpenRAL", "rskill"]), *gated_listing]
+
+    def fake_download(*, repo_id: str, filename: str, **_: object) -> str:
+        if repo_id == _ACT_ALOHA_ID:
+            return str(_MANIFEST_FIXTURES[_ACT_ALOHA_ID])
+        raise EntryNotFoundError(f"403 gated: {repo_id}/{filename}")
+
+    return (
+        patch("huggingface_hub.HfApi", return_value=_Api()),
+        patch("huggingface_hub.hf_hub_download", side_effect=fake_download),
+    )
+
+
+class TestGatedRepos:
+    def test_gated_repo_listed_from_card_data(self, tmp_path: Path) -> None:
+        listing = [
+            SimpleNamespace(id=_GATED_ID, tags=_GATED_TAGS, gated="manual", card_data=_GATED_CARD)
+        ]
+        p1, p2 = _patch_gated_hub(listing)
+        with p1, p2, patch("openral_rskill.loader.DEFAULT_REGISTRY_PATH", tmp_path / "r.json"):
+            result = search_hub_rskills(
+                "restock", kind="vla", license="proprietary", embodiment="so101_follower"
+            )
+        (hit,) = result.hits
+        assert hit.repo_id == _GATED_ID and hit.manifest is None
+        assert hit.card is not None
+        assert hit.card.model_dump() == {
+            "kind": "vla",
+            "role": "s1",
+            "license": "proprietary",
+            "embodiment_tags": ("so101_follower",),
+            "description": "Restocks a retail shelf from a tote.",
+            "model_family": None,
+            "min_vram_gb": 6.5,
+            "latency_ms": 120.0,
+            "runtime": "pytorch",
+            "dtype": "bf16",
+        }
+        assert result.skipped == 0
+
+    def test_ungated_or_contractless_unreadable_repos_still_skipped(self, tmp_path: Path) -> None:
+        listing = [
+            SimpleNamespace(id=_BROKEN_ID, tags=_GATED_TAGS, gated=False, card_data=_GATED_CARD),
+            SimpleNamespace(id=_GATED_ID, tags=["rskill"], gated="manual", card_data={}),
+        ]
+        p1, p2 = _patch_gated_hub(listing)
+        with p1, p2, patch("openral_rskill.loader.DEFAULT_REGISTRY_PATH", tmp_path / "r.json"):
+            result = search_hub_rskills()
+        assert [h.repo_id for h in result.hits] == [_ACT_ALOHA_ID]
+        assert result.skipped_repo_ids == tuple(sorted([_BROKEN_ID, _GATED_ID]))
+
+
+def test_malformed_gated_card_is_skipped_not_raised() -> None:
+    """A card value of the wrong type yields no card (the repo is skipped), never an exception."""
+    from openral_rskill.hub_search import HubRSkillCard
+
+    tags = ["rskill-kind:vla", "rskill-role:s1", "rskill-license:proprietary"]
+    assert HubRSkillCard.from_card(tags, {"openral": {"min_vram_gb": "6 GB"}}) is None
+    ok = HubRSkillCard.from_card(tags, {"openral": {"model_family": "act"}})
+    assert ok is not None and ok.model_family == "act"
+
+
+def test_family_facet_matches_a_gated_card() -> None:
+    from openral_rskill.hub_search import HubRSkillCard, _matches_facets
+
+    card = HubRSkillCard(kind="vla", role="s1", license="proprietary", model_family="act")
+    facets = {"kind": "", "role": "", "embodiment": "", "license_": ""}
+    assert _matches_facets(card, family="act", **facets)
+    assert not _matches_facets(card, family="smolvla", **facets)
