@@ -1881,3 +1881,299 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
             prompt_metadata_json="",
             goal_params_json="",
         )
+
+
+class _EstopRig:
+    """An ExecuteRskill client plus an e-stop publisher already matched to the runner."""
+
+    def __init__(self, executor: Any, runtime: Any) -> None:
+        import rclpy
+        from openral_msgs.action import ExecuteRskill
+        from rclpy.action import ActionClient
+        from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+        from std_msgs.msg import Empty
+
+        self.executor = executor
+        self.client = ActionClient(
+            runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill"
+        )
+        self.helper = rclpy.create_node("openral_skill_runner_wrapped_estop_test")
+        executor.add_node(self.helper)
+        qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
+        self._empty = Empty
+        self.estop_pub = self.helper.create_publisher(Empty, "/openral/estop", qos)
+        self.cleared_pub = self.helper.create_publisher(Empty, "/openral/estop_cleared", qos)
+        self.spin_until(
+            lambda: (
+                self.estop_pub.get_subscription_count() > 0
+                and self.cleared_pub.get_subscription_count() > 0
+            ),
+            5.0,
+            "the runner's e-stop subscriptions",
+        )
+        assert self.client.wait_for_server(timeout_sec=2.0)
+
+    def spin_until(self, cond: Any, within_s: float, what: str) -> None:
+        deadline = time.monotonic() + within_s
+        while not cond() and time.monotonic() < deadline:
+            self.executor.spin_once(timeout_sec=0.02)
+        assert cond(), f"timed out after {within_s} s waiting for {what}"
+
+    def send(self, goal: Any) -> Any:
+        """Send ``goal``; return its handle (``accepted`` may be False)."""
+        future = self.client.send_goal_async(goal)
+        self.spin_until(future.done, 15.0, "the goal response")
+        return future.result()
+
+    def result(self, handle: Any, within_s: float) -> Any:
+        future = handle.get_result_async()
+        self.spin_until(future.done, within_s, "the goal result")
+        return future.result().result
+
+    def estop(self) -> None:
+        self.estop_pub.publish(self._empty())
+
+    def estop_cleared(self) -> None:
+        self.cleared_pub.publish(self._empty())
+
+    def close(self) -> None:
+        self.executor.remove_node(self.helper)
+        self.helper.destroy_node()
+
+
+def _nav2_skill_resolver() -> Any:
+    from openral_core import RSkillManifest
+    from openral_rskill.ros_action_rskill import ROSActionRskill
+
+    manifest = RSkillManifest.from_yaml(str(_NAV2_MANIFEST)).model_copy(
+        update={"embodiment_tags": ["so100_follower"]}
+    )
+
+    def _resolver(*, goal_params_json: str = "", ros_node: Any = None, **_k: Any) -> Any:
+        skill = ROSActionRskill(
+            manifest=manifest,
+            ros_node=ros_node,
+            robot_description=None,
+            prompt="",
+            prompt_metadata_json="",
+            goal_params_json=goal_params_json,
+        )
+        skill.configure()
+        skill.activate()
+        return skill
+
+    return _resolver
+
+
+def _nav2_goal(deadline_s: float) -> Any:
+    from openral_msgs.action import ExecuteRskill
+
+    goal = ExecuteRskill.Goal()
+    goal.rskill_id = "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"
+    goal.prompt = "drive"
+    goal.goal_params_json = _nav2_goal_params(2.0)
+    goal.deadline_s = deadline_s
+    return goal
+
+
+@pytest.mark.parametrize("accept_cancel", [True, False], ids=["cancelled", "cancel_rejected"])
+def test_an_estop_ends_an_in_flight_wrapped_nav2_goal(accept_cancel: bool) -> None:
+    """``/openral/estop`` mid-goal cancels the wrapped Nav2 goal, and the goal is an e-stop.
+
+    Before this, the runner only latched: the wrapped wait polled cancel and its budget,
+    never the e-stop, so Nav2 kept its goal and a goal finishing later read as success.
+    A server that refuses the cancel still ends the goal as FAILURE_SAFETY_ESTOP, naming
+    that the wrapped goal may still be running, and the runner then refuses new goals,
+    even after an e-stop reset, until that goal has ended.
+    """
+    pytest.importorskip("nav2_msgs")
+    import rclpy
+    from openral_msgs.action import ExecuteRskill
+
+    from tests.integration.fakes.action_servers import held_navigate_to_pose_server
+
+    outcomes: list[str] = []
+    with _compose_harness(resolver=_nav2_skill_resolver()) as (executor, runtime, _s, _o):
+        nav2_side = rclpy.create_node("openral_test_nav2_held")
+        server = held_navigate_to_pose_server(
+            nav2_side, outcomes, accept_cancel=accept_cancel, hold_s=30.0
+        )
+        executor.add_node(nav2_side)
+        rig = _EstopRig(executor, runtime)
+        try:
+            handle = rig.send(_nav2_goal(60.0))
+            assert handle.accepted
+            rig.spin_until(lambda: "executing" in outcomes, 15.0, "Nav2 to start the goal")
+            rig.estop()
+            result = rig.result(handle, 11.0)
+            ended_when_reported = list(outcomes)
+            if not accept_cancel:
+                # The stopped goal may still be driving: a reset must not let a new one in.
+                rig.estop_cleared()
+                rig.spin_until(
+                    lambda: not runtime.skill_runner_node._estop_latched, 3.0, "the reset"
+                )
+                assert not rig.send(_nav2_goal(60.0)).accepted
+                server.release()  # the held goal ends at its server
+                rig.spin_until(lambda: "succeeded" in outcomes, 3.0, "the held goal to end")
+                _spin_for(executor, 0.3)  # its result reaches the runner's client
+                assert rig.send(_nav2_goal(60.0)).accepted
+        finally:
+            server.release()
+            rig.close()
+            server.destroy()
+            executor.remove_node(nav2_side)
+            nav2_side.destroy_node()
+
+    assert not result.success
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP, result.failure_reason
+    assert result.failure_reason.startswith("safety_estop:"), result.failure_reason
+    if accept_cancel:
+        assert ended_when_reported == ["executing", "canceled"], ended_when_reported
+    else:
+        assert "may still be running" in result.failure_reason
+        assert ended_when_reported == ["executing"], "the held goal should still be running"
+
+
+def test_a_goal_that_completes_under_a_latched_estop_is_not_a_success() -> None:
+    """A skill whose completion lands after ``/openral/estop`` ends as an e-stop, not success.
+
+    The per-tick guard runs before each step, so a step already running when the stop
+    latches (a wrapped wait, a slow policy) used to fall through to ``success=True``.
+    """
+    import threading
+
+    from openral_core.exceptions import ROSRskillGoalSatisfied
+    from openral_core.schemas import Action
+    from openral_msgs.action import ExecuteRskill
+    from openral_rskill.base import rSkillBase
+
+    in_step, release = threading.Event(), threading.Event()
+
+    class _HeldCompletingSkill(rSkillBase):
+        """Its first step blocks until released, then signals completion."""
+
+        def __init__(self) -> None:
+            super().__init__(
+                name="openral/test-held-completing-skill",
+                version="0.1.0",
+                role="s1",
+                embodiment_tags=["so100_follower"],
+            )
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> Action:
+            in_step.set()
+            release.wait(timeout=10.0)
+            raise ROSRskillGoalSatisfied("reached the target")
+
+    def _resolver(*_a: Any, **_k: Any) -> Any:
+        skill = _HeldCompletingSkill()
+        skill.configure()
+        skill.activate()
+        return skill
+
+    goal = ExecuteRskill.Goal()
+    goal.rskill_id = "openral/test-held-completing-skill"
+    goal.prompt = "go"
+    goal.deadline_s = 20.0
+    with _compose_harness(resolver=_resolver) as (executor, runtime, _s, _o):
+        rig = _EstopRig(executor, runtime)
+        try:
+            handle = rig.send(goal)
+            assert handle.accepted
+            rig.spin_until(in_step.is_set, 10.0, "the skill's step")
+            rig.estop()
+            rig.spin_until(
+                lambda: runtime.skill_runner_node._estop_latched, 3.0, "the runner's latch"
+            )
+            release.set()  # the step completes with the stop latched
+            result = rig.result(handle, 5.0)
+        finally:
+            release.set()
+            rig.close()
+
+    assert not result.success
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP, result.failure_reason
+    assert "while a safety stop was latched" in result.failure_reason, result.failure_reason
+
+
+def test_a_nav2_goal_longer_than_the_first_chunk_window_is_not_braked() -> None:
+    """The runner announces a result-only goal; the deadman bounds it by that, not 0.8 s.
+
+    Real runner + real ``DeadmanWatchdogNode`` gated on the runner's goal status, with a
+    0.8 s first-chunk window and a Nav2 goal that drives for 2.5 s. Before ADR-0127
+    Decision 5 the watchdog e-stopped it at 0.8 s (it publishes no chunks).
+    """
+    pytest.importorskip("nav2_msgs")
+    import rclpy
+    from openral_msgs.msg import ResultOnlyGoal
+    from openral_safety_watchdog.deadman_watchdog_node import DeadmanWatchdogNode
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.parameter import Parameter
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import Empty
+
+    from tests.integration.fakes.action_servers import held_navigate_to_pose_server
+
+    outcomes: list[str] = []
+    estops: list[Any] = []
+    announced: list[Any] = []
+    with _compose_harness(resolver=_nav2_skill_resolver()) as (executor, runtime, _s, _o):
+        watchdog = DeadmanWatchdogNode(node_name="openral_test_deadman_nav2")
+        watchdog.set_parameters(
+            [
+                Parameter("arm_status_topic", value="/openral/execute_rskill/_action/status"),
+                Parameter("first_chunk_deadline_s", value=0.8),
+                Parameter("result_only_grace_s", value=1.0),
+                Parameter("check_period_s", value=0.02),
+            ]
+        )
+        nav2_side = rclpy.create_node("openral_test_nav2_long")
+        server = held_navigate_to_pose_server(nav2_side, outcomes, hold_s=2.5)
+        nav2_side.create_subscription(Empty, "/openral/estop", estops.append, 10)
+        nav2_side.create_subscription(
+            ResultOnlyGoal,
+            "/openral/result_only_goal",
+            announced.append,
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            ),
+        )
+        executor.add_node(nav2_side)
+        executor.add_node(watchdog)
+        assert watchdog.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert watchdog.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        rig = _EstopRig(executor, runtime)
+        try:
+            handle = rig.send(_nav2_goal(10.0))
+            assert handle.accepted
+            result = rig.result(handle, 10.0)
+        finally:
+            server.release()
+            rig.close()
+            executor.remove_node(watchdog)
+            watchdog.destroy_node()
+            server.destroy()
+            executor.remove_node(nav2_side)
+            nav2_side.destroy_node()
+
+    assert estops == [], "the deadman braked a Nav2 goal that was still driving"
+    assert result.success, result.failure_reason
+    assert outcomes == ["executing", "succeeded"]
+    assert len(announced) == 1
+    assert bytes(announced[0].goal_uuid) == bytes(handle.goal_id.uuid)
+    assert announced[0].wall_bound_s == pytest.approx(10.0)

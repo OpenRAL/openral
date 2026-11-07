@@ -22,7 +22,10 @@ Action-goal lifecycle (CLAUDE.md §3 rSkill packaging + the F1 design):
    ``failure_kind=FAILURE_SAFETY_ESTOP`` and transitions to ``inactive``. OR-ed into one seam,
    ``RskillRunnerNode._safety_abort_reason``, read by the ``ROSPublishingHAL`` apply-wait
    and (via ``RskillRunnerNode._raise_if_safety_aborted``) every other blocking wait on the
-   dispatch path, so a latched safety layer is never reported as a generic timeout.
+   dispatch path, so a latched safety layer is never reported as a generic timeout. A wrapped
+   result-only goal (Nav2) blocked inside one step reads it through its ``stop_check``: the
+   stop cancels the wrapped server's goal and waits for the server to confirm, and a goal
+   that completes while a stop is latched is never reported as a success.
 
 The action-goal path is the only way an external client triggers a rskill; the legacy CLI /
 single-process invocation is a thin wrapper that sends a goal to this server.
@@ -248,6 +251,10 @@ def ungrounded_target_queries(queries: Any, tracked: Any, key: str) -> list[str]
         )
         < q.min_instances
     ]
+
+
+_RESULT_ONLY_GOAL_TOPIC = "/openral/result_only_goal"
+"""Runner -> deadman watchdog: a goal that publishes no chunks (``ResultOnlyGoal``)."""
 
 
 def _failure_kind_for_exception(exc: BaseException) -> int:
@@ -499,6 +506,9 @@ if _ROS2_AVAILABLE:
             self._goal_started_monotonic = 0.0
             self._safety_failure_sub: Any = None
             self._episode_pub: Any = None
+            # Announces a goal that publishes no chunks (a wrapped result-only skill) to the
+            # deadman watchdog, with the runner's own wall bound on it (ADR-0127 D5).
+            self._result_only_pub: Any = None
             self._episode_counter: int = 0
             # Set once a goal-end publish found the context already shut down.
             self._shutdown_publish_logged: bool = False
@@ -542,6 +552,10 @@ if _ROS2_AVAILABLE:
             self._resident_key: tuple[str, ...] = ()
             self._chunks_published: int = 0
             self._estop_latched: bool = False
+            # (skill name, result future) of a wrapped goal whose cancel was never
+            # confirmed: it may still be driving the robot, so no goal is accepted until
+            # the future completes. An e-stop reset does not clear it.
+            self._unterminated_wrapped: tuple[str, Any] | None = None
             self._cancel_requested: bool = False
             # Issue #418: set when the tracker exhausts a query of this goal's armed
             # declaration (/openral/failure/world_state); the goal then ends along the
@@ -777,6 +791,20 @@ if _ROS2_AVAILABLE:
                 depth=10,
             )
             self._episode_pub = self.create_publisher(Episode, "/openral/episode", episode_qos)
+
+            # One message per result-only goal, read by the deadman watchdog. Latched
+            # (TRANSIENT_LOCAL) so a watchdog that joins mid-goal still sees it.
+            from openral_msgs.msg import ResultOnlyGoal
+
+            self._result_only_pub = self.create_publisher(
+                ResultOnlyGoal,
+                _RESULT_ONLY_GOAL_TOPIC,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                    depth=1,
+                ),
+            )
 
             # Announce the executing instruction on
             # /openral/reward/active_task so the reward monitor's scoring heartbeat
@@ -1119,6 +1147,9 @@ if _ROS2_AVAILABLE:
             if self._episode_pub is not None:
                 self.destroy_publisher(self._episode_pub)
                 self._episode_pub = None
+            if self._result_only_pub is not None:
+                self.destroy_publisher(self._result_only_pub)
+                self._result_only_pub = None
             if self._action_server is not None:
                 self._action_server.destroy()
                 self._action_server = None
@@ -1291,6 +1322,16 @@ if _ROS2_AVAILABLE:
                     "and HAL latched"
                 )
                 return GoalResponse.REJECT
+            if self._unterminated_wrapped is not None:
+                name, future = self._unterminated_wrapped
+                if not future.done():
+                    self.get_logger().error(
+                        f"rskill_runner.goal_rejected: wrapped goal of {name!r} was never "
+                        "confirmed ended after its cancel and may still be driving the robot; "
+                        "stop it at its own server (or restart that server) first"
+                    )
+                    return GoalResponse.REJECT
+                self._unterminated_wrapped = None
             if self._preload_in_flight.is_set():
                 # Not accept-and-wait: acceptance is what arms the deadman
                 # watchdog's first-chunk window, and a goal parked on
@@ -1501,19 +1542,17 @@ if _ROS2_AVAILABLE:
                             deadline_s=deadline_s,
                         )
                     except ROSEStopRequested as exc:
-                        # Latched by /openral/estop or HAL.estop().
-                        span.record_exception(exc)
-                        result.success = False
-                        result.failure_reason = f"safety_estop:{exc!s}"
-                        result.failure_kind = _failure_kind_for_exception(exc)
-                        self._finalize_goal(goal_handle, "abort")
-                        self._reset_active_goal()
+                        # Latched by /openral/estop or HAL.estop(), or a safety stop a
+                        # wrapped goal's stop_check raised (after cancelling that goal).
+                        self._note_unterminated_wrapped(skill)
+                        self._end_safety_stopped(goal_handle, result, span, exc)
                         return result
                     except ROSSafetyViolation:
                         # Never convert a safety violation into a soft failure_reason
                         # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
                         raise
                     except ROSError as exc:
+                        self._note_unterminated_wrapped(skill)
                         if self._cancel_requested or goal_handle.is_cancel_requested:
                             # A wrapped wait that gave up because the goal was
                             # cancelled (``ROSActionRskill.stop_check``) ends as a
@@ -1557,6 +1596,23 @@ if _ROS2_AVAILABLE:
                         result.failure_kind = _failure_kind
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
+                        return result
+
+                    # The per-tick guard runs before each step, so a step already
+                    # running when a stop latched (a wrapped wait, a slow policy) ends
+                    # here. A latched stop outranks a cancel and a completion, as it does
+                    # inside a wrapped wait: neither is reported over it.
+                    safety_reason = self._safety_abort_reason()
+                    if safety_reason is not None:
+                        self._end_safety_stopped(
+                            goal_handle,
+                            result,
+                            span,
+                            ROSEStopRequested(
+                                f"goal ended ({exit_reason}) while a safety stop was latched "
+                                f"({safety_reason})"
+                            ),
+                        )
                         return result
 
                     # Honour cancel — drain then idle-hold (F1 design).
@@ -1834,7 +1890,7 @@ if _ROS2_AVAILABLE:
             (skips per-stage timing); the full integration lands with F2's
             ``WorldStateStamped`` typed staleness array.
             """
-            from openral_core.exceptions import ROSRskillGoalSatisfied
+            from openral_core.exceptions import ROSEStopRequested, ROSRskillGoalSatisfied
             from openral_msgs.action import ExecuteRskill
             from openral_observability import inference_span
 
@@ -1844,12 +1900,24 @@ if _ROS2_AVAILABLE:
             rate_hz = self._control_rate_hz()
             period_s = 1.0 / max(rate_hz, 1.0)
             budget = self._new_execution_budget(deadline_s)
+            budget_wall_start_ns = time.time_ns()  # the deadman counts a result-only bound here
             from openral_rskill.ros_action_rskill import ROSActionRskill
 
             if isinstance(skill, ROSActionRskill):
                 # A wrapped result-only goal (Nav2) blocks inside one ``step()``,
-                # where this loop cannot check cancel or the budget; hand both in.
+                # where this loop cannot check a safety stop, cancel or the budget;
+                # hand all three in. A safety stop first: the wrapped server may be
+                # driving the robot itself, so the stop must end its goal (the skill
+                # cancels it and waits for the server to confirm), not only latch here.
                 def _goal_ended() -> str | None:
+                    safety_reason = self._safety_abort_reason()
+                    if safety_reason is not None:
+                        # Typed, so the cause reaches the runner as the stop it is,
+                        # whatever the latch reads by the time the cancel is confirmed.
+                        raise ROSEStopRequested(
+                            f"safety stop latched ({safety_reason}) while waiting on the "
+                            "wrapped goal"
+                        )
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         return "cancel requested"
                     miss = budget.check()
@@ -1858,6 +1926,10 @@ if _ROS2_AVAILABLE:
                     return None if miss is None else f"{miss.kind}: {miss.detail}"
 
                 skill.stop_check = _goal_ended
+                if skill.result_only:
+                    self._announce_result_only_goal(
+                        goal_handle, skill, budget, wall_start_ns=budget_wall_start_ns
+                    )
             # Absolute deadlines absorb tick work into the configured period.
             chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
@@ -2066,6 +2138,24 @@ if _ROS2_AVAILABLE:
                 self._finalize_goal(goal_handle, "canceled")
             self._reset_active_goal()
 
+        def _end_safety_stopped(
+            self, goal_handle: Any, result: Any, span: Any, exc: BaseException
+        ) -> None:
+            """End the goal as a safety stop: the one ``FAILURE_SAFETY_ESTOP`` result shape."""
+            span.record_exception(exc)
+            self.get_logger().error(f"rskill_runner.safety_abort: {exc!s}")
+            result.success = False
+            result.failure_reason = f"safety_estop:{exc!s}"
+            result.failure_kind = _failure_kind_for_exception(exc)
+            self._finalize_goal(goal_handle, "abort")
+            self._reset_active_goal()
+
+        def _note_unterminated_wrapped(self, skill: Any) -> None:
+            """Remember a wrapped goal whose cancel was never confirmed (see ``_goal_cb``)."""
+            future = getattr(skill, "unterminated_result_future", None)
+            if future is not None and not future.done():
+                self._unterminated_wrapped = (str(getattr(skill, "name", "?")), future)
+
         def _end_stopped_before_skill(self, goal_handle: Any, result: Any, span: Any) -> bool:
             """End a goal stopped before its skill loaded; ``True`` when it was ended.
 
@@ -2075,13 +2165,12 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSEStopRequested
 
             if self._estop_latched:
-                exc = ROSEStopRequested("e-stop latched before the skill loaded")
-                span.record_exception(exc)
-                result.success = False
-                result.failure_reason = f"safety_estop:{exc!s}"
-                result.failure_kind = _failure_kind_for_exception(exc)
-                self._finalize_goal(goal_handle, "abort")
-                self._reset_active_goal()
+                self._end_safety_stopped(
+                    goal_handle,
+                    result,
+                    span,
+                    ROSEStopRequested("e-stop latched before the skill loaded"),
+                )
                 return True
             if self._cancel_requested or goal_handle.is_cancel_requested:
                 self._end_cancelled(goal_handle, result, span)
@@ -2528,6 +2617,40 @@ if _ROS2_AVAILABLE:
                     )
                 return False
             return True
+
+        def _announce_result_only_goal(
+            self,
+            goal_handle: Any,  # reason: rclpy ServerGoalHandle is untyped
+            skill: ROSActionRskill,
+            budget: ExecutionBudget,
+            *,
+            wall_start_ns: int,
+        ) -> None:
+            """Tell the deadman watchdog this goal publishes no chunks, and its wall bound.
+
+            Without it the watchdog's first-chunk window e-stops every Nav2 goal longer
+            than that window. The bound is the one this runner enforces itself
+            (``ExecutionBudget.wall_bound_s``); a disabled budget announces nothing, so the
+            goal keeps the first-chunk window.
+            """
+            if self._result_only_pub is None:
+                return
+            bound_s = float(budget.wall_bound_s)
+            if bound_s <= 0.0:
+                return
+            from openral_msgs.msg import ResultOnlyGoal
+
+            msg = ResultOnlyGoal()
+            msg.goal_uuid = [int(b) for b in goal_handle.goal_id.uuid]
+            msg.wall_start.sec = wall_start_ns // 1_000_000_000
+            msg.wall_start.nanosec = wall_start_ns % 1_000_000_000
+            msg.rskill_id = str(skill.name)
+            msg.wall_bound_s = bound_s
+            if self._publish_unless_shut_down(self._result_only_pub, msg, "result-only goal"):
+                self.get_logger().info(
+                    f"rskill_runner.result_only_goal: {skill.name!r} publishes no chunks; "
+                    f"deadman bound {bound_s:.1f} s wall"
+                )
 
         def _publish_episode_marker(self, *, phase: int, task_string: str, success: bool) -> None:
             """Publish one ``openral_msgs/Episode`` boundary marker; bump idx on END."""
@@ -3408,6 +3531,9 @@ if _ROS2_AVAILABLE:
             """
             if self._estop_latched:
                 return
+            # The in-flight goal aborts at its next guard: the per-tick check, or, for a
+            # wrapped goal blocked in one step, its ``stop_check`` (which cancels the
+            # wrapped server's goal and waits for it to confirm).
             self._estop_latched = True
             self.get_logger().error(
                 "rskill_runner.estop_received; "
