@@ -1,13 +1,13 @@
 [project]
 name = "openral-observability"
-version = "0.3.1"  # x-release-please-version
+version = "0.4.0"  # x-release-please-version
 description = "OpenRAL observability — OpenTelemetry tracing + structlog→OTLP logging bridge for Skill / inference / safety spans"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.1",                             # reason: failure_bus / replay / compliance import openral_core schemas
+    "openral-core==0.4.0",                             # reason: failure_bus / replay / compliance import openral_core schemas
     # x-release-please-end
     "opentelemetry-api>=1.37",                         # reason: stable Tracer/Span API; LogRecord(context=) + Logger.emit of an API LogRecord (compliance records)
     "opentelemetry-sdk>=1.37",                         # reason: TracerProvider, LoggerProvider
