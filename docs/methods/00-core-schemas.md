@@ -568,32 +568,32 @@ Discriminated union over the closed palette of typed tool calls the reasoner can
 - `class ReloadGstPipelineTool` (L15187) — `tool="reload_gst_pipeline"`; fields `sensor_id, pipeline_yaml`.
 - `class LifecycleTransitionTool` (L15213) — `tool="lifecycle_transition"`; `shutdown` is deliberately absent — that authority belongs to the safety supervisor. Canonical primitive for managing long-lived background services (slam_toolbox, RTAB-Map, perception trees), which are LifecycleNode peers, not rSkills.
   fields: `node, transition: Literal["configure"|"activate"|"deactivate"|"cleanup"]`
-- `class EmitPromptTool` (L15241) — `tool="emit_prompt"`; the reasoner node publishes on `target_topic` itself via a per-topic publisher cache.
+- `class EmitPromptTool` (L15242) — `tool="emit_prompt"`; the reasoner node publishes on `target_topic` itself via a per-topic publisher cache.
   fields: `target_topic` (must start with `/`), `text`, `metadata_json`
-- `class WaitTool` — deliberate no-op; `tool="wait"`, no fields beyond `rationale`. Since the reasoner's tool choice is forced, this lets the LLM choose "observe and wait" instead of acting every tick. No actuation authority. (L15673)
-- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L15275)
+- `class WaitTool` — deliberate no-op; `tool="wait"`, no fields beyond `rationale`. Since the reasoner's tool choice is forced, this lets the LLM choose "observe and wait" instead of acting every tick. No actuation authority. (L15680)
+- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L15276)
   fields: `query` (free-text/label), `limit`
-- `class ResolvePlaceTool` — read-only query; `tool="resolve_place"`; resolves a place/room/agent to a goal pose plus path. No actuation authority. Dispatch is planned Phase 2. (L15299)
+- `class ResolvePlaceTool` — read-only query; `tool="resolve_place"`; resolves a place/room/agent to a goal pose plus path. No actuation authority. Dispatch is planned Phase 2. (L15300)
   fields: `reference` ("the kitchen", "where I was standing")
-- `class LocateInViewTool` — read-only query; `tool="locate_in_view"`; asks a live VLM detector whether an object is in the current frame (vs `recall_object`'s remembered objects). No actuation authority. (L15319)
+- `class LocateInViewTool` — read-only query; `tool="locate_in_view"`; asks a live VLM detector whether an object is in the current frame (vs `recall_object`'s remembered objects). No actuation authority. (L15320)
   fields: `query` (concrete object noun(s)), `camera` (optional viewpoint id, default primary), `detector` (optional locator selector, default the deployment default)
-- `class QuerySceneTool` — read-only query; `tool="query_scene"`; asks a scene VLM an open-ended question about the current frame, answer fed back as a re-prompt. Distinct from `locate_in_view`: returns free text, not boxes. (L15373)
+- `class QuerySceneTool` — read-only query; `tool="query_scene"`; asks a scene VLM an open-ended question about the current frame, answer fed back as a re-prompt. Distinct from `locate_in_view`: returns free text, not boxes. (L15376)
   fields: `question` (open-ended scene-state question, min_length=1), `camera` (optional viewpoint id)
-- `class QueryTaskProgressTool` — read-only query; `tool="query_task_progress"`; asks the reward monitor for a windowed progress/success assessment, fed back to drive the replanning ladder. Distinct from `query_scene`: returns normalized scalars, not free text. (L15409)
+- `class QueryTaskProgressTool` — read-only query; `tool="query_task_progress"`; asks the reward monitor for a windowed progress/success assessment, fed back to drive the replanning ladder. Distinct from `query_scene`: returns normalized scalars, not free text. (L15414)
   fields: `window_s` (seconds of recent frames to assess, > 0, default 8.0), `task` (optional instruction override)
 - `MemorySection: TypeAlias = Literal[...]` — the five fixed sections of the self-maintained `MEMORY.md` core: `home_map`, `preferences`, `lessons`, `object_locations`, `open_tasks`.
-- `class MemoryWriteTool` — write; the reasoner's first write-capable variant; `tool="memory_write"`; edits the advisory `MEMORY.md` via an explicit add/update/supersede/delete op. Writes the memory file only — no actuation authority. (L15454)
+- `class MemoryWriteTool` — write; the reasoner's first write-capable variant; `tool="memory_write"`; edits the advisory `MEMORY.md` via an explicit add/update/supersede/delete op. Writes the memory file only — no actuation authority. (L15461)
   fields: `op` (`add`/`update`/`supersede`/`delete`), `section: MemorySection`, `content` (required unless `delete`), `importance` (0–1, default 0.5), `target` (required for `update`/`supersede`/`delete`)
-- `class MemorySearchTool` — read-only; `tool="memory_search"`; pages archived entries evicted from the bounded core back in. No actuation. (L15502)
+- `class MemorySearchTool` — read-only; `tool="memory_search"`; pages archived entries evicted from the bounded core back in. No actuation. (L15509)
   fields: `query` (min_length=1), `section: MemorySection | None`, `limit` (1–100, default 5)
-- `is_collective_target(text) -> bool` — True when `text` targets a set rather than one specific object (a quantifier or bare generic plural); shared by `GroundedSubtask`'s validator and the reasoner node's runtime execute gate. (L15538)
-- `_COLLECTIVE_TARGET_RE: re.Pattern[str]` — Backing regex for `is_collective_target`. (L15532)
-- `class GroundedSubtask` — One subtask bound to exactly one specific object; a validator forbids a collective `object_ref`/`text` and requires `text` to name `object_ref`, so "the first batch of objects" isn't representable. (L15554)
+- `is_collective_target(text) -> bool` — True when `text` targets a set rather than one specific object (a quantifier or bare generic plural); shared by `GroundedSubtask`'s validator and the reasoner node's runtime execute gate. (L15545)
+- `_COLLECTIVE_TARGET_RE: re.Pattern[str]` — Backing regex for `is_collective_target`. (L15539)
+- `class GroundedSubtask` — One subtask bound to exactly one specific object; a validator forbids a collective `object_ref`/`text` and requires `text` to name `object_ref`, so "the first batch of objects" isn't representable. (L15561)
   fields: `object_ref: str` (min_length=1), `text: str` (min_length=1)
-  - `render(self) -> str` — The instruction string handed to `MissionState` / the skill. (L15621)
-- `class DecomposeMissionTool` — task-ledger write; `tool="decompose_mission"`; the typed path for a playbook to write the deterministic `MissionState` — empty `target_task_id` replaces the whole queue, a set one flat-splices into that blocked task. Edits the S2 task ledger only, no actuation authority. (L15626)
+  - `render(self) -> str` — The instruction string handed to `MissionState` / the skill. (L15628)
+- `class DecomposeMissionTool` — task-ledger write; `tool="decompose_mission"`; the typed path for a playbook to write the deterministic `MissionState` — empty `target_task_id` replaces the whole queue, a set one flat-splices into that blocked task. Edits the S2 task ledger only, no actuation authority. (L15633)
   fields: `subtasks: list[GroundedSubtask]` (min_length=1), `target_task_id: str` (default `""`)
-  - `rendered_subtasks(self) -> list[str]` — The ordered subtask instruction strings for `MissionState`. (L15668)
+  - `rendered_subtasks(self) -> list[str]` — The ordered subtask instruction strings for `MissionState`. (L15675)
 - `ReasonerToolCall: TypeAlias` — Discriminated union over the thirteen variants above.
 
 **Module-level functions (Layer 0)**

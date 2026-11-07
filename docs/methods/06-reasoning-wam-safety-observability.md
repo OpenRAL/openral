@@ -25,13 +25,13 @@ _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` un
 - module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L592) — model-first env names (ADR-0088).
 - module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L599) — `auto`/`required` override for the uncurated bare-URL `openai` path only; validated on every path via `openral_core.parse_reasoner_tool_choice`, and ignored with a `reasoner.tool_choice_ignored` warning elsewhere.
 - `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. (L655)
-- `class AnthropicToolUseClient` (L1543) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1627) — Call Anthropic and decode the resulting tool payload.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1667) — Ask the Anthropic model a free-text question about a camera frame.
+- `class AnthropicToolUseClient` (L1545) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1634) — Call Anthropic and decode the resulting tool payload.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L1674) — Ask the Anthropic model a free-text question about a camera frame.
 - `_anthropic_response_text(response) -> str` — Concatenate all text blocks so thinking-enabled responses do not lose an answer after a leading thinking block.
-- `class OpenAICompatibleToolUseClient` (L1714) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1797) — Call the OpenAI-compatible endpoint and decode the tool call.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1872) — Ask an OpenAI-compatible model a free-text question about a frame.
+- `class OpenAICompatibleToolUseClient` (L1721) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1806) — Call the OpenAI-compatible endpoint and decode the tool call.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L1881) — Ask an OpenAI-compatible model a free-text question about a frame.
 - `_tool_palette_to_anthropic_tools(palette) -> list[dict]` — Render the closed palette, including `WaitTool`; per-skill names use collision-resistant `execute_rskill__<slug>_<sha1-8>`.
 - `_tool_palette_to_openai_tools(palette) -> list[dict]` — Convert the same surface to OpenAI function shape without leaking the Anthropic-only `input_schema` key.
 - `_decode_tool_payload(*, tool_name, arguments, palette) -> ReasonerToolCall` — Validate provider output against the union + palette; per-skill names resolve through the same hashed mapping used to render them. A `lifecycle_transition` whose `node` is not in `palette.node_ids` raises `ROSReasonerInvalidPlan`.
@@ -39,9 +39,11 @@ _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` un
 - module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L976)
 - `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L979)
 - `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores. (L996)
-- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1057)
-- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint.
-- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1422)
+- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1059)
+- `class _LLMSchemaGenerator(GenerateJsonSchema)` — Pydantic schema generator behind `_llm_schema`: drops the auto-generated `title` of every field/model/enum and model/enum docstring `description`s (an explicit `Field(title=...)` and dataclass/TypedDict schemas keep theirs). (L1025)
+- `_llm_schema_json(model: type[BaseModel]) -> str` — `functools.cache`d JSON string of the stripped schema, one per class; `_llm_schema` parses a fresh dict from it. (L1054)
+- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint. Each returns the list it rendered or read, never a re-read of the shared cache, so overlapping calls cannot swap palettes. (L1598)
+- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1424)
 - module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L335) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
 
 ### `python/reasoner/src/openral_reasoner/cosmos3.py`

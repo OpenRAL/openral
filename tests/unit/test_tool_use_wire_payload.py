@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import cast, get_args
 
 import pytest
-import yaml
 from openral_core import (
     LifecycleTransitionTool,
     ReasonerToolCall,
@@ -165,8 +164,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # Cosmos3-Edge's window on a Jetson and what else rides in it, from
-# docs/reference/cosmos3-edge-reasoner.md. Tool JSON tokenizes at 3.27 characters
-# per token on Edge's tokenizer (measured on the so100 and franka palettes).
+# docs/reference/cosmos3-edge-reasoner.md. Tool JSON rendered through Edge's own chat
+# template (``apply_chat_template(..., tools=...)`` with the nvidia/Cosmos3-Edge
+# tokenizer, snapshot 344d602b) costs 3.31 characters of ``json.dumps`` per token on
+# the franka palette and 3.28 on the so100 one; 3.27 is the conservative floor. Raw
+# ``json.dumps`` alone tokenizes at 3.70, so the pre-#498 "2.7" was simply wrong.
 _WINDOW_TOKENS = 32_768
 _REPLY_CAP_TOKENS = 512
 _SYSTEM_PROMPT_TOKENS = 3_005
@@ -176,30 +178,6 @@ _TOOL_CHAR_BUDGET = int(
     (_WINDOW_TOKENS - _REPLY_CAP_TOKENS - _SYSTEM_PROMPT_TOKENS - _TICK_CONTEXT_TOKENS)
     * _TOOL_CHARS_PER_TOKEN
 )
-
-
-def _manifests_for(robot_tags: set[str]) -> list[RSkillManifest]:
-    """Validate only the manifests ``build_tool_palette`` could admit for the robot.
-
-    That is every detector, whatever its tags (the palette surfaces continuous and
-    on-demand detectors in the ``locate_in_view`` description before its tag check),
-    plus every other manifest naming one of the robot's tags. A file that does not
-    parse to a mapping, or that the palette would drop anyway, is left to its own
-    tests instead of failing this one.
-    """
-    manifests = []
-    for path in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml")):
-        try:
-            raw = yaml.safe_load(path.read_text())
-        except yaml.YAMLError:
-            continue  # not this test's subject; the manifest's own tests report it
-        if not isinstance(raw, dict):
-            continue
-        tags = raw.get("embodiment_tags")
-        tag_match = isinstance(tags, list) and bool(robot_tags & set(tags))
-        if raw.get("kind") == "detector" or tag_match:
-            manifests.append(RSkillManifest.from_yaml(str(path)))
-    return manifests
 
 
 def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
@@ -213,7 +191,12 @@ def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
     """
     robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
     palette = build_tool_palette(
-        installed_skills=_manifests_for(set(robot.capabilities.embodiment_tags)),
+        # Every manifest in the repo: admission (embodiment tags, detector kinds) is
+        # build_tool_palette's job, not this test's.
+        installed_skills=[
+            RSkillManifest.from_yaml(str(p))
+            for p in sorted(_REPO_ROOT.glob("rskills/*/rskill.yaml"))
+        ],
         robot_capabilities=robot.capabilities,
         detector_available=True,
         scene_query_available=True,
@@ -228,6 +211,9 @@ def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
     # A Pydantic ``title`` is a string value; a field named ``title`` maps to a schema object.
     assert '"title": "' not in wire
     assert "Attributes:" not in wire and "Example:" not in wire
+    # "empty = the default" was copied live as the literal string "default", which no
+    # camera or locator is named; optional fields say "leave blank" instead.
+    assert "empty =" not in wire and "the default" not in wire
     assert len(wire) < _TOOL_CHAR_BUDGET, (
         f"franka palette is {len(wire)} characters ({len(palette.skills)} skills), over the "
         f"{_TOOL_CHAR_BUDGET} that fit a 32K window; offer fewer skills per tick (#494) rather "
@@ -248,6 +234,36 @@ def test_clients_render_tools_once_per_palette() -> None:
     anthropic_tools = anthropic_client._tools(first)
     assert anthropic_tools[-1]["cache_control"] == {"type": "ephemeral"}
     assert sum("cache_control" in t for t in anthropic_tools) == 1
+
+
+@pytest.mark.parametrize(
+    "client_cls", [OpenAICompatibleToolUseClient, AnthropicToolUseClient], ids=lambda c: c.__name__
+)
+def test_overlapping_render_returns_its_own_palette(
+    client_cls: type[OpenAICompatibleToolUseClient] | type[AnthropicToolUseClient],
+) -> None:
+    """A call whose cache write is overtaken by another palette's still returns its own tools.
+
+    The subclass re-enters ``_tools`` with ``second`` right after ``first`` is
+    cached — the interleaving two overlapping ``select_tool`` calls can produce.
+    """
+    first = _palette("OpenRAL/rskill-smolvla-so100-pick-fp16")
+    second = _palette("OpenRAL/rskill-smolvla-so100-place-fp16")
+
+    class Overtaken(client_cls):  # type: ignore[valid-type,misc]  # reason: parametrized base
+        def __setattr__(self, name: str, value: object) -> None:
+            super().__setattr__(name, value)
+            if name == "_rendered" and isinstance(value, tuple) and value[0] is first:
+                self._tools(second)
+
+    if client_cls is AnthropicToolUseClient:
+        client = Overtaken(model_id="claude-opus-4-8", api_key="unused")
+    else:
+        client = Overtaken(model_id="local", base_url="http://127.0.0.1:1")
+    tools = client._tools(first)
+    names = [str(t.get("name") or cast("dict[str, object]", t["function"])["name"]) for t in tools]
+    assert any("pick" in n for n in names), names
+    assert not any("place" in n for n in names), names
 
 
 @pytest.mark.parametrize("model", get_args(get_args(ReasonerToolCall)[0]), ids=lambda m: m.__name__)

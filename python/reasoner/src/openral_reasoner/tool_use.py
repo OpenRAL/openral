@@ -1025,8 +1025,10 @@ _CoreSchemaOrField = (
 class _LLMSchemaGenerator(GenerateJsonSchema):
     """Emit tool schemas without the parts only a Python reader needs.
 
-    Drops every ``title`` and every model / enum docstring ``description``;
-    field descriptions are untouched.
+    Drops the auto-generated ``title`` of every field, model and enum, and every
+    model / enum docstring ``description``; field descriptions are untouched. An
+    explicit ``Field(title=...)`` and dataclass / TypedDict schemas keep theirs —
+    the reasoner tools use neither, and the wire test fails on any ``title``.
     """
 
     def field_title_should_be_set(self, schema: _CoreSchemaOrField) -> bool:
@@ -1227,7 +1229,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             "visible in the CURRENT frame right now (open-vocabulary). Complements "
             "recall_object (which only recalls remembered objects): use locate_in_view to "
             "verify what the robot can see this instant. Optionally name a 'camera' to "
-            "pick a viewpoint; empty uses the default camera. No actuation."
+            "pick a viewpoint, or leave it blank for the primary camera. No actuation."
         )
         # When several on-demand locators are in the graph, let the LLM
         # choose one by alias via the 'detector' field. "empty = the default"
@@ -1292,8 +1294,8 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "state and progress — e.g. 'Has the robot grasped the red mug?', 'Is the bowl "
                     "on the shelf?', 'Did we drop the object?', 'Is the table clear?'. This is NOT "
                     "a localizer: to find WHERE an object is, use locate_in_view instead. "
-                    "Optionally name a 'camera' to pick a viewpoint; empty uses the default "
-                    "camera. No actuation."
+                    "Optionally name a 'camera' to pick a viewpoint, or leave it blank for the "
+                    "primary camera. No actuation."
                 ),
                 "input_schema": _llm_schema(QuerySceneTool),
             },
@@ -1595,7 +1597,11 @@ class AnthropicToolUseClient:
 
     def _tools(self, palette: ToolPalette) -> list[dict[str, object]]:
         """Anthropic tool schemas for ``palette``, rendered once per palette object."""
-        if self._rendered is None or self._rendered[0] is not palette:
+        # Read the cache once and return the local: re-reading ``self._rendered``
+        # after the write could hand back another palette's tools when two
+        # ``select_tool`` calls overlap.
+        rendered = self._rendered
+        if rendered is None or rendered[0] is not palette:
             tools = _tool_palette_to_anthropic_tools(palette)
             # Prompt caching: the tool schemas + system brief are large and
             # static between ticks; a cache breakpoint after them lets Anthropic
@@ -1603,8 +1609,9 @@ class AnthropicToolUseClient:
             # re-ingesting it every call. Only the per-tick context stays uncached.
             if tools:
                 tools[-1]["cache_control"] = {"type": "ephemeral"}
-            self._rendered = (palette, tools)
-        return self._rendered[1]
+            rendered = (palette, tools)
+            self._rendered = rendered
+        return rendered[1]
 
     def _client(self) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — anthropic.Anthropic, lazy-imported
         """The cached ``anthropic.Anthropic`` instance (lazy import + construct)."""
@@ -1773,9 +1780,11 @@ class OpenAICompatibleToolUseClient:
 
     def _tools(self, palette: ToolPalette) -> list[dict[str, object]]:
         """OpenAI tool schemas for ``palette``, rendered once per palette object."""
-        if self._rendered is None or self._rendered[0] is not palette:
-            self._rendered = (palette, _tool_palette_to_openai_tools(palette))
-        return self._rendered[1]
+        rendered = self._rendered
+        if rendered is None or rendered[0] is not palette:
+            rendered = (palette, _tool_palette_to_openai_tools(palette))
+            self._rendered = rendered
+        return rendered[1]
 
     def _client(self) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — openai.OpenAI, lazy-imported
         """The cached ``openai.OpenAI`` instance (lazy import + construct)."""
