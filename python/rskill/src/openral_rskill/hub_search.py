@@ -341,7 +341,7 @@ def search_hub_rskills(
     Args:
         query: Free-text query; empty matches every valid manifest.
         kind: Exact-match filter on ``manifest.kind`` (e.g. ``"vla"``).
-        role: Exact-match filter on ``manifest.role`` (``"s0"``/``"s1"``/``"s2"``).
+        role: Exact-match filter on ``manifest.role`` (``"s1"``/``"s2"``).
         embodiment: Require this tag in ``manifest.embodiment_tags``.
         license: Exact-match filter on ``manifest.license.value``.
         family: Exact-match filter on ``manifest.model_family``.

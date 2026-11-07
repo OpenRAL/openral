@@ -163,6 +163,11 @@ def render_skill_md(manifest_path: Path) -> str:
     m = yaml.safe_load(manifest_path.read_text())
     if not isinstance(m, dict):
         raise ValueError(f"{manifest_path} did not parse to a mapping")
+    # ``role`` is optional on disk (derived from ``kind``); show the derived one.
+    from openral_core import RSKILL_ROLE_BY_KIND
+
+    if m.get("role") is None and m.get("kind") in RSKILL_ROLE_BY_KIND:
+        m["role"] = RSKILL_ROLE_BY_KIND[m["kind"]]
     skill_name = manifest_path.parent.name
     rel_manifest = "./rskill.yaml"
     license_str = str(m.get("license", "")).strip()

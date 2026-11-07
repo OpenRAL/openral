@@ -244,16 +244,12 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         return 2
 
     # Build the production resolver. ``make_default_skill_resolver``
-    # branches on ``manifest.kind`` so wrapped-ROS skills
-    # (``kind: ros_action`` / ``ros_service``) get an
-    # :class:`ROSActionRskill` against the host node, while VLA
-    # manifests fall through to the local-tree path (same search
-    # paths as the reasoner's palette seed). The local-only resolver
-    # always calls ``_build_runtime_skill_from_manifest`` which
-    # rejects non-VLA kinds, so using it directly here makes the
-    # reasoner-dispatched wrapped-ROS skills (nav2, moveit,
-    # look-at) fail at goal-execute time with ``kind='ros_action' is
-    # not a VLA policy``.
+    # returns a ``ManifestSkillResolver`` bound to the host node, so
+    # wrapped-ROS skills (``kind: ros_action`` / ``ros_service``) get an
+    # :class:`ROSActionRskill` on it, while policies resolve from the same
+    # search paths as the reasoner's palette seed (then the HF Hub). The
+    # local-only resolver has no host node, so it refuses the
+    # reasoner-dispatched wrapped-ROS skills (nav2, moveit, look-at).
     #
     # ``compose_runtime`` constructs the host
     # :class:`RskillRunnerNode`, so we hand it a resolver factory

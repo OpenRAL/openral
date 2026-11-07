@@ -89,7 +89,7 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
         name: Skill name, used as the ROS 2 node name and in
             ``/skill/<name>/info``.
         version: SemVer string, forwarded to ``RSkillInfo``.
-        role: Skill slot — ``"s0"``, ``"s1"``, or ``"s2"``.
+        role: Skill slot, ``"s1"`` or ``"s2"`` (S0 is never an rSkill).
         embodiment_tags: Embodiment tags for capability matching.
         latency_budget_ms: Maximum allowed inference latency.  Exceeded
             latency is logged as a warning but does not raise.

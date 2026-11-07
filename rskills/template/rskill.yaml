@@ -24,7 +24,7 @@
 # this header back if you want it.
 
 # ── Identity ───────────────────────────────────────────────────────────────
-schema_version: "0.1"
+schema_version: "0.2"
 name: "TEMPLATE_ORG/rskill-TEMPLATE_ID"
 version: "0.1.0"
 license: "permissive_research"

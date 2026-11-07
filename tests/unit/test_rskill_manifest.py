@@ -3,8 +3,9 @@
 Covers the rSkill *package* contract (CLAUDE.md §3 rSkill packaging / RFC §1.4, §8.7) —
 distinct from the in-process ``Skill`` ABC (tested in ``test_skill.py``).
 
-``schema_version`` stays "0.1" (unpublished, so extended in place rather than
-bumped). V1 additions: ``actuators_required`` mirrors ``sensors_required``
+``schema_version`` was extended in place at "0.1" while unpublished; "0.2" made
+``role`` derived from ``kind`` (0.1 files still load through a role migration). V1
+additions: ``actuators_required`` mirrors ``sensors_required``
 (required, ``min_length=1``); ``"custom"`` embodiment tag requires
 ``embodiment_extra`` plus explicit ``n_dof``/``vla_action_key`` on every
 actuator. Also tightened: HF Hub regex on name/fallback_skill_id, SemVer on
@@ -212,11 +213,11 @@ class TestRSkillManifestConstruction:
 
 
 class TestSchemaVersion:
-    def test_default_is_v0_1(self) -> None:
+    def test_default_is_v0_2(self) -> None:
         d = _minimal_manifest_dict()
         del d["schema_version"]
         m = RSkillManifest.model_validate(d)
-        assert m.schema_version == "0.1"
+        assert m.schema_version == "0.2"
 
 
 class TestNameRegex:

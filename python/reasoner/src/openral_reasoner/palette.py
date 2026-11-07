@@ -25,6 +25,7 @@ from typing import (
 )
 
 from openral_core import (
+    EXECUTE_RSKILL_KINDS,
     DetectorMode,
     RobotCapabilities,
     RobotDescription,
@@ -431,12 +432,12 @@ def build_tool_palette(
        ``robot_capabilities``.
     2. ``skill.embodiment_tags`` intersects
        ``robot_capabilities.embodiment_tags``.
-    3. ``role == "s1"`` — only S1 skills are dispatchable via
-       ``ExecuteRskillTool`` per CLAUDE.md §3 dual-system pattern (S0/S2 slots have
-       separate dispatch paths) — and ``kind not in {"detector",
-       "segmenter"}``: both are S1-rate perception producers, not
-       ExecuteRskill-dispatchable; they activate as the perception ROS
-       node / GStreamer tee consumer.
+    3. ``kind in EXECUTE_RSKILL_KINDS`` (policies and wrapped ROS servers) —
+       the one set the runner dispatches too. ``detector`` / ``segmenter`` are
+       S1-rate perception producers that activate as the perception ROS node /
+       GStreamer tee consumer; ``vlm`` / ``reward`` / ``playbook`` are S2
+       components the reasoner queries or reads. Detectors are still surfaced,
+       as coverage or ``locate_in_view`` options, never as tools.
     4. If ``commercial_deployment`` is ``True``, the skill's license
        posture allows commercial use
        (``RSkillManifest.is_commercial_use_allowed``). Defense in
@@ -495,8 +496,6 @@ def build_tool_palette(
     continuous_detectors: list[ContinuousDetectorEntry] = []
     on_demand_detectors: list[OnDemandDetectorEntry] = []
     for skill in installed_skills:
-        if skill.role != "s1":
-            continue
         # Never admit the unresolved scaffold template to the palette. The
         # `rskills/*/rskill.yaml` glob picks up `rskills/template/rskill.yaml`
         # (name `TEMPLATE_ORG/rskill-TEMPLATE_ID`, `role: s1`); without this a
@@ -536,12 +535,10 @@ def build_tool_palette(
                     )
                 )
             continue
-        # ``segmenter`` rSkills answer a geometric point prompt with a mask for
-        # the HAL's attachment-evidence producer. They are S1-rate perception
-        # producers with no actuation authority and no reasoner-facing tool at
-        # all — the LLM never asks for a mask, so unlike an on-demand detector
-        # they are not even surfaced as a selectable option.
-        if skill.kind == "segmenter":
+        # Everything else that is not an ExecuteRskill kind has no actuating
+        # tool: a segmenter answers the HAL's attachment-evidence producer (the
+        # LLM never asks for a mask), and vlm / reward / playbook are S2.
+        if skill.kind not in EXECUTE_RSKILL_KINDS:
             continue
         skill_tags = set(skill.embodiment_tags)
         if not (skill_tags & robot_tags):

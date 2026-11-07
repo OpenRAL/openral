@@ -243,7 +243,7 @@ must therefore read `failure_kind == FAILURE_NONE` on a failed result as
 | --- | --- | --- |
 | `FAILURE_NONE` | 0 | Success (also the pre-field default) |
 | `FAILURE_CONFIG_ERROR` | 1 | `ROSConfigError` — bad manifest, non-ACTIVE resolver result, unusable MoveIt approach manifest |
-| `FAILURE_CAPABILITY_MISMATCH` | 2 | `ROSCapabilityMismatch` — embodiment-tag gate |
+| `FAILURE_CAPABILITY_MISMATCH` | 2 | `ROSCapabilityMismatch` — a dispatch gate (`check_manifest_gates`): not an ExecuteRskill kind, an actuating skill tagged `any`, embodiment, capability flags, sensors, gripper encoding; or a manifest-less skill not declaring `role: s1` |
 | `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. `ROSQuantizationError` / `ROSGPUMemoryError`), plus a labelled torch OOM / dtype failure |
 | `FAILURE_SAFETY_ESTOP` | 4 | `ROSEStopRequested` |
 | `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale` |
@@ -284,9 +284,13 @@ Additive like `failure_kind`: an older producer's Result decodes as `""`.
 The reasoner renders it on the skill's execution line and picks its
 strategy hint from the kind and the evidence (`reflect_on_failure`).
 
-Production deployments override the skill resolver via
-`compose_so100_runtime(skill_resolver=...)`; the default resolver
-calls `openral_rskill.rSkill.from_pretrained` (HF Hub fetch).
+The default resolver is a `ManifestSkillResolver` (`make_default_skill_resolver`):
+the runner resolves the goal's manifest (in-tree by name under the search paths,
+else the HF Hub manifest alone), runs `check_manifest_gates` against the robot
+before evicting the resident skill or loading anything, then builds — a Hub policy's
+weights pinned to the commit whose manifest was gated. Tests override it via
+`compose_so100_runtime(skill_resolver=...)`; a callable that is not a
+`TwoPhaseSkillResolver` is gated only after it has built the skill.
 
 ## Related
 

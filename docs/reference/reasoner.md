@@ -127,7 +127,9 @@ installed rSkills by:
 
 - `RobotCapabilities` flags (`capabilities_required` ⊆ robot capabilities),
 - embodiment-tag intersection (`embodiment_tags`),
-- `role == "s1"` (S0/S2 excluded from the actuation palette),
+- `kind in EXECUTE_RSKILL_KINDS` (policies and wrapped ROS servers — the same set the
+  runner dispatches; detectors surface as coverage / `locate_in_view` options, and
+  segmenters and the S2 kinds `vlm` / `reward` / `playbook` get no actuating tool),
 - license posture (commercial-deployment gate).
 
 The LLM sees one tool per skill (`execute_rskill__<slug>`) with a real description
