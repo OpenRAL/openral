@@ -113,9 +113,17 @@ def test_declared_urdf_parses_and_matches_hal_joints(mf: Path) -> None:
     assert p is not None
     model = yourdfpy.URDF.load(str(p))
     urdf_joints = set(model.joint_map)
-    # Grippers/base DoFs are HAL-contract joints, not arm-URDF joints.
-    contract_joints = {j.name for j in d.joints if j.role not in ("gripper", "base")}
-    missing = contract_joints - urdf_joints
+    # Grippers/base DoFs are HAL-contract joints, not arm-URDF joints. A joint is in
+    # the URDF under its logical name or, when they differ, under ``sim_joint_name``
+    # (the declared bridge: OpenArm's ``left_joint1`` is the URDF's
+    # ``openarm_left_joint1``).
+    missing = {
+        j.name
+        for j in d.joints
+        if j.role not in ("gripper", "base")
+        and j.name not in urdf_joints
+        and j.sim_joint_name not in urdf_joints
+    }
     assert not missing, f"{mf.parent.name}: manifest joints {missing} not in URDF"
 
 
