@@ -67,7 +67,7 @@ from contextlib import contextmanager
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
-from openral_hal.mobile_base_bridge import describes_mobile_base
+from openral_hal.mobile_base_bridge import describes_mobile_base, platform_owns_navigation
 
 if TYPE_CHECKING:
     from openral_core import JointState, RobotDescription
@@ -2816,7 +2816,17 @@ if _ROS2_AVAILABLE:
             # Mobile-base streams (issue #191 Phase 3): /odom + odom->base_link TF
             # + /cmd_vel->BODY_TWIST, attached generically when the manifest
             # declares a planar base (`base_joints`). Fixed-base arms skip it.
-            if describes_mobile_base(self._hal.description):
+            hal_mode = self.get_parameter("hal_mode").get_parameter_value().string_value or "sim"
+            if platform_owns_navigation(self._hal.description, hal_mode=hal_mode):
+                # ADR-0127 Decision 1: on `deploy run` the platform's own stack publishes
+                # /odom and odom -> base and owns the final /cmd_vel; a bridge here would
+                # give the base a second TF parent and a command input that bypasses the
+                # platform's arbitration. The base part still reads the platform odometry.
+                self.get_logger().info(
+                    "navigation=platform_owned: no MobileBaseBridge (/odom, odom TF and "
+                    "/cmd_vel are the platform's)"
+                )
+            elif describes_mobile_base(self._hal.description):
                 from openral_hal.mobile_base_bridge import MobileBaseBridge
 
                 self._mobile_base = MobileBaseBridge(

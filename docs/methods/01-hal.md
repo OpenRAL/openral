@@ -520,16 +520,16 @@ _One robot HAL composed from part HALs that each own a disjoint set of its joint
 ### `python/hal/src/openral_hal/platform_base.py`
 _A mobile base driven by its own platform stack, through its odometry and twist topics._
 
-- `class PlatformBaseHAL` — `PlatformBaseHAL(*, description, odom_topic="/platform/odom", cmd_vel_topic=None, staleness_limit_s=0.5)`: joints are the three `base_joints`, positioned at the odometry pose; with `cmd_vel_topic=None` it is odometry-only (no publisher; a zero `BODY_TWIST` is a no-op, a non-zero one raises `ROSCapabilityMismatch` in `check_action`); with a topic, `BODY_TWIST` → `geometry_msgs/Twist` (non-zero `vy` refused on a differential base; `check_action` refuses every other mode, without publishing); stale or absent odometry raises `ROSPerceptionStale`; `effort` is empty (unmeasured); `disconnect` destroys its subscription and publisher on the node; `estop` publishes zero twist (when it has a publisher) and raises. Needs `attach_ros_node(node)` before `connect`. (L55)
-  - `check_action(action) -> tuple[float, ...]` — Refuses a non-`BODY_TWIST` or an unactuable twist and returns the twist; publishes nothing, needs no connection. (L205)
-  - `attach_ros_node(node)` — Create the odometry subscription and twist publisher on ``node``. (L96)
-  - `connect()` — Require the node; odometry freshness is checked at ``read_state``. (L121)
-  - `disconnect()` — Stop the base and release; idempotent. (L130)
-  - `base_pose` [@property] — The latest odometry ``(x, y, yaw)``. (L150)
-  - `base_twist` [@property] — The latest odometry body twist. (L155)
-  - `read_state()` — The base joints at the odometry pose. (L171)
-  - `send_action(action)` — Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``. (L191)
-  - `estop()` — Command zero twist, then raise. (L234)
+- `class PlatformBaseHAL` — `PlatformBaseHAL(*, description, odom_topic="/odom", cmd_vel_topic=None, staleness_limit_s=0.5)`: joints are the three `base_joints`, positioned at the odometry pose; with `cmd_vel_topic=None` it is odometry-only (no publisher; a zero `BODY_TWIST` is a no-op, a non-zero one raises `ROSCapabilityMismatch` in `check_action`); with a topic, `BODY_TWIST` → `geometry_msgs/Twist` (non-zero `vy` refused on a differential base; `check_action` refuses every other mode, without publishing); stale or absent odometry raises `ROSPerceptionStale`; `effort` is empty (unmeasured); `disconnect` destroys its subscription and publisher on the node; `estop` publishes zero twist (when it has a publisher) and raises. Needs `attach_ros_node(node)` before `connect`. (L56)
+  - `check_action(action) -> tuple[float, ...]` — Refuses a non-`BODY_TWIST` or an unactuable twist and returns the twist; publishes nothing, needs no connection. (L206)
+  - `attach_ros_node(node)` — Create the odometry subscription and twist publisher on ``node``. (L97)
+  - `connect()` — Require the node; odometry freshness is checked at ``read_state``. (L122)
+  - `disconnect()` — Stop the base and release; idempotent. (L131)
+  - `base_pose` [@property] — The latest odometry ``(x, y, yaw)``. (L151)
+  - `base_twist` [@property] — The latest odometry body twist. (L156)
+  - `read_state()` — The base joints at the odometry pose. (L172)
+  - `send_action(action)` — Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``. (L192)
+  - `estop()` — Command zero twist, then raise. (L235)
 
 ### `python/hal/src/openral_hal/_openamrobot_v2_assets.py`
 _Build the OpenAMRobot 2.0 MJCF from the vendored `robots/openamrobot_v2/openamrobot_v2.urdf` (upstream ships no MJCF)._
@@ -927,11 +927,12 @@ _Shared sim-sensor + viewer bridge for scene-attached HAL lifecycle nodes: repub
   - `attachment_action_ack_ready() -> bool` (L4661) — Attachment transaction gate for the lifecycle node: an addition stays unacknowledged until kernel acceptance, one transparent depth frame, and the following voxel raster all land. An empty detach snapshot is immediately ready, since detach unmasks before the kernel drops the old payload.
   - `_on_attachment_state_applied(msg)` — Applies the staged revision once the kernel accepts it, then arms the perception barrier only when the revision masks geometry not already masked (compared exactly by `(object_id, evidence_ref)`); a revision masking nothing new (e.g. a re-published place witness) releases the barrier immediately instead of deadlocking a successful place.
 - `describes_mobile_base(description: RobotDescription) -> bool` (`mobile_base_bridge.py` L40) — Pure predicate: does the manifest declare a planar base (`base_joints`)? The single answer to "does something already own `odom → base_frame`", so `MobileBaseBridge`'s attach and `SimSensorBridge`'s TF skip-guard can't drift apart; reading any other field risks a second `base_link` parent and a split `/tf` tree.
-- `class MobileBaseBridge` (`mobile_base_bridge.py` L66) — Generic planar-mobile-base ROS wiring (sibling of `SimSensorBridge`): owns `/odom`, the `odom->base_link` TF, and the `/cmd_vel`→BODY_TWIST bridge (bypasses the safety supervisor — out of scope here). Frame ids come from `RobotDescription`; `ManifestHALLifecycleNode` attaches it in `on_activate_post_subs` iff the manifest declares `base_joints`. A `ROSPerceptionStale` from a real base's `base_pose` (no or late odometry) skips that `/odom` tick with a throttled warning instead of killing the executor.
+- `platform_owns_navigation(description: RobotDescription, *, hal_mode: str) -> bool` (`mobile_base_bridge.py` L66) — ADR-0127 Decision 1, no setting: `True` for a real deploy (`hal_mode="real"`) of a manifest with `base_joints`. Then the CLI launches no SLAM or Nav2 (and refuses a scene that enables either), the HAL node attaches no `MobileBaseBridge`, and the launch waits for the platform's `/navigate_to_pose` before re-seeding the reasoner palette.
+- `class MobileBaseBridge` (`mobile_base_bridge.py` L93) — Generic planar-mobile-base ROS wiring (sibling of `SimSensorBridge`): owns `/odom`, the `odom->base_link` TF, and the `/cmd_vel`→BODY_TWIST bridge (bypasses the safety supervisor — out of scope here). Frame ids come from `RobotDescription`; `ManifestHALLifecycleNode` attaches it in `on_activate_post_subs` iff the manifest declares `base_joints`. A `ROSPerceptionStale` from a real base's `base_pose` (no or late odometry) skips that `/odom` tick with a throttled warning instead of killing the executor.
   - `__init__(node, hal, description, *, odom_rate_hz: float = 20.0, cmd_vel_topic: str = "/cmd_vel", proprio: Any = None) -> None` — `proprio`: when set (sim-attached HALs), odom is published from the node's dedicated thread via `publish_from_snapshot`, reading the snapshot not the simulator; `None` (real HALs) keeps the legacy odom timer.
-  - `setup() -> None` (`mobile_base_bridge.py` L109) — Create the `/odom` publisher + TF broadcaster + `/cmd_vel` subscription; the odom timer is created **only when `proprio is None`** (sim HALs publish odom off the node's thread).
-  - `publish_from_snapshot() -> None` (`mobile_base_bridge.py` L163) — Dedicated-thread entry: publish one `/odom` + TF sample from the proprio snapshot (never the simulator). Thin alias over `_publish_odom` (which branches on `proprio`).
-  - `teardown() -> None` (`mobile_base_bridge.py` L150) — Cancel the timer (if any) + destroy the publisher/subscription. Idempotent.
+  - `setup() -> None` (`mobile_base_bridge.py` L136) — Create the `/odom` publisher + TF broadcaster + `/cmd_vel` subscription; the odom timer is created **only when `proprio is None`** (sim HALs publish odom off the node's thread).
+  - `publish_from_snapshot() -> None` (`mobile_base_bridge.py` L190) — Dedicated-thread entry: publish one `/odom` + TF sample from the proprio snapshot (never the simulator). Thin alias over `_publish_odom` (which branches on `proprio`).
+  - `teardown() -> None` (`mobile_base_bridge.py` L177) — Cancel the timer (if any) + destroy the publisher/subscription. Idempotent.
 
 ### `python/hal/src/openral_hal/proprio_snapshot.py`
 

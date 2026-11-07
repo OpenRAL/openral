@@ -2361,6 +2361,26 @@ def _rsp_urdf_joint_map(
     return urdf_joint_map(description, pathlib.Path(urdf).read_text(encoding="utf-8"))
 
 
+def _palette_reseed_cmd(*, lifecycle_node: str) -> list[str]:
+    """The ``wait_for_action_and_signal_palette.py`` command for ``/navigate_to_pose``.
+
+    Fires ``/openral/skill_registry_changed`` once the action is advertised (and, when
+    ``lifecycle_node`` is given, that node is active), so the reasoner re-seeds its palette
+    with the Nav2 rSkill. ``""`` waits on the action alone (a platform's own Nav2).
+    """
+    cmd = [
+        sys.executable,
+        str(_REPO_ROOT / "tools" / "wait_for_action_and_signal_palette.py"),
+        "--action",
+        "/navigate_to_pose",
+        "--timeout-s",
+        "120.0",
+    ]
+    if lifecycle_node:
+        cmd += ["--lifecycle-node", lifecycle_node]
+    return cmd
+
+
 def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
     context: LaunchContext, *_args: object, **_kwargs: object
 ) -> list[LaunchDescriptionEntity]:
@@ -4245,6 +4265,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             )
             extra_nodes.append(slam_autostart)
 
+    from openral_hal.mobile_base_bridge import platform_owns_navigation
+
     if enable_nav2:
         # Nav2's local_costmap needs ``odom -> base_link`` TF to be
         # already on the bus when its ``lifecycle_manager_navigation``
@@ -4276,22 +4298,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # helper that polls the ROS graph for ``/navigate_to_pose`` and fires Empty on
         # ``/openral/skill_registry_changed`` once it appears; the reasoner re-seeds the palette
         # and the Nav2 rSkill becomes dispatchable.
-        palette_reseed_helper = str(_REPO_ROOT / "tools" / "wait_for_action_and_signal_palette.py")
         extra_nodes.append(
-            ExecuteProcess(
-                cmd=[
-                    sys.executable,
-                    palette_reseed_helper,
-                    "--action",
-                    "/navigate_to_pose",
-                    "--lifecycle-node",
-                    "/bt_navigator",
-                    "--timeout-s",
-                    "120.0",
-                ],
-                output="log",
-            ),
+            ExecuteProcess(cmd=_palette_reseed_cmd(lifecycle_node="/bt_navigator"), output="log")
         )
+    elif platform_owns_navigation(description, hal_mode=hal_mode):
+        # ADR-0127 Decision 1: on `deploy run` the platform's own Nav2 serves
+        # /navigate_to_pose. Same reseed, so the Nav2 rSkill reaches the palette once that
+        # server is advertised; the platform's node names are not ours to assume, so the
+        # helper waits on the action alone.
+        extra_nodes.append(ExecuteProcess(cmd=_palette_reseed_cmd(lifecycle_node=""), output="log"))
 
     # Manifest-derived, never the mobile-base literals: see _octomap_frames.
     # Resolved unconditionally so the runtime node's world-cloud bridge gets the
