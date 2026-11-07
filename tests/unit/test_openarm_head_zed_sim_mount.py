@@ -107,3 +107,19 @@ def test_top_shares_head_zeds_mount_and_a_bad_reference_is_refused() -> None:
                 s["shares_mount_with"] = bad
         with pytest.raises(ValueError, match="shares_mount_with"):
             RobotDescription.model_validate(broken)
+
+
+def test_top_renders_from_head_zeds_sim_placement() -> None:
+    """`top` shares head_zed's mount, so the twin must rig both cameras at one pose.
+
+    The bare-MuJoCo camera rig places each RGB camera from its own ``sim_placement``,
+    so ``top`` restating an older pose would render the policy view from the wrong
+    viewpoint while the TF tree says otherwise. The code mirror must agree too.
+    """
+    from openral_hal.openarm import OPENARM_DESCRIPTION
+
+    path = Path(__file__).resolve().parents[2] / "robots/openarm/robot.yaml"
+    by_name = {s.name: s for s in RobotDescription.from_yaml(str(path)).sensors}
+    assert by_name["top"].sim_placement == by_name["head_zed"].sim_placement
+    mirror = next(s for s in OPENARM_DESCRIPTION.sensors if s.name == "top")
+    assert mirror.sim_placement == by_name["head_zed"].sim_placement
