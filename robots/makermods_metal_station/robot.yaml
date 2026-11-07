@@ -13,22 +13,23 @@
 # vendored (see the single-arm manifest and
 # python/hal/src/openral_hal/_makermods_metal_assets.py).
 #
-# ESTIMATED GEOMETRY (not measured on hardware): MakerMods publishes no
-# base-to-base spacing or top-camera mount. Values below are triangulated from
-# MakerMods' own footage (2026-11):
-# * Top camera: on the vertical mast centred between the arms, behind them
-#   (Station photos / hero video). Lens ~0.62 m above the plate (hero video,
-#   arm rest height 0.283 m as scale), ~0.19 m behind the arm-base line,
-#   pitched ~25 deg down, wide lens f ~300 px @ 640x480 (~94 deg HFOV): PnP of
-#   the held cube against FK in HappyEthan/metal_pick_place (same kit stand,
-#   244 points, median 3 px). Those footage-only fits leave height and focal
-#   length coupled; the photo height breaks the tie.
-# * Arm spacing 0.78 m (range 0.72-0.90): the parked grippers' positions in
-#   the Station app's top-camera feed under that camera pose
-#   (`STATION_ARM_SPACING_M` in the asset module).
-# Everything stays `static_transform_calibrated: false`. Measure the real
-# station and update the asset constant, `fixed_attachments` and the camera
-# together.
+# MEASURED GEOMETRY: MakerMods publishes no base-to-base spacing or top-camera
+# mount; both are fitted from the real station's recordings in
+# makermods/pen_holder_bi_20260723_161553 (41 episodes; fit 2026-11-07): FK
+# arm-mesh silhouettes of both arms vs the top image (40 frames), 1 897
+# left-wrist-camera PCB detections and the pen-at-rest line (39 episodes).
+# * Arm spacing 0.612 m (+/-0.02): arms at y = +/-0.306 m
+#   (`STATION_ARM_SPACING_M` in the asset module). The fitted right base sits
+#   at (0.0069, -0.6119) m, yaw +0.9 deg, in the left base frame; the 7 mm and
+#   0.9 deg offsets are within the error, so the mounts are symmetric.
+# * Top camera (in station_base = the midpoint of the bases): (0.068, -0.001,
+#   0.587) m, i.e. on the mast ~7 cm IN FRONT of the base line, pitched 49.7
+#   deg down; f = 314.4 px, principal point (321.4, 241.0) at 640x480 (VFOV
+#   74.7 deg), no distortion fitted. Realistic error +/-1.5 cm, +/-1 deg,
+#   f +/-10 px.
+# Mounts stay `static_transform_calibrated: false` (a dataset fit, not a
+# measured mount). Update the asset constant, `fixed_attachments` and the
+# camera together.
 #
 # MJCF layout: per arm 8 qpos (joint1..6, mimic finger joint7, driven finger
 # joint8) and 7 actuators (joint1..6, joint8) — left first, then right.
@@ -231,12 +232,12 @@ fixed_attachments:
 - name: left_mount
   parent_link: station_base
   child_link: left_base_link
-  origin_xyz: [0.0, 0.39, 0.0]
+  origin_xyz: [0.0, 0.306, 0.0]
   origin_rpy: [0.0, 0.0, 0.0]
 - name: right_mount
   parent_link: station_base
   child_link: right_base_link
-  origin_xyz: [0.0, -0.39, 0.0]
+  origin_xyz: [0.0, -0.306, 0.0]
   origin_rpy: [0.0, 0.0, 0.0]
 - name: left_gripper_base
   parent_link: left_link6
@@ -300,16 +301,20 @@ sensors:
   modality: rgb
   frame_id: top_camera
   parent_frame: station_base
-  # x forward (REP-103 body), pitched 25 deg (0.436 rad) down; see header.
-  static_transform_xyz_rpy: [-0.19, 0.0, 0.62, 0.0, 0.436, 0.0]
+  # Fitted from the pen-holder dataset (see header): x forward (REP-103 body)
+  # = the optical axis, pitched 49.7 deg down, roll -2.2, yaw -1.7 deg.
+  # sim_placement: target = where that axis meets the plate (z = 0); `up` is
+  # the image-up axis (MuJoCo camera y), so the roll survives the look-at.
+  static_transform_xyz_rpy: [0.068, -0.001, 0.587, -0.0377, 0.867, -0.0302]
   static_transform_calibrated: false
   rate_hz: 30.0
   sim_placement:
     parent_body: station_base
-    pos: [-0.19, 0.0, 0.62]
-    target: [0.535, 0.0, 0.282]
-    fovy_deg: 77.3
-  intrinsics: {width: 640, height: 480, fx: 300.0, fy: 300.0, cx: 320.0, cy: 240.0}
+    pos: [0.068, -0.001, 0.587]
+    target: [0.566, -0.016, 0.0]
+    up: [0.7626, 0.0147, 0.6467]
+    fovy_deg: 74.7
+  intrinsics: {width: 640, height: 480, fx: 314.4, fy: 314.4, cx: 321.4, cy: 241.0}
   encoding: rgb8
   vla_feature_key: observation.images.top
   vendor: generic_usb
@@ -362,8 +367,8 @@ capabilities:
   supported_vla_embodiments: [makermods_metal_station]
   embodiment_tags: [makermods_metal_station, makermods, bimanual]
 safety:
-  workspace_box_min_xyz: [-0.65, -1.05, 0.0]
-  workspace_box_max_xyz: [0.65, 1.05, 0.8]
+  workspace_box_min_xyz: [-0.65, -0.96, 0.0]
+  workspace_box_max_xyz: [0.65, 0.96, 0.8]
   max_ee_speed_m_s: 0.5
   max_ee_accel_m_s2: 1.0
   max_joint_speed_factor: 0.5

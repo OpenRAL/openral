@@ -290,8 +290,10 @@ def test_no_non_allowed_pair_interpenetrates_at_rest(manifest_path: Path) -> Non
 #     vertices inside base_link (derived `makermods:metal` MJCF meshes).
 #   makermods_metal (2): gripper folded back onto the upper arm — 194 link2
 #     vertices inside gripper_base.
-#   makermods_metal_station: both arms yawed inward and stretched to the
-#     middle of the plate — 1 217 right_link7 vertices inside left_gripper_base.
+#   makermods_metal_station (0.612 m spacing): both arms yawed inward and
+#     reaching to the middle of the plate until the fingertips meet — 21
+#     left_link7 vertices inside the convex hull of right_link8 (and 21 the
+#     other way); kernel gap -27.6 mm.
 _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
     (
         "makermods_metal",
@@ -321,13 +323,13 @@ _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
         "makermods_metal_station",
         {
             "left_joint1": -1.57,
-            "left_joint2": -1.57,
+            "left_joint2": -1.2,
             "left_joint3": 1.57,
             "right_joint1": 1.57,
-            "right_joint2": -1.57,
+            "right_joint2": -1.2,
             "right_joint3": 1.57,
         },
-        ("left_gripper_base", "right_link7"),
+        ("left_link7", "right_link8"),
     ),
     (
         "openarm",
