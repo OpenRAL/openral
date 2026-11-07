@@ -1888,3 +1888,35 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
         )
     # The refused skill was loaded but never made resident: the runner frees it.
     assert resolved[0].info.state is RSkillState.FINALIZED
+
+
+def test_runner_refuses_an_s2_skill_and_releases_it() -> None:
+    """The runner is the S1 path: a resolved ``role: s2`` skill is refused and shut down.
+
+    The resolver has already configured + activated it (weights loaded) by the
+    time the slot gate runs, and a refused skill is never made resident, so the
+    runner must finalize it itself or its VRAM leaks on every retry.
+    """
+    from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_core.schemas import RSkillState
+
+    resolved: list[Any] = []
+
+    def _resolver(**_k: Any) -> Any:
+        skill = _make_constant_skill()
+        skill._update(role="s2")
+        resolved.append(skill)
+        return skill
+
+    with (
+        _compose_harness(resolver=_resolver) as (_executor, runtime, _safety, _observed),
+        pytest.raises(ROSCapabilityMismatch, match="role='s2'"),
+    ):
+        runtime.skill_runner_node._acquire_skill(
+            rskill_id="openral/test-constant-skill",
+            revision="",
+            prompt="go",
+            prompt_metadata_json="",
+            goal_params_json="",
+        )
+    assert resolved[0].info.state is RSkillState.FINALIZED

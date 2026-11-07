@@ -399,6 +399,38 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         return True
 
     @staticmethod
+    def check_s1_role(rskill_id: str, role: str) -> None:
+        """Refuse running a non-``s1`` skill on the S1 (ExecuteRskill) path.
+
+        The runner calls this on every resolved skill's ``info.role`` before
+        stepping it, so an S2 component (scene VLM, reward monitor, playbook) is
+        never driven as an S1 policy. Manifests already pin ``role`` to their
+        ``kind`` (``RSKILL_ROLE_BY_KIND``); this also covers runtime skills
+        built without a manifest. A refusal is logged as ``rskill.slot_refused``.
+
+        Args:
+            rskill_id: Skill id, for the log + error.
+            role: The skill's declared role (``RSkillInfo.role``).
+
+        Raises:
+            ROSCapabilityMismatch: If ``role != "s1"``.
+
+        Example:
+            >>> rSkill.check_s1_role("openral/rskill-x", "s1")
+            >>> rSkill.check_s1_role("openral/rskill-x", "s2")
+            Traceback (most recent call last):
+            ...
+            openral_core.exceptions.ROSCapabilityMismatch: ...
+        """
+        if role == "s1":
+            return
+        log.warning("rskill.slot_refused", rskill_id=rskill_id, role=role, slot="s1")
+        raise ROSCapabilityMismatch(
+            f"rSkill {rskill_id!r} declares role={role!r}; refusing to run it on the "
+            "S1 dispatch path"
+        )
+
+    @staticmethod
     def check_embodiment_tags(
         manifest: RSkillManifest,
         robot_capabilities: RobotCapabilities,

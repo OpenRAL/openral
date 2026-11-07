@@ -1656,7 +1656,7 @@ if _ROS2_AVAILABLE:
             return skill
 
         def _check_resolved_skill(self, rskill_id: str, skill: Any) -> None:
-            """Run the embodiment / gripper / state gates on a resolved skill."""
+            """Run the embodiment / slot / gripper / state gates on a resolved skill."""
             from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
             # Embodiment gate — skill must declare this robot's
@@ -1678,6 +1678,11 @@ if _ROS2_AVAILABLE:
                     "therefore not an rSkillBase; a resolver must return a "
                     "configured, activated runtime skill"
                 )
+            # Slot gate — this runner is the S1 path; an S2 component
+            # (scene VLM, reward monitor, playbook) is never stepped here.
+            from openral_rskill.loader import rSkill
+
+            rSkill.check_s1_role(rskill_id, info.role)
             tags = list(info.embodiment_tags or [])
             if tags:
                 allowed = set(self._description.capabilities.embodiment_tags or [])
@@ -1691,7 +1696,6 @@ if _ROS2_AVAILABLE:
             # unconverted, so the skill's convention must equal the end
             # effector's. Skills built without a manifest (test harness) skip.
             from openral_core import RSkillManifest as _Manifest
-            from openral_rskill.loader import rSkill
 
             manifest = getattr(skill, "manifest", None)
             if isinstance(manifest, _Manifest):
