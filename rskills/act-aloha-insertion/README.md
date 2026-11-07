@@ -11,10 +11,24 @@ tags:
 - lerobot
 - vision-language-action
 - aloha
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:aloha
+- rskill-license:mit
 - bimanual
 - manipulation
 - insertion
 inference: false
+openral:
+  description: 'ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual sim-insertion
+    demonstration set. Insertion is the harder ALOHA task in the original paper; the
+    0.20 success rate reflects that. See the norm-stats note above re: the legacy
+    safetensors-resident buffers.'
+  model_family: act
+  min_vram_gb: null
+  latency_ms: 25.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-act-aloha-aloha_insertion-fp32

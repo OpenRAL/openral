@@ -7,7 +7,21 @@ tags:
 - OpenRAL
 - rskill
 - any
+- rskill-kind:playbook
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: 'S2 decision procedure: before dispatching a manipulation skill, check
+    the target is within the robot''s reachable workspace (using the robot self-model
+    + object pose) and stage the base or hand off if it is not. Composes recall_object,
+    resolve_place, query_scene and NAVIGATE skills.'
+  model_family: null
+  min_vram_gb: null
+  latency_ms: 5000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-playbook-preflight_reach

@@ -9,6 +9,10 @@ tags:
 - detector
 - object-detection
 - any
+- rskill-kind:detector
+- rskill-role:s1
+- embodiment:any
+- rskill-license:apache-2.0
 - rt-detr
 - onnx
 - coco
@@ -16,6 +20,17 @@ base_model:
 - PekingU/rtdetr_r18vd_coco_o365
 base_model_relation: finetune
 inference: false
+openral:
+  description: RT-DETR (Real-Time DEtection TRansformer) with a ResNet-18vd backbone
+    (r18vd), trained on COCO and exported to ONNX. Runs on the camera tee and publishes
+    ObjectsMetadata to /openral/perception/objects. 80 COCO categories. Apache-2.0
+    weights. Reference latency ~20 ms on GPU, ~45 ms on CPU. This is the detector
+    rSkill kind contract.
+  model_family: null
+  min_vram_gb: null
+  latency_ms: 50.0
+  runtime: onnx
+  dtype: fp32
 ---
 
 # rskill-rtdetr_coco_r18-any-coco-fp32

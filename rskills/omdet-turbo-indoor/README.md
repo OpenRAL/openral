@@ -9,11 +9,27 @@ tags:
 - detector
 - object-detection
 - any
+- rskill-kind:detector
+- rskill-role:s1
+- embodiment:any
+- rskill-license:apache-2.0
 - open-vocabulary
 - zero-shot
 - omdet-turbo
 - indoor
 inference: false
+openral:
+  description: 'OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process
+    over a fixed curated indoor vocabulary (~230 household/kitchen/office/ manipulation
+    classes). An unprompted background producer: publishes ObjectsMetadata to /openral/perception/objects
+    every frame without reasoner prompting, giving the world model far more classes
+    than the 80 COCO categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf.
+    This is the zeroshot_hf detector engine.'
+  model_family: null
+  min_vram_gb: 0.6
+  latency_ms: 200.0
+  runtime: pytorch
+  dtype: fp16
 base_model:
 - omlab/omdet-turbo-swin-tiny-hf
 ---

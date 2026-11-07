@@ -11,12 +11,29 @@ tags:
 - nf4
 - 4-bit
 - aloha_agilex
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:aloha_agilex
+- rskill-license:apache-2.0
 - lingbot-vla2
 - vla
 - robotwin
 - bimanual
 - manipulation
 inference: false
+openral:
+  description: 'LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching
+    action expert) for dual-arm manipulation on the RoboTwin 2.0 / AgileX Cobot Magic
+    embodiment. Predicts 50-step action chunks from three RGB views (head + per-wrist)
+    driving a 14-DoF dual-arm joint command (25-step replay). Runs in a torch-2.9
+    ZMQ sidecar; NF4 backbone quantization targets 8 GB GPUs. NOTE: pre-trained FOUNDATION
+    checkpoint — zero-shot actions collapse to the distribution mean; post-train on
+    RoboTwin first.'
+  model_family: lingbot_vla2
+  min_vram_gb: 7.0
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-lingbot_vla2-aloha_agilex-robotwin-nf4

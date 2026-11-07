@@ -84,7 +84,7 @@ if TYPE_CHECKING:
     )
     from openral_detect import CompatibilityReport, DetectionReport, RSkillCompatRow
     from openral_detect.report import GpuProbeResult
-    from openral_rskill.hub_search import HubRSkillSearchResult
+    from openral_rskill.hub_search import HubRSkillHit, HubRSkillSearchResult
 
     from openral_cli._rskill_intel import RSkillFamily, RSkillPatch
 
@@ -1845,7 +1845,7 @@ def rskill_install(
         >>> # openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
         >>> # openral rskill install smolvla-libero --revision abc1234
     """
-    from openral_rskill.loader import rSkill
+    from openral_rskill.loader import gated_repo_error, rSkill
 
     # ── Step 0: a HF repo id needs an `org/name` shape. A bare name (the most
     # common paste mistake) otherwise 404s against a non-existent top-level repo
@@ -1877,6 +1877,10 @@ def rskill_install(
         )
         manifest = RSkillManifest.from_yaml(manifest_path)
     except Exception as exc:  # reason: surface any download/parse error to user
+        gated_err = gated_repo_error(hub_id, exc)
+        if gated_err is not None:
+            console.print(f"[yellow]{gated_err}[/yellow]")
+            raise typer.Exit(code=1)  # noqa: B904
         console.print(f"[red]Failed to fetch manifest:[/red] {exc}")
         if "404" in str(exc) or "Repository Not Found" in str(exc):
             bare = hub_id.rsplit("/", 1)[-1]
@@ -1938,8 +1942,9 @@ def _render_rskill_search_results(result: HubRSkillSearchResult, query: str) -> 
     for col in ("repo_id", "local", "kind", "role", "license", "embodiment_tags", "description"):
         table.add_column(col, style="cyan bold" if col == "repo_id" else None)
     for hit in result.hits:
-        m = hit.manifest
-        lic = m.license.value
+        m = hit.manifest or hit.card
+        assert m is not None  # reason: a hit always carries a manifest or a gated card
+        lic = str(getattr(m.license, "value", m.license))
         lic_color = "green" if lic in _permissive else "yellow"
         desc = (
             m.description
@@ -1948,7 +1953,7 @@ def _render_rskill_search_results(result: HubRSkillSearchResult, query: str) -> 
         )
         table.add_row(
             hit.repo_id,
-            hit.local or "—",
+            "[magenta]Pro (request access)[/magenta]" if hit.card else hit.local or "—",
             m.kind,
             m.role,
             f"[{lic_color}]{lic}[/{lic_color}]",
@@ -1963,6 +1968,44 @@ def _render_rskill_search_results(result: HubRSkillSearchResult, query: str) -> 
             f"no valid rskill.yaml: {ids}[/dim]"
         )
     console.print("[dim]Install one with:[/dim] [cyan]openral rskill install <repo_id>[/cyan]")
+    if any(hit.card for hit in result.hits):
+        console.print(
+            "[dim]Pro rSkills are gated: request access at "
+            "https://huggingface.co/<repo_id>, then install.[/dim]"
+        )
+
+
+def _rskill_search_hit_json(hit: HubRSkillHit) -> dict[str, object]:
+    """One `rskill search --json` row — the same keys for a manifest hit and a gated card."""
+    from openral_cli._rskill_readme import _catalog_block
+
+    if hit.manifest is None:
+        card = hit.card
+        assert card is not None  # reason: a hit always carries a manifest or a gated card
+        fields: dict[str, object] = {"name": hit.repo_id, "version": None}
+        fields.update(card.model_dump(mode="json"))
+    else:
+        m = hit.manifest
+        fields = {
+            "name": m.name,
+            "version": m.version,
+            "kind": m.kind,
+            "role": m.role,
+            "license": m.license.value,
+            "embodiment_tags": list(m.embodiment_tags),
+            # description, model_family, min_vram_gb, latency_ms, runtime, dtype
+            **_catalog_block(m),
+        }
+    keys = (
+        "name", "version", "kind", "role", "license", "model_family", "embodiment_tags",
+        "description", "min_vram_gb", "latency_ms", "runtime", "dtype",
+    )  # fmt: skip
+    return {
+        "repo_id": hit.repo_id,
+        **{k: fields.get(k) for k in keys},
+        "local": hit.local,
+        "gated": hit.manifest is None,
+    }
 
 
 @rskill_app.command("search")
@@ -1997,8 +2040,9 @@ def rskill_search(
     name/description/model_family/kind/role/embodiment tags, and Hub tags)
     plus the optional facet filters — so the printed ids are paste-able into
     ``openral rskill install <repo_id>``. The HF Hub is the index — there is
-    no bespoke catalog service. Repos without a valid manifest are skipped
-    and the count surfaced.
+    no bespoke catalog service. A gated OpenRAL Pro repo you have no access
+    to is listed from its model card as "Pro (request access)". Other repos
+    without a valid manifest are skipped and the count surfaced.
 
     Example:
         >>> # openral rskill search aloha
@@ -2029,25 +2073,7 @@ def rskill_search(
         raise typer.Exit(code=1)  # noqa: B904
 
     if json:
-        console.print_json(
-            _json_mod.dumps(
-                [
-                    {
-                        "repo_id": hit.repo_id,
-                        "name": hit.manifest.name,
-                        "version": hit.manifest.version,
-                        "kind": hit.manifest.kind,
-                        "role": hit.manifest.role,
-                        "license": hit.manifest.license.value,
-                        "model_family": hit.manifest.model_family,
-                        "embodiment_tags": list(hit.manifest.embodiment_tags),
-                        "description": hit.manifest.description,
-                        "local": hit.local,
-                    }
-                    for hit in result.hits
-                ]
-            )
-        )
+        console.print_json(_json_mod.dumps([_rskill_search_hit_json(hit) for hit in result.hits]))
         return
 
     _render_rskill_search_results(result, query_str)

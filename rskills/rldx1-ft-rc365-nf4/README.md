@@ -12,6 +12,10 @@ tags:
 - nf4
 - 4-bit
 - panda_mobile
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:panda_mobile
+- rskill-license:rlwrld_non_commercial
 - openral
 - vla
 - robocasa
@@ -19,6 +23,18 @@ tags:
 - manipulation
 - non-commercial
 inference: false
+openral:
+  description: 'RLDX-1 fine-tuned on RoboCasa-365 (365-task cross-skill suite, PandaMobile).
+    Shares the out-of-process rldx sidecar runtime with the other RLDX-1 finetunes.
+    The general_embodiment slot in this checkpoint is the PandaMobile contract: 3
+    camera streams, 16-D state (eef_rel + gripper + base), 12-D action (eef_delta
+    + gripper + base + control_mode); the rldx adapter trims to 11-D for the openral
+    RoboCasa env. Non-commercial license.'
+  model_family: rldx
+  min_vram_gb: 7.0
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: int4
 license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 ---
 

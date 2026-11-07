@@ -9,12 +9,26 @@ tags:
 - lingbot_va_a1
 - vision-language-action
 - galaxea_a1
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:galaxea_a1
+- rskill-license:apache-2.0
 base_model:
 - robbyant/lingbot-va-base
 base_model_relation: finetune
 datasets:
 - pengyue-polaron/nyush-galaxea-a1-fruit-placement-eef-v21
 inference: false
+openral:
+  description: LingBot-VA fruit-placement policy for the Galaxea A1. It consumes the
+    synchronized front and wrist RGB views, predicts episode-relative EEF pose and
+    continuous gripper chunks, and uses the tracked A1 Runtime IK contract before
+    OpenRAL validates and executes the resulting joint/gripper actions.
+  model_family: lingbot_va_a1
+  min_vram_gb: null
+  latency_ms: 6000.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-lingbot_va_a1-galaxea_a1-fruit_placement-bf16

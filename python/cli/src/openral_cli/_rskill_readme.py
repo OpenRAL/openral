@@ -148,6 +148,12 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
             tags.append("nf4" if dt == "int4" else dt)
             tags.append("4-bit" if dt == "int4" else "8-bit" if dt == "int8" else "quantized")
     tags += list(manifest.embodiment_tags)
+    # Reserved, namespaced catalog tags (the contract the website catalog and
+    # ``openral rskill search`` read for repos whose rskill.yaml is gated).
+    # ``rskill-license:`` not ``license:`` — HF derives ``license:`` tags itself.
+    tags += [f"rskill-kind:{kind}", f"rskill-role:{manifest.role}"]
+    tags += [f"embodiment:{t}" for t in manifest.embodiment_tags]
+    tags.append(f"rskill-license:{manifest.license.value}")
     fm["tags"] = _dedup(tags)
 
     base = _hf_repo(getattr(manifest, "source_repo", None))
@@ -166,7 +172,26 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
 
     # rSkills are packaging manifests, not HF-inference-servable checkpoints.
     fm["inference"] = False
+    fm["openral"] = _catalog_block(manifest)
     return fm
+
+
+def _catalog_block(manifest: RSkillManifest) -> dict[str, Any]:
+    """The ``openral:`` front-matter mapping: catalog fields readable without rskill.yaml."""
+    dtype = manifest.quantization.dtype
+    vram = manifest.min_vram_gb
+    min_vram = manifest.active_min_vram_gb() if vram else None
+    if vram and min_vram is None:
+        min_vram = min(vram.values())
+    runtime = manifest.runtime
+    return {
+        "description": " ".join(manifest.description.split()),
+        "model_family": manifest.model_family,
+        "min_vram_gb": min_vram,
+        "latency_ms": manifest.latency_budget.per_chunk_ms,
+        "runtime": str(getattr(runtime, "value", runtime)) if runtime else None,
+        "dtype": str(getattr(dtype, "value", dtype)) if dtype else None,
+    }
 
 
 def render_frontmatter(fm: dict[str, Any]) -> str:
@@ -200,12 +225,12 @@ def _demo() -> None:
     root = Path(__file__).resolve()
     while root != root.parent and not (root / "rskills").is_dir():
         root = root.parent
-    m = RSkillManifest.from_yaml(str(root / "rskills" / "pi05-libero-nf4" / "rskill.yaml"))
+    m = RSkillManifest.from_yaml(str(root / "rskills" / "molmoact2-so101-nf4" / "rskill.yaml"))
     fm = build_rskill_frontmatter(m)
-    assert fm["library_name"] == "lerobot", fm
+    assert "library_name" not in fm, fm  # transformers custom-code, not lerobot
     assert fm["pipeline_tag"] == "robotics", fm
-    assert fm["license"] == "other" and fm["license_name"] == "permissive-research", fm
-    assert fm["base_model"] == ["lerobot/pi05_libero_finetuned_v044"], fm
+    assert fm["license"] == "apache-2.0" and "license_name" not in fm, fm
+    assert fm["base_model"] == ["allenai/MolmoAct2-SO100_101"], fm
     assert fm["base_model_relation"] == "quantized", fm
     assert "4-bit" in fm["tags"] and "OpenRAL" in fm["tags"], fm
     assert fm["inference"] is False
@@ -215,7 +240,7 @@ def _demo() -> None:
     )
     merged = _parse_frontmatter(card)
     assert "hand-tag" in merged["tags"] and merged.get("custom_field") == "keep", merged
-    assert merged["library_name"] == "lerobot", "derived field lost in merge"
+    assert merged["license"] == "apache-2.0", "derived field lost in merge"
     n_fences = card.count("---\n")
     assert n_fences >= 2 and "\n# body" in card, n_fences  # noqa: PLR2004  # reason: yaml front-matter has exactly two fences
     # detector uses the object-detection pipeline

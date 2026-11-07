@@ -16,7 +16,29 @@ tags:
 - rizon4
 - sawyer
 - widowx
+- rskill-kind:ros_action
+- rskill-role:s1
+- embodiment:franka_panda
+- embodiment:ur5e
+- embodiment:ur10e
+- embodiment:so100_follower
+- embodiment:openarm
+- embodiment:rizon4
+- embodiment:sawyer
+- embodiment:widowx
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: Aim a robot-mounted camera (default the wrist camera) at a 3-D point
+    so a later perception query or manipulation skill sees the object framed. Plans
+    a collision-aware arm motion via MoveIt that points the camera's optical axis
+    at look_at.target_xyz. Use after navigating to an approach pose and before locate_in_view
+    / a grasp skill.
+  model_family: null
+  min_vram_gb: null
+  latency_ms: 2000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-moveit-multi-look_at

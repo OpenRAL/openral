@@ -7,7 +7,21 @@ tags:
 - OpenRAL
 - rskill
 - any
+- rskill-kind:playbook
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: 'S2 decision procedure: break a compound, multi-step instruction into
+    an ordered list of subtasks, each with its own verifiable done-condition (an internal
+    TODO list), executing and verifying them in order. Composes execute_rskill, query_scene,
+    query_task_progress, memory_write and memory_search.'
+  model_family: null
+  min_vram_gb: null
+  latency_ms: 5000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-playbook-decompose_mission

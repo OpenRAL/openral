@@ -9,6 +9,10 @@ tags:
 - nf4
 - 4-bit
 - any
+- rskill-kind:vlm
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 - vlm
 - video-language-model
 - scene-understanding
@@ -19,6 +23,15 @@ base_model:
 - Qwen/Qwen3.5-4B
 base_model_relation: quantized
 inference: false
+openral:
+  description: Qwen3.5-4B natively-multimodal video-language model packaged as an
+    NF4 bitsandbytes vlm rSkill. Accepts RGB image or video frames plus a natural-language
+    query; returns a text answer. Embodiment-agnostic. No actuators. Apache-2.0.
+  model_family: null
+  min_vram_gb: 2.5
+  latency_ms: 3000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-qwen35_4b-any-general-nf4
