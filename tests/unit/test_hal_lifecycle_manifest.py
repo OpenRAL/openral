@@ -85,9 +85,10 @@ class TestManifestNode:
 
         assert isinstance(_build("t_franka_real", "franka_panda", "real"), FrankaPandaRealHAL)
 
-    def test_sim_only_robot_real_mode_raises(self) -> None:
-        with pytest.raises(ROSCapabilityMismatch, match="g1"):
-            _build("t_g1_real", "g1", "real")
+    @pytest.mark.parametrize("robot_id", ["g1", "h2"])
+    def test_sim_only_robot_real_mode_raises(self, robot_id: str) -> None:
+        with pytest.raises(ROSCapabilityMismatch, match=robot_id):
+            _build(f"t_{robot_id}_real", robot_id, "real")
 
     def test_missing_robot_yaml_raises(self) -> None:
         node = _ManifestHALLifecycleNode("t_noyaml")

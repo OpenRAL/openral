@@ -88,7 +88,7 @@ def _resolve_mjcf_path(desc: RobotDescription) -> str:
     The MujocoArmHAL is built from a ``RobotDescription`` alone (the
     manifest path is not threaded through ``from_description``), so no
     ``manifest_dir`` is supplied — every in-tree MJCF ref is a ``rd:`` /
-    ``gym_aloha:`` / ``openarm:`` / ``menagerie:`` scheme that resolves without
+    ``gym_aloha:`` / ``openarm:`` / ``menagerie:`` / ``unitree:`` scheme that resolves without
     one (no robot declares a ``file:`` MJCF). ``AssetRefError`` is translated to
     ``ROSConfigError`` at this HAL boundary, matching the contract
     ``_sim_kwargs_for`` documented for the old resolver.

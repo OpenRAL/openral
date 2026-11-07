@@ -29,6 +29,10 @@ Public surface:
 - ``H1MujocoHAL`` / ``H1_DESCRIPTION``: Unitree H1, 19-DoF (predecessor to
   G1: 5-DoF/leg, 1-DoF torso, 4-DoF/arm); same validator scope as
   ``G1MujocoHAL``; real-HW also waits on the M2 S0 cerebellum.
+- ``H2MujocoHAL`` / ``H2_DESCRIPTION``: Unitree H2, 31-DoF in unitree_sdk2
+  motor order (6-DoF legs, 3-DoF waist, 7-DoF arms, 2-DoF head); official
+  Unitree MJCF/URDF fetched pinned by ``openral_hal._unitree_h2_assets``
+  (``unitree:h2``); pinned-base glide + software PD over torque motors.
 - ``Rizon4MujocoHAL`` / ``RIZON4_DESCRIPTION``: Flexiv Rizon 4, 7-DoF
   cobot, whole-body force sensitivity; structurally like the UR/Franka
   sim HALs.
@@ -77,6 +81,7 @@ from openral_hal.franka_panda_real import (
 from openral_hal.g1 import G1_DESCRIPTION, G1MujocoHAL
 from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1HAL
 from openral_hal.h1 import H1_DESCRIPTION, H1MujocoHAL
+from openral_hal.h2 import H2_DESCRIPTION, H2MujocoHAL
 from openral_hal.openarm import OPENARM_DESCRIPTION, OpenArmMujocoHAL
 from openral_hal.openarm_real import OPENARM_REAL_DESCRIPTION, OpenArmRealHAL
 from openral_hal.panda_mobile import (
@@ -140,6 +145,7 @@ __all__ = [
     "G1_DESCRIPTION",
     "GALAXEA_A1_DESCRIPTION",
     "H1_DESCRIPTION",
+    "H2_DESCRIPTION",
     "HAL",
     "OPENARM_DESCRIPTION",
     "OPENARM_REAL_DESCRIPTION",
@@ -164,6 +170,7 @@ __all__ = [
     "G1MujocoHAL",
     "GalaxeaA1HAL",
     "H1MujocoHAL",
+    "H2MujocoHAL",
     "HALHealthProvider",
     "HALHealthReport",
     "LifecycleEStopHAL",
