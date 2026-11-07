@@ -67,6 +67,15 @@ where a rigid follower is what MoveIt and cuRobo do.
   and against its leader's child — the two jaws of one gripper, rigidly related by the one
   coordinate they share and designed to meet (their hulls overlap 2.9 mm at closed). An undeclared
   follower (no manifest in-tree has one) still takes the whole-stroke sweep.
+- **Normalised gripper channel (MakerMods Metal).** When the leader is a `sim.grippers[]` entry in
+  `write_mode: normalised`, the channel the kernel reads is a `[0, 1]` fraction, so the check
+  compares in those units: the MJCF leader is `lo + (hi - lo) · v` over `ctrl_range`, accepted only
+  when the gripper's actuator is a gear-1 joint transmission on that leader
+  (`_manifest_to_mjcf_affine`). A mimic row may sit on the leader's own MJCF joint (identity
+  relation): the Metal poses both fingers, `joint7 = -0.05 f` and `joint8 = +0.05 f`, as mimic rows,
+  because the logical `finger_pair` child would be slid by the fraction read as metres. That row
+  owns the body — `finger_pair` gets no primitive — and it stands in as the leader jaw for the
+  jaw-against-jaw exemption.
 - **Envelope loader.** A mimic edge lowers to `collision_joint_kind` 3 (revolute) / 4 (prismatic)
   on the **mimicked** joint's `collision_dof_index` column, with the relation in the per-link
   `collision_mimic_multiplier` / `collision_mimic_offset` arrays (emitted only when the tree has a

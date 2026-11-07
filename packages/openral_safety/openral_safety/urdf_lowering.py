@@ -36,6 +36,7 @@ from openral_core import (
     BoxShape,
     CapsuleShape,
     CollisionShape,
+    GripperWriteMode,
     LinkCollisionGeometry,
     RobotDescription,
     SphereShape,
@@ -2038,15 +2039,61 @@ def _stroke_swept_meshes(
     return parts
 
 
+def _manifest_to_mjcf_affine(
+    robot: RobotDescription, model: object, joint: str, leader: int
+) -> tuple[float, float]:
+    """``(a, b)`` with the MJCF ``leader`` qpos ``= a + b · v`` for manifest ``joint`` value ``v``.
+
+    Identity unless ``joint`` is a ``sim.grippers[]`` entry in ``normalised``
+    write mode, whose [0, 1] value the twin writes to ``ctrl`` as
+    ``lo + (hi - lo) · v`` over ``ctrl_range``. That ``ctrl`` is the leader's
+    qpos only through a gear-1 joint transmission on the leader itself; the
+    actuator (``actuator_index``, else the joint's position in ``joints``) is
+    checked to be one.
+
+    Raises:
+        ROSConfigError: The gripper's actuator does not drive ``leader`` 1:1.
+    """
+    import mujoco
+
+    m: Any = model
+    grip = next((g for g in (robot.sim.grippers if robot.sim else []) if g.joint == joint), None)
+    if grip is None or grip.write_mode != GripperWriteMode.NORMALISED:
+        return 0.0, 1.0
+    act = (
+        grip.actuator_index
+        if grip.actuator_index is not None
+        else [j.name for j in robot.joints].index(joint)
+    )
+    if not (
+        0 <= act < m.nu
+        and int(m.actuator_trntype[act]) == int(mujoco.mjtTrn.mjTRN_JOINT)
+        and int(m.actuator_trnid[act][0]) == leader
+        and float(m.actuator_gear[act][0]) == 1.0
+    ):
+        raise ROSConfigError(
+            f"sim.grippers[{joint!r}]: actuator {act} does not drive MJCF joint "
+            f"{mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, leader)!r} 1:1; the [0, 1] "
+            "channel cannot be converted to the MJCF's units"
+        )
+    lo, hi = grip.ctrl_range
+    return float(lo), float(hi - lo)
+
+
 def _declared_mimic_followers(
     robot: RobotDescription, model: object, followers: Mapping[int, list[tuple[int, float, float]]]
 ) -> set[int]:
     """MJCF follower joints the manifest models as ``mimic_joints`` — checked against the MJCF.
 
     Each declared mimic must be an equality follower of its ``mimics`` joint in
-    the MJCF with the SAME ``multiplier`` / ``offset`` (the kernel poses the
-    follower from the manifest's numbers, the fit from the MJCF's; a
-    disagreement would put the kernel's finger at the wrong opening).
+    the MJCF — or that leader's MJCF joint itself (the identity relation) — with
+    the SAME ``multiplier`` / ``offset`` (the kernel poses the follower from the
+    manifest's numbers, the fit from the MJCF's; a disagreement would put the
+    kernel's finger at the wrong opening). The comparison is in the units of
+    the manifest channel the kernel reads: for a ``write_mode: normalised``
+    gripper (the MakerMods Metal's [0, 1] fraction) the MJCF leader is
+    ``lo + (hi - lo) · v`` over ``sim.grippers[].ctrl_range``
+    (``_manifest_to_mjcf_affine``).
 
     Returns:
         The MJCF joint ids of the declared followers.
@@ -2069,18 +2116,24 @@ def _declared_mimic_followers(
                 f"mimic_joints[{mim.name!r}]: the MJCF has no joint "
                 f"{mim.sim_joint_name or mim.name!r} or no leader {jid[mim.mimics]!r}"
             )
-        relation = next(((c0, c1) for f, c0, c1 in followers.get(lj, []) if f == fj), None)
+        relation = (
+            (0.0, 1.0)
+            if fj == lj
+            else next(((c0, c1) for f, c0, c1 in followers.get(lj, []) if f == fj), None)
+        )
         if relation is None:
             raise ROSConfigError(
                 f"mimic_joints[{mim.name!r}]: the MJCF has no joint equality coupling it to "
                 f"{jid[mim.mimics]!r}"
             )
         c0, c1 = relation
-        if abs(c0 - mim.offset) > 1e-9 or abs(c1 - mim.multiplier) > 1e-9:
+        a, b = _manifest_to_mjcf_affine(robot, model, mim.mimics, lj)
+        mult, off = c1 * b, c0 + c1 * a  # the MJCF relation in the manifest channel's units
+        if abs(off - mim.offset) > 1e-9 or abs(mult - mim.multiplier) > 1e-9:
             raise ROSConfigError(
                 f"mimic_joints[{mim.name!r}]: multiplier/offset ({mim.multiplier}, {mim.offset}) "
-                f"disagree with the MJCF equality ({c1}, {c0}); the kernel would pose the "
-                "follower at the wrong opening"
+                f"disagree with the MJCF equality ({mult}, {off} in the {mim.mimics!r} "
+                "channel's units); the kernel would pose the follower at the wrong opening"
             )
         declared.add(fj)
     return declared
@@ -2162,12 +2215,19 @@ def fit_collision_geometry_from_mjcf(
     ordered_links = [ln for j in robot.joints for ln in (j.parent_link, j.child_link)] + [
         mim.child_link for mim in robot.mimic_joints
     ]
+    # A body a mimic row owns (the Metal's ``link8``, on the MJCF's driven
+    # joint8) is fitted under the mimic's link only: the gripper joint's
+    # logical child sharing it (``finger_pair``) would be slid by the [0, 1]
+    # fraction read as metres, so it gets no primitive.
+    mimic_bodies = {link_body[m.child_link]: m.child_link for m in robot.mimic_joints}
     seen: set[str] = set()
     for link in ordered_links:
         if link in seen or link not in link_body:
             continue
         seen.add(link)
         body = link_body[link]
+        if mimic_bodies.get(body, link) != link:
+            continue
         mesh = _body_mesh(model, data, body)
         leader_joint = next(
             (
@@ -2334,6 +2394,12 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         if j.parent_link in geoms and j.child_link in geoms and j.parent_link != j.child_link:
             disabled.add(frozenset({j.parent_link, j.child_link}))  # adjacent
     leader_child = {j.name: j.child_link for j in robot.joints}
+    leader_jid = {j.name: jid(j.sim_joint_name or j.name) for j in robot.joints}
+    for mim in robot.mimic_joints:
+        # A mimic row on its leader's own MJCF joint (the Metal's joint8) owns
+        # that body: it is the leader jaw, the logical child carries nothing.
+        if jid(mim.sim_joint_name or mim.name) == leader_jid[mim.mimics] >= 0:
+            leader_child[mim.mimics] = mim.child_link
     for mim in robot.mimic_joints:
         # A mimic child is adjacent to its parent, and the two jaws of one
         # gripper are rigidly related by the one coordinate they share: they
