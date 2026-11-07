@@ -30,15 +30,17 @@ guards it (see the manifest header).
 | `hal.sim` | `null` — `build_hal` derives `MujocoArmHAL.from_description` from the `sim:` block |
 | `hal.real` | `null` — no real-hardware HAL yet |
 
-## Provisional geometry
+## Estimated geometry
 
 **MakerMods publishes no base-to-base spacing and no top-camera mount for the
-station.** The values below are OpenRAL sim choices, not measurements:
+station.** The values below were triangulated from MakerMods' own footage, not
+measured on hardware:
 
-| Quantity | Value | Where it lives |
-| --- | --- | --- |
-| Arm spacing | 0.60 m (arms at y = ±0.30 m) | `STATION_ARM_SPACING_M` in `openral_hal._makermods_metal_assets`, and `fixed_attachments` `left_mount` / `right_mount` |
-| Top camera | 0.70 m above the plate, looking at (0.4, 0, 0) | `sensors[top]` (`static_transform_calibrated: false`) |
+| Quantity | Value | How it was estimated | Where it lives |
+| --- | --- | --- | --- |
+| Arm spacing | 0.78 m (arms at y = ±0.39 m; plausible range 0.72–0.90) | Parked grippers' positions in the Station app's top-camera feed ([`metal-station/ask-bottle-app.mp4`](https://www.makermods.ai/metal-arm-station)) under the camera pose below | `STATION_ARM_SPACING_M` in `openral_hal._makermods_metal_assets`, and `fixed_attachments` `left_mount` / `right_mount` |
+| Top camera position | Mast centred between the arms, ~0.19 m behind the arm-base line, lens ~0.62 m above the plate | Height: Station hero video, arm rest height (0.283 m) as scale. Setback: PnP below | `sensors[top]` (`static_transform_calibrated: false`) |
+| Top camera orientation / lens | Facing forward, ~25° down; f ≈ 300 px at 640×480 (~94° HFOV) | PnP of the held cube (orange-blob centroid) against FK of the follower in [`HappyEthan/metal_pick_place`](https://huggingface.co/datasets/HappyEthan/metal_pick_place) episodes 0–16 (same kit stand; 244 points, median 3 px). Footage alone couples focal length and distance; the photo height fixes it | `sensors[top]` |
 | Wrist cameras | sim placement on each `*_gripper_base` | `sensors[wrist_*]` (`static_transform_calibrated: false`) |
 
 Measure the real station, then update the asset constant, `fixed_attachments`

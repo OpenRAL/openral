@@ -13,12 +13,22 @@
 # vendored (see the single-arm manifest and
 # python/hal/src/openral_hal/_makermods_metal_assets.py).
 #
-# PROVISIONAL GEOMETRY: MakerMods publishes no base-to-base spacing or top
-# camera mount for the station. The arms sit at y = +/-0.30 m
-# (`STATION_ARM_SPACING_M` = 0.60 in the asset module) and the top camera
-# 0.70 m above the plate; both are sim choices, so the camera's
-# `static_transform_calibrated` is false. Measure the real station and update
-# the asset constant, `fixed_attachments` and the camera together.
+# ESTIMATED GEOMETRY (not measured on hardware): MakerMods publishes no
+# base-to-base spacing or top-camera mount. Values below are triangulated from
+# MakerMods' own footage (2026-11):
+# * Top camera: on the vertical mast centred between the arms, behind them
+#   (Station photos / hero video). Lens ~0.62 m above the plate (hero video,
+#   arm rest height 0.283 m as scale), ~0.19 m behind the arm-base line,
+#   pitched ~25 deg down, wide lens f ~300 px @ 640x480 (~94 deg HFOV): PnP of
+#   the held cube against FK in HappyEthan/metal_pick_place (same kit stand,
+#   244 points, median 3 px). Those footage-only fits leave height and focal
+#   length coupled; the photo height breaks the tie.
+# * Arm spacing 0.78 m (range 0.72-0.90): the parked grippers' positions in
+#   the Station app's top-camera feed under that camera pose
+#   (`STATION_ARM_SPACING_M` in the asset module).
+# Everything stays `static_transform_calibrated: false`. Measure the real
+# station and update the asset constant, `fixed_attachments` and the camera
+# together.
 #
 # MJCF layout: per arm 8 qpos (joint1..6, mimic finger joint7, driven finger
 # joint8) and 7 actuators (joint1..6, joint8) — left first, then right.
@@ -217,12 +227,12 @@ fixed_attachments:
 - name: left_mount
   parent_link: station_base
   child_link: left_base_link
-  origin_xyz: [0.0, 0.3, 0.0]
+  origin_xyz: [0.0, 0.39, 0.0]
   origin_rpy: [0.0, 0.0, 0.0]
 - name: right_mount
   parent_link: station_base
   child_link: right_base_link
-  origin_xyz: [0.0, -0.3, 0.0]
+  origin_xyz: [0.0, -0.39, 0.0]
   origin_rpy: [0.0, 0.0, 0.0]
 - name: left_gripper_base
   parent_link: left_link6
@@ -244,14 +254,16 @@ sensors:
   modality: rgb
   frame_id: top_camera
   parent_frame: station_base
-  static_transform_xyz_rpy: [0.1, 0.0, 0.7, 0.0, 1.3, 0.0]
+  # x forward (REP-103 body), pitched 25 deg (0.436 rad) down; see header.
+  static_transform_xyz_rpy: [-0.19, 0.0, 0.62, 0.0, 0.436, 0.0]
   static_transform_calibrated: false
   rate_hz: 30.0
   sim_placement:
     parent_body: station_base
-    pos: [0.1, 0.0, 0.7]
-    target: [0.4, 0.0, 0.0]
-  intrinsics: {width: 640, height: 480, fx: 480.0, fy: 480.0, cx: 320.0, cy: 240.0}
+    pos: [-0.19, 0.0, 0.62]
+    target: [0.535, 0.0, 0.282]
+    fovy_deg: 77.3
+  intrinsics: {width: 640, height: 480, fx: 300.0, fy: 300.0, cx: 320.0, cy: 240.0}
   encoding: rgb8
   vla_feature_key: observation.images.top
   vendor: generic_usb
@@ -304,8 +316,8 @@ capabilities:
   supported_vla_embodiments: [makermods_metal_station]
   embodiment_tags: [makermods_metal_station, makermods, bimanual]
 safety:
-  workspace_box_min_xyz: [-0.65, -0.95, 0.0]
-  workspace_box_max_xyz: [0.65, 0.95, 0.8]
+  workspace_box_min_xyz: [-0.65, -1.05, 0.0]
+  workspace_box_max_xyz: [0.65, 1.05, 0.8]
   max_ee_speed_m_s: 0.5
   max_ee_accel_m_s2: 1.0
   max_joint_speed_factor: 0.5

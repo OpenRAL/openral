@@ -60,14 +60,17 @@ _REPO_URL: str = "https://github.com/makermods-robotics/metal-python-ros.git"
 _PKG_REL: str = "metal_ros2/src/metal_description"
 _URDF_REL: str = "urdf/metal_with_gripper.urdf"
 
-#: Provisional lateral distance (metres) between the two arm bases on the
-#: Metal Arm Station. NOT a MakerMods figure — none is published. Update it
-#: together with ``robots/makermods_metal_station/robot.yaml`` once measured.
-STATION_ARM_SPACING_M: float = 0.60
+#: Lateral distance (metres) between the two arm bases on the Metal Arm
+#: Station. NOT a MakerMods figure — none is published. Estimated (0.72-0.90 m)
+#: from MakerMods' own Station demo video: where the parked grippers land in
+#: the top-camera feed, given that camera's pose (see the station manifest).
+#: Update it together with ``robots/makermods_metal_station/robot.yaml`` once
+#: measured on a real station.
+STATION_ARM_SPACING_M: float = 0.78
 
 # Bump when the derived URDF/MJCF content changes, so a stale cache is not
 # reused (the pinned SHA alone does not cover OpenRAL's post-processing).
-_DERIVE_VERSION: str = "3"
+_DERIVE_VERSION: str = "4"
 
 _ARM_JOINTS: tuple[str, ...] = ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")
 # Upstream, joint8 carries ``<mimic joint="joint7" multiplier="-1">``: joint7
