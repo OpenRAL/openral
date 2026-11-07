@@ -47,6 +47,7 @@ _ROUTES: dict[str, str | None] = {
     "google_robot": None,
     "gr1": "sampling",
     "h1": "sampling",
+    "h2": "sampling",
     "openamrobot_v2": "mjcf",  # raised on a partially resolving base_link before
     "openarm": "mjcf",
     "panda_mobile": "srdf",
