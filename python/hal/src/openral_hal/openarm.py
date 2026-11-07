@@ -296,10 +296,14 @@ OPENARM_DESCRIPTION = RobotDescription(
             vla_feature_key="observation.images.top",
             vendor="sim",
             model="mujoco_top",
+            # `top` is the ZED-M's left image, so it shares head_zed's measured
+            # mount (robots/openarm/robot.yaml `shares_mount_with: head_zed`);
+            # this is head_zed's `sim_placement` verbatim.
             sim_placement=CameraSimPlacement(
                 parent_body="openarm_left_base_link",
-                pos=(0.0, -0.031, 0.20),
-                target=(0.379, -0.031, -0.725),
+                pos=(0.06597, -0.035548, 0.094539),
+                target=(0.4787, -0.0507, -0.8162),
+                up=(0.9107, 0.0226, 0.4124),
             ),
         ),
         SensorSpec(
