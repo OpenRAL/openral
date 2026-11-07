@@ -64,6 +64,12 @@ from openral_hal import G1_DESCRIPTION, G1MujocoHAL
 
 from tests.sim.conftest import mujoco_renderer_probe_error
 
+# One control period at the manifest's declared rate: the glide integrates a
+# BODY_TWIST over exactly this, so the base moves at its commanded speed.
+assert G1_DESCRIPTION.action_spec is not None
+assert G1_DESCRIPTION.action_spec.control_freq_hz is not None
+_G1_DT = 1.0 / G1_DESCRIPTION.action_spec.control_freq_hz
+
 pytestmark = [
     pytest.mark.sim,
     pytest.mark.skipif(
@@ -528,26 +534,33 @@ class TestBodyTwistGlide:
         x0, y0, yaw0 = glide_hal.base_pose
         glide_hal.send_action(_twist_action(vx=0.5))
         x1, y1, yaw1 = glide_hal.base_pose
-        assert x1 - x0 == pytest.approx(0.5 * 0.05, rel=1e-6)  # one dt of glide
+        assert x1 - x0 == pytest.approx(0.5 * _G1_DT, rel=1e-6)  # one control period
         assert y1 == pytest.approx(y0, abs=1e-9)
         assert yaw1 == pytest.approx(yaw0, abs=1e-9)
+
+    def test_default_glide_step_is_one_control_period(self) -> None:
+        # The runner ticks at action_spec.control_freq_hz; a glide step of any
+        # other length would move the base faster or slower than commanded.
+        assert G1MujocoHAL()._body_twist_dt_s == pytest.approx(_G1_DT)
+        assert G1MujocoHAL(body_twist_dt_s=0.1)._body_twist_dt_s == pytest.approx(0.1)
 
     def test_yaw_twist_rotates_base(self, glide_hal: G1MujocoHAL) -> None:
         _, _, yaw0 = glide_hal.base_pose
         glide_hal.send_action(_twist_action(wz=1.0))
         _, _, yaw1 = glide_hal.base_pose
-        assert yaw1 - yaw0 == pytest.approx(1.0 * 0.05, rel=1e-6)
+        assert yaw1 - yaw0 == pytest.approx(1.0 * _G1_DT, rel=1e-6)
 
     def test_twist_follows_heading(self, glide_hal: G1MujocoHAL) -> None:
         # Rotate ~90° in place, then drive "forward" — motion must be +y world.
-        for _ in range(32):  # 32 * 1.0 rad/s * 0.05 s ≈ 1.6 rad ≈ 92°
+        for _ in range(round(1.6 / _G1_DT)):  # 1.0 rad/s for 1.6 s ≈ 92°
             glide_hal.send_action(_twist_action(wz=1.0))
         _, _, yaw = glide_hal.base_pose
         assert yaw == pytest.approx(math.pi / 2, abs=0.15)
         x0, y0, _ = glide_hal.base_pose
-        glide_hal.send_action(_twist_action(vx=0.5))
+        for _ in range(round(0.1 / _G1_DT)):  # 0.5 m/s for 0.1 s = 0.05 m
+            glide_hal.send_action(_twist_action(vx=0.5))
         x1, y1, _ = glide_hal.base_pose
-        assert y1 > y0 + 0.02  # forward is now world +y
+        assert y1 > y0 + 0.04  # forward is now world +y
         assert abs(x1 - x0) < 0.01
 
     def test_base_stays_upright_under_gravity(self, glide_hal: G1MujocoHAL) -> None:

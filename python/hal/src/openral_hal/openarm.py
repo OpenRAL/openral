@@ -296,10 +296,14 @@ OPENARM_DESCRIPTION = RobotDescription(
             vla_feature_key="observation.images.top",
             vendor="sim",
             model="mujoco_top",
+            # `top` is the ZED-M's left image, so it shares head_zed's measured
+            # mount (robots/openarm/robot.yaml `shares_mount_with: head_zed`);
+            # this is head_zed's `sim_placement` verbatim.
             sim_placement=CameraSimPlacement(
                 parent_body="openarm_left_base_link",
-                pos=(0.0, -0.031, 0.20),
-                target=(0.379, -0.031, -0.725),
+                pos=(0.06597, -0.035548, 0.094539),
+                target=(0.4787, -0.0507, -0.8162),
+                up=(0.9107, 0.0226, 0.4124),
             ),
         ),
         SensorSpec(
@@ -411,8 +415,16 @@ OPENARM_DESCRIPTION = RobotDescription(
     # otherwise.  qpos[8] is the left follower finger (passive); qpos[17]
     # is the right follower finger — we skip both.
     assets=AssetRefs(
-        urdf=UrdfAsset(ref="file:openarm.urdf"),
+        # Mirrors robots/openarm/robot.yaml: openarm.urdf roots at `world`,
+        # which sits 0.698 m below `openarm_base` (derivation in the manifest).
+        urdf=UrdfAsset(
+            ref="file:openarm.urdf",
+            root_frame="world",
+            base_to_root_xyz_rpy=(0.0, 0.0, -0.698, 0.0, 0.0, 0.0),
+        ),
         mjcf="openarm:bimanual",
+        # Hand-reviewed ACM exemptions unioned into the MJCF lowering.
+        srdf="file:openarm.srdf",
     ),
     sim=SimDescription(
         joint_qpos_addr={

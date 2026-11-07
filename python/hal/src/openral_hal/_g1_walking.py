@@ -50,13 +50,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _download(relative_path: str, expected_sha256: str, destination: Path) -> None:
+def _download(
+    relative_path: str,
+    expected_sha256: str,
+    destination: Path,
+    *,
+    root: str = _RAW_ROOT,
+    label: str = "G1 walking asset",
+) -> None:
+    """Fetch ``root/relative_path`` into ``destination``, fail-closed on SHA-256 mismatch.
+
+    A cached file with the expected digest is reused offline; a fresh download
+    lands in a per-process temporary file and is renamed into place only once
+    verified. ``root`` must be a URL pinned to a commit (never a branch);
+    ``label`` names the asset family in errors.
+    """
     if destination.is_file() and _sha256(destination) == expected_sha256:
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
     request = urllib.request.Request(
-        f"{_RAW_ROOT}/{relative_path}",
+        f"{root}/{relative_path}",
         headers={"User-Agent": "OpenRAL-G1-walking-assets"},
     )
     try:
@@ -68,14 +82,12 @@ def _download(relative_path: str, expected_sha256: str, destination: Path) -> No
                 output.write(chunk)
     except (OSError, urllib.error.URLError) as exc:
         temporary.unlink(missing_ok=True)
-        raise ROSConfigError(
-            f"Could not download pinned G1 walking asset {relative_path!r}: {exc}"
-        ) from exc
+        raise ROSConfigError(f"Could not download pinned {label} {relative_path!r}: {exc}") from exc
     actual_sha256 = _sha256(temporary)
     if actual_sha256 != expected_sha256:
         temporary.unlink(missing_ok=True)
         raise ROSConfigError(
-            f"G1 walking asset {relative_path!r} failed SHA-256 verification: "
+            f"{label} {relative_path!r} failed SHA-256 verification: "
             f"expected {expected_sha256}, got {actual_sha256}."
         )
     os.replace(temporary, destination)

@@ -342,31 +342,33 @@ _Per-family scaffold defaults + HF Hub config introspection for `openral rskill 
 ### `python/cli/src/openral_cli/autodetect.py`
 _USB VID/PID enumeration and DDS topic discovery for `openral detect`._
 
-- `class UsbDevice(NamedTuple)` — A USB serial device on the host. (L66)
+- `class UsbDevice(NamedTuple)` — A USB serial device on the host. (L68)
   fields: `port, vid, pid, description`
-- `class KnownDevice(NamedTuple)` — A known USB adapter/controller from the VID/PID table. (L82)
+- `class KnownDevice(NamedTuple)` — A known USB adapter/controller from the VID/PID table. (L84)
   fields: `chip, driver_hint, embodiment_tag, bh_robot_type`
-- `class UsbMatch(NamedTuple)` — A detected device matched against the table. (L100)
+- `class UsbMatch(NamedTuple)` — A detected device matched against the table. (L102)
   fields: `device, known`
-- `class DdsTopic(NamedTuple)` — A ROS 2 topic observed during DDS scan. (L112)
+- `class DdsTopic(NamedTuple)` — A ROS 2 topic observed during DDS scan. (L114)
   fields: `name, type_name`
 - `class CanInterface(NamedTuple)` — One SocketCAN interface on the host. Defined in `openral_core.can` and re-exported here; the enumeration is transport mechanism shared with the HAL layer's bus preflight, while the robot *matching* below is this module's own concern.
   fields: `name, is_up, fd_enabled, bitrate, data_bitrate, state, driver, mtu, vid, pid, description`
-- `class CanMatch(NamedTuple)` — CAN interfaces that together identify one robot; a bimanual arm contributes one per side. (L496)
+- `class CanMatch(NamedTuple)` — CAN interfaces that together identify one robot; a bimanual arm contributes one per side. (L573)
   fields: `interfaces, known`
-- `_enumerate_linux_pyudev() -> list[UsbDevice]` (L249)
-- `_enumerate_macos_system_profiler() -> list[UsbDevice]` (L285)
-- `_enumerate_glob_fallback() -> list[UsbDevice]` — `/dev/tty*` glob. (L330)
-- `enumerate_usb_devices() -> list[UsbDevice]` — OS-routed enumerator. (L353)
-- `match_known_devices(devices) -> list[UsbMatch]` (L385)
-- `_VID_PID_TABLE: dict[tuple[int, int], KnownDevice]` — USB `(VID, PID)` → `KnownDevice` lookup driving `match_known_devices`. (L128)
-- `scan_dds_topics(timeout_s=5.0) -> list[DdsTopic]` — `ros2 topic list -t`. (L412)
-- `_TOPIC_ROBOT_MAP: dict[str, str]` — DDS topic name substring → robot slug, driving `infer_robot_from_topics`. (L233)
-- `infer_robot_from_topics(topics) -> str | None` (L460)
+- `_enumerate_linux_pyudev() -> list[UsbDevice]` (L278)
+- `_enumerate_macos_system_profiler() -> list[UsbDevice]` (L314)
+- `_enumerate_glob_fallback() -> list[UsbDevice]` — `/dev/tty*` glob. (L359)
+- `enumerate_usb_devices() -> list[UsbDevice]` — OS-routed enumerator. (L382)
+- `match_known_devices(devices) -> list[UsbMatch]` (L414)
+- `_VID_PID_TABLE: dict[tuple[int, int], KnownDevice]` — USB `(VID, PID)` → `KnownDevice` lookup driving `match_known_devices`. (L130)
+- `scan_dds_topics(timeout_s=5.0) -> list[DdsTopic]` — `ros2 topic list -t`. (L441)
+- `_TOPIC_ROBOT_MAP: dict[str, str]` — DDS topic name substring → robot slug, driving `infer_robot_from_topics`. (L234)
+- `infer_robot_from_topics(topics) -> str | None` — Unitree topics resolve only when their message family has a single model; otherwise skipped (no guess). (L527)
+- `unitree_candidates_from_topics(topics) -> tuple[str, ...]` — Unitree model slugs consistent with the topics: `unitree_hg` → `g1, h1_2, h2`; `unitree_go` → `h1, go2, b2`; untyped → all; `()` when no Unitree topic. (L489)
+- `_UNITREE_FAMILY_CANDIDATES: dict[str, tuple[str, ...]]` — Unitree message package → candidate model slugs (extension point for new models). (L269)
 - `enumerate_can_interfaces(*, sysfs_net=None) -> list[CanInterface]` — Re-exported from `openral_core.can` (see [Layer 0](00-core-schemas.md)); Linux-only, dependency-free SocketCAN enumeration via `/sys/class/net` and `ip -details -json link show`. Needs no root and opens no socket, so it never perturbs a running robot.
-- `match_can_interfaces(interfaces) -> list[CanMatch]` — Groups *up* interfaces by the robot their names declare, since a CAN bus carries no vendor descriptor — only a udev-pinned interface name is a durable signal. A bare `can0` stays unmatched by design. (L586)
-- `_CAN_NAME_ROBOT_TABLE: dict[str, KnownDevice]` — Interface-name substring → `KnownDevice`, driving `match_can_interfaces`. (L522)
-- `infer_robot_from_can(interfaces) -> str | None` — First matched robot slug, else `None`. (L629)
-- `can_adapter_name(iface) -> str` — Catalogued adapter name (`_CAN_ADAPTER_TABLE`), else the USB product string, else a vendor-only label, else `"SocketCAN"` for an on-SoC controller. Descriptive only — never used to infer a robot, since the same dongle drives any CAN machine. (L546)
-- `_CAN_ADAPTER_TABLE: dict[tuple[int, int], str]` — USB `(VID, PID)` → catalogued CAN adapter name, used only for the descriptive label in `can_adapter_name`. (L536)
-- `_CAN_VENDOR_TABLE: dict[int, str]` — USB VID → vendor-only fallback label for `can_adapter_name` when the PID is not catalogued. (L541)
+- `match_can_interfaces(interfaces) -> list[CanMatch]` — Groups *up* interfaces by the robot their names declare, since a CAN bus carries no vendor descriptor — only a udev-pinned interface name is a durable signal. A bare `can0` stays unmatched by design. (L663)
+- `_CAN_NAME_ROBOT_TABLE: dict[str, KnownDevice]` — Interface-name substring → `KnownDevice`, driving `match_can_interfaces`. (L599)
+- `infer_robot_from_can(interfaces) -> str | None` — First matched robot slug, else `None`. (L706)
+- `can_adapter_name(iface) -> str` — Catalogued adapter name (`_CAN_ADAPTER_TABLE`), else the USB product string, else a vendor-only label, else `"SocketCAN"` for an on-SoC controller. Descriptive only — never used to infer a robot, since the same dongle drives any CAN machine. (L623)
+- `_CAN_ADAPTER_TABLE: dict[tuple[int, int], str]` — USB `(VID, PID)` → catalogued CAN adapter name, used only for the descriptive label in `can_adapter_name`. (L613)
+- `_CAN_VENDOR_TABLE: dict[int, str]` — USB VID → vendor-only fallback label for `can_adapter_name` when the PID is not catalogued. (L618)

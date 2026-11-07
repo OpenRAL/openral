@@ -145,6 +145,14 @@ _Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`);
 - `prop _LEFT_CAN_INTERFACE, _RIGHT_CAN_INTERFACE` (L45–46) — `"openarm_left"` / `"openarm_right"`; must match the udev names `openral_hal.openarm_real._LEFT_CAN_INTERFACE` / `_RIGHT_CAN_INTERFACE` assign to the USB CAN-FD adapter's two channels.
 - `_ROBOT_CONTROLLER` (L51) — `"joint_trajectory_controller"`; must match the controller type `OpenArmRealHAL` publishes `JointTrajectory` messages to, not `forward_position_controller` (which takes `Float64MultiArray`).
 
+### `packages/openral_hal_unitree/launch/real_bringup.launch.py`
+
+_Bringup-only package: the Unitree hg HAL node is the generic `openral_hal_node` running `openral_hal.unitree_real:UnitreeHgRealHAL`; `robots/g1/robot.yaml` reaches this file through `hal.real_bringup`._
+
+- `generate_launch_description() -> LaunchDescription` (L250) — NVIDIA's S0 graph for a real Unitree hg robot: `controller_manager` (200 Hz) on `unitree_hg_ros2_control` with NVIDIA's real xacro (`with_hands:=false`, 29 joints), broadcasters, `safety_controller` ← `inference_controller` (S0 ONNX policy) + `upper_body_forward_joint_command_controller`, `freeze_controller` loaded inactive. Args `robot_model` (g1), `policy` (default `gr00t_decoupled_wbc`; the policy file's `controllers` block via `openral_hal.unitree_s0_policy`), `network_interface` (default `$OPENRAL_UNITREE_NETWORK_INTERFACE` / `eth0`), `inference_controller_config_path`. Loads everything inactive then activates the runtime group in one strict switch; `safety_controller.blend_ratio` stays 0.0 (operator raises it). Activation releases Unitree's built-in locomotion — robot on a gantry.
+- `_S0_CHAIN` (L98) — must equal `UnitreeHgRealHAL.controller_names()` (test-enforced).
+- `_DEFAULT_POLICY` (L86) — must equal the manifest's `hal.parameters.defaults.s0_policy` (test-enforced).
+
 ### `packages/openral_slam_bringup/launch/`
 
 - `generate_launch_description() -> LaunchDescription` (slam_toolbox.launch.py L40) — Stand-alone bring-up of upstream `slam_toolbox/async_slam_toolbox_node` as a `LifecycleNode` (auto-transitions only to INACTIVE; the Reasoner promotes to ACTIVE via `LifecycleTransitionTool`). Composed into `deploy_e2e.launch.py` when `enable_slam:=true`.
