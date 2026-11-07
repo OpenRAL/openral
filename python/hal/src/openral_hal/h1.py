@@ -18,7 +18,9 @@ territory (CLAUDE.md §3 dual-system pattern, M2 milestone) — out of scope her
 
 Joint inventory: the menagerie MJCF has 20 joints (19 actuated + 1
 floating base, not exposed on ``RobotDescription`` — implicit world
-state, not Skill-commanded) and 19 position actuators in a fixed order:
+state, not Skill-commanded) and 19 torque (``motor``) actuators in a
+fixed order, which ``H1MujocoHAL`` drives through a software PD position
+loop (see ``_per_step_update``):
 
     legs  : 2 x (hip_yaw, hip_roll, hip_pitch, knee, ankle)
     torso : 1 (yaw only)
@@ -332,7 +334,8 @@ class H1MujocoHAL(MujocoArmHAL):
     """HAL adapter for the Unitree H1 humanoid (MuJoCo digital twin).
 
     Drives the 19 actuated joints of the menagerie ``unitree_h1`` MJCF
-    through MuJoCo's position-controlled actuators.  Exposes a 19-D
+    through its torque (``motor``) actuators, closing a software PD
+    position loop every ``mj_step``.  Exposes a 19-D
     ``openral_core.Action`` matching the joint order in
     ``H1_DESCRIPTION`` (left leg 5 → right leg 5 → torso 1 → left
     arm 4 → right arm 4).
