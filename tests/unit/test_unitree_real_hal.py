@@ -223,8 +223,8 @@ def test_an_arm_command_carries_every_upper_body_joint_then_a_zero_twist() -> No
         assert by_name[n] == pytest.approx(v)
     # Unowned upper-body joints hold their measured position (SimTransport starts at 0).
     assert all(by_name[n] == 0.0 for n in _RIGHT_ARM)
-    # One control period at the manifest's 20 Hz.
-    assert upper["time_from_start_s"] == pytest.approx(1 / 20)
+    # One control period at the manifest's declared rate (50 Hz).
+    assert upper["time_from_start_s"] == pytest.approx(1 / 50)
     assert twist_topic == _TWIST_TOPIC
     assert twist == {"twist": [0.0] * 6}
 

@@ -585,9 +585,7 @@ class G1MujocoHAL(MujocoArmHAL):
         )
         if body_twist_dt_s is None:
             rate_desc = description if description is not None else G1_DESCRIPTION
-            rate_hz = (
-                rate_desc.action_spec.control_freq_hz if rate_desc.action_spec else None
-            )
+            rate_hz = rate_desc.action_spec.control_freq_hz if rate_desc.action_spec else None
             if rate_hz is None or rate_hz <= 0.0:
                 raise ROSConfigError(
                     "G1MujocoHAL needs body_twist_dt_s or a description with "
