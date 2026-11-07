@@ -237,14 +237,19 @@ def _checkpoint_camera_order(
     return tuple(slot_of[key] for key in checkpoint_keys)
 
 
+def _norm_stats_path(repo_id: str, revision: str | None) -> str:
+    """Local path of the checkpoint's ``norm_stats.json`` at ``revision``."""
+    from huggingface_hub import hf_hub_download
+
+    with _hf_offline_if_cached(repo_id, probe_file="norm_stats.json", revision=revision):
+        return str(hf_hub_download(repo_id, "norm_stats.json", revision=revision))
+
+
 def _norm_stats_camera_keys(repo_id: str, revision: str | None, norm_tag: str) -> tuple[str, ...]:
     """The checkpoint's camera order for ``norm_tag`` from its ``norm_stats.json``."""
     import json
 
-    from huggingface_hub import hf_hub_download
-
-    with _hf_offline_if_cached(repo_id, probe_file="norm_stats.json", revision=revision):
-        path = hf_hub_download(repo_id, "norm_stats.json", revision=revision)
+    path = _norm_stats_path(repo_id, revision)
     with open(path, encoding="utf-8") as fh:
         stats = json.load(fh)
     meta = stats.get("metadata_by_tag", {}).get(norm_tag, {})
@@ -606,9 +611,10 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
             config = config_cls.from_pretrained(source_repo, revision=revision)
         # transformers 5.x no longer populates config._name_or_path from
         # from_pretrained, but MolmoAct2's `_get_robot_stats` reads it to locate
-        # (and hf_hub_download) norm_stats.json on the first predict_action. Set
-        # it to the source_repo so the lazy norm-stats fetch resolves.
-        config._name_or_path = source_repo
+        # norm_stats.json on the first predict_action. Point it at the pinned
+        # snapshot dir: a local dir is read directly, while a repo id would be
+        # hf_hub_download-ed with no revision (HEAD, not the pin).
+        config._name_or_path = os.path.dirname(_norm_stats_path(source_repo, revision))
         prev_dtype = torch.get_default_dtype()
         torch.set_default_dtype(torch.bfloat16)
         try:
@@ -660,7 +666,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         )
     # See the fast-path note: transformers 5.x leaves config._name_or_path empty,
     # which MolmoAct2's `_get_robot_stats` needs to fetch norm_stats.json.
-    model.config._name_or_path = source_repo
+    model.config._name_or_path = os.path.dirname(_norm_stats_path(source_repo, revision))
 
     if not use_nf4:
         with _molmoact2_phase("cast_and_to_device", device=device, dtype=dtype_str):

@@ -27,7 +27,7 @@ metadata:
   license_code: Apache-2.0
   license_weights: apache-2.0
   weights_uri: hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4@7cd8070161663a2dfe11c00cd1e1a7b59e4787fd
-  source_repo: hf://allenai/MolmoAct2-LIBERO
+  source_repo: hf://allenai/MolmoAct2-LIBERO@0d24a92bd1faf321ef497c3bbd5681af97c65aa2
   paper_url: https://arxiv.org/abs/2605.02881
 ---
 
