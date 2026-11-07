@@ -337,26 +337,70 @@ Galaxea A1 hardware bring-up and the LingBot-VA rSkill deploy runbook moved to [
 ### `python/hal/src/openral_hal/h1.py`
 _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum, so gravity must stay disabled in closed-loop tests. Unlike G1/UR/Franka/SO-100, the H1 menagerie ships torque actuators, so this HAL runs a software PD position loop every physics step._
 
-- `class H1MujocoHAL(MujocoArmHAL)` — Takes `description=` (loaded manifest; `None` → `H1_DESCRIPTION`). 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml` (legs + torso + arms, no wrists); thin manifest-driven wrapper around `MujocoArmHAL`. Overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange`, so the public action contract stays "position targets in radians" — mirroring how `unitree_sdk2` wraps torque control in a position loop on real hardware. (L329)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` (L370)
-  - `_per_step_update(targets) -> None` — Recomputes PD torque every `mj_step`.
+- `class H1MujocoHAL(MujocoArmHAL)` — Takes `description=` (loaded manifest; `None` → `H1_DESCRIPTION`). 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml` (legs + torso + arms, no wrists); thin manifest-driven wrapper around `MujocoArmHAL`. Overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange`, so the public action contract stays "position targets in radians" — mirroring how `unitree_sdk2` wraps torque control in a position loop on real hardware. (L330)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` (L371)
+  - `_per_step_update(targets) -> None` — Recomputes PD torque every `mj_step` via `_floating_base.apply_software_pd`.
   - `_apply_arm_targets(targets) -> None` — No-op (PD loop runs per-step instead).
-- module const `_H1_LEFT_LEG_JOINTS: tuple[str, ...]` (L80) — left-leg joint names.
-- module const `_H1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L87) — right-leg joint names.
-- module const `_H1_TORSO_JOINTS: tuple[str, ...]` (L94) — torso joint name(s).
-- module const `_H1_LEFT_ARM_JOINTS: tuple[str, ...]` (L95) — left-arm joint names.
-- module const `_H1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L101) — right-arm joint names.
-- module const `_H1_JOINT_NAMES: tuple[str, ...]` (L107) — full 19-DoF joint order (legs + torso + arms).
-- module const `_H1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L122) — per-joint position limits.
-- module const `_H1_EFFORT_LIMITS: dict[str, float]` (L149) — per-joint actuator effort ceiling used to clamp the software PD loop's torque.
-- module const `_H1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L176) — per-kinematic-group velocity limits.
-- module const `_H1_KP_BY_GROUP: dict[str, float]` (L309) — per-kinematic-group PD proportional gain.
-- module const `_H1_KV_BY_GROUP: dict[str, float]` (L317) — per-kinematic-group PD derivative gain.
-- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L189)
-- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L194)
-- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L230)
-- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L320)
-- const `H1_DESCRIPTION = RobotDescription(...)` (L253) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"`, `hal.real=None` (sim-only). In-code mirror of `robots/h1/robot.yaml` (the runtime source; `build_hal` passes it as `description=`); drift-guarded against `robots/h1/robot.yaml`.
+- module const `_H1_LEFT_LEG_JOINTS: tuple[str, ...]` (L81) — left-leg joint names.
+- module const `_H1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L88) — right-leg joint names.
+- module const `_H1_TORSO_JOINTS: tuple[str, ...]` (L95) — torso joint name(s).
+- module const `_H1_LEFT_ARM_JOINTS: tuple[str, ...]` (L96) — left-arm joint names.
+- module const `_H1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L102) — right-arm joint names.
+- module const `_H1_JOINT_NAMES: tuple[str, ...]` (L108) — full 19-DoF joint order (legs + torso + arms).
+- module const `_H1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L123) — per-joint position limits.
+- module const `_H1_EFFORT_LIMITS: dict[str, float]` (L150) — per-joint actuator effort ceiling used to clamp the software PD loop's torque.
+- module const `_H1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L177) — per-kinematic-group velocity limits.
+- module const `_H1_KP_BY_GROUP: dict[str, float]` (L310) — per-kinematic-group PD proportional gain.
+- module const `_H1_KV_BY_GROUP: dict[str, float]` (L318) — per-kinematic-group PD derivative gain.
+- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L190)
+- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L195)
+- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L231)
+- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L321)
+- const `H1_DESCRIPTION = RobotDescription(...)` (L254) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"`, `hal.real=None` (sim-only). In-code mirror of `robots/h1/robot.yaml` (the runtime source; `build_hal` passes it as `description=`); drift-guarded against `robots/h1/robot.yaml`.
+
+### `python/hal/src/openral_hal/h2.py`
+_MuJoCo digital twin for the Unitree H2 humanoid on Unitree's official `unitree_mujoco` MJCF (asset ref `unitree:h2`). 31 joints in `unitree_sdk2` motor order; gravity-on twin with the free joint pinned upright (ADR-0087 glide) and a software PD over the MJCF's torque `motor` actuators that also runs during `idle_step`. Sim-only (`hal.real=None`)._
+
+- `class H2MujocoHAL(MujocoArmHAL)` — Takes `description=` (loaded manifest; `None` → `H2_DESCRIPTION`). On `connect`, lowers the pin so the lowest foot-sphere surface sits on `z = 0`, zeroes `ctrl` and captures the hold targets from `qpos`. (L322)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, description=None)` (L357)
+  - `connect() -> None` (L387) — Load the MJCF, lower the base onto the floor plane, hold the default pose.
+  - `reset_to_pose(pose) -> None` (L412) — Snap the joints and make `pose` the PD hold target (clears the base class's qpos-as-ctrl seed, which would be N·m on a torque actuator).
+  - `base_pose -> tuple[float, float, float]` (property) — Pinned base `(x, y, yaw)`. (L424)
+  - `base_twist -> tuple[float, ...]` (property) — Last commanded base twist; zeroed by non-twist actions. (L432)
+  - `send_action(action) -> None` (L438) — `BODY_TWIST` integrates the planar twist into the pin and steps with the joints holding; `JOINT_POSITION` makes the last waypoint the hold target and steps PD + pin.
+  - `idle_step(wall_dt_s=None) -> bool` (L471) — HOLD-steps with PD + pin every physics step (the base `idle_step` would replay the last torque open-loop); `False` once disconnected / e-stopped.
+- module const `_H2_JOINT_NAMES: tuple[str, ...]` (L105) — the 31 joints in SDK motor-index order (legs 0–11, ankle roll before pitch; waist 12–14; arms 15–28; head 29–30).
+- module const `_H2_LIMITS: dict[str, tuple[float, float, float, float]]` (L125) — `(lower, upper, effort, velocity)` per joint, verbatim from `unitree_ros` `H2.urdf` @ `41dec58c`.
+- module const `_H2_PARENT_CHILD: dict[str, tuple[str, str]]` (L162) — URDF `(parent_link, child_link)` per joint.
+- module const `_H2_MJCF_TREE_ORDER` / `_H2_QPOS_ADDR: dict[str, int]` (L223) — MJCF tree order (head between waist and arms) and the joint→qpos map it implies; qvel is qpos − 1. Carried into `H2_DESCRIPTION.sim.joint_qpos_addr` / `joint_qvel_addr`.
+- module const `_H2_PD_BY_GROUP` / `_H2_WRIST_PD` (L285) — PD `(kp, kd)`: body from `unitree_rl_mjlab` `h2_constants.py` @ `1425b15f`, head from `unitree_sdk2` `h2_ankle_swing_example.cpp` @ `8e1b9275`.
+- `_h2_joint_specs() -> list[JointSpec]` (L197) — Build the 31 `JointSpec`s.
+- `_h2_pd_gains() -> dict[str, tuple[float, float]]` (L302) — Per-joint `(kp, kd)`.
+- const `H2_DESCRIPTION = RobotDescription(...)` (L233) — In-code mirror of `robots/h2/robot.yaml` (drift-guarded); `assets` `unitree:h2` for both URDF and MJCF, `supported_control_modes=[joint_position, body_twist]`, tags `h2`/`unitree_h2`/`humanoid`/`mobile_base`, no sensors (unverified upstream).
+
+### `python/hal/src/openral_hal/_unitree_h2_assets.py`
+_Fetches Unitree's official H2 description files at pinned commits, each beside its own meshes, with per-file SHA-256 — backs the `unitree:h2` asset ref._
+
+- `ensure_h2_urdf() -> Path` (L253) — `unitree_ros` @ `41dec58c` `robots/h2_description/H2.urdf` + 34 meshes into `$OPENRAL_CACHE_DIR/unitree_h2/unitree_ros/<sha>/…`. Raises `ROSConfigError` on a failed download or digest mismatch (nothing installed).
+- `ensure_h2_mjcf() -> Path` (L264) — `unitree_mujoco` @ `1eb6642e` `unitree_robots/h2/h2_mujoco.xml` (+ `scene.xml`, 32 meshes); returns the bare-robot MJCF. Same failure contract.
+- const `UNITREE_ROS_SHA: str` (L41) — pinned `unitreerobotics/unitree_ros` commit.
+- const `UNITREE_MUJOCO_SHA: str` (L43) — pinned `unitreerobotics/unitree_mujoco` commit.
+
+### `python/hal/src/openral_hal/_floating_base.py`
+_Shared floating-base helpers for the pinned-humanoid twins (G1, H2): the ADR-0087 kinematic-glide pin and the software PD law for torque actuators (H1, H2). Sim-only._
+
+- type alias `BasePin = tuple[float, float, float, float]` (L38) — `(x, y, yaw, z0)` the free joint is pinned to.
+- `capture_base_pin(qpos) -> BasePin` (L45) — `(x, y, yaw, z)` from a free joint's `qpos[0:7]`.
+- `integrate_planar_twist(pin, vx, vy, wz, dt) -> BasePin` (L57) — Euler-integrate a body-frame planar twist (rotated into world by the current yaw; yaw wrapped).
+- `write_base_pin(data, pin) -> None` (L75) — Write the upright pose into `qpos[0:7]` and zero `qvel[0:6]`.
+- `validate_planar_body_twist(action, hal_name) -> tuple[float, float, float]` (L86) — Return `(vx, vy, wz)`; raises `ROSConfigError` for an empty, wrong-width or non-planar `BODY_TWIST` row.
+- `apply_software_pd(model, data, targets, gains, actuator_index, qpos_addr, qvel_addr) -> None` (L111) — `tau = kp (target - q) - kd dq` clamped to `ctrlrange`, written into `ctrl`; one call per `mj_step`.
+
+### `python/hal/src/openral_hal/_pinned_files.py`
+_Single-file pinned download with SHA-256 verification and atomic install, shared by `_g1_walking` and `_unitree_h2_assets` (the clone-based fetchers use `_pinned_clone`)._
+
+- `sha256_file(path) -> str` (L27) — Streamed hex SHA-256 of a file.
+- `fetch_pinned_file(url, expected_sha256, destination, *, what, user_agent=...) -> None` (L44) — Reuse a verified cached file, else download to a per-process temp file, verify, `os.replace` into place. Raises `ROSConfigError` on download failure or digest mismatch (fail-closed). Reuse watch: the canonical single-file pinned fetcher.
 
 ### `python/hal/src/openral_hal/flexiv_rizon4.py`
 _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body force sensitivity (0.1 N).  Structurally identical to the UR / Franka sim HALs: position actuators, no gripper, no floating base, no PD-loop overrides — a clean `MujocoArmHAL` subclass._
@@ -505,42 +549,41 @@ _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions`
 ### `python/hal/src/openral_hal/g1.py`
 _MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; explicit `walking_enabled=True` selects ADR-0089's pinned MuJoCo Playground ONNX policy and matching gravity-on dynamics._
 
-- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; walking mode swaps in the pinned policy-tuned MJCF + ONNX controller. Floating-base joint remains implicit world state. (L379)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False)` (L418)
-  - `connect() -> None` (L492) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`. Raises `ROSConfigError` (and disconnects) if the walking MJCF lacks that keyframe.
-  - `disconnect() -> None` (L512) — Release the walking controller, then the MuJoCo model.
-  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking base pose. (L480)
-  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action. (L488)
-  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Non-planar twist components raise `ROSConfigError`. (L517)
-  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned; walking state resets so a stale velocity command is never replayed. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L564)
-  - `reset_to_pose(pose: list[float]) -> None` (L576) — Reset the joint pose plus the base pin and (when walking) the gait state.
-  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin: `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L604)
-- module const `_PLANAR_TWIST_EPS` (L80) — tolerance for detecting a non-planar `BODY_TWIST` component (`send_action`'s validation).
-- module const `_G1_LEFT_LEG_JOINTS: tuple[str, ...]` (L92) — left-leg joint names.
-- module const `_G1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L100) — right-leg joint names.
-- module const `_G1_WAIST_JOINTS: tuple[str, ...]` (L108) — waist joint names.
-- module const `_G1_LEFT_ARM_JOINTS: tuple[str, ...]` (L113) — left-arm joint names.
-- module const `_G1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L122) — right-arm joint names.
-- module const `_G1_JOINT_NAMES: tuple[str, ...]` (L131) — full 29-DoF joint order (legs + waist + arms).
-- module const `_G1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L150) — per-joint position limits.
-- module const `_G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L186) — per-kinematic-group velocity limits.
-- module const `_G1_EFFORT_LIMITS_BY_GROUP: dict[str, float]` (L195) — per-kinematic-group effort limits.
-- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L209)
-- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L214)
-- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L264)
-- const `G1_DESCRIPTION = RobotDescription(...)` (L292) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"`, `hal.real=None` (sim-only); in-code mirror — `build_hal` passes the loaded `robots/g1/robot.yaml` as `description=`. Advertises `supported_control_modes=[joint_position, body_twist]`, `mobile_base` in `embodiment_tags`, and a forward `head` RGB camera so BODY_TWIST nav skills (InternVLA-N1) match. All MuJoCo wiring lives in `G1_DESCRIPTION.sim`; drift-guarded against `robots/g1/robot.yaml`.
+- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; walking mode swaps in the pinned policy-tuned MJCF + ONNX controller. Floating-base joint remains implicit world state. (L380)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False)` (L419)
+  - `connect() -> None` (L493) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`. Raises `ROSConfigError` (and disconnects) if the walking MJCF lacks that keyframe.
+  - `disconnect() -> None` (L513) — Release the walking controller, then the MuJoCo model.
+  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking base pose. (L481)
+  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action. (L489)
+  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Non-planar twist components raise `ROSConfigError`. (L518)
+  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned; walking state resets so a stale velocity command is never replayed. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L559)
+  - `reset_to_pose(pose: list[float]) -> None` (L571) — Reset the joint pose plus the base pin and (when walking) the gait state.
+  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin via `_floating_base` (`capture_base_pin` / `write_base_pin`): `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L584)
+- module const `_G1_LEFT_LEG_JOINTS: tuple[str, ...]` (L93) — left-leg joint names.
+- module const `_G1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L101) — right-leg joint names.
+- module const `_G1_WAIST_JOINTS: tuple[str, ...]` (L109) — waist joint names.
+- module const `_G1_LEFT_ARM_JOINTS: tuple[str, ...]` (L114) — left-arm joint names.
+- module const `_G1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L123) — right-arm joint names.
+- module const `_G1_JOINT_NAMES: tuple[str, ...]` (L132) — full 29-DoF joint order (legs + waist + arms).
+- module const `_G1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L151) — per-joint position limits.
+- module const `_G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L187) — per-kinematic-group velocity limits.
+- module const `_G1_EFFORT_LIMITS_BY_GROUP: dict[str, float]` (L196) — per-kinematic-group effort limits.
+- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L210)
+- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L215)
+- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L265)
+- const `G1_DESCRIPTION = RobotDescription(...)` (L293) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"`, `hal.real=None` (sim-only); in-code mirror — `build_hal` passes the loaded `robots/g1/robot.yaml` as `description=`. Advertises `supported_control_modes=[joint_position, body_twist]`, `mobile_base` in `embodiment_tags`, and a forward `head` RGB camera so BODY_TWIST nav skills (InternVLA-N1) match. All MuJoCo wiring lives in `G1_DESCRIPTION.sim`; drift-guarded against `robots/g1/robot.yaml`.
 
 ### `python/hal/src/openral_hal/_g1_walking.py`
 _ADR-0089's private, sim-only walking implementation._
 
-- `ensure_g1_walking_assets() -> tuple[str, str]` (L84) — downloads four files from pinned MuJoCo Playground commit `43d180a`, verifies SHA-256, links the cached Menagerie meshes, flattens the included MJCF, and returns `(mjcf_path, policy_path)`.
-- module const `_PINNED_SHA: str` (L19) — pinned MuJoCo Playground commit.
-- module const `_RAW_ROOT: str` (L20) — raw-GitHub root URL derived from `_PINNED_SHA`.
-- module const `_ASSETS: dict[str, str]` (L21) — the four pinned-asset relative paths mapped to their expected SHA-256 hex digests, verified by `ensure_g1_walking_assets`.
-- `class G1WalkingController` (L128) — 50 Hz CPU ONNX inference over 500 Hz MuJoCo physics; builds the upstream 103-D observation, validates the 29-D finite output, scales/clips joint targets, and persists gait phase/action history.
-  - `initialize(data: mujoco.MjData) -> None` (L157) — Capture `data.qpos[7:]` as the standing default-angle reference, then `reset_state()`.
-  - `reset_state() -> None` (L161) — Zero the last-action history and gait phase, reset the decimation counter.
-  - `apply(model: mujoco.MjModel, data: mujoco.MjData, command: tuple[float, float, float]) -> None` (L166) — Every `_CONTROL_DECIMATION`-th physics step, build the 103-D observation (base linear velocity, gyro, projected gravity, command, joint-angle delta, joint velocity, last action, phase sin/cos), run the ONNX policy, and scale/clip/apply the resulting joint targets.
+- `ensure_g1_walking_assets() -> tuple[str, str]` (L54) — downloads four files from pinned MuJoCo Playground commit `43d180a` via `_pinned_files.fetch_pinned_file`, verifies SHA-256, links the cached Menagerie meshes, flattens the included MJCF, and returns `(mjcf_path, policy_path)`.
+- module const `_PINNED_SHA: str` (L18) — pinned MuJoCo Playground commit.
+- module const `_RAW_ROOT: str` (L19) — raw-GitHub root URL derived from `_PINNED_SHA`.
+- module const `_ASSETS: dict[str, str]` (L20) — the four pinned-asset relative paths mapped to their expected SHA-256 hex digests, verified by `ensure_g1_walking_assets`.
+- `class G1WalkingController` (L98) — 50 Hz CPU ONNX inference over 500 Hz MuJoCo physics; builds the upstream 103-D observation, validates the 29-D finite output, scales/clips joint targets, and persists gait phase/action history.
+  - `initialize(data: mujoco.MjData) -> None` (L127) — Capture `data.qpos[7:]` as the standing default-angle reference, then `reset_state()`.
+  - `reset_state() -> None` (L131) — Zero the last-action history and gait phase, reset the decimation counter.
+  - `apply(model: mujoco.MjModel, data: mujoco.MjData, command: tuple[float, float, float]) -> None` (L136) — Every `_CONTROL_DECIMATION`-th physics step, build the 103-D observation (base linear velocity, gyro, projected gravity, command, joint-angle delta, joint velocity, last action, phase sin/cos), run the ONNX policy, and scale/clip/apply the resulting joint targets.
 
 ### `python/hal/src/openral_hal/so100_mujoco.py`
 _MuJoCo digital twin for the SO-100 follower arm (Menagerie MJCF)._

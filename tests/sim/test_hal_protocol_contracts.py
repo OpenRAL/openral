@@ -38,6 +38,7 @@ from openral_core import (
     ROSEStopRequested,
     ROSSafetyViolation,
 )
+from openral_core.assets import AssetFetchError
 from openral_hal import (
     HAL,
     AlohaMujocoHAL,
@@ -45,6 +46,7 @@ from openral_hal import (
     FrankaPandaHAL,
     G1MujocoHAL,
     H1MujocoHAL,
+    H2MujocoHAL,
     OpenArmMujocoHAL,
     Rizon4MujocoHAL,
     SO100MujocoHAL,
@@ -72,6 +74,7 @@ _HAL_CLASSES = [
     FrankaPandaHAL,
     G1MujocoHAL,
     H1MujocoHAL,
+    H2MujocoHAL,
     AlohaMujocoHAL,
     Rizon4MujocoHAL,
     OpenArmMujocoHAL,
@@ -86,7 +89,7 @@ def _make_hal(hal_class: type[HAL]) -> HAL:
     # Every listed class is a MujocoArmHAL subclass taking these kwargs; the
     # ``HAL`` Protocol itself declares no constructor.
     ctor: Callable[..., HAL] = hal_class
-    if issubclass(hal_class, (G1MujocoHAL, H1MujocoHAL)):
+    if issubclass(hal_class, (G1MujocoHAL, H1MujocoHAL, H2MujocoHAL)):
         # Humanoids settle longer; gravity off so the free-standing floating base
         # doesn't collapse during the settle steps and perturb the contract check.
         return ctor(gravity_enabled=False, settle_steps=1000)
@@ -110,7 +113,9 @@ def _missing_optional_dep(exc: BaseException) -> bool:
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if isinstance(cur, (ModuleNotFoundError, ImportError, FileNotFoundError)):
+        # AssetFetchError: a pinned upstream (e.g. ``unitree:h2``) could not be
+        # fetched on this host — the one resolution failure an offline host skips.
+        if isinstance(cur, (ModuleNotFoundError, ImportError, FileNotFoundError, AssetFetchError)):
             return True
         cur = cur.__cause__ or cur.__context__
     return False
@@ -284,6 +289,7 @@ _MJCF_MODEL_SHAPE: list[tuple[type[HAL], int, int | None]] = [
     (OpenArmMujocoHAL, 16, None),  # 16 position actuators in v2
     (G1MujocoHAL, 29, 30),  # 29 actuated joints + floating base
     (H1MujocoHAL, 19, 20),  # 19 actuated joints + floating base
+    (H2MujocoHAL, 31, 32),  # 31 actuated joints + floating base
     (Rizon4MujocoHAL, 7, None),
     (UR5eHAL, 6, None),
 ]
@@ -299,6 +305,7 @@ _SEED_CTRL_FROM_QPOS_HALS: list[type[HAL]] = [OpenArmMujocoHAL, AnvilOpenArmV2Mu
 _ZERO_REST_POSE: list[tuple[type[HAL], float]] = [
     (G1MujocoHAL, 1e-3),
     (H1MujocoHAL, 1e-3),
+    (H2MujocoHAL, 1e-3),
     (Rizon4MujocoHAL, 1e-6),
     (UR5eHAL, 1e-6),
 ]
@@ -309,6 +316,7 @@ _ZERO_REST_POSE: list[tuple[type[HAL], float]] = [
 _HOLDS_ZERO_POSE: list[type[HAL]] = [
     G1MujocoHAL,
     H1MujocoHAL,
+    H2MujocoHAL,
     OpenArmMujocoHAL,
     AnvilOpenArmV2MujocoHAL,
 ]

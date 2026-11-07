@@ -11,6 +11,9 @@ Grammar (``resolve_asset(ref, kind)``):
 * ``file:<relpath>`` — resolved against the manifest dir, then the repo root.
 * ``gym_aloha:<scene>`` · ``openarm:<variant>`` · ``menagerie:<model>`` —
   robot-specific MJCF loaders (sim-only optional deps, lazy-imported).
+* ``unitree:<model>`` — official Unitree description files fetched at a pinned
+  commit with per-file SHA-256 (``h2``: URDF from ``unitree_ros``, MJCF from
+  ``unitree_mujoco``), for robots in neither menagerie nor robot_descriptions.
 * ``ros2://robot_description`` — dynamic-detection marker (URDF only); not a
   file, returned as ``None`` for the launch to subscribe at runtime.
 
@@ -28,7 +31,7 @@ import contextlib
 import importlib
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
 
@@ -93,20 +96,15 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
         if kind != "urdf":
             raise AssetRefError(f"{_ROS2_DYNAMIC!r} is only valid for urdf, not {kind}")
         return None
-    if ref.startswith("rd:"):
-        return _resolve_rd(ref[3:], kind)
     if ref.startswith("file:"):
         return _resolve_file(ref[len("file:") :], manifest_dir)
-    if ref.startswith("gym_aloha:"):
-        return _resolve_gym_aloha(ref[len("gym_aloha:") :], kind)
-    if ref.startswith("openarm:"):
-        return _resolve_openarm(ref[len("openarm:") :], kind)
-    if ref.startswith("menagerie:"):
-        return _resolve_menagerie(ref[len("menagerie:") :], kind)
+    for prefix, resolver in _SCHEME_RESOLVERS:
+        if ref.startswith(prefix):
+            return resolver(ref[len(prefix) :], kind)
     raise AssetRefError(
         f"unrecognized asset ref {ref!r}; expected one of: rd:<module>, "
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
-        f"menagerie:<model>, {_ROS2_DYNAMIC}"
+        f"menagerie:<model>, unitree:<model>, {_ROS2_DYNAMIC}"
     )
 
 
@@ -323,6 +321,48 @@ def _resolve_openarm(variant: str, kind: AssetKind) -> Path:
     )
 
 
+def _resolve_unitree(model: str, kind: AssetKind) -> Path:
+    """Resolve ``unitree:<model>`` to a pinned official Unitree URDF / MJCF.
+
+    Models (lazy import keeps the fetcher off the path for other robots):
+
+    * ``h2`` — ``urdf``: ``unitree_ros`` ``H2.urdf``; ``mjcf``: ``unitree_mujoco``
+      ``h2_mujoco.xml``; each fetched beside its meshes by
+      ``openral_hal._unitree_h2_assets`` (pinned SHA + per-file SHA-256).
+
+    Raises:
+        AssetFetchError: The pinned files could not be fetched or verified.
+        AssetRefError: An unknown model, or a kind the model does not ship.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if model != "h2":
+        raise AssetRefError(f"unknown unitree model {model!r}; expected 'h2'")
+    if kind == "srdf":
+        raise AssetRefError("unitree:h2 ships a urdf and an mjcf, not an srdf")
+    try:
+        from openral_hal._unitree_h2_assets import ensure_h2_mjcf, ensure_h2_urdf
+    except ImportError as exc:
+        raise AssetRefError(
+            f"unitree:{model} needs openral_hal ({type(exc).__name__}: {exc})"
+        ) from exc
+    try:
+        return ensure_h2_urdf() if kind == "urdf" else ensure_h2_mjcf()
+    except ROSConfigError as exc:
+        raise AssetFetchError(f"unitree:{model} ({kind}): {exc}") from exc
+
+
 def _resolve_menagerie(model: str, kind: AssetKind) -> Path:
     """Resolve ``menagerie:<model>`` — not yet wired (YAGNI)."""
     raise AssetRefError(f"menagerie:{model} not yet wired — widowx is sim-only via SimplerEnv")
+
+
+# ``<scheme>:`` → resolver for every scheme but ``file:`` (which also takes the
+# manifest dir). Keep in lock-step with ``openral_core.schemas._ASSET_SCHEMES``.
+_SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
+    ("rd:", _resolve_rd),
+    ("gym_aloha:", _resolve_gym_aloha),
+    ("openarm:", _resolve_openarm),
+    ("menagerie:", _resolve_menagerie),
+    ("unitree:", _resolve_unitree),
+)

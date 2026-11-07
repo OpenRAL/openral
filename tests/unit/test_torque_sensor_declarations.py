@@ -17,7 +17,9 @@ from openral_core.schemas import RobotDescription
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("robot_id", ["anvil_openarm_v2", "openarm", "ur5e", "ur10e", "h1", "g1"])
+@pytest.mark.parametrize(
+    "robot_id", ["anvil_openarm_v2", "openarm", "ur5e", "ur10e", "h1", "g1", "h2"]
+)
 def test_no_current_estimated_joint_declares_a_torque_sensor(robot_id: str) -> None:
     desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot_id / "robot.yaml"))
     assert not any(j.has_torque_sensor for j in desc.joints)

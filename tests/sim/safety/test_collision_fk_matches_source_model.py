@@ -167,18 +167,22 @@ def test_g1_arms_are_not_stacked_on_the_pelvis() -> None:
     assert left[2] > 0.05
 
 
-def test_g1_lowers_exactly_onto_its_urdf() -> None:
-    """``g1``'s chain reproduces its URDF — the model its manifest is lowered from.
+@pytest.mark.parametrize("robot_id", ["g1", "h2"])
+def test_lowers_exactly_onto_its_urdf(robot_id: str) -> None:
+    """A URDF-lowered humanoid's chain reproduces its URDF — the model it is lowered from.
 
     The URDF is normative here: ``lower_joint_fk`` reads it, and the fleet drift
     guard (``tests/unit/test_collision_lowering_fleet.py``) holds the manifest to
-    what it emits. So this is the check that has teeth for ``g1`` — the waist
-    values must be the URDF's, not a same-robot MJCF's.
+    what it emits. So this is the check that has teeth for ``g1`` (the waist
+    values must be the URDF's, not a same-robot MJCF's) and ``h2`` (Unitree's
+    ``unitree_mujoco`` H2 MJCF places the wrist-pitch joint 4.1 cm closer to the
+    elbow than its ``unitree_ros`` URDF, so the MJCF-frame check above cannot
+    hold; ``tests/sim/test_h2_hal_mujoco.py`` pins that upstream disagreement).
     """
     yourdfpy = pytest.importorskip("yourdfpy", reason="URDF FK needs the [lowering] group")
     import numpy as np
 
-    robot = RobotDescription.from_yaml(str(_ROBOTS_DIR / "g1" / "robot.yaml"))
+    robot = RobotDescription.from_yaml(str(_ROBOTS_DIR / robot_id / "robot.yaml"))
     ours = _link_world_positions(collision_params_from_description(robot))
 
     urdf_path = resolve_asset(robot.assets.urdf.ref, "urdf")  # type: ignore[union-attr]  # reason: g1 declares a urdf
@@ -192,9 +196,9 @@ def test_g1_lowers_exactly_onto_its_urdf() -> None:
         compared += 1
         ref = np.asarray(model.get_transform(name), dtype=np.float64)[:3, 3]
         assert pos == pytest.approx(tuple(ref), abs=_TOL_M), (
-            f"g1 link {name!r} lowers to {pos} but its URDF places it at {tuple(ref)}"
+            f"{robot_id} link {name!r} lowers to {pos} but its URDF places it at {tuple(ref)}"
         )
-    assert compared >= 25, f"only {compared} g1 links matched; the check is vacuous"
+    assert compared >= 25, f"only {compared} {robot_id} links matched; the check is vacuous"
 
 
 def test_openarm_torso_sits_where_the_urdf_puts_it() -> None:

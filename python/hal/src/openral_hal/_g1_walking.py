@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+
+from openral_hal._pinned_files import fetch_pinned_file
 
 if TYPE_CHECKING:
     import mujoco
@@ -42,43 +41,14 @@ class _InferenceSession(Protocol):
     ) -> list[NDArray[np.float32]]: ...
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _download(relative_path: str, expected_sha256: str, destination: Path) -> None:
-    if destination.is_file() and _sha256(destination) == expected_sha256:
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    request = urllib.request.Request(
+    fetch_pinned_file(
         f"{_RAW_ROOT}/{relative_path}",
-        headers={"User-Agent": "OpenRAL-G1-walking-assets"},
+        expected_sha256,
+        destination,
+        what=f"G1 walking asset {relative_path!r}",
+        user_agent="OpenRAL-G1-walking-assets",
     )
-    try:
-        with (
-            urllib.request.urlopen(request, timeout=60) as response,
-            temporary.open("wb") as output,
-        ):
-            while chunk := response.read(1024 * 1024):
-                output.write(chunk)
-    except (OSError, urllib.error.URLError) as exc:
-        temporary.unlink(missing_ok=True)
-        raise ROSConfigError(
-            f"Could not download pinned G1 walking asset {relative_path!r}: {exc}"
-        ) from exc
-    actual_sha256 = _sha256(temporary)
-    if actual_sha256 != expected_sha256:
-        temporary.unlink(missing_ok=True)
-        raise ROSConfigError(
-            f"G1 walking asset {relative_path!r} failed SHA-256 verification: "
-            f"expected {expected_sha256}, got {actual_sha256}."
-        )
-    os.replace(temporary, destination)
 
 
 def ensure_g1_walking_assets() -> tuple[str, str]:

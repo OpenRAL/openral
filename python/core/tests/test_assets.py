@@ -50,5 +50,17 @@ def test_openarm_variants_are_mjcf_only() -> None:
             resolve_asset(ref, "urdf")
 
 
+def test_unknown_unitree_model_raises() -> None:
+    """``unitree:<model>`` dispatches explicitly; only ``h2`` is wired."""
+    with pytest.raises(AssetRefError, match="unknown unitree model"):
+        resolve_asset("unitree:h3", "mjcf")
+
+
+def test_unitree_h2_has_no_srdf() -> None:
+    """``unitree:h2`` ships a URDF and an MJCF; an SRDF request fails before any fetch."""
+    with pytest.raises(AssetRefError, match="not an srdf"):
+        resolve_asset("unitree:h2", "srdf")
+
+
 def test_ros2_marker_is_passthrough_not_a_file() -> None:
     assert resolve_asset("ros2://robot_description", "urdf") is None

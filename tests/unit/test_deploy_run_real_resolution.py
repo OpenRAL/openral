@@ -70,9 +70,10 @@ class TestRealModeResolution:
         assert "sim_robot_yaml" not in inv.hal_params
         assert "sim_env_yaml" not in inv.hal_params
 
-    def test_sim_only_robot_real_fails_fast(self) -> None:
-        with pytest.raises(ROSCapabilityMismatch, match="g1"):
-            _resolve("g1", "real")
+    @pytest.mark.parametrize("robot_id", ["g1", "h2"])
+    def test_sim_only_robot_real_fails_fast(self, robot_id: str) -> None:
+        with pytest.raises(ROSCapabilityMismatch, match=robot_id):
+            _resolve(robot_id, "real")
 
     def test_no_robot_and_no_config_raises(self) -> None:
         with pytest.raises(ROSConfigError, match="robot_id is undefined"):
