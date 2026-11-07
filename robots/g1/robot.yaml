@@ -481,10 +481,12 @@ safety:
 
 # `sdk_kind: open` because the menagerie MJCF + the `mujoco` Python
 # package are both Apache-2.0; the sim HAL needs no closed driver.
-# A future `G1RealHAL` over `unitree_sdk2` (BSD-3, closed-with-api
-# per CLAUDE.md §1.9) will derive its `RobotDescription` from this
+# A future `G1RealHAL` over `unitree_sdk2` will derive its `RobotDescription` from this
 # sim baseline via `make_real_description` and flip the sdk_kind (the
 # `hal` block is shared); that's tracked under the M2 milestone (CLAUDE.md §3 dual-system pattern).
+# `unitree_sdk2` is BSD-3-Clause, but its core ships only as a prebuilt
+# static library (`lib/<arch>/libunitree_sdk2.a`) behind public headers, so
+# that real HAL is `closed_with_api` (CLAUDE.md §1.9), not `open`.
 sdk_kind: "open"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
 # Sim-only → real: null until the M2 C++ S0 cerebellum (CLAUDE.md §3 dual-system pattern).
