@@ -216,6 +216,7 @@ _UNCOVERED_TWIN_BODIES: dict[str, str] = {
 )
 def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) -> None:
     from openral_safety.urdf_lowering import (
+        _manifest_to_mjcf_affine,
         _mjcf_link_bodies,
         mjcf_coupled_joints,
         select_lowering,
@@ -258,7 +259,21 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     own_body = {
         b for m in robot.mimic_joints for b in [link_body.get(m.child_link)] if b is not None
     }
+    # A mimic row on its leader's own MJCF joint (the Metal's link8, on joint8)
+    # owns that body, as in the lowering: the leader's logical child sharing it
+    # (`finger_pair`) carries no primitive and holds nothing.
+    mimic_owner = {
+        link_body[m.child_link]: m.child_link
+        for m in robot.mimic_joints
+        if m.child_link in link_body
+    }
+    for ln, b in link_body.items():
+        if mimic_owner.get(b, ln) != ln:
+            del bodies_of[ln]
     dof_adr: list[int] = []
+    # Manifest value -> MJCF qpos (`a + b * v`): identity except a normalised
+    # gripper, whose [0, 1] fraction the twin maps over `ctrl_range`.
+    affine: list[tuple[float, float]] = []
     limits: list[tuple[float, float]] = []
     for j in robot.joints:
         ji = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, j.sim_joint_name or j.name))
@@ -268,13 +283,14 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
             if int(model.jnt_bodyid[follower]) not in own_body:
                 bodies_of.setdefault(j.child_link, []).append(int(model.jnt_bodyid[follower]))
         dof_adr.append(int(model.jnt_qposadr[ji]))
+        affine.append(_manifest_to_mjcf_affine(robot, model, j.name, ji))
         lo, hi = j.position_limits if j.position_limits else (-np.pi, np.pi)
         limits.append((float(lo), float(hi)))
 
     def pose(q: npt.NDArray[np.float64]) -> list[npt.NDArray[np.float64]]:
         mujoco.mj_resetData(model, data)
         for d, adr in enumerate(dof_adr):
-            data.qpos[adr] = q[d]
+            data.qpos[adr] = affine[d][0] + affine[d][1] * q[d]
         # Followers track the joint the manifest drives, never the other way round.
         for leader, adr in driven.items():
             for follower, c0, c1 in coupled.get(leader, []):
