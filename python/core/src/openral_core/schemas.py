@@ -6559,7 +6559,9 @@ class QuantizationConfig(BaseModel):
     def _check_pro_dtype(cls, v: dict[str, object]) -> dict[str, object]:
         """``extra["pro_dtype"]``, when set, must name a ``QuantizationDtype``."""
         pro = v.get("pro_dtype")
-        if pro is not None and pro not in {d.value for d in QuantizationDtype}:
+        if pro is not None and (
+            not isinstance(pro, str) or pro not in {d.value for d in QuantizationDtype}
+        ):
             raise ValueError(
                 f"quantization.extra.pro_dtype={pro!r} is not a QuantizationDtype "
                 f"({sorted(d.value for d in QuantizationDtype)})"
