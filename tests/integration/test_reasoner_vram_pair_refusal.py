@@ -43,11 +43,24 @@ _VLA_ID = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
-def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
+@pytest.mark.parametrize(
+    ("gpu_total_gb", "dtype_override"),
+    [
+        pytest.param(4.0, None, id="pair-exceeds-card"),
+        # The bf16 pair fits 8 GB, but the runner will load the override; smolvla
+        # declares no fp32 size, so the pair cannot be verified and is refused.
+        pytest.param(8.0, "fp32", id="env-override-undeclared"),
+    ],
+)
+def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram(
+    gpu_total_gb: float, dtype_override: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A VLA whose pair (VLA + reward) exceeds GPU VRAM is refused before dispatch.
 
     smolvla (1.2 GB bf16) + robometer (5.5 GB int4) = 6.7 GB; with a 4.0 GB budget
-    the pair does not fit, so ``_refuse_unfittable_vla`` must:
+    the pair does not fit. With ``$OPENRAL_QUANTIZATION_DTYPE=fp32`` the check
+    budgets the dtype the runner resolves, not the manifest's. Either way
+    ``_refuse_unfittable_vla`` must:
 
     1. publish a ``KIND_CONTROLLER`` / ``vram_insufficient`` ``FailureTrigger`` for
        the VLA id, and
@@ -76,6 +89,10 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
+    if dtype_override is None:
+        monkeypatch.delenv("OPENRAL_QUANTIZATION_DTYPE", raising=False)
+    else:
+        monkeypatch.setenv("OPENRAL_QUANTIZATION_DTYPE", dtype_override)
     vla_manifest = RSkillManifest.from_yaml(str(_SMOLVLA))
     reward_manifest = RSkillManifest.from_yaml(str(_ROBOMETER))
 
@@ -123,7 +140,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         # VRAM-pair-refusal guard inputs (see module docstring — __init__ already read the
         # params, so set the attributes the guard reads directly):
         reasoner._reward_manifest = reward_manifest
-        reasoner._gpu_total_vram_gb = 4.0  # < 4.8 GB pair → must refuse
+        reasoner._gpu_total_vram_gb = gpu_total_gb
         # Prime the manifest cache like `_seed_palette` does, not by replacing
         # `_manifest_for_rskill`. A lambda stub here once bypassed the broken production
         # lookup, which consults the install registry (~/.local/share/openral/rskills.json,
