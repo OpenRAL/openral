@@ -30,22 +30,41 @@ guards it (see the manifest header).
 | `hal.sim` | `null` — `build_hal` derives `MujocoArmHAL.from_description` from the `sim:` block |
 | `hal.real` | `null` — no real-hardware HAL yet |
 
-## Estimated geometry
+## Measured geometry
 
-**MakerMods publishes no base-to-base spacing and no top-camera mount for the
-station.** The values below were triangulated from MakerMods' own footage, not
-measured on hardware:
+MakerMods publishes no base-to-base spacing and no top-camera mount for the
+station. Both are fitted from the real station's recordings in
+[`makermods/pen_holder_bi_20260723_161553`](https://huggingface.co/datasets/makermods/pen_holder_bi_20260723_161553)
+(41 bimanual pen-into-holder episodes, top + both wrist cameras, joint states in
+degrees with the URDF's signs and zeros; fit 2026-11-07).
 
-| Quantity | Value | How it was estimated | Where it lives |
+**Method.** One joint fit of three signals in the top camera, with both arms posed
+by forward kinematics of the recorded joint states:
+
+- arm-mesh silhouettes of both arms against dark-pixel masks in 40 random frames;
+- 1 897 detections of the left wrist camera's green PCB;
+- the pen-at-rest line in 39 episodes, which pins the right arm's base.
+
+The arm bases are never in view; the spacing comes from the links and the pen.
+
+| Quantity | Value | Error / checks | Where it lives |
 | --- | --- | --- | --- |
-| Arm spacing | 0.78 m (arms at y = ±0.39 m; plausible range 0.72–0.90) | Parked grippers' positions in the Station app's top-camera feed ([`metal-station/ask-bottle-app.mp4`](https://www.makermods.ai/metal-arm-station)) under the camera pose below | `STATION_ARM_SPACING_M` in `openral_hal._makermods_metal_assets`, and `fixed_attachments` `left_mount` / `right_mount` |
-| Top camera position | Mast centred between the arms, ~0.19 m behind the arm-base line, lens ~0.62 m above the plate | Height: Station hero video, arm rest height (0.283 m) as scale. Setback: PnP below | `sensors[top]` (`static_transform_calibrated: false`) |
-| Top camera orientation / lens | Facing forward, ~25° down; f ≈ 300 px at 640×480 (~94° HFOV) | PnP of the held cube (orange-blob centroid) against FK of the follower in [`HappyEthan/metal_pick_place`](https://huggingface.co/datasets/HappyEthan/metal_pick_place) episodes 0–16 (same kit stand; 244 points, median 3 px). Footage alone couples focal length and distance; the photo height fixes it | `sensors[top]` |
-| Wrist cameras | sim placement on each `*_gripper_base` | `sensors[wrist_*]` (`static_transform_calibrated: false`) |
+| Arm spacing | **0.612 m**, arms at y = ±0.306 m | ±0.02 m. The held-out silhouette cost is flat over 0.60–0.64 m and rises clearly by 0.55 / 0.68 m. Independent kinematic check (pen axis vs holder at insertion, 40 episodes): 0.584 ± 0.011 m. The previous footage estimate, 0.78 m, gives a 93 px pen-line residual against 1.6 px here. | `STATION_ARM_SPACING_M` in `openral_hal._makermods_metal_assets`, and `fixed_attachments` `left_mount` / `right_mount` |
+| Right base relative to left | (0.0069, −0.6119) m, yaw +0.9° | The 7 mm fore-aft offset and the 0.9° yaw are within the spacing error, so the model mounts both arms symmetrically with no yaw | — |
+| Top camera position | (0.068, −0.001, 0.587) m in `station_base`: on the mast centred between the arms, ~7 cm **in front of** the base line, 0.587 m above the plate | ±1.5 cm | `sensors[top]` |
+| Top camera orientation | Optical axis pitched 49.7° down, roll −2.2°, yaw −1.7° (REP-103 rpy `[-0.0377, 0.867, -0.0302]`); it meets the plate at (0.566, −0.016) m | ±1° | `sensors[top]` (`static_transform_xyz_rpy`; `sim_placement` target + image-up hint) |
+| Top camera lens | f = 314.4 px, principal point (321.4, 241.0), 640×480 (VFOV 74.7°, HFOV 91°), no distortion fitted | f ±10 px. Residuals: PCB median 2.9 px (p90 6.1), pen line 1.6 px (p90 6.9), held-out silhouette 0.53 px mean | `sensors[top].intrinsics` |
+| Wrist cameras | The single-arm refit, unchanged | FK fingertips and the FK object point land on the real fingertips and objects in both wrists; right-wrist pen-centre column error −5 px median | `sensors[wrist_*]` |
 
-Measure the real station, then update the asset constant, `fixed_attachments`
-and the camera transforms together. Until then, no frame derived from these
-values is calibrated.
+`station_base` is the midpoint of the two bases (the fit's `station_mid`); z = 0 is
+the plate / desk top. Rendering the derived MJCF's top camera at recorded joint
+states puts both grippers on the real ones in the dataset frames.
+
+The fit assumes zero lens distortion and URDF meshes that match the real links;
+cables and the wrist-camera housings are not modelled. The mounts stay
+`static_transform_calibrated: false` because they come from a dataset fit, not a
+measurement of the mount. If the station is rebuilt, re-fit and update the
+asset constant, `fixed_attachments` and the camera together.
 
 ## Assets and licensing
 
@@ -107,13 +126,23 @@ openral collision lower --robot robots/makermods_metal_station/robot.yaml --writ
 The exempt pairs are each arm's own adjacent pairs and its two fingers; **no pair
 across the arms is exempt**, so the kernel refuses an arm-to-arm contact (pinned in
 `tests/unit/test_collision_geometry_zero_pose.py`: both arms yawed inward and
-stretched to the middle of the plate trips `left_gripper_base` against
-`right_link7`, where 1 217 finger mesh vertices are inside the other gripper). The
-station start pose does not trip (`tests/unit/test_collision_makermods_metal_poses.py`).
+reaching to the middle of the plate until the fingertips meet trips `left_link7`
+against `right_link8`, where 21 finger mesh vertices are inside the other finger's
+hull). The station start pose does not trip
+(`tests/unit/test_collision_makermods_metal_poses.py`).
 
-**Still owed**: the arm spacing is a footage estimate (see
-[Estimated geometry](#estimated-geometry)), so the inter-arm distances are only as
-good as `STATION_ARM_SPACING_M`; re-lower after measuring the station. Safety-WG
+Checked once against all 25 987 recorded states of the pen-holder dataset (not a
+committed test; the parquet is not vendored): **no arm-to-arm stop**. Four states
+stop on `right_link1` against `right_link5` (−8.5 to −11.8 mm; episode 0 frames
+1–3 and episode 8 frame 2). All four are the folded rest with the wrist in
+`link1`'s pocket, a few mm from the real mesh, so this is a per-arm
+conservatism of the `link1` slabs, unrelated to the spacing.
+
+The arm spacing is measured to ±0.02 m (see [Measured geometry](#measured-geometry)).
+At 0.612 m the two 0.6125 m reach spheres overlap by 0.613 m, so the arms share
+most of the plate. Re-lower after any change to `STATION_ARM_SPACING_M`.
+
+**Still owed**: Safety-WG
 review, a hazard-log entry and a C++ kernel run are owed as for the single arm.
 
 ## Real hardware

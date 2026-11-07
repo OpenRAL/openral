@@ -25,9 +25,9 @@ and derives every file it needs from that clone at runtime:
   sim-only choice and say nothing about the real Damiao CAN loop.
 
 Station geometry: MakerMods publishes no base-to-base spacing for the two-arm
-Metal Arm Station, so ``STATION_ARM_SPACING_M`` is a provisional value. The
-station manifest marks every frame derived from it as not calibrated; measure
-the real station and update the constant (and the manifest) together.
+Metal Arm Station; ``STATION_ARM_SPACING_M`` is measured from the real
+station's ``makermods/pen_holder_bi_20260723_161553`` recordings (see the
+station README). Update the constant and the station manifest together.
 """
 
 from __future__ import annotations
@@ -62,12 +62,14 @@ _PKG_REL: str = "metal_ros2/src/metal_description"
 _URDF_REL: str = "urdf/metal_with_gripper.urdf"
 
 #: Lateral distance (metres) between the two arm bases on the Metal Arm
-#: Station. NOT a MakerMods figure — none is published. Estimated (0.72-0.90 m)
-#: from MakerMods' own Station demo video: where the parked grippers land in
-#: the top-camera feed, given that camera's pose (see the station manifest).
-#: Update it together with ``robots/makermods_metal_station/robot.yaml`` once
-#: measured on a real station.
-STATION_ARM_SPACING_M: float = 0.78
+#: Station. NOT a MakerMods figure — none is published. Measured (±0.02 m) from
+#: the real station's ``makermods/pen_holder_bi_20260723_161553`` dataset: a
+#: joint fit of arm-mesh silhouettes, the wrist-camera PCB and the pen-at-rest
+#: line in the top camera, cross-checked by insertion kinematics (station
+#: README, "Measured geometry"). Modelled symmetric: the fitted 7 mm fore-aft
+#: and 0.9 deg yaw offsets of the right base are within that error. Update it
+#: together with ``robots/makermods_metal_station/robot.yaml``.
+STATION_ARM_SPACING_M: float = 0.612
 
 # The derived cache is keyed by this module's own source (every derive
 # constant and step lives here), so any edit invalidates a stale cache without
