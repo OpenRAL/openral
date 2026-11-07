@@ -1,15 +1,17 @@
-# MakerMods Metal pick & place — 10 graded scenes of the metal_pick_place sim twin.
+# MakerMods Metal pick & place — 3 graded scenes of the metal_pick_place sim twin (a showcase).
 #
 #   openral benchmark run --suite makermods_metal_pick_place --rskill rskills/pi05-metal-pick-place
 #
-# Scenes: stratified over the dataset's four layouts (HappyEthan/metal_pick_place;
-# MetalPickPlaceOptions' default layouts A/B/C/D, episodes 0-29 / 30-49 / 50-68 / 69-99)
-# as 3 + 3 + 2 + 2. Each scene's cube start and marker centre are the layout's dataset
-# position plus an independent uniform +-1.5 cm offset per axis, drawn once with
-# numpy.random.default_rng(0) in A1, A2, A3, B1, ... order (cube xy, then marker xy) and
-# baked in below, so the suite is deterministic and stays inside the dataset's spread.
-# The scene's own spawn jitter is off; the cube yaw keeps the scene's 0 +-10 deg draw,
-# seeded per episode. The scene / task id suffix (A1 ... D2) names the layout.
+# Scenes: layout A of the dataset (HappyEthan/metal_pick_place episodes 0-29;
+# MetalPickPlaceOptions' default layout A), the only layout the MakerMods checkpoint
+# reaches in sim. Layouts B/C/D are in the dataset's distribution, but the policy
+# falls back to an average reach point there, with real top-camera images too, and
+# never touches the cube, so they are left out of this showcase suite. Each scene's
+# cube start and marker centre are layout A's dataset position plus an independent
+# uniform +-1.5 cm offset per axis, drawn once with numpy.random.default_rng(0) in
+# A1, A2, A3 order (cube xy, then marker xy) and baked in below, so the suite is
+# deterministic and stays inside the dataset's spread. The scene's own spawn jitter
+# is off; the cube yaw keeps the scene's 0 +-10 deg draw, seeded per episode.
 #
 # Grading (metal_pick_place, restock's placement_grade contract): once the cube is
 # released and at rest, complete 1.0 (>= 50 % of its footprint over the marker disc,
@@ -49,11 +51,12 @@
   seed: 0
   metadata: &meta
     paper: "https://huggingface.co/datasets/HappyEthan/metal_pick_place"
-    display_name: "MakerMods Metal pick & place (10 scenes)"
+    display_name: "MakerMods Metal pick & place (3 scenes)"
     simulator: "MuJoCo (metal_pick_place sim twin)"
     honest_scope: >-
-      Sim twin of the HappyEthan/metal_pick_place rig: 10 scenes over the dataset's four
-      cube/marker layouts (A/B/C/D 3/3/2/2), cube and marker each jittered within
+      Sim twin of the HappyEthan/metal_pick_place rig, a showcase: 3 scenes in the
+      dataset's layout A (B/C/D left out: the checkpoint never reaches the cube
+      there, on real images too), cube and marker each jittered within
       +-1.5 cm of the layout's dataset position, cube yaw 0 +-10 deg per episode seed;
       3 seeds per scene, 900 steps at 30 Hz. Graded at rest once the cube is released:
       complete (>= 50 % of the cube footprint over the 3.9 cm marker, the success),
@@ -91,146 +94,6 @@
       layouts: {A3: [[0.2683, -0.0559], [0.2875, 0.0611]]}  # layout A: cube, marker
   task:
     id: metal_pick_place/A3
-    scene_id: metal_pick_place
-    instruction: "Pick up the cube and place it at the marked location"
-    max_steps: 900
-    success_key: is_success
-  robot_id: makermods_metal
-  n_episodes: 3
-  seed: 0
-  metadata: *meta
-- scene:
-    id: metal_pick_place
-    backend: mujoco
-    observation_height: 480
-    observation_width: 640
-    cameras: ["top", "wrist"]
-    backend_options:
-      <<: *opts
-      layout: B1
-      layouts: {B1: [[0.2807, 0.173], [0.2829, 0.0583]]}  # layout B: cube, marker
-  task:
-    id: metal_pick_place/B1
-    scene_id: metal_pick_place
-    instruction: "Pick up the cube and place it at the marked location"
-    max_steps: 900
-    success_key: is_success
-  robot_id: makermods_metal
-  n_episodes: 3
-  seed: 0
-  metadata: *meta
-- scene:
-    id: metal_pick_place
-    backend: mujoco
-    observation_height: 480
-    observation_width: 640
-    cameras: ["top", "wrist"]
-    backend_options:
-      <<: *opts
-      layout: B2
-      layouts: {B2: [[0.2809, 0.1882], [0.27, 0.0657]]}  # layout B: cube, marker
-  task:
-    id: metal_pick_place/B2
-    scene_id: metal_pick_place
-    instruction: "Pick up the cube and place it at the marked location"
-    max_steps: 900
-    success_key: is_success
-  robot_id: makermods_metal
-  n_episodes: 3
-  seed: 0
-  metadata: *meta
-- scene:
-    id: metal_pick_place
-    backend: mujoco
-    observation_height: 480
-    observation_width: 640
-    cameras: ["top", "wrist"]
-    backend_options:
-      <<: *opts
-      layout: B3
-      layouts: {B3: [[0.2558, 0.1757], [0.2811, 0.0724]]}  # layout B: cube, marker
-  task:
-    id: metal_pick_place/B3
-    scene_id: metal_pick_place
-    instruction: "Pick up the cube and place it at the marked location"
-    max_steps: 900
-    success_key: is_success
-  robot_id: makermods_metal
-  n_episodes: 3
-  seed: 0
-  metadata: *meta
-- scene:
-    id: metal_pick_place
-    backend: mujoco
-    observation_height: 480
-    observation_width: 640
-    cameras: ["top", "wrist"]
-    backend_options:
-      <<: *opts
-      layout: C1
-      layouts: {C1: [[0.2135, 0.0695], [0.3119, 0.0784]]}  # layout C: cube, marker
-  task:
-    id: metal_pick_place/C1
-    scene_id: metal_pick_place
-    instruction: "Pick up the cube and place it at the marked location"
-    max_steps: 900
-    success_key: is_success
-  robot_id: makermods_metal
-  n_episodes: 3
-  seed: 0
-  metadata: *meta
-- scene:
-    id: metal_pick_place
-    backend: mujoco
-    observation_height: 480
-    observation_width: 640
-    cameras: ["top", "wrist"]
-    backend_options:
-      <<: *opts
-      layout: C2
-      layouts: {C2: [[0.2156, 0.0775], [0.3027, 0.0607]]}  # layout C: cube, marker
-  task:
-    id: metal_pick_place/C2
-    scene_id: metal_pick_place
-    instruction: "Pick up the cube and place it at the marked location"
-    max_steps: 900
-    success_key: is_success
-  robot_id: makermods_metal
-  n_episodes: 3
-  seed: 0
-  metadata: *meta
-- scene:
-    id: metal_pick_place
-    backend: mujoco
-    observation_height: 480
-    observation_width: 640
-    cameras: ["top", "wrist"]
-    backend_options:
-      <<: *opts
-      layout: D1
-      layouts: {D1: [[0.2791, 0.0306], [0.2858, -0.0867]]}  # layout D: cube, marker
-  task:
-    id: metal_pick_place/D1
-    scene_id: metal_pick_place
-    instruction: "Pick up the cube and place it at the marked location"
-    max_steps: 900
-    success_key: is_success
-  robot_id: makermods_metal
-  n_episodes: 3
-  seed: 0
-  metadata: *meta
-- scene:
-    id: metal_pick_place
-    backend: mujoco
-    observation_height: 480
-    observation_width: 640
-    cameras: ["top", "wrist"]
-    backend_options:
-      <<: *opts
-      layout: D2
-      layouts: {D2: [[0.2896, 0.0357], [0.298, -0.0853]]}  # layout D: cube, marker
-  task:
-    id: metal_pick_place/D2
     scene_id: metal_pick_place
     instruction: "Pick up the cube and place it at the marked location"
     max_steps: 900
