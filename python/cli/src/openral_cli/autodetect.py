@@ -17,7 +17,8 @@ This module provides three independent probes:
    node to find.
 
 3. **DDS discovery** — runs ``ros2 topic list`` for a bounded timeout and
-   maps observed topic name prefixes to known robot types (Unitree, ALOHA, …).
+   maps observed topic name prefixes to known robot types (ALOHA, SO-10x, …);
+   Unitree topics are narrowed to a model family by message type.
 
 All three probes are pure functions with no global state, never open a bus or
 a device, and can be called from tests without hardware.
@@ -58,6 +59,7 @@ __all__ = [
     "match_can_interfaces",
     "match_known_devices",
     "scan_dds_topics",
+    "unitree_candidates_from_topics",
 ]
 
 # ── Data types ─────────────────────────────────────────────────────────────────
@@ -114,7 +116,7 @@ class DdsTopic(NamedTuple):
 
     Attributes:
         name: Full topic name, e.g. ``"/lowstate"``.
-        type_name: Message type string, e.g. ``"unitree_go/msg/LowState"``.
+        type_name: Message type string, e.g. ``"unitree_hg/msg/LowState"``.
     """
 
     name: str
@@ -216,30 +218,57 @@ _VID_PID_TABLE: dict[tuple[int, int], KnownDevice] = {
         "",
         "",
     ),
-    # ── Unitree robotics ─────────────────────────────────────────────────────
-    # Unitree G1/H1/B1 connect over Ethernet (DDS), not USB serial.
-    # Their USB port (0x0483:0xDF11) is only used for DFU firmware flashing.
-    (0x0483, 0xDF11): KnownDevice(
-        "STM32 DFU",
-        "Unitree firmware update port (not the control interface — use Ethernet)",
-        "unitree_g1",
-        "",
-    ),
+    # Unitree robots (G1 / H1 / H2 / Go2 / B2) are deliberately absent: they
+    # are controlled over Ethernet (DDS), not USB serial, so they are
+    # identified by the DDS probe below.  The STM32 DFU bootloader id
+    # 0x0483:0xDF11 is STMicroelectronics' generic ROM bootloader shared by
+    # every STM32 in DFU mode (and it is not a tty, so the tty enumerators
+    # never see it) — it identifies no robot.
 }
 
 # ── DDS topic → robot type map ────────────────────────────────────────────────
-# Maps topic name prefix (lower-cased) → ral robot type string.
+# Maps topic name prefix (lower-cased) → ral robot type string.  Unitree topics
+# are handled separately by `_UNITREE_TOPIC_PREFIXES` (see below) because the
+# topic name alone cannot tell the Unitree models apart.
 
 _TOPIC_ROBOT_MAP: dict[str, str] = {
-    "/lowstate": "unitree_g1",  # Unitree G1 / H1 / B1 / Go2
-    "/lowcmd": "unitree_g1",
-    "/sportmodestate": "unitree_g1",
     "/follower_arms_position_goal": "aloha",  # HiLSeRL ALOHA / ACT
     "/bimanual_stretch": "aloha",
     "/so101": "so101",  # openral SO-101 lifecycle node (current default arm)
     "/so100": "so100",  # explicit openral SO-100 lifecycle node
     "/joint_trajectory_controller/joint_trajectory": "ros2_control",
     "/lekiwi": "lekiwi",
+}
+
+# ── Unitree DDS signature ─────────────────────────────────────────────────────
+# Every Unitree robot publishes the same low-level channel names
+# (unitree_sdk2 `rt/lowstate` / `rt/lowcmd`, bridged to ROS 2 as `/lowstate` /
+# `/lowcmd` by unitree_ros2), so the topic NAME only says "a Unitree robot".
+# The message *package* splits the product line into two families — per the
+# unitree_sdk2 examples (github.com/unitreerobotics/unitree_sdk2, example/):
+#
+#   unitree_hg — G1 (example/g1), H1-2 (example/h1/low_level/h1_2_*.cpp),
+#                H2 (example/h2): `unitree/idl/hg/LowState_.hpp`
+#   unitree_go — original H1 (example/h1/low_level/humanoid.hpp), Go2
+#                (example/go2), B2 (example/b2): `unitree/idl/go2/LowState_.hpp`
+#
+# Within a family the topic list cannot pick the model, so inference reports the
+# candidates (`unitree_candidates_from_topics`) instead of guessing.  Candidate
+# ids are Unitree model slugs; one resolves to a committed manifest only when a
+# `robots/<id>/robot.yaml` exists (today: `g1`, `h1`).  Add a new model to the
+# family tuple it belongs to; `infer_robot_from_topics` returns a candidate
+# only when its family has exactly one member.
+
+_UNITREE_TOPIC_PREFIXES: tuple[str, ...] = ("/lowstate", "/lowcmd", "/sportmodestate")
+
+# Topics whose message package identifies the family.  `/sportmodestate` is
+# excluded: `SportModeState` is defined only in the `unitree_go` package, so
+# its type says nothing about which family is publishing it.
+_UNITREE_FAMILY_TOPICS: tuple[str, ...] = ("/lowstate", "/lowcmd")
+
+_UNITREE_FAMILY_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "unitree_hg": ("g1", "h1_2", "h2"),
+    "unitree_go": ("h1", "go2", "b2"),
 }
 
 
@@ -457,28 +486,76 @@ def scan_dds_topics(timeout_s: float = 5.0) -> list[DdsTopic]:
     return sorted(topics, key=lambda t: t.name)
 
 
-def infer_robot_from_topics(topics: list[DdsTopic]) -> str | None:
-    """Infer a robot type from DDS topic names.
+def unitree_candidates_from_topics(topics: list[DdsTopic]) -> tuple[str, ...]:
+    """List the Unitree models the observed DDS topics are consistent with.
 
-    Checks each topic name against ``_TOPIC_ROBOT_MAP`` prefix matches.
-    Returns the first match found (in topic-name alphabetical order).
+    A Unitree robot is recognised by its low-level channel names
+    (``_UNITREE_TOPIC_PREFIXES``); the message package of ``/lowstate`` /
+    ``/lowcmd`` (``unitree_hg`` vs ``unitree_go``) narrows it to one family
+    (``_UNITREE_FAMILY_CANDIDATES``).  Without a family-identifying type (e.g.
+    an untyped scan, or only ``/sportmodestate`` visible) every family stays a
+    candidate.
 
     Args:
         topics: Output of `scan_dds_topics`.
 
     Returns:
-        A robot type string (e.g. ``"unitree_g1"``) if a known topic prefix
-        is found, otherwise ``None``.
+        Candidate Unitree model slugs in table order; empty when no Unitree
+        topic is present.  More than one entry means the topology is ambiguous.
+
+    Example:
+        >>> from openral_cli.autodetect import DdsTopic, unitree_candidates_from_topics
+        >>> unitree_candidates_from_topics([DdsTopic("/lowstate", "unitree_hg/msg/LowState")])
+        ('g1', 'h1_2', 'h2')
+        >>> unitree_candidates_from_topics([DdsTopic("/rosout", "rcl_interfaces/msg/Log")])
+        ()
+    """
+    unitree = [t for t in topics if t.name.lower().startswith(_UNITREE_TOPIC_PREFIXES)]
+    if not unitree:
+        return ()
+    families = {
+        t.type_name.split("/", 1)[0]
+        for t in unitree
+        if t.name.lower().startswith(_UNITREE_FAMILY_TOPICS)
+    } & _UNITREE_FAMILY_CANDIDATES.keys()
+    if len(families) != 1:
+        # No family-identifying type, or contradictory ones: keep every model.
+        return tuple(m for ms in _UNITREE_FAMILY_CANDIDATES.values() for m in ms)
+    return _UNITREE_FAMILY_CANDIDATES[families.pop()]
+
+
+def infer_robot_from_topics(topics: list[DdsTopic]) -> str | None:
+    """Infer a robot type from DDS topic names.
+
+    Checks each topic name against ``_TOPIC_ROBOT_MAP`` prefix matches and
+    returns the first match found (in topic-name alphabetical order).  Unitree
+    topics resolve only when `unitree_candidates_from_topics` narrows them to
+    exactly one model; an ambiguous Unitree topology yields no Unitree match
+    rather than a guess (call `unitree_candidates_from_topics` to report it).
+
+    Args:
+        topics: Output of `scan_dds_topics`.
+
+    Returns:
+        A robot type string (e.g. ``"aloha"``) if a known topic prefix
+        identifies one robot, otherwise ``None``.
 
     Example:
         >>> from openral_cli.autodetect import DdsTopic, infer_robot_from_topics
-        >>> infer_robot_from_topics([DdsTopic("/lowstate", "unitree_go/msg/LowState")])
-        'unitree_g1'
+        >>> infer_robot_from_topics([DdsTopic("/so101/joint_state", "sensor_msgs/msg/JointState")])
+        'so101'
+        >>> infer_robot_from_topics([DdsTopic("/lowstate", "unitree_hg/msg/LowState")]) is None
+        True
         >>> infer_robot_from_topics([]) is None
         True
     """
+    unitree = unitree_candidates_from_topics(topics)
     for topic in topics:
         name_lower = topic.name.lower()
+        if name_lower.startswith(_UNITREE_TOPIC_PREFIXES):
+            if len(unitree) == 1:
+                return unitree[0]
+            continue
         for prefix, robot_type in _TOPIC_ROBOT_MAP.items():
             if name_lower.startswith(prefix.lower()):
                 return robot_type

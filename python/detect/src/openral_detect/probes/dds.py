@@ -2,14 +2,19 @@
 
 Adds RMW + domain-id capture and ``/tf`` / ``/robot_description`` presence
 on top of the existing ``scan_dds_topics`` + ``infer_robot_from_topics``
-helpers.
+helpers, and a warning naming the candidates when Unitree topics are seen but
+``unitree_candidates_from_topics`` cannot narrow them to one model.
 """
 
 from __future__ import annotations
 
 import os
 
-from openral_cli.autodetect import infer_robot_from_topics, scan_dds_topics
+from openral_cli.autodetect import (
+    infer_robot_from_topics,
+    scan_dds_topics,
+    unitree_candidates_from_topics,
+)
 
 from openral_detect.report import DdsTopicRecord, Ros2TopologyResult
 
@@ -40,6 +45,14 @@ def probe_dds(
 
     topic_records = [DdsTopicRecord(name=t.name, type_name=t.type_name) for t in topics]
     inferred = infer_robot_from_topics(topics) if topics else None
+    unitree = unitree_candidates_from_topics(topics)
+    if inferred is None and len(unitree) > 1 and warnings is not None:
+        # Truth over plausibility: the topic list says "a Unitree robot" but
+        # cannot pick the model, so surface the candidates instead of guessing.
+        warnings.append(
+            "dds: Unitree low-level topics seen but the model is ambiguous "
+            f"(candidates: {', '.join(unitree)}); pass `openral detect --robot <id>`."
+        )
 
     has_robot_description = any(t.name == "/robot_description" for t in topics)
     has_tf = any(t.name in ("/tf", "/tf_static") for t in topics)

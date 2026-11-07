@@ -74,8 +74,13 @@ class SimTransport:
         trigger_responses: Per-service ``(success, message)`` a
             ``call_trigger`` returns, to simulate e.g. a UR dashboard whose
             ``stop`` refuses. Unlisted services succeed.
-        switch_faults: Per-operation (``"deactivate"`` / ``"activate"``)
-            exception the switch **raises** instead of answering — the
+        joint_names: Names of the simulated joints, in state order. When
+            given, a command that carries its own ``joint_names`` (a HAL
+            commanding a subset of the robot, e.g. the Unitree upper body) is
+            applied **by name** to those joints only; without it every command
+            is a whole-vector one.
+        switch_faults: Per-operation (``"deactivate"`` / ``"activate"`` /
+            ``"swap"``) exception the switch **raises** instead of answering — the
             rclpy-shaped fault (executor or context shut down, a dead
             client handle) a real ``controller_manager`` call can die with.
             The HAL must contain it in its stop report.
@@ -107,8 +112,16 @@ class SimTransport:
         controllers: Sequence[str] | None = None,
         trigger_responses: Mapping[str, tuple[bool, str]] | None = None,
         switch_faults: Mapping[str, Exception] | None = None,
+        joint_names: Sequence[str] | None = None,
     ) -> None:
         """Initialise zeroed joint state for *n_joints* joints."""
+        if joint_names is not None and len(joint_names) != n_joints:
+            raise ROSConfigError(
+                f"SimTransport: {len(joint_names)} joint_names for n_joints={n_joints}."
+            )
+        self._joint_names: tuple[str, ...] | None = (
+            None if joint_names is None else tuple(joint_names)
+        )
         self._n_joints = n_joints
         self._positions: list[float] = [0.0] * n_joints
         self._velocities: list[float] = [0.0] * n_joints
@@ -146,8 +159,21 @@ class SimTransport:
         targets = msg.get("joint_targets")
         if isinstance(targets, list) and targets:
             last_step = targets[-1]
-            if isinstance(last_step, list):
-                self._positions = [float(v) for v in last_step]
+            if not isinstance(last_step, list):
+                return
+            names = msg.get("joint_names")
+            if self._joint_names is not None and isinstance(names, list) and names:
+                index = {n: i for i, n in enumerate(self._joint_names)}
+                unknown = [str(n) for n in names if str(n) not in index]
+                if unknown or len(names) != len(last_step):
+                    raise ROSConfigError(
+                        f"SimTransport: command on {topic!r} names {list(names)} "
+                        f"(unknown: {unknown}) for a {len(last_step)}-value step."
+                    )
+                for name, value in zip(names, last_step, strict=True):
+                    self._positions[index[str(name)]] = float(value)
+                return
+            self._positions = [float(v) for v in last_step]
 
     def state(self) -> dict[str, object]:
         """Return the current simulated joint state.
@@ -175,6 +201,46 @@ class SimTransport:
     ) -> ControllerSwitchReport:
         """Flip every named controller to ``active`` (STRICT: unknown names refuse)."""
         return self._switch("activate", names, "active")
+
+    def swap_controllers(
+        self,
+        *,
+        deactivate: Sequence[str],
+        activate: Sequence[str],
+        timeout_s: float,
+    ) -> ControllerSwitchReport:
+        """One-request hand-over (``ControllerSwapSeam``): all or nothing, like a single switch.
+
+        Recorded as one ``("swap", deactivate + activate)`` entry in
+        ``switch_calls``, so a test can prove no separate deactivate-then-
+        activate pair (which would leave the joints unclaimed between the two)
+        was issued. A name not in a STRICT table refuses the whole swap.
+        """
+        off, on = tuple(deactivate), tuple(activate)
+        wanted = off + on
+        if not wanted:
+            raise ROSConfigError("SimTransport.swap_controllers(): no controller names given.")
+        self._switches.append(("swap", wanted))
+        if "swap" in self._switch_faults:
+            raise self._switch_faults["swap"]
+        unknown = [n for n in wanted if self._state_of(n) == "unloaded"]
+        if unknown:
+            return ControllerSwitchReport(
+                ok=False,
+                controllers=wanted,
+                states={n: self._state_of(n) for n in wanted},
+                detail=f"controller(s) not loaded: {unknown}",
+            )
+        for n in off:
+            self._controller_states[n] = "inactive"
+        for n in on:
+            self._controller_states[n] = "active"
+        return ControllerSwitchReport(
+            ok=True,
+            controllers=wanted,
+            states={n: self._controller_states[n] for n in wanted},
+            detail=f"swapped {list(off)} -> {list(on)}",
+        )
 
     def call_trigger(self, service: str, *, timeout_s: float) -> TriggerReport:
         """Record the call and answer from ``trigger_responses`` (default: success)."""
@@ -214,7 +280,7 @@ class SimTransport:
 
     @property
     def switch_calls(self) -> list[tuple[str, tuple[str, ...]]]:
-        """Every ``("deactivate" | "activate", names)`` switch, in order."""
+        """Every ``("deactivate" | "activate" | "swap", names)`` switch, in order."""
         return list(self._switches)
 
     @property

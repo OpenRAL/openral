@@ -45,7 +45,7 @@ Three transports, consulted strongest-evidence-first:
 
 | order | transport | signal | example |
 | ----- | --------- | ------ | ------- |
-| 1 | DDS | topic-name prefix | `/lowstate` → Unitree G1 |
+| 1 | DDS | topic-name prefix (+ message type for Unitree) | `/so101/joint_state` → SO-101 |
 | 2 | SocketCAN | udev-pinned interface name | `openarm_left` → OpenArm |
 | 3 | USB serial | VID/PID of the controller chip | `1a86:7523` → SO-101 |
 
@@ -53,6 +53,14 @@ DDS outranks CAN because a robot publishing those topics is already up and
 naming itself. CAN outranks USB because an interface name is a deliberate
 provisioning choice, while one USB controller chip is often shared across arms
 (every Feetech-bus arm looks alike).
+
+Unitree robots all publish the same `/lowstate` / `/lowcmd` channels, so the
+topic name only says "a Unitree robot". The message package narrows it to a
+family — `unitree_hg` (G1, H1-2, H2) or `unitree_go` (original H1, Go2, B2), per
+the `unitree_sdk2` examples — but not to one model. Detection therefore does not
+guess: it leaves the robot unresolved and adds a warning listing the candidates
+(`unitree_candidates_from_topics`); pick one with `openral detect --robot g1`
+(or `h1`, …).
 
 CAN needs the udev rule because a CAN bus carries no vendor descriptor: the
 adapter identifies itself, the motors behind it do not. A bare `can0` is left

@@ -61,6 +61,7 @@ __all__ = [
     "ControllerKind",
     "ControllerStopSeam",
     "ControllerStoppable",
+    "ControllerSwapSeam",
     "ControllerSwitchReport",
     "DownstreamStopReport",
     "DownstreamStopReporting",
@@ -102,6 +103,21 @@ class ControllerKind(StrEnum):
     #: ros2_control arm is commonly configured with, and because two kinds are
     #: what make the dispatch real rather than a rename of an assumption.
     FORWARD_COMMAND = "forward_command"
+
+    #: NVIDIA ``isaac_ros_deploy_ros2_control/ForwardJointCommandController``
+    #: in trajectory mode, commanded via
+    #: ``isaac_ros_deploy_interfaces/msg/JointCommandTrajectory`` (a named,
+    #: chunked ``[horizon, joints]`` block with a uniform ``step_dt`` that the
+    #: controller interpolates through). The Unitree hg family's real HAL
+    #: (``openral_hal.unitree_real``) drives the upper body through it.
+    JOINT_COMMAND_TRAJECTORY = "joint_command_trajectory"
+
+    #: A ``geometry_msgs/msg/Twist`` velocity command read by a controller's
+    #: topic input — NVIDIA ``InferenceController``'s ``command/body/velocity``
+    #: source, which feeds the S0 whole-body policy. Commanded from the
+    #: command dict's ``twist`` (6 floats: vx, vy, vz, wx, wy, wz), not from
+    #: ``joint_targets``.
+    TWIST = "twist"
 
 
 @dataclass(frozen=True)
@@ -193,6 +209,33 @@ class ControllerStopSeam(Protocol):
 
     def publish_empty(self, topic: str) -> None:
         """Publish one ``std_msgs/Empty`` on a topic the HAL declared in ``vendor_stop_topics``."""
+        ...
+
+
+@runtime_checkable
+class ControllerSwapSeam(Protocol):
+    """A stop seam that can swap controllers in **one** ``switch_controller`` request.
+
+    Plain deactivation is the stop for an arm: an inactive
+    ``JointTrajectoryController`` holds its last position command. It is not a
+    stop for a robot whose hardware interface *releases* every joint no
+    controller claims — the Unitree hg ``SystemInterface`` sends motor mode 0
+    (zero torque) for an unclaimed joint, so deactivating a standing humanoid's
+    controllers drops it. Such a robot must hand its joints to a holding
+    controller in the same request that releases them, so no control cycle
+    runs with the joints unclaimed. ``RosControlTransport`` and
+    ``SimTransport`` both implement this; a HAL that needs it refuses a seam
+    without it at ``attach_controller_stop`` time.
+    """
+
+    def swap_controllers(
+        self,
+        *,
+        deactivate: Sequence[str],
+        activate: Sequence[str],
+        timeout_s: float,
+    ) -> ControllerSwitchReport:
+        """Deactivate ``deactivate`` and activate ``activate`` in one switch, then confirm."""
         ...
 
 
@@ -685,7 +728,7 @@ class RosControlHAL(HALBase):
         # the report instead, never swallowed.
         problems: list[str] = []
         try:
-            switch = seam.deactivate_controllers(names, timeout_s=self._stop_timeout_s)
+            switch = self._stop_switch(seam, names)
         except Exception as exc:  # reason: a seam fault must land in the report, not escape estop()
             switch = ControllerSwitchReport(
                 ok=False, controllers=names, detail=f"{type(exc).__name__}: {exc}"
@@ -717,6 +760,19 @@ class RosControlHAL(HALBase):
                 **report.fields(),
             )
         return report
+
+    def _stop_switch(
+        self, seam: ControllerStopSeam, names: tuple[str, ...]
+    ) -> ControllerSwitchReport:
+        """The ``controller_manager`` switch ``estop`` performs; plain deactivation by default.
+
+        A subclass whose hardware releases unclaimed joints (the Unitree hg
+        humanoids) overrides this to hand ``names``' joints to a holding
+        controller in the same request — see ``ControllerSwapSeam``. Whatever it
+        returns is folded into the ``DownstreamStopReport``; an exception it
+        raises is caught by ``_stop_downstream`` and reported, never escapes.
+        """
+        return seam.deactivate_controllers(names, timeout_s=self._stop_timeout_s)
 
     def _vendor_stop(self, seam: ControllerStopSeam) -> str:
         """Vendor-specific stop beyond controller deactivation; return its label.
