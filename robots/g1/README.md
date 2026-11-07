@@ -110,7 +110,7 @@ the package README for bring-up, rates (200 Hz manager / 50 Hz policy) and risks
 | `hal.real` | `openral_hal.unitree_real:UnitreeHgRealHAL` (`deploy run`) |
 | `hal.real_bringup` | `openral_hal_unitree:real_bringup.launch.py` |
 | `hal.parameters.defaults` | `robot_model: g1`, `s0_policy: gr00t_decoupled_wbc` |
-| `action_spec.control_freq_hz` | 20 Hz (= the twin's `body_twist_dt_s`; the real HAL's trajectory step) |
+| `action_spec.control_freq_hz` | 50 Hz (the S0 policy rate; one control period = the twin's default `body_twist_dt_s` and the real HAL's trajectory step) |
 
 ## Pair with
 
