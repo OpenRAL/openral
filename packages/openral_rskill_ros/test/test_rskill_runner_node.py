@@ -1865,9 +1865,14 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
         str(Path(__file__).resolve().parents[3] / "rskills" / "xr1-robocasa365" / "rskill.yaml")
     )
 
+    from openral_core.schemas import RSkillState
+
+    resolved: list[Any] = []
+
     def _resolver(**_k: Any) -> Any:
         skill = _make_constant_skill()
         skill.manifest = manifest
+        resolved.append(skill)
         return skill
 
     with (
@@ -1881,3 +1886,5 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
             prompt_metadata_json="",
             goal_params_json="",
         )
+    # The refused skill was loaded but never made resident: the runner frees it.
+    assert resolved[0].info.state is RSkillState.FINALIZED
