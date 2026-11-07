@@ -47,6 +47,7 @@ import structlog
 import yaml
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError, ROSError
 from openral_core.schemas import (
+    EXECUTE_RSKILL_KINDS,
     ComputeSpec,
     ControlMode,
     RobotCapabilities,
@@ -92,6 +93,22 @@ _REQUIRE_SIGNED_ENV = "OPENRAL_REQUIRE_SIGNED_SKILLS"
 # embodiment gate treats this as match-any. Agnosticism is *declared*, never
 # derived from an empty tag list (which the manifest validator now rejects).
 _EMBODIMENT_ANY_TAG: str = "any"
+
+
+def _parse_manifest(path: str | Path, *, source: str) -> RSkillManifest:
+    """Parse ``rskill.yaml`` at ``path``; a schema failure is a typed, logged ``ROSConfigError``.
+
+    The loader's one manifest parse (``from_pretrained`` / ``fetch_manifest`` /
+    ``from_yaml`` / ``load_rskill_manifest``): CLAUDE.md §5 makes a bad manifest
+    a ``ROSConfigError``, and every refusal — a kind/role mismatch included —
+    is logged as ``rskill.manifest_refused`` with the failing rules.
+    """
+    try:
+        return RSkillManifest.from_yaml(str(path))
+    except ValidationError as exc:
+        errors = [str(e["msg"]) for e in exc.errors()]
+        log.warning("rskill.manifest_refused", source=source, path=str(path), errors=errors)
+        raise ROSConfigError(f"rSkill manifest {source!r} is invalid: {'; '.join(errors)}") from exc
 
 
 # ── Registry entry schema ──────────────────────────────────────────────────────
@@ -230,7 +247,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
             >>> # rSkill.from_pretrained("openral/rskill-pick-cube-so100", revision="abc123")
         """
         try:
-            from huggingface_hub import hf_hub_download, snapshot_download  # noqa: PLC0415
+            from huggingface_hub import snapshot_download  # noqa: PLC0415
         except ImportError as exc:
             raise ROSConfigError(
                 "rSkill.from_pretrained requires 'huggingface_hub'. "
@@ -239,24 +256,11 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
         _cache = str(cache_dir or _CACHE_HOME)
 
-        # ── 1. Fetch manifest ──────────────────────────────────────────────────
-        log.info("rskill.fetch_manifest", repo_id=repo_id, revision=revision)
-        try:
-            manifest_path_str = hf_hub_download(
-                repo_id=repo_id,
-                filename="rskill.yaml",
-                revision=revision,
-                cache_dir=_cache,
-                force_download=force_download,
-            )
-        except Exception as exc:
-            gated_err = gated_repo_error(repo_id, exc)
-            if gated_err is not None:
-                raise gated_err from exc
-            raise ROSConfigError(f"Failed to download rskill.yaml for '{repo_id}': {exc}") from exc
-
-        # ── 2. Parse manifest ──────────────────────────────────────────────────
-        manifest = RSkillManifest.from_yaml(manifest_path_str)
+        # ── 1-2. Fetch + parse the manifest (no weights yet) ───────────────────
+        manifest, manifest_path = cls.fetch_manifest(
+            repo_id, revision=revision, cache_dir=cache_dir, force_download=force_download
+        )
+        manifest_path_str = str(manifest_path)
 
         # ── 3. License guard ───────────────────────────────────────────────────
         cls._check_license(manifest, commercial_use=commercial_use)
@@ -302,6 +306,59 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         )
         return cls(manifest=manifest, local_dir=Path(local_dir_str))
 
+    @staticmethod
+    def fetch_manifest(
+        repo_id: str,
+        *,
+        revision: str | None = None,
+        cache_dir: Path | None = None,
+        force_download: bool = False,
+    ) -> tuple[RSkillManifest, Path]:
+        """Download and validate only an rSkill's ``rskill.yaml`` — never its weights.
+
+        Lets a caller gate a Hub skill (kind, license, embodiment) before
+        committing to the snapshot download; ``from_pretrained`` starts here.
+
+        Args:
+            repo_id: HF Hub repository, e.g. ``"openral/rskill-pick-cube-so100"``.
+            revision: Git commit SHA or branch; ``None`` is the default branch.
+            cache_dir: Override the default HF Hub cache directory.
+            force_download: Re-download even if the file is cached.
+
+        Returns:
+            ``(manifest, path)`` — the validated manifest and its cached file.
+
+        Raises:
+            ROSConfigError: ``huggingface_hub`` is missing, the download fails
+                (a gated repo gets ``gated_repo_error``'s access message), or
+                the manifest fails validation.
+
+        Example:
+            >>> # manifest, path = rSkill.fetch_manifest("openral/rskill-pick-cube-so100")
+        """
+        try:
+            from huggingface_hub import hf_hub_download  # noqa: PLC0415
+        except ImportError as exc:
+            raise ROSConfigError(
+                f"fetching rSkill {repo_id!r} requires 'huggingface_hub'. "
+                "Install it: uv add huggingface_hub --package openral-rskill"
+            ) from exc
+        log.info("rskill.fetch_manifest", repo_id=repo_id, revision=revision)
+        try:
+            path = hf_hub_download(
+                repo_id=repo_id,
+                filename="rskill.yaml",
+                revision=revision,
+                cache_dir=str(cache_dir or _CACHE_HOME),
+                force_download=force_download,
+            )
+        except Exception as exc:
+            gated_err = gated_repo_error(repo_id, exc)
+            if gated_err is not None:
+                raise gated_err from exc
+            raise ROSConfigError(f"Failed to download rskill.yaml for '{repo_id}': {exc}") from exc
+        return _parse_manifest(path, source=repo_id), Path(path)
+
     @classmethod
     def from_yaml(cls, path: str | Path, *, local_dir: Path | None = None) -> rSkill:
         """Load an rSkill from a local ``rskill.yaml`` without network access.
@@ -319,16 +376,16 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
         Raises:
             FileNotFoundError: If ``path`` does not exist.
-            pydantic.ValidationError: If the YAML fails schema validation.
-            ROSConfigError: If the license blocks the deployment, or
+            ROSConfigError: If the manifest fails schema validation, the
+                license blocks the deployment, or
                 ``OPENRAL_REQUIRE_SIGNED_SKILLS=1`` and verification is
                 unavailable (see ``_check_provenance``).
 
         Example:
             >>> # rSkill.from_yaml("/path/to/my-skill/rskill.yaml")
         """
-        manifest = RSkillManifest.from_yaml(str(path))
         resolved = Path(path).resolve()
+        manifest = _parse_manifest(resolved, source=str(resolved))
         cls._check_license(manifest, commercial_use=True)
         cls._check_provenance(manifest, source=str(resolved))
         skill_dir = local_dir or resolved.parent
@@ -397,6 +454,46 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         reg.write_text(json.dumps(raw, indent=2), encoding="utf-8")
         log.info("rskill.uninstalled", repo_id=repo_id)
         return True
+
+    @staticmethod
+    def check_dispatchable(manifest: RSkillManifest) -> None:
+        """Refuse a manifest the ExecuteRskill runner cannot dispatch.
+
+        Only ``EXECUTE_RSKILL_KINDS`` (policies and wrapped ROS servers) run on
+        the S1 dispatch path. Detectors and segmenters are S1-rate perception
+        producers; vlm / reward / playbook are S2 components the reasoner
+        queries or reads. The reasoner palette admits the same set, so a
+        refusal here means a skill reached dispatch around the palette. Logged
+        as ``rskill.dispatch_refused``.
+
+        Args:
+            manifest: The skill's validated manifest.
+
+        Raises:
+            ROSCapabilityMismatch: If ``manifest.kind`` is not dispatchable.
+
+        Example:
+            >>> from openral_core import RSkillManifest
+            >>> vla = RSkillManifest.from_yaml("rskills/smolvla-libero/rskill.yaml")
+            >>> rSkill.check_dispatchable(vla)
+            >>> vlm = RSkillManifest.from_yaml("rskills/qwen35-4b-nf4/rskill.yaml")
+            >>> rSkill.check_dispatchable(vlm)
+            Traceback (most recent call last):
+            ...
+            openral_core.exceptions.ROSCapabilityMismatch: ...
+        """
+        if manifest.kind in EXECUTE_RSKILL_KINDS:
+            return
+        log.warning(
+            "rskill.dispatch_refused",
+            rskill_id=manifest.name,
+            kind=manifest.kind,
+            role=manifest.role,
+        )
+        raise ROSCapabilityMismatch(
+            f"rSkill {manifest.name!r} has kind={manifest.kind!r} (role={manifest.role!r}); "
+            f"only {sorted(EXECUTE_RSKILL_KINDS)} are dispatched via ExecuteRskill"
+        )
 
     @staticmethod
     def check_embodiment_tags(
@@ -1301,7 +1398,8 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
         The parsed and validated ``RSkillManifest``.
 
     Raises:
-        ROSConfigError: If the reference cannot be resolved.
+        ROSConfigError: If the reference cannot be resolved or the manifest
+            fails validation.
     """
     if uri in _RSKILL_MANIFEST_CACHE:
         return _RSKILL_MANIFEST_CACHE[uri]
@@ -1316,7 +1414,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
             break
 
     if yaml_path is not None:
-        manifest = RSkillManifest.from_yaml(str(yaml_path))
+        manifest = _parse_manifest(yaml_path, source=uri)
         _RSKILL_MANIFEST_CACHE[uri] = manifest
         return manifest
 
@@ -1329,7 +1427,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
         intree_path = _intree_manifest_path_by_name(uri)
         if intree_path is not None:
             log.debug("rskill.manifest_resolved_in_tree", uri=uri, path=str(intree_path))
-            manifest = RSkillManifest.from_yaml(str(intree_path))
+            manifest = _parse_manifest(intree_path, source=uri)
             _RSKILL_MANIFEST_CACHE[uri] = manifest
             return manifest
 
@@ -1358,7 +1456,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
             f"and Hub lookup failed: {exc}"
         ) from exc
 
-    manifest = RSkillManifest.from_yaml(manifest_path)
+    manifest = _parse_manifest(manifest_path, source=uri)
     _RSKILL_MANIFEST_CACHE[uri] = manifest
     return manifest
 

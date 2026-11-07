@@ -49,6 +49,9 @@ pytestmark = pytest.mark.skipif(
 # ── Test fixtures ───────────────────────────────────────────────────────────
 
 
+_REPO = Path(__file__).resolve().parents[3]
+
+
 def _make_constant_skill() -> Any:
     """Return a real ``rSkillBase`` subclass — no mocks."""
     from openral_core.schemas import Action, ControlMode
@@ -1171,15 +1174,16 @@ def _make_starting_pose_skill() -> Any:
     ``rskills/rskill-smolvla-so101-eraser_place-bf16`` is an in-tree manifest
     whose 6-D ``starting_pose`` matches the harness's so100 6-DoF description,
     which is what makes the runner run its starting-pose preamble at all. Real fixture, real
-    ``RSkillManifest`` — no hand-built placeholder (CLAUDE.md §1.11).
+    ``RSkillManifest`` — no hand-built placeholder (CLAUDE.md §1.11). Its embodiment tag is
+    retargeted from ``so101_follower`` to the harness's ``so100_follower``: the runner gates
+    the manifest's tags, and every other gate passes unchanged.
     """
     from openral_rskill.loader import load_rskill_manifest
 
-    repo_root = Path(__file__).resolve().parents[3]
     skill = _make_constant_skill()
     skill.manifest = load_rskill_manifest(
-        str(repo_root / "rskills" / "rskill-smolvla-so101-eraser_place-bf16")
-    )
+        str(_REPO / "rskills" / "rskill-smolvla-so101-eraser_place-bf16")
+    ).model_copy(update={"embodiment_tags": ["so100_follower"]})
     return skill
 
 
@@ -1856,18 +1860,23 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
 
     The harness robot is the SO-100 (gripper ``normalized_open_unit``, end
     effector ``gripper``); the RoboCasa skill sends ``normalized_close_symmetric``
-    to ``panda_gripper``, so resolving it must fail before any chunk is sent.
+    to ``panda_gripper``, so resolving it must fail before any chunk is sent. Its
+    embodiment tags are retargeted to the SO-100 so the gripper gate, not the
+    embodiment gate, is the one that refuses it.
     """
     from openral_core import RSkillManifest
     from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_core.schemas import RSkillState
 
     manifest = RSkillManifest.from_yaml(
-        str(Path(__file__).resolve().parents[3] / "rskills" / "xr1-robocasa365" / "rskill.yaml")
-    )
+        str(_REPO / "rskills" / "xr1-robocasa365" / "rskill.yaml")
+    ).model_copy(update={"embodiment_tags": ["so100_follower"]})
+    resolved: list[Any] = []
 
     def _resolver(**_k: Any) -> Any:
         skill = _make_constant_skill()
         skill.manifest = manifest
+        resolved.append(skill)
         return skill
 
     with (
@@ -1881,3 +1890,65 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
             prompt_metadata_json="",
             goal_params_json="",
         )
+    # An opaque resolver hands back a loaded skill that is never made resident:
+    # the runner shuts the refused one down itself.
+    assert resolved[0].info.state is RSkillState.FINALIZED
+
+
+@pytest.mark.parametrize(
+    ("skill_dir", "match"),
+    [
+        # An S2 scene-query VLM: not an ExecuteRskill kind.
+        ("qwen35-4b-nf4", "kind='vlm'"),
+        # A RoboCasa policy on the SO-100 harness: wrong embodiment. Its build
+        # would bind remote-code XR-1 weights, so this refusal proves the gate
+        # runs on the manifest before anything loads.
+        ("xr1-robocasa365", "panda_mobile"),
+    ],
+)
+def test_production_resolver_gates_the_manifest_before_loading(skill_dir: str, match: str) -> None:
+    """``ManifestSkillResolver`` is driven lookup → gate → build: a refusal loads nothing."""
+    from openral_core import RSkillManifest
+    from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_rskill_ros.rskill_runner_node import ManifestSkillResolver
+
+    resolver = ManifestSkillResolver(search_paths=[_REPO / "rskills"], hub_fallback=False)
+    rskill_id = RSkillManifest.from_yaml(str(_REPO / "rskills" / skill_dir / "rskill.yaml")).name
+    with (
+        _compose_harness(resolver=resolver) as (_executor, runtime, _safety, _observed),
+        pytest.raises(ROSCapabilityMismatch, match=match),
+    ):
+        runtime.skill_runner_node._acquire_skill(
+            rskill_id=rskill_id,
+            revision="",
+            prompt="go",
+            prompt_metadata_json="",
+            goal_params_json="",
+        )
+
+
+def test_runner_refuses_a_manifestless_s2_skill_and_releases_it() -> None:
+    """A code-built skill with no manifest has only ``info.role``: ``s2`` is refused, then freed."""
+    from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_core.schemas import RSkillState
+
+    resolved: list[Any] = []
+
+    def _resolver(**_k: Any) -> Any:
+        skill = _make_constant_skill()
+        skill._update(role="s2")
+        resolved.append(skill)
+        return skill
+
+    with (
+        _compose_harness(resolver=_resolver) as (_executor, runtime, _safety, _observed),
+        pytest.raises(ROSCapabilityMismatch, match="role='s2'"),
+    ):
+        runtime.skill_runner_node._acquire_skill(
+            rskill_id="openral/test-constant-skill",
+            revision="",
+            prompt="go",
+            prompt_metadata_json="",
+            goal_params_json="",
+        )
+    assert resolved[0].info.state is RSkillState.FINALIZED

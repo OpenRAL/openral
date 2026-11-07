@@ -29,6 +29,7 @@ from typing import (
     Self,
     TypeAlias,
     TypeVar,
+    cast,
 )
 
 from pydantic import (
@@ -6615,8 +6616,8 @@ class RSkillInfo(BaseModel):
         quantized: Whether weights have been quantized for the target runtime.
         warmed_up: Whether the model has been warmed up (first inference run).
         embodiment_tags: Embodiment tags from the skill manifest.
-        role: rSkill role: ``"s0"`` (cerebellar), ``"s1"`` (fast policy),
-            ``"s2"`` (slow reasoning).
+        role: rSkill role: ``"s1"`` (fast policy) or ``"s2"`` (slow reasoning);
+            ``"s0"`` (cerebellar) is never loaded as an rSkill.
         latency_budget_ms: Maximum allowed inference latency in milliseconds.
         last_inference_ms: Actual latency of the most recent ``step()`` call.
         error_msg: Human-readable error description when ``state == "error"``.
@@ -8694,6 +8695,27 @@ dispatchable only while their ``ros_integration.interface_name`` is on the ROS g
 # imagines future frames, which the adapter keeps for itself).
 POLICY_KINDS: frozenset[str] = frozenset({"vla", "wam"})
 
+RSKILL_ROLE_BY_KIND: dict[RSkillKind, Literal["s1", "s2"]] = {
+    "vla": "s1",
+    "wam": "s1",
+    "ros_action": "s1",
+    "ros_service": "s1",
+    "detector": "s1",
+    "segmenter": "s1",
+    "vlm": "s2",
+    "reward": "s2",
+    "playbook": "s2",
+}
+"""Slot each ``RSkillKind`` runs in (CLAUDE.md §3 dual-system pattern). A manifest that
+omits ``role`` gets this value; one that declares it must match. No kind maps to ``"s0"``:
+S0 cerebellar control ships as ros2_control controllers, never as an rSkill."""
+
+EXECUTE_RSKILL_KINDS: frozenset[str] = POLICY_KINDS | ROS_WRAPPER_KINDS
+"""Kinds the ExecuteRskill runner can dispatch: policies and wrapped ROS servers. Every
+other kind is a perception producer (detector / segmenter), a scene-query or reward model
+(vlm / reward), or a decision procedure the reasoner reads (playbook). The reasoner palette,
+the runner's resolver and its pre-load gate all read this one set."""
+
 # Embodiment-agnostic rSkills (perception kinds detector / vlm / reward, and
 # ``playbook`` decision procedures) do not target a specific embodiment. They
 # declare this **explicitly** with the wildcard ``embodiment_tags: ["any"]``
@@ -9205,8 +9227,10 @@ class RSkillManifest(BaseModel):
         name: HF Hub identifier ``<owner>/<repo>``, e.g. ``"openral/rskill-pick-cube-so100"``.
         version: SemVer string of the rSkill package (not the wrapped weights).
         license: License posture surfaced at install time; drives ``is_commercial_use_allowed``.
-        role: rSkill slot — ``"s1"`` fast policy (the only slot loaded today),
-            ``"s0"`` cerebellar realtime (reserved), ``"s2"`` slow reasoning (reserved).
+        role: rSkill slot, fixed by ``kind`` — ``"s1"`` (policies, ROS wrappers,
+            detector / segmenter) or ``"s2"`` (vlm / reward / playbook). Optional:
+            omitted, it is filled from ``RSKILL_ROLE_BY_KIND``; declared, it must
+            match. ``"s0"`` is refused: S0 ships as ros2_control controllers.
         model_family: Closed VLA / policy family; drives the runner's adapter dispatch.
         embodiment_tags: Robot embodiments targeted; must intersect the robot's tags.
             ``"custom"`` requires ``embodiment_extra``.
@@ -9291,7 +9315,9 @@ class RSkillManifest(BaseModel):
     name: str = Field(pattern=_HF_HUB_ID_PATTERN)
     version: str = Field(pattern=_SEMVER_PATTERN)
     license: RSkillLicensePosture = RSkillLicensePosture.UNKNOWN
-    role: Literal["s0", "s1", "s2"] = "s1"
+    # Optional on disk: ``_default_role_from_kind`` fills it from ``RSKILL_ROLE_BY_KIND``
+    # before validation, so a validated manifest always carries a role.
+    role: Literal["s0", "s1", "s2"] = Field(default=None)  # type: ignore[arg-type]  # reason: never None once validated; the before-validator fills it from kind
     # Discriminator selecting the loader / runner branch. Required (no
     # default) so every manifest declares it explicitly — see
     # ``RSkillKind`` for the semantics of each value and which other
@@ -9381,6 +9407,43 @@ class RSkillManifest(BaseModel):
         if self.min_vram_gb is None:
             return None
         return self.min_vram_gb.get(self.quantization.dtype)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_role_from_kind(cls, data: object) -> object:
+        """Fill an omitted ``role`` from ``RSKILL_ROLE_BY_KIND`` — the role is derived, not free.
+
+        An unknown or missing ``kind`` is left for the field validator to reject.
+        """
+        if not isinstance(data, Mapping) or data.get("role") is not None:
+            return data
+        kind = data.get("kind")
+        if kind not in RSKILL_ROLE_BY_KIND:
+            return data
+        return {**data, "role": RSKILL_ROLE_BY_KIND[cast("RSkillKind", kind)]}
+
+    @model_validator(mode="after")
+    def _check_role_matches_kind(self) -> RSkillManifest:
+        """A declared ``role`` must be the slot ``kind`` runs in (``RSKILL_ROLE_BY_KIND``).
+
+        ``"s0"`` is refused outright: S0 ships as ros2_control controllers and
+        there is no S0 rSkill runtime. A mismatched ``s1`` / ``s2`` would put an
+        S2 component in the reasoner's S1 palette, or hide an S1 policy from it.
+        """
+        expected = RSKILL_ROLE_BY_KIND[self.kind]
+        if self.role == "s0":
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): role='s0' is not loadable as an rSkill; "
+                "S0 cerebellar control ships as ros2_control controllers, and there is "
+                f"no S0 rSkill runtime. kind={self.kind!r} requires role={expected!r}."
+            )
+        if self.role != expected:
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): kind={self.kind!r} requires "
+                f"role={expected!r} (got {self.role!r}); the role is the slot the kind "
+                "runs in."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_self_referential_fallback(self) -> RSkillManifest:
@@ -9953,11 +10016,6 @@ class RSkillManifest(BaseModel):
                 raise ValueError(
                     f"RSkillManifest({self.name!r}): kind='playbook' requires a "
                     "`playbook` block (trigger, body_uri, done_predicate, max_steps)."
-                )
-            if self.role != "s2":
-                raise ValueError(
-                    f"RSkillManifest({self.name!r}): kind='playbook' requires role='s2' "
-                    f"(got {self.role!r}); a playbook is an S2 decision procedure."
                 )
             if RSkillAction.PLAN not in self.actions:
                 raise ValueError(
