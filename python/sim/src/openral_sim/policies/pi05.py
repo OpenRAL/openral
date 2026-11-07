@@ -72,6 +72,11 @@ from openral_sim._quantization import (
 from openral_sim._quantization import (
     tie_transformers_weights as _tie_transformers_weights,
 )
+from openral_sim.policies._lora import (
+    fetch_adapter_dir,
+    merge_lora_into_policy,
+    resolve_base_weights,
+)
 from openral_sim.policies._policy_loading import (
     lazy_import_lerobot,
     load_manifest_for_spec,
@@ -608,6 +613,23 @@ def _pi05_phase(name: str, **fields: Any) -> Any:
     return phase_timer(name, prefix="pi05", gpu_mb=True, log=_log, **fields)
 
 
+def _has_device_step(pretrained_path: str) -> bool:
+    """Whether the saved ``policy_preprocessor.json`` carries a ``device_processor`` step.
+
+    Example:
+        >>> _has_device_step("/nonexistent")
+        False
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(pretrained_path) / "policy_preprocessor.json"
+    if not path.is_file():
+        return False
+    steps = json.loads(path.read_text()).get("steps") or []
+    return any(step.get("registry_name") == "device_processor" for step in steps)
+
+
 def _resolve_pretrained_path(spec: Any, repo_id: str) -> str:
     """Return a local directory containing the lerobot processor sidecars.
 
@@ -657,6 +679,25 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     # either shape.
     manifest = load_manifest_for_spec(spec)
 
+    # A LoRA rSkill (`base_weights_uri` set): config + processors come from the
+    # adapter repo (`repo_id`), the weights from the base, and the low-rank pairs
+    # are merged right after the load, before any quantization (`_merge_lora`).
+    base_uri = getattr(manifest, "base_weights_uri", None)
+    weights_repo, weights_rev = (
+        resolve_base_weights(base_uri) if base_uri is not None else (repo_id, revision)
+    )
+
+    def _merge_lora(loaded: Any) -> None:
+        if base_uri is None:
+            return
+        with _pi05_phase("lora_merge", repo=repo_id, base=weights_repo):
+            merge_lora_into_policy(
+                loaded,
+                fetch_adapter_dir(repo_id, revision),
+                torch=torch,
+                base_repo_id=None if base_uri.startswith("local://") else weights_repo,
+            )
+
     # Load dtype: nf4/int4 -> bitsandbytes NF4, 3.4B backbone fits <=4 GiB;
     # int8 -> bnb.nn.Linear8bitLt, ~7 GiB peak, more accurate than nf4 on
     # outlier-heavy attention; bf16 -> ~7 GiB (tight on 8 GiB); fp32 ->
@@ -681,6 +722,11 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     # `config.json` HEAD validation on every load; ~1-5s on a cold connection.
     with _pi05_phase("config_load", repo=repo_id):
         pi05_cfg = PreTrainedConfig.from_pretrained(repo_id, revision=revision)
+    if getattr(pi05_cfg, "use_peft", False) and base_uri is None:
+        raise ROSConfigError(
+            f"pi05: {repo_id} is a PEFT adapter (config use_peft: true); set the rSkill's "
+            "base_weights_uri to the checkpoint it was trained on"
+        )
     pi05_cfg.device = "cpu"
     # torch.compile bakes the graph at construction time; a later nf4
     # requantization (compute_dtype=bf16) trips a cached-graph dtype
@@ -704,6 +750,11 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             prequant_repo = pro_quantization(what="pi05").detect_prequantized_nf4(spec)
     else:
         prequant_repo = None
+    if prequant_repo is not None and base_uri is not None:
+        raise ROSConfigError(
+            "pi05: a prequantized nf4 pack cannot take a LoRA merge (its weights are already "
+            "packed); load the LoRA rSkill at bf16/fp32, or ship a pack built from the merged model"
+        )
     nf4_fast_meta_init = prequant_repo is not None
     int8_fast_meta_init = use_int8 and device.startswith("cuda")
     # Plain bf16 on CUDA: build on meta, allocate on the GPU, stream the
@@ -720,7 +771,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     fast_state_repo: str | None = (
         prequant_repo
         if nf4_fast_meta_init
-        else (repo_id if (int8_fast_meta_init or bf16_fast_meta_init) else None)
+        else (weights_repo if (int8_fast_meta_init or bf16_fast_meta_init) else None)
     )
 
     # Peek the safetensors header so `reset_parameters` can skip modules
@@ -729,7 +780,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     # the peek failed; fall back to the full reset.
     fast_state_keys: set[str] | None = (
         peek_safetensors_keys(
-            fast_state_repo, revision=revision if fast_state_repo == repo_id else None
+            fast_state_repo, revision=weights_rev if fast_state_repo == weights_repo else None
         )
         if fast_state_repo is not None
         else None
@@ -767,10 +818,14 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # PaliGemma graph allocation + state_dict load is fully silent
             # inside transformers/lerobot and takes ~2 min on a warm cache.
             # Heartbeat so the user can tell loading from hung.
-            with _pi05_phase("from_pretrained", repo=repo_id, dtype=dtype_str):
-                policy = PI05Policy.from_pretrained(repo_id, config=pi05_cfg, revision=revision)
+            with _pi05_phase("from_pretrained", repo=weights_repo, dtype=dtype_str):
+                policy = PI05Policy.from_pretrained(
+                    weights_repo, config=pi05_cfg, revision=weights_rev
+                )
     finally:
         torch.set_default_dtype(prev_dtype)
+    if not use_fast_meta_init:
+        _merge_lora(policy)
 
     # The int8 / bf16 loaders stream through lerobot's key normalisation, so the
     # reset skip-set must speak the normalised names too; the nf4 prequant pack
@@ -908,15 +963,16 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                 _init_pi05_buffers(policy, torch=torch)
             # Streamed into the still-bf16 CPU Linear8bitLt weights with the same
             # key normalisation and fail-closed coverage check as the bf16 path.
-            with _pi05_phase("bf16_state_load", repo=repo_id):
+            with _pi05_phase("bf16_state_load", repo=weights_repo):
                 stream_state_into_policy(
                     policy,
-                    repo_id,
+                    weights_repo,
                     torch=torch,
                     family="pi05",
-                    revision=revision,
+                    revision=weights_rev,
                     key_map=_lerobot_key_map(policy),
                 )
+            _merge_lora(policy)
             # `to_empty` above stripped the `Int8Params` subclass from
             # every `Linear8bitLt.weight`; re-wrap so `policy.to(<cuda>)`
             # dispatches through `Int8Params.cuda` (bf16->int8 pack)
@@ -960,15 +1016,16 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             _targeted_reset_parameters(policy, covered_keys=bf16_reset_keys)
         with _pi05_phase("init_buffers"), torch.no_grad():
             _init_pi05_buffers(policy, torch=torch)
-        with _pi05_phase("bf16_state_stream", repo=repo_id, device=device):
+        with _pi05_phase("bf16_state_stream", repo=weights_repo, device=device):
             stream_state_into_policy(
                 policy,
-                repo_id,
+                weights_repo,
                 torch=torch,
                 family="pi05",
-                revision=revision,
+                revision=weights_rev,
                 key_map=_lerobot_key_map(policy),
             )
+        _merge_lora(policy)
     else:
         # Cast on CPU first, then move to GPU. Doing both in one .to() loads
         # each parameter onto CUDA in fp32 before the dtype conversion, which
@@ -994,10 +1051,18 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         # Suppresses the 5 HF HEAD/metadata round-trips lerobot's
         # `TokenizerProcessorStep` would otherwise fire at
         # `google/paligemma-3b-pt-224` on every load, warm cache or not.
+        # A saved `device_processor` names the training host's device (often
+        # "cuda"); pin it to this load's device so the same rSkill runs anywhere.
+        # lerobot refuses an override for a step the pipeline lacks, hence the check.
         preprocessor, postprocessor = call_make_processors_cached_first(
             make_pre_post_processors,
             policy.config,
             pretrained_path=pretrained_path,
+            preprocessor_overrides=(
+                {"device_processor": {"device": device}}
+                if _has_device_step(pretrained_path)
+                else {}
+            ),
         )
 
     # flip_vertical (the openpi-robocasa `RoboCasaGymEnv.process_img`

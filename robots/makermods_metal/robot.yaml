@@ -152,28 +152,46 @@ end_effectors:
     workspace_radius_m: 0.6125
 
 sensors:
-  # Workcell-style overhead camera for sim (the kit's "front camera" on its
-  # stand). Placement is a sim choice, not a measured mount.
-  - name: "front"
+  # Static top camera of MakerMods' pick-and-place rig, fit on the top video of
+  # the HappyEthan/metal_pick_place dataset (95 episodes; reprojection residual
+  # ~3 px median; see python/sim/src/openral_sim/backends/metal_pick_place).
+  # A video fit of THAT rig, not a measured mount of yours: re-fit or measure
+  # before trusting the transform on a real cell.
+  - name: "top"
     modality: "rgb"
-    frame_id: "world"
+    frame_id: "top_camera"
+    parent_frame: "base_link"
+    # x forward (REP-103 body); rpy from the fit.
+    static_transform_xyz_rpy: [0.024, 0.371, 0.705, -0.0360, 0.8210, -0.0261]
+    static_transform_calibrated: false
     rate_hz: 30.0
+    # MuJoCo cameras through this generic placement have no principal-point
+    # offset, so the sim view is aimed along the ray through the real image
+    # centre (target / up recentred, fovy 65.5). The metal_pick_place scene
+    # renders the exact intrinsics below instead.
     sim_placement:
-      pos: [0.75, 0.0, 0.55]
-      target: [0.30, 0.0, 0.0]
+      pos: [0.024, 0.371, 0.705]
+      target: [0.6103, 0.2658, -0.0982]
+      up: [0.808, 0.0045, 0.5892]
+      fovy_deg: 65.5
     intrinsics:
       width: 640
       height: 480
-      fx: 480.0
-      fy: 480.0
-      cx: 320.0
-      cy: 240.0
+      fx: 373.0
+      fy: 373.0
+      cx: 287.8
+      cy: 195.0
     encoding: "rgb8"
-    vla_feature_key: "observation.images.front"
+    vla_feature_key: "observation.images.top"
     vendor: "generic_usb"
-    model: "makermods_front_camera"
-  # Gripper camera (kit part "Camera, x1", mounted on the gripper). Mount pose
-  # not published — sim placement only, static transform NOT calibrated.
+    model: "makermods_top_camera"
+  # Gripper camera (kit part "Camera, x1", mounted on the gripper). Mount and
+  # pinhole intrinsics fit offline on 120 real wrist frames (layouts A-D, rest
+  # to release) against appearance-free features (desk edges, marker and cube
+  # back-projected from the top camera, grommet); held-out 24 frames: desk
+  # edges 1-3 px, marker 4.4 px median. sim_placement has no principal-point
+  # offset (fovy 80.1 = f 285.6); the metal_pick_place scene renders cx/cy.
+  # A video fit, not a measured transform.
   - name: "wrist"
     modality: "rgb"
     frame_id: "wrist_camera"
@@ -182,17 +200,17 @@ sensors:
     rate_hz: 30.0
     sim_placement:
       parent_body: "gripper_base"
-      pos: [0.09, 0.0, -0.05]
-      target: [0.0, 0.0, 0.20]
-      up: [1.0, 0.0, 0.0]
-      fovy_deg: 90.0
+      pos: [0.0677, -0.0004, -0.0134]
+      target: [0.0056, 0.0003, 0.1768]
+      up: [0.9507, -0.0028, 0.3102]
+      fovy_deg: 80.1
     intrinsics:
       width: 640
       height: 480
-      fx: 480.0
-      fy: 480.0
-      cx: 320.0
-      cy: 240.0
+      fx: 285.6
+      fy: 285.6
+      cx: 325.8
+      cy: 249.9
     encoding: "rgb8"
     vla_feature_key: "observation.images.wrist"
     vendor: "generic_usb"

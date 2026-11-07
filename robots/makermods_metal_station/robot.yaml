@@ -276,11 +276,11 @@ sensors:
   rate_hz: 30.0
   sim_placement:
     parent_body: left_gripper_base
-    pos: [0.09, 0.0, -0.05]
-    target: [0.0, 0.0, 0.20]
-    up: [1.0, 0.0, 0.0]
-    fovy_deg: 90.0
-  intrinsics: {width: 640, height: 480, fx: 480.0, fy: 480.0, cx: 320.0, cy: 240.0}
+    pos: [0.0677, -0.0004, -0.0134]
+    target: [0.0056, 0.0003, 0.1768]
+    up: [0.9507, -0.0028, 0.3102]
+    fovy_deg: 80.1
+  intrinsics: {width: 640, height: 480, fx: 285.6, fy: 285.6, cx: 325.8, cy: 249.9}
   encoding: rgb8
   vla_feature_key: observation.images.wrist_left
   vendor: generic_usb
@@ -293,11 +293,11 @@ sensors:
   rate_hz: 30.0
   sim_placement:
     parent_body: right_gripper_base
-    pos: [0.09, 0.0, -0.05]
-    target: [0.0, 0.0, 0.20]
-    up: [1.0, 0.0, 0.0]
-    fovy_deg: 90.0
-  intrinsics: {width: 640, height: 480, fx: 480.0, fy: 480.0, cx: 320.0, cy: 240.0}
+    pos: [0.0677, -0.0004, -0.0134]
+    target: [0.0056, 0.0003, 0.1768]
+    up: [0.9507, -0.0028, 0.3102]
+    fovy_deg: 80.1
+  intrinsics: {width: 640, height: 480, fx: 285.6, fy: 285.6, cx: 325.8, cy: 249.9}
   encoding: rgb8
   vla_feature_key: observation.images.wrist_right
   vendor: generic_usb

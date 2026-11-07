@@ -1,0 +1,21 @@
+Image assets of the metal_pick_place scene. All are derived from the LeRobot v3 dataset
+HappyEthan/metal_pick_place (https://huggingface.co/datasets/HappyEthan/metal_pick_place),
+revision aaf1afccb83bc99b48a0f8c39ce146bbbc5b4626, license Apache-2.0.
+
+top_plate.jpg      640x480 background plate of the static top camera
+                   (videos/observation.images.top): per-pixel temporal median over 440 frames
+                   sampled every 37th frame from video files 000, 002, 005 and 007 (layouts
+                   A-D). Arms, hands, cube and marker move between those frames, so the median
+                   keeps only the static desk, wall, grommet and cart. JPEG q90.
+cart_photo.jpg     280x175 per-texel median of the same frames rectified onto a plane at
+                   z = -0.02 m over the white cart right of the desk (x 0.04..0.60,
+                   y -0.50..-0.149), 2 mm/texel. JPEG q85.
+marker_sticker.png 98x98 marker sticker cropped to its 39 mm disc, 0.4 mm/texel, rectified from
+                   the closest unoccluded wrist view of the sticker (episode 16).
+table_wood.png     376x376 seamless desk tile, 150 x 150 mm (0.4 mm/texel). Four clean near-nadir
+                   wrist-frame patches (episodes 1 and 19; no gripper, cube, marker or shadow
+                   pixels) rectified onto the desk with the fitted wrist camera, de-shaded
+                   (divided by a 12 mm Gaussian low-pass), cross-faded 2 x 2 and made seamless
+                   with a half-period roll blend; high frequencies boosted (unsharp 1.5, sigma
+                   0.5 mm, gain 1.3) so the rendered across-grain spatial frequency matches the
+                   real wrist frames at the same poses (0.34 vs 0.36 cycles/mm).

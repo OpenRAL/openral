@@ -1,0 +1,19 @@
+metal_pick_place_ep00.npz, _ep42.npz, _ep62.npz, _ep91.npz: episodes 0 (layout A), 42 (B), 62 (C) and
+91 (D) of the LeRobot v3 dataset HappyEthan/metal_pick_place
+(https://huggingface.co/datasets/HappyEthan/metal_pick_place), revision
+aaf1afccb83bc99b48a0f8c39ce146bbbc5b4626, license Apache-2.0.
+
+  action, state  float32 (T, 7): the dataset's `action` and `observation.state` columns for the
+                 episode (joint1..joint6 in degrees, URDF sign/zero; gripper stroke, ~2.5 closed,
+                 ~100 open), 30 fps.
+  cube_xy        float32 (2,): cube start, follower base frame (m): orange blob of top-video frame 5
+                 back-projected onto z = 0.020 m with the calibrated top camera (pos (0.024, 0.371,
+                 0.705), f 373 px, principal point (287.8, 195)).
+  cube_yaw_deg   float32: cube yaw from the lit top face of the same blob (minAreaRect on the
+                 back-projected pixels, folded to [-45, 45)).
+  target_xy      float32 (2,): marker centre, same method on the white sticker at z = 0.003 m.
+
+Made by the replay tool that produced the review videos (sceneA/scripts/replay_eps.py in the
+working notes). Used by tests/sim/test_makermods_metal_hal_metal_pick_place.py (open-loop replay
+of each episode grasps the cube and places it on the marker) and
+tests/unit/test_metal_pick_place_options.py (unit round trip on episode 0's states).
