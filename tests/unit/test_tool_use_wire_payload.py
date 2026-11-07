@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast, get_args
+from typing import Any, cast, get_args
 
 import pytest
 from openral_core import (
@@ -139,6 +139,20 @@ def test_non_colliding_ids_also_get_a_hash_suffix() -> None:
 # ── 4. Lifecycle targets are bounded by the palette ──────────────────────────
 
 
+def test_lifecycle_transition_offers_exactly_the_palette_node_ids() -> None:
+    """The LLM picks ``node`` from ``node_ids`` instead of guessing a free-text name."""
+    ids = frozenset({"/openral_slam_toolbox", "/openral_nav2_bringup"})
+    for palette, enum in (
+        (ToolPalette(execute_rskill_ids=frozenset(), node_ids=ids), sorted(ids)),
+        (ToolPalette(execute_rskill_ids=frozenset()), None),
+    ):
+        tools = _tool_palette_to_anthropic_tools(palette)
+        (tool,) = (t for t in tools if t["name"] == "lifecycle_transition")
+        node = cast("dict[str, Any]", tool["input_schema"])["properties"]["node"]
+        assert node.get("enum") == enum
+        assert ("every call is refused" in str(tool["description"])) is (enum is None)
+
+
 def test_lifecycle_transition_outside_palette_node_ids_is_refused() -> None:
     """A model-chosen lifecycle target not in ``node_ids`` (e.g. the deadman) is refused."""
     palette = ToolPalette(
@@ -212,8 +226,13 @@ def test_franka_palette_ships_no_docstrings_and_fits_a_small_model() -> None:
     assert '"title": "' not in wire
     assert "Attributes:" not in wire and "Example:" not in wire
     # "empty = the default" was copied live as the literal string "default", which no
-    # camera or locator is named; optional fields say "leave blank" instead.
-    assert "empty =" not in wire and "the default" not in wire
+    # camera or locator is named; optional fields say "leave blank" instead. Checked on
+    # the fixed tools' own descriptions (field descriptions: per variant, below);
+    # per-skill tools carry manifest prose this test does not own.
+    fixed = json.dumps(
+        [t for t in _tool_palette_to_openai_tools(palette) if "execute_rskill__" not in str(t)]
+    )
+    assert "empty =" not in fixed and "the default" not in fixed
     assert len(wire) < _TOOL_CHAR_BUDGET, (
         f"franka palette is {len(wire)} characters ({len(palette.skills)} skills), over the "
         f"{_TOOL_CHAR_BUDGET} that fit a 32K window; offer fewer skills per tick (#494) rather "
@@ -264,6 +283,18 @@ def test_overlapping_render_returns_its_own_palette(
     names = [str(t.get("name") or cast("dict[str, object]", t["function"])["name"]) for t in tools]
     assert any("pick" in n for n in names), names
     assert not any("place" in n for n in names), names
+
+
+@pytest.mark.parametrize("model", get_args(get_args(ReasonerToolCall)[0]), ids=lambda m: m.__name__)
+def test_reasoner_tool_schema_has_no_title_or_default_placeholder(model: type[BaseModel]) -> None:
+    """Every variant, rendered on this robot or not, has no ``title`` and no "default" stand-in.
+
+    A model copies "empty = the default" back as the literal ``"default"``; a blank
+    optional field is described as "leave blank for ..." instead.
+    """
+    wire = json.dumps(_llm_schema(model))
+    assert '"title": "' not in wire
+    assert "empty =" not in wire and "the default" not in wire
 
 
 @pytest.mark.parametrize("model", get_args(get_args(ReasonerToolCall)[0]), ids=lambda m: m.__name__)

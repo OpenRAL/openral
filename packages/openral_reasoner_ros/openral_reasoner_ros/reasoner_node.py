@@ -704,10 +704,26 @@ def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str:
     manipulate. The active mission task *is* the instruction, so use it whenever the
     LLM leaves the prompt empty/whitespace; otherwise pass the LLM prompt through.
     Returns ``""`` when neither is available (the runner/manifest default applies).
+    ``query_task_progress`` resolves a blank ``task`` the same way.
     """
     if call_prompt.strip():
         return call_prompt
     return active_text or ""
+
+
+def _camera_label(camera: str) -> str:
+    """How a tool-result re-prompt names the camera a query looked through.
+
+    A blank id is the node's primary camera; it is never rendered as ``'default'``,
+    which a model copies back as a literal ``camera="default"`` that no multi-camera
+    deployment serves ("no frame for camera").
+
+    >>> _camera_label("wrist")
+    "camera 'wrist'"
+    >>> _camera_label("")
+    'the primary camera'
+    """
+    return f"camera {camera!r}" if camera else "the primary camera"
 
 
 # The "collective target" predicate (grounded task decomposition) is the single source of truth in
@@ -3782,8 +3798,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "detector" if within_budget else self.get_name()
         msg.text = (
-            f"locate_in_view could not check {call.query!r} in camera "
-            f"{call.camera or 'default'!r}; "
+            f"locate_in_view could not check {call.query!r} in {_camera_label(call.camera)}; "
             f"visibility is unknown. failure_reason={reason}. Do not treat this as evidence "
             "that the object is absent."
         )
@@ -3830,7 +3845,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             )
             return
         assert self._prompt_pub is not None
-        cam = resp.camera or call.camera or "default"
+        cam = _camera_label(resp.camera or call.camera)
         failure_reason = " ".join(str(getattr(resp, "failure_reason", "") or "").split())[
             :_LOCATE_FAILURE_REASON_MAX
         ]
@@ -3855,7 +3870,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             except ValidationError as exc:
                 self.get_logger().debug(f"located: dropping malformed locate metadata: {exc!s}")
             text = (
-                f"locate_in_view: {call.query!r} IS visible in camera {cam!r} right now. "
+                f"locate_in_view: {call.query!r} IS visible in {cam} right now. "
                 f"detections={resp.metadata_json}"
             )
         elif self._spatial_search.record_attempt():
@@ -3863,13 +3878,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # camera frame). Let the next recall retry the detector; the shared
             # SearchProgress budget still bounds the total attempts.
             self._locate_escalated.discard(call.query)
-            text = f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now."
+            text = f"locate_in_view: {call.query!r} is NOT visible in {cam} right now."
         else:
             # Budget exhausted → hand off. The reasoner's own frame_id makes
             # _on_prompt filter it (no further tick): the cascade stops here.
             frame_id = self.get_name()
             text = (
-                f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now.\n"
+                f"locate_in_view: {call.query!r} is NOT visible in {cam} right now.\n"
                 f"active_search: query budget exhausted after {self._spatial_search.attempts} "
                 "consecutive lookups — handing off to a human."
             )
@@ -3958,12 +3973,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().warning(f"dispatch: query_scene response failed: {exc}")
             return
         assert self._prompt_pub is not None
-        cam = resp.camera or call.camera or "default"
+        cam = _camera_label(resp.camera or call.camera)
         if resp.ok:
-            text = f"query_scene[{call.question!r} | camera {cam!r}]: {resp.answer}"
+            text = f"query_scene[{call.question!r} | {cam}]: {resp.answer}"
         else:
             text = (
-                f"query_scene[{call.question!r} | camera {cam!r}]: no answer "
+                f"query_scene[{call.question!r} | {cam}]: no answer "
                 "(no frame available or the scene VLM errored)."
             )
         msg = IDLPromptStamped()
@@ -4016,6 +4031,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 "/openral/perception/query_task_progress not on graph; skipping",
             )
             return
+        # Blank = the active mission task, as the tool's ``task`` field promises. Sent
+        # blank, the reward monitor would score its launch-time ``task`` parameter instead
+        # (or refuse when that is empty). Resolved on ``call`` so the log line and the
+        # ``## REWARD`` record name the task that was actually scored.
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        call = call.model_copy(
+            update={"task": _resolve_execute_prompt(call.task, active.text if active else None)}
+        )
         req = QueryTaskProgress.Request()
         req.window_s = call.window_s
         req.task = call.task

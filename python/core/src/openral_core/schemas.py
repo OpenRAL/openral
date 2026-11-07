@@ -15232,7 +15232,7 @@ class LifecycleTransitionTool(_ReasonerToolBase):
     tool: Literal["lifecycle_transition"] = "lifecycle_transition"
     node: str = Field(
         min_length=1,
-        description="Fully-qualified name of a lifecycle node this robot runs (leading '/').",
+        description="Fully-qualified name of a lifecycle peer node (leading '/').",
     )
     transition: Literal["configure", "activate", "deactivate", "cleanup"] = Field(
         description="Lifecycle transition to request."
@@ -15441,7 +15441,7 @@ class QueryTaskProgressTool(_ReasonerToolBase):
     tool: Literal["query_task_progress"] = "query_task_progress"
     window_s: float = Field(gt=0.0, default=8.0, description="Seconds of recent frames to assess.")
     task: str = Field(
-        default="", description="Task instruction override; leave blank for the active goal."
+        default="", description="Task to assess; leave blank for the active mission task."
     )
 
 

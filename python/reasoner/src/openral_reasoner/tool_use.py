@@ -1028,7 +1028,8 @@ class _LLMSchemaGenerator(GenerateJsonSchema):
     Drops the auto-generated ``title`` of every field, model and enum, and every
     model / enum docstring ``description``; field descriptions are untouched. An
     explicit ``Field(title=...)`` and dataclass / TypedDict schemas keep theirs —
-    the reasoner tools use neither, and the wire test fails on any ``title``.
+    the reasoner tools use neither, and a unit test fails any reasoner tool
+    variant whose schema carries a ``title``.
     """
 
     def field_title_should_be_set(self, schema: _CoreSchemaOrField) -> bool:
@@ -1182,9 +1183,16 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             "pick it to avoid a decision the snapshot clearly demands.",
         ),
     ):
-        tools.append(
-            {"name": kind, "description": description, "input_schema": _llm_schema(cls)},
-        )
+        schema = _llm_schema(cls)
+        text = description
+        if kind == "lifecycle_transition":
+            # The decoder refuses any node outside ``palette.node_ids``, so the LLM is
+            # given that set instead of guessing names from a free-text description.
+            if palette.node_ids:
+                schema["properties"]["node"]["enum"] = sorted(palette.node_ids)
+            else:
+                text += " No lifecycle peers are configured here: every call is refused."
+        tools.append({"name": kind, "description": text, "input_schema": schema})
 
     # The two read-only spatial-memory query tools are surfaced only
     # when the reasoner_node has a SpatialMemory query backend wired (Phase 2);
