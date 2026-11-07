@@ -104,7 +104,10 @@ def _launch_module() -> Any:  # reason: a launch file loaded as a module
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["deploy_e2e_launch_platform_nav"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop("deploy_e2e_launch_platform_nav", None)
     return module
 
 
@@ -115,8 +118,42 @@ def test_the_palette_waits_for_the_platforms_navigate_to_pose_without_naming_its
     alone; with OpenRAL's own Nav2 it also waits for ``/bt_navigator`` to be active.
     """
     module = _launch_module()
-    platform = module._palette_reseed_cmd(lifecycle_node="")
+    platform = module._palette_reseed_cmd(lifecycle_node="", timeout_s=600.0)
     own = module._palette_reseed_cmd(lifecycle_node="/bt_navigator")
     assert platform[platform.index("--action") + 1] == "/navigate_to_pose"
     assert "--lifecycle-node" not in platform
+    assert platform[platform.index("--timeout-s") + 1] == "600.0"
     assert own[own.index("--lifecycle-node") + 1] == "/bt_navigator"
+
+
+@pytest.mark.usefixtures("_rclpy_ctx")
+@pytest.mark.parametrize(("hal_mode", "bridged"), [("real", False), ("sim", True)])
+def test_the_hal_node_bridges_the_base_only_when_openral_owns_navigation(
+    hal_mode: str, bridged: bool
+) -> None:
+    """Real HAL node + real openamrobot_v2 HAL (sim twin, or the real composite unconnected).
+
+    On ``deploy run`` no ``/odom`` publisher and no ``/cmd_vel`` subscription exist, so
+    nothing gives the base a second TF parent or bypasses the platform's arbitration.
+    """
+    from openral_hal.lifecycle import _ManifestHALLifecycleNode
+    from rclpy.parameter import Parameter
+
+    node = _ManifestHALLifecycleNode(f"t_platform_nav_{hal_mode}")
+    params = [
+        Parameter("robot_yaml", value=str(_REPO / "robots" / "openamrobot_v2" / "robot.yaml")),
+        Parameter("hal_mode", value=hal_mode),
+    ]
+    if hal_mode == "real":  # build the composite without its CAN links up
+        params.append(Parameter("hal_transport_json", value='{"require_can_links": false}'))
+    node.set_parameters(params)
+    try:
+        node._hal = node._create_hal()
+        node._attach_mobile_base_bridge()
+        assert (node._mobile_base is not None) is bridged
+        assert node.count_publishers("/odom") == int(bridged)
+        assert node.count_subscribers("/cmd_vel") == int(bridged)
+    finally:
+        if node._mobile_base is not None:
+            node._mobile_base.teardown()
+        node.destroy_node()

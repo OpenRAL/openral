@@ -165,9 +165,12 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   goal, and recovery never restarts old work. OpenRAL's own half lands with openral#501: an
   OpenRAL e-stop cancels its in-flight Nav2 goal and nothing re-sends it. The
   hardwired E-stop stays separate from both.
-- **TF.** Upstream's EKF publishes `odom → base_link`; in the integrated profile the
-  platform owns that transform, and its legacy real bringup needs a coordinated TF
-  migration to the composed model (upstream is handling it).
+- **TF.** On `deploy run` OpenRAL publishes no `odom → base` transform; the platform
+  must publish `odom → base_footprint` (this manifest's `base_frame`, the composed URDF
+  root). Upstream's legacy EKF publishes `odom → base_link` instead, which gives
+  `base_link` two parents next to `robot_state_publisher`'s `base_footprint → base_link`
+  and leaves `base_footprint` off the `odom` tree. Upstream is migrating its real bringup
+  to the composed model; a real deploy waits for that.
 - **Arm controllers.** The OpenArm bringup (`openral_hal_openarm`) and upstream's
   `arm_controllers.yaml` name the controllers differently
   (`left_joint_trajectory_controller` vs `left_arm_controller`), and upstream's

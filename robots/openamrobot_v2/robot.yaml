@@ -25,7 +25,9 @@
 name: "openamrobot_v2"
 embodiment_kind: "mobile_manipulator"
 # REP-105: base_footprint is the URDF root, on the floor under the drive-axle
-# midpoint; MobileBaseBridge publishes odom -> base_footprint.
+# midpoint. On deploy sim MobileBaseBridge publishes odom -> base_footprint; on deploy run
+# the platform must (ADR-0127; its legacy EKF publishes odom -> base_link until upstream's
+# TF migration to the composed model, see README "TF").
 base_frame: "base_footprint"
 # Nav2 mobile-base properties. The chassis is 0.80 x 0.43 m around base_footprint
 # (casters at x ±0.275, y ±0.215; front sensors at x 0.399). The radius encloses

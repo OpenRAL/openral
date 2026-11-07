@@ -2813,9 +2813,20 @@ if _ROS2_AVAILABLE:
             )
             self._bridge.setup()
 
-            # Mobile-base streams (issue #191 Phase 3): /odom + odom->base_link TF
-            # + /cmd_vel->BODY_TWIST, attached generically when the manifest
-            # declares a planar base (`base_joints`). Fixed-base arms skip it.
+            self._attach_mobile_base_bridge()
+
+            self._setup_vision_attachment()
+            return TransitionCallbackReturn.SUCCESS
+
+        def _attach_mobile_base_bridge(self) -> None:
+            """Attach ``MobileBaseBridge`` when OpenRAL owns this deploy's base navigation.
+
+            Mobile-base streams (issue #191 Phase 3): ``/odom`` + ``odom -> base`` TF +
+            ``/cmd_vel`` -> ``BODY_TWIST``, attached when the manifest declares a planar base
+            (``base_joints``) and OpenRAL owns navigation (``deploy sim``). On ``deploy run``
+            the platform owns them (ADR-0127 Decision 1): no bridge. Fixed-base arms skip it.
+            """
+            assert self._hal is not None  # invariant: called after the HAL is built
             hal_mode = self.get_parameter("hal_mode").get_parameter_value().string_value or "sim"
             if platform_owns_navigation(self._hal.description, hal_mode=hal_mode):
                 # ADR-0127 Decision 1: on `deploy run` the platform's own stack publishes
@@ -2844,9 +2855,6 @@ if _ROS2_AVAILABLE:
                     proprio=self._proprio,
                 )
                 self._mobile_base.setup()
-
-            self._setup_vision_attachment()
-            return TransitionCallbackReturn.SUCCESS
 
         def _setup_vision_attachment(self) -> None:
             """Attach the vision attachment bridge when the operator enabled it.

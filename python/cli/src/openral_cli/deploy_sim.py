@@ -1463,8 +1463,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         if asked:
             raise ROSConfigError(
                 f"robot {description.name!r} on a real deploy: its platform owns navigation "
-                f"(ADR-0127), so OpenRAL starts no SLAM or Nav2; drop {', '.join(asked)} from "
-                "the scene's runtime."
+                f"(ADR-0127), so OpenRAL starts no SLAM or Nav2; drop {', '.join(asked)} "
+                "(the scene's runtime or the --enable-slam / --enable-nav2 flag)."
             )
         enable_slam = enable_nav2 = False
         _console.print(
