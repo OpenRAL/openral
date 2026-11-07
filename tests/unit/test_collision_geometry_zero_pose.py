@@ -286,7 +286,49 @@ def test_no_non_allowed_pair_interpenetrates_at_rest(manifest_path: Path) -> Non
 #     for, issue #356): the link7 box centre sits 29.2 mm inside the torso's
 #     watertight collision mesh (body_link0_symp.stl) at body z = 0.661 m;
 #     kernel gap -118 mm. Found by a seeded search over the left arm's limits.
+#   makermods_metal (1): gripper folded down into the base — 467 gripper_base
+#     vertices inside base_link (derived `makermods:metal` MJCF meshes).
+#   makermods_metal (2): gripper folded back onto the upper arm — 194 link2
+#     vertices inside gripper_base.
+#   makermods_metal_station: both arms yawed inward and stretched to the
+#     middle of the plate — 1 217 right_link7 vertices inside left_gripper_base.
 _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
+    (
+        "makermods_metal",
+        {
+            "joint1": 0.26,
+            "joint2": -1.74,
+            "joint3": 0.1,
+            "joint4": -0.42,
+            "joint5": 0.54,
+            "joint6": -0.27,
+        },
+        ("base_link", "gripper_base"),
+    ),
+    (
+        "makermods_metal",
+        {
+            "joint1": -0.3,
+            "joint2": -0.77,
+            "joint3": 0.44,
+            "joint4": -1.63,
+            "joint5": 0.48,
+            "joint6": 0.22,
+        },
+        ("gripper_base", "link2"),
+    ),
+    (
+        "makermods_metal_station",
+        {
+            "left_joint1": -1.57,
+            "left_joint2": -1.57,
+            "left_joint3": 1.57,
+            "right_joint1": 1.57,
+            "right_joint2": -1.57,
+            "right_joint3": 1.57,
+        },
+        ("left_gripper_base", "right_link7"),
+    ),
     (
         "openarm",
         {

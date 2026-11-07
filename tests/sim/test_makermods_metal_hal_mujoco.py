@@ -274,7 +274,9 @@ def test_single_arm_matches_derived_urdf(arm: RobotDescription) -> None:
         assert parent is not None and child is not None
         assert (parent.get("link"), child.get("link")) == (joint.parent_link, joint.child_link)
         assert joint.origin_xyz == pytest.approx(_floats(origin.get("xyz")), abs=1e-6)
-        assert joint.origin_rpy == pytest.approx(_floats(origin.get("rpy")), abs=1e-9)
+        # `openral collision lower` writes joint FK at 8 significant figures
+        # (pi/2 -> 1.5707963, 2.7e-8 off), and `collision check` holds it there.
+        assert joint.origin_rpy == pytest.approx(_floats(origin.get("rpy")), abs=1e-7)
         assert joint.axis_xyz == pytest.approx(_floats(axis.get("xyz")))
         assert joint.position_limits == pytest.approx(
             (float(str(limit.get("lower"))), float(str(limit.get("upper"))))

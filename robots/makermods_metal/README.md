@@ -162,17 +162,47 @@ hal.disconnect()
 --resolve-remote-assets` also resolves the `makermods:` refs (clone + MuJoCo
 compile).
 
-## Safety: no self-collision checking yet
+## Safety: self-collision model
 
-> **Hazard.** This manifest declares no `collision_geometry`, so the safety kernel's
-> envelope loader runs with self-collision checking **disabled** (only the workspace
-> box and joint/velocity limits apply). The repo's collision fitter cannot lower
-> this arm yet: its MJCF path reads the `gripper` fraction as metres when checking
-> the finger `mimic_joints` rows, and its URDF path leaves the `metal_description`
-> `package://` meshes unresolved; it also emits no finger geometry. Closing this
-> needs a `packages/openral_safety` lowering change (Safety-WG review). Until then,
-> do not run this manifest on real hardware behind the kernel's self-collision
-> guarantee.
+The manifest's `collision_geometry` and `allowed_collision_pairs` are what the C++
+safety kernel checks every chunk against. They are **generated from the derived
+`makermods:metal` MJCF** (the URDF's `package://metal_description` meshes are left
+unresolved on purpose, so the robot lowers on the MJCF path like the OpenArm).
+Regenerate with
+
+```bash
+openral collision lower --robot robots/makermods_metal/robot.yaml --write
+```
+
+(first lowering: `--tight-link` on every link, `--tight-link link1=2`). What is
+checked:
+
+- **Every link is a box plus its exact convex hull** (`tight_geometry`), fitted to
+  all MJCF geoms of its body, collision and visual. `link1` is two slabs: one hull
+  of it covered the pocket the wrist (`link5`) parks in, and stopped the first
+  recorded states of `HappyEthan/metal_pick_place` episode 0 at -9.8 mm against a
+  real mesh gap of +0.25 mm.
+- **Both fingers** are their own links, `link7` / `link8`, posed by the
+  `mimic_joints` rows at `∓0.05 · gripper` m. The lowering checks those numbers
+  against the MJCF (joint8 driven over `sim.grippers[].ctrl_range`, joint7 = -joint8)
+  in the fraction's units. `finger_pair` stays logical and carries no primitive.
+- **Exempt pairs**: each joint's parent/child, `gripper_base`'s mount on `link6`
+  and the fingers on `gripper_base`, and the two fingers against each other (the
+  closed jaws overlap by 4.3 mm by design). Everything else is checked, finger
+  against arm included.
+
+Pinned by `tests/unit/test_collision_makermods_metal_poses.py` (start pose open and
+closed, and all 3 196 recorded states of the four fixture episodes: 0 stops;
+the 444 recorded *actions* that would stop all command a joint past its limit,
+which the envelope refuses first), `tests/unit/test_collision_geometry_zero_pose.py`
+(rest pose; a gripper folded into `base_link` and into `link2` still trips, with
+mesh evidence) and `tests/unit/test_collision_geometry_enclosure.py` (every MJCF
+mesh vertex inside its link's primitives).
+
+**Still owed**: Safety-WG review of the generated blocks and the lowering change,
+a hazard-log entry, and a C++ kernel run against this manifest (the Python port of
+the kernel predicates is what the tests use). The geometry is the upstream CAD, not
+a measured arm; cables and the camera on the gripper are not modelled.
 
 ## Real hardware
 
