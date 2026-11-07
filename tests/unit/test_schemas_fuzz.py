@@ -1131,6 +1131,10 @@ def _build_rskill_manifest(draw: st.DrawFn) -> RSkillManifest:
         runtime=draw(st.sampled_from(list(RSkillRuntime))),
         quantization=draw(_quant_config_st),
         weights_uri=weights_uri,
+        # A LoRA base: any other hf:// repo (never the adapter's own).
+        base_weights_uri=draw(
+            st.one_of(st.none(), _weights_uri.filter(lambda u: u != weights_uri))
+        ),
         chunk_size=draw(st.integers(min_value=1, max_value=1000)),
         latency_budget=draw(_rskill_latency_budget_st),
         actuators_required=draw(st.lists(_actuator_requirement_st, min_size=1, max_size=3)),

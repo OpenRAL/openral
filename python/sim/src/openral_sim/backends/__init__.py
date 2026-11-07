@@ -32,7 +32,8 @@ every ``<prefix>/<task>`` scene id resolves to it, so a new task is YAML.
   (sawyer), ``robocasa`` (panda_mobile | panda_mobile_vslam), ``robocasa/gr1``
   (gr1), ``maniskill3`` (franka_panda — every in-tree ``robot_uids`` agent),
   ``simpler_env`` (widowx — the only MS3-registered bridge robot),
-  ``openarm_tabletop_pnp`` (openarm), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
+  ``openarm_tabletop_pnp`` (openarm), ``metal_pick_place`` (makermods_metal —
+  the calibrated MakerMods rig), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
   box/tube task is coupled to the so_arm101 MJCF schema),
   ``rlbench`` (franka_panda — CoppeliaSim/PyRep tasks behind an out-of-process
   py3.10 sidecar), ``robotwin`` (aloha_agilex — the RoboTwin 2.0
@@ -77,6 +78,7 @@ def _register_backends() -> None:
         isaac_sim,
         libero,
         maniskill3,
+        metal_pick_place,
         metaworld,
         openarm_robosuite,
         pusht,
