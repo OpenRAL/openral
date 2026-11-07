@@ -2,9 +2,10 @@
 
 Canonical `RobotDescription` manifest for the **Unitree G1** humanoid, a
 29-DoF biped (2 × 6 legs + 3 waist + 2 × 7 arms; no end-effectors on this
-menagerie variant). One manifest covers the real G1 (over `unitree_sdk2`, M2
-milestone) and the MuJoCo digital twin (`G1MujocoHAL` on the `mujoco_menagerie`
-MJCF).
+menagerie variant). One manifest covers the real G1 (`UnitreeHgRealHAL` over
+NVIDIA's Isaac ROS `ros2_control` stack, bringup in
+[`packages/openral_hal_unitree`](../../packages/openral_hal_unitree/README.md)) and
+the MuJoCo digital twin (`G1MujocoHAL` on the `mujoco_menagerie` MJCF).
 
 ## What this is — and what it isn't
 
@@ -81,9 +82,14 @@ dependency-free and deterministic. `scenes/deploy/g1_vln.yaml` keeps
 `playground_walk` until a `deploy sim` run validates `gr00t_wbc` end to end
 behind InternVLA-N1.
 
-Real balance and walking belong to the C++ S0 cerebellum (CLAUDE.md §3, M2
-milestone) and are out of scope here; see the "HAL · Unitree G1 (real-HW)" planned block in
-`docs/architecture/repo-state-map.html`.
+On real hardware, balance and walking are NVIDIA's C++ S0 layer: a whole-body
+ONNX policy in isaac_ros_deploy's `InferenceController` (GR00T Decoupled WBC by
+default — `hal.parameters.defaults.s0_policy`; WBC-AGILE selectable) owns the legs
+(GR00T: and the whole waist). `UnitreeHgRealHAL` sends it a base twist and commands
+only the arms, refusing any action that targets a policy-owned joint; it never
+reuses the sim walking controller. Its e-stop hands every joint to
+`freeze_controller` (a position hold, **not** balance). Not yet run on a G1 — see
+the package README for bring-up, rates (200 Hz manager / 50 Hz policy) and risks.
 
 ## At a glance
 
@@ -99,9 +105,12 @@ milestone) and are out of scope here; see the "HAL · Unitree G1 (real-HW)" plan
 | Control rate | 50 Hz (`action_spec.control_freq_hz`; the sim S0 policy rate — one `send_action` = 10 × 2 ms physics steps) |
 | Locomotion | `bipedal` |
 | Bimanual | yes |
-| `sdk_kind` | `open` (menagerie MJCF + `mujoco` Python package, Apache-2.0) |
+| `sdk_kind` | `closed_with_api` — the real path links `unitree_sdk2`'s prebuilt core; the sim path itself is fully open (menagerie MJCF + `mujoco`, Apache-2.0) |
 | `hal.sim` | `openral_hal.g1:G1MujocoHAL` (`deploy sim`) |
-| `hal.real` | _null_ — sim-only until the M2 C++ S0 cerebellum (`deploy run` raises `ROSCapabilityMismatch`) |
+| `hal.real` | `openral_hal.unitree_real:UnitreeHgRealHAL` (`deploy run`) |
+| `hal.real_bringup` | `openral_hal_unitree:real_bringup.launch.py` |
+| `hal.parameters.defaults` | `robot_model: g1`, `s0_policy: gr00t_decoupled_wbc` |
+| `action_spec.control_freq_hz` | 20 Hz (= the twin's `body_twist_dt_s`; the real HAL's trajectory step) |
 
 ## Pair with
 
@@ -110,7 +119,9 @@ milestone) and are out of scope here; see the "HAL · Unitree G1 (real-HW)" plan
 | Python HAL adapter | `openral_hal.g1.G1MujocoHAL` (MuJoCo digital twin) |
 | Python description | `openral_hal.G1_DESCRIPTION` |
 | Sim test | `tests/sim/test_g1_hal_mujoco.py`, `tests/sim/test_g1_gr00twbc_mujoco.py` (GR00T WBC S0) |
-| Future real-HW HAL | planned under M2 (CLAUDE.md §3, S0), `unitree_sdk2` + C++ S0 cerebellum |
+| Real-HW HAL | `openral_hal.unitree_real.UnitreeHgRealHAL` / `G1_REAL_DESCRIPTION` (this manifest's mirror) |
+| Real-HW bringup | `packages/openral_hal_unitree` (NVIDIA `isaac_ros_robots` + `isaac_ros_deploy`, pinned) |
+| S0 bundle builder | `tools/build_gr00t_wbc_leapp.py` (GR00T WBC → LEAPP bundle) |
 
 ## Joints
 
@@ -173,7 +184,12 @@ these.
   ONNX parity with a reference port of the upstream runner, 20 s stand, 0.5 m/s
   walk, arm tracking while walking, S0-joint refusal, 300 N push recovery, and
   the fall latch.
-- HIL: planned alongside the real-HW HAL under M2.
+- Unit: `tests/unit/test_unitree_real_hal.py`, `tests/unit/test_unitree_real_bringup_config.py`
+  (joint-name parity with NVIDIA's xacro, policy split, launch), and
+  `tests/unit/test_gr00t_wbc_leapp_bundle.py` (bundle vs GR00T's runner, tick for tick).
+- Integration: `tests/integration/test_unitree_real_hal_ros2_control_live.py` (real
+  NVIDIA controllers over mock hardware; skips without the NVIDIA stack).
+- HIL: none yet — the first real bring-up is a validation run on a gantry.
 
 ## Asymmetric joint conventions
 

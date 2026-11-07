@@ -71,8 +71,27 @@ class TestRealModeResolution:
         assert "sim_env_yaml" not in inv.hal_params
 
     def test_sim_only_robot_real_fails_fast(self) -> None:
-        with pytest.raises(ROSCapabilityMismatch, match="g1"):
-            _resolve("g1", "real")
+        # H1 is sim-only (`hal.real: null`); G1 gained its real HAL (below).
+        with pytest.raises(ROSCapabilityMismatch, match="h1"):
+            _resolve("h1", "real")
+
+    def test_g1_real_resolves_to_the_unitree_hg_hal_and_its_bringup(self) -> None:
+        """G1 real mode: manifest-driven HAL node, no sim twin, NVIDIA S0 bringup declared."""
+        from openral_core import RobotDescription
+        from openral_hal.resolver import ros_control_hal
+
+        inv = _resolve("g1", "real")
+        assert inv.hal_params["hal_mode"] == "real"
+        assert "sim_robot_yaml" not in inv.hal_params
+        robot_yaml = inv.hal_params["robot_yaml"]
+        assert isinstance(robot_yaml, str)
+        assert robot_yaml.endswith("robots/g1/robot.yaml")
+        desc = RobotDescription.from_yaml(robot_yaml)
+        assert desc.hal.real == "openral_hal.unitree_real:UnitreeHgRealHAL"
+        assert desc.hal.real_bringup == "openral_hal_unitree:real_bringup.launch.py"
+        # The lifecycle node wires a RosControlTransport to it (vendor joint_state_broadcaster).
+        assert ros_control_hal(desc, mode="real")
+        assert not ros_control_hal(desc, mode="sim")
 
     def test_no_robot_and_no_config_raises(self) -> None:
         with pytest.raises(ROSConfigError, match="robot_id is undefined"):

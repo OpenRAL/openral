@@ -15,9 +15,9 @@ never the YAML. ``sensors:`` and ``collision_geometry:`` are deliberately not
 compared: they are manifest-only (``build_hal`` threads them from the YAML) and
 most mirrors leave them empty.
 
-UR5e/UR10e/Franka/Sawyer/ALOHA mirror their ``*_REAL_DESCRIPTION`` (derived
+UR5e/UR10e/Franka/Sawyer/ALOHA/G1 mirror their ``*_REAL_DESCRIPTION`` (derived
 via ``openral_hal._real_description.make_real_description`` — only
-``sdk_kind`` differs from the sim baseline). G1/H1/Rizon4/OpenArm/Anvil-v2
+``sdk_kind`` differs from the sim baseline). H1/Rizon4/OpenArm/Anvil-v2
 mirror their sim baseline. SO-100 and ``pusht_2d`` are out of scope.
 """
 
@@ -37,8 +37,8 @@ from openral_core import RobotDescription
         ("robots/franka_panda/robot.yaml", "FRANKA_PANDA_REAL_DESCRIPTION"),
         ("robots/sawyer/robot.yaml", "SAWYER_REAL_DESCRIPTION"),
         ("robots/aloha_bimanual/robot.yaml", "ALOHA_REAL_DESCRIPTION"),
+        ("robots/g1/robot.yaml", "G1_REAL_DESCRIPTION"),
         # Sim-baseline pins (no real-HW HAL yet) — see module docstring.
-        ("robots/g1/robot.yaml", "G1_DESCRIPTION"),
         ("robots/h1/robot.yaml", "H1_DESCRIPTION"),
         ("robots/rizon4/robot.yaml", "RIZON4_DESCRIPTION"),
         ("robots/openarm/robot.yaml", "OPENARM_DESCRIPTION"),

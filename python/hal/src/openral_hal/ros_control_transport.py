@@ -42,6 +42,8 @@ and `publish_empty` (`std_msgs/Empty` publishers), both created at wire-up
 from what the HAL declared in `vendor_stop_services()` /
 `vendor_stop_topics()`, so the stop path never creates an entity — and so a
 vendor stop on an undeclared name is refused rather than silently absent.
+`swap_controllers` (`ControllerSwapSeam`) is the one-request hand-over a robot
+whose hardware releases unclaimed joints needs instead of plain deactivation.
 
 Service calls run on a private helper node with its own executor: the e-stop
 callback runs on the lifecycle node's single-threaded executor, and a future
@@ -51,6 +53,7 @@ the client. Bounded by the HAL's `stop_timeout_s`.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -74,6 +77,17 @@ _DEFAULT_CONTROLLER_MANAGER = "/controller_manager"
 #: switch if any named controller cannot move. A best-effort stop that leaves
 #: one controller active is not a stop.
 _STRICT = 2
+
+#: `BEST_EFFORT` strictness, used only by `swap_controllers`: the swap is an
+#: emergency hand-over (NVIDIA's own `SafetyController` issues the same
+#: request BEST_EFFORT) and one of its controllers may already be where the
+#: swap wants it — e.g. the S0 safety controller already fell back to its
+#: freeze controller. STRICT would refuse that whole request; the post-switch
+#: `list_controllers` confirmation is what decides whether the swap held.
+_BEST_EFFORT = 1
+
+#: Components of a `TWIST` command: vx, vy, vz, wx, wy, wz.
+_TWIST_DIM = 6
 
 
 @runtime_checkable
@@ -296,16 +310,19 @@ class RosControlTransport:
         The message type follows the `ControllerKind` the HAL declared for this
         topic in `command_bindings` — `trajectory_msgs/JointTrajectory` for a
         `JointTrajectoryController`, `std_msgs/Float64MultiArray` for the
-        forward-command family.
+        forward-command family, `isaac_ros_deploy_interfaces/JointCommandTrajectory`
+        and `geometry_msgs/Twist` for NVIDIA's isaac_ros_deploy controllers.
 
         The message's own `joint_names` are used verbatim, so this cannot
         misroute a value the HAL placed correctly; it falls back to the full
         joint list only for a HAL that omits them.
 
-        Only the chunk's **last** step is published. A `JointTrajectory` point
-        carries an absolute target plus a deadline, and the controller
-        interpolates from where the robot actually is — replaying every
-        intermediate step of an action chunk would fight that interpolation.
+        A `JointTrajectory` gets every row of the chunk as a point, evenly
+        spaced up to the HAL's deadline; a `Float64MultiArray` (forward
+        command) only the last row, since it carries no time. A
+        `JointCommandTrajectory` (NVIDIA `ForwardJointCommandController`) gets
+        the measured pose as step 0 followed by every row. A `TWIST` topic is
+        commanded from the dict's `twist`, not from `joint_targets`.
 
         Args:
             topic: One of `command_topics`.
@@ -325,6 +342,11 @@ class RosControlTransport:
                 f"publishes to topics it never declared in command_topics(). "
                 f"Declared: {sorted(self._pubs)}"
             )
+
+        kind = self._kinds[topic]
+        if kind is ControllerKind.TWIST:
+            self._publish_twist(publisher, topic, msg)
+            return
 
         # A payload this transport cannot express must be loud. Returning
         # quietly would drop a command on the actuation path with nothing above
@@ -359,7 +381,10 @@ class RosControlTransport:
                 f"{len(last_step) if isinstance(last_step, list) else 'a non-list'}."
             )
 
-        kind = self._kinds[topic]
+        if kind is ControllerKind.JOINT_COMMAND_TRAJECTORY:
+            self._publish_joint_command_trajectory(publisher, topic, msg, names, targets)
+            return
+
         if kind is ControllerKind.FORWARD_COMMAND:
             from std_msgs.msg import Float64MultiArray  # noqa: PLC0415  # reason: ROS-only dep
 
@@ -452,6 +477,29 @@ class RosControlTransport:
         """Activate `names` through `switch_controller` (STRICT), then confirm `active`."""
         return self._switch(names, activate=True, timeout_s=timeout_s)
 
+    def swap_controllers(
+        self,
+        *,
+        deactivate: Sequence[str],
+        activate: Sequence[str],
+        timeout_s: float,
+    ) -> ControllerSwitchReport:
+        """Deactivate `deactivate` and activate `activate` in ONE `switch_controller` request.
+
+        Implements `ControllerSwapSeam` for robots whose hardware releases
+        unclaimed joints: the hand-over happens inside one controller-manager
+        switch, so no update cycle runs with the joints unclaimed. Requested
+        BEST_EFFORT (see `_BEST_EFFORT`); `ok` is the manager's `ok` **and** a
+        post-switch listing with every `deactivate` controller `inactive` and
+        every `activate` controller `active`.
+        """
+        return self._switch_request(
+            deactivate=tuple(deactivate),
+            activate=tuple(activate),
+            strictness=_BEST_EFFORT,
+            timeout_s=timeout_s,
+        )
+
     def call_trigger(self, service: str, *, timeout_s: float) -> TriggerReport:
         """Call one declared `std_srvs/Trigger` service and return its response.
 
@@ -522,13 +570,30 @@ class RosControlTransport:
     def _switch(
         self, names: Sequence[str], *, activate: bool, timeout_s: float
     ) -> ControllerSwitchReport:
-        """One STRICT ``switch_controller`` call, confirmed via ``list_controllers``.
+        """One STRICT ``switch_controller`` call, confirmed via ``list_controllers``."""
+        wanted = tuple(names)
+        return self._switch_request(
+            deactivate=() if activate else wanted,
+            activate=wanted if activate else (),
+            strictness=_STRICT,
+            timeout_s=timeout_s,
+        )
+
+    def _switch_request(
+        self,
+        *,
+        deactivate: tuple[str, ...],
+        activate: tuple[str, ...],
+        strictness: int,
+        timeout_s: float,
+    ) -> ControllerSwitchReport:
+        """One ``switch_controller`` call, confirmed via ``list_controllers``.
 
         Service discovery, the switch and its confirmation share **one** ``timeout_s``
         deadline, so the call returns within the budget however the manager stalls.
         """
-        wanted = tuple(names)
-        target = "active" if activate else "inactive"
+        wanted = deactivate + activate
+        targets = {n: "inactive" for n in deactivate} | {n: "active" for n in activate}
         if not wanted:
             return ControllerSwitchReport(
                 ok=False, controllers=wanted, detail="no controller names to switch"
@@ -540,11 +605,9 @@ class RosControlTransport:
                 ok=False, controllers=wanted, detail=f"{manager} not available"
             )
         request = self._switch_type.Request()
-        if activate:
-            request.activate_controllers = list(wanted)
-        else:
-            request.deactivate_controllers = list(wanted)
-        request.strictness = _STRICT
+        request.activate_controllers = list(activate)
+        request.deactivate_controllers = list(deactivate)
+        request.strictness = strictness
         request.activate_asap = True
         # The manager's own switch timeout stays the full budget: `0` would mean "wait
         # forever" to controller_manager, and a manager that aborts a nearly-applied stop
@@ -566,7 +629,7 @@ class RosControlTransport:
         # Confirmation gets only what is left of `timeout_s`: the whole stop is bounded by
         # the caller's budget, never a full extra window per phase.
         states = self._controller_states_of(wanted, timeout_s=_left(deadline))
-        confirmed = all(states.get(n) == target for n in wanted)
+        confirmed = all(states.get(n) == target for n, target in targets.items())
         # `message` joined the response after Humble; read it defensively.
         message = str(getattr(response, "message", "") or "")
         detail = (
@@ -580,6 +643,94 @@ class RosControlTransport:
         """Return ``{name: state}`` for ``names``, ``not_listed`` for any the manager omits."""
         listed = self.controller_states(timeout_s=timeout_s)
         return {n: listed.get(n, "not_listed") for n in names}
+
+    # ── Kind-specific publishers ──────────────────────────────────────────────
+
+    def _publish_twist(
+        self,
+        publisher: Any,  # noqa: ANN401  # reason: rclpy publisher is untyped without a ROS install
+        topic: str,
+        msg: dict[str, object],
+    ) -> None:
+        """Publish the command dict's ``twist`` as one ``geometry_msgs/Twist``.
+
+        Raises:
+            ROSConfigError: If ``twist`` is missing, not 6 values, or not finite —
+                a velocity command this transport would have to guess at.
+        """
+        from geometry_msgs.msg import Twist  # noqa: PLC0415  # reason: ROS-only dep
+        from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
+
+        raw = msg.get("twist")
+        if not isinstance(raw, list | tuple) or len(raw) != _TWIST_DIM:
+            raise ROSConfigError(
+                f"RosControlTransport: {topic!r} is a twist topic and needs 'twist' as 6 "
+                f"floats (vx, vy, vz, wx, wy, wz); got {raw!r}."
+            )
+        values = [float(v) for v in raw]
+        if not all(math.isfinite(v) for v in values):
+            raise ROSConfigError(f"RosControlTransport: non-finite twist for {topic!r}: {values}")
+        twist = Twist()
+        twist.linear.x, twist.linear.y, twist.linear.z = values[0], values[1], values[2]
+        twist.angular.x, twist.angular.y, twist.angular.z = values[3], values[4], values[5]
+        publisher.publish(twist)
+
+    def _publish_joint_command_trajectory(
+        self,
+        publisher: Any,  # noqa: ANN401  # reason: rclpy publisher is untyped without a ROS install
+        topic: str,
+        msg: dict[str, object],
+        names: list[str],
+        targets: list[object],
+    ) -> None:
+        """Publish a chunk as ``isaac_ros_deploy_interfaces/JointCommandTrajectory``.
+
+        NVIDIA's ``ForwardJointCommandController`` places step ``i`` at
+        ``header.stamp + i * step_dt`` and interpolates linearly between steps;
+        step 0 is reached at the stamp itself. So step 0 is the **measured**
+        position of every named joint and the chunk's rows follow, evenly
+        spaced up to the HAL's deadline — the same "interpolate from where the
+        robot is" semantics a ``JointTrajectory`` gets from its controller.
+        ``kp`` / ``kd`` stay empty, so the controller's configured gains apply.
+
+        Raises:
+            ROSConfigError: A ragged chunk, or a joint whose measured position
+                has never arrived on the state topic (no step 0 to start from).
+        """
+        from builtin_interfaces.msg import Duration  # noqa: PLC0415  # reason: ROS-only dep
+        from isaac_ros_deploy_interfaces.msg import (  # noqa: PLC0415  # reason: vendor ROS-only dep
+            JointCommandTrajectory,
+        )
+        from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
+
+        unheard = [n for n in names if n not in self._latest]
+        if unheard:
+            raise ROSConfigError(
+                f"RosControlTransport: no measured position yet for {unheard} on "
+                f"{self._joint_state_topic}; a JointCommandTrajectory to {topic!r} must start "
+                "from where the robot is, so the command is refused rather than started "
+                "from an assumed pose."
+            )
+        rows: list[list[float]] = [[self._latest[n][0] for n in names]]
+        for i, row in enumerate(targets):
+            if not isinstance(row, list) or len(row) != len(names):
+                raise ROSConfigError(
+                    f"RosControlTransport: {topic!r} chunk row {i} has "
+                    f"{len(row) if isinstance(row, list) else 'a non-list'} value(s) "
+                    f"for {len(names)} joint(s)."
+                )
+            rows.append([float(v) for v in row])
+        step_s = self._time_from_start_s(msg, topic) / len(targets)
+        traj = JointCommandTrajectory()
+        traj.header.stamp = self._node.get_clock().now().to_msg()
+        step_dt = Duration()
+        step_dt.sec = int(step_s)
+        step_dt.nanosec = int((step_s - int(step_s)) * 1e9)
+        traj.step_dt = step_dt
+        traj.names = list(names)
+        traj.position = [v for row in rows for v in row]
+        traj.horizon = len(rows)
+        publisher.publish(traj)
 
     # ── Introspection ─────────────────────────────────────────────────────────
 
@@ -665,6 +816,18 @@ def _message_type(kind: ControllerKind) -> type:
         from std_msgs.msg import Float64MultiArray  # noqa: PLC0415  # reason: ROS-only dep
 
         message_type = Float64MultiArray
+        return message_type
+    if kind is ControllerKind.JOINT_COMMAND_TRAJECTORY:
+        from isaac_ros_deploy_interfaces.msg import (  # noqa: PLC0415  # reason: vendor ROS-only dep
+            JointCommandTrajectory,
+        )
+
+        message_type = JointCommandTrajectory
+        return message_type
+    if kind is ControllerKind.TWIST:
+        from geometry_msgs.msg import Twist  # noqa: PLC0415  # reason: ROS-only dep
+
+        message_type = Twist
         return message_type
     raise ROSConfigError(  # pragma: no cover - guarded by test_every_controller_kind_maps
         f"RosControlTransport has no message type for ControllerKind {kind!r}. "

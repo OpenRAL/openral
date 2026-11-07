@@ -67,6 +67,7 @@ from openral_core.schemas import (
     ControlMode,
     EmbodimentKind,
     HalEntrypoints,
+    HalParameters,
     IntrinsicsPinhole,
     JointSpec,
     JointType,
@@ -402,15 +403,30 @@ G1_DESCRIPTION = RobotDescription(
         # Walking-policy trained command box; see robots/g1/robot.yaml.
         max_base_linear_speed_m_s=0.5,
         max_base_angular_speed_rad_s=1.0,
+        # Provisional (former schema defaults / runner defaults; robots/g1/robot.yaml).
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
+        # = unitree_hg_ros2_control's own state-freshness bound (FreshStateTracker
+        # kMaximumStateAge, isaac_ros_robots @ 520aa94f) and G1MujocoHAL's default.
+        joint_state_staleness_limit_s=0.5,
     ),
     sdk_kind="open",
-    # The G1 sim HAL is the only execution path today; a future
-    # ``G1RealHAL`` over ``unitree_sdk2`` will derive its
-    # ``RobotDescription`` from this sim baseline via
-    # ``make_real_description`` (matches the UR / Franka / Sawyer / ALOHA
-    # pattern) and will be tracked by a follow-up issue.  Until then the
-    # manifest under ``robots/g1/robot.yaml`` mirrors this sim baseline.
-    hal=HalEntrypoints(sim="openral_hal.g1:G1MujocoHAL", real=None),
+    # Sim: the MuJoCo twin. Real: ``UnitreeHgRealHAL`` over NVIDIA's isaac_ros_robots /
+    # isaac_ros_deploy ros2_control stack (S0 whole-body policy in C++); its
+    # ``RobotDescription`` is ``G1_REAL_DESCRIPTION`` (this one, ``closed_with_api``),
+    # which ``robots/g1/robot.yaml`` mirrors.
+    hal=HalEntrypoints(
+        sim="openral_hal.g1:G1MujocoHAL",
+        real="openral_hal.unitree_real:UnitreeHgRealHAL",
+        real_bringup="openral_hal_unitree:real_bringup.launch.py",
+        # build_hal drops keys a constructor does not take, so the twin never sees it.
+        parameters=HalParameters(
+            defaults={"robot_model": "g1", "s0_policy": "gr00t_decoupled_wbc"}
+        ),
+    ),
     # Floating-base humanoid — qpos is offset by 7 (3 position + 4 quaternion);
     # qvel is offset by 6 (3 linear vel + 3 angular vel).  ``MujocoArmHAL``
     # derives both offsets from ``floating_base=True``.
@@ -491,7 +507,7 @@ class G1MujocoHAL(MujocoArmHAL):
         settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
-        body_twist_dt_s: float = 0.05,
+        body_twist_dt_s: float | None = None,
         walking_enabled: bool = False,
         s0_controller: G1S0Controller | None = None,
         description: RobotDescription | None = None,
@@ -508,7 +524,11 @@ class G1MujocoHAL(MujocoArmHAL):
             staleness_limit_s: Maximum age of a cached state.
             body_twist_dt_s: Logical control timestep one BODY_TWIST
                 action integrates the glide base by (matches
-                ``SimAttachedHAL`` / ``PandaMobileHAL``).
+                ``SimAttachedHAL`` / ``PandaMobileHAL``) and the Playground
+                walker steps physics for. ``None`` = one control period of the
+                description's ``action_spec.control_freq_hz`` (0.02 s at the
+                manifest's 50 Hz), so a commanded twist advances the base at
+                its commanded speed when the runner ticks at that rate.
             walking_enabled: Legacy alias for ``s0_controller="playground_walk"``.
             s0_controller: Sim-only S0 controller (see the class docstring).
                 ``None`` = ``"playground_walk"`` when ``walking_enabled`` else
@@ -563,6 +583,17 @@ class G1MujocoHAL(MujocoArmHAL):
             gravity_enabled=gravity_enabled,
             staleness_limit_s=staleness_limit_s,
         )
+        if body_twist_dt_s is None:
+            rate_desc = description if description is not None else G1_DESCRIPTION
+            rate_hz = (
+                rate_desc.action_spec.control_freq_hz if rate_desc.action_spec else None
+            )
+            if rate_hz is None or rate_hz <= 0.0:
+                raise ROSConfigError(
+                    "G1MujocoHAL needs body_twist_dt_s or a description with "
+                    "action_spec.control_freq_hz > 0."
+                )
+            body_twist_dt_s = 1.0 / rate_hz
         if body_twist_dt_s <= 0.0:
             raise ROSConfigError("G1MujocoHAL body_twist_dt_s must be > 0.")
         self._body_twist_dt_s = body_twist_dt_s
