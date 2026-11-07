@@ -51,6 +51,7 @@ attribute satisfies it, without inheriting from anything.
 | `openarm.py` | `OpenArmMujocoHAL` + `OPENARM_DESCRIPTION` — Enactic OpenArm v2 bimanual humanoid arm (16-DoF: 7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF. Thin `MujocoArmHAL` subclass (wiring in `OPENARM_DESCRIPTION.sim`) — v2 ships native `<position>` actuators with per-class PD gains baked into the MJCF, so the HAL just writes target → ctrl and steps. v2 MJCF fetched lazily via `openral_hal._openarm_v2_assets` (the `robot_descriptions` package still pins to a pre-v2 commit; helper drops out when upstream bumps). |
 | `openarm_real.py` | `OpenArmRealHAL` + `OPENARM_REAL_DESCRIPTION` — real Enactic OpenArm v2 over `openarm_bringup`'s `ros2_control` stack, sharing `OPENARM_DESCRIPTION` with the twin. Not Python-side CAN: the OpenArm loop runs at 750 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++, so the chain is `Action` → four command topics → `controller_manager` → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors. Fans one 16-DoF action across the four controllers the bimanual bringup spawns (per-side arm + gripper), reads `/joint_states` by joint name, and refuses to `connect()` over a CAN link that is down. |
 | `anvil_openarm_v2.py` | `AnvilOpenArmV2MujocoHAL` + `ANVIL_OPENARM_V2_DESCRIPTION` — Anvil OpenARM 2.0 (Anvil Robotics' manufactured variant of the standard OpenArm v2; 16-DoF: 7 arm + 1 gripper per side). Thin manifest-driven subclass like `openarm.py` — the difference is entirely in the fetched MJCF: J1 clamped to ±135 deg, J6 radial deviation widened to -45..+70 deg, and the wrist support bracket (visual-only CAD meshes) that enables it. MJCF fetched at a pinned SHA from `bensonlee5/anvil-openarm-mujoco` by `openral_hal._anvil_openarm_v2_assets`. |
+| `_makermods_metal_assets.py` | `ensure_metal_description` / `ensure_metal_urdf` / `ensure_metal_station_urdf` / `ensure_metal_mjcf` / `ensure_metal_station_mjcf` — back the `makermods:<metal\|metal_station>` asset scheme. Clone `makermods-robotics/metal-python-ros` at `METAL_PINNED_SHA` into `$OPENRAL_CACHE_DIR` and derive the MakerMods Metal single-arm and two-arm station URDF / MJCF at runtime (sim-only `<position>` actuators + finger `<equality>`). Nothing vendored: upstream has no LICENSE file. `STATION_ARM_SPACING_M` (0.78 m) is estimated from MakerMods' Station footage, not measured. No HAL class — both manifests are pure data. |
 | `_real_description.py` | `make_real_description(base, *, sdk_kind)` — internal helper deriving a real-HW `RobotDescription` from a sim baseline (flips `sdk_kind`; the `hal` entrypoints are shared); used by the UR, Franka, Sawyer, ALOHA and OpenArm real adapters. |
 | `resolver.py` | `build_hal(description, *, mode, transport=None, sim_env_yaml=None)` — the single seam mapping a manifest + mode to a constructed sim/real HAL. |
 | `ur.py` | `UR5eHAL` / `UR5e_DESCRIPTION` + `UR10eHAL` / `UR10e_DESCRIPTION` (and the `*_with_sensors` factories) — MuJoCo-backed sim. |
@@ -62,7 +63,7 @@ attribute satisfies it, without inheriting from anything.
 `robots/<id>/robot.yaml` is the runtime source of truth: `build_hal` passes the
 loaded manifest to every HAL (sim and real) as `description=`. Pure-data MuJoCo
 arms (franka_panda, ur5e, ur10e, rizon4, openarm, anvil_openarm_v2,
-aloha_bimanual, so100/so101) set `hal.sim: null`, so `deploy sim` / `sim run`
+aloha_bimanual, so100/so101, makermods_metal, makermods_metal_station) set `hal.sim: null`, so `deploy sim` / `sim run`
 build `MujocoArmHAL.from_description(manifest)`; the per-robot sim classes in
 the table below (`FrankaPandaHAL`, `UR5eHAL`, …) are thin wrappers over the
 in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
@@ -84,6 +85,8 @@ in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
 | Enactic OpenArm v2 (MuJoCo digital twin) | `OpenArmMujocoHAL` | ✓ sim (`tests/sim/test_openarm_hal_mujoco.py`) | 16-DoF bimanual (7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF (PR #19 on master). Shares `OPENARM_DESCRIPTION` with the real adapter below. |
 | Enactic OpenArm v2 (real-HW) | `OpenArmRealHAL` | ✓ unit + live CAN HIL | `openarm_bringup` `ros2_control` (4 controllers, 16-DoF) over the C++ `openarm_hardware` SystemInterface and two Damiao CAN FD buses (1 Mbit/s nominal, 5 Mbit/s data), one per arm. `connect()` preflights both SocketCAN links. `sdk_kind: open` — `openarm_can` and `openarm_ros2` are Apache-2.0, so unlike UR / Franka there is no closed vendor runtime in the path. Lab-gated HIL via `tests/hil/test_openarm_can_live.py`. |
 | Anvil OpenARM 2.0 (MuJoCo digital twin) | `AnvilOpenArmV2MujocoHAL` | ✓ sim (`tests/sim/test_anvil_openarm_v2_hal_mujoco.py`) | 16-DoF bimanual on the standard v2 MJCF plus Anvil's documented deltas (J1 ±135 deg; J6 -45..+70 deg radial deviation via the wrist support bracket, shipped as visual-only CAD meshes). Same native `<position>` actuators as the Enactic v2 twin — thin manifest-driven HAL, no PD workarounds. Real-HW path wraps Anvil's driver stack (`anvil-robotics/openarm`). |
+| MakerMods Metal arm (MuJoCo digital twin) | derived `MujocoArmHAL` (no class) | ✓ sim (`tests/sim/test_data_driven_mujoco_hal.py`) | 6 revolute joints + parallel gripper (two coupled prismatic fingers); 7-D. URDF / MJCF derived at runtime from a pinned clone of the unlicensed upstream description (`makermods:metal`). Sim-only actuator gains. No real-HW adapter (`hal.real: null`): Damiao CAN, own `metal_controller` topics (not `ros2_control`), **no brakes** — see `robots/makermods_metal/README.md`. |
+| MakerMods Metal Arm Station (MuJoCo digital twin) | derived `MujocoArmHAL` (no class) | ✓ sim (`tests/sim/test_data_driven_mujoco_hal.py`) | Two Metal arms + top camera, 14-D (`makermods:metal_station`). Arm spacing and camera mount are provisional (not published by MakerMods). No real-HW adapter. |
 | Universal Robots UR5e (sim) | `UR5eHAL` | ✓ sim | MuJoCo-backed. |
 | Universal Robots UR5e (real HW) | `UR5eRealHAL` | ✓ unit + HIL fixture | `ros2_control` + `ur_robot_driver` (URCap / RTDE; BSD-3-Clause driver). Lab-gated HIL via `tests/hil/test_ur5e.py`. Issue #54. |
 | Universal Robots UR10e (sim) | `UR10eHAL` | ✓ sim | MuJoCo-backed. |
@@ -105,10 +108,11 @@ Python file is required**:
    `safety` blocks **plus** a `sim:` block:
 
    ```yaml
+   assets:
+     # mjcf ref schemes: rd:<robot_descriptions module> | gym_aloha:<scene>
+     #                   | openarm:<variant> | makermods:<variant> | file:<relpath>
+     mjcf: "rd:<module>"
    sim:
-     # mjcf_uri schemes: robot_descriptions:<module> | gym_aloha:<scene>
-     #                    | openarm_v2:bimanual | file:<abs-path>
-     mjcf_uri: "robot_descriptions:<module>"
      floating_base: false                       # true for humanoids (G1, H1)
      # Optional joint-index overrides — only needed when the MJCF's qpos
      # order doesn't match description.joints (e.g. OpenArm skips qpos 8

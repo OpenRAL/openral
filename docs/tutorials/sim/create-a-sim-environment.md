@@ -94,9 +94,14 @@ paths**, not registry ids; no command prints the `SCENES` / `POLICIES` /
                              single-view world render named
                              <scene>_<rskill>_<success|fail>.mp4 + videos.json
                              (for website hero clips; overlays drawn by the page).
---video-size INT             Square edge (px) for --video-style world (default 1024).
+--video-size INT             Long edge (px) for --video-style world (default 1024);
+                             frames keep their native aspect.
+--video-square               Center-crop world clips to a square (website canvas).
 --video-grid                 With --video-style world: also tile every episode
                              into <scene>_<rskill>_grid.mp4.
+                             World clips and grid tiles carry a live outcome
+                             border: grey while running, then the scene's
+                             placement grade (green / yellow / orange), red on a fail.
 --n-action-steps N           Override the chunk-replay cadence. Precedence:
                              spec_extra > manifest > checkpoint chunk_size.
 --dataset-out DIR            Write a LeRobotDataset v3.0 as the run proceeds.
@@ -296,6 +301,8 @@ assets:
   #   rd:<module>          — robot_descriptions package (downloads on first use)
   #   gym_aloha:<scene>    — gym-aloha package asset
   #   openarm:bimanual     — Enactic OpenArm v2 (fetched on first use)
+  #   makermods:metal      — MakerMods Metal arm (or makermods:metal_station);
+  #                          derived from a pinned upstream clone on first use
   #   file:<relpath>       — repo/manifest-relative explicit override
   mjcf: "rd:ur5e_mj_description"
   # Optional URDF (robot_state_publisher / collision lowering):

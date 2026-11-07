@@ -1,0 +1,104 @@
+# MakerMods Metal pick & place — 3 graded scenes of the metal_pick_place sim twin (a showcase).
+#
+#   openral benchmark run --suite makermods_metal_pick_place --rskill rskills/pi05-metal-pick-place
+#
+# Scenes: layout A of the dataset (HappyEthan/metal_pick_place episodes 0-29;
+# MetalPickPlaceOptions' default layout A), the only layout the MakerMods checkpoint
+# reaches in sim. Layouts B/C/D are in the dataset's distribution, but the policy
+# falls back to an average reach point there, with real top-camera images too, and
+# never touches the cube, so they are left out of this showcase suite. Each scene's
+# cube start and marker centre are layout A's dataset position plus an independent
+# uniform +-1.5 cm offset per axis, drawn once with numpy.random.default_rng(0) in
+# A1, A2, A3 order (cube xy, then marker xy) and baked in below, so the suite is
+# deterministic and stays inside the dataset's spread. The scene's own spawn jitter
+# is off; the cube yaw keeps the scene's 0 +-10 deg draw, seeded per episode.
+#
+# Grading (metal_pick_place, restock's placement_grade contract): once the cube is
+# released and at rest, complete 1.0 (>= 50 % of its footprint over the marker disc,
+# the success) / partial 0.5 (> 0 %) / semi 0.25 (lifted, off the marker) end the
+# episode; otherwise it runs all 900 steps and fails. The eval JSON carries
+# grade_counts; benchmark run writes per-episode grade / lifted / overlap / distance
+# to eval/episodes/<suite>.json.
+#
+# Shape: bare list of BenchmarkScenes; robot_id / n_episodes / seed / metadata uniform
+# (raise_on_invalid_suite), shared options via the &opts merge key.
+
+- scene:
+    id: metal_pick_place
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist"]
+    backend_options:
+      <<: &opts
+        joint_units: degrees
+        gripper_scale: 100.0
+        control_hz: 30.0
+        initial_joint_positions: [0.74, 0.04, -0.05, 0.49, -0.10, -1.38, 2.5]
+        spawn_jitter_m: 0.0      # positions below are already jittered
+        leader_arm: mirror_action
+        top_background: plate
+      layout: A1
+      layouts: {A1: [[0.2711, -0.0759], [0.2642, 0.0615]]}  # layout A: cube, marker
+  task:
+    id: metal_pick_place/A1
+    scene_id: metal_pick_place
+    instruction: "Pick up the cube and place it at the marked location"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal
+  n_episodes: 3
+  seed: 0
+  metadata: &meta
+    paper: "https://huggingface.co/datasets/HappyEthan/metal_pick_place"
+    display_name: "MakerMods Metal pick & place (3 scenes)"
+    simulator: "MuJoCo (metal_pick_place sim twin)"
+    honest_scope: >-
+      Sim twin of the HappyEthan/metal_pick_place rig, a showcase: 3 scenes in the
+      dataset's layout A (B/C/D left out: the checkpoint never reaches the cube
+      there, on real images too), cube and marker each jittered within
+      +-1.5 cm of the layout's dataset position, cube yaw 0 +-10 deg per episode seed;
+      3 seeds per scene, 900 steps at 30 Hz. Graded at rest once the cube is released:
+      complete (>= 50 % of the cube footprint over the 3.9 cm marker, the success),
+      partial (> 0 %), semi (lifted >= 1 cm but off the marker), fail. Not a published
+      protocol; a sim proxy for the real rig, with a real top-camera background plate.
+- scene:
+    id: metal_pick_place
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist"]
+    backend_options:
+      <<: *opts
+      layout: A2
+      layouts: {A2: [[0.2764, -0.0566], [0.2812, 0.0829]]}  # layout A: cube, marker
+  task:
+    id: metal_pick_place/A2
+    scene_id: metal_pick_place
+    instruction: "Pick up the cube and place it at the marked location"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+- scene:
+    id: metal_pick_place
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist"]
+    backend_options:
+      <<: *opts
+      layout: A3
+      layouts: {A3: [[0.2683, -0.0559], [0.2875, 0.0611]]}  # layout A: cube, marker
+  task:
+    id: metal_pick_place/A3
+    scene_id: metal_pick_place
+    instruction: "Pick up the cube and place it at the marked location"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal
+  n_episodes: 3
+  seed: 0
+  metadata: *meta

@@ -1,0 +1,49 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://huggingface.co/datasets/HappyEthan/metal_pick_place",
+    "arxiv": null,
+    "model_variant": "pi05",
+    "evaluated_by": "OpenRAL:openral benchmark run",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark run --suite makermods_metal_pick_place --rskill rskills/pi05-metal-pick-place",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "MakerMods Metal pick & place (3 scenes)",
+    "dataset": null,
+    "protocol": "3 episodes per task, success_key=is_success, max_steps=900",
+    "robot": "makermods_metal",
+    "simulator": "MuJoCo (metal_pick_place sim twin)"
+  },
+  "eval_config": {
+    "n_episodes": 3,
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "success_key": "is_success",
+    "max_steps": 900,
+    "vla_id": "pi05",
+    "weights_uri": "rskills/pi05-metal-pick-place"
+  },
+  "results": {
+    "metal_pick_place/A1_success_rate": 0.0,
+    "metal_pick_place/A2_success_rate": 0.0,
+    "metal_pick_place/A3_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 3,
+    "n_episodes_per_task": 3,
+    "n_episodes_total": 9,
+    "mean_step_latency_ms_avg": 2.0415204746164752
+  },
+  "baselines": {},
+  "trace_id": null,
+  "grade_counts": {
+    "fail": 7,
+    "partial": 2
+  }
+}

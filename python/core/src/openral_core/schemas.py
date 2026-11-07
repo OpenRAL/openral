@@ -2038,7 +2038,7 @@ class SimGripperDescription(BaseModel):
 # below only checks the ref *string* shape (cheap, no I/O); the resolver in
 # ``openral_core.assets`` does the file resolution. Both must accept the same
 # schemes, so keep these in lock-step with ``openral_core.assets``.
-_ASSET_SCHEMES = ("rd:", "file:", "gym_aloha:", "openarm:", "menagerie:")
+_ASSET_SCHEMES = ("rd:", "file:", "gym_aloha:", "openarm:", "menagerie:", "makermods:")
 _ROS2_DYNAMIC = "ros2://robot_description"
 
 
@@ -9221,6 +9221,11 @@ class RSkillManifest(BaseModel):
         quantization: Default ``QuantizationConfig`` for this rSkill.
         weights_uri: HF Hub revision-pinned URI or local path to weights;
             production deployments pin a SHA (CLAUDE.md operating principle 8).
+        base_weights_uri: Base checkpoint a low-rank adapter in ``weights_uri``
+            is merged into at load (``kind`` ``vla``/``wam`` only). When set,
+            ``weights_uri`` is the adapter repo — its ``config.json`` and
+            processors drive the policy — and the backbone weights come from
+            here. Same URI grammar as ``weights_uri``; must differ from it.
         chunk_size: Action-chunk length emitted per ``Skill.step``.
         latency_budget: Latency contract enforced by CI on the reference host (CLAUDE.md §2).
         min_vram_gb: Optional minimum VRAM (GB) per quantization dtype; informational only.
@@ -9314,6 +9319,8 @@ class RSkillManifest(BaseModel):
     # action has no weights to download). Enforced by
     # ``_check_kind_consistency``.
     weights_uri: str | None = Field(default=None, pattern=_WEIGHTS_URI_PATTERN)
+    # A LoRA adapter's base checkpoint (policy kinds only); see the docstring.
+    base_weights_uri: str | None = Field(default=None, pattern=_WEIGHTS_URI_PATTERN)
     chunk_size: int = Field(gt=0)
     latency_budget: RSkillLatencyBudget
     min_vram_gb: dict[QuantizationDtype, float] | None = None
@@ -9480,7 +9487,7 @@ class RSkillManifest(BaseModel):
         """
         return any(
             contains_rskill_template_sentinel(field)
-            for field in (self.name, self.weights_uri, self.source_repo)
+            for field in (self.name, self.weights_uri, self.base_weights_uri, self.source_repo)
         )
 
     # ── Preprocessing block ───────────────────────────────────────────────
@@ -9682,6 +9689,8 @@ class RSkillManifest(BaseModel):
           ``detector`` itself (the two contracts are alternatives, never
           both); ``actuators_required`` MUST be empty.
         * ``kind == "wam"`` → the same rules as ``"vla"``.
+        * ``base_weights_uri`` → policy kinds only, and never equal to
+          ``weights_uri``.
         """
         # A ``playbook`` block belongs only to kind='playbook'. One guard here
         # forbids it for every other kind, so the per-kind branches
@@ -9702,7 +9711,18 @@ class RSkillManifest(BaseModel):
                 "kind='vla' only)."
             )
 
+        if self.kind not in POLICY_KINDS and self.base_weights_uri is not None:
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
+                "`base_weights_uri` (an adapter's base checkpoint; kind='vla'/'wam' only)."
+            )
+
         if self.kind in POLICY_KINDS:
+            if self.base_weights_uri is not None and self.base_weights_uri == self.weights_uri:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): `base_weights_uri` equals `weights_uri`; "
+                    "the base checkpoint must be a different repo from the adapter."
+                )
             if self.model_family is None:
                 raise ValueError(
                     f"RSkillManifest({self.name!r}): kind={self.kind!r} requires "
@@ -10622,6 +10642,9 @@ class RSkillEvalResult(BaseModel):
             endpoint configured (no ``--dashboard``, no
             ``OTEL_EXPORTER_OTLP_ENDPOINT``), where observability is in
             no-op mode.
+        grade_counts: Episodes per final placement grade (``complete`` /
+            ``partial`` / ``semi`` / ``fail``) on a graded scene
+            (``info["placement_grade"]``); ``None`` when no episode was graded.
 
     Example:
         >>> # RSkillEvalResult.model_validate_json(
@@ -10641,6 +10664,7 @@ class RSkillEvalResult(BaseModel):
     # — the dataset / trace cross-reference is a one-way pointer at
     # the top of the run, not a propagation seam.
     trace_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    grade_counts: dict[str, Annotated[int, Field(ge=0)]] | None = None
 
     @classmethod
     def from_json(cls, path: str) -> RSkillEvalResult:

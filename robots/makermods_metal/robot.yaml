@@ -1,0 +1,323 @@
+# RobotDescription — MakerMods Metal arm (single arm, sim baseline).
+#
+# Product: https://www.makermods.ai/metal-arm — an aluminium arm marketed as
+# "7-axis": 6 revolute joints (joint1..joint6) plus a parallel-jaw gripper
+# whose two prismatic fingers (upstream joint7 / joint8) are coupled
+# (`<mimic joint="joint7" multiplier="-1">` on joint8). Damiao motors over CAN
+# (MIT mode), no brakes. Upstream driver: ROS 2 Humble, own topics/messages
+# (`metal_controller`, `ArmJointPositionControl`), not ros2_control.
+#
+# Kinematics, limits and meshes come from `metal_description` in
+# makermods-robotics/metal-python-ros at the SHA pinned in
+# python/hal/src/openral_hal/_makermods_metal_assets.py (METAL_PINNED_SHA).
+# That repository ships no LICENSE file, so NOTHING is vendored here: the
+# `makermods:metal` asset ref fetches the pinned clone into $OPENRAL_CACHE_DIR
+# and derives the URDF (root `base_link`, the upstream `world` link dropped)
+# and the MJCF (MuJoCo-compiled from that URDF, with OpenRAL's sim-only
+# position actuators and the finger equality) at runtime.
+#
+# Joint order = MJCF actuator order (joint1..joint6, then the driven finger
+# joint8). The MJCF has 8 qpos slots — joint7 (the mimic finger, qpos 6)
+# precedes joint8 (qpos 7) — so `sim.joint_qpos_addr` pins the gripper to 7.
+#
+# Gripper: normalised [0, 1] (0 = closed, 1 = open), the lerobot convention,
+# mapped affinely onto joint8's [0, 0.05] m finger travel (0 = fingers
+# touching, ~95 mm between finger bodies fully open in the MJCF).
+#
+# Real hardware: no HAL yet (`hal.real: null`). The arm has no brakes — a
+# de-energised arm falls — so a real HAL needs a safety-WG-reviewed stop
+# behaviour (hold / damped descent), not a torque cut. See README.md.
+
+name: "makermods_metal"
+embodiment_kind: "manipulator"
+base_frame: "base_link"
+
+assets:
+  urdf:
+    ref: "makermods:metal"
+  mjcf: "makermods:metal"
+
+joints:
+  - name: "joint1"
+    sim_joint_name: "joint1"
+    origin_xyz: [0.0, 0.0, 0.06675]
+    origin_rpy: [0.0, 0.0, 0.0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "base_link"
+    child_link: "link1"
+    position_limits: [-2.79, 2.79]
+    velocity_limit: 5.0
+    effort_limit: 30.0
+    actuator_kind: "bldc"
+    has_torque_sensor: false
+  - name: "joint2"
+    sim_joint_name: "joint2"
+    origin_xyz: [0.00075, 0.0, 0.055]
+    origin_rpy: [1.5707963267949, 0.0, 0.0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link1"
+    child_link: "link2"
+    position_limits: [-3.14, 0.0]
+    velocity_limit: 5.0
+    effort_limit: 100.0
+    actuator_kind: "bldc"
+    has_torque_sensor: false
+  - name: "joint3"
+    sim_joint_name: "joint3"
+    origin_xyz: [-0.28, 0.0, 0.0]
+    origin_rpy: [0.0, 0.0, 0.0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link2"
+    child_link: "link3"
+    position_limits: [0.0, 3.14]
+    velocity_limit: 5.0
+    effort_limit: 30.0
+    actuator_kind: "bldc"
+    has_torque_sensor: false
+  - name: "joint4"
+    sim_joint_name: "joint4"
+    origin_xyz: [0.215, 0.063, 0.0]
+    origin_rpy: [0.0, 0.0, 0.0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link3"
+    child_link: "link4"
+    position_limits: [-2.145, 1.413]
+    velocity_limit: 20.0
+    effort_limit: 10.0
+    actuator_kind: "bldc"
+    has_torque_sensor: false
+  - name: "joint5"
+    sim_joint_name: "joint5"
+    origin_xyz: [0.08, 0.052, 0.00025]
+    origin_rpy: [1.5707963267949, 0.0, 0.0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link4"
+    child_link: "link5"
+    position_limits: [-1.482, 1.482]
+    velocity_limit: 20.0
+    effort_limit: 10.0
+    actuator_kind: "bldc"
+    has_torque_sensor: false
+  - name: "joint6"
+    sim_joint_name: "joint6"
+    origin_xyz: [0.0235, 0.0, 0.044]
+    origin_rpy: [-3.14159265330655, 0.0, 0.0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "link5"
+    child_link: "link6"
+    position_limits: [-2.529, 2.529]
+    velocity_limit: 20.0
+    effort_limit: 10.0
+    actuator_kind: "bldc"
+    has_torque_sensor: false
+  - name: "gripper"
+    sim_joint_name: "joint8"
+    joint_type: "prismatic"
+    parent_link: "gripper_base"
+    # `finger_pair` is a LOGICAL link (like so101's `moving_jaw` and
+    # franka_panda's `panda_finger_pair`): this channel is the normalised
+    # [0, 1] opening, which the kernel would read as metres along the axis.
+    # It carries no primitive; the real fingers `link7` / `link8` are
+    # `mimic_joints` rows posed from this fraction at their URDF origins.
+    child_link: "finger_pair"
+    axis_xyz: [1, 0, 0]
+    position_limits: [0.0, 1.0]
+    velocity_limit: 1.0
+    effort_limit: 3.0
+    actuator_kind: "bldc"
+    role: "gripper"
+    has_torque_sensor: false
+
+# The gripper is bolted to link6 (upstream fixed joint `gripper_base`).
+fixed_attachments:
+  - name: "gripper_base"
+    parent_link: "link6"
+    child_link: "gripper_base"
+    origin_xyz: [0.0758, 0.0, 0.0]
+    origin_rpy: [1.57079745225378, -1.57079631189374, 1.57079520133601]
+
+# The two fingers as moving links of the collision model, posed from the
+# `gripper` fraction f with the upstream URDF joint origins / axes. The MuJoCo
+# twin drives joint8 = 0.05 f m (`sim.grippers[].ctrl_range`) and couples
+# joint7 = -joint8 (the URDF `<mimic multiplier="-1">` on joint8, whose master
+# is joint7). joint7 is the URDF's non-mimic finger joint, so
+# `urdf_joint_map` publishes the gripper's state to it as -0.05 f m and
+# robot_state_publisher derives joint8. The real gripper's stroke -> metres map
+# is UNVERIFIED (no real HAL yet).
+mimic_joints:
+  - name: "joint7"
+    parent_link: "gripper_base"
+    child_link: "link7"
+    mimics: "gripper"
+    multiplier: -0.05
+    offset: 0.0
+    joint_type: "prismatic"
+    axis_xyz: [1.0, 0.0, 0.0]
+    origin_xyz: [0.0, -0.00275, 0.0]
+    origin_rpy: [0.0, 0.0, -1.5707963267949]
+  - name: "joint8"
+    parent_link: "gripper_base"
+    child_link: "link8"
+    mimics: "gripper"
+    multiplier: 0.05
+    offset: 0.0
+    joint_type: "prismatic"
+    axis_xyz: [1.0, 0.0, 0.0]
+    origin_xyz: [0.0, 0.00275, 0.0]
+    origin_rpy: [0.0, 0.0, -1.5707963267949]
+
+end_effectors:
+  - name: "gripper"
+    command_convention: "normalized_open_unit"
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    # Not published by MakerMods; the URDF finger effort limit (3 N) is the
+    # only upstream figure. Payload is the vendor's 3 kg arm rating capped by
+    # what a 3 N two-finger friction grasp holds — keep conservative.
+    max_grip_force_n: 3.0
+    max_payload_kg: 0.3
+    # Vendor-quoted reach (makermods.ai/metal-arm): 612.5 mm.
+    workspace_radius_m: 0.6125
+
+sensors:
+  # Static top camera of MakerMods' pick-and-place rig, fit on the top video of
+  # the HappyEthan/metal_pick_place dataset (95 episodes; reprojection residual
+  # ~3 px median; see python/sim/src/openral_sim/backends/metal_pick_place).
+  # A video fit of THAT rig, not a measured mount of yours: re-fit or measure
+  # before trusting the transform on a real cell.
+  - name: "top"
+    modality: "rgb"
+    frame_id: "top_camera"
+    parent_frame: "base_link"
+    # x forward (REP-103 body); rpy from the fit.
+    static_transform_xyz_rpy: [0.024, 0.371, 0.705, -0.0360, 0.8210, -0.0261]
+    static_transform_calibrated: false
+    rate_hz: 30.0
+    # MuJoCo cameras through this generic placement have no principal-point
+    # offset, so the sim view is aimed along the ray through the real image
+    # centre (target / up recentred, fovy 65.5). The metal_pick_place scene
+    # renders the exact intrinsics below instead.
+    sim_placement:
+      pos: [0.024, 0.371, 0.705]
+      target: [0.6103, 0.2658, -0.0982]
+      up: [0.808, 0.0045, 0.5892]
+      fovy_deg: 65.5
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 373.0
+      fy: 373.0
+      cx: 287.8
+      cy: 195.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.top"
+    vendor: "generic_usb"
+    model: "makermods_top_camera"
+  # Gripper camera (kit part "Camera, x1", mounted on the gripper). Mount and
+  # pinhole intrinsics fit offline on 120 real wrist frames (layouts A-D, rest
+  # to release) against appearance-free features (desk edges, marker and cube
+  # back-projected from the top camera, grommet); held-out 24 frames: desk
+  # edges 1-3 px, marker 4.4 px median. sim_placement has no principal-point
+  # offset (fovy 80.1 = f 285.6); the metal_pick_place scene renders cx/cy.
+  # A video fit, not a measured transform.
+  - name: "wrist"
+    modality: "rgb"
+    frame_id: "wrist_camera"
+    parent_frame: "gripper_base"
+    static_transform_calibrated: false
+    rate_hz: 30.0
+    sim_placement:
+      parent_body: "gripper_base"
+      pos: [0.0677, -0.0004, -0.0134]
+      target: [0.0056, 0.0003, 0.1768]
+      up: [0.9507, -0.0028, 0.3102]
+      fovy_deg: 80.1
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 285.6
+      fy: 285.6
+      cx: 325.8
+      cy: 249.9
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.wrist"
+    vendor: "generic_usb"
+    model: "makermods_gripper_camera"
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 0.3
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+    - "gripper_position"
+  supported_vla_embodiments: ["makermods_metal"]
+  embodiment_tags:
+    - "makermods_metal"
+    - "makermods"
+
+safety:
+  workspace_box_min_xyz: [-0.65, -0.65, 0.0]
+  workspace_box_max_xyz: [0.65, 0.65, 0.8]
+  max_ee_speed_m_s: 0.5
+  max_ee_accel_m_s2: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 30.0
+  max_torque_nm: 100.0
+  deadman_required: true
+  contact_force_threshold_n: 20.0
+  self_collision_margin_m: 0.0
+  starting_pose_max_joint_speed_rad_s: 0.5
+  starting_pose_tolerance_rad: 0.05
+  joint_state_staleness_limit_s: 0.1
+
+sdk_kind: "open"
+hal:
+  # sim: MujocoArmHAL.from_description from the `sim:` block below.
+  sim: null
+  real: null
+
+sim:
+  joint_qpos_addr:
+    joint1: 0
+    joint2: 1
+    joint3: 2
+    joint4: 3
+    joint5: 4
+    joint6: 5
+    gripper: 7          # qpos 6 is the mimic finger joint7 (equality-coupled)
+  grippers:
+    - joint: "gripper"
+      ctrl_range: [0.0, 0.05]
+      qpos_addrs: [7]
+      qpos_scale: 0.05
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
+  # Joint 2 / 3 rest at a range limit at qpos 0; seeding ctrl from qpos keeps
+  # the position actuators holding the initial pose instead of driving to 0.
+  seed_ctrl_from_qpos: true
+
+observation_spec:
+  state_key: "observation.state"
+  state_shape: [7]
+  state_representation: "joint_positions"
+
+action_spec:
+  dim: 7
+  representation: "joint_positions"
+  control_freq_hz: 30.0
+
+schema_version: "0.2"
