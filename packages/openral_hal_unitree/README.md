@@ -160,8 +160,10 @@ Build-time network fetches you should know about:
    on only this graph holds it up.
 3. **Start.** Either the whole deploy (`openral deploy run --config <scene>` with
    `robot_id: g1` — it includes this launch through `hal.real_bringup`), or the graph
-   alone to check wiring:
-   `ros2 launch openral_hal_unitree real_bringup.launch.py`. Never both: two graphs
+   alone to check wiring, under the OpenRAL venv interpreter (the launch imports
+   `openral_hal`, which `/opt/ros`'s system Python cannot see):
+   `.venv/bin/python "$(command -v ros2)" launch openral_hal_unitree real_bringup.launch.py`.
+   Never both: two graphs
    double-publish `/joint_states` and `deploy run` refuses to start.
 4. **Verify.** `ros2 control list_controllers` → broadcasters, `safety_controller`,
    `inference_controller`, `upper_body_forward_joint_command_controller` active,

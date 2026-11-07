@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 
 from openral_cli.autodetect import (
+    DdsTopic,
     infer_robot_from_topics,
     scan_dds_topics,
     unitree_candidates_from_topics,
@@ -18,7 +19,41 @@ from openral_cli.autodetect import (
 
 from openral_detect.report import DdsTopicRecord, Ros2TopologyResult
 
-__all__ = ["probe_dds"]
+__all__ = ["probe_dds", "unitree_ambiguity_warning"]
+
+
+def unitree_ambiguity_warning(topics: list[DdsTopic]) -> str | None:
+    """Explain why a Unitree topology could not be resolved to one model.
+
+    Truth over plausibility: when the topic list says "a Unitree robot" but its
+    message family leaves more than one model, the candidates are surfaced
+    instead of guessing one.
+
+    Args:
+        topics: Output of ``scan_dds_topics``.
+
+    Returns:
+        A ``dds:`` warning naming the candidate models and the ``--robot``
+        override, or ``None`` when the topology resolves to one model or holds
+        no Unitree topic.
+
+    Example:
+        >>> from openral_cli.autodetect import DdsTopic
+        >>> msg = unitree_ambiguity_warning([DdsTopic("/lowstate", "unitree_hg/msg/LowState")])
+        >>> "candidates: g1, h1_2, h2" in msg and "--robot" in msg
+        True
+        >>> unitree_ambiguity_warning([]) is None
+        True
+    """
+    if infer_robot_from_topics(topics) is not None:
+        return None
+    unitree = unitree_candidates_from_topics(topics)
+    if len(unitree) <= 1:
+        return None
+    return (
+        "dds: Unitree low-level topics seen but the model is ambiguous "
+        f"(candidates: {', '.join(unitree)}); pass `openral detect --robot <id>`."
+    )
 
 
 def probe_dds(
@@ -45,14 +80,9 @@ def probe_dds(
 
     topic_records = [DdsTopicRecord(name=t.name, type_name=t.type_name) for t in topics]
     inferred = infer_robot_from_topics(topics) if topics else None
-    unitree = unitree_candidates_from_topics(topics)
-    if inferred is None and len(unitree) > 1 and warnings is not None:
-        # Truth over plausibility: the topic list says "a Unitree robot" but
-        # cannot pick the model, so surface the candidates instead of guessing.
-        warnings.append(
-            "dds: Unitree low-level topics seen but the model is ambiguous "
-            f"(candidates: {', '.join(unitree)}); pass `openral detect --robot <id>`."
-        )
+    ambiguity = unitree_ambiguity_warning(topics)
+    if ambiguity is not None and warnings is not None:
+        warnings.append(ambiguity)
 
     has_robot_description = any(t.name == "/robot_description" for t in topics)
     has_tf = any(t.name in ("/tf", "/tf_static") for t in topics)

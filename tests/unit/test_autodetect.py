@@ -386,16 +386,23 @@ class TestEnumerateUsbDevices:
 
 class TestProbeDdsUnitreeAmbiguity:
     def test_ambiguous_unitree_topology_warns_with_candidates(self) -> None:
-        from openral_detect.probes.dds import probe_dds
+        from openral_detect.probes.dds import unitree_ambiguity_warning
 
-        fake_output = "/lowcmd [unitree_hg/msg/LowCmd]\n/lowstate [unitree_hg/msg/LowState]\n"
-        warnings: list[str] = []
-        with (
-            patch("shutil.which", return_value="/usr/bin/ros2"),
-            patch("subprocess.check_output", return_value=fake_output),
-        ):
-            result = probe_dds(timeout_s=0.1, warnings=warnings)
-        assert result.inferred_robot_type is None
-        (msg,) = [w for w in warnings if "Unitree" in w]
+        topics = [
+            DdsTopic("/lowcmd", "unitree_hg/msg/LowCmd"),
+            DdsTopic("/lowstate", "unitree_hg/msg/LowState"),
+        ]
+        msg = unitree_ambiguity_warning(topics)
+        assert msg is not None
+        assert "Unitree" in msg
         assert "g1, h1_2, h2" in msg
         assert "--robot" in msg
+
+    def test_no_warning_without_unitree_topics(self) -> None:
+        from openral_detect.probes.dds import unitree_ambiguity_warning
+
+        assert unitree_ambiguity_warning([]) is None
+        assert (
+            unitree_ambiguity_warning([DdsTopic("/joint_states", "sensor_msgs/msg/JointState")])
+            is None
+        )

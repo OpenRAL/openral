@@ -149,9 +149,9 @@ _Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`);
 
 _Bringup-only package: the Unitree hg HAL node is the generic `openral_hal_node` running `openral_hal.unitree_real:UnitreeHgRealHAL`; `robots/g1/robot.yaml` reaches this file through `hal.real_bringup`._
 
-- `generate_launch_description() -> LaunchDescription` (L225) — NVIDIA's S0 graph for a real Unitree hg robot: `controller_manager` (200 Hz) on `unitree_hg_ros2_control` with NVIDIA's real xacro (`with_hands:=false`, 29 joints), broadcasters, `safety_controller` ← `inference_controller` (S0 ONNX policy) + `upper_body_forward_joint_command_controller`, `freeze_controller` loaded inactive. Args `robot_model` (g1), `policy` (default `gr00t_decoupled_wbc`; the policy file's `controllers` block via `openral_hal.unitree_s0_policy`), `network_interface` (default `$OPENRAL_UNITREE_NETWORK_INTERFACE` / `eth0`), `inference_controller_config_path`. Loads everything inactive then activates the runtime group in one strict switch; `safety_controller.blend_ratio` stays 0.0 (operator raises it). Activation releases Unitree's built-in locomotion — robot on a gantry.
-- `_S0_CHAIN` (L85) — must equal `UnitreeHgRealHAL.controller_names()` (test-enforced).
-- `_DEFAULT_POLICY` (L73) — must equal the manifest's `hal.parameters.defaults.s0_policy` (test-enforced).
+- `generate_launch_description() -> LaunchDescription` (L250) — NVIDIA's S0 graph for a real Unitree hg robot: `controller_manager` (200 Hz) on `unitree_hg_ros2_control` with NVIDIA's real xacro (`with_hands:=false`, 29 joints), broadcasters, `safety_controller` ← `inference_controller` (S0 ONNX policy) + `upper_body_forward_joint_command_controller`, `freeze_controller` loaded inactive. Args `robot_model` (g1), `policy` (default `gr00t_decoupled_wbc`; the policy file's `controllers` block via `openral_hal.unitree_s0_policy`), `network_interface` (default `$OPENRAL_UNITREE_NETWORK_INTERFACE` / `eth0`), `inference_controller_config_path`. Loads everything inactive then activates the runtime group in one strict switch; `safety_controller.blend_ratio` stays 0.0 (operator raises it). Activation releases Unitree's built-in locomotion — robot on a gantry.
+- `_S0_CHAIN` (L98) — must equal `UnitreeHgRealHAL.controller_names()` (test-enforced).
+- `_DEFAULT_POLICY` (L86) — must equal the manifest's `hal.parameters.defaults.s0_policy` (test-enforced).
 
 ### `packages/openral_slam_bringup/launch/`
 

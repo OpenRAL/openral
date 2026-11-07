@@ -40,11 +40,13 @@ interface also releases Unitree's built-in locomotion service (``MotionSwitcherC
 default must be right for the robot; the one host fact, the NIC wired to the robot, comes
 from ``$OPENRAL_UNITREE_NETWORK_INTERFACE`` (default ``eth0``).
 
-Usage::
+Usage (under the OpenRAL venv interpreter — this file imports ``openral_hal``, which a
+bare ``ros2 launch`` running ``/opt/ros``'s system Python cannot see; ``openral deploy
+run`` does this for you)::
 
     OPENRAL_UNITREE_NETWORK_INTERFACE=enp3s0 \
-        ros2 launch openral_hal_unitree real_bringup.launch.py \
-        robot_model:=g1 policy:=gr00t_decoupled_wbc
+        .venv/bin/python "$(command -v ros2)" launch openral_hal_unitree \
+        real_bringup.launch.py robot_model:=g1 policy:=gr00t_decoupled_wbc
 """
 
 from __future__ import annotations
@@ -54,12 +56,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from openral_core.exceptions import ROSConfigError
-from openral_hal.unitree_s0_policy import (
-    load_s0_policy,
-    policy_parameters,
-    resolve_leapp_config,
-)
+
+try:
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.unitree_s0_policy import (
+        load_s0_policy,
+        policy_parameters,
+        resolve_leapp_config,
+    )
+except ImportError as exc:  # pragma: no cover - only under a non-venv interpreter
+    # A bare `ros2 launch` parses this file under /opt/ros's system python3, which
+    # does not see the OpenRAL venv. `openral deploy run` already runs the launch
+    # under the venv interpreter (openral_cli.deploy_sim._ros2_argv_head).
+    raise ImportError(
+        "openral_hal_unitree real_bringup.launch.py needs the OpenRAL venv: run it via "
+        '`openral deploy run`, or `.venv/bin/python "$(command -v ros2)" launch '
+        "openral_hal_unitree real_bringup.launch.py` from the repo root."
+    ) from exc
 
 if TYPE_CHECKING:  # pragma: no cover - launch is a ROS-only dep
     from launch import LaunchContext, LaunchDescription
@@ -202,6 +215,17 @@ def _launch_setup(context: LaunchContext) -> list[Any]:
         )
         return [LogInfo(msg=reason), Shutdown(reason=reason)]
 
+    def _after_activate(
+        event: Any, _ctx: Any
+    ) -> list[Any]:  # reason: launch event types are untyped
+        if event.returncode == 0:
+            return [LogInfo(msg=f"{_PACKAGE}: {robot_model} S0 chain active.")]
+        reason = (
+            f"{_PACKAGE}: activating the {robot_model} S0 chain failed "
+            f"(switch_controllers exit {event.returncode}); the S0 graph is not up."
+        )
+        return [LogInfo(msg=reason), Shutdown(reason=reason)]
+
     return [
         LogInfo(
             msg=(
@@ -213,6 +237,7 @@ def _launch_setup(context: LaunchContext) -> list[Any]:
         state_publisher,
         load_all,
         RegisterEventHandler(OnProcessExit(target_action=load_all, on_exit=_after_load)),
+        RegisterEventHandler(OnProcessExit(target_action=activate, on_exit=_after_activate)),
     ]
 
 
