@@ -49,7 +49,8 @@ _SHIPPED: list[tuple[str, str | None, str]] = [
     ("rldx1-ft-gr1-nf4", "nf4", "nf4"),
     ("xr1-vlabench", None, "nf4"),
     ("lingbot-vla2-robotwin", "nf4", "nf4"),
-    ("rskill-internvla_n1-mobile_base-vln-nf4", "nf4", "nf4"),
+    # InternVLA-N1 defaults to bf16 in open; NF4 is the Pro override.
+    ("rskill-internvla_n1-mobile_base-vln-nf4", "bf16", "bf16"),
     ("smolvla-libero", None, "bf16"),
     ("act-aloha", None, "fp32"),
     ("diffusion-pusht", None, "fp32"),

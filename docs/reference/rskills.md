@@ -100,7 +100,7 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`lingbot-vla-4b-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla-4b-robotwin/) | LingBot-VLA 1.0 (4 B, Qwen2.5-VL-3B + flow-matching expert), RoboTwin post-train | `aloha_agilex` | Apache-2.0 |
 | [`lingbot-vla2-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla2-robotwin/) | LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B + sparse-MoE expert), RoboTwin | `aloha_agilex` | Apache-2.0 |
 | [`lingbot-va-galaxea-a1-fruit-placement`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-va-galaxea-a1-fruit-placement/) | LingBot-VA fruit placement | `galaxea_a1` | Apache-2.0 |
-| [`rskill-internvla_n1-mobile_base-vln-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-internvla_n1-mobile_base-vln-nf4/) | InternVLA-N1 / DualVLN navigation (Qwen2.5-VL-7B NF4 + NavDP) | `mobile_base` | CC-BY-NC-SA-4.0 weights (non-commercial) |
+| [`rskill-internvla_n1-mobile_base-vln-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-internvla_n1-mobile_base-vln-nf4/) | InternVLA-N1 / DualVLN navigation (Qwen2.5-VL-7B + NavDP; bf16, NF4 with Pro) | `mobile_base` | CC-BY-NC-SA-4.0 weights (non-commercial) |
 | [`smolvla-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-vlabench/) | SmolVLA finetuned on VLABench (`lerobot/vlabench_unified`, 97 tasks) — integration baseline, 0% on current tasks | `franka_panda` | Apache-2.0 |
 
 `XiaomiRobotics/Xiaomi-Robotics-1-5B` is intentionally absent: its only model
