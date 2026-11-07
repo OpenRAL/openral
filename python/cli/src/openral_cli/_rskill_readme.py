@@ -200,12 +200,12 @@ def _demo() -> None:
     root = Path(__file__).resolve()
     while root != root.parent and not (root / "rskills").is_dir():
         root = root.parent
-    m = RSkillManifest.from_yaml(str(root / "rskills" / "pi05-libero-nf4" / "rskill.yaml"))
+    m = RSkillManifest.from_yaml(str(root / "rskills" / "molmoact2-so101-nf4" / "rskill.yaml"))
     fm = build_rskill_frontmatter(m)
-    assert fm["library_name"] == "lerobot", fm
+    assert "library_name" not in fm, fm  # transformers custom-code, not lerobot
     assert fm["pipeline_tag"] == "robotics", fm
-    assert fm["license"] == "other" and fm["license_name"] == "permissive-research", fm
-    assert fm["base_model"] == ["lerobot/pi05_libero_finetuned_v044"], fm
+    assert fm["license"] == "apache-2.0" and "license_name" not in fm, fm
+    assert fm["base_model"] == ["allenai/MolmoAct2-SO100_101"], fm
     assert fm["base_model_relation"] == "quantized", fm
     assert "4-bit" in fm["tags"] and "OpenRAL" in fm["tags"], fm
     assert fm["inference"] is False
@@ -215,7 +215,7 @@ def _demo() -> None:
     )
     merged = _parse_frontmatter(card)
     assert "hand-tag" in merged["tags"] and merged.get("custom_field") == "keep", merged
-    assert merged["library_name"] == "lerobot", "derived field lost in merge"
+    assert merged["license"] == "apache-2.0", "derived field lost in merge"
     n_fences = card.count("---\n")
     assert n_fences >= 2 and "\n# body" in card, n_fences  # noqa: PLR2004  # reason: yaml front-matter has exactly two fences
     # detector uses the object-detection pipeline
