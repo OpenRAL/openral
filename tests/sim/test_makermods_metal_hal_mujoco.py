@@ -25,6 +25,7 @@ cannot be fetched (``AssetFetchError``), the module skips with the reason.
 
 from __future__ import annotations
 
+import os
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
@@ -34,7 +35,14 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 
 from openral_core import Action, ControlMode, RobotDescription  # noqa: E402
-from openral_core.assets import AssetFetchError, AssetKind, resolve_asset  # noqa: E402
+from openral_core.assets import (  # noqa: E402
+    AssetFetchError,
+    AssetKind,
+    AssetRefError,
+    resolve_asset,
+)
+from openral_core.exceptions import ROSConfigError  # noqa: E402
+from openral_hal import _makermods_metal_assets as metal  # noqa: E402
 from openral_hal._mujoco_arm import MujocoArmHAL  # noqa: E402
 
 pytestmark = pytest.mark.sim
@@ -296,3 +304,30 @@ def test_station_urdf_mounts_match_manifest(station: RobotDescription) -> None:
         assert att.origin_rpy == pytest.approx(_floats(origin.get("rpy")))
     for joint in station.joints:
         assert (joint.sim_joint_name or joint.name) in urdf, joint.name
+
+
+def test_unwritable_cache_is_an_asset_ref_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A derive that cannot write into the cache surfaces as ``AssetRefError``.
+
+    The pinned clone is linked into a fresh, read-only ``OPENRAL_CACHE_DIR`` so
+    the fetch succeeds and the derive step's ``mkdir`` is what fails.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    try:
+        clone = metal.fetch_metal_clone()
+    except ROSConfigError as exc:
+        pytest.skip(f"pinned MakerMods Metal clone not fetchable on this host: {exc}")
+    cache = tmp_path / "makermods_metal"
+    cache.mkdir()
+    (cache / metal.METAL_PINNED_SHA).symlink_to(clone)
+    cache.chmod(0o500)
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    try:
+        with pytest.raises(AssetRefError) as info:
+            resolve_asset("makermods:metal", "urdf")
+    finally:
+        cache.chmod(0o700)
+    assert isinstance(info.value.__cause__, PermissionError)
