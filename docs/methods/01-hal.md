@@ -337,26 +337,26 @@ Galaxea A1 hardware bring-up and the LingBot-VA rSkill deploy runbook moved to [
 ### `python/hal/src/openral_hal/h1.py`
 _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum, so gravity must stay disabled in closed-loop tests. Unlike G1/UR/Franka/SO-100, the H1 menagerie ships torque actuators, so this HAL runs a software PD position loop every physics step._
 
-- `class H1MujocoHAL(MujocoArmHAL)` — Takes `description=` (loaded manifest; `None` → `H1_DESCRIPTION`). 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml` (legs + torso + arms, no wrists); thin manifest-driven wrapper around `MujocoArmHAL`. Overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange`, so the public action contract stays "position targets in radians" — mirroring how `unitree_sdk2` wraps torque control in a position loop on real hardware. (L330)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` (L371)
+- `class H1MujocoHAL(MujocoArmHAL)` — Takes `description=` (loaded manifest; `None` → `H1_DESCRIPTION`). 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml` (legs + torso + arms, no wrists); thin manifest-driven wrapper around `MujocoArmHAL`. Overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange`, so the public action contract stays "position targets in radians" — mirroring how `unitree_sdk2` wraps torque control in a position loop on real hardware. (L334)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` (L376)
   - `_per_step_update(targets) -> None` — Recomputes PD torque every `mj_step` via `_floating_base.apply_software_pd`.
   - `_apply_arm_targets(targets) -> None` — No-op (PD loop runs per-step instead).
-- module const `_H1_LEFT_LEG_JOINTS: tuple[str, ...]` (L81) — left-leg joint names.
-- module const `_H1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L88) — right-leg joint names.
-- module const `_H1_TORSO_JOINTS: tuple[str, ...]` (L95) — torso joint name(s).
-- module const `_H1_LEFT_ARM_JOINTS: tuple[str, ...]` (L96) — left-arm joint names.
-- module const `_H1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L102) — right-arm joint names.
-- module const `_H1_JOINT_NAMES: tuple[str, ...]` (L108) — full 19-DoF joint order (legs + torso + arms).
-- module const `_H1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L123) — per-joint position limits.
-- module const `_H1_EFFORT_LIMITS: dict[str, float]` (L150) — per-joint actuator effort ceiling used to clamp the software PD loop's torque.
-- module const `_H1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L177) — per-kinematic-group velocity limits.
-- module const `_H1_KP_BY_GROUP: dict[str, float]` (L310) — per-kinematic-group PD proportional gain.
-- module const `_H1_KV_BY_GROUP: dict[str, float]` (L318) — per-kinematic-group PD derivative gain.
-- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L190)
-- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L195)
-- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L231)
-- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L321)
-- const `H1_DESCRIPTION = RobotDescription(...)` (L254) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"`, `hal.real=None` (sim-only). In-code mirror of `robots/h1/robot.yaml` (the runtime source; `build_hal` passes it as `description=`); drift-guarded against `robots/h1/robot.yaml`.
+- module const `_H1_LEFT_LEG_JOINTS: tuple[str, ...]` (L83) — left-leg joint names.
+- module const `_H1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L90) — right-leg joint names.
+- module const `_H1_TORSO_JOINTS: tuple[str, ...]` (L97) — torso joint name(s).
+- module const `_H1_LEFT_ARM_JOINTS: tuple[str, ...]` (L98) — left-arm joint names.
+- module const `_H1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L104) — right-arm joint names.
+- module const `_H1_JOINT_NAMES: tuple[str, ...]` (L110) — full 19-DoF joint order (legs + torso + arms).
+- module const `_H1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L125) — per-joint position limits.
+- module const `_H1_EFFORT_LIMITS: dict[str, float]` (L152) — per-joint actuator effort ceiling used to clamp the software PD loop's torque.
+- module const `_H1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L179) — per-kinematic-group velocity limits.
+- module const `_H1_KP_BY_GROUP: dict[str, float]` (L314) — per-kinematic-group PD proportional gain.
+- module const `_H1_KV_BY_GROUP: dict[str, float]` (L322) — per-kinematic-group PD derivative gain.
+- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L192)
+- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L197)
+- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L233)
+- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L325)
+- const `H1_DESCRIPTION = RobotDescription(...)` (L256) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"`, `hal.real=None` (sim-only). In-code mirror of `robots/h1/robot.yaml` (the runtime source; `build_hal` passes it as `description=`); drift-guarded against `robots/h1/robot.yaml`.
 
 ### `python/hal/src/openral_hal/h2.py`
 _MuJoCo digital twin for the Unitree H2 humanoid on Unitree's official `unitree_mujoco` MJCF (asset ref `unitree:h2`). 31 joints in `unitree_sdk2` motor order; gravity-on twin with the free joint pinned upright (ADR-0087 glide) and a software PD over the MJCF's torque `motor` actuators that also runs during `idle_step`. Sim-only (`hal.real=None`)._
@@ -417,8 +417,8 @@ _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body forc
 ### `python/hal/src/openral_hal/openarm.py`
 _MuJoCo digital twin for the Enactic OpenArm **v2** bimanual humanoid arm.  Fresh `HALBase` subclass — v2's native `<position>` actuators with per-class PD baked into the MJCF mean the HAL just writes target → ctrl and steps, no software PD loop needed._
 
-- `class OpenArmMujocoHAL(MujocoArmHAL)` (L0) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L474) ADR-0102 slot-group reassembly, the stale-tick guard and `last_committed_tick` are inherited from `MujocoArmHAL.send_action` (this class held its own copy until 2026-09-24).
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L512)
+- `class OpenArmMujocoHAL(MujocoArmHAL)` (L0) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L486) ADR-0102 slot-group reassembly, the stale-tick guard and `last_committed_tick` are inherited from `MujocoArmHAL.send_action` (this class held its own copy until 2026-09-24).
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L524)
 - `_openarm_arm_joint_specs(names, position_limits, side) -> list[JointSpec]`, `_openarm_gripper_joint_spec(name, side, position_limits) -> JointSpec`, `_openarm_joint_specs() -> list[JointSpec]` (L167, L190, L206)
 - module const `_OPENARM_LEFT_ARM_JOINTS: tuple[str, ...]` (L106) — left-arm joint names.
 - module const `_OPENARM_RIGHT_ARM_JOINTS: tuple[str, ...]` (L107) — right-arm joint names.
@@ -547,43 +547,72 @@ _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions`
 - module const `_OPENARM_V2_MJCF_REL: str` (L42) — the bimanual MJCF's path within the clone.
 
 ### `python/hal/src/openral_hal/g1.py`
-_MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; explicit `walking_enabled=True` selects ADR-0089's pinned MuJoCo Playground ONNX policy and matching gravity-on dynamics._
+_MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; `s0_controller` selects a sim-only S0: `"playground_walk"` (= `walking_enabled=True`, ADR-0089's pinned MuJoCo Playground ONNX policy + MJCF) or `"gr00t_wbc"` (NVIDIA GR00T Decoupled WBC on the unpinned Menagerie twin, arms left to S1)._
 
-- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; walking mode swaps in the pinned policy-tuned MJCF + ONNX controller. Floating-base joint remains implicit world state. (L380)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False)` (L419)
-  - `connect() -> None` (L493) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`. Raises `ROSConfigError` (and disconnects) if the walking MJCF lacks that keyframe.
-  - `disconnect() -> None` (L513) — Release the walking controller, then the MuJoCo model.
-  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking base pose. (L481)
-  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action. (L489)
-  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Non-planar twist components raise `ROSConfigError`. (L518)
-  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned; walking state resets so a stale velocity command is never replayed. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L559)
-  - `reset_to_pose(pose: list[float]) -> None` (L571) — Reset the joint pose plus the base pin and (when walking) the gait state.
-  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin via `_floating_base` (`capture_base_pin` / `write_base_pin`): `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L584)
-- module const `_G1_LEFT_LEG_JOINTS: tuple[str, ...]` (L93) — left-leg joint names.
-- module const `_G1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L101) — right-leg joint names.
-- module const `_G1_WAIST_JOINTS: tuple[str, ...]` (L109) — waist joint names.
-- module const `_G1_LEFT_ARM_JOINTS: tuple[str, ...]` (L114) — left-arm joint names.
-- module const `_G1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L123) — right-arm joint names.
-- module const `_G1_JOINT_NAMES: tuple[str, ...]` (L132) — full 29-DoF joint order (legs + waist + arms).
-- module const `_G1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L151) — per-joint position limits.
-- module const `_G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L187) — per-kinematic-group velocity limits.
-- module const `_G1_EFFORT_LIMITS_BY_GROUP: dict[str, float]` (L196) — per-kinematic-group effort limits.
-- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L210)
-- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L215)
-- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L265)
-- const `G1_DESCRIPTION = RobotDescription(...)` (L293) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"`, `hal.real=None` (sim-only); in-code mirror — `build_hal` passes the loaded `robots/g1/robot.yaml` as `description=`. Advertises `supported_control_modes=[joint_position, body_twist]`, `mobile_base` in `embodiment_tags`, and a forward `head` RGB camera so BODY_TWIST nav skills (InternVLA-N1) match. All MuJoCo wiring lives in `G1_DESCRIPTION.sim`; drift-guarded against `robots/g1/robot.yaml`.
+- `G1S0Controller = Literal["none", "playground_walk", "gr00t_wbc"]` (L113) — the `s0_controller` choices.
+- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; `playground_walk` swaps in the pinned policy-tuned MJCF + ONNX controller; `gr00t_wbc` keeps the Menagerie MJCF, converts its position actuators to torque motors in memory and never pins the base. Floating-base joint remains implicit world state. (L451)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False, s0_controller=None, description=None)` (L505) — `s0_controller=None` resolves from `walking_enabled`; a contradicting pair, an unknown value, or an S0 with gravity off raise `ROSConfigError`. `gr00t_wbc` fetches its weights here and logs the `nvidia_open_model` weight posture (`hal.g1.s0_controller`).
+  - `s0_controller -> G1S0Controller` (property) (L626) — the active S0 mode.
+  - `s0_fallen -> bool` (property) (L631) — the GR00T WBC fall latch (torques cut).
+  - `connect() -> None` (L653) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`; in `gr00t_wbc` mode, validates the Menagerie joint/actuator layout and the 50 Hz decimation, converts actuators to torque motors, makes the camera-rig floor collide, and builds the `Gr00tWbcController`. Raises `ROSConfigError` (and disconnects) on a mismatch.
+  - `disconnect() -> None` (L679) — Release the S0 controller, then the MuJoCo model.
+  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking / GR00T WBC base pose. (L636)
+  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action — except under `gr00t_wbc`, where it is a held setpoint only a new twist or an idle tick changes. (L644)
+  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Under `gr00t_wbc`: twist sets the S0 command, `JOINT_POSITION` must name arm joints only (`ROSCapabilityMismatch` otherwise, incl. whole-vector actions), ADR-0102 slot ticks may mix one twist + arm slots, one control period is stepped, and a latched fall raises `ROSSafetyViolation`. Non-planar twist components raise `ROSConfigError`. (L685)
+  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned (glide / walking state reset), or under `gr00t_wbc` zero the command and keep the Balance policy running. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L731)
+  - `reset_to_pose(pose: list[float]) -> None` (L745) — Reset the joint pose plus the base pin and (when walking) the gait state; under `gr00t_wbc` also re-seats the base upright at its MJCF height, takes the pose's arm entries as targets and clears policy history + fall latch.
+  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin via `_floating_base` (`capture_base_pin` / `write_base_pin`): `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L773)
+  - `_gr00t_physics_step()` / `_send_gr00t_wbc(action)` / `_gr00t_tick_commands(actions)` / `_idle_gr00t_wbc(wall_dt_s)` / `_enable_ground_contact()` — the GR00T WBC loop: 50 Hz policy step, 29-joint PD torque every physics step, fall detection; tick parsing; idle Balance; world-plane collision switch-on (incl. the compiled `body_contype` broad-phase bits). (L926)
+- module consts `_FALL_PELVIS_HEIGHT_M`, `_FALL_TILT_RAD`, `_RATE_TOLERANCE` (L117) — GR00T WBC fall thresholds (0.5 m, 45°) and the decimation check slack.
+- module const `_G1_LEFT_LEG_JOINTS: tuple[str, ...]` (L128) — left-leg joint names.
+- module const `_G1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L136) — right-leg joint names.
+- module const `_G1_WAIST_JOINTS: tuple[str, ...]` (L144) — waist joint names.
+- module const `_G1_LEFT_ARM_JOINTS: tuple[str, ...]` (L149) — left-arm joint names.
+- module const `_G1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L158) — right-arm joint names.
+- module const `_G1_JOINT_NAMES: tuple[str, ...]` (L167) — full 29-DoF joint order (legs + waist + arms).
+- module const `_G1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L192) — per-joint position limits.
+- module const `_G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L229) — per-kinematic-group velocity limits.
+- module const `_G1_EFFORT_LIMITS: dict[str, float]` (L240) — per-joint effort limits keyed by side-less joint name (Unitree `g1_29dof.urdf` vendor ratings).
+- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L263)
+- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L268)
+- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L318)
+- const `G1_DESCRIPTION = RobotDescription(...)` (L346) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"`, `hal.real=None` (sim-only); in-code mirror — `build_hal` passes the loaded `robots/g1/robot.yaml` as `description=`. Advertises `supported_control_modes=[joint_position, body_twist]`, `mobile_base` in `embodiment_tags`, and a forward `head` RGB camera so BODY_TWIST nav skills (InternVLA-N1) match. All MuJoCo wiring lives in `G1_DESCRIPTION.sim`; drift-guarded against `robots/g1/robot.yaml`.
 
 ### `python/hal/src/openral_hal/_g1_walking.py`
 _ADR-0089's private, sim-only walking implementation._
 
-- `ensure_g1_walking_assets() -> tuple[str, str]` (L54) — downloads four files from pinned MuJoCo Playground commit `43d180a` via `_pinned_files.fetch_pinned_file`, verifies SHA-256, links the cached Menagerie meshes, flattens the included MJCF, and returns `(mjcf_path, policy_path)`.
+- `_download(relative_path, expected_sha256, destination, *, root=_RAW_ROOT, label=...) -> None` (L44) — the pinned-commit + per-file SHA-256 fail-closed fetch (delegates to `_pinned_files.fetch_pinned_file`); `root` lets `_g1_gr00t_wbc` reuse it for another pinned repo.
+- `ensure_g1_walking_assets() -> tuple[str, str]` (L67) — downloads four files from pinned MuJoCo Playground commit `43d180a`, verifies SHA-256, links the cached Menagerie meshes, flattens the included MJCF, and returns `(mjcf_path, policy_path)`.
 - module const `_PINNED_SHA: str` (L18) — pinned MuJoCo Playground commit.
 - module const `_RAW_ROOT: str` (L19) — raw-GitHub root URL derived from `_PINNED_SHA`.
 - module const `_ASSETS: dict[str, str]` (L20) — the four pinned-asset relative paths mapped to their expected SHA-256 hex digests, verified by `ensure_g1_walking_assets`.
-- `class G1WalkingController` (L98) — 50 Hz CPU ONNX inference over 500 Hz MuJoCo physics; builds the upstream 103-D observation, validates the 29-D finite output, scales/clips joint targets, and persists gait phase/action history.
-  - `initialize(data: mujoco.MjData) -> None` (L127) — Capture `data.qpos[7:]` as the standing default-angle reference, then `reset_state()`.
-  - `reset_state() -> None` (L131) — Zero the last-action history and gait phase, reset the decimation counter.
-  - `apply(model: mujoco.MjModel, data: mujoco.MjData, command: tuple[float, float, float]) -> None` (L136) — Every `_CONTROL_DECIMATION`-th physics step, build the 103-D observation (base linear velocity, gyro, projected gravity, command, joint-angle delta, joint velocity, last action, phase sin/cos), run the ONNX policy, and scale/clip/apply the resulting joint targets.
+- `class G1WalkingController` (L111) — 50 Hz CPU ONNX inference over 500 Hz MuJoCo physics; builds the upstream 103-D observation, validates the 29-D finite output, scales/clips joint targets, and persists gait phase/action history.
+  - `initialize(data: mujoco.MjData) -> None` (L140) — Capture `data.qpos[7:]` as the standing default-angle reference, then `reset_state()`.
+  - `reset_state() -> None` (L144) — Zero the last-action history and gait phase, reset the decimation counter.
+  - `apply(model: mujoco.MjModel, data: mujoco.MjData, command: tuple[float, float, float]) -> None` (L149) — Every `_CONTROL_DECIMATION`-th physics step, build the 103-D observation (base linear velocity, gyro, projected gravity, command, joint-angle delta, joint velocity, last action, phase sin/cos), run the ONNX policy, and scale/clip/apply the resulting joint targets.
+
+### `python/hal/src/openral_hal/_g1_gr00t_wbc.py`
+_Sim-only port of NVIDIA GR00T Decoupled WBC's MuJoCo runner (`NVlabs/GR00T-WholeBodyControl` @ `1e1ec4f5`) — the G1 `gr00t_wbc` S0. Code Apache-2.0; weights NVIDIA Open Model License._
+
+- module const `GR00T_WBC_PINNED_SHA` (L55) — pinned upstream commit.
+- module const `GR00T_WBC_LICENSE_POSTURE` (L57) — the weights' `RSkillLicensePosture.NVIDIA_OPEN_MODEL`.
+- `class Gr00tWbcAssets` (L112) — frozen dataclass: verified `walk_onnx`, `balance_onnx`, `license_text` paths.
+- `ensure_gr00t_wbc_assets() -> Gr00tWbcAssets` (L120) — fetch / reuse the two ONNX files (Git LFS media URL) and the licence text into `$OPENRAL_CACHE_DIR/g1_gr00t_wbc/<sha>/`, each SHA-256-verified via `_g1_walking._download`; `ROSConfigError` on failure.
+- `position_actuators_to_torque_motors(model) -> None` (L155) — in-memory conversion of position actuators to unit-gain torque motors (`actuatorfrcrange` still clamps).
+- `gr00t_wbc_observation(*, command, base_height, torso_rpy, base_quat_wxyz, base_ang_vel_body, joint_pos, joint_vel, last_action) -> NDArray[float32]` (L172) — one 86-D frame in the upstream layout.
+- `class Gr00tWbcController` (L231) — loads Walk + Balance (signature-checked `input[B,516] -> output[B,15]`), keeps the 6-frame history and last action.
+  - `reset() -> None` (L284) — zero history and last action.
+  - `policy_input(frame) -> NDArray[float32]` (L291) — append a frame, return the `[1, 516]` input (oldest first).
+  - `step(data, *, command, base_height=0.74, torso_rpy=(0,0,0)) -> NDArray[float64]` (L296) — one 50 Hz step: Balance when `‖command‖ ≤ 0.05` else Walk; returns `0.25·a + S0_DEFAULT_ANGLES`; `used_walk` records the net.
+- module const `S0_JOINT_COUNT` (L77) — 15 policy-owned joints (12 legs + 3 waist).
+- module const `S0_DEFAULT_ANGLES` (L92) — stance the action offsets from.
+- module const `S0_KP` (L97) — leg/waist PD stiffness (upstream sim gains).
+- module const `S0_KD` (L100) — leg/waist PD damping.
+- module const `ARM_KP` (L105) — arm PD stiffness (GR00T real-robot `MOTOR_KP`).
+- module const `ARM_KD` (L106) — arm PD damping (`MOTOR_KD`).
+- module const `CONTROL_RATE_HZ` (L108) — 50 Hz policy rate.
+- module const `DEFAULT_BASE_HEIGHT_M` (L89) — 0.74 m height command.
+- module const `WALK_COMMAND_THRESHOLD` (L83) — 0.05 Balance/Walk switch.
 
 ### `python/hal/src/openral_hal/so100_mujoco.py`
 _MuJoCo digital twin for the SO-100 follower arm (Menagerie MJCF)._
@@ -614,76 +643,117 @@ _SO100DigitalTwin — in-process simulator for the SO-100 follower arm._
 ### `python/hal/src/openral_hal/ros_control.py`
 _RosControlHAL — `ros2_control`-backed HAL adapter, plus the typed downstream e-stop seam every ros2_control robot stops through (issue #295)._
 
-- `class ControllerKind(StrEnum)` — Which ros2_control controller sits behind one command topic, and therefore which message type commands it: `JOINT_TRAJECTORY` (`trajectory_msgs/JointTrajectory` — every ros2_control robot in this repo, OpenArm's 1-DoF grippers included) and `FORWARD_COMMAND` (`std_msgs/Float64MultiArray`, the `forward_command_controller` family; no in-repo robot yet). Declared rather than assumed because publishing the wrong type is **silent** — DDS never delivers it, so the arm does not move and nothing logs an error. Re-exported from `openral_hal`. (L72)
-- `class ControllerSwitchReport` — Frozen dataclass: acknowledged outcome of one `controller_manager` switch. `ok` is the service's verdict **and** the post-switch confirmation (every controller listed in the requested state); `states` is what `list_controllers` reported per name; `detail` names what did not move. (L108)
-- `class TriggerReport` — Frozen dataclass: `success` + `message` of one `std_srvs/Trigger`-shaped vendor call. (L125)
-- `class DownstreamStopReport` — Frozen dataclass: what a HAL knows about its last downstream stop — `stopped` (only when controller deactivation **and** the vendor stop were acknowledged; a local latch never counts), `controllers`, `controller_states`, `vendor_stop` (service/topic label or `""`), `detail`. `fields()` flattens it for `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`, …). Read by the lifecycle node, which logs FATAL on an unacknowledged stop. (L133)
-  - `fields() -> dict[str, str]` — Flattens the report for `/diagnostics` and the log line: `downstream_stop=acknowledged|unacknowledged`, `downstream_controllers`, `downstream_controller_states`, `downstream_vendor_stop`, `downstream_stop_detail`. (L151)
-- `class ControllerStopSeam(Protocol)` — What a transport must expose for a ros2_control HAL to stop its controllers: `deactivate_controllers(names, *, timeout_s)`, `activate_controllers(names, *, timeout_s)` (both → `ControllerSwitchReport`), `call_trigger(service, *, timeout_s) -> TriggerReport`, `publish_empty(topic)`. Production: `RosControlTransport`; unit lane: `SimTransport`. (L165)
-  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The stop: switch every named controller to `inactive` and confirm. (L178)
-  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The `RESETTABLE` re-arm: switch to `active` and confirm. (L184)
-  - `call_trigger(service, *, timeout_s) -> TriggerReport` — One declared `std_srvs/Trigger` vendor service. (L190)
-  - `publish_empty(topic) -> None` — One `std_msgs/Empty` on a declared vendor-stop topic. (L194)
-- `class ControllerStoppable(Protocol)` — The stop-side counterpart of `RosControlDrivable`: `controller_names()`, `vendor_stop_services()`, `vendor_stop_topics()`, `attach_controller_stop(seam)`. The lifecycle node **refuses to configure** a `RosControlDrivable` real HAL that is not also this; `RosControlHAL` answers all four. Pinned per manifest by `tests/unit/test_real_hal_estop_fleet_conformance.py`. (L200)
-  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` must deactivate. (L212)
-  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services the vendor stop calls. (L216)
-  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on. (L220)
-  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` at wire-up. (L224)
-- `class DownstreamStopReporting(Protocol)` — `last_stop_report -> DownstreamStopReport | None` property; what the lifecycle heartbeat and FATAL log read. (L230)
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L234)
-- `class RosControlHAL` — `ros2_control`-backed HAL adapter. Implements `LifecycleEStopHAL` with `estop_recovery = RESTART_REQUIRED` by default (the conservative policy; OpenArm opts into `RESETTABLE`). (L261)
-  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0)` (L324) — `staleness_limit_s=None` reads `description.safety.joint_state_staleness_limit_s` via `resolve_staleness_limit_s` (no constructor default; refused when undeclared). Reads the control rate from `description.action_spec.control_freq_hz` (the field the runner ticks at and the recorder stamps as fps; every committed ros2_control manifest declares 30 Hz); **refuses to construct** with `ROSConfigError` naming the field when it is missing or not positive, so `build_hal(mode="real")` and the lifecycle node's configure stop there (issue #303).
-  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` — Bind a live transport after construction; `build_hal` runs before any ROS node exists, so a real deployment cannot pass one to `__init__`. `stamp_fn` is the transport's per-message arrival clock and is what makes the staleness check a freshness check rather than a time-since-connect check. Rejects a non-callable `stamp_fn` at wire-up. (L375)
-  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` (same rationale as `attach_transport`); rejects a non-seam at wire-up with `ROSConfigError`. (L414)
-  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` deactivates; `[controller_name]` by default, overridden by the bimanual OpenArm alongside `command_bindings`. (L437)
-  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services and `std_msgs/Empty` topics the vendor stop uses; declared up front so the transport creates the clients/publishers at wire-up and refuses an undeclared name loudly. Empty in the base. (L446)
-  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on, declared for the same reason. Empty in the base; Sawyer overrides. (L455)
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L460)
-  - `command_bindings() -> dict[str, ControllerKind]` — Every controller topic this HAL publishes to, each with the wire format its controller speaks; one entry becomes one typed transport publisher. Insertion order is the `send_action` fan-out order. **This is the override point for a new robot** — overridden by the bimanual OpenArm (4 topics, all `JOINT_TRAJECTORY`). (L464)
-  - `command_topics() -> list[str]` — Derived from `command_bindings()` so the topic list and the declared formats cannot drift; override `command_bindings`, not this. (L478)
-  - `ros2_control_joint_names() -> list[str]` — Joint names in ros2_control's namespace, action order; what `/joint_states` is keyed by. Overridden where URDF names differ from manifest names (OpenArm). (L486)
-  - **(property)** `joint_state_topic -> str` — The aggregated `sensor_msgs/JointState` topic this HAL reads. (L496)
-  - **(property)** `controller_name -> str` — Name of the primary `ros2_control` controller this HAL commands (the one `command_topic` defaults from). Hoisted here from the Franka / Sawyer wrappers so every subclass answers it. (L501)
-  - `connect() -> None` (L507)
+- `class ControllerKind(StrEnum)` — Which ros2_control controller sits behind one command topic, and therefore which message type commands it: `JOINT_TRAJECTORY` (`trajectory_msgs/JointTrajectory` — every ros2_control robot in this repo, OpenArm's 1-DoF grippers included) and `FORWARD_COMMAND` (`std_msgs/Float64MultiArray`, the `forward_command_controller` family; no in-repo robot yet), `JOINT_COMMAND_TRAJECTORY` (`isaac_ros_deploy_interfaces/JointCommandTrajectory`, NVIDIA's `ForwardJointCommandController` — the Unitree upper body) and `TWIST` (`geometry_msgs/Twist` from the command dict's `twist`, NVIDIA `InferenceController`'s velocity source). Declared rather than assumed because publishing the wrong type is **silent** — DDS never delivers it, so the arm does not move and nothing logs an error. Re-exported from `openral_hal`. (L73)
+- `class ControllerSwitchReport` — Frozen dataclass: acknowledged outcome of one `controller_manager` switch. `ok` is the service's verdict **and** the post-switch confirmation (every controller listed in the requested state); `states` is what `list_controllers` reported per name; `detail` names what did not move. (L124)
+- `class TriggerReport` — Frozen dataclass: `success` + `message` of one `std_srvs/Trigger`-shaped vendor call. (L141)
+- `class DownstreamStopReport` — Frozen dataclass: what a HAL knows about its last downstream stop — `stopped` (only when controller deactivation **and** the vendor stop were acknowledged; a local latch never counts), `controllers`, `controller_states`, `vendor_stop` (service/topic label or `""`), `detail`. `fields()` flattens it for `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`, …). Read by the lifecycle node, which logs FATAL on an unacknowledged stop. (L149)
+  - `fields() -> dict[str, str]` — Flattens the report for `/diagnostics` and the log line: `downstream_stop=acknowledged|unacknowledged`, `downstream_controllers`, `downstream_controller_states`, `downstream_vendor_stop`, `downstream_stop_detail`. (L167)
+- `class ControllerStopSeam(Protocol)` — What a transport must expose for a ros2_control HAL to stop its controllers: `deactivate_controllers(names, *, timeout_s)`, `activate_controllers(names, *, timeout_s)` (both → `ControllerSwitchReport`), `call_trigger(service, *, timeout_s) -> TriggerReport`, `publish_empty(topic)`. Production: `RosControlTransport`; unit lane: `SimTransport`. (L181)
+  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The stop: switch every named controller to `inactive` and confirm. (L194)
+  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The `RESETTABLE` re-arm: switch to `active` and confirm. (L200)
+  - `call_trigger(service, *, timeout_s) -> TriggerReport` — One declared `std_srvs/Trigger` vendor service. (L206)
+  - `publish_empty(topic) -> None` — One `std_msgs/Empty` on a declared vendor-stop topic. (L210)
+- `class ControllerSwapSeam(Protocol)` — **runtime-checkable**: a stop seam that can `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` in ONE `switch_controller` request. Needed by a robot whose hardware releases unclaimed joints (Unitree hg: motor mode 0 = zero torque), where plain deactivation would drop a standing humanoid. Implemented by `RosControlTransport` and `SimTransport`; `UnitreeHgRealHAL.attach_controller_stop` refuses a seam without it. (L216)
+  - `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` — Hand-over in one switch, confirmed by listing. (L231)
+- `class ControllerStoppable(Protocol)` — The stop-side counterpart of `RosControlDrivable`: `controller_names()`, `vendor_stop_services()`, `vendor_stop_topics()`, `attach_controller_stop(seam)`. The lifecycle node **refuses to configure** a `RosControlDrivable` real HAL that is not also this; `RosControlHAL` answers all four. Pinned per manifest by `tests/unit/test_real_hal_estop_fleet_conformance.py`. (L243)
+  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` must deactivate. (L255)
+  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services the vendor stop calls. (L259)
+  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on. (L263)
+  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` at wire-up. (L267)
+- `class DownstreamStopReporting(Protocol)` — `last_stop_report -> DownstreamStopReport | None` property; what the lifecycle heartbeat and FATAL log read. (L273)
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L277)
+- `class RosControlHAL` — `ros2_control`-backed HAL adapter. Implements `LifecycleEStopHAL` with `estop_recovery = RESTART_REQUIRED` by default (the conservative policy; OpenArm opts into `RESETTABLE`). (L304)
+  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0)` (L367) — `staleness_limit_s=None` reads `description.safety.joint_state_staleness_limit_s` via `resolve_staleness_limit_s` (no constructor default; refused when undeclared). Reads the control rate from `description.action_spec.control_freq_hz` (the field the runner ticks at and the recorder stamps as fps; every committed ros2_control manifest declares 30 Hz); **refuses to construct** with `ROSConfigError` naming the field when it is missing or not positive, so `build_hal(mode="real")` and the lifecycle node's configure stop there (issue #303).
+  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` — Bind a live transport after construction; `build_hal` runs before any ROS node exists, so a real deployment cannot pass one to `__init__`. `stamp_fn` is the transport's per-message arrival clock and is what makes the staleness check a freshness check rather than a time-since-connect check. Rejects a non-callable `stamp_fn` at wire-up. (L418)
+  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` (same rationale as `attach_transport`); rejects a non-seam at wire-up with `ROSConfigError`. (L457)
+  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` deactivates; `[controller_name]` by default, overridden by the bimanual OpenArm alongside `command_bindings`. (L480)
+  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services and `std_msgs/Empty` topics the vendor stop uses; declared up front so the transport creates the clients/publishers at wire-up and refuses an undeclared name loudly. Empty in the base. (L489)
+  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on, declared for the same reason. Empty in the base; Sawyer overrides. (L498)
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L503)
+  - `command_bindings() -> dict[str, ControllerKind]` — Every controller topic this HAL publishes to, each with the wire format its controller speaks; one entry becomes one typed transport publisher. Insertion order is the `send_action` fan-out order. **This is the override point for a new robot** — overridden by the bimanual OpenArm (4 topics, all `JOINT_TRAJECTORY`). (L507)
+  - `command_topics() -> list[str]` — Derived from `command_bindings()` so the topic list and the declared formats cannot drift; override `command_bindings`, not this. (L521)
+  - `ros2_control_joint_names() -> list[str]` — Joint names in ros2_control's namespace, action order; what `/joint_states` is keyed by. Overridden where URDF names differ from manifest names (OpenArm). (L529)
+  - **(property)** `joint_state_topic -> str` — The aggregated `sensor_msgs/JointState` topic this HAL reads. (L539)
+  - **(property)** `controller_name -> str` — Name of the primary `ros2_control` controller this HAL commands (the one `command_topic` defaults from). Hoisted here from the Franka / Sawyer wrappers so every subclass answers it. (L544)
+  - `connect() -> None` (L550)
   - `disconnect() -> None` — inherited from `HALBase` (flag-and-log default; no extra teardown needed).
-  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L527)
-  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping, and `time_from_start_s` from `time_from_start_s(action)`. (L573)
-  - `time_from_start_s(action) -> float` — Trajectory deadline `horizon / action_spec.control_freq_hz`: a chunk is reached just as its replacement is due; the transport spreads the chunk's rows evenly up to it. Issue #303: at 30 Hz that default re-planned a steep segment every 33 ms and amplified each step between targets. (L607)
-  - `estop() -> None` — Drop the connection flag **first** (nothing more leaves this HAL), then `_stop_downstream()`, then raise `ROSEStopRequested` whose message says whether the downstream stop was acknowledged. The outcome lives in `last_stop_report`, not the exception type, so the HAL Protocol's "always `ROSEStopRequested`" holds. With no seam attached the report is `stopped=False` / "no controller stop seam attached" — never a claimed stop. (L630)
-  - `_stop_downstream() -> DownstreamStopReport` [private] — Deactivates `controller_names()` through the seam (STRICT switch + listing confirmation), then runs `_vendor_stop`; both are attempted even if the first fails, so the report names everything that did and did not acknowledge. (L663)
-  - `_vendor_stop(seam) -> str` [hook] — Vendor-specific stop beyond controller deactivation; returns its label for the report or raises a `ROSError`. Base: none (for a plain ros2_control robot deactivation *is* the stop; for `franka_hardware` it is what calls `libfranka`'s `stopRobot()`). Overridden by UR (dashboard `stop` Trigger) and Sawyer (super-stop Empty). (L721)
-  - `_vendor_reset(seam) -> None` [hook] — Vendor re-arm before controllers are re-activated; no-op by default. (L733)
-  - `reset_estop() -> None` — Only for `RESETTABLE` adapters: `_vendor_reset`, then `activate_controllers` through the seam, and only once the manager confirms every controller `active` is the HAL marked connected again. Raises `ROSRuntimeError` for a `RESTART_REQUIRED` policy ("in-process reset is forbidden"), a missing seam, or an unacknowledged re-activation — so the lifecycle latch can never clear ahead of the vendor reset. (L737)
+  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L570)
+  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping, and `time_from_start_s` from `time_from_start_s(action)`. (L616)
+  - `time_from_start_s(action) -> float` — Trajectory deadline `horizon / action_spec.control_freq_hz`: a chunk is reached just as its replacement is due; the transport spreads the chunk's rows evenly up to it. Issue #303: at 30 Hz that default re-planned a steep segment every 33 ms and amplified each step between targets. (L650)
+  - `estop() -> None` — Drop the connection flag **first** (nothing more leaves this HAL), then `_stop_downstream()`, then raise `ROSEStopRequested` whose message says whether the downstream stop was acknowledged. The outcome lives in `last_stop_report`, not the exception type, so the HAL Protocol's "always `ROSEStopRequested`" holds. With no seam attached the report is `stopped=False` / "no controller stop seam attached" — never a claimed stop. (L673)
+  - `_stop_downstream() -> DownstreamStopReport` [private] — Deactivates `controller_names()` through the seam (STRICT switch + listing confirmation), then runs `_vendor_stop`; both are attempted even if the first fails, so the report names everything that did and did not acknowledge. (L706)
+  - `_stop_switch(seam, names) -> ControllerSwitchReport` [hook] — The switch `estop` performs; plain `deactivate_controllers` by default, overridden by `UnitreeHgRealHAL` to swap in `freeze_controller`. Exceptions it raises are folded into the report by `_stop_downstream`. (L764)
+  - `_vendor_stop(seam) -> str` [hook] — Vendor-specific stop beyond controller deactivation; returns its label for the report or raises a `ROSError`. Base: none (for a plain ros2_control robot deactivation *is* the stop; for `franka_hardware` it is what calls `libfranka`'s `stopRobot()`). Overridden by UR (dashboard `stop` Trigger) and Sawyer (super-stop Empty). (L777)
+  - `_vendor_reset(seam) -> None` [hook] — Vendor re-arm before controllers are re-activated; no-op by default. (L789)
+  - `reset_estop() -> None` — Only for `RESETTABLE` adapters: `_vendor_reset`, then `activate_controllers` through the seam, and only once the manager confirms every controller `active` is the HAL marked connected again. Raises `ROSRuntimeError` for a `RESTART_REQUIRED` policy ("in-process reset is forbidden"), a missing seam, or an unacknowledged re-activation — so the lifecycle latch can never clear ahead of the vendor reset. (L793)
   - private: `_require_connected`, `_validate_action`
 
 ### `python/hal/src/openral_hal/ros_control_transport.py`
 _Production `rclpy` transport shared by every real `RosControlHAL` robot._
 
-- `class RosControlDrivable(Protocol)` — **runtime-checkable**, structural: what a HAL must expose to be driven by `RosControlTransport` (`command_bindings`, `ros2_control_joint_names`, `joint_state_topic`, `attach_transport`). The lifecycle node's wiring gates on *this*, not on `isinstance(hal, RosControlHAL)`, so a ros2_control robot that reimplements the fan-out on `HALBase` rather than inheriting can opt in by shape instead of being silently skipped. Non-method member (`joint_state_topic` is a property) so `isinstance` works but `issubclass` raises — gate with `isinstance`. (L80)
-  - `command_bindings() -> dict[str, ControllerKind]` (L93) — see `RosControlHAL.command_bindings`.
-  - `ros2_control_joint_names() -> list[str]` (L97) — see `RosControlHAL.ros2_control_joint_names`.
-  - **(property)** `joint_state_topic -> str` (L102)
-  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` (L106) — see `RosControlHAL.attach_transport`.
-- `class RosControlTransport` — Bridges one `RosControlHAL` to live ros2_control topics **and** implements `ControllerStopSeam` over `controller_manager`. Built only from what the HAL reports about itself (`command_bindings()`, `ros2_control_joint_names()`, `joint_state_topic`), so a one-controller UR and the four-controller bimanual OpenArm are one code path and a new robot needs no transport code. Wired automatically by the lifecycle node under `hal_mode:=real`. **Reuse watch:** the canonical real-HW ros2_control bridge — do not hand-roll publishers in a per-robot HAL. (L128)
-  - `__init__(node, *, command_topics, joint_names, joint_state_topic='/joint_states', command_kinds=None)` — Refuses an empty topic or joint list, and a `command_kinds` entry naming a topic not in `command_topics` (a typo there would silently leave the real topic on the `JOINT_TRAJECTORY` default). Topics absent from `command_kinds` default to `JOINT_TRAJECTORY`. (L157)
-  - `publish(topic, msg) -> None` — One command dict → the message type this topic's declared `ControllerKind` calls for. Publishes the chunk's final step only (a point is an absolute target the controller interpolates toward). Raises on a topic the HAL never declared, **and on a payload it cannot express** (no `joint_targets` key — e.g. a `{"position": …}` gripper command): dropping that quietly would be a silent no-op on the actuation path. An empty `joint_targets` list is the distinct, benign "nothing to send this tick". (L293)
-  - `state() -> dict[str, object]` — Newest joint state projected onto the HAL's joint order; merged **by name, never index**, since split controllers publish independently. An unheard joint's position/velocity read 0.0; `effort` is `[]` unless every joint carried an effort value. (L405)
-  - `last_arrival() -> float` — `time.monotonic()` of the newest message; 0.0 before the first. Feeds `RosControlHAL.attach_transport(stamp_fn=...)`. (L430)
-  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — **The stop.** `controller_manager/switch_controller` with `deactivate_controllers=names`, `strictness=STRICT`, then `list_controllers` to confirm every name reads `inactive`; `ok` is both. Discovery, the switch and its confirmation share **one** `timeout_s` deadline, so a stalled manager cannot stretch the stop past the budget. A deactivated `JointTrajectoryController` holds its last position command (zeroes velocity / effort), drops late trajectories (its subscriber goes inactive) and writes nothing until re-activated — verified against `ros2_controllers` jazzy, which is also why an *empty* trajectory is **not** used as a stop: ROS 2 rejects it ("Empty trajectory received"). (L436)
-  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — Mirror for a `RESETTABLE` re-arm; confirms `active`. (L449)
-  - `call_trigger(service, *, timeout_s) -> TriggerReport` — One declared `std_srvs/Trigger` (UR `/dashboard_client/stop`); `ROSConfigError` for an undeclared service, `success=False` when absent or unanswered; discovery and the call share one `timeout_s` deadline. (L455)
-  - `publish_empty(topic) -> None` — One `std_msgs/Empty` on a declared vendor-stop topic (Sawyer `/robot/set_super_stop`); `ROSConfigError` for an undeclared one. (L487)
-  - `controller_states(*, timeout_s) -> dict[str, str]` — `{name: state}` from `list_controllers`; `{}` if the manager did not answer; discovery and the call share one `timeout_s` deadline. The lifecycle node logs a warning at wire-up when the HAL's controllers are not yet listed active. (L504)
-  - `close() -> None` — Destroy the helper node the service clients live on (lifecycle cleanup). (L517)
+- `class RosControlDrivable(Protocol)` — **runtime-checkable**, structural: what a HAL must expose to be driven by `RosControlTransport` (`command_bindings`, `ros2_control_joint_names`, `joint_state_topic`, `attach_transport`). The lifecycle node's wiring gates on *this*, not on `isinstance(hal, RosControlHAL)`, so a ros2_control robot that reimplements the fan-out on `HALBase` rather than inheriting can opt in by shape instead of being silently skipped. Non-method member (`joint_state_topic` is a property) so `isinstance` works but `issubclass` raises — gate with `isinstance`. (L94)
+  - `command_bindings() -> dict[str, ControllerKind]` (L107) — see `RosControlHAL.command_bindings`.
+  - `ros2_control_joint_names() -> list[str]` (L111) — see `RosControlHAL.ros2_control_joint_names`.
+  - **(property)** `joint_state_topic -> str` (L116)
+  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` (L120) — see `RosControlHAL.attach_transport`.
+- `class RosControlTransport` — Bridges one `RosControlHAL` to live ros2_control topics **and** implements `ControllerStopSeam` over `controller_manager`. Built only from what the HAL reports about itself (`command_bindings()`, `ros2_control_joint_names()`, `joint_state_topic`), so a one-controller UR and the four-controller bimanual OpenArm are one code path and a new robot needs no transport code. Wired automatically by the lifecycle node under `hal_mode:=real`. **Reuse watch:** the canonical real-HW ros2_control bridge — do not hand-roll publishers in a per-robot HAL. (L142)
+  - `__init__(node, *, command_topics, joint_names, joint_state_topic='/joint_states', command_kinds=None)` — Refuses an empty topic or joint list, and a `command_kinds` entry naming a topic not in `command_topics` (a typo there would silently leave the real topic on the `JOINT_TRAJECTORY` default). Topics absent from `command_kinds` default to `JOINT_TRAJECTORY`. (L171)
+  - `publish(topic, msg) -> None` — One command dict → the message type this topic's declared `ControllerKind` calls for. Publishes the chunk's final step only (a point is an absolute target the controller interpolates toward). Raises on a topic the HAL never declared, **and on a payload it cannot express** (no `joint_targets` key — e.g. a `{"position": …}` gripper command): dropping that quietly would be a silent no-op on the actuation path. An empty `joint_targets` list is the distinct, benign "nothing to send this tick". (L307)
+  - `state() -> dict[str, object]` — Newest joint state projected onto the HAL's joint order; merged **by name, never index**, since split controllers publish independently. An unheard joint's position/velocity read 0.0; `effort` is `[]` unless every joint carried an effort value. (L430)
+  - `last_arrival() -> float` — `time.monotonic()` of the newest message; 0.0 before the first. Feeds `RosControlHAL.attach_transport(stamp_fn=...)`. (L455)
+  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — **The stop.** `controller_manager/switch_controller` with `deactivate_controllers=names`, `strictness=STRICT`, then `list_controllers` to confirm every name reads `inactive`; `ok` is both. Discovery, the switch and its confirmation share **one** `timeout_s` deadline, so a stalled manager cannot stretch the stop past the budget. A deactivated `JointTrajectoryController` holds its last position command (zeroes velocity / effort), drops late trajectories (its subscriber goes inactive) and writes nothing until re-activated — verified against `ros2_controllers` jazzy, which is also why an *empty* trajectory is **not** used as a stop: ROS 2 rejects it ("Empty trajectory received"). (L461)
+  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — Mirror for a `RESETTABLE` re-arm; confirms `active`. (L474)
+  - `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` — `ControllerSwapSeam`: one `switch_controller` request with both lists, **BEST_EFFORT** (an emergency hand-over where a controller may already be where the swap wants it — NVIDIA's `SafetyController` issues the same request BEST_EFFORT), `ok` only when the listing shows every `deactivate` name `inactive` and every `activate` name `active`. (L480)
+  - `call_trigger(service, *, timeout_s) -> TriggerReport` — One declared `std_srvs/Trigger` (UR `/dashboard_client/stop`); `ROSConfigError` for an undeclared service, `success=False` when absent or unanswered; discovery and the call share one `timeout_s` deadline. (L503)
+  - `publish_empty(topic) -> None` — One `std_msgs/Empty` on a declared vendor-stop topic (Sawyer `/robot/set_super_stop`); `ROSConfigError` for an undeclared one. (L535)
+  - `controller_states(*, timeout_s) -> dict[str, str]` — `{name: state}` from `list_controllers`; `{}` if the manager did not answer; discovery and the call share one `timeout_s` deadline. The lifecycle node logs a warning at wire-up when the HAL's controllers are not yet listed active. (L552)
+  - `close() -> None` — Destroy the helper node the service clients live on (lifecycle cleanup). (L565)
   - `__init__` also takes `controller_names`, `trigger_services`, `empty_topics` (from `hal.controller_names()` / `vendor_stop_services()` / `vendor_stop_topics()`) and `controller_manager='/controller_manager'`. Service calls run on a private helper node + executor because the e-stop callback runs on the lifecycle node's single-threaded executor and a future issued from inside a callback can only complete if something else spins the client.
-  - `seen_joints() -> set[str]` (L586)
-  - `missing_joints() -> list[str]` (L590)
+  - `seen_joints() -> set[str]` (L737)
+  - `missing_joints() -> list[str]` (L741)
   - private: `_time_from_start_s(msg, topic)` — the chunk deadline the HAL supplied; **no fallback** — a command without a positive `time_from_start_s` raises `ROSConfigError` (a fixed 100 ms constant in its place is the defect of issue #303). `publish` turns every chunk row into a `JointTrajectoryPoint`, evenly spaced up to that deadline, so the controller interpolates through the chunk's shape (a single-row tick is one point at one control period). `_on_joint_state`
-- module const `_COMMAND_DEPTH = 1` (L120) — command QoS depth (RELIABLE, VOLATILE, shallow — CLAUDE.md §2).
-- module const `_STATE_DEPTH = 10` (L125) — state QoS depth.
-- module const `_STRICT = 2` (L76) — `controller_manager_msgs/SwitchController.STRICT`: a switch that cannot fully apply is refused rather than partially applied.
-- `_left(deadline) -> float` — Seconds left before a `time.monotonic()` deadline, floored at zero; every stop-seam phase (`wait_for_service`, the call, the confirmation) is budgeted through it. (L636)
-- `_message_type(kind) -> type` — The one place a `ControllerKind` becomes a ROS message class. Adding an enum member without extending this raises at wire-up rather than publishing a plausible-but-wrong type onto the actuation path; `tests/unit/test_ros_control_transport.py::test_every_controller_kind_maps_to_a_message_type` pins that. (L641)
+- module const `_COMMAND_DEPTH = 1` (L134) — command QoS depth (RELIABLE, VOLATILE, shallow — CLAUDE.md §2).
+- module const `_STATE_DEPTH = 10` (L139) — state QoS depth.
+- module const `_BEST_EFFORT = 1` (L87) — `SwitchController.BEST_EFFORT`, used only by `swap_controllers`; the post-switch listing decides success.
+- module const `_TWIST_DIM = 6` (L90) — components of a `TWIST` command.
+- module const `_STRICT = 2` (L79) — `controller_manager_msgs/SwitchController.STRICT`: a switch that cannot fully apply is refused rather than partially applied.
+- `_left(deadline) -> float` — Seconds left before a `time.monotonic()` deadline, floored at zero; every stop-seam phase (`wait_for_service`, the call, the confirmation) is budgeted through it. (L787)
+- `_message_type(kind) -> type` — The one place a `ControllerKind` becomes a ROS message class. Adding an enum member without extending this raises at wire-up rather than publishing a plausible-but-wrong type onto the actuation path; `tests/unit/test_ros_control_transport.py::test_every_controller_kind_maps_to_a_message_type` pins that. (L792)
+
+### `python/hal/src/openral_hal/unitree_real.py`
+_Real-hardware adapter for the Unitree hg humanoids (G1 now; H2 shares the stack). NVIDIA owns S0: a whole-body ONNX policy runs as `isaac_ros_deploy`'s C++ `InferenceController` on `isaac_ros_robots`' `unitree_hg_ros2_control`; this HAL commands the upper body and a base velocity only. Bringup: `packages/openral_hal_unitree`._
+
+- const `G1_REAL_DESCRIPTION` (L113) — `make_real_description(G1_DESCRIPTION, sdk_kind="closed_with_api")` (`unitree_sdk2`'s prebuilt core). Mirrored by `robots/g1/robot.yaml`.
+- `class UnitreeHgRealHAL(RosControlHAL)` (L146) — `estop_recovery = RESTART_REQUIRED`. Joint split from the selected S0 policy file (`unitree_s0_policy`): a `JOINT_POSITION` action owning an S0 joint (named, or implied by `joint_names=None`) raises `ROSCapabilityMismatch` before anything is published. Every upper-body message carries every upper-body joint (unowned ones at their held target / measured pose — NVIDIA's forward controller snaps an omitted joint to its activation pose). Every tick re-publishes a twist heartbeat (zero unless a same-tick `BODY_TWIST` slot set one) so the policy's `topic_input_timeout_ms` only trips when OpenRAL is gone. No base-height command (no `Action` field; upstream hardcodes 0.7 m).
+  - `__init__(description=None, *, robot_model='g1', s0_policy=None, upper_body_controller=..., inference_controller=..., safety_controller=..., freeze_controller=..., joint_state_topic='/joint_states', publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0)` — `s0_policy=None` → the model default (`gr00t_decoupled_wbc`); refuses an unknown model, a missing/placeholder policy, or a split that is not a disjoint cover of the manifest. (L185)
+  - `upper_body_joints() -> list[str]` — Joints this HAL commands, in message order. (L259)
+  - `s0_joints() -> list[str]` — Joints the policy owns (manifest order). (L269)
+  - `command_bindings() -> dict[str, ControllerKind]` — `/upper_body_forward_joint_command_controller/joint_commands_trajectory` (`JOINT_COMMAND_TRAJECTORY`) + the policy's velocity topic (`TWIST`). (L279)
+  - `controller_names() -> list[str]` — `safety_controller`, `inference_controller`, `upper_body_forward_joint_command_controller` — what `estop` swaps out. (L292)
+  - **(property)** `s0_policy -> str` (L307)
+  - **(property)** `freeze_controller -> str` (L312)
+  - `attach_controller_stop(seam) -> None` — Refuses a seam that is not a `ControllerSwapSeam` (`ROSConfigError`). (L318)
+  - `estop() -> None` — Swaps the S0 chain for `freeze_controller` in one request (`_stop_switch`), then raises `ROSEStopRequested`. (L354)
+  - `send_action(action) -> None` — `JOINT_POSITION` → upper-body `JointCommandTrajectory` + heartbeat twist; `BODY_TWIST` → row 0 on the velocity topic (planar and finite, else `ROSConfigError`). (L366)
+  - `disconnect() -> None` (L348)
+  - `health() -> HALHealthReport` (L502)
+  - private: `_stop_switch`, `_validate_action`, `_twist_of`, `_heartbeat_twist`, `_upper_body_message`, `_held_or_measured`
+- `@dataclass _UnitreeHgModel` / `_MODELS` — Per-model defaults (description, default S0 policy); H2 joins as a row. (L129)
+
+### `python/hal/src/openral_hal/unitree_s0_policy.py`
+_One typed reader of `packages/openral_hal_unitree/config/<model>/policies/<policy>.yaml` for both `UnitreeHgRealHAL` (joint split) and `real_bringup.launch.py` (controller parameters), so the split the HAL enforces is the one the C++ graph runs._
+
+- `class S0PolicyMeta(BaseModel)` — `name`, `status` (`ready`/`placeholder`), `data_package` | `bundle_dir`, `leapp_config`, `velocity_command_topic`, `velocity_command_type`, `s0_joints`. `extra="forbid"`. (L56)
+- `class S0PolicyFile(BaseModel)` — `openral_policy` + `controllers` (ROS param blocks). (L83)
+  - **(property)** `upper_body_joints -> list[str]` — The upper-body controller's `joints`; `ROSConfigError` when absent. (L97)
+- module const `UNITREE_BRINGUP_PACKAGE = "openral_hal_unitree"` (L47)
+- module const `UPPER_BODY_CONTROLLER = "upper_body_forward_joint_command_controller"` (L49)
+- module const `INFERENCE_CONTROLLER = "inference_controller"` (L51)
+- `s0_policy_path(robot_model, policy) -> Path` — `$OPENRAL_UNITREE_CONFIG_DIR`, then the installed `openral_hal_unitree` share, then the repo checkout. (L109)
+- `load_s0_policy(path, *, require_ready=True) -> S0PolicyFile` — `ROSConfigError` on a missing/malformed/placeholder file. (L146)
+- `resolve_leapp_config(policy, override, package_share=None) -> Path` — override › `share/<data_package>/data/` › `bundle_dir`; names `tools/build_gr00t_wbc_leapp.py` when a built bundle is missing. (L170)
+- `policy_parameters(policy, leapp_config) -> dict` — A copy of `controllers` with `inference_controller.config_path` filled. (L219)
+
 
 ### `python/hal/src/openral_hal/interbotix_transport.py`
 _Production `rclpy` torque-stop seam for the Interbotix XS arms (ALOHA) — the stop only, not the command path (#250)._
@@ -696,25 +766,26 @@ _Production `rclpy` torque-stop seam for the Interbotix XS arms (ALOHA) — the 
 _SimTransport — in-memory simulated `ros2_control` transport **and** `ControllerStopSeam`; SimTorqueSeam — in-memory `InterbotixStopSeam`. The in-repo controller simulators the unit lane proves the e-stop path on._
 
 - `class SimTransport` — In-memory transport simulating JointTrajectory controllers behind a `controller_manager` table. Mirrors the two verified facts about a deactivated `JointTrajectoryController`: a command on an `inactive` controller's topic is **dropped** (recorded in `dropped_calls`, not applied) and nothing moves until re-activated. (L59)
-  - `__init__(n_joints, *, controllers=None, trigger_responses=None, switch_faults=None)` — `controllers` given → STRICT table (an unknown name refuses a switch like an unloaded controller); omitted → names register `active` on first use. `trigger_responses` maps a service to the `(success, message)` its `call_trigger` returns (simulate a refusing UR dashboard); `switch_faults` maps `"deactivate"` / `"activate"` to the exception that switch raises instead of answering (the rclpy-shaped fault the HAL must contain in its report). (L103)
-  - `publish(topic, msg) -> None` — Record msg, apply `joint_targets` — unless the topic's controller is inactive. (L128)
-  - `state() -> dict[str, object]` — Current simulated joint state. (L152)
-  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — Flip the table to `inactive`; refuse unknown names under STRICT; raise the `switch_faults["deactivate"]` exception when configured. (L167)
-  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — Mirror for the re-arm; `switch_faults["activate"]` likewise. (L173)
-  - `call_trigger(service, *, timeout_s) -> TriggerReport` — Recorded; answered from `trigger_responses` (default: success). (L179)
-  - `publish_empty(topic) -> None` — Recorded in `empty_publishes`. (L185)
-  - `controller_state(name) -> str` — `active` / `inactive` / `unloaded`. (L189)
-  - `call_count -> int` [@property] — Number of commands delivered to an active controller. (L196)
-  - `last_call -> tuple | None` [@property] — The most recent delivered `(topic, msg)`. (L201)
-  - `calls -> list[tuple]` [@property] — Every delivered `(topic, msg)`, in order. (L206)
-  - `dropped_calls -> list[tuple]` [@property] — Every command that reached an `inactive` controller and was dropped. (L211)
-  - `switch_calls -> list[tuple]` [@property] — Every `("deactivate" | "activate", names)` switch, in order. (L216)
-  - `trigger_calls -> list[str]` [@property] — Every `std_srvs/Trigger` service called, in order. (L221)
-  - `empty_publishes -> list[str]` [@property] — Every `std_msgs/Empty` topic published on, in order. (L226)
-- `class SimTorqueSeam` — In-memory `InterbotixStopSeam`: a simulated `xs_sdk` torque table. `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` flips the arm's torque, refuses an arm not in `arms` (absent service) or listed in `failing`, and raises the exception `faults` maps an arm to (the rclpy-shaped fault the HAL must contain while still stopping the other arms); `torque(name)` / `calls` for assertions. (L266)
-  - `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` — Record the call and flip the arm's torque unless it is absent, listed in `failing`, or mapped in `faults` (then raise that exception). (L306)
-  - `torque(robot_name) -> bool` — Whether the arm is currently torqued on. (L322)
-  - `calls -> list[tuple[str, str, bool]]` [@property] — Every `(robot_name, group, enable)` call, in order. (L327)
+  - `__init__(n_joints, *, controllers=None, trigger_responses=None, switch_faults=None, joint_names=None)` — `joint_names` given → a command carrying its own `joint_names` (a subset HAL such as the Unitree upper body) is applied by name; `switch_faults` also takes `"swap"`. `controllers` given → STRICT table (an unknown name refuses a switch like an unloaded controller); omitted → names register `active` on first use. `trigger_responses` maps a service to the `(success, message)` its `call_trigger` returns (simulate a refusing UR dashboard); `switch_faults` maps `"deactivate"` / `"activate"` to the exception that switch raises instead of answering (the rclpy-shaped fault the HAL must contain in its report). (L108)
+  - `publish(topic, msg) -> None` — Record msg, apply `joint_targets` — unless the topic's controller is inactive. (L141)
+  - `state() -> dict[str, object]` — Current simulated joint state. (L178)
+  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — Flip the table to `inactive`; refuse unknown names under STRICT; raise the `switch_faults["deactivate"]` exception when configured. (L193)
+  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — Mirror for the re-arm; `switch_faults["activate"]` likewise. (L199)
+  - `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` — One all-or-nothing hand-over, recorded as a single `("swap", deactivate + activate)` entry in `switch_calls`. (L205)
+  - `call_trigger(service, *, timeout_s) -> TriggerReport` — Recorded; answered from `trigger_responses` (default: success). (L245)
+  - `publish_empty(topic) -> None` — Recorded in `empty_publishes`. (L251)
+  - `controller_state(name) -> str` — `active` / `inactive` / `unloaded`. (L255)
+  - `call_count -> int` [@property] — Number of commands delivered to an active controller. (L262)
+  - `last_call -> tuple | None` [@property] — The most recent delivered `(topic, msg)`. (L267)
+  - `calls -> list[tuple]` [@property] — Every delivered `(topic, msg)`, in order. (L272)
+  - `dropped_calls -> list[tuple]` [@property] — Every command that reached an `inactive` controller and was dropped. (L277)
+  - `switch_calls -> list[tuple]` [@property] — Every `("deactivate" | "activate", names)` switch, in order. (L282)
+  - `trigger_calls -> list[str]` [@property] — Every `std_srvs/Trigger` service called, in order. (L287)
+  - `empty_publishes -> list[str]` [@property] — Every `std_msgs/Empty` topic published on, in order. (L292)
+- `class SimTorqueSeam` — In-memory `InterbotixStopSeam`: a simulated `xs_sdk` torque table. `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` flips the arm's torque, refuses an arm not in `arms` (absent service) or listed in `failing`, and raises the exception `faults` maps an arm to (the rclpy-shaped fault the HAL must contain while still stopping the other arms); `torque(name)` / `calls` for assertions. (L332)
+  - `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` — Record the call and flip the arm's torque unless it is absent, listed in `failing`, or mapped in `faults` (then raise that exception). (L372)
+  - `torque(robot_name) -> bool` — Whether the arm is currently torqued on. (L388)
+  - `calls -> list[tuple[str, str, bool]]` [@property] — Every `(robot_name, group, enable)` call, in order. (L393)
 
 ### `python/hal/src/openral_hal/lifecycle.py`
 _Generic ROS 2 managed lifecycle node wrapper for every HAL adapter — UR5e / UR10e / Franka / SO-100 / OpenArm / H1 / future HALs all share the same publish / subscribe / heartbeat / OTel-span wiring._

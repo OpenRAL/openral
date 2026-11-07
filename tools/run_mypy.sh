@@ -25,8 +25,15 @@ pkgs=$(ls -d packages/*/ | sed 's:/$::' | paste -sd:)
 # shellcheck disable=SC2046  # word-split the -p list on purpose
 MYPYPATH=$pkgs uv run mypy --strict $(git ls-files 'packages/*/*/__init__.py' \
   | grep -v -e '/test/' -e '^packages/openral_safety/' | cut -d/ -f3 | sort -u | sed 's:^:-p :')
+# Launch files: one call per package launch dir, since packages may reuse a
+# launch file name (openral_hal_openarm and openral_hal_unitree both ship
+# real_bringup.launch.py) and one mypy call refuses duplicate module names.
+for d in $(git ls-files 'packages/*/launch/*.py' | cut -d/ -f1-3 | sort -u); do
+  # shellcheck disable=SC2046
+  MYPYPATH=$pkgs uv run mypy --strict $(git ls-files "$d/*.py")
+done
 # shellcheck disable=SC2046
-MYPYPATH=$pkgs uv run mypy --strict $(git ls-files 'packages/*/launch/*.py' 'cpp/*.py')
+MYPYPATH=$pkgs uv run mypy --strict $(git ls-files 'cpp/*.py')
 
 # Package-local test dirs: one call each, with the test dir as the deepest root,
 # so test modules get the bare names pytest's rootdir-prepend gives them

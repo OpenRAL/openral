@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# S0 whole-body policy: NVIDIA WBC-AGILE velocity policy for the Unitree G1.
+#
+# One file per policy, so swapping the S0 policy (AGILE vs GR00T Decoupled WBC, still
+# being benchmarked) is `policy:=<file stem>` on the launch — the policy-independent
+# graph in ../controller_manager.yaml does not change.
+#
+# Layout (read by real_bringup.launch.py and by tests/unit/test_unitree_real_bringup_config.py,
+# never handed to ROS as-is):
+#   openral_policy  — metadata: status, where the LEAPP model comes from, the joint split.
+#   controllers     — ROS parameter blocks, written to a temp params file the launch
+#                     loads after controller_manager.yaml (later file wins).
+#
+# Source: NVIDIA isaac_ros_robots @ 520aa94ffb7732467870a87dcb66a8bfd33cbe60,
+# unitree_g1/unitree_g1_bringup/config/controller_groups.yaml group `agile_velocity`
+# (safety_controller + inference_controller + upper_body_forward_joint_command_controller)
+# and launch/unitree_g1_controller_manager.launch.py (decimation 4, command_prefix /
+# command_suffix, the TwistStamped `cmd_vel_topic` override shape). NVIDIA documents the
+# deploy at nvidia-isaac-ros.github.io/repositories_and_packages/isaac_ros_deploy/tutorials/
+# deploy_agile.html.
+
+openral_policy:
+  name: agile_velocity
+  # ready | placeholder. The launch refuses a placeholder.
+  status: ready
+  # ament package shipping the LEAPP export (`data/<leapp_config>` + its ONNX), named by
+  # upstream's controller group. It is NOT in isaac_ros_robots / isaac_ros_deploy; install
+  # it per NVIDIA's AGILE deploy tutorial, or pass `inference_controller_config_path:=`.
+  data_package: isaac_ros_agile_unitree_g1
+  leapp_config: agile_velocity.yaml
+  # The velocity command the policy reads, and its wire type. Must equal
+  # `controllers.inference_controller.ros__parameters.source_to_topic` below and
+  # `openral_hal.unitree_real._G1_VELOCITY_COMMAND_TOPIC` (test-enforced).
+  velocity_command_topic: /inference_controller/cmd_vel
+  velocity_command_type: geometry_msgs/msg/Twist
+  # Joints the policy owns (upstream: "12 legs + waist roll + waist pitch. Matches the
+  # AGILE action output set."). OpenRAL never commands these on real hardware.
+  s0_joints:
+    - left_hip_pitch_joint
+    - left_hip_roll_joint
+    - left_hip_yaw_joint
+    - left_knee_joint
+    - left_ankle_pitch_joint
+    - left_ankle_roll_joint
+    - right_hip_pitch_joint
+    - right_hip_roll_joint
+    - right_hip_yaw_joint
+    - right_knee_joint
+    - right_ankle_pitch_joint
+    - right_ankle_roll_joint
+    - waist_roll_joint
+    - waist_pitch_joint
+
+controllers:
+  inference_controller:
+    ros__parameters:
+      # Filled in by the launch from `data_package`/`leapp_config`, or from the
+      # `inference_controller_config_path:=` override. Empty fails the controller's
+      # configure (upstream: "config_path parameter is required").
+      config_path: ""
+      decimation: 4  # 200 Hz manager / 4 = 50 Hz policy (upstream hardcodes 4 too)
+      command_prefix: "safety_controller"
+      command_suffix: "_raw"
+      topic_input_sources:
+        - command/body/velocity
+      source_to_topic:
+        command/body/velocity: /inference_controller/cmd_vel
+      source_message_type:
+        command/body/velocity: geometry_msgs/msg/Twist
+      # OpenRAL addition (upstream leaves 0 = never stale). A velocity command older than
+      # this invalidates the policy's output and SafetyController holds the measured pose:
+      # a crashed or stalled Python side then stops the robot walking instead of leaving
+      # it on its last command forever. The HAL re-publishes the twist on every tick
+      # (zero when the tick carries none), so a live runner keeps it fresh.
+      topic_input_timeout_ms: 500.0
+
+  upper_body_forward_joint_command_controller:
+    ros__parameters:
+      # The joints OpenRAL commands: everything the policy does not own. Must equal
+      # `openral_hal.unitree_real.G1_UPPER_BODY_JOINTS` (test-enforced).
+      joints:
+        - waist_yaw_joint
+        - left_shoulder_pitch_joint
+        - left_shoulder_roll_joint
+        - left_shoulder_yaw_joint
+        - left_elbow_joint
+        - left_wrist_roll_joint
+        - left_wrist_pitch_joint
+        - left_wrist_yaw_joint
+        - right_shoulder_pitch_joint
+        - right_shoulder_roll_joint
+        - right_shoulder_yaw_joint
+        - right_elbow_joint
+        - right_wrist_roll_joint
+        - right_wrist_pitch_joint
+        - right_wrist_yaw_joint

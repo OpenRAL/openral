@@ -4,9 +4,10 @@ Requires a sourced ROS 2 installation (``ROS_DISTRO`` env var set).
 Skipped automatically in pure-Python CI.
 
 Scenario: spawn ``ros2 topic pub /lowstate std_msgs/msg/String`` in a
-separate subprocess (Unitree G1 signature topic), then call
-``scan_dds_topics`` and verify that ``infer_robot_from_topics``
-maps the discovered topic to ``"unitree_g1"``.
+separate subprocess (the Unitree low-level signature topic), then call
+``scan_dds_topics`` and verify that the topic is recognised as Unitree but,
+because a ``std_msgs`` type names no Unitree message family, every model stays
+a candidate and ``infer_robot_from_topics`` declines to guess.
 
 The publisher runs as a separate ``ros2`` subprocess (instead of an
 in-process rclpy node) so its DDS participant is discovered reliably
@@ -43,8 +44,8 @@ def _wait_for_topic(name: str, deadline_s: float = 15.0) -> list:  # type: ignor
 
 @pytest.mark.skipif(not _ROS2_AVAILABLE, reason="ROS_DISTRO / ros2 not available")
 def test_dds_discovery_finds_lowstate_topic() -> None:  # pragma: no cover
-    """scan_dds_topics finds /lowstate and maps it to unitree_g1."""
-    from openral_cli.autodetect import infer_robot_from_topics
+    """scan_dds_topics finds /lowstate; an untyped Unitree topology stays ambiguous."""
+    from openral_cli.autodetect import infer_robot_from_topics, unitree_candidates_from_topics
 
     proc = subprocess.Popen(
         [
@@ -66,8 +67,10 @@ def test_dds_discovery_finds_lowstate_topic() -> None:  # pragma: no cover
         names = [t.name for t in topics]
         assert "/lowstate" in names, f"Expected /lowstate in topics; got {names}"
 
+        candidates = unitree_candidates_from_topics(topics)
+        assert {"g1", "h1"} <= set(candidates), f"Expected g1 and h1 candidates; got {candidates}"
         robot = infer_robot_from_topics(topics)
-        assert robot == "unitree_g1", f"Expected unitree_g1; inferred {robot!r}"
+        assert robot is None, f"Ambiguous Unitree topology must not resolve; got {robot!r}"
     finally:
         proc.terminate()
         try:

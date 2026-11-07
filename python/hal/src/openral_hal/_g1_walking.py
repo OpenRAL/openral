@@ -41,12 +41,25 @@ class _InferenceSession(Protocol):
     ) -> list[NDArray[np.float32]]: ...
 
 
-def _download(relative_path: str, expected_sha256: str, destination: Path) -> None:
+def _download(
+    relative_path: str,
+    expected_sha256: str,
+    destination: Path,
+    *,
+    root: str = _RAW_ROOT,
+    label: str = "G1 walking asset",
+) -> None:
+    """Fetch ``root/relative_path`` into ``destination``, fail-closed on SHA-256 mismatch.
+
+    ``root`` must be a URL pinned to a commit (never a branch); ``label`` names
+    the asset family in errors. Caching, atomic replace and verification live in
+    ``_pinned_files.fetch_pinned_file``.
+    """
     fetch_pinned_file(
-        f"{_RAW_ROOT}/{relative_path}",
+        f"{root}/{relative_path}",
         expected_sha256,
         destination,
-        what=f"G1 walking asset {relative_path!r}",
+        what=f"{label} {relative_path!r}",
         user_agent="OpenRAL-G1-walking-assets",
     )
 

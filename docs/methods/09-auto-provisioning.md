@@ -42,7 +42,8 @@
 - `_enrich_can_buses(description, detection) -> RobotDescription` — Replaces the CAN interface names in `hal.parameters.defaults` with the ones actually found on this host, for any robot declaring `hal.parameters.can_bus_bindings` — without it a config could name interfaces that merely look host-derived. A role matching no interface, or more than one, appends a warning and leaves the manifest value alone rather than guessing. Defined in `assemble.py`, not this package.
 - `probe_can(*, warnings=None) -> CanProbeResult` — Wraps `openral_cli.autodetect.enumerate_can_interfaces` + `match_can_interfaces`. Finds what USB-serial enumeration structurally can't: a CAN-attached arm (OpenArm) registers a network device, not a `/dev/tty*` node. Read-only — never opens a socket, so probing a live robot can't perturb it. (can.py L85)
 - `diagnose_can_matches(matches) -> list[str]` — Turn controller states on matched buses into operator-facing lines: `ERROR-PASSIVE` on an up, correctly-configured bus means frames are leaving the adapter unacknowledged, i.e. the motors are unpowered; `BUS-OFF` points at termination / bitrate. (can.py L47)
-- `probe_dds(*, timeout_s=5.0, warnings=None) -> Ros2TopologyResult` — Wraps `scan_dds_topics` + `infer_robot_from_topics` and captures RMW / domain id. (dds.py L19)
+- `probe_dds(*, timeout_s=5.0, warnings=None) -> Ros2TopologyResult` — Wraps `scan_dds_topics` + `infer_robot_from_topics` and captures RMW / domain id; warns with the candidates when Unitree topics are ambiguous (`unitree_ambiguity_warning`). (dds.py L59)
+- `unitree_ambiguity_warning(topics: list[DdsTopic]) -> str | None` — The `dds:` warning naming the candidate Unitree models (`unitree_candidates_from_topics`) and the `--robot` override when the topology cannot be resolved to one model; `None` otherwise. Pure, so `probe_dds`'s ambiguity path is tested without a subprocess. (dds.py L25)
 - const `NVIDIA_TOPS_BY_NAME_KEYWORD: tuple[tuple[str, float], ...]` — Coarse TOPS estimate keyed by a substring that must appear in the GPU `name` field; first-match-wins, most-specific keyword first. (gpu.py L50)
 - const `JETSON_BOARD_TOPS: dict[str, float]` — TOPS per Jetson board (peak INT8, NVIDIA product briefs). AGX Thor is deliberately absent — NVIDIA publishes its headline figure in sparse FP4 TFLOPS with no documented INT8 conversion. (gpu.py L77)
 - const `DTYPES_BY_COMPUTE_CAPABILITY: tuple[tuple[tuple[int, int], tuple[QuantizationDtype, ...]], ...]` — Quantization dtypes a CUDA accelerator can reasonably execute, keyed by `(major, minor)` compute capability; conservative — only adds a dtype with hardware backing. (gpu.py L89)
@@ -67,10 +68,10 @@
 - const `_MAX_ROOT_SEARCH_DEPTH: int` — How many ancestor directories `_discover_workspace_root` walks before giving up. (L45)
 - const `_PACKAGE_WORKSPACE_ROOT: Path | None` — Workspace root discovered once at import time by walking up from this module; `None` when no ancestor has both `robots/` and `python/`. (L57)
 - const `_OPENRAL_ROBOT_TYPE_TO_DIR: dict[str, str]` — Alias table from a `bh_robot_type` slug to its canonical `robots/<name>/` directory (e.g. `"so100"` → `"so100_follower"`); a slug absent from this table is tried verbatim as a directory name. (L72)
-- `canonical_robot_path(bh_robot_type) -> Path | None` — Resolve a robot-type slug (`"so101"`, `"aloha"`, …) to `robots/<name>/robot.yaml`: alias lookup in `_OPENRAL_ROBOT_TYPE_TO_DIR` first, then the slug tried verbatim as a `robots/<slug>/` dir so an operator override can name any committed robot directly. The `robots/` tree is located by walking up to the nearest ancestor holding both `robots/` and `python/`, so resolution doesn't depend on cwd. (L94)
-- `signature_for_realsense(model_id) -> SensorSignature` (L138)
-- `signature_for_v4l2(name) -> SensorSignature` (L143)
-- `signature_for_usb_uvc(vid, pid) -> SensorSignature` (L148)
+- `canonical_robot_path(bh_robot_type) -> Path | None` — Resolve a robot-type slug (`"so101"`, `"aloha"`, …) to `robots/<name>/robot.yaml`: alias lookup in `_OPENRAL_ROBOT_TYPE_TO_DIR` first, then the slug tried verbatim as a `robots/<slug>/` dir so an operator override can name any committed robot directly. The `robots/` tree is located by walking up to the nearest ancestor holding both `robots/` and `python/`, so resolution doesn't depend on cwd. (L95)
+- `signature_for_realsense(model_id) -> SensorSignature` (L139)
+- `signature_for_v4l2(name) -> SensorSignature` (L144)
+- `signature_for_usb_uvc(vid, pid) -> SensorSignature` (L149)
 
 ### `python/detect/src/openral_detect/report.py`
 

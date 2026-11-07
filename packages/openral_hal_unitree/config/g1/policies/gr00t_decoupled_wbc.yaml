@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# S0 whole-body policy: NVIDIA GR00T Decoupled WBC (Walk + Balance) for the Unitree G1.
+# THE DEFAULT real-hardware S0 for the G1 (`robots/g1/robot.yaml`
+# `hal.parameters.defaults.s0_policy`, and real_bringup.launch.py's `policy:=` default).
+#
+# Why this one: the G1 S0 bake-off (MuJoCo, same harness for both) — 0/90 falls under
+# aggressive arm motion + payload vs 3/90 for WBC-AGILE, and 100 % recovery from 400 N
+# standing / 300 N walking pushes vs 12-68 % for AGILE; AGILE tracks velocity better.
+# AGILE stays selectable as `policy:=agile_velocity`.
+#
+# GR00T ships two plain ONNX MLPs, not a LEAPP export, so `tools/build_gr00t_wbc_leapp.py`
+# composes them — with GR00T's runner logic (obs scaling, history, walk/balance switch,
+# action scaling) — into one LEAPP bundle NVIDIA's InferenceController loads unchanged.
+# Numerical parity with GR00T's own runner on the original networks:
+# tests/unit/test_gr00t_wbc_leapp_bundle.py.
+#
+# Upstream: NVlabs/GR00T-WholeBodyControl @ 1e1ec4f5f27e6c3e03048f693bd7c60cce04afda,
+# decoupled_wbc/sim2mujoco/resources/robots/g1/{g1_gear_wbc.yaml,policy/*.onnx}.
+# Weights: NVIDIA Open Model License (fetched, SHA-256-checked, never vendored); code Apache-2.0.
+
+openral_policy:
+  name: gr00t_decoupled_wbc
+  status: ready
+  # No ament data package: the bundle is BUILT on the robot host by
+  # `uv run python tools/build_gr00t_wbc_leapp.py`, which writes it here.
+  data_package: null
+  bundle_dir: ~/.cache/openral/unitree/g1/gr00t_decoupled_wbc
+  leapp_config: gr00t_wbc_g1.yaml
+  velocity_command_topic: /inference_controller/cmd_vel
+  velocity_command_type: geometry_msgs/msg/Twist
+  # The 15-D action: 12 legs + waist yaw/roll/pitch (GR00T owns the whole waist, unlike
+  # AGILE). OpenRAL never commands these on real hardware.
+  s0_joints:
+    - left_hip_pitch_joint
+    - left_hip_roll_joint
+    - left_hip_yaw_joint
+    - left_knee_joint
+    - left_ankle_pitch_joint
+    - left_ankle_roll_joint
+    - right_hip_pitch_joint
+    - right_hip_roll_joint
+    - right_hip_yaw_joint
+    - right_knee_joint
+    - right_ankle_pitch_joint
+    - right_ankle_roll_joint
+    - waist_yaw_joint
+    - waist_roll_joint
+    - waist_pitch_joint
+
+controllers:
+  inference_controller:
+    ros__parameters:
+      # Filled in by the launch from `bundle_dir`/`leapp_config`, or the
+      # `inference_controller_config_path:=` override.
+      config_path: ""
+      decimation: 4  # 200 Hz manager / 4 = 50 Hz — GR00T's control rate (dt 0.005 × 4)
+      command_prefix: "safety_controller"
+      command_suffix: "_raw"
+      topic_input_sources:
+        - command/body/velocity
+      source_to_topic:
+        command/body/velocity: /inference_controller/cmd_vel
+      source_message_type:
+        command/body/velocity: geometry_msgs/msg/Twist
+      # OpenRAL addition, as for AGILE: a stale velocity command blanks the policy output
+      # and SafetyController holds the measured pose.
+      topic_input_timeout_ms: 500.0
+
+  upper_body_forward_joint_command_controller:
+    ros__parameters:
+      # Both 7-DoF arms; the waist belongs to the policy. Must be the complement of
+      # `s0_joints` in robots/g1/robot.yaml (test-enforced).
+      joints:
+        - left_shoulder_pitch_joint
+        - left_shoulder_roll_joint
+        - left_shoulder_yaw_joint
+        - left_elbow_joint
+        - left_wrist_roll_joint
+        - left_wrist_pitch_joint
+        - left_wrist_yaw_joint
+        - right_shoulder_pitch_joint
+        - right_shoulder_roll_joint
+        - right_shoulder_yaw_joint
+        - right_elbow_joint
+        - right_wrist_roll_joint
+        - right_wrist_pitch_joint
+        - right_wrist_yaw_joint
+      # G1 real arm motor gains (Unitree MOTOR_KP [100,100,40,40,20,20,20] /
+      # MOTOR_KD [5,5,2,2,2,2,2] per arm). gain_utils applies patterns in parameter-name
+      # order (a std::map; later match wins): the base file's ".*" (20 / 1) sorts before
+      # every pattern here, and these three are disjoint and cover every arm joint, so
+      # each arm joint ends at exactly the value listed here.
+      kp:
+        ".*_shoulder_(pitch|roll)_joint": 100.0
+        ".*_(shoulder_yaw|elbow)_joint": 40.0
+        ".*_wrist_(roll|pitch|yaw)_joint": 20.0
+      kd:
+        ".*_shoulder_(pitch|roll)_joint": 5.0
+        ".*_(shoulder_yaw|elbow)_joint": 2.0
+        ".*_wrist_(roll|pitch|yaw)_joint": 2.0

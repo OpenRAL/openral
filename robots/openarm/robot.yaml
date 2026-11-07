@@ -619,14 +619,14 @@ sensors:
         qos_depth: 5
       max_age_ms: 200
     # Twin: the bimanual MJCF ships no head camera, so the generic camera rig splices one
-    # in at head_zed's nominal mount. The MJCF world origin IS `openarm_base` (its
-    # `openarm_left_base_link` sits at [0, 0.031, 0], the manifest's
-    # openarm_base->openarm_left_link0), so the mount is expressed from that body;
-    # `target` is one metre along the nominal 1.1823 rad down-pitch.
+    # in at head_zed's measured mount — head_zed's `sim_placement` verbatim (same device,
+    # `shares_mount_with: head_zed`; equality is test-enforced in
+    # tests/unit/test_openarm_head_zed_sim_mount.py).
     sim_placement:
       parent_body: "openarm_left_base_link"
-      pos: [0.0, -0.031, 0.20]
-      target: [0.379, -0.031, -0.725]
+      pos: [0.06597, -0.035548, 0.094539]
+      target: [0.4787, -0.0507, -0.8162]
+      up: [0.9107, 0.0226, 0.4124]
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"

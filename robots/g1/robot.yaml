@@ -1,14 +1,34 @@
 # RobotDescription — Unitree G1 humanoid (physical embodiment, sim baseline).
 #
-# Mirrors `G1_DESCRIPTION` in python/hal/src/openral_hal/g1.py (drift guarded
-# by tests/unit/test_robot_manifests_match_hal_constants.py). Joint limits
-# come from the upstream Unitree G1 URDF / mujoco_menagerie.
+# Mirrors `G1_REAL_DESCRIPTION` in python/hal/src/openral_hal/unitree_real.py
+# (= `G1_DESCRIPTION` in g1.py with `sdk_kind: closed_with_api`; drift guarded
+# by tests/unit/test_robot_manifests_match_hal_constants.py). Position limits
+# come from mujoco_menagerie unitree_g1/g1.xml @ feadf76d. effort_limit is the
+# vendor's per-joint rating from Unitree's g1_29dof.urdf (unitreerobotics/
+# unitree_ros @ 267182b8, robots/g1_description; the menagerie MJCF's
+# actuatorfrcrange is higher for hip_roll/ankle/waist roll+pitch, so the lower
+# vendor value wins). Where the vendor rating exceeds the previous OpenRAL cap
+# (knee 139, ankles 35 N·m) the previous cap (88 / 30) is kept so the safety
+# envelope never loosens without safety-WG review. velocity_limit is deliberately far below the URDF's
+# 20-37 rad/s ratings (conservative safety envelope; see g1.py).
 #
-# `G1MujocoHAL` is the only execution path today; real-HW HAL over
-# `unitree_sdk2` is the M2 milestone (CLAUDE.md §3 dual-system pattern), needs a C++ S0
-# cerebellar controller first. Without S0 balance the digital twin is a
-# contract validator only (falls over under gravity) — tests/sim/test_g1_hal_mujoco.py
-# runs with gravity_enabled=False for that reason.
+# Two execution paths. Real hardware: `UnitreeHgRealHAL` (unitree_real.py) over
+# NVIDIA's Apache-2.0 isaac_ros_robots + isaac_ros_deploy ros2_control stack,
+# brought up by packages/openral_hal_unitree (`hal.real_bringup`). There the S0
+# layer is NVIDIA's: a whole-body ONNX policy (GR00T Decoupled WBC by default,
+# WBC-AGILE selectable) runs as a C++
+# ros2_control controller and owns the legs; OpenRAL commands the upper body and
+# a base velocity only (CLAUDE.md §3 "Python proposes; C++ disposes").
+# Simulation: `G1MujocoHAL`. The digital twin runs with gravity on in three
+# sim-only modes (HAL parameter `s0_controller`): by default (`none`) ADR-0087's
+# kinematic glide re-pins the floating base upright every physics step (no
+# balance — the pin is what keeps it standing); `playground_walk` (legacy
+# `walking_enabled: true`) is ADR-0089's pinned MuJoCo Playground ONNX
+# controller on its policy-tuned MJCF; `gr00t_wbc` is NVIDIA's GR00T Decoupled
+# WBC (NVIDIA Open Model License weights, fetched pinned + SHA-256-verified)
+# balancing and walking the unpinned Menagerie twin while S1 drives the arms
+# (robots/g1/README.md). None is a hardware balance controller. tests/sim/test_g1_hal_mujoco.py zeroes gravity
+# only in its joint-convergence fixtures, to keep those assertions deterministic.
 #
 # 29 actuated joints: legs 6+6 (hip_pitch/roll/yaw, knee, ankle_pitch/roll),
 # waist 3 (yaw, roll, pitch), arms 7+7 (shoulder_pitch/roll/yaw, elbow,
@@ -205,7 +225,7 @@ joints:
     child_link: "waist_roll_link"
     position_limits: [-0.52, 0.52]
     velocity_limit: 6.0
-    effort_limit: 88.0
+    effort_limit: 35.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   # child_link is "torso_link", NOT a "waist_pitch_link" — the G1 has no such
@@ -224,7 +244,7 @@ joints:
     child_link: "torso_link"
     position_limits: [-0.52, 0.52]
     velocity_limit: 6.0
-    effort_limit: 88.0
+    effort_limit: 35.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Left arm (7) ─────────────────────────────────────────────────
@@ -237,7 +257,7 @@ joints:
     child_link: "left_shoulder_pitch_link"
     position_limits: [-3.0892, 2.6704]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_shoulder_roll_joint"
@@ -249,7 +269,7 @@ joints:
     child_link: "left_shoulder_roll_link"
     position_limits: [-1.5882, 2.2515]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_shoulder_yaw_joint"
@@ -261,7 +281,7 @@ joints:
     child_link: "left_shoulder_yaw_link"
     position_limits: [-2.618, 2.618]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_elbow_joint"
@@ -273,7 +293,7 @@ joints:
     child_link: "left_elbow_link"
     position_limits: [-1.0472, 2.0944]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_roll_joint"
@@ -285,7 +305,7 @@ joints:
     child_link: "left_wrist_roll_link"
     position_limits: [-1.97222, 1.97222]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_pitch_joint"
@@ -297,7 +317,7 @@ joints:
     child_link: "left_wrist_pitch_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_yaw_joint"
@@ -309,7 +329,7 @@ joints:
     child_link: "left_wrist_yaw_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Right arm (7) ────────────────────────────────────────────────
@@ -322,7 +342,7 @@ joints:
     child_link: "right_shoulder_pitch_link"
     position_limits: [-3.0892, 2.6704]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_shoulder_roll_joint"
@@ -334,7 +354,7 @@ joints:
     child_link: "right_shoulder_roll_link"
     position_limits: [-2.2515, 1.5882]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_shoulder_yaw_joint"
@@ -346,7 +366,7 @@ joints:
     child_link: "right_shoulder_yaw_link"
     position_limits: [-2.618, 2.618]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_elbow_joint"
@@ -358,7 +378,7 @@ joints:
     child_link: "right_elbow_link"
     position_limits: [-1.0472, 2.0944]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_roll_joint"
@@ -370,7 +390,7 @@ joints:
     child_link: "right_wrist_roll_link"
     position_limits: [-1.97222, 1.97222]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_pitch_joint"
@@ -382,7 +402,7 @@ joints:
     child_link: "right_wrist_pitch_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_yaw_joint"
@@ -394,7 +414,7 @@ joints:
     child_link: "right_wrist_yaw_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
 
@@ -437,8 +457,9 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: true
-  # body_twist rides the ADR-0087 kinematic-glide base (sim-only); a real
-  # gait is the M2 S0 cerebellum.
+  # body_twist rides the ADR-0087 kinematic-glide base by default, or a sim-only
+  # learned S0 (`s0_controller: playground_walk | gr00t_wbc`); a hardware gait
+  # is the M2 S0 cerebellum.
   supported_control_modes:
     - "joint_position"
     - "body_twist"
@@ -466,19 +487,60 @@ safety:
   # disk that stays inside the trained vy range.
   max_base_linear_speed_m_s: 0.5
   max_base_angular_speed_rad_s: 1.0
+  # provisional: former schema defaults, not measured on a G1 — see issue #303.
+  # Required because the manifest declares a real HAL; identical to the values
+  # the sim path already ran with, so the twin's envelope is unchanged.
+  max_ee_accel_m_s2: 1.0
+  contact_force_threshold_n: 30.0
+  self_collision_margin_m: 0.0
+  # Runner ramp to a skill's starting_pose — the runner's former defaults,
+  # declared here so they are visible; provisional until run on a G1.
+  starting_pose_max_joint_speed_rad_s: 0.5
+  starting_pose_tolerance_rad: 0.05
+  # Equal to unitree_hg_ros2_control's own state-freshness bound (FreshStateTracker
+  # kMaximumStateAge = 500 ms, isaac_ros_robots @ 520aa94f) and to G1MujocoHAL's
+  # default. Not yet measured on a G1 — re-derive with
+  # tools/joint_state_staleness_probe.py on the first real bring-up.
+  joint_state_staleness_limit_s: 0.5
 
-# `sdk_kind: open` because the menagerie MJCF + the `mujoco` Python
-# package are both Apache-2.0; the sim HAL needs no closed driver.
-# A future `G1RealHAL` over `unitree_sdk2` (BSD-3, closed-with-api
-# per CLAUDE.md §1.9) will derive its `RobotDescription` from this
-# sim baseline via `make_real_description` and flip the sdk_kind (the
-# `hal` block is shared); that's tracked under the M2 milestone (CLAUDE.md §3 dual-system pattern).
-sdk_kind: "open"
+# `closed_with_api`, mirroring the real HAL's description (the UR / Franka /
+# Sawyer pattern: the shared manifest carries the real posture). The sim path is
+# fully open (menagerie MJCF + `mujoco`, Apache-2.0); the real path runs NVIDIA's
+# Apache-2.0 ros2_control packages, but `unitree_hg_ros2_control` links
+# `unitree_sdk2`, whose core ships only as a prebuilt static library
+# (`lib/<arch>/libunitree_sdk2.a`, BSD-3 wrapper) — CLAUDE.md §1.9.
+sdk_kind: "closed_with_api"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
-# Sim-only → real: null until the M2 C++ S0 cerebellum (CLAUDE.md §3 dual-system pattern).
 hal:
   sim: "openral_hal.g1:G1MujocoHAL"
-  real: null
+  real: "openral_hal.unitree_real:UnitreeHgRealHAL"
+  # NVIDIA ros2_control graph `deploy run` includes beside the real HAL: the
+  # unitree_hg hardware interface + safety / S0 inference / upper-body forward
+  # controllers at 200 Hz, all C++ (§1.5). The S0 policy is chosen there
+  # (`policy:=`, default = `s0_policy` below); the NIC by
+  # OPENRAL_UNITREE_NETWORK_INTERFACE.
+  real_bringup: "openral_hal_unitree:real_bringup.launch.py"
+  parameters:
+    defaults:
+      # Which hg-family model's controller/joint-split defaults the real HAL
+      # uses. build_hal drops it for the sim HAL, which takes no such kwarg.
+      robot_model: "g1"
+      # The S0 whole-body policy whose joint split the real HAL enforces — the
+      # file packages/openral_hal_unitree/config/g1/policies/<this>.yaml, which
+      # real_bringup.launch.py configures the C++ graph from (its `policy:=`
+      # default is the same stem; test-enforced). GR00T Decoupled WBC won the G1
+      # S0 bake-off on robustness; it owns legs + all three waist axes.
+      s0_policy: "gr00t_decoupled_wbc"
+
+# The one place this robot's control rate lives: the runner ticks at it, the
+# recorder stamps it as fps, and the real HAL spaces every upper-body trajectory
+# step by it. 50 Hz = the S0 policy rate on both paths: the sim S0 controllers
+# (ADR-0089 Playground walking, GR00T Decoupled WBC) take one send_action per
+# control period (10 physics steps of the Menagerie 2 ms timestep), the glide
+# integrates BODY_TWIST over the same period, and on real hardware the GR00T /
+# AGILE InferenceController also runs at 50 Hz (controller manager 200 Hz).
+action_spec:
+  control_freq_hz: 50.0
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
 # Source: ``unitree_g1/g1.xml`` in mujoco_menagerie.  The G1 MJCF has a
