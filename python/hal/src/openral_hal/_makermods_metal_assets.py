@@ -284,11 +284,11 @@ def _compile_urdf_to_mjcf_unchecked(
             "angle": "radian",
         },
     )
-    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
-    with tempfile.TemporaryDirectory() as tmp:
-        saved = Path(tmp) / f"{model_name}.xml"
-        mujoco.mj_saveLastXML(str(saved), model)
-        mjcf = ET.parse(saved).getroot()
+    # MjSpec, not ``mj_saveLastXML``: the latter serialises MuJoCo's
+    # process-global "last loaded" XML, which another thread may replace.
+    spec = mujoco.MjSpec.from_string(ET.tostring(root, encoding="unicode"))
+    spec.compile()
+    mjcf = ET.fromstring(spec.to_xml())
 
     mjcf.set("model", model_name)
     compiler = mjcf.find("compiler")
