@@ -12,11 +12,24 @@ tags:
 - nf4
 - 4-bit
 - r1pro
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:r1pro
+- rskill-license:nvidia_open_model
 - gr00t
 - behavior-1k
 datasets:
 - behavior-1k/2026-challenge-demos
 inference: false
+openral:
+  description: GR00T N1.7 finetuned for the 2026 BEHAVIOR-1K turning_on_radio task
+    on the simulated Galaxea R1 Pro. Consumes head plus dual-wrist RGB and 61-D proprioception;
+    emits the official mixed 23-D mobile-bimanual action.
+  model_family: gr00t_b1k
+  min_vram_gb: null
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: int4
 base_model:
 - nvidia/GR00T-N1.7-3B
 base_model_relation: finetune

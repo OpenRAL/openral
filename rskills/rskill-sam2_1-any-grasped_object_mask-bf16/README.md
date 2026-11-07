@@ -10,10 +10,26 @@ tags:
 - mask-generation
 - promptable-segmentation
 - any
+- rskill-kind:segmenter
+- rskill-role:s1
+- embodiment:any
+- rskill-license:apache-2.0
 - sam2
 - attachment-evidence
 - grasped-object
 inference: false
+openral:
+  description: SAM 2.1 Hiera-small packaged as a promptable segmenter for grasped-object
+    masking. Answers a geometric point prompt at the tool center point with a binary
+    mask over the current wrist frame, which the HAL's vision attachment-evidence
+    producer intersects with depth to bound the carried payload. One shot per attach
+    / detach / regrasp event, not per frame. Wraps facebook/sam2.1-hiera-small. Emits
+    no actions and drives no actuators.
+  model_family: null
+  min_vram_gb: 0.45
+  latency_ms: 100.0
+  runtime: pytorch
+  dtype: bf16
 base_model:
 - facebook/sam2.1-hiera-small
 ---

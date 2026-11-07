@@ -7,7 +7,21 @@ tags:
 - OpenRAL
 - rskill
 - any
+- rskill-kind:playbook
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: 'S2 decision procedure: when the goal is underspecified or ambiguous,
+    resolve it from memory/scene or ask the operator a concise question before acting
+    — never guessing on an irreversible action. Composes query_scene, memory_search,
+    recall_object and emit_prompt.'
+  model_family: null
+  min_vram_gb: null
+  latency_ms: 5000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-playbook-clarify_ambiguity

@@ -11,7 +11,23 @@ tags:
 - nf4
 - 4-bit
 - aloha_agilex
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:aloha_agilex
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: 'LingBot-VLA 1.0 (4 B, Qwen2.5-VL-3B + dense Qwen2 flow-matching expert)
+    POST-TRAINED on RoboTwin for the AgileX Cobot Magic dual-arm embodiment. Predicts
+    50-step chunks from three RGB views (head + per-wrist) driving a 14-DoF dual-arm
+    joint command (25-step replay). Runs in a torch-2.8 ZMQ sidecar; NF4 fits the
+    4 B model in 3.65 GB, co-resident with SAPIEN on an 8 GB GPU. Verified: open-loop
+    MAE 0.023 vs GT lift_pot (not mean-collapsed).'
+  model_family: lingbot_vla
+  min_vram_gb: 4.5
+  latency_ms: 1000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 > **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.

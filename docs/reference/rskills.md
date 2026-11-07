@@ -33,6 +33,21 @@ table with a `local` column: `in-tree` (a matching manifest exists under
 same lookup is available programmatically as
 `openral_rskill.search_hub_rskills(...) -> HubRSkillSearchResult`.
 
+**Gated (OpenRAL Pro) rSkills.** `tools/rskill_publisher.py --publish --gated`
+publishes a premium rSkill to a public repo with Hugging Face **manual** access
+approval (commercial or `proprietary` licences only); the Hub's gating is the
+only enforcement. When you lack access, `rskill search` lists the repo from
+its public model card and marks it `Pro (request access)`, and `rskill
+install` / `rSkill.from_pretrained` fail with
+`OpenRAL Pro rSkill '<repo>' is gated — request access at https://huggingface.co/<repo> …`.
+
+**Catalog card contract.** Every published card (private, public or gated)
+carries the reserved tags `rskill-kind:<kind>`, `rskill-role:<role>`,
+`embodiment:<tag>` (one per tag) and `rskill-license:<posture>`, plus an
+`openral:` front-matter mapping with exactly `description`, `min_vram_gb`
+(the active dtype's entry of a per-dtype map, else the smallest; or null),
+`latency_ms` (`latency_budget.per_chunk_ms`), `runtime` and `dtype`.
+
 ## Discovery views (`SKILL.md`)
 
 Each `rskills/<id>/` also carries a generated `SKILL.md` — a standard agent-skill

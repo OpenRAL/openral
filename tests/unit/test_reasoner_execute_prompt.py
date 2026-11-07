@@ -14,7 +14,7 @@ import pytest
 pytest.importorskip("rclpy")
 pytest.importorskip("openral_msgs")
 
-from openral_reasoner_ros.reasoner_node import _resolve_execute_prompt
+from openral_reasoner_ros.reasoner_node import _camera_label, _resolve_execute_prompt
 
 
 def test_keeps_a_nonempty_llm_prompt() -> None:
@@ -34,3 +34,9 @@ def test_whitespace_prompt_falls_back_to_active_task_text() -> None:
 def test_empty_prompt_and_no_active_task_yields_empty() -> None:
     # No task to borrow from → empty (the runner/manifest default still applies).
     assert _resolve_execute_prompt("", None) == ""
+
+
+def test_camera_label_never_names_a_blank_camera_default() -> None:
+    """A re-prompt never teaches the model the literal camera id ``'default'``."""
+    assert _camera_label("") == "the primary camera"
+    assert _camera_label("wrist") == "camera 'wrist'"

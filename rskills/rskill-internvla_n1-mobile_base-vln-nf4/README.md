@@ -11,7 +11,23 @@ tags:
 - nf4
 - 4-bit
 - mobile_base
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:mobile_base
+- rskill-license:cc-by-nc-sa-4.0
 inference: false
+openral:
+  description: 'InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation
+    foundation model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller).
+    Takes a single forward egocentric RGB camera (metric depth derived monocularly
+    via the DA3 sidecar, not a robot sensor) plus a natural-language navigation instruction
+    and drives a mobile base with body-twist velocity commands, emitting STOP on arrival.
+    Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).'
+  model_family: internvla_n1
+  min_vram_gb: 7.0
+  latency_ms: 2500.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-internvla_n1-mobile_base-vln-nf4

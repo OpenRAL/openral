@@ -11,10 +11,27 @@ tags:
 - lerobot
 - vision-language-action
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:apache-2.0
 - vla
 - vlabench
 - manipulation
 inference: false
+openral:
+  description: 'SmolVLA (~0.5 B) finetuned on VLABench (lerobot/vlabench_unified),
+    lerobot-native, runs in-process on lerobot 0.6.0 (bf16, fits 8 GB). VALIDATED
+    INTEGRATION BASELINE, not a passing policy: 0/3 on six diverse primitives (identical
+    to lerobot''s own lerobot-eval reference — the 0% is the policy, not the wiring).
+    The only >50% VLABench policy (pi0-fast-ft 51.2% primitive avg) is openpi/JAX
+    needing conversion. See README + project memory. Use this to exercise the VLABench
+    backend.'
+  model_family: smolvla
+  min_vram_gb: 2.0
+  latency_ms: 100.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-smolvla-franka_panda-vlabench-bf16

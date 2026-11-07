@@ -12,6 +12,10 @@ tags:
 - nf4
 - 4-bit
 - any
+- rskill-kind:detector
+- rskill-role:s1
+- embodiment:any
+- rskill-license:nvidia_non_commercial
 - visual-grounding
 - locateanything
 - nvidia
@@ -20,6 +24,15 @@ base_model:
 - nvidia/LocateAnything-3B
 base_model_relation: quantized
 inference: false
+openral:
+  description: NVIDIA LocateAnything-3B open-vocabulary grounding detector packaged
+    as an NF4 bitsandbytes PyTorch rSkill. It localizes queried objects, text, GUI
+    elements, and points from RGB images without commanding actuators.
+  model_family: null
+  min_vram_gb: 5.0
+  latency_ms: 1000.0
+  runtime: pytorch
+  dtype: int4
 license_link: https://huggingface.co/nvidia/LocateAnything-3B/blob/main/LICENSE
 ---
 

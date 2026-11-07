@@ -35,6 +35,8 @@ TARGETS=(
     tests/integration/test_reasoner_palette_preserves_detector_coverage.py
     # Configured lifecycle peers reach the palette without a skill seed.
     tests/integration/test_reasoner_lifecycle_peers_without_seed.py
+    # A blank query_task_progress task is the active mission task; stale replies drop.
+    tests/integration/test_reasoner_task_progress_live.py
     tests/integration/test_critic_producer_node.py
     # The scene-VLM node ends the sidecar its warm-up spawned (fake sidecar, no GPU).
     tests/integration/test_scene_vlm_node_teardown_live.py

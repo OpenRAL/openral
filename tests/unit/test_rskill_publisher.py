@@ -562,3 +562,156 @@ def test_enforce_repo_name_accepts_canonical_playbook(
     )
     out = publisher._enforce_repo_name(tmp_path, manifest, fix_name=False)
     assert out.name == "OpenRAL/rskill-playbook-find_object"
+
+
+# ── --gated (premium rSkills behind HF manual access approval) ──────────────
+
+
+@pytest.mark.parametrize(
+    "posture", ["apache-2.0", "mit", "bsd", "nvidia_open_model", "proprietary"]
+)
+def test_gated_visibility_error_allows_commercial_and_proprietary(
+    publisher: types.ModuleType, tmp_path: Path, posture: str
+) -> None:
+    text = _VALID_MANIFEST_YAML.replace("license: apache-2.0", f"license: {posture}")
+    manifest = publisher._validate_manifest(_write_skill_dir(tmp_path, manifest_text=text))
+    assert publisher.gated_visibility_error(manifest, gated=True) is None
+
+
+@pytest.mark.parametrize(
+    "posture",
+    [
+        "permissive_research",
+        "nvidia_non_commercial",
+        "rlwrld_non_commercial",
+        "cc-by-nc-sa-4.0",
+        "unknown",
+    ],
+)
+def test_gated_visibility_error_refuses_research_and_non_commercial(
+    publisher: types.ModuleType, tmp_path: Path, posture: str
+) -> None:
+    text = _VALID_MANIFEST_YAML.replace("license: apache-2.0", f"license: {posture}")
+    manifest = publisher._validate_manifest(_write_skill_dir(tmp_path, manifest_text=text))
+    err = publisher.gated_visibility_error(manifest, gated=True)
+    assert err is not None and "--gated refused" in err and posture in err
+    assert publisher.gated_visibility_error(manifest, gated=False) is None
+
+
+def test_main_gated_on_refused_posture_exits_before_network(
+    publisher: types.ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = _VALID_MANIFEST_YAML.replace("license: apache-2.0", "license: permissive_research")
+    skill_dir = _write_skill_dir(tmp_path, manifest_text=text)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--publish", "--gated"])
+    with (
+        patch.object(publisher, "_publish") as publish,
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        publisher.main()
+    assert excinfo.value.code == 1
+    publish.assert_not_called()
+
+
+def test_gated_and_public_are_mutually_exclusive(
+    publisher: types.ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill_dir = _write_skill_dir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--public", "--gated"])
+    with pytest.raises(SystemExit) as excinfo:
+        publisher.main()
+    assert excinfo.value.code == 2  # argparse usage error
+
+
+def _sibling(name: str) -> types.SimpleNamespace:
+    return types.SimpleNamespace(rfilename=name)
+
+
+def _fake_api(infos: list[types.SimpleNamespace]) -> MagicMock:
+    """A recording fake HfApi whose successive ``model_info`` calls return ``infos``."""
+    fake_api = MagicMock()
+    fake_api.create_repo.return_value = "https://huggingface.co/test/rskill-gated"
+    fake_api.model_info.side_effect = infos
+    return fake_api
+
+
+def _gated_publish(publisher: types.ModuleType, tmp_path: Path, fake_api: MagicMock) -> None:
+    """Run ``_publish(gated=True)`` against ``fake_api`` (the HF network boundary)."""
+    skill_dir = _write_skill_dir(tmp_path)
+    manifest = publisher._validate_manifest(skill_dir)
+    with patch.dict(
+        "sys.modules",
+        {"huggingface_hub": types.SimpleNamespace(HfApi=lambda token=None: fake_api)},
+    ):
+        publisher._publish(skill_dir, manifest, token="fake-token", gated=True)
+
+
+def test_publish_gated_sets_manual_gate_before_any_upload(
+    publisher: types.ModuleType, tmp_path: Path
+) -> None:
+    fresh = types.SimpleNamespace(private=False, gated=False, siblings=[_sibling(".gitattributes")])
+    gated = types.SimpleNamespace(private=False, gated="manual", siblings=[])
+    api = _fake_api([fresh, gated])
+    _gated_publish(publisher, tmp_path, api)
+
+    assert api.create_repo.call_args.kwargs["private"] is False
+    api.update_repo_settings.assert_called_once_with(
+        _FIXTURE_NAME, gated="manual", repo_type="model"
+    )
+    order = [c[0] for c in api.method_calls]
+    assert order[:4] == ["create_repo", "model_info", "update_repo_settings", "model_info"]
+    assert order.index("update_repo_settings") < order.index("upload_folder")
+    assert order.index("model_info", 2) < order.index("upload_folder")  # verified before upload
+
+
+def test_publish_gated_republish_to_manual_repo_skips_settings_call(
+    publisher: types.ModuleType, tmp_path: Path
+) -> None:
+    info = types.SimpleNamespace(
+        private=False, gated="manual", siblings=[_sibling("rskill.yaml"), _sibling("README.md")]
+    )
+    api = _fake_api([info])
+    _gated_publish(publisher, tmp_path, api)
+    api.update_repo_settings.assert_not_called()
+    api.upload_folder.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("infos", "settings_called"),
+    [
+        # verification: the Hub did not apply manual gating
+        (
+            [
+                types.SimpleNamespace(private=False, gated=False, siblings=[]),
+                types.SimpleNamespace(private=False, gated="auto", siblings=[]),
+            ],
+            True,
+        ),
+        # an existing PRIVATE repo is refused, never changed
+        ([types.SimpleNamespace(private=True, gated=False, siblings=[])], False),
+        # an existing ungated repo that already holds files is refused, never changed
+        (
+            [
+                types.SimpleNamespace(
+                    private=False, gated=False, siblings=[_sibling("model.safetensors")]
+                )
+            ],
+            False,
+        ),
+    ],
+    ids=["gate-not-applied", "existing-private", "existing-ungated-with-files"],
+)
+def test_publish_gated_aborts_without_uploading(
+    publisher: types.ModuleType,
+    tmp_path: Path,
+    infos: list[types.SimpleNamespace],
+    settings_called: bool,
+) -> None:
+    api = _fake_api(infos)
+    with pytest.raises(SystemExit) as excinfo:
+        _gated_publish(publisher, tmp_path, api)
+    assert excinfo.value.code == 1
+    assert api.update_repo_settings.called is settings_called
+    api.upload_folder.assert_not_called()
+    api.upload_file.assert_not_called()

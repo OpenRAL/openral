@@ -11,6 +11,10 @@ tags:
 - nf4
 - 4-bit
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:apache-2.0
 - transformers
 - vla
 - libero
@@ -19,6 +23,18 @@ base_model:
 - allenai/MolmoAct2-LIBERO
 base_model_relation: quantized
 inference: false
+openral:
+  description: 'MolmoAct2 (Ai2) finetuned on the full LIBERO training mixture, NF4-quantized
+    via tools/quantize_rskill.py and re-hosted so 8 GB GPUs can run the rollout without
+    OOM. MolmoAct2 grafts a flow-matching continuous-action expert onto the Molmo2-ER
+    embodied-reasoning VLM via per-layer KV-cache conditioning. Reported LIBERO success:
+    97.2% (98.1% for the -Think depth-reasoning variant). Weights are Apache-2.0 —
+    commercial use permitted. See eval/libero.json.'
+  model_family: molmoact2
+  min_vram_gb: 4.0
+  latency_ms: 1000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-molmoact2-franka_panda-libero_spatial-nf4

@@ -7,7 +7,21 @@ tags:
 - OpenRAL
 - rskill
 - any
+- rskill-kind:playbook
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: 'S2 decision procedure: move the robot into a manipulation skill''s
+    declared pre-grasp / starting pose (and verify it) before the manipulation policy
+    runs, reducing grasp failures from bad initial poses. Composes resolve_place,
+    execute_rskill, query_scene and memory_write over a collision-aware approach skill.'
+  model_family: null
+  min_vram_gb: null
+  latency_ms: 5000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-playbook-stage_for_manipulation

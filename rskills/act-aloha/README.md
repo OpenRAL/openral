@@ -11,9 +11,23 @@ tags:
 - lerobot
 - vision-language-action
 - aloha
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:aloha
+- rskill-license:mit
 - bimanual
 - manipulation
 inference: false
+openral:
+  description: Action Chunking Transformer (~52M-param encoder-decoder) finetuned
+    on the ALOHA bimanual cube-transfer demonstration set. Action chunks of length
+    100. The mean/std norm buffers live inside model.safetensors; modern lerobot ACTPolicy
+    drops them on load and the adapter re-applies them — see tests/sim/test_aloha_bimanual_act_aloha.py.
+  model_family: act
+  min_vram_gb: null
+  latency_ms: 25.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-act-aloha-aloha_transfer_cube-fp32
