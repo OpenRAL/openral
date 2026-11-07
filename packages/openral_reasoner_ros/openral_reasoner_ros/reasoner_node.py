@@ -4046,11 +4046,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         future = client.call_async(req)
         # The task instance asked about (``None``: no active mission task). A reply that
         # lands after a new goal or a queue advance describes a task that is no longer
-        # active and is dropped, as ``_on_mission_verify_response`` does.
-        asked = (active.task_id, active.text) if active is not None else None
+        # active and is dropped, as ``_on_mission_verify_response`` does. The mission
+        # object is part of the identity: a re-sent identical goal builds a new mission
+        # whose first task has the same ``t1`` id and text.
+        asked_task = (active.task_id, active.text) if active is not None else None
         future.add_done_callback(
             lambda fut: self._on_query_task_progress_response(
-                call, fut, asked=asked, traceparent=traceparent
+                call, fut, asked=(mission, asked_task), traceparent=traceparent
             ),
         )
         self.get_logger().info(
@@ -4062,7 +4064,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         call: QueryTaskProgressTool,
         future: Any,
         *,
-        asked: tuple[str, str] | None,
+        asked: tuple[MissionState | None, tuple[str, str] | None],
         traceparent: str | None,
     ) -> None:
         """Render a ``QueryTaskProgress`` response as a re-prompt (cascade).
@@ -4078,7 +4080,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         mission = self._renderer.mission
         active = mission.active() if mission is not None else None
-        if asked != ((active.task_id, active.text) if active is not None else None):
+        asked_mission, asked_task = asked
+        if mission is not asked_mission or asked_task != (
+            (active.task_id, active.text) if active is not None else None
+        ):
             self.get_logger().info(
                 f"dispatch: query_task_progress for {call.task!r} answered after the active "
                 "task changed; dropped as stale",
@@ -4182,10 +4187,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # Carry BOTH the task id and text into the response guard: two tasks
         # frequently share text after a decompose ("pick up the milk…" twice),
         # so a text-only staleness check could apply an old verdict to the
-        # wrong task instance.
+        # wrong task instance. The mission object too: a re-sent identical goal builds a
+        # new mission whose first task has the same ``t1`` id and text.
         future.add_done_callback(
             lambda fut: self._on_mission_verify_response(
-                active.task_id, active.text, fut, traceparent=traceparent
+                active.task_id, active.text, fut, mission=mission, traceparent=traceparent
             ),
         )
         self.get_logger().info(
@@ -4194,7 +4200,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         )
 
     def _on_mission_verify_response(
-        self, task_id: str, task_text: str, future: Any, *, traceparent: str | None
+        self,
+        task_id: str,
+        task_text: str,
+        future: Any,
+        *,
+        mission: MissionState,
+        traceparent: str | None,
     ) -> None:
         """Apply the reward gate (§2): complete / abandon / retry.
 
@@ -4209,12 +4221,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         except Exception as exc:  # best-effort; a failed verify must not kill the loop
             self.get_logger().warning(f"mission verify: query failed: {exc}")
             return
-        mission = self._renderer.mission
-        if mission is None:
-            return
+        if self._renderer.mission is not mission:
+            return  # a new goal replaced the mission under us; stale verdict
         active = mission.active()
         if active is None or active.task_id != task_id or active.text != task_text:
-            return  # the mission advanced or changed under us; stale verdict
+            return  # the mission advanced under us; stale verdict
         # VLM-adjudicated completion §1/§5 — band edges from the active reward model's calibration
         # (or the system fallback when none is wired).
         success_threshold, check_floor = self._band_edges()
@@ -4259,6 +4270,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self._adjudicate_completion_async(
                 active.text,
                 lambda verdict_vlm: self._on_vlm_completion_verdict(
+                    mission=mission,
                     task_id=task_id,
                     task_text=task_text,
                     verdict=verdict,
@@ -4284,6 +4296,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def _on_vlm_completion_verdict(
         self,
         *,
+        mission: MissionState,
         task_id: str,
         task_text: str,
         verdict: str,
@@ -4301,12 +4314,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         response itself), then applies the pre-async semantics: True →
         complete; False/None → degrade to the attempts ladder.
         """
-        mission = self._renderer.mission
-        if mission is None:
-            return
+        if self._renderer.mission is not mission:
+            return  # a new goal replaced the mission under us; stale verdict
         active = mission.active()
         if active is None or active.task_id != task_id or active.text != task_text:
-            return  # the mission advanced or changed under us; stale verdict
+            return  # the mission advanced under us; stale verdict
         if verdict_vlm is True:
             self.get_logger().info(
                 "mission verify: VLM confirmed complete "
