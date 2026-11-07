@@ -92,17 +92,29 @@ print(hal.read_state().name)
 hal.disconnect()
 ```
 
-## Safety: no self-collision checking yet
+## Safety: self- and inter-arm collision model
 
-> **Hazard.** This manifest declares no `collision_geometry`, so the safety kernel's
-> envelope loader runs with self-collision checking **disabled** (only the workspace
-> box and joint/velocity limits apply). On the station the two arms are 0.78 m apart with 0.6125 m reach each, so their workspaces overlap and the kernel will **not** refuse an arm-to-arm collision. The repo's collision fitter cannot lower
-> this arm yet: its MJCF path reads the `gripper` fraction as metres when checking
-> the finger `mimic_joints` rows, and its URDF path leaves the `metal_description`
-> `package://` meshes unresolved; it also emits no finger geometry. Closing this
-> needs a `packages/openral_safety` lowering change (Safety-WG review). Until then,
-> do not run this manifest on real hardware behind the kernel's self-collision
-> guarantee.
+`collision_geometry` / `allowed_collision_pairs` are generated from the derived
+`makermods:metal_station` MJCF the same way as the single arm's (see
+[`robots/makermods_metal/README.md`](../makermods_metal/README.md#safety-self-collision-model)):
+every `left_` / `right_` link is a box plus its exact hull, `*_link1` in two slabs,
+both fingers per arm as mimic links. Regenerate with
+
+```bash
+openral collision lower --robot robots/makermods_metal_station/robot.yaml --write
+```
+
+The exempt pairs are each arm's own adjacent pairs and its two fingers; **no pair
+across the arms is exempt**, so the kernel refuses an arm-to-arm contact (pinned in
+`tests/unit/test_collision_geometry_zero_pose.py`: both arms yawed inward and
+stretched to the middle of the plate trips `left_gripper_base` against
+`right_link7`, where 1 217 finger mesh vertices are inside the other gripper). The
+station start pose does not trip (`tests/unit/test_collision_makermods_metal_poses.py`).
+
+**Still owed**: the arm spacing is a footage estimate (see
+[Estimated geometry](#estimated-geometry)), so the inter-arm distances are only as
+good as `STATION_ARM_SPACING_M`; re-lower after measuring the station. Safety-WG
+review, a hazard-log entry and a C++ kernel run are owed as for the single arm.
 
 ## Real hardware
 
