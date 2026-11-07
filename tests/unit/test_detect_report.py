@@ -70,8 +70,8 @@ class TestDetectionReportRoundTrip:
                 ],
             ),
             ros2=Ros2TopologyResult(
-                topics=[DdsTopicRecord(name="/lowstate", type_name="unitree_go/msg/LowState")],
-                inferred_robot_type="unitree_g1",
+                topics=[DdsTopicRecord(name="/lowstate", type_name="unitree_hg/msg/LowState")],
+                inferred_robot_type="g1",
             ),
             warnings=["pyrealsense2 not installed"],
         )

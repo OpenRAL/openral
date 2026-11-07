@@ -23,6 +23,7 @@ from openral_cli.autodetect import (
     infer_robot_from_topics,
     match_known_devices,
     scan_dds_topics,
+    unitree_candidates_from_topics,
 )
 
 # ── VID/PID table ─────────────────────────────────────────────────────────────
@@ -128,13 +129,31 @@ class TestInferRobotFromTopics:
     def test_empty_input(self) -> None:
         assert infer_robot_from_topics([]) is None
 
-    def test_unitree_lowstate(self) -> None:
-        topics = [DdsTopic("/lowstate", "unitree_go/msg/LowState")]
-        assert infer_robot_from_topics(topics) == "unitree_g1"
+    def test_unitree_hg_family_is_ambiguous(self) -> None:
+        # G1 / H1-2 / H2 all publish unitree_hg/LowState on /lowstate — the
+        # topic list cannot pick one, so inference must not guess.
+        topics = [DdsTopic("/lowstate", "unitree_hg/msg/LowState")]
+        assert infer_robot_from_topics(topics) is None
 
-    def test_unitree_lowcmd(self) -> None:
+    def test_unitree_go_family_is_ambiguous(self) -> None:
+        # The original H1, Go2 and B2 all use unitree_go/LowCmd.
         topics = [DdsTopic("/lowcmd", "unitree_go/msg/LowCmd")]
-        assert infer_robot_from_topics(topics) == "unitree_g1"
+        assert infer_robot_from_topics(topics) is None
+
+    def test_unitree_singleton_family_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Extension point: a family with exactly one model resolves to it.
+        import openral_cli.autodetect as ad
+
+        monkeypatch.setitem(ad._UNITREE_FAMILY_CANDIDATES, "unitree_hg", ("g1",))
+        topics = [DdsTopic("/lowstate", "unitree_hg/msg/LowState")]
+        assert infer_robot_from_topics(topics) == "g1"
+
+    def test_ambiguous_unitree_does_not_mask_other_robot(self) -> None:
+        topics = [
+            DdsTopic("/lowstate", "unitree_hg/msg/LowState"),
+            DdsTopic("/so101/joint_state", "sensor_msgs/msg/JointState"),
+        ]
+        assert infer_robot_from_topics(topics) == "so101"
 
     def test_aloha_topic(self) -> None:
         topics = [DdsTopic("/follower_arms_position_goal", "std_msgs/msg/Float64MultiArray")]
@@ -163,16 +182,60 @@ class TestInferRobotFromTopics:
             key=lambda t: t.name,
         )
         # /follower_arms_position_goal < /lowstate alphabetically → aloha first
-        result = infer_robot_from_topics(topics)
-        assert result in ("unitree_g1", "aloha")  # depends on order, but must be one of these
+        assert infer_robot_from_topics(topics) == "aloha"
 
     def test_topic_map_non_empty(self) -> None:
         assert len(_TOPIC_ROBOT_MAP) > 0
 
     def test_case_insensitive_match(self) -> None:
         """Topic names may be uppercase on some DDS implementations."""
-        topics = [DdsTopic("/LowState", "unitree_go/msg/LowState")]
-        assert infer_robot_from_topics(topics) == "unitree_g1"
+        topics = [DdsTopic("/LowState", "unitree_hg/msg/LowState")]
+        assert unitree_candidates_from_topics(topics) == ("g1", "h1_2", "h2")
+
+
+# ── unitree_candidates_from_topics ────────────────────────────────────────────
+
+
+class TestUnitreeCandidates:
+    def test_no_unitree_topic(self) -> None:
+        assert unitree_candidates_from_topics([DdsTopic("/tf", "tf2_msgs/msg/TFMessage")]) == ()
+
+    def test_hg_family(self) -> None:
+        # unitree_sdk2 example/g1, example/h1 (h1_2_*), example/h2 use idl/hg.
+        topics = [DdsTopic("/lowstate", "unitree_hg/msg/LowState")]
+        assert unitree_candidates_from_topics(topics) == ("g1", "h1_2", "h2")
+
+    def test_go_family(self) -> None:
+        # unitree_sdk2 example/h1 (humanoid.hpp), example/go2, example/b2 use idl/go2.
+        topics = [DdsTopic("/lowstate", "unitree_go/msg/LowState")]
+        assert unitree_candidates_from_topics(topics) == ("h1", "go2", "b2")
+
+    def test_untyped_topic_keeps_every_model(self) -> None:
+        topics = [DdsTopic("/lowstate", "std_msgs/msg/String")]
+        assert set(unitree_candidates_from_topics(topics)) == {
+            "g1",
+            "h1_2",
+            "h2",
+            "h1",
+            "go2",
+            "b2",
+        }
+
+    def test_sportmodestate_alone_does_not_pick_family(self) -> None:
+        # SportModeState lives only in unitree_go, whichever family publishes it.
+        topics = [DdsTopic("/sportmodestate", "unitree_go/msg/SportModeState")]
+        assert len(unitree_candidates_from_topics(topics)) == 6
+
+    def test_candidates_with_manifest_resolve_to_robot_yaml(self) -> None:
+        from openral_detect.registry import canonical_robot_path
+
+        for model in ("g1", "h1"):
+            path = canonical_robot_path(model)
+            assert path is not None and path.parent.name == model
+
+    def test_dfu_bootloader_not_mapped_to_a_robot(self) -> None:
+        # 0483:df11 is the generic STM32 ROM DFU bootloader, not a Unitree id.
+        assert (0x0483, 0xDF11) not in _VID_PID_TABLE
 
 
 # ── scan_dds_topics ───────────────────────────────────────────────────────────
@@ -316,3 +379,23 @@ class TestEnumerateUsbDevices:
         for d in devs:
             assert d.vid == 0
             assert d.pid == 0
+
+
+# ── probe_dds: Unitree ambiguity is reported, not guessed ─────────────────────
+
+
+class TestProbeDdsUnitreeAmbiguity:
+    def test_ambiguous_unitree_topology_warns_with_candidates(self) -> None:
+        from openral_detect.probes.dds import probe_dds
+
+        fake_output = "/lowcmd [unitree_hg/msg/LowCmd]\n/lowstate [unitree_hg/msg/LowState]\n"
+        warnings: list[str] = []
+        with (
+            patch("shutil.which", return_value="/usr/bin/ros2"),
+            patch("subprocess.check_output", return_value=fake_output),
+        ):
+            result = probe_dds(timeout_s=0.1, warnings=warnings)
+        assert result.inferred_robot_type is None
+        (msg,) = [w for w in warnings if "Unitree" in w]
+        assert "g1, h1_2, h2" in msg
+        assert "--robot" in msg

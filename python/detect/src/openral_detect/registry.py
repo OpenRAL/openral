@@ -83,9 +83,10 @@ _OPENRAL_ROBOT_TYPE_TO_DIR: dict[str, str] = {
     # and its `RobotDescription.name` is `openarm_v2`. Alias the versioned name
     # so `openral detect --robot openarm_v2` resolves the same manifest.
     "openarm_v2": "openarm",
+    # Unitree models need no alias: DDS inference reports the model slug
+    # (`g1`, `h1`, …) which is already the `robots/<id>/` directory name.
     # Future entries land here as new HAL adapters publish a canonical
     # `robots/<name>/robot.yaml`:
-    # "unitree_g1": "unitree_g1",
     # "lekiwi": "lekiwi",
     # "ros2_control": "",  # generic — no canonical yaml
 }
