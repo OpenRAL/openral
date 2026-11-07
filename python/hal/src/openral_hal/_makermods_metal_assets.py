@@ -33,6 +33,7 @@ the real station and update the constant (and the manifest) together.
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import tempfile
 import xml.etree.ElementTree as ET
@@ -68,9 +69,10 @@ _URDF_REL: str = "urdf/metal_with_gripper.urdf"
 #: measured on a real station.
 STATION_ARM_SPACING_M: float = 0.78
 
-# Bump when the derived URDF/MJCF content changes, so a stale cache is not
-# reused (the pinned SHA alone does not cover OpenRAL's post-processing).
-_DERIVE_VERSION: str = "4"
+# The derived cache is keyed by this module's own source (every derive
+# constant and step lives here), so any edit invalidates a stale cache without
+# a hand-bumped version; the pinned SHA in the dir name covers the upstream.
+_DERIVE_KEY: str = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 
 _ARM_JOINTS: tuple[str, ...] = ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")
 # Upstream, joint8 carries ``<mimic joint="joint7" multiplier="-1">``: joint7
@@ -109,7 +111,7 @@ def _cache_root() -> Path:
 
 
 def _derived_dir() -> Path:
-    return _cache_root() / f"derived-{METAL_PINNED_SHA[:12]}-v{_DERIVE_VERSION}"
+    return _cache_root() / f"derived-{METAL_PINNED_SHA[:12]}-{_DERIVE_KEY}"
 
 
 def fetch_metal_clone() -> Path:
