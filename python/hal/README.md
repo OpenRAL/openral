@@ -49,6 +49,10 @@ attribute satisfies it, without inheriting from anything.
 | `unitree_real.py` | `UnitreeHgRealHAL` + `G1_REAL_DESCRIPTION` — real Unitree hg humanoids (G1 now; H2 shares the stack) over NVIDIA's Apache-2.0 Isaac ROS packages (`isaac_ros_robots` `unitree_hg_ros2_control` + `isaac_ros_deploy` controllers; bringup `packages/openral_hal_unitree`). NVIDIA owns S0: the whole-body ONNX policy (GR00T Decoupled WBC by default, WBC-AGILE selectable) is a C++ `InferenceController` that owns the legs. This HAL commands only the upper body (`JointCommandTrajectory`) and a base twist heartbeat (`geometry_msgs/Twist`); leg/waist targets the policy owns raise `ROSCapabilityMismatch`; `/openral/estop` swaps the S0 chain for `freeze_controller` in one `switch_controller` request (`ControllerSwapSeam`). |
 | `unitree_s0_policy.py` | `S0PolicyFile` / `load_s0_policy` / `s0_policy_path` / `resolve_leapp_config` / `policy_parameters` — one typed reader of `packages/openral_hal_unitree/config/<model>/policies/<policy>.yaml`, shared by `UnitreeHgRealHAL` (joint split) and the bringup launch (controller parameters). |
 | `h1.py` | `H1MujocoHAL` + `H1_DESCRIPTION` — Unitree H1 humanoid (19-DoF, predecessor to the G1) MuJoCo digital twin on the `mujoco_menagerie/unitree_h1` MJCF. First HAL whose MJCF uses torque rather than position actuators: a software PD position loop runs every `mj_step` via the `MujocoArmHAL._per_step_update` hook, so the public action contract stays "position targets in radians". |
+| `h2.py` | `H2MujocoHAL` + `H2_DESCRIPTION` — Unitree H2 humanoid (31-DoF in `unitree_sdk2` motor order: 6-DoF legs, 3-DoF waist, 7-DoF arms, 2-DoF head) MuJoCo digital twin on Unitree's official `unitree_mujoco` MJCF (asset ref `unitree:h2`). Pinned-upright base (ADR-0087 glide, `BODY_TWIST`) + a software PD over the torque `motor` actuators on every `mj_step` **and** `idle_step`; explicit `sim.joint_qpos_addr` / `joint_qvel_addr` because the MJCF tree puts the head between waist and arms. Sim-only (`hal.real: null`). |
+| `_unitree_h2_assets.py` | `ensure_h2_urdf` / `ensure_h2_mjcf` — fetch the official H2 URDF (`unitree_ros`) and MJCF (`unitree_mujoco`) with their meshes at pinned commits, per-file SHA-256, fail-closed `ROSConfigError`; backs the `unitree:h2` asset ref. |
+| `_floating_base.py` | Shared floating-base helpers for the humanoid twins: ADR-0087 kinematic-glide pin (`capture_base_pin` / `integrate_planar_twist` / `write_base_pin` / `validate_planar_body_twist`) and `apply_software_pd` for torque (`motor`) actuators. |
+| `_pinned_files.py` | `fetch_pinned_file` / `sha256_file` — single-file pinned download with SHA-256 verification and atomic install (shared by `_g1_walking` and `_unitree_h2_assets`). |
 | `flexiv_rizon4.py` | `Rizon4MujocoHAL` + `RIZON4_DESCRIPTION` — Flexiv Rizon 4 cobot (7-DoF, whole-body force sensitivity) MuJoCo digital twin on the `mujoco_menagerie/flexiv_rizon4` MJCF. Drop-in `MujocoArmHAL` subclass — position actuators, no gripper, no floating base. Real-HW path wrapping `flexivrobotics/flexiv_rdk` is a planned follow-up. |
 | `openarm.py` | `OpenArmMujocoHAL` + `OPENARM_DESCRIPTION` — Enactic OpenArm v2 bimanual humanoid arm (16-DoF: 7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF. Thin `MujocoArmHAL` subclass (wiring in `OPENARM_DESCRIPTION.sim`) — v2 ships native `<position>` actuators with per-class PD gains baked into the MJCF, so the HAL just writes target → ctrl and steps. v2 MJCF fetched lazily via `openral_hal._openarm_v2_assets` (the `robot_descriptions` package still pins to a pre-v2 commit; helper drops out when upstream bumps). |
 | `openarm_real.py` | `OpenArmRealHAL` + `OPENARM_REAL_DESCRIPTION` — real Enactic OpenArm v2 over `openarm_bringup`'s `ros2_control` stack, sharing `OPENARM_DESCRIPTION` with the twin. Not Python-side CAN: the OpenArm loop runs at 750 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++, so the chain is `Action` → four command topics → `controller_manager` → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors. Fans one 16-DoF action across the four controllers the bimanual bringup spawns (per-side arm + gripper), reads `/joint_states` by joint name, and refuses to `connect()` over a CAN link that is down. |
@@ -83,6 +87,7 @@ in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
 | Unitree G1 (MuJoCo digital twin) | `G1MujocoHAL` | ✓ sim (`tests/sim/test_g1_hal_mujoco.py`) | 29-DoF humanoid: stock Menagerie contract twin + ADR-0087 glide, or explicit ADR-0089 gravity-on walking with the pinned MuJoCo Playground ONNX controller. |
 | Unitree G1 (real-HW) | `UnitreeHgRealHAL` | ✓ unit + GR00T-bundle parity · ros2_control live test (skips without the NVIDIA stack) · **never run on a G1** | NVIDIA Isaac ROS `ros2_control` stack; S0 = GR00T Decoupled WBC (default, built by `tools/build_gr00t_wbc_leapp.py`) or WBC-AGILE in NVIDIA's C++ `InferenceController` at 200 Hz / 50 Hz policy. Upper body + base twist only; freeze-swap e-stop (`RESTART_REQUIRED`). `sdk_kind: closed_with_api` (`unitree_sdk2` prebuilt core). See `packages/openral_hal_unitree/README.md`. |
 | Unitree H1 (MuJoCo digital twin) | `H1MujocoHAL` | ✓ sim (`tests/sim/test_h1_hal_mujoco.py`) | 19-DoF humanoid (G1's predecessor) on the `mujoco_menagerie/unitree_h1` MJCF. Same contract-validator scope as G1; falls without gravity disabled. Software PD position loop wraps the MJCF's torque actuators (mirrors `unitree_sdk2` on hardware). Real-HW H1 also planned under M2. |
+| Unitree H2 (MuJoCo digital twin) | `H2MujocoHAL` | ✓ sim (`tests/sim/test_h2_hal_mujoco.py`) | 31-DoF humanoid in `unitree_sdk2` motor order on Unitree's official MJCF (fetched pinned, `unitree:h2`). Gravity-on twin with the base pinned upright (ADR-0087 glide for `BODY_TWIST`); software PD (gains from `unitree_rl_mjlab` H2 + `unitree_sdk2` head) over torque motors. No public H2 walking checkpoint; real-HW HAL + S0 wiring are a later phase (`hal.real: null`). |
 | Flexiv Rizon 4 (MuJoCo digital twin) | `Rizon4MujocoHAL` | ✓ sim (`tests/sim/test_rizon4_hal_mujoco.py`) | 7-DoF cobot with whole-body force sensitivity (0.1 N) on the `mujoco_menagerie/flexiv_rizon4` MJCF. Drop-in `MujocoArmHAL` subclass — position actuators, no gripper. No real-HW adapter (`hal.real: null`); a `flexivrobotics/flexiv_rdk` path is a planned follow-up. |
 | Enactic OpenArm v2 (MuJoCo digital twin) | `OpenArmMujocoHAL` | ✓ sim (`tests/sim/test_openarm_hal_mujoco.py`) | 16-DoF bimanual (7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF (PR #19 on master). Shares `OPENARM_DESCRIPTION` with the real adapter below. |
 | Enactic OpenArm v2 (real-HW) | `OpenArmRealHAL` | ✓ unit + live CAN HIL | `openarm_bringup` `ros2_control` (4 controllers, 16-DoF) over the C++ `openarm_hardware` SystemInterface and two Damiao CAN FD buses (1 Mbit/s nominal, 5 Mbit/s data), one per arm. `connect()` preflights both SocketCAN links. `sdk_kind: open` — `openarm_can` and `openarm_ros2` are Apache-2.0, so unlike UR / Franka there is no closed vendor runtime in the path. Lab-gated HIL via `tests/hil/test_openarm_can_live.py`. |
@@ -112,7 +117,7 @@ Python file is required**:
      # mjcf_uri schemes: robot_descriptions:<module> | gym_aloha:<scene>
      #                    | openarm_v2:bimanual | file:<abs-path>
      mjcf_uri: "robot_descriptions:<module>"
-     floating_base: false                       # true for humanoids (G1, H1)
+     floating_base: false                       # true for humanoids (G1, H1, H2)
      # Optional joint-index overrides — only needed when the MJCF's qpos
      # order doesn't match description.joints (e.g. OpenArm skips qpos 8
      # and qpos 17 for passive follower fingers).
@@ -156,6 +161,7 @@ passive follower-finger slots (OpenArm).
 | single-arm + parallel jaw (`sum_over_scale`) | `franka_panda` |
 | single-arm, no gripper | `ur5e`, `ur10e`, `rizon4` |
 | floating-base humanoid (`floating_base: true`) | `g1`, `h1` |
+| floating-base humanoid + `joint_qpos_addr` / `joint_qvel_addr` override (MJCF tree ≠ SDK order) | `h2` |
 | bimanual + two `PASSTHROUGH` grippers + `mirror_actuator_index` + `keyframe_index` | `aloha_bimanual` |
 | bimanual + two `PASSTHROUGH` grippers + `joint_qpos_addr` override + `seed_ctrl_from_qpos` | `openarm` |
 
@@ -218,7 +224,8 @@ parameters and topic names.
   `tests/sim/test_so100_follower_hal_mujoco.py`,
   `tests/sim/test_aloha_bimanual_hal_mujoco.py`,
   `tests/sim/test_g1_hal_mujoco.py`,
-  `tests/sim/test_h1_hal_mujoco.py`.
+  `tests/sim/test_h1_hal_mujoco.py`,
+  `tests/sim/test_h2_hal_mujoco.py`.
 - Sim (cross-HAL integration): `tests/sim/test_all_hals_via_runner.py`
   drives **every** HAL twin through the production `DeployRunner` with a
   real `WorldStateAggregator` and an echo-current-pose skill, catching

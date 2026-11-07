@@ -70,10 +70,11 @@ class TestRealModeResolution:
         assert "sim_robot_yaml" not in inv.hal_params
         assert "sim_env_yaml" not in inv.hal_params
 
-    def test_sim_only_robot_real_fails_fast(self) -> None:
-        # H1 is sim-only (`hal.real: null`); G1 gained its real HAL (below).
-        with pytest.raises(ROSCapabilityMismatch, match="h1"):
-            _resolve("h1", "real")
+    @pytest.mark.parametrize("robot_id", ["h1", "h2"])
+    def test_sim_only_robot_real_fails_fast(self, robot_id: str) -> None:
+        # H1 / H2 are sim-only (`hal.real: null`); G1 gained its real HAL (below).
+        with pytest.raises(ROSCapabilityMismatch, match=robot_id):
+            _resolve(robot_id, "real")
 
     def test_g1_real_resolves_to_the_unitree_hg_hal_and_its_bringup(self) -> None:
         """G1 real mode: manifest-driven HAL node, no sim twin, NVIDIA S0 bringup declared."""

@@ -296,6 +296,7 @@ assets:
   #   rd:<module>          — robot_descriptions package (downloads on first use)
   #   gym_aloha:<scene>    — gym-aloha package asset
   #   openarm:bimanual     — Enactic OpenArm v2 (fetched on first use)
+  #   unitree:h2           — Unitree H2 official MJCF/URDF (pinned, SHA-256 verified)
   #   file:<relpath>       — repo/manifest-relative explicit override
   mjcf: "rd:ur5e_mj_description"
   # Optional URDF (robot_state_publisher / collision lowering):

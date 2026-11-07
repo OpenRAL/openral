@@ -57,7 +57,6 @@ from typing import Literal, get_args
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core import BODY_TWIST_DIM
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError, ROSSafetyViolation
 from openral_core.schemas import (
     Action,
@@ -80,6 +79,13 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
+from openral_hal._floating_base import (
+    BasePin,
+    capture_base_pin,
+    integrate_planar_twist,
+    validate_planar_body_twist,
+    write_base_pin,
+)
 from openral_hal._g1_gr00t_wbc import (
     ARM_KD,
     ARM_KP,
@@ -98,10 +104,6 @@ from openral_hal._g1_gr00t_wbc import (
 from openral_hal._g1_walking import G1WalkingController, ensure_g1_walking_assets
 from openral_hal._mujoco_arm import _IDLE_STEP_CAP, MujocoArmHAL, _kinematic_group
 from openral_hal._slot_group import slot_group_targets
-
-# Twist components a kinematic-glide base does not actuate (linear-z,
-# angular-x, angular-y).  Mirrors ``panda_mobile._PLANAR_TWIST_EPS``.
-_PLANAR_TWIST_EPS = 1e-9
 
 log = structlog.get_logger(__name__)
 
@@ -613,7 +615,7 @@ class G1MujocoHAL(MujocoArmHAL):
         # Kinematic-glide base pin (ADR-0087): ``(x, y, yaw, z0)`` world pose
         # the free joint is re-pinned to every physics step.  Captured lazily
         # from the MJCF default qpos on first use after connect.
-        self._base_pin: tuple[float, float, float, float] | None = None
+        self._base_pin: BasePin | None = None
         # Last commanded base twist, ``base_link`` frame; zeroed by any
         # non-BODY_TWIST action (odom publisher contract, like PandaMobileHAL).
         self._last_body_twist: tuple[float, float, float, float, float, float] = (0.0,) * 6
@@ -710,13 +712,7 @@ class G1MujocoHAL(MujocoArmHAL):
         if self._walking_controller is not None:
             self._walk((vx, vy, wz))
             return
-        x, y, yaw, z0 = self._pin()
-        cy, sy = math.cos(yaw), math.sin(yaw)
-        x += (cy * vx - sy * vy) * self._body_twist_dt_s
-        y += (sy * vx + cy * vy) * self._body_twist_dt_s
-        yaw += wz * self._body_twist_dt_s
-        yaw = (yaw + math.pi) % (2.0 * math.pi) - math.pi
-        self._base_pin = (x, y, yaw, z0)
+        self._base_pin = integrate_planar_twist(self._pin(), vx, vy, wz, self._body_twist_dt_s)
 
         for _ in range(self._settle_steps):
             self._pin_base()
@@ -763,32 +759,14 @@ class G1MujocoHAL(MujocoArmHAL):
 
             assert self._model is not None and self._data is not None
             x, y, yaw = self._current_base_pose()
-            half = 0.5 * yaw
-            z0 = float(self._model.qpos0[2])
-            self._data.qpos[0:7] = (x, y, z0, math.cos(half), 0.0, 0.0, math.sin(half))
-            self._data.qvel[0:6] = 0.0
+            write_base_pin(self._data, (x, y, yaw, float(self._model.qpos0[2])))
             mj.mj_forward(self._model, self._data)
             self._arm_targets = np.asarray(pose[S0_JOINT_COUNT:], dtype=np.float64).copy()
             self._reset_gr00t_state()
 
     def _validate_action(self, action: Action) -> None:
         if action.control_mode == ControlMode.BODY_TWIST.value:
-            if not action.body_twist:
-                raise ROSConfigError(
-                    "G1MujocoHAL.send_action: empty Action.body_twist for BODY_TWIST."
-                )
-            row = action.body_twist[0]
-            if len(row) != BODY_TWIST_DIM:
-                raise ROSConfigError(
-                    f"G1MujocoHAL: BODY_TWIST expects {BODY_TWIST_DIM} floats "
-                    f"(vx, vy, vz, wx, wy, wz); got {len(row)}."
-                )
-            if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
-                raise ROSConfigError(
-                    "G1MujocoHAL: BODY_TWIST row carries non-zero linear-z / "
-                    "angular-x / angular-y; the glide base is planar — only "
-                    "vx, vy, wz are actuated."
-                )
+            validate_planar_body_twist(action, "G1MujocoHAL")
             return
         super()._validate_action(action)
 
@@ -797,27 +775,19 @@ class G1MujocoHAL(MujocoArmHAL):
         del targets
         self._pin_base()
 
-    def _pin(self) -> tuple[float, float, float, float]:
+    def _pin(self) -> BasePin:
         """Return the glide-base pin ``(x, y, yaw, z0)``, capturing it on first use."""
         if self._base_pin is None:
             self._require_connected("base_pose")
             assert self._data is not None
-            qw, qx, qy, qz = (float(self._data.qpos[i]) for i in range(3, 7))
-            yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-            self._base_pin = (
-                float(self._data.qpos[0]),
-                float(self._data.qpos[1]),
-                yaw,
-                float(self._data.qpos[2]),
-            )
+            self._base_pin = capture_base_pin(self._data.qpos)
         return self._base_pin
 
     def _current_base_pose(self) -> tuple[float, float, float]:
         self._require_connected("base_pose")
         assert self._data is not None
-        qw, qx, qy, qz = (float(self._data.qpos[i]) for i in range(3, 7))
-        yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-        return (float(self._data.qpos[0]), float(self._data.qpos[1]), yaw)
+        x, y, yaw, _z = capture_base_pin(self._data.qpos)
+        return (x, y, yaw)
 
     def _walk(self, command: tuple[float, float, float]) -> None:
         import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
@@ -847,10 +817,7 @@ class G1MujocoHAL(MujocoArmHAL):
         pitch are clamped to zero (upright), yaw/x/y come from the glide.
         """
         assert self._data is not None
-        x, y, yaw, z0 = self._pin()
-        half = 0.5 * yaw
-        self._data.qpos[0:7] = (x, y, z0, math.cos(half), 0.0, 0.0, math.sin(half))
-        self._data.qvel[0:6] = 0.0
+        write_base_pin(self._data, self._pin())
 
     # ── GR00T Decoupled WBC S0 (sim-only) ────────────────────────────────────
 

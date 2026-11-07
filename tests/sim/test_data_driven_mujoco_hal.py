@@ -27,9 +27,26 @@ from openral_core import (
     ControlMode,
     RobotDescription,
 )
+from openral_core.assets import AssetFetchError
+from openral_core.exceptions import ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 
 pytestmark = pytest.mark.sim
+
+
+def _build_hal(description: RobotDescription) -> MujocoArmHAL:
+    """Build the manifest-driven HAL; skip only when a pinned asset could not be downloaded.
+
+    ``unitree:h2`` fetches its MJCF on first use. ``AssetFetchError`` is raised for
+    network failures only — a SHA-256 mismatch is an ``AssetRefError`` and fails.
+    """
+    try:
+        return MujocoArmHAL.from_description(description, gravity_enabled=False)
+    except ROSConfigError as exc:
+        if isinstance(exc.__cause__, AssetFetchError):
+            pytest.skip(f"{description.name} assets unavailable on this host: {exc}")
+        raise
+
 
 # ``aloha_bimanual`` resolves its MJCF through the ``gym_aloha:`` scheme, an
 # optional sim-only dependency separate from ``robot_descriptions``. Skip just
@@ -46,6 +63,7 @@ _MANIFEST_DRIVEN_ROBOTS = [
     "rizon4",
     "g1",
     "h1",
+    "h2",  # unitree: scheme; explicit qpos/qvel maps (MJCF tree puts head before arms)
     pytest.param(
         "aloha_bimanual",  # bimanual: 2 grippers + mirror_actuator + keyframe
         marks=pytest.mark.skipif(_GYM_ALOHA_MISSING, reason="gym_aloha not installed"),
@@ -82,7 +100,7 @@ def test_manifest_has_sim_block(description: RobotDescription) -> None:
     assert description.sim is not None
     assert description.assets.mjcf is not None
     assert description.assets.mjcf.startswith(
-        ("rd:", "gym_aloha:", "openarm:", "menagerie:", "file:")
+        ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:", "file:")
     ), f"unexpected mjcf ref scheme: {description.assets.mjcf!r}"
 
 
@@ -94,7 +112,7 @@ def test_from_description_round_trips(description: RobotDescription) -> None:
     qpos/qvel/actuator mapping logic (with or without floating-base
     offsets).
     """
-    hal = MujocoArmHAL.from_description(description, gravity_enabled=False)
+    hal = _build_hal(description)
     hal.connect()
     try:
         state = hal.read_state()
@@ -139,7 +157,7 @@ def test_no_user_facing_python_required(robot_id: str) -> None:
 
     yaml_path = repo_root / "robots" / robot_id / "robot.yaml"
     description = RobotDescription.from_yaml(str(yaml_path))
-    hal = MujocoArmHAL.from_description(description, gravity_enabled=False)
+    hal = _build_hal(description)
     hal.connect()
     state = hal.read_state()
     hal.disconnect()
@@ -163,6 +181,7 @@ def test_python_description_matches_yaml(robot_id: str, description: RobotDescri
         "rizon4": ("openral_hal.flexiv_rizon4", "RIZON4_DESCRIPTION"),
         "g1": ("openral_hal.g1", "G1_DESCRIPTION"),
         "h1": ("openral_hal.h1", "H1_DESCRIPTION"),
+        "h2": ("openral_hal.h2", "H2_DESCRIPTION"),
         "aloha_bimanual": ("openral_hal.aloha", "ALOHA_DESCRIPTION"),
         "openarm": ("openral_hal.openarm", "OPENARM_DESCRIPTION"),
         "anvil_openarm_v2": ("openral_hal.anvil_openarm_v2", "ANVIL_OPENARM_V2_DESCRIPTION"),

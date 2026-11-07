@@ -66,6 +66,7 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
+from openral_hal._floating_base import apply_software_pd
 from openral_hal._mujoco_arm import MujocoArmHAL, _kinematic_group
 
 __all__ = ["H1_DESCRIPTION", "H1MujocoHAL"]
@@ -419,18 +420,15 @@ class H1MujocoHAL(MujocoArmHAL):
         """
         assert self._data is not None
         assert self._model is not None
-        for name, target in zip(self._joint_names, targets, strict=True):
-            act_idx = self._actuator_index.get(name)
-            if act_idx is None:
-                continue
-            kp, kv = self._pd_gains[name]
-            qpos_idx = self._joint_qpos_addr[name]
-            qvel_idx = self._joint_qvel_addr[name]
-            q = float(self._data.qpos[qpos_idx])
-            dq = float(self._data.qvel[qvel_idx])
-            tau = kp * (float(target) - q) - kv * dq
-            low, high = self._model.actuator_ctrlrange[act_idx]
-            self._data.ctrl[act_idx] = max(float(low), min(float(high), tau))
+        apply_software_pd(
+            self._model,
+            self._data,
+            dict(zip(self._joint_names, targets, strict=True)),
+            self._pd_gains,
+            self._actuator_index,
+            self._joint_qpos_addr,
+            self._joint_qvel_addr,
+        )
 
     # The base ``_apply_arm_targets`` (called once before the settle
     # loop) writes the raw position target to ``ctrl``, which is wrong
