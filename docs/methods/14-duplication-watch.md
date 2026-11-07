@@ -144,7 +144,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`openral_reasoner.spatial_query.ApproachRefiner`** — live (it types `refine_approach` on the two exported query functions), but `reasoner_node.py` passes its callback as `Any` with a comment instead of importing the alias. Import it.
 
-- **`openral_rskill_ros.make_local_skill_resolver`** — exported, documented for `openral sim run`, and called only from inside its own module today. Public with no external consumer stays public; revisit if the docstring's use case never materialises.
+- **`openral_rskill_ros.make_local_skill_resolver`** — exported, documented for `openral sim run`; now a one-line `ManifestSkillResolver(hub_fallback=False)` factory that only tests call. Public with no external consumer stays public; fold into `ManifestSkillResolver` if the docstring's use case never materialises.
 
 - **`openral_safety.supervisor_node.SafetySupervisorNode`** — back-compat alias of `SafetyPassthroughNode` with zero references outside its own package's `__init__` docstring. Removing it touches `packages/openral_safety/` (safety-WG review + hazard log), so it is recorded here rather than deleted by a cleanup PR.
 
