@@ -250,6 +250,9 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
                 force_download=force_download,
             )
         except Exception as exc:
+            gated_err = gated_repo_error(repo_id, exc)
+            if gated_err is not None:
+                raise gated_err from exc
             raise ROSConfigError(f"Failed to download rskill.yaml for '{repo_id}': {exc}") from exc
 
         # ── 2. Parse manifest ──────────────────────────────────────────────────
@@ -272,6 +275,9 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
                 force_download=force_download,
             )
         except Exception as exc:
+            gated_err = gated_repo_error(repo_id, exc)
+            if gated_err is not None:
+                raise gated_err from exc
             raise ROSConfigError(f"Failed to download snapshot for '{repo_id}': {exc}") from exc
 
         # ── 6. Register ────────────────────────────────────────────────────────
@@ -1229,6 +1235,54 @@ def validate_skill_ref(raw: str) -> str:
     return cleaned
 
 
+_HTTP_AUTH_STATUSES = frozenset({401, 403})
+
+
+def gated_repo_error(repo_id: str, exc: BaseException) -> ROSConfigError | None:
+    """Map a Hub download failure on a gated (OpenRAL Pro) repo to an actionable error.
+
+    Returns a ``ROSConfigError`` telling the user to request access when ``exc``
+    is a ``GatedRepoError``, or a 401/403 on a repo whose ``model_info`` reports
+    it gated. Returns ``None`` for anything else (private or missing repos,
+    network errors), so the caller keeps its existing handling. Hub gating is
+    the enforcement; this only explains it.
+
+    Args:
+        repo_id: HF Hub repository id that failed to download.
+        exc: The exception raised by ``hf_hub_download`` / ``snapshot_download``.
+
+    Returns:
+        The "request access" ``ROSConfigError``, or ``None`` when the repo is not gated.
+
+    Example:
+        >>> import httpx
+        >>> from huggingface_hub.errors import GatedRepoError
+        >>> resp = httpx.Response(403, request=httpx.Request("GET", "https://huggingface.co"))
+        >>> err = gated_repo_error("OpenRAL/rskill-x", GatedRepoError("403", response=resp))
+        >>> "request access at https://huggingface.co/OpenRAL/rskill-x" in str(err)
+        True
+        >>> gated_repo_error("OpenRAL/rskill-x", OSError("disk full")) is None
+        True
+    """
+    from huggingface_hub import HfApi  # noqa: PLC0415
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError  # noqa: PLC0415
+
+    gated = isinstance(exc, GatedRepoError)
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not gated and isinstance(exc, HfHubHTTPError) and status in _HTTP_AUTH_STATUSES:
+        try:
+            gated = bool(HfApi().model_info(repo_id).gated)
+        except HfHubHTTPError:  # reason: private/missing repo — not gated; caller re-raises
+            gated = False
+    if not gated:
+        return None
+    return ROSConfigError(
+        f"OpenRAL Pro rSkill '{repo_id}' is gated — request access at "
+        f"https://huggingface.co/{repo_id} (signed in to the Hub as the account whose "
+        "token this machine uses)."
+    )
+
+
 def load_rskill_manifest(uri: str) -> RSkillManifest:
     """Resolve a bare rSkill reference to a parsed ``RSkillManifest``.
 
@@ -1304,6 +1358,9 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
             cache_dir=str(_CACHE_HOME),
         )
     except Exception as exc:
+        gated_err = gated_repo_error(uri, exc)
+        if gated_err is not None:
+            raise gated_err from exc
         raise ROSConfigError(
             f"failed to resolve rSkill reference {uri!r}: not a local path "
             f"and Hub lookup failed: {exc}"
