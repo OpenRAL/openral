@@ -537,6 +537,8 @@ def _feather(mask: NDArray[np.float32], radius: int) -> NDArray[np.float32]:
     sim_clock=True,
     converts_policy_units=True,  # backend_options.joint_units + gripper_scale
     sequential_init=True,  # makermods: asset resolve imports openral_hal -> transformers
+    # The scene divides the policy's stroke by gripper_scale: 0 closed, 1 open.
+    gripper_convention="normalized_open_unit",
 )
 def build_metal_pick_place_scene(env_cfg: SimEnvironment) -> _MetalPickPlaceRollout:
     """Build the metal_pick_place rollout from a composed ``SimEnvironment``."""
