@@ -49,9 +49,6 @@ quantization:
 weights_uri: "hf://lerobot/diffusion_pusht@84a7c23178445c6bbf7e1a884ff497017910f653"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
-processors:
-  preprocessor_uri: "hf://lerobot/diffusion_pusht/policy_preprocessor.json"
-  postprocessor_uri: "hf://lerobot/diffusion_pusht/policy_postprocessor.json"
 # PushT is a 2-DoF planar pushing benchmark; proprio state is 2-D
 # (x, y) of the end effector.
 # Slot camera1 -> the checkpoint's `observation.image`.
