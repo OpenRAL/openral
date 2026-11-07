@@ -58,7 +58,8 @@ hands it to `openral_hal._makermods_metal_assets`, which:
 `openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`, so `package://` mesh
 refs resolve on a host without a sourced MakerMods workspace (Isaac import,
 Foxglove 3D panel). Bump the pin deliberately; the derived files are cached per
-SHA and derive version.
+SHA and a hash of the derive module's source, so a derive change never reuses
+a stale cache.
 
 **The actuator gains are a sim-only choice.** The upstream URDF has no actuator
 model, so the MJCF's `kp` / `kv` say nothing about the real Damiao control loop.
