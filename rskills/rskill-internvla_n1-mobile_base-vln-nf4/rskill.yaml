@@ -65,13 +65,16 @@ actuators_required:
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
+# Open default is bf16, the upstream checkpoint's own precision (ADR-0123: open
+# runs fp32/fp16/bf16). OpenRAL Pro runs it NF4 via
+# OPENRAL_QUANTIZATION_DTYPE=nf4 (Qwen2.5-VL-7B backbone NF4, NavDP S1 head bf16),
+# which is what fits an 8 GB card. The "-nf4" in the name predates this default.
 quantization:
-  dtype: "int4"        # NF4 on the Qwen2.5-VL-7B backbone; NavDP S1 head stays bf16
+  dtype: "bf16"
   backend: "pytorch"
-# NF4 backbone (~5.0 GB) + bf16 NavDP head (~0.6 GB) measured peak on an 8 GB
-# card; declared with render/activation headroom for the co-resident sim EGL
-# context. The full bf16 checkpoint (~16.6 GB) needs a 24 GB card — set
-# quantization override "none" there.
+# bf16: full checkpoint (~16.6 GB), needs a 24 GB card. int4 (Pro): NF4 backbone
+# (~5.0 GB) + bf16 NavDP head (~0.6 GB) measured peak on an 8 GB card; declared
+# with render/activation headroom for the co-resident sim EGL context.
 min_vram_gb:
   int4: 7.0
   bf16: 16.6
@@ -84,8 +87,9 @@ weights_uri: "hf://InternRobotics/InternVLA-N1-DualVLN@a698a9e898b4001621a319e1b
 # System-1 in between (asynchronous dual-system inference).
 chunk_size: 1
 latency_budget:
-  # A System-2 replan is a full 7B-VLM generate: ~1.5-2.5 s at NF4 on an 8 GB
-  # card; the cheaper System-1-only steps run at ~5-8 Hz. Budget the worst case.
+  # A System-2 replan is a full 7B-VLM generate: ~1.5-2.5 s measured at NF4 on
+  # an 8 GB card (not yet re-measured at bf16); the cheaper System-1-only steps
+  # run at ~5-8 Hz. Budget the worst case.
   per_chunk_ms: 2500.0
   # A VLN episode is long-horizon (drive across a kitchen). 300 s ceiling; the
   # model self-terminates by emitting STOP (the adapter then latches zero twist).
