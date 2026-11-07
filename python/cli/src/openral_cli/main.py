@@ -4072,7 +4072,8 @@ def deploy_run(
     resolves the robot from `--config` (a DeployScene) and shells the SAME
     `deploy_e2e.launch.py` graph with `hal_mode:=real` — the HAL lifecycle node +
     C++ safety kernel + reasoner + world state (+ SLAM/Nav2 when the robot
-    declares a lidar). The HAL's `connect()` fails loudly if no hardware is
+    declares a lidar and has no mobile base: a mobile base's own platform owns
+    navigation on a real deploy, ADR-0127). The HAL's `connect()` fails loudly if no hardware is
     attached; a simulation-only robot raises ROSCapabilityMismatch (use
     `openral deploy sim`). Robot HAL defaults come from robot.yaml; `--hal` wins.
     """

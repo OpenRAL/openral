@@ -1447,6 +1447,31 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # neither stay off — no base to localise, nothing to map.
     # `enable_slam is None` means "auto": honour the manifest; an explicit
     # flag wins.
+    # ADR-0127 Decision 1: on `deploy run` a mobile base's own platform owns navigation,
+    # localization, odometry, TF and the final /cmd_vel. OpenRAL launches neither SLAM nor
+    # Nav2 and sends navigate_to_pose goals to the platform's server. There is no setting:
+    # the deploy command decides, and a scene asking for OpenRAL's SLAM or Nav2 here is
+    # refused rather than overridden.
+    from openral_hal.mobile_base_bridge import platform_owns_navigation
+
+    if platform_owns_navigation(description, hal_mode=hal_mode):
+        asked = [
+            name
+            for name, value in (("enable_slam", enable_slam), ("enable_nav2", enable_nav2))
+            if value
+        ]
+        if asked:
+            raise ROSConfigError(
+                f"robot {description.name!r} on a real deploy: its platform owns navigation "
+                f"(ADR-0127), so OpenRAL starts no SLAM or Nav2; drop {', '.join(asked)} "
+                "(the scene's runtime or the --enable-slam / --enable-nav2 flag)."
+            )
+        enable_slam = enable_nav2 = False
+        _console.print(
+            f"navigation=platform_owned: robot {description.name!r} is navigated by its own "
+            "platform (navigate_to_pose, /odom, odom TF and /cmd_vel are the platform's); "
+            "OpenRAL launches no SLAM or Nav2."
+        )
     slam_defaulted = enable_slam is None
     if enable_slam is None:
         enable_slam = bool(

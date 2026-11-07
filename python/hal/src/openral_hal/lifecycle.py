@@ -67,7 +67,7 @@ from contextlib import contextmanager
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
-from openral_hal.mobile_base_bridge import describes_mobile_base
+from openral_hal.mobile_base_bridge import describes_mobile_base, platform_owns_navigation
 
 if TYPE_CHECKING:
     from openral_core import JointState, RobotDescription
@@ -2813,10 +2813,31 @@ if _ROS2_AVAILABLE:
             )
             self._bridge.setup()
 
-            # Mobile-base streams (issue #191 Phase 3): /odom + odom->base_link TF
-            # + /cmd_vel->BODY_TWIST, attached generically when the manifest
-            # declares a planar base (`base_joints`). Fixed-base arms skip it.
-            if describes_mobile_base(self._hal.description):
+            self._attach_mobile_base_bridge()
+
+            self._setup_vision_attachment()
+            return TransitionCallbackReturn.SUCCESS
+
+        def _attach_mobile_base_bridge(self) -> None:
+            """Attach ``MobileBaseBridge`` when OpenRAL owns this deploy's base navigation.
+
+            Mobile-base streams (issue #191 Phase 3): ``/odom`` + ``odom -> base`` TF +
+            ``/cmd_vel`` -> ``BODY_TWIST``, attached when the manifest declares a planar base
+            (``base_joints``) and OpenRAL owns navigation (``deploy sim``). On ``deploy run``
+            the platform owns them (ADR-0127 Decision 1): no bridge. Fixed-base arms skip it.
+            """
+            assert self._hal is not None  # invariant: called after the HAL is built
+            hal_mode = self.get_parameter("hal_mode").get_parameter_value().string_value or "sim"
+            if platform_owns_navigation(self._hal.description, hal_mode=hal_mode):
+                # ADR-0127 Decision 1: on `deploy run` the platform's own stack publishes
+                # /odom and odom -> base and owns the final /cmd_vel; a bridge here would
+                # give the base a second TF parent and a command input that bypasses the
+                # platform's arbitration. The base part still reads the platform odometry.
+                self.get_logger().info(
+                    "navigation=platform_owned: no MobileBaseBridge (/odom, odom TF and "
+                    "/cmd_vel are the platform's)"
+                )
+            elif describes_mobile_base(self._hal.description):
                 from openral_hal.mobile_base_bridge import MobileBaseBridge
 
                 self._mobile_base = MobileBaseBridge(
@@ -2834,9 +2855,6 @@ if _ROS2_AVAILABLE:
                     proprio=self._proprio,
                 )
                 self._mobile_base.setup()
-
-            self._setup_vision_attachment()
-            return TransitionCallbackReturn.SUCCESS
 
         def _setup_vision_attachment(self) -> None:
             """Attach the vision attachment bridge when the operator enabled it.

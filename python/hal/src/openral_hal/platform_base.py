@@ -17,10 +17,11 @@ on until the platform defines a reviewed, arbitrated one with its own priority,
 timeout, stale-message rejection and stop behaviour. Publishing onto a remapped copy of
 its final ``/cmd_vel`` would bypass that chain.
 
-When a ``cmd_vel_topic`` is configured, ``MobileBaseBridge`` owns ``/cmd_vel``
-(Nav2's output) and ``odom -> base_frame``, so the platform's odometry must be remapped
-onto ``odom_topic`` with its own odom TF broadcast off and neither topic nor TF has two
-owners.
+On ``deploy run`` the platform owns navigation (ADR-0127 Decision 1): it publishes
+``/odom`` and ``odom -> base`` itself, OpenRAL attaches no ``MobileBaseBridge`` and runs no
+Nav2 of its own, so the part reads the platform's ``/odom`` directly (the default
+``odom_topic``) and base motion reaches the robot as ``navigate_to_pose`` goals to the
+platform's Nav2, not through this part.
 
 The part's joints are the robot's three planar base joints; their positions are the
 odometry pose (x, y, yaw).
@@ -70,7 +71,7 @@ class PlatformBaseHAL:
         self,
         *,
         description: RobotDescription,
-        odom_topic: str = "/platform/odom",
+        odom_topic: str = "/odom",
         cmd_vel_topic: str | None = None,
         staleness_limit_s: float = 0.5,
     ) -> None:
