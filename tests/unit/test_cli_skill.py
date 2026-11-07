@@ -294,21 +294,17 @@ class TestSkillInstall:
         ):
             rSkill.from_pretrained(self.GATED_REPO, registry_path=tmp_path / "r.json")
 
-    def test_403_on_repo_model_info_reports_gated_maps_to_request_access(self) -> None:
+    def test_plain_403_is_not_reported_as_gated_and_makes_no_network_call(self) -> None:
+        """Only ``GatedRepoError`` means gated; a plain 401/403 never triggers a Hub lookup."""
         exc = self._http_error(HfHubHTTPError, 403)
-        api = SimpleNamespace(model_info=lambda repo_id: SimpleNamespace(gated="manual"))
-        with patch("huggingface_hub.HfApi", return_value=api):
-            err = gated_repo_error(self.GATED_REPO, exc)
-        assert err is not None and f"https://huggingface.co/{self.GATED_REPO}" in str(err)
+        with patch("huggingface_hub.HfApi", side_effect=AssertionError("no network call")):
+            assert gated_repo_error(self.GATED_REPO, exc) is None
 
     def test_private_or_missing_repo_keeps_current_behaviour(self, tmp_path: Path) -> None:
         """401 on a private/missing repo (model_info also fails) is not reported as gated."""
         exc = self._http_error(RepositoryNotFoundError, 401)
 
-        def missing(repo_id: str) -> None:
-            raise self._http_error(RepositoryNotFoundError, 401)
-
-        with patch("huggingface_hub.HfApi", return_value=SimpleNamespace(model_info=missing)):
+        with patch("huggingface_hub.HfApi", side_effect=AssertionError("no network call")):
             assert gated_repo_error(self.GATED_REPO, exc) is None
             result = self._invoke(_FakeHub({}, error=exc), tmp_path, self.GATED_REPO)
         assert result.exit_code == 1
@@ -466,6 +462,22 @@ class TestSkillSearch:
         (row,) = json.loads(as_json.output)
         assert row["gated"] is True and row["license"] == "proprietary"
         assert row["min_vram_gb"] == 6.5 and row["version"] is None
+
+    def test_json_rows_have_the_same_keys_for_manifest_and_gated_hits(self) -> None:
+        """``rskill search --json`` has one row schema, whether the hit is a manifest or a card."""
+        from openral_cli.main import _rskill_search_hit_json
+        from openral_core.schemas import RSkillManifest
+        from openral_rskill.hub_search import HubRSkillCard, HubRSkillHit
+
+        manifest = RSkillManifest.from_yaml(str(_RSKILLS_DIR / "act-libero" / "rskill.yaml"))
+        public = HubRSkillHit(repo_id=manifest.name, manifest=manifest, local=None)
+        card = HubRSkillCard(kind="vla", role="s1", license="proprietary", model_family="act")
+        gated = HubRSkillHit(repo_id="OpenRAL/rskill-x", manifest=None, card=card, local=None)
+        public_row, gated_row = _rskill_search_hit_json(public), _rskill_search_hit_json(gated)
+        assert list(public_row) == list(gated_row)
+        assert public_row["gated"] is False and gated_row["gated"] is True
+        assert public_row["model_family"] == manifest.model_family
+        assert public_row["latency_ms"] == manifest.latency_budget.per_chunk_ms
 
     def test_lists_valid_skills_with_install_hint(self, tmp_path: Path) -> None:
         """A query token present in both repo ids must surface both, plus the hint."""

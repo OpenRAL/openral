@@ -422,6 +422,7 @@ class TestGatedRepos:
             "license": "proprietary",
             "embodiment_tags": ("so101_follower",),
             "description": "Restocks a retail shelf from a tote.",
+            "model_family": None,
             "min_vram_gb": 6.5,
             "latency_ms": 120.0,
             "runtime": "pytorch",
@@ -439,3 +440,22 @@ class TestGatedRepos:
             result = search_hub_rskills()
         assert [h.repo_id for h in result.hits] == [_ACT_ALOHA_ID]
         assert result.skipped_repo_ids == tuple(sorted([_BROKEN_ID, _GATED_ID]))
+
+
+def test_malformed_gated_card_is_skipped_not_raised() -> None:
+    """A card value of the wrong type yields no card (the repo is skipped), never an exception."""
+    from openral_rskill.hub_search import HubRSkillCard
+
+    tags = ["rskill-kind:vla", "rskill-role:s1", "rskill-license:proprietary"]
+    assert HubRSkillCard.from_card(tags, {"openral": {"min_vram_gb": "6 GB"}}) is None
+    ok = HubRSkillCard.from_card(tags, {"openral": {"model_family": "act"}})
+    assert ok is not None and ok.model_family == "act"
+
+
+def test_family_facet_matches_a_gated_card() -> None:
+    from openral_rskill.hub_search import HubRSkillCard, _matches_facets
+
+    card = HubRSkillCard(kind="vla", role="s1", license="proprietary", model_family="act")
+    facets = {"kind": "", "role": "", "embodiment": "", "license_": ""}
+    assert _matches_facets(card, family="act", **facets)
+    assert not _matches_facets(card, family="smolvla", **facets)

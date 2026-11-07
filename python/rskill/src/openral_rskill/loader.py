@@ -1235,17 +1235,15 @@ def validate_skill_ref(raw: str) -> str:
     return cleaned
 
 
-_HTTP_AUTH_STATUSES = frozenset({401, 403})
-
-
 def gated_repo_error(repo_id: str, exc: BaseException) -> ROSConfigError | None:
     """Map a Hub download failure on a gated (OpenRAL Pro) repo to an actionable error.
 
     Returns a ``ROSConfigError`` telling the user to request access when ``exc``
-    is a ``GatedRepoError``, or a 401/403 on a repo whose ``model_info`` reports
-    it gated. Returns ``None`` for anything else (private or missing repos,
-    network errors), so the caller keeps its existing handling. Hub gating is
-    the enforcement; this only explains it.
+    is a ``GatedRepoError`` (what ``huggingface_hub`` raises for a gated repo the
+    token has no access to). Returns ``None`` for anything else (private or
+    missing repos, network errors), so the caller keeps its existing handling.
+    Pure: no network call, so it can never raise from inside a caller's
+    ``except``. Hub gating is the enforcement; this only explains it.
 
     Args:
         repo_id: HF Hub repository id that failed to download.
@@ -1264,17 +1262,11 @@ def gated_repo_error(repo_id: str, exc: BaseException) -> ROSConfigError | None:
         >>> gated_repo_error("OpenRAL/rskill-x", OSError("disk full")) is None
         True
     """
-    from huggingface_hub import HfApi  # noqa: PLC0415
-    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError  # noqa: PLC0415
-
-    gated = isinstance(exc, GatedRepoError)
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if not gated and isinstance(exc, HfHubHTTPError) and status in _HTTP_AUTH_STATUSES:
-        try:
-            gated = bool(HfApi().model_info(repo_id).gated)
-        except HfHubHTTPError:  # reason: private/missing repo — not gated; caller re-raises
-            gated = False
-    if not gated:
+    try:
+        from huggingface_hub.errors import GatedRepoError  # noqa: PLC0415
+    except ImportError:  # reason: huggingface_hub absent — nothing can be gated
+        return None
+    if not isinstance(exc, GatedRepoError):
         return None
     return ROSConfigError(
         f"OpenRAL Pro rSkill '{repo_id}' is gated — request access at "

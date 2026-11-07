@@ -1976,32 +1976,35 @@ def _render_rskill_search_results(result: HubRSkillSearchResult, query: str) -> 
 
 
 def _rskill_search_hit_json(hit: HubRSkillHit) -> dict[str, object]:
-    """One `rskill search --json` row; a gated hit carries its model-card summary."""
+    """One `rskill search --json` row — the same keys for a manifest hit and a gated card."""
+    from openral_cli._rskill_readme import _catalog_block
+
     if hit.manifest is None:
         card = hit.card
         assert card is not None  # reason: a hit always carries a manifest or a gated card
-        return {
-            "repo_id": hit.repo_id,
-            "name": hit.repo_id,
-            "version": None,
-            "model_family": None,
-            **card.model_dump(mode="json"),
-            "local": hit.local,
-            "gated": True,
+        fields: dict[str, object] = {"name": hit.repo_id, "version": None}
+        fields.update(card.model_dump(mode="json"))
+    else:
+        m = hit.manifest
+        fields = {
+            "name": m.name,
+            "version": m.version,
+            "kind": m.kind,
+            "role": m.role,
+            "license": m.license.value,
+            "embodiment_tags": list(m.embodiment_tags),
+            # description, model_family, min_vram_gb, latency_ms, runtime, dtype
+            **_catalog_block(m),
         }
-    m = hit.manifest
+    keys = (
+        "name", "version", "kind", "role", "license", "model_family", "embodiment_tags",
+        "description", "min_vram_gb", "latency_ms", "runtime", "dtype",
+    )  # fmt: skip
     return {
         "repo_id": hit.repo_id,
-        "name": m.name,
-        "version": m.version,
-        "kind": m.kind,
-        "role": m.role,
-        "license": m.license.value,
-        "model_family": m.model_family,
-        "embodiment_tags": list(m.embodiment_tags),
-        "description": m.description,
+        **{k: fields.get(k) for k in keys},
         "local": hit.local,
-        "gated": False,
+        "gated": hit.manifest is None,
     }
 
 

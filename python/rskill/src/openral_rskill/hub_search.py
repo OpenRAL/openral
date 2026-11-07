@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Literal
 import structlog
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import RSkillManifest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from openral_rskill.loader import discover_intree_rskills, rSkill
 
@@ -81,6 +81,7 @@ class HubRSkillCard(BaseModel):
     license: str
     embodiment_tags: tuple[str, ...] = Field(default_factory=tuple)
     description: str = ""
+    model_family: str | None = None
     min_vram_gb: float | None = None
     latency_ms: float | None = None
     runtime: str | None = None
@@ -107,17 +108,21 @@ class HubRSkillCard(BaseModel):
                 reserved[prefix] = value
         if not isinstance(block, dict) or len(reserved) < 3:  # noqa: PLR2004  # reason: kind+role+license
             return None
-        return cls(
-            kind=reserved["rskill-kind"],
-            role=reserved["rskill-role"],
-            license=reserved["rskill-license"],
-            embodiment_tags=tuple(embodiments),
-            description=str(block.get("description") or ""),
-            min_vram_gb=block.get("min_vram_gb"),
-            latency_ms=block.get("latency_ms"),
-            runtime=block.get("runtime"),
-            dtype=block.get("dtype"),
-        )
+        try:
+            return cls(
+                kind=reserved["rskill-kind"],
+                role=reserved["rskill-role"],
+                license=reserved["rskill-license"],
+                embodiment_tags=tuple(embodiments),
+                description=str(block.get("description") or ""),
+                model_family=block.get("model_family"),
+                min_vram_gb=block.get("min_vram_gb"),
+                latency_ms=block.get("latency_ms"),
+                runtime=block.get("runtime"),
+                dtype=block.get("dtype"),
+            )
+        except ValidationError:  # reason: a malformed card is skipped like any unreadable repo
+            return None
 
 
 class HubRSkillHit(BaseModel):
@@ -328,7 +333,8 @@ def search_hub_rskills(
     must substring-match repo id / manifest name / description / model
     family / kind / role / embodiment tags / Hub tags) and applies the facet
     filters. A gated repo whose manifest is unreadable is matched from its
-    model card instead (``HubRSkillHit.card``; ``family`` cannot match it).
+    model card instead (``HubRSkillHit.card``; ``family`` matches its card's
+    ``model_family``).
     Other repos without a valid manifest are counted in ``skipped`` and
     excluded from ``hits`` regardless of query or filters.
 
