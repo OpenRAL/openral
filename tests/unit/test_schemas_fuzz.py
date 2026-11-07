@@ -1119,7 +1119,7 @@ def _build_rskill_manifest(draw: st.DrawFn) -> RSkillManifest:
         name=draw(_hub_id),
         version=draw(_semver),
         license=draw(st.sampled_from(list(RSkillLicensePosture))),
-        role=draw(st.sampled_from(["s0", "s1", "s2"])),
+        role="s1",  # kind="vla" pins role (RSKILL_ROLE_BY_KIND)
         kind="vla",
         model_family=family,
         embodiment_tags=draw(st.lists(_embodiment_tag, min_size=1, max_size=3, unique=True)),
