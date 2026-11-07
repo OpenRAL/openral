@@ -6,9 +6,13 @@
 #
 # `G1MujocoHAL` is the only execution path today; real-HW HAL over
 # `unitree_sdk2` is the M2 milestone (CLAUDE.md §3 dual-system pattern), needs a C++ S0
-# cerebellar controller first. Without S0 balance the digital twin is a
-# contract validator only (falls over under gravity) — tests/sim/test_g1_hal_mujoco.py
-# runs with gravity_enabled=False for that reason.
+# cerebellar controller first. The digital twin runs with gravity on in two
+# sim-only modes: by default ADR-0087's kinematic glide re-pins the floating
+# base upright every physics step (no balance — the pin is what keeps it
+# standing); with `walking_enabled: true` ADR-0089's pinned MuJoCo Playground
+# ONNX controller walks BODY_TWIST commands on its policy-tuned MJCF. Neither is
+# a hardware balance controller. tests/sim/test_g1_hal_mujoco.py zeroes gravity
+# only in its joint-convergence fixtures, to keep those assertions deterministic.
 #
 # 29 actuated joints: legs 6+6 (hip_pitch/roll/yaw, knee, ankle_pitch/roll),
 # waist 3 (yaw, roll, pitch), arms 7+7 (shoulder_pitch/roll/yaw, elbow,
@@ -437,8 +441,9 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: true
-  # body_twist rides the ADR-0087 kinematic-glide base (sim-only); a real
-  # gait is the M2 S0 cerebellum.
+  # body_twist rides the ADR-0087 kinematic-glide base by default, or the
+  # ADR-0089 learned walking controller with `walking_enabled: true` (both
+  # sim-only); a hardware gait is the M2 S0 cerebellum.
   supported_control_modes:
     - "joint_position"
     - "body_twist"

@@ -8,17 +8,21 @@ MJCF).
 
 ## What this is — and what it isn't
 
-The MuJoCo twin is a **HAL contract validator**, not a useful humanoid sim:
-with a floating base and no S0 cerebellar controller it falls over under
-gravity, so the closed-loop sim tests run with `gravity_enabled=False`. It
+The MuJoCo twin is a **HAL contract validator** with two sim-only base modes,
+both with gravity on. By default ADR-0087's kinematic glide re-pins the
+floating base upright every physics step — there is no balance, the pin is what
+keeps it standing. With `walking_enabled=True` (`hal: {defaults: {walking_enabled:
+true}}` in a deploy scene, as `scenes/deploy/g1_vln.yaml` does) ADR-0089's pinned
+MuJoCo Playground ONNX controller walks `body_twist` commands on its own
+policy-tuned MJCF. The joint-convergence sim tests zero gravity
+(`gravity_enabled=False`) only to keep those assertions deterministic. It
 verifies:
 
 - 29-DoF joint-position action layout,
 - lifecycle wiring (`connect → read_state → send_action → estop`),
 - joint indexing and ordering,
 - `RobotDescription` round-trip,
-- embodiment / VLA tag plumbing.
-
+- embodiment / VLA tag plumbing,
 - the `body_twist` path: by default ADR-0087's upright kinematic glide (no
   balance); with `walking_enabled=True`, ADR-0089's pinned MuJoCo Playground
   ONNX walking controller for gravity-on sim walking — a sim-only learned

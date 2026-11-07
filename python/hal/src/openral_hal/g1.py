@@ -401,8 +401,9 @@ class G1MujocoHAL(MujocoArmHAL):
             ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
             count is a pinned, logged override.
         gravity_enabled: When ``False``, gravity is zeroed at
-            ``connect()`` time — required for the contract-validation
-            tests because the floating base falls otherwise.
+            ``connect()`` time — the joint-convergence contract tests use
+            it for determinism; the default glide pin keeps the
+            gravity-on twin upright.
         staleness_limit_s: Maximum age of a cached state.
 
     Example:
