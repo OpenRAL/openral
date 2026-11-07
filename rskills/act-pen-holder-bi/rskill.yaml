@@ -1,0 +1,143 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 "rSkill packaging")
+#
+# Wraps makermods/act_pen_holder_bi (pinned commit a4af0cc4, Apache-2.0): a lerobot
+# 0.6.0 ACT (ResNet-18, 4 enc / 1 dec layers, VAE, chunk 100) trained 20k steps (batch
+# 16) on makermods/pen_holder_bi_20260723_161553 (41 real teleop episodes, 25 987
+# frames @ 30 FPS, robot_type bi_metal_follower), task "Move the pen holder with the
+# left arm and put the pen into it with the right arm".
+#
+# IO — 14-D state and action, left arm first: left_joint1..6, left_gripper,
+# right_joint1..6, right_gripper (the station manifest's joint order). Three 480x640
+# views: top, left_wrist, right_wrist; MEAN_STD normalisation on all of them, in the
+# checkpoint's own policy_preprocessor / postprocessor.
+#
+# UNITS — as the single-arm sibling (rskills/pi05-metal-pick-place): joints in
+# DEGREES (same sign and zero as the URDF), gripper as a stroke ~0 closed .. ~105 open
+# (holds the holder at ~82, the pen at ~22). The codec converts rad<->deg and x100 on
+# the normalised [0 closed, 1 open] gripper both ways; a stroke above 100 clamps open.
+#
+# CAMERAS — robots/makermods_metal_station names its wrist views wrist_left /
+# wrist_right; the checkpoint calls them left_wrist / right_wrist (aliases below).
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-act-makermods_metal_station-pen_holder-fp32"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "act"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "makermods_metal_station"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.top"
+    min_width: 640
+    min_height: 480
+  - modality: "rgb"
+    vla_feature_key: "observation.images.wrist_left"
+    min_width: 640
+    min_height: 480
+  - modality: "rgb"
+    vla_feature_key: "observation.images.wrist_right"
+    min_width: 640
+    min_height: 480
+
+actuators_required:
+  - kind: "joint_position"
+    n_dof: 12
+    control_mode_semantics:
+      mode: "absolute"
+  - kind: "gripper_position"
+    n_dof: 2
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_open_unit"
+
+# ── Home / starting pose ─────────────────────────────────────────────────
+# Median first frame over the 41 episodes (deg): left [-6.58, -0.16, 0.07, 1.98,
+# -2.75, 1.49], gripper 0.03; right [-1.21, 0.01, 4.79, -16.91, -1.67, -0.52],
+# gripper -0.44. Radians, gripper /100 clamped to [0, 1]; right joint2 (limit
+# [-3.14, 0]) sits 1 mrad inside its limit.
+starting_pose: [-0.1148, -0.0028, 0.0012, 0.0346, -0.0480, 0.0260, 0.0,
+                -0.0211, -0.001, 0.0836, -0.2951, -0.0291, -0.0091, 0.0]
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+# 51.6 M params fp32 (207 MB) + three 480x640 ResNet-18 passes; see README.
+min_vram_gb:
+  fp32: 2.0
+weights_uri: "hf://makermods/act_pen_holder_bi@a4af0cc42618f935f1f7c8c5c717ad5769703745"
+
+processors:
+  preprocessor_uri: "hf://makermods/act_pen_holder_bi@a4af0cc42618f935f1f7c8c5c717ad5769703745/policy_preprocessor.json"
+  postprocessor_uri: "hf://makermods/act_pen_holder_bi@a4af0cc42618f935f1f7c8c5c717ad5769703745/policy_postprocessor.json"
+image_preprocessing:
+  flip_180: false
+  aliases:
+    wrist_left: "left_wrist"
+    wrist_right: "right_wrist"
+state_contract:
+  dim: 14
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# The checkpoint's own chunk_size / n_action_steps: 100 steps (3.3 s at 30 Hz),
+# replayed in full before the next inference (no temporal ensembling).
+chunk_size: 100
+n_action_steps: 100
+latency_budget:
+  per_chunk_ms: 100.0
+
+default_prompt: "Move the pen holder with the left arm and put the pen into it with the right arm"
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2304.13705"
+dataset_uri: "hf://makermods/pen_holder_bi_20260723_161553@f9f3d9959464d123a164b1e4bc11d0f0e56ad97d"
+source_repo: "hf://makermods/act_pen_holder_bi"
+
+description: >
+  ACT (Action Chunking Transformer) by MakerMods for the two-arm MakerMods Metal Arm
+  Station: the left arm lifts a pen holder off a shelf to mid-desk, the right arm drops
+  a pen into it and the left arm puts the holder back, from a top and two wrist RGB
+  views and the 14-D joint + gripper state, at 30 Hz in 100-step chunks of absolute
+  joint positions (degrees in the checkpoint).
+
+actions:
+  - "pick"
+  - "place"
+  - "insert"
+objects:
+  - "pen"
+  - "pen_holder"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 14
+  representation: "joint_positions"
+  joint_units: "degrees"
+  gripper_scale: 100.0
+  control_freq_hz: 30.0
+  joint_names:
+    - "left_joint1"
+    - "left_joint2"
+    - "left_joint3"
+    - "left_joint4"
+    - "left_joint5"
+    - "left_joint6"
+    - "left_gripper"
+    - "right_joint1"
+    - "right_joint2"
+    - "right_joint3"
+    - "right_joint4"
+    - "right_joint5"
+    - "right_joint6"
+    - "right_gripper"

@@ -1,0 +1,13 @@
+metal_pen_holder_episodes.npz: episodes 0, 7 and 30 of the LeRobot v3 dataset
+makermods/pen_holder_bi_20260723_161553
+(https://huggingface.co/datasets/makermods/pen_holder_bi_20260723_161553), revision
+f9f3d9959464d123a164b1e4bc11d0f0e56ad97d, license Apache-2.0.
+
+  action_<ep>, state_<ep>  float32 (T, 14): the dataset's `action` and `observation.state`
+                           columns (left joint1..6 in degrees with the URDF sign / zero, left
+                           gripper stroke ~0 closed .. ~105 open, then the right arm), 30 fps.
+  layout_<ep>              float32 (6,): the episode's start layout in station_base (the
+                           midpoint of the arm bases): cup x, y (m), cup face yaw (deg, mod 90),
+                           pen centre x, y (m), pen yaw (deg). Cup from left-arm forward
+                           kinematics at the grasp (0.087 m along gripper_base z); pen from
+                           top-camera back-projection with the measured station camera.
