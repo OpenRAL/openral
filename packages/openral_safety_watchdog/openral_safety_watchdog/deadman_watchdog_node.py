@@ -26,12 +26,15 @@ released when ``/openral/safety_status`` reports recovery.
 
 A goal that publishes no chunks at all, a wrapped result-only rSkill such as Nav2's
 ``navigate_to_pose``, is announced by the runner on ``/openral/result_only_goal``
-(``openral_msgs/ResultOnlyGoal``) with the runner's own wall bound on it. For a live goal
-so named, the first-chunk window is replaced by that bound plus ``result_only_grace_s``
-(time to cancel the wrapped goal and confirm it ended), counted from the announcement
-and never longer than ``result_only_max_s`` (ADR-0127 Decision 5). Before, every such
-goal longer than ``first_chunk_deadline_s`` was braked. The replacement stays bounded:
-a runner that dies mid-goal leaves the window open, and it fires at that bound.
+(``openral_msgs/ResultOnlyGoal``) with the runner's own wall bound on it. While such a
+goal is live, the window is that bound plus ``result_only_grace_s`` (the runner's
+goal-accept wait and the cancel of the wrapped goal), counted from the goal's announced
+``wall_start`` and never longer than ``result_only_max_s`` (ADR-0127 Decision 5), whether
+or not a chunk was seen (a starting-pose move publishes some first). Before, every such
+goal longer than ``first_chunk_deadline_s`` was braked. The replacement stays bounded: a
+runner that dies mid-goal leaves the window open, and it fires at that bound. A goal
+queued behind it gets a fresh first-chunk window when the result-only goal ends (the
+runner executes one goal at a time).
 """
 
 from __future__ import annotations
@@ -72,9 +75,10 @@ chunk holds the window open forever and is never braked."""
 DEFAULT_RESULT_ONLY_TOPIC = "/openral/result_only_goal"
 """Runner -> watchdog: a goal that publishes no chunks and its wall bound (ADR-0127 D5)."""
 
-DEFAULT_RESULT_ONLY_GRACE_S = 15.0
-"""Added to a result-only goal's announced bound: the runner's cancel + confirm of the
-wrapped goal takes up to 10 s (two 5 s waits) after its budget lapses."""
+DEFAULT_RESULT_ONLY_GRACE_S = 30.0
+"""Added to a result-only goal's announced bound: the runner's goal-accept wait (up to 15 s,
+not stoppable) and its cancel + confirm of the wrapped goal (up to two 5 s waits) can run
+past its budget, plus margin."""
 
 DEFAULT_RESULT_ONLY_MAX_S = 1800.0
 """Hard ceiling on a result-only goal's window, whatever bound the runner announces."""
@@ -135,7 +139,7 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         ``result_only_topic``: ``openral_msgs/ResultOnlyGoal`` announcements of goals
             that publish no chunks (gated mode only; empty disables, so every goal keeps
             the first-chunk window).
-        ``result_only_grace_s``: Added to an announced bound (default 15 s).
+        ``result_only_grace_s``: Added to an announced bound (default 30 s).
         ``result_only_max_s``: Ceiling on a result-only window (default 1800 s).
         ``safety_status_topic``: Latched ``openral_msgs/SafetyStatus``. The
             post-estop latch is released on the **transition** ``latched=True``
@@ -174,8 +178,10 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         self._status_sub: Any = None
         self._result_only_sub: Any = None
         self._timer: Any = None
-        # goal uuid -> (rskill_id, deadline in time.time_ns()) of announced result-only goals.
-        self._result_only: dict[bytes, tuple[str, int]] = {}
+        # goal uuid -> (rskill_id, wall start ns, deadline ns) of announced result-only goals.
+        self._result_only: dict[bytes, tuple[str, int, int]] = {}
+        self._result_only_grace_s = DEFAULT_RESULT_ONLY_GRACE_S
+        self._result_only_max_s = DEFAULT_RESULT_ONLY_MAX_S
 
         self._last_safe_ns: int = 0
         self._window_opened_ns: int = 0
@@ -247,7 +253,21 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
                 self.get_parameter("result_only_topic").get_parameter_value().string_value
             )
             if result_only_topic:
+                import math
+
                 from openral_msgs.msg import ResultOnlyGoal
+
+                grace_s = (
+                    self.get_parameter("result_only_grace_s").get_parameter_value().double_value
+                )
+                max_s = self.get_parameter("result_only_max_s").get_parameter_value().double_value
+                for name, value in (("result_only_grace_s", grace_s), ("result_only_max_s", max_s)):
+                    if not math.isfinite(value) or value <= 0.0:
+                        self.get_logger().error(
+                            f"safety.deadman_bad_param {name}={value!r}: must be finite and > 0"
+                        )
+                        return TransitionCallbackReturn.FAILURE
+                self._result_only_grace_s, self._result_only_max_s = grace_s, max_s
 
                 self._result_only_sub = self.create_subscription(
                     ResultOnlyGoal,
@@ -340,9 +360,12 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
             for entry in msg.status_list
             if entry.status in self._live_statuses
         )
+        result_only_ended = False
         for ended in self._live_goal_ids - live_ids:
-            self._result_only.pop(ended, None)
-        if live_ids - self._live_goal_ids:
+            result_only_ended |= self._result_only.pop(ended, None) is not None
+        if live_ids - self._live_goal_ids or (result_only_ended and live_ids):
+            # A new goal, or a goal queued behind a result-only goal that just ended
+            # (the runner runs one at a time): it gets its own first-chunk window now.
             now = time.time_ns()
             self._last_safe_ns = now
             self._window_opened_ns = now
@@ -353,28 +376,37 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         self._window_open = bool(live_ids)
 
     def _on_result_only_goal(self, msg: Any) -> None:
-        """Record a goal that publishes no chunks, with its deadline from now.
+        """Record a goal that publishes no chunks, with its deadline.
 
-        The deadline is the runner's announced wall bound plus ``result_only_grace_s``,
-        capped at ``result_only_max_s``; a non-positive or non-finite bound is ignored, so
-        that goal keeps the first-chunk window.
+        The deadline is the goal's announced ``wall_start`` plus its wall bound plus
+        ``result_only_grace_s``, capped at ``result_only_max_s`` (a capped bound is logged
+        as a warning). A non-positive or non-finite bound, or a start in the future, is
+        ignored, so that goal keeps the first-chunk window.
         """
         import math
 
         bound_s = float(msg.wall_bound_s)
-        if not math.isfinite(bound_s) or bound_s <= 0.0:
+        start_ns = int(msg.wall_start.sec) * 1_000_000_000 + int(msg.wall_start.nanosec)
+        if not math.isfinite(bound_s) or bound_s <= 0.0 or start_ns > time.time_ns():
             self.get_logger().warning(
-                f"safety.deadman_result_only_ignored rskill={msg.rskill_id!r} bound={bound_s!r}"
+                f"safety.deadman_result_only_ignored rskill={msg.rskill_id!r} "
+                f"bound={bound_s!r} wall_start_ns={start_ns}"
             )
             return
-        grace_s = self.get_parameter("result_only_grace_s").get_parameter_value().double_value
-        max_s = self.get_parameter("result_only_max_s").get_parameter_value().double_value
+        grace_s, max_s = self._result_only_grace_s, self._result_only_max_s
         window_s = min(bound_s + grace_s, max_s)
+        if bound_s + grace_s > max_s:
+            self.get_logger().warning(
+                f"safety.deadman_result_only_capped rskill={msg.rskill_id!r}: the runner's "
+                f"bound {bound_s:.1f} s + grace {grace_s:.1f} s exceeds result_only_max_s; "
+                f"braking at {max_s:.1f} s"
+            )
         while len(self._result_only) >= _RESULT_ONLY_MAX_TRACKED:
             self._result_only.pop(next(iter(self._result_only)))
         self._result_only[bytes(msg.goal_uuid)] = (
             str(msg.rskill_id),
-            time.time_ns() + int(window_s * 1e9),
+            start_ns,
+            start_ns + int(window_s * 1e9),
         )
         self.get_logger().info(
             f"safety.deadman_result_only rskill={msg.rskill_id!r} window_s={window_s:.1f} "
@@ -429,20 +461,24 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         if not self._armed or self._triggered or not self._window_open:
             return
         now = time.time_ns()
-        if self._arm_sub is not None and not self._chunk_seen_in_window:
+        if self._arm_sub is not None:
             # A live goal announced as publishing no chunks is bounded by its own
-            # announced deadline instead (bounded too: a dead runner never ends it).
+            # announced deadline instead, chunk or no chunk (a starting-pose move
+            # publishes some first). Bounded too: a dead runner never ends it.
             announced = [
                 self._result_only[g] for g in self._live_goal_ids if g in self._result_only
             ]
             if announced:
-                _rskill, deadline_ns = min(announced, key=lambda entry: entry[1])
+                rskill_id, start_ns, deadline_ns = min(announced, key=lambda entry: entry[2])
                 if now > deadline_ns:
-                    window_s = (deadline_ns - self._window_opened_ns) / 1e9
                     self._fire_estop(
-                        (now - self._window_opened_ns) / 1e9, window_s, "result_only_goal"
+                        (now - start_ns) / 1e9,
+                        (deadline_ns - start_ns) / 1e9,
+                        "result_only_goal",
+                        rskill_id=rskill_id,
                     )
                 return
+        if self._arm_sub is not None and not self._chunk_seen_in_window:
             # Bounded: a goal that never produces a first chunk is a dead
             # actuation path once its load budget is spent.
             budget_s: float = (
@@ -459,7 +495,9 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         if age_s > deadline_s:
             self._fire_estop(age_s, deadline_s, "safe_action")
 
-    def _fire_estop(self, age_s: float, deadline_s: float, operation: str) -> None:
+    def _fire_estop(
+        self, age_s: float, deadline_s: float, operation: str, *, rskill_id: str = ""
+    ) -> None:
         """Publish estop + FailureTrigger; latch until safety_status recovers."""
         from openral_msgs.msg import FailureTrigger
         from std_msgs.msg import Empty
@@ -481,7 +519,7 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
                 "elapsed_s": float(age_s),
             }
         )
-        trigger.rskill_id = ""
+        trigger.rskill_id = rskill_id
         trigger.trace_id = ""
         self._failure_pub.publish(trigger)
         self.get_logger().error(

@@ -1900,6 +1900,7 @@ if _ROS2_AVAILABLE:
             rate_hz = self._control_rate_hz()
             period_s = 1.0 / max(rate_hz, 1.0)
             budget = self._new_execution_budget(deadline_s)
+            budget_wall_start_ns = time.time_ns()  # the deadman counts a result-only bound here
             from openral_rskill.ros_action_rskill import ROSActionRskill
 
             if isinstance(skill, ROSActionRskill):
@@ -1926,7 +1927,9 @@ if _ROS2_AVAILABLE:
 
                 skill.stop_check = _goal_ended
                 if skill.result_only:
-                    self._announce_result_only_goal(goal_handle, skill, budget)
+                    self._announce_result_only_goal(
+                        goal_handle, skill, budget, wall_start_ns=budget_wall_start_ns
+                    )
             # Absolute deadlines absorb tick work into the configured period.
             chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
@@ -2613,7 +2616,14 @@ if _ROS2_AVAILABLE:
                 return False
             return True
 
-        def _announce_result_only_goal(self, goal_handle: Any, skill: Any, budget: Any) -> None:
+        def _announce_result_only_goal(
+            self,
+            goal_handle: Any,  # reason: rclpy ServerGoalHandle is untyped
+            skill: ROSActionRskill,
+            budget: ExecutionBudget,
+            *,
+            wall_start_ns: int,
+        ) -> None:
             """Tell the deadman watchdog this goal publishes no chunks, and its wall bound.
 
             Without it the watchdog's first-chunk window e-stops every Nav2 goal longer
@@ -2630,6 +2640,8 @@ if _ROS2_AVAILABLE:
 
             msg = ResultOnlyGoal()
             msg.goal_uuid = [int(b) for b in goal_handle.goal_id.uuid]
+            msg.wall_start.sec = wall_start_ns // 1_000_000_000
+            msg.wall_start.nanosec = wall_start_ns % 1_000_000_000
             msg.rskill_id = str(skill.name)
             msg.wall_bound_s = bound_s
             if self._publish_unless_shut_down(self._result_only_pub, msg, "result-only goal"):
