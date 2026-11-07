@@ -405,8 +405,7 @@ def check_command(
         False,
         "--resolve-remote-assets",
         help=(
-            "Also resolve rd:/gym_aloha:/openarm:/unitree:/makermods: refs "
-            "(downloads / sim deps)."
+            "Also resolve rd:/gym_aloha:/openarm:/unitree:/makermods: refs (downloads / sim deps)."
         ),
     ),
     json_out: bool = typer.Option(False, "--json", help="Emit the GraphCheckReport as JSON."),
