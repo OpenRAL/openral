@@ -114,10 +114,10 @@ def resolve_package_uri(uri: str) -> Path:
     """Resolve a ROS ``package://<pkg>/<relpath>`` mesh URI to a file on disk.
 
     Only for the description packages OpenRAL fetches itself as pinned clones
-    (``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`` — today
-    ``openarm_description``); a sourced ROS workspace is not consulted, so the
-    answer is the same on every host. Lazy import, as ``_resolve_openarm``: the
-    fetchers stay off the import path for robots that never need them.
+    (the keys of ``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES``); a
+    sourced ROS workspace is not consulted, so the answer is the same on every
+    host. Lazy import, as ``_resolve_openarm``: the fetchers stay off the
+    import path for robots that never need them.
 
     Args:
         uri: The ``package://`` reference as the URDF spells it.
