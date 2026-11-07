@@ -14,8 +14,11 @@ fields, and Hub tags) so a query word that only appears in a skill's
 
 Public surface
 --------------
-- ``HubRSkillHit``: One matching Hub repo, its validated manifest, and
+- ``HubRSkillHit``: One matching Hub repo, its validated manifest (or, for a
+  gated OpenRAL Pro repo you have no access to, its model-card summary), and
   whether it is already available locally (in-tree or installed).
+- ``HubRSkillCard``: The catalog fields a gated repo exposes on its public
+  model card — reserved tags plus the ``openral:`` front-matter block.
 - ``HubRSkillSearchResult``: The full result — hits plus bookkeeping
   (``skipped``, ``skipped_repo_ids``, ``inspected``) so callers can surface
   "N repos skipped" (with ids) without this module logging anything itself.
@@ -24,6 +27,7 @@ Public surface
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Literal
 
@@ -40,13 +44,92 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+class HubRSkillCard(BaseModel):
+    """Catalog summary of a gated (OpenRAL Pro) rSkill, read from its public model card.
+
+    Built from the publisher's reserved tags (``rskill-kind:``, ``rskill-role:``,
+    ``embodiment:``, ``rskill-license:``) and the ``openral:`` front-matter block,
+    for a repo whose ``rskill.yaml`` this machine cannot read yet.
+
+    Example:
+        >>> card = HubRSkillCard.from_card(
+        ...     [
+        ...         "rskill",
+        ...         "rskill-kind:vla",
+        ...         "rskill-role:s1",
+        ...         "embodiment:so101_follower",
+        ...         "rskill-license:proprietary",
+        ...     ],
+        ...     {
+        ...         "openral": {
+        ...             "description": "Restock shelves.",
+        ...             "min_vram_gb": 6.0,
+        ...             "latency_ms": 120.0,
+        ...             "runtime": "pytorch",
+        ...             "dtype": "bf16",
+        ...         }
+        ...     },
+        ... )
+        >>> (card.kind, card.license, card.embodiment_tags, card.min_vram_gb)
+        ('vla', 'proprietary', ('so101_follower',), 6.0)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: str
+    role: str
+    license: str
+    embodiment_tags: tuple[str, ...] = Field(default_factory=tuple)
+    description: str = ""
+    min_vram_gb: float | None = None
+    latency_ms: float | None = None
+    runtime: str | None = None
+    dtype: str | None = None
+
+    @classmethod
+    def from_card(cls, tags: Iterable[str], card_data: object) -> HubRSkillCard | None:
+        """Build from Hub tags + card data; ``None`` when the card lacks the catalog contract.
+
+        Args:
+            tags: The repo's Hub tags.
+            card_data: ``ModelInfo.card_data`` (a ``ModelCardData`` or plain dict).
+        """
+        to_dict = getattr(card_data, "to_dict", None)
+        data = to_dict() if callable(to_dict) else card_data
+        block = data.get("openral") if isinstance(data, dict) else None
+        reserved: dict[str, str] = {}
+        embodiments: list[str] = []
+        for tag in tags:
+            prefix, _, value = tag.partition(":")
+            if prefix == "embodiment" and value:
+                embodiments.append(value)
+            elif prefix in {"rskill-kind", "rskill-role", "rskill-license"} and value:
+                reserved[prefix] = value
+        if not isinstance(block, dict) or len(reserved) < 3:  # noqa: PLR2004  # reason: kind+role+license
+            return None
+        return cls(
+            kind=reserved["rskill-kind"],
+            role=reserved["rskill-role"],
+            license=reserved["rskill-license"],
+            embodiment_tags=tuple(embodiments),
+            description=str(block.get("description") or ""),
+            min_vram_gb=block.get("min_vram_gb"),
+            latency_ms=block.get("latency_ms"),
+            runtime=block.get("runtime"),
+            dtype=block.get("dtype"),
+        )
+
+
 class HubRSkillHit(BaseModel):
-    """One Hub repo whose ``rskill.yaml`` validated and matched the query.
+    """One Hub repo that matched the query: a validated manifest or a gated card.
 
     Attributes:
         repo_id: HF Hub repository identifier, e.g.
             ``"OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32"``.
-        manifest: The validated ``RSkillManifest`` fetched from the repo.
+        manifest: The validated ``RSkillManifest`` fetched from the repo;
+            ``None`` for a gated repo whose ``rskill.yaml`` is not readable here.
+        card: For such a gated repo, its model-card summary — the CLI shows it
+            as "Pro (request access)". ``None`` otherwise.
         local: ``"in-tree"`` when the Hub ``repo_id`` matches the ``name``
             declared by a ``rskills/<dir>/rskill.yaml`` in this checkout
             (compared against the local manifest's name, never the remote
@@ -55,8 +138,9 @@ class HubRSkillHit(BaseModel):
             registry (``rSkill.list_installed()``) has a matching
             ``repo_id``; ``None`` when neither.
         hub_tags: The repo's model-card tags as reported by the Hub
-            (includes ``"OpenRAL"`` and ``"rskill"``, plus embodiment/license
-            tags set by the publisher).
+            (includes ``"OpenRAL"`` and ``"rskill"``, plus the reserved
+            ``rskill-kind:`` / ``rskill-role:`` / ``embodiment:`` /
+            ``rskill-license:`` tags set by the publisher).
 
     Example:
         >>> from openral_rskill.loader import load_rskill_manifest
@@ -74,7 +158,8 @@ class HubRSkillHit(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     repo_id: str
-    manifest: RSkillManifest
+    manifest: RSkillManifest | None
+    card: HubRSkillCard | None = None
     local: Literal["in-tree", "installed"] | None
     hub_tags: tuple[str, ...] = Field(default_factory=tuple)
 
@@ -85,7 +170,8 @@ class HubRSkillSearchResult(BaseModel):
     Attributes:
         hits: Matching repos, sorted by ``repo_id`` and capped by ``limit``.
         skipped: Count of inspected org repos with no valid ``rskill.yaml``
-            (excluded from ``hits`` regardless of query/filters). Always
+            and no gated catalog card (excluded from ``hits`` regardless of
+            query/filters). Always
             equal to ``len(skipped_repo_ids)``.
         skipped_repo_ids: The repo ids counted in ``skipped``, sorted. This
             module never logs per-repo skips (the CLI never calls
@@ -109,13 +195,15 @@ class HubRSkillSearchResult(BaseModel):
     inspected: int
 
 
-def _manifest_haystack(repo_id: str, manifest: RSkillManifest, hub_tags: tuple[str, ...]) -> str:
+def _manifest_haystack(
+    repo_id: str, manifest: RSkillManifest | HubRSkillCard, hub_tags: tuple[str, ...]
+) -> str:
     """Build the lower-cased free-text blob a query's tokens are matched against."""
     parts = [
         repo_id,
-        manifest.name,
+        getattr(manifest, "name", ""),
         manifest.description,
-        manifest.model_family or "",
+        getattr(manifest, "model_family", None) or "",
         manifest.kind,
         manifest.role,
         *manifest.embodiment_tags,
@@ -131,7 +219,13 @@ def _matches_query(query: str, haystack: str) -> bool:
 
 
 def _matches_facets(
-    m: RSkillManifest, *, kind: str, role: str, embodiment: str, license_: str, family: str
+    m: RSkillManifest | HubRSkillCard,
+    *,
+    kind: str,
+    role: str,
+    embodiment: str,
+    license_: str,
+    family: str,
 ) -> bool:
     """Return whether a manifest passes every non-empty facet filter."""
     if kind and m.kind != kind:
@@ -140,13 +234,19 @@ def _matches_facets(
         return False
     if embodiment and embodiment not in m.embodiment_tags:
         return False
-    if license_ and m.license.value != license_:
+    if license_ and getattr(m.license, "value", m.license) != license_:
         return False
-    return not (family and m.model_family != family)
+    return not (family and getattr(m, "model_family", None) != family)
 
 
-def _fetch_one(model: ModelInfo) -> tuple[str, RSkillManifest | None, tuple[str, ...], str]:
+def _fetch_one(
+    model: ModelInfo,
+) -> tuple[str, RSkillManifest | HubRSkillCard | None, tuple[str, ...], str]:
     """Fetch + validate one Hub repo's ``rskill.yaml``; ``None`` manifest = skip.
+
+    When the manifest is unreadable but the listing marks the repo gated, the
+    result is built from its public model card instead (``HubRSkillCard``);
+    a gated repo whose card lacks the catalog contract is skipped like any other.
 
     Runs in a worker thread (see ``search_hub_rskills``). A repo with no
     manifest, an unparseable one, or a Hub-side miss is not an rSkill — the
@@ -175,6 +275,10 @@ def _fetch_one(model: ModelInfo) -> tuple[str, RSkillManifest | None, tuple[str,
         HfHubHTTPError,  # reason: repo has no rskill.yaml at all, or a transient Hub HTTP error
         EntryNotFoundError,  # reason: rskill.yaml missing from an otherwise-valid repo
     ) as exc:
+        if getattr(model, "gated", False):
+            card = HubRSkillCard.from_card(hub_tags, getattr(model, "card_data", None))
+            if card is not None:
+                return repo_id, card, hub_tags, ""
         return repo_id, None, hub_tags, str(exc)
     return repo_id, manifest, hub_tags, ""
 
@@ -223,7 +327,9 @@ def search_hub_rskills(
     matches ``query`` locally (case-insensitive, every whitespace-split token
     must substring-match repo id / manifest name / description / model
     family / kind / role / embodiment tags / Hub tags) and applies the facet
-    filters. Repos without a valid manifest are counted in ``skipped`` and
+    filters. A gated repo whose manifest is unreadable is matched from its
+    model card instead (``HubRSkillHit.card``; ``family`` cannot match it).
+    Other repos without a valid manifest are counted in ``skipped`` and
     excluded from ``hits`` regardless of query or filters.
 
     Args:
@@ -251,11 +357,15 @@ def search_hub_rskills(
     """
     from huggingface_hub import HfApi  # noqa: PLC0415
 
-    models = list(HfApi().list_models(author=org, filter="rskill", limit=None))
+    models = list(
+        HfApi().list_models(
+            author=org, filter="rskill", limit=None, expand=["tags", "gated", "cardData"]
+        )
+    )
     inspected = len(models)
 
     skipped_repo_ids: list[str] = []
-    candidates: list[tuple[str, RSkillManifest, tuple[str, ...]]] = []
+    candidates: list[tuple[str, RSkillManifest | HubRSkillCard, tuple[str, ...]]] = []
     with ThreadPoolExecutor(
         max_workers=max_workers, thread_name_prefix="rskill_hub_search"
     ) as pool:
@@ -284,7 +394,13 @@ def search_hub_rskills(
         else:
             local = None
         hits.append(
-            HubRSkillHit(repo_id=repo_id, manifest=manifest, local=local, hub_tags=hub_tags)
+            HubRSkillHit(
+                repo_id=repo_id,
+                manifest=manifest if isinstance(manifest, RSkillManifest) else None,
+                card=manifest if isinstance(manifest, HubRSkillCard) else None,
+                local=local,
+                hub_tags=hub_tags,
+            )
         )
 
     hits.sort(key=lambda h: h.repo_id)

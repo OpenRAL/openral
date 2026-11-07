@@ -19,9 +19,17 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import patch
 
-from huggingface_hub.errors import EntryNotFoundError
+import httpx
+import pytest
+from huggingface_hub.errors import (
+    EntryNotFoundError,
+    GatedRepoError,
+    HfHubHTTPError,
+    RepositoryNotFoundError,
+)
 from openral_cli.main import app
-from openral_rskill.loader import InstalledRSkillEntry, rSkill
+from openral_core.exceptions import ROSConfigError
+from openral_rskill.loader import InstalledRSkillEntry, gated_repo_error, rSkill
 from typer.testing import CliRunner
 
 if TYPE_CHECKING:
@@ -251,6 +259,62 @@ class TestSkillInstall:
         assert hub.download_calls == []
         assert hub.snapshot_calls == []
 
+    GATED_REPO = "OpenRAL/rskill-act-franka_panda-libero-fp32"
+
+    @staticmethod
+    def _http_error(error_cls: type[HfHubHTTPError], status: int) -> HfHubHTTPError:
+        resp = httpx.Response(status, request=httpx.Request("GET", "https://huggingface.co"))
+        return error_cls(f"{status} Client Error", response=resp)
+
+    def test_gated_repo_prints_request_access(self, tmp_path: Path) -> None:
+        """A gated repo fails the manifest fetch with the actionable request-access line."""
+        hub = _FakeHub({}, error=self._http_error(GatedRepoError, 403))
+        result = self._invoke(hub, tmp_path, self.GATED_REPO)
+        assert result.exit_code == 1
+        out = " ".join(result.output.split())  # Rich wraps long lines
+        assert (
+            f"OpenRAL Pro rSkill '{self.GATED_REPO}' is gated — request access at "
+            f"https://huggingface.co/{self.GATED_REPO} (signed in to the Hub as the account "
+            "whose token this machine uses)." in out
+        )
+        assert "Failed to fetch manifest" not in out
+        assert hub.snapshot_calls == []
+
+    def test_from_pretrained_gated_snapshot_raises_request_access(self, tmp_path: Path) -> None:
+        """``rSkill.from_pretrained``: a gated weights snapshot raises the typed message."""
+        hub = _FakeHub({self.GATED_REPO: _RSKILLS_DIR / "act-libero"})
+
+        def gated_snapshot(*, repo_id: str, **_: object) -> str:
+            raise self._http_error(GatedRepoError, 403)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", new=hub.hf_hub_download),
+            patch("huggingface_hub.snapshot_download", new=gated_snapshot),
+            pytest.raises(ROSConfigError, match="is gated — request access at"),
+        ):
+            rSkill.from_pretrained(self.GATED_REPO, registry_path=tmp_path / "r.json")
+
+    def test_403_on_repo_model_info_reports_gated_maps_to_request_access(self) -> None:
+        exc = self._http_error(HfHubHTTPError, 403)
+        api = SimpleNamespace(model_info=lambda repo_id: SimpleNamespace(gated="manual"))
+        with patch("huggingface_hub.HfApi", return_value=api):
+            err = gated_repo_error(self.GATED_REPO, exc)
+        assert err is not None and f"https://huggingface.co/{self.GATED_REPO}" in str(err)
+
+    def test_private_or_missing_repo_keeps_current_behaviour(self, tmp_path: Path) -> None:
+        """401 on a private/missing repo (model_info also fails) is not reported as gated."""
+        exc = self._http_error(RepositoryNotFoundError, 401)
+
+        def missing(repo_id: str) -> None:
+            raise self._http_error(RepositoryNotFoundError, 401)
+
+        with patch("huggingface_hub.HfApi", return_value=SimpleNamespace(model_info=missing)):
+            assert gated_repo_error(self.GATED_REPO, exc) is None
+            result = self._invoke(_FakeHub({}, error=exc), tmp_path, self.GATED_REPO)
+        assert result.exit_code == 1
+        assert "Failed to fetch manifest" in result.output
+        assert "request access" not in result.output
+
 
 # ── ral skill search ───────────────────────────────────────────────────────────
 
@@ -353,6 +417,55 @@ class TestSkillSearch:
             patch.dict(os.environ, {"COLUMNS": "200"}),
         ):
             return runner.invoke(app, ["rskill", "search", *args], catch_exceptions=False)
+
+    def test_gated_repo_shown_as_pro_request_access(self, tmp_path: Path) -> None:
+        """A gated repo with an unreadable manifest is listed from its card as Pro."""
+        gated_id = "OpenRAL/rskill-act-so101_follower-restock-bf16"
+        listing = [
+            SimpleNamespace(
+                id=gated_id,
+                tags=[
+                    "rskill",
+                    "rskill-kind:vla",
+                    "rskill-role:s1",
+                    "embodiment:so101_follower",
+                    "rskill-license:proprietary",
+                ],
+                gated="manual",
+                card_data={
+                    "openral": {
+                        "description": "Restocks a shelf.",
+                        "min_vram_gb": 6.5,
+                        "latency_ms": 120.0,
+                        "runtime": "pytorch",
+                        "dtype": "bf16",
+                    }
+                },
+            )
+        ]
+
+        class _Api:
+            def list_models(self, **_: object) -> list[SimpleNamespace]:
+                return listing
+
+        def gated_download(*, repo_id: str, filename: str, **_: object) -> str:
+            raise EntryNotFoundError(f"403 gated: {repo_id}/{filename}")
+
+        with (
+            patch("huggingface_hub.HfApi", return_value=_Api()),
+            patch("huggingface_hub.hf_hub_download", side_effect=gated_download),
+            patch("openral_rskill.loader.DEFAULT_REGISTRY_PATH", tmp_path / "r.json"),
+            patch.dict(os.environ, {"COLUMNS": "250"}),
+        ):
+            result = runner.invoke(app, ["rskill", "search"], catch_exceptions=False)
+            as_json = runner.invoke(app, ["rskill", "search", "--json"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert gated_id in result.output
+        assert "Pro (request access)" in result.output
+        assert "skipped" not in result.output.lower()
+        (row,) = json.loads(as_json.output)
+        assert row["gated"] is True and row["license"] == "proprietary"
+        assert row["min_vram_gb"] == 6.5 and row["version"] is None
 
     def test_lists_valid_skills_with_install_hint(self, tmp_path: Path) -> None:
         """A query token present in both repo ids must surface both, plus the hint."""
