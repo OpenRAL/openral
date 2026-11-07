@@ -23,7 +23,7 @@ metadata:
   latency_budget: {per_chunk_ms: 2500.0, max_execution_s: 300.0}
   license_code: Apache-2.0
   license_weights: cc-by-nc-sa-4.0   # NOT permissive — see License section
-  weights_uri: hf://InternRobotics/InternVLA-N1-DualVLN
+  weights_uri: hf://InternRobotics/InternVLA-N1-DualVLN@a698a9e898b4001621a319e1bc89f02ec715cc86
   source_repo: hf://InternRobotics/InternVLA-N1-DualVLN
   paper_url: https://arxiv.org/abs/2512.08186
 ---

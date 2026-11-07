@@ -24,7 +24,7 @@ metadata:
   latency_budget: {per_chunk_ms: 100.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://Deepkar/libero-test-act
+  weights_uri: hf://Deepkar/libero-test-act@b6a5253edf0c9d9e458629fdeb489f514ff6300f
   source_repo: hf://Deepkar/libero-test-act
   paper_url: https://arxiv.org/abs/2304.13705
 ---

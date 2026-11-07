@@ -26,7 +26,7 @@ metadata:
   latency_budget: {per_chunk_ms: 200.0}
   license_code: Apache-2.0
   license_weights: permissive_research   # NOT permissive — see License section
-  weights_uri: hf://lerobot/pi05_libero_finetuned_v044
+  weights_uri: hf://lerobot/pi05_libero_finetuned_v044@7152f13e34c6c115d808aea0e5d08aca74eac14b
   source_repo: hf://lerobot/pi05_libero_finetuned_v044
   paper_url: https://arxiv.org/abs/2410.24164
 ---

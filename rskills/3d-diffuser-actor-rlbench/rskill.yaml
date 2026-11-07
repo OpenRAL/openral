@@ -71,7 +71,7 @@ runtime: "pytorch"
 min_vram_gb:
   bf16: 2.0
   fp32: 2.0
-weights_uri: "hf://katefgroup/3d_diffuser_actor"
+weights_uri: "hf://katefgroup/3d_diffuser_actor@a5a7819af75491d0e7d9e606f635cc3f95cb3a1c"
 
 # ── Execution semantics ────────────────────────────────────────────────────
 # One macro-keypose per step (the scene's mover plans + executes it). 100 DDIM

@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 3000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4
+  weights_uri: hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4@53746590ae04b6a3e4e9b1ef0247b6041f240873
   source_repo: hf://Qwen/Qwen3-VL-4B-Instruct
   paper_url: https://arxiv.org/abs/2602.19313
 ---

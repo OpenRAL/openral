@@ -680,7 +680,7 @@ _Xiaomi Robotics XR-1 / MiBoT adapter. The openral process owns history, state-l
 - `_load_manifest_for_spec(spec) -> RSkillManifest | None` — Loads the rSkill manifest from a skill reference in `spec.weights_uri`; returns `None` when the URI is not resolvable to a manifest. Also imported by `backends.libero` (formerly a duplicate copy there).
 - `_sanitize_act_config_json(snapshot_dir) -> None` — Drops `ACTConfig` fields the installed lerobot version doesn't accept (e.g. `n_state_dim` on training-fork checkpoints). Mutates `config.json` in-place, no-op when there's nothing to strip.
 - `_apply_temporal_ensemble(policy, spec_extra) -> float | None` — Sets `policy.config.temporal_ensemble_coeff` and builds the missing `ACTTemporalEnsembler` (lerobot only attaches one when the coeff is non-None at `__init__` time).
-- `_try_load_act_norm_stats(repo_id, device, torch, cam_keys) -> dict` — Pulls `normalize_*` / `unnormalize_*` tensors from `model.safetensors` for the legacy `act-aloha`-shaped checkpoints.
+- `_try_load_act_norm_stats(repo_id, device, torch, cam_keys, revision=None) -> dict` — Pulls `normalize_*` / `unnormalize_*` tensors from `model.safetensors` for the legacy `act-aloha`-shaped checkpoints.
 
 #### `python/sim/src/openral_sim/_quantization.py`
 _Shared precision plumbing: manifest-driven dtype resolution, dtype casting, safetensors streaming and meta-init. The bitsandbytes NF4/LLM.int8 code lives in OpenRAL Pro (ADR-0123 step 3). Family-agnostic — the same primitives serve pi05 today and any future bnb-quantized backbone (pi0.6, smolvla-large). All helpers defer torch / bitsandbytes imports so installing `openral-sim` does not pull them transitively._

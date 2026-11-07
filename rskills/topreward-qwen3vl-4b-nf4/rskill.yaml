@@ -50,7 +50,7 @@ min_vram_gb:
 # Qwen3-VL-4B-Instruct VLM. OpenRAL hosts a pre-quantized NF4 copy so nobody
 # re-quantizes: weights_uri points at THIS repo (self-referencing, like Robometer);
 # source_repo credits the upstream bf16 backbone.
-weights_uri: "hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4"
+weights_uri: "hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4@53746590ae04b6a3e4e9b1ef0247b6041f240873"
 
 chunk_size: 1
 latency_budget:

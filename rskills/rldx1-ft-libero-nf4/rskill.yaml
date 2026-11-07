@@ -75,7 +75,7 @@ quantization:
 min_vram_gb:
   bf16: 18.0   # full-precision weights + 4-frame video activations.
   int4: 7.0    # NF4 backbone + NF4 head + activations on an 8 GiB GPU.
-weights_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO"
+weights_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO@6e934852242bf7c31c422ffb7c79a7d717582fa9"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # Per-file URIs are declared for contract completeness; the rldx sidecar

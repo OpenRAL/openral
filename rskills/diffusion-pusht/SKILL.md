@@ -24,7 +24,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1250.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://lerobot/diffusion_pusht
+  weights_uri: hf://lerobot/diffusion_pusht@84a7c23178445c6bbf7e1a884ff497017910f653
   source_repo: hf://lerobot/diffusion_pusht
   paper_url: https://arxiv.org/abs/2303.04137
 ---

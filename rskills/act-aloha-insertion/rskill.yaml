@@ -48,7 +48,7 @@ runtime: "pytorch"
 quantization:
   dtype: "fp32"
   backend: "pytorch"
-weights_uri: "hf://lerobot/act_aloha_sim_insertion_human"
+weights_uri: "hf://lerobot/act_aloha_sim_insertion_human@33259aa86eb45fdf85350280044a33d9d50e40c3"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # processors omitted — legacy path; norm stats live inside model.safetensors.

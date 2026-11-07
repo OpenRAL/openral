@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 3000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-qwen35_4b-any-general-nf4
+  weights_uri: hf://OpenRAL/rskill-qwen35_4b-any-general-nf4@86d341c080cf7db480a1c688bb249288bd184f8c
   source_repo: hf://Qwen/Qwen3.5-4B@851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
 ---
 

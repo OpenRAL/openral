@@ -614,7 +614,7 @@ Materialises a Python 3.10 venv, clones upstream RLDX-1, installs its dependenci
 - `_install_deps_aarch64(*, source, quantization) -> Path` — aarch64 replacement for `uv sync`: provisions the venv with pinned torch/cuda overrides plus the quantization extras, keyed so a corrected pin repairs an existing venv. (L67)
 - `_aarch64_extras(quantization) -> list[str]` — the packages installed on top of upstream's own dependency set on aarch64; shared between the install pass and the sentinel spec so they cannot drift. (L115)
 - `_make_wrapper(*, work, source, args) -> Path` — Generates the server-launching wrapper script: monkey-patches model loading for NF4/int8/no-op quantization, falls back to `sdpa` attention when flash-attn isn't importable, and hands off to the upstream server entry point. (L167)
-- `main() -> int` — argparse entry point (`--model`, `--port`, `--quantization`, `--home`); stamps the sidecar identity record and execs into the sidecar venv so SIGINT reaches the server. (L319)
+- `main() -> int` — argparse entry point (`--model`, `--port`, `--quantization`, `--home`); stamps the sidecar identity record and execs into the sidecar venv so SIGINT reaches the server. (L326)
 
 ### `tools/xr1_sidecar.py` + `tools/_xr1_server.py`
 _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provisions its pinned dependency stack and execs the server, which loads the pinned MiBoT checkpoint (NF4 or BF16), recreates the benchmark-specific chat template, and serves `ping/reset/get_action/close` over the shared ZMQ/msgpack wire._

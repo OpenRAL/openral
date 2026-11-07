@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -214,12 +215,9 @@ def test_adapter_passes_the_manifest_revision_to_the_sidecar(
     skill = tmp_path / _SKILL.name
     shutil.copytree(_SKILL, skill)
     manifest = skill / "rskill.yaml"
-    manifest.write_text(
-        manifest.read_text().replace(
-            "hf://InternRobotics/InternVLA-N1-DualVLN",
-            f"hf://InternRobotics/InternVLA-N1-DualVLN@{_SHA}",
-        )
-    )
+    pinned, n = re.subn(r"(InternVLA-N1-DualVLN)@[0-9a-f]{40}", rf"\1@{_SHA}", manifest.read_text())
+    assert n == 1, "shipped manifest lost its weights_uri pin"
+    manifest.write_text(pinned)
     with socket.socket() as probe:  # a port nothing listens on
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]

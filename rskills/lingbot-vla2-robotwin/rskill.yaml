@@ -97,8 +97,8 @@ min_vram_gb:
 # the sidecar at load. This previously pointed at an OpenRAL prequant mirror (~6.8 GB)
 # that was never published, so every load 404'd. The mirror is worth republishing for
 # the smaller download and the skipped per-boot pack -- repoint here when it exists.
-# Unpinned, like every other third-party upstream in this tree.
-weights_uri: "hf://robbyant/lingbot-vla-v2-6b"
+# Pinned to the upstream HEAD on 2026-11-07 (CLAUDE.md §1.8).
+weights_uri: "hf://robbyant/lingbot-vla-v2-6b@11c703bf6a5c1f45b3b69168482da11fdbba53d7"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
 # No `processors` block: LingBot-VLA 2.0 is not a lerobot PolicyProcessorPipeline
