@@ -37,6 +37,7 @@ ros2 interface show openral_msgs/action/ExecuteRskill
 | `ContactForceWitness.msg` | Measured contact force of an attached payload on its declared place target (ADR-0100). The gate it feeds only adds refusals. |
 | `OccupancyVoxels.msg` | Dense, fixed-capacity, oriented 3-D occupancy grid on `/openral/world_voxels` in the robot base frame, for the safety kernel's world-collision check; a grid above the kernel's capacity fails closed. |
 | `CriticScore.msg` | Per-frame critic / reward score sample on `/openral/critic/score`, keyed by `critic_id`; the critic producer emits a Tier-C `FailureTrigger` when a critic stalls. |
+| `ResultOnlyGoal.msg` | rskill runner → deadman watchdog on `/openral/result_only_goal` (`TRANSIENT_LOCAL`): an `ExecuteRskill` goal that publishes no chunks (a wrapped result-only rSkill such as Nav2), its goal uuid and the runner's own wall bound. The watchdog bounds that goal by bound + `result_only_grace_s` (capped by `result_only_max_s`) instead of its first-chunk window (ADR-0127 Decision 5). |
 | `Episode.msg` | Episode-boundary marker on `/openral/episode` (`PHASE_START` / `PHASE_END`, `task_string`, `success`); the dataset converter segments bags on it. |
 | `Tick.msg` | Per-tick metadata from `DeployRunner` on `/openral/tick` (episode/step index, reward, termination flags, `trace_id` / `span_id`); mirrors `openral_core.TickResult`. |
 

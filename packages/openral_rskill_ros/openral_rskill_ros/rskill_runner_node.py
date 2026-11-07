@@ -253,6 +253,10 @@ def ungrounded_target_queries(queries: Any, tracked: Any, key: str) -> list[str]
     ]
 
 
+_RESULT_ONLY_GOAL_TOPIC = "/openral/result_only_goal"
+"""Runner -> deadman watchdog: a goal that publishes no chunks (``ResultOnlyGoal``)."""
+
+
 def _failure_kind_for_exception(exc: BaseException) -> int:
     """Map a caught exception onto an ``ExecuteRskill.Result.failure_kind``.
 
@@ -502,6 +506,9 @@ if _ROS2_AVAILABLE:
             self._goal_started_monotonic = 0.0
             self._safety_failure_sub: Any = None
             self._episode_pub: Any = None
+            # Announces a goal that publishes no chunks (a wrapped result-only skill) to the
+            # deadman watchdog, with the runner's own wall bound on it (ADR-0127 D5).
+            self._result_only_pub: Any = None
             self._episode_counter: int = 0
             # Set once a goal-end publish found the context already shut down.
             self._shutdown_publish_logged: bool = False
@@ -784,6 +791,20 @@ if _ROS2_AVAILABLE:
                 depth=10,
             )
             self._episode_pub = self.create_publisher(Episode, "/openral/episode", episode_qos)
+
+            # One message per result-only goal, read by the deadman watchdog. Latched
+            # (TRANSIENT_LOCAL) so a watchdog that joins mid-goal still sees it.
+            from openral_msgs.msg import ResultOnlyGoal
+
+            self._result_only_pub = self.create_publisher(
+                ResultOnlyGoal,
+                _RESULT_ONLY_GOAL_TOPIC,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                    depth=1,
+                ),
+            )
 
             # Announce the executing instruction on
             # /openral/reward/active_task so the reward monitor's scoring heartbeat
@@ -1126,6 +1147,9 @@ if _ROS2_AVAILABLE:
             if self._episode_pub is not None:
                 self.destroy_publisher(self._episode_pub)
                 self._episode_pub = None
+            if self._result_only_pub is not None:
+                self.destroy_publisher(self._result_only_pub)
+                self._result_only_pub = None
             if self._action_server is not None:
                 self._action_server.destroy()
                 self._action_server = None
@@ -1901,6 +1925,8 @@ if _ROS2_AVAILABLE:
                     return None if miss is None else f"{miss.kind}: {miss.detail}"
 
                 skill.stop_check = _goal_ended
+                if skill.result_only:
+                    self._announce_result_only_goal(goal_handle, skill, budget)
             # Absolute deadlines absorb tick work into the configured period.
             chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
@@ -2586,6 +2612,31 @@ if _ROS2_AVAILABLE:
                     )
                 return False
             return True
+
+        def _announce_result_only_goal(self, goal_handle: Any, skill: Any, budget: Any) -> None:
+            """Tell the deadman watchdog this goal publishes no chunks, and its wall bound.
+
+            Without it the watchdog's first-chunk window e-stops every Nav2 goal longer
+            than that window. The bound is the one this runner enforces itself
+            (``ExecutionBudget.wall_bound_s``); a disabled budget announces nothing, so the
+            goal keeps the first-chunk window.
+            """
+            if self._result_only_pub is None:
+                return
+            bound_s = float(budget.wall_bound_s)
+            if bound_s <= 0.0:
+                return
+            from openral_msgs.msg import ResultOnlyGoal
+
+            msg = ResultOnlyGoal()
+            msg.goal_uuid = [int(b) for b in goal_handle.goal_id.uuid]
+            msg.rskill_id = str(skill.name)
+            msg.wall_bound_s = bound_s
+            if self._publish_unless_shut_down(self._result_only_pub, msg, "result-only goal"):
+                self.get_logger().info(
+                    f"rskill_runner.result_only_goal: {skill.name!r} publishes no chunks; "
+                    f"deadman bound {bound_s:.1f} s wall"
+                )
 
         def _publish_episode_marker(self, *, phase: int, task_string: str, success: bool) -> None:
             """Publish one ``openral_msgs/Episode`` boundary marker; bump idx on END."""

@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (56)
+## Topics (57)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -55,6 +55,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/place_declaration` | `openral_msgs/PlaceDeclaration` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe)<br>python/hal/src/openral_hal/_place_target_leg.py (PlaceTargetLeg.setup)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_place_declaration) |
 | `/openral/policy_state` | `std_msgs/Float32MultiArray` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._publish_policy_state) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 | `/openral/prompt` | `openral_msgs/PromptStamped` | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
+| `/openral/result_only_goal` | `openral_msgs/ResultOnlyGoal` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) [param `result_only_topic`] |
 | `/openral/reward/active_task` | `std_msgs/String` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__)<br>packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode._subscribe_active_task) |
 | `/openral/safe_action` | `openral_msgs/ActionChunk` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>tools/kernel_replay_diff.py (_Side.__init__) |
 | `/openral/safety/external_torque` | `sensor_msgs/JointState` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp | — |

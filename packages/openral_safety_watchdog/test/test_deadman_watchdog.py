@@ -503,3 +503,114 @@ def test_a_second_goal_gets_its_own_first_chunk_budget_when_the_gap_is_coalesced
         )
     finally:
         harness.close()
+
+
+def _result_only_node(
+    name: str, *, first_chunk_s: float = 0.3, grace_s: float = 0.2, max_s: float = 60.0
+) -> Any:
+    from rclpy.parameter import Parameter
+
+    node = _gated_node(name, first_chunk_deadline_s=first_chunk_s)
+    node.set_parameters(
+        [
+            Parameter("result_only_grace_s", Parameter.Type.DOUBLE, grace_s),
+            Parameter("result_only_max_s", Parameter.Type.DOUBLE, max_s),
+        ]
+    )
+    return node
+
+
+def _announce(harness: _Harness, goal: int, bound_s: float) -> None:
+    """Publish the runner's ``ResultOnlyGoal`` for goal id ``goal`` (as ``_status`` ids)."""
+    from openral_msgs.msg import ResultOnlyGoal
+
+    pub = getattr(harness, "result_only_pub", None)
+    if pub is None:
+        pub = harness.helper.create_publisher(
+            ResultOnlyGoal,
+            "/openral/result_only_goal",
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            ),
+        )
+        harness.result_only_pub = pub  # type: ignore[attr-defined]  # reason: test-only attr
+        _spin_until(harness.executor, lambda: pub.get_subscription_count() > 0)
+    msg = ResultOnlyGoal()
+    msg.goal_uuid = list(goal.to_bytes(16, "big"))
+    msg.rskill_id = "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"
+    msg.wall_bound_s = bound_s
+    pub.publish(msg)
+
+
+def test_a_result_only_goal_is_bounded_by_its_announced_bound_not_the_first_chunk(
+    ros_context: None,
+) -> None:
+    """A Nav2-style goal publishes no chunks; it is braked at bound + grace, not at 0.3 s.
+
+    Before ADR-0127 Decision 5 every such goal longer than ``first_chunk_deadline_s``
+    (120 s in deploy) was e-stopped. Still bounded: a runner that dies mid-goal never
+    closes the window, and the announced bound fires.
+    """
+    node = _result_only_node("deadman_result_only")
+    harness = _Harness(node, "deadman_result_only")
+    try:
+        harness.activate()
+        harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING))
+        _announce(harness, 1, bound_s=0.8)  # window 0.8 + 0.2 s from now
+        harness.idle(0.6)  # twice the first-chunk window
+        assert harness.estop == [], "braked a result-only goal at its first-chunk window"
+        assert _spin_until(harness.executor, lambda: len(harness.estop) >= 1, timeout_s=3.0), (
+            "a result-only goal past its announced bound was never braked"
+        )
+        assert _spin_until(harness.executor, lambda: bool(_timeout_failures(harness.failures)))
+        evidence = json.loads(_timeout_failures(harness.failures)[0].evidence_json)
+        assert evidence["operation"] == "result_only_goal"
+    finally:
+        harness.close()
+
+
+def test_an_announcement_for_another_goal_relaxes_nothing(ros_context: None) -> None:
+    """Only the goal the runner named gets the result-only window."""
+    node = _result_only_node("deadman_result_only_other")
+    harness = _Harness(node, "deadman_result_only_other")
+    try:
+        harness.activate()
+        harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING, ids=(2,)))
+        _announce(harness, 1, bound_s=30.0)  # goal 1, not the live goal 2
+        assert _spin_until(harness.executor, lambda: len(harness.estop) >= 1, timeout_s=2.0), (
+            "the first-chunk window did not apply to the un-announced goal"
+        )
+        assert _spin_until(harness.executor, lambda: bool(_timeout_failures(harness.failures)))
+        evidence = json.loads(_timeout_failures(harness.failures)[0].evidence_json)
+        assert evidence["operation"] == "first_chunk"
+    finally:
+        harness.close()
+
+
+@pytest.mark.parametrize("bound_s", [100.0, 0.0, float("nan")], ids=["capped", "zero", "nan"])
+def test_a_result_only_window_is_capped_and_a_bad_bound_is_ignored(
+    ros_context: None, bound_s: float
+) -> None:
+    """``result_only_max_s`` caps an announced bound; a zero/NaN bound keeps first-chunk."""
+    import math
+
+    node = _result_only_node("deadman_result_only_cap", first_chunk_s=0.3, max_s=0.8)
+    harness = _Harness(node, "deadman_result_only_cap")
+    try:
+        harness.activate()
+        harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING))
+        _announce(harness, 1, bound_s=bound_s)
+        start = time.monotonic()
+        assert _spin_until(harness.executor, lambda: len(harness.estop) >= 1, timeout_s=3.0)
+        elapsed = time.monotonic() - start
+        assert _spin_until(harness.executor, lambda: bool(_timeout_failures(harness.failures)))
+        evidence = json.loads(_timeout_failures(harness.failures)[0].evidence_json)
+        if bound_s > 0.0 and math.isfinite(bound_s):
+            assert evidence["operation"] == "result_only_goal"
+            assert 0.6 < elapsed < 2.0, f"cap not applied: fired after {elapsed:.2f} s"
+        else:
+            assert evidence["operation"] == "first_chunk"
+    finally:
+        harness.close()

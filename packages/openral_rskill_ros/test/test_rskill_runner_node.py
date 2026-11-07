@@ -2107,3 +2107,73 @@ def test_a_goal_that_completes_under_a_latched_estop_is_not_a_success() -> None:
     assert not result.success
     assert result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP, result.failure_reason
     assert "while a safety stop was latched" in result.failure_reason, result.failure_reason
+
+
+def test_a_nav2_goal_longer_than_the_first_chunk_window_is_not_braked() -> None:
+    """The runner announces a result-only goal; the deadman bounds it by that, not 0.8 s.
+
+    Real runner + real ``DeadmanWatchdogNode`` gated on the runner's goal status, with a
+    0.8 s first-chunk window and a Nav2 goal that drives for 2.5 s. Before ADR-0127
+    Decision 5 the watchdog e-stopped it at 0.8 s (it publishes no chunks).
+    """
+    pytest.importorskip("nav2_msgs")
+    import rclpy
+    from openral_msgs.msg import ResultOnlyGoal
+    from openral_safety_watchdog.deadman_watchdog_node import DeadmanWatchdogNode
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.parameter import Parameter
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import Empty
+
+    from tests.integration.fakes.action_servers import held_navigate_to_pose_server
+
+    outcomes: list[str] = []
+    estops: list[Any] = []
+    announced: list[Any] = []
+    with _compose_harness(resolver=_nav2_skill_resolver()) as (executor, runtime, _s, _o):
+        watchdog = DeadmanWatchdogNode(node_name="openral_test_deadman_nav2")
+        watchdog.set_parameters(
+            [
+                Parameter("arm_status_topic", value="/openral/execute_rskill/_action/status"),
+                Parameter("first_chunk_deadline_s", value=0.8),
+                Parameter("result_only_grace_s", value=1.0),
+                Parameter("check_period_s", value=0.02),
+            ]
+        )
+        nav2_side = rclpy.create_node("openral_test_nav2_long")
+        server = held_navigate_to_pose_server(nav2_side, outcomes, hold_s=2.5)
+        nav2_side.create_subscription(Empty, "/openral/estop", estops.append, 10)
+        nav2_side.create_subscription(
+            ResultOnlyGoal,
+            "/openral/result_only_goal",
+            announced.append,
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            ),
+        )
+        executor.add_node(nav2_side)
+        executor.add_node(watchdog)
+        assert watchdog.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert watchdog.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        rig = _EstopRig(executor, runtime)
+        try:
+            handle = rig.send(_nav2_goal(10.0))
+            assert handle.accepted
+            result = rig.result(handle, 10.0)
+        finally:
+            server.release()
+            rig.close()
+            executor.remove_node(watchdog)
+            watchdog.destroy_node()
+            server.destroy()
+            executor.remove_node(nav2_side)
+            nav2_side.destroy_node()
+
+    assert estops == [], "the deadman braked a Nav2 goal that was still driving"
+    assert result.success, result.failure_reason
+    assert outcomes == ["executing", "succeeded"]
+    assert len(announced) == 1
+    assert bytes(announced[0].goal_uuid) == bytes(handle.goal_id.uuid)
+    assert announced[0].wall_bound_s == pytest.approx(10.0)

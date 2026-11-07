@@ -53,6 +53,9 @@ activation would E-stop and latch on every boot, so the node has an explicit gat
 | `check_period_s` | `0.05` | Internal deadline-check timer period. |
 | `arm_status_topic` | `""` | Empty = **free-running**: the deadline is armed by `on_activate` and any silence past it fires. Non-empty names an `action_msgs/GoalStatusArray` topic — the deadline is evaluated only while some goal is ACCEPTED / EXECUTING / CANCELING. `deploy_e2e.launch.py` sets `/openral/execute_rskill/_action/status`, the runner's own action-status topic. |
 | `first_chunk_deadline_s` | `60.0` | Bound on goal-accepted → first chunk, covering a cold policy load. `deploy_e2e.launch.py` sets 120 s. Gated mode only. |
+| `result_only_topic` | `/openral/result_only_goal` | `openral_msgs/ResultOnlyGoal` from the rskill runner: a goal that publishes no chunks (a wrapped result-only rSkill, Nav2), with the runner's own wall bound. Gated mode only; empty disables it, so every goal keeps the first-chunk window. |
+| `result_only_grace_s` | `15.0` | Added to an announced bound: the runner cancels the wrapped goal and waits up to 5 s + 5 s for it to confirm it ended after its budget lapses. |
+| `result_only_max_s` | `1800.0` | Ceiling on a result-only window, whatever bound the runner announces. |
 | `safety_status_topic` | `/openral/safety_status` | Latched `SafetyStatus`. The post-estop latch is released only on a `latched=True` → `latched=False` **transition** observed after this node latched (see below); a sample older than `SAFETY_STATUS_LIVENESS_S` (3 s, HZ-0096-1) is ignored as unknown. Empty makes the node one-shot per activation. |
 
 The window is re-based whenever a goal id that was not live becomes live — not
@@ -76,6 +79,19 @@ inherits the current status instead of waiting for the next transition.
 
 **Every suppressing guard is bounded.** A window that never produces a first
 chunk fires at `first_chunk_deadline_s` instead of waiting forever on a dead runner.
+
+**A goal that publishes no chunks (ADR-0127 Decision 5).** A wrapped result-only rSkill
+(Nav2's `navigate_to_pose`) runs its whole goal inside one runner step while the wrapped
+server moves the robot, so it never produces a chunk, and every such goal longer than
+`first_chunk_deadline_s` used to be braked. The runner now announces it on
+`/openral/result_only_goal` with its own wall bound on the goal (its execution budget,
+times `execution_wall_cap_factor` on sim time). For a live goal so named, the first-chunk
+window is replaced by that bound plus `result_only_grace_s`, counted from the announcement
+and capped by `result_only_max_s`; it fires as `operation="result_only_goal"`. It stays
+bounded: a runner that dies mid-goal leaves the window open and the bound fires. A goal
+never announced, an announcement for another goal id, and a non-positive or non-finite
+bound all keep the first-chunk window. The relaxation is a Safety-WG item (hazard log
+Entry 075).
 
 The node also **subscribes** `/openral/estop`: an estop from any other source
 latches its internal `_triggered` flag so it never storms the topic behind the

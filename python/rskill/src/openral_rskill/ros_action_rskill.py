@@ -1011,6 +1011,16 @@ class ROSActionRskill(rSkillBase):
                 f"after cancel ({exc}); it may still be running."
             ) from exc
 
+    @property
+    def result_only(self) -> bool:
+        """``True`` when the wrapped server moves the robot itself and no chunks are published.
+
+        A ``ros_action`` or ``ros_service`` skill with no ``result_trajectory_field``
+        (Nav2): the whole goal runs inside one ``step()``. The
+        runner announces such goals to the deadman watchdog (``ResultOnlyGoal``).
+        """
+        return self._integration.result_trajectory_field is None
+
     def _call_service_and_await_response(self) -> Any:  # noqa: ANN401  # reason: arbitrary IDL response
         """Send the cached service request, poll the response future."""
         assert self._interface_type is not None
