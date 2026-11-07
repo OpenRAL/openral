@@ -12,6 +12,10 @@ tags:
 - lerobot
 - vision-language-action
 - makermods_metal
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:makermods_metal
+- rskill-license:permissive_research
 - lora
 base_model:
 - lerobot/pi05_base
@@ -19,6 +23,17 @@ base_model_relation: adapter
 datasets:
 - HappyEthan/metal_pick_place
 inference: false
+openral:
+  description: 'π0.5 with MakerMods'' LoRA for the MakerMods Metal arm: picks a cube
+    and places it on a marked spot from a fixed table-facing and a wrist RGB view
+    and the 7-D joint + gripper state, at 30 Hz in 50-step chunks of absolute joint
+    positions (degrees in the checkpoint). The LoRA is merged into lerobot/pi05_base
+    at load. PI permissive-research base weights: commercial use needs a vendor agreement.'
+  model_family: pi05
+  min_vram_gb: 9.5
+  latency_ms: 500.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-pi05-makermods_metal-pick_place-bf16
