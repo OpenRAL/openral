@@ -331,8 +331,12 @@ def _resolve_unitree(model: str, kind: AssetKind) -> Path:
       ``openral_hal._unitree_h2_assets`` (pinned SHA + per-file SHA-256).
 
     Raises:
-        AssetFetchError: The pinned files could not be fetched or verified.
-        AssetRefError: An unknown model, or a kind the model does not ship.
+        AssetFetchError: The pinned files could not be downloaded (network
+            unavailable) — callers and tests may treat this as a missing
+            dependency.
+        AssetRefError: An unknown model, a kind the model does not ship, a
+            downloaded file that failed SHA-256 verification, or a local cache
+            error — integrity / configuration failures, never skippable.
     """
     from openral_core.exceptions import ROSConfigError
 
@@ -341,6 +345,7 @@ def _resolve_unitree(model: str, kind: AssetKind) -> Path:
     if kind == "srdf":
         raise AssetRefError("unitree:h2 ships a urdf and an mjcf, not an srdf")
     try:
+        from openral_hal._pinned_files import is_download_failure
         from openral_hal._unitree_h2_assets import ensure_h2_mjcf, ensure_h2_urdf
     except ImportError as exc:
         raise AssetRefError(
@@ -349,7 +354,9 @@ def _resolve_unitree(model: str, kind: AssetKind) -> Path:
     try:
         return ensure_h2_urdf() if kind == "urdf" else ensure_h2_mjcf()
     except ROSConfigError as exc:
-        raise AssetFetchError(f"unitree:{model} ({kind}): {exc}") from exc
+        if is_download_failure(exc):
+            raise AssetFetchError(f"unitree:{model} ({kind}): {exc}") from exc
+        raise AssetRefError(f"unitree:{model} ({kind}): {exc}") from exc
 
 
 def _resolve_menagerie(model: str, kind: AssetKind) -> Path:

@@ -57,6 +57,26 @@ _SIM_ROBOTS = [
 ]
 
 
+def _skip_if_assets_undownloadable(robot_id: str) -> None:
+    """Pre-fetch a manifest's pinned MJCF; skip only when it cannot be downloaded.
+
+    ``unitree:h2`` downloads on first use, and a failed fetch inside ``configure``
+    would surface as a bare FAILURE. ``AssetFetchError`` is network-only; a
+    SHA-256 mismatch is an ``AssetRefError`` and fails the test.
+    """
+    from openral_core import RobotDescription
+    from openral_core.assets import AssetFetchError, resolve_asset
+
+    desc = RobotDescription.from_yaml(str(_ROBOTS_DIR / robot_id / "robot.yaml"))
+    mjcf = desc.assets.mjcf
+    if mjcf is None or not mjcf.startswith("unitree:"):
+        return
+    try:
+        resolve_asset(mjcf, "mjcf")
+    except AssetFetchError as exc:
+        pytest.skip(f"{robot_id} assets could not be downloaded on this host: {exc}")
+
+
 def _manifest_node(robot_id: str) -> ManifestHALLifecycleNode:
     """The node ``lifecycle_node.py`` spins, parameterised as ``deploy sim`` does."""
     node = ManifestHALLifecycleNode(f"openral_hal_{robot_id}")
@@ -90,6 +110,7 @@ def test_lifecycle_entrypoint_imports() -> None:
 @pytest.mark.parametrize(("robot_id", "n_joints"), _SIM_ROBOTS)
 def test_manifest_lifecycle_full_cycle(robot_id: str, n_joints: int) -> None:
     """Every transition succeeds and ``/joint_states`` carries the manifest's DoF."""
+    _skip_if_assets_undownloadable(robot_id)
     node_name = f"openral_hal_{robot_id}"
     rclpy.init()
     try:

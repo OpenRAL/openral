@@ -57,6 +57,10 @@ try:
     _URDF_PATH: Path | None = ensure_h2_urdf()
     _ASSET_ERROR: str | None = None
 except ROSConfigError as exc:
+    from openral_hal._pinned_files import is_download_failure
+
+    if not is_download_failure(exc):
+        raise  # a SHA-256 mismatch or cache error is a real failure, never a skip
     _MJCF_PATH = _URDF_PATH = None
     _ASSET_ERROR = str(exc)
 
@@ -509,7 +513,12 @@ class TestPinnedFetchFailsClosed:
             "https://raw.githubusercontent.com/unitreerobotics/unitree_mujoco/"
             f"{UNITREE_MUJOCO_SHA}/unitree_robots/h2/scene.xml"
         )
+        from openral_hal._pinned_files import is_download_failure
+
         dest = tmp_path / "scene.xml"
-        with pytest.raises(ROSConfigError, match="failed SHA-256 verification"):
+        with pytest.raises(ROSConfigError) as caught:
             fetch_pinned_file(url, "0" * 64, dest, what="H2 scene.xml")
+        if is_download_failure(caught.value):
+            pytest.skip(f"raw.githubusercontent.com unreachable: {caught.value}")
+        assert "failed SHA-256 verification" in str(caught.value)
         assert list(tmp_path.iterdir()) == []

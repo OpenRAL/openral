@@ -27,9 +27,26 @@ from openral_core import (
     ControlMode,
     RobotDescription,
 )
+from openral_core.assets import AssetFetchError
+from openral_core.exceptions import ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 
 pytestmark = pytest.mark.sim
+
+
+def _build_hal(description: RobotDescription) -> MujocoArmHAL:
+    """Build the manifest-driven HAL; skip only when a pinned asset could not be downloaded.
+
+    ``unitree:h2`` fetches its MJCF on first use. ``AssetFetchError`` is raised for
+    network failures only — a SHA-256 mismatch is an ``AssetRefError`` and fails.
+    """
+    try:
+        return MujocoArmHAL.from_description(description, gravity_enabled=False)
+    except ROSConfigError as exc:
+        if isinstance(exc.__cause__, AssetFetchError):
+            pytest.skip(f"{description.name} assets unavailable on this host: {exc}")
+        raise
+
 
 # ``aloha_bimanual`` resolves its MJCF through the ``gym_aloha:`` scheme, an
 # optional sim-only dependency separate from ``robot_descriptions``. Skip just
@@ -95,7 +112,7 @@ def test_from_description_round_trips(description: RobotDescription) -> None:
     qpos/qvel/actuator mapping logic (with or without floating-base
     offsets).
     """
-    hal = MujocoArmHAL.from_description(description, gravity_enabled=False)
+    hal = _build_hal(description)
     hal.connect()
     try:
         state = hal.read_state()
@@ -140,7 +157,7 @@ def test_no_user_facing_python_required(robot_id: str) -> None:
 
     yaml_path = repo_root / "robots" / robot_id / "robot.yaml"
     description = RobotDescription.from_yaml(str(yaml_path))
-    hal = MujocoArmHAL.from_description(description, gravity_enabled=False)
+    hal = _build_hal(description)
     hal.connect()
     state = hal.read_state()
     hal.disconnect()

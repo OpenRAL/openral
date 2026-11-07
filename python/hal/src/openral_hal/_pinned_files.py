@@ -21,7 +21,7 @@ from openral_core.exceptions import ROSConfigError
 if TYPE_CHECKING:
     from pathlib import Path
 
-__all__ = ["fetch_pinned_file", "sha256_file"]
+__all__ = ["fetch_pinned_file", "is_download_failure", "sha256_file"]
 
 
 def sha256_file(path: Path) -> str:
@@ -69,9 +69,12 @@ def fetch_pinned_file(
     """
     if destination.is_file() and sha256_file(destination) == expected_sha256:
         return
-    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
     request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ROSConfigError(f"Cannot create the cache directory for {what}: {exc}") from exc
     try:
         with (
             urllib.request.urlopen(request, timeout=60) as response,
@@ -88,4 +91,47 @@ def fetch_pinned_file(
         raise ROSConfigError(
             f"{what} failed SHA-256 verification: expected {expected_sha256}, got {actual_sha256}."
         )
-    os.replace(temporary, destination)
+    try:
+        os.replace(temporary, destination)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise ROSConfigError(f"Cannot install verified {what} into the cache: {exc}") from exc
+
+
+def is_download_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` (or anything in its ``__cause__`` chain) is a network fetch failure.
+
+    Separates "the pinned file could not be downloaded" (an unavailable
+    dependency: tests skip, the asset resolver reports ``AssetFetchError``) from
+    "the bytes failed SHA-256 verification" or a local cache error, which are
+    integrity / configuration failures that must never be skipped.
+
+    Args:
+        exc: An exception raised while fetching, possibly wrapped several times.
+
+    Returns:
+        ``True`` when a ``urllib.error.URLError`` (HTTP or connection error),
+        ``TimeoutError`` or ``ConnectionError`` appears in the cause chain.
+
+    Example:
+        >>> import urllib.error
+        >>> from openral_core.exceptions import ROSConfigError
+        >>> try:
+        ...     try:
+        ...         raise urllib.error.URLError("offline")
+        ...     except urllib.error.URLError as cause:
+        ...         raise ROSConfigError("Could not download pinned x") from cause
+        ... except ROSConfigError as err:
+        ...     is_download_failure(err)
+        True
+        >>> is_download_failure(ROSConfigError("x failed SHA-256 verification"))
+        False
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, (urllib.error.URLError, TimeoutError, ConnectionError)):
+            return True
+        seen.add(id(current))
+        current = current.__cause__
+    return False

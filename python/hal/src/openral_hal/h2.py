@@ -395,13 +395,20 @@ class H2MujocoHAL(MujocoArmHAL):
         import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
 
         assert self._model is not None and self._data is not None
-        lowest = min(
+        foot_bottoms = [
             float(self._data.geom_xpos[g][2]) - float(self._model.geom_size[g][0])
             for g in range(self._model.ngeom)
             if int(self._model.geom_type[g]) == int(mj.mjtGeom.mjGEOM_SPHERE)
             and mj.mj_id2name(self._model, mj.mjtObj.mjOBJ_BODY, self._model.geom_bodyid[g])
             in _FOOT_BODIES
-        )
+        ]
+        if not foot_bottoms:
+            super().disconnect()
+            raise ROSConfigError(
+                f"H2 MJCF has no foot contact sphere on {sorted(_FOOT_BODIES)}; "
+                "cannot set the standing height."
+            )
+        lowest = min(foot_bottoms)
         x, y, yaw, z = capture_base_pin(self._data.qpos)
         self._base_pin = (x, y, yaw, z - lowest)
         write_base_pin(self._data, self._base_pin)
