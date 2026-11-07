@@ -9,8 +9,11 @@ The ``*_DESCRIPTION`` constants in ``python/hal/src/openral_hal/`` survive
 only as in-code **mirrors** of the manifests (tests and direct
 ``FrankaPandaHAL()``-style construction use them). The parametrised test
 below checks each mirror against its manifest, so a joint-limit/payload/
-torque-sensor/safety-envelope bump in the YAML fails loudly until the mirror follows
-(issues #54-58). The manifest wins; fix the constant, never the YAML.
+torque-sensor/safety-envelope/asset-ref/sim-wiring bump in the YAML fails loudly
+until the mirror follows (issues #54-58). The manifest wins; fix the constant,
+never the YAML. ``sensors:`` and ``collision_geometry:`` are deliberately not
+compared: they are manifest-only (``build_hal`` threads them from the YAML) and
+most mirrors leave them empty.
 
 UR5e/UR10e/Franka/Sawyer/ALOHA mirror their ``*_REAL_DESCRIPTION`` (derived
 via ``openral_hal._real_description.make_real_description`` — only
@@ -91,6 +94,13 @@ def test_hal_constant_mirrors_robot_yaml(manifest_path: str, hal_constant_attr: 
     assert yaml_modes == hal_modes or yaml_modes == [m.value for m in hal_modes]
     assert yaml_desc.sdk_kind == hal_desc.sdk_kind
     assert yaml_desc.hal == hal_desc.hal  # sim/real HAL entrypoints
+    # URDF / MJCF / SRDF refs (incl. the URDF root bridge): a mirror on a
+    # different URDF publishes /tf under different joint names (H1 drift).
+    assert yaml_desc.assets == hal_desc.assets, "asset refs drifted between YAML and HAL constant"
+    assert yaml_desc.safety == hal_desc.safety, (
+        "safety envelope drifted between YAML and HAL constant"
+    )
+    assert yaml_desc.sim == hal_desc.sim, "sim wiring drifted between YAML and HAL constant"
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
