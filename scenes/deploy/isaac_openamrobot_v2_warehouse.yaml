@@ -1,0 +1,55 @@
+# OpenAMRobot 2.0 in NVIDIA's Isaac Sim warehouse (three shelf racks, pallet bins).
+#
+# The same generic "any Isaac stage, any manifest robot" scene as
+# isaac_panda_mobile_warehouse.yaml (see it for the field contract): the robot is
+# imported from robots/openamrobot_v2/openamrobot_v2.urdf; its meshes resolve through the
+# pinned openarm_description and openamr-platform-sw clones.
+#
+# Spawn: the aisle between Shelf_0 (x <= -8.6) and Shelf_1 (x >= -1.0), facing
+# down it (+y). With the lift at 0.35 m the shoulders sit at 1.35 m.
+#
+# The Isaac base is kinematic (the pinned root follows the integrated twist). The
+# manifest's base is differential, so give it vx and wz only.
+#
+# Lift drive: the sidecar's default prismatic drive (1000 N/m) would let the lift
+# sag about 12 cm under the arms. 1e5 N/m with 4000 N*s/m damping is the MuJoCo
+# twin's lift (openral_hal._openamrobot_v2_assets).
+#
+# Licence: NVIDIA's Isaac Sim assets may be used inside Isaac Sim. They are
+# referenced from NVIDIA's asset server at run time, never converted or vendored.
+#
+# Requirements: NVIDIA RTX GPU, Isaac Sim (a binary install such as
+# /opt/isaac-sim, or the sidecar venv; OPENRAL_ISAAC_SIDECAR_PYTHON overrides it),
+# and network access to NVIDIA's asset server.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/isaac_openamrobot_v2_warehouse.yaml \
+#       --no-enable-octomap --hal viewer_enabled=false
+
+robot_id: "openamrobot_v2"
+
+base_pose:
+  xyz: [-4.8, 0.0, 0.0]
+  quat_xyzw: [0.0, 0.0, 0.7071068, 0.7071068]  # yaw +90 deg: facing down the aisle (+y)
+  frame_id: world
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  assets_uri: "isaac:Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
+  backend_options:
+    # First boot also streams the stage + its props from the asset server.
+    boot_timeout_s: 1200
+    joint_drive_gains:
+      "lift_joint": [100000.0, 4000.0]
+    objects:
+      - name: cracker_box
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"
+        xyz: [-0.45, 4.80, 0.40]
+      - name: sugar_box
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/004_sugar_box.usd"
+        xyz: [-0.45, 5.10, 0.35]
+      - name: mustard_bottle
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/006_mustard_bottle.usd"
+        xyz: [-0.45, 5.40, 0.35]

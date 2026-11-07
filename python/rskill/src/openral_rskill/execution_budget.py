@@ -153,6 +153,24 @@ class ExecutionBudget:
         """``True`` when the budget is measured on the graph clock."""
         return self._graph_now is not None
 
+    @property
+    def wall_bound_s(self) -> float:
+        """Wall seconds after which ``check()`` has lapsed at the latest.
+
+        The budget itself on the wall clock; ``wall_cap_factor x budget_s`` (the wall
+        backstop) on the graph clock, where a stalled clock may lapse it sooner. ``0`` when
+        the budget is disabled.
+
+        Example:
+            >>> ExecutionBudget(30.0).wall_bound_s
+            30.0
+            >>> ExecutionBudget(30.0, graph_now=lambda: 1.0, wall_cap_factor=4.0).wall_bound_s
+            120.0
+        """
+        if self.budget_s <= 0.0:
+            return 0.0
+        return self.budget_s * (self._wall_cap_factor if self.on_graph_clock else 1.0)
+
     def _observe_graph(self) -> None:
         assert self._graph_now is not None
         now = self._graph_now()

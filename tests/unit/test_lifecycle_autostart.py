@@ -300,3 +300,48 @@ def test_redundant_activate_does_not_crash_a_real_lifecycle_node() -> None:
             rclpy.shutdown()
         target.kill()
         target.wait()
+
+
+def test_exit_code_is_zero_only_when_the_target_state_is_confirmed() -> None:
+    """deploy_e2e releases Nav2 on this tool's exit 0, so 0 must mean "reached --target".
+
+    Against a real lifecycle node: ``--target active`` drives it to active and exits 0;
+    ``--target inactive`` then reads ``active`` (not the target) and exits 1, where it
+    used to report the state and exit 0 whatever it was.
+    """
+    from tests.sim.safety._kernel_subprocess import isolated_domain_id
+
+    domain = isolated_domain_id()
+    env = {**os.environ, "ROS_DOMAIN_ID": str(domain)}
+    target = subprocess.Popen([sys.executable, "-c", _TARGET_NODE], env=env)
+    try:
+
+        def run(state: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(_TOOL_PATH),
+                    "--node",
+                    "/autostart_redundant_target",
+                    "--target",
+                    state,
+                    "--service-timeout-s",
+                    "20",
+                    "--transition-timeout-s",
+                    "10",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+
+        reached = run("active")
+        assert reached.returncode == 0, reached.stdout + reached.stderr
+        assert "state='active'" in reached.stdout
+        other = run("inactive")
+        assert other.returncode == 1, other.stdout + other.stderr
+    finally:
+        target.terminate()
+        target.wait(timeout=10)

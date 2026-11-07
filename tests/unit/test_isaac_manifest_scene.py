@@ -1377,3 +1377,129 @@ def test_droid_followers_track_the_measured_leader(
     assert out[dof_index[g["leader"]]] == pytest.approx(0.7)  # the leader keeps its command
     assert out[dof_index["panda_joint1"]] == pytest.approx(0.7)
     assert target[dof_index[g["followers"][0]["dof"]]] == pytest.approx(0.7)  # a copy
+
+
+def test_openamrobot_lidar_fan_is_cast_from_its_mount_not_the_base(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenAMRobot's lidar sits 0.33 m ahead of the base, turned by yaw pi.
+
+    The sidecar cast the fan from the base at base heading while /scan is stamped in
+    the lidar frame, so every return came out mirrored front to back and SLAM mapped
+    forward driving as reverse (Isaac warehouse, 2026-11-05: odom +6.97 m, map -4.72 m).
+    """
+    mod: Any = _manifest_scene_mod
+    manifest = Path(__file__).resolve().parents[2] / "robots" / "openamrobot_v2" / "robot.yaml"
+    desc = RobotDescription.from_yaml(str(manifest))
+    lidar = _sensor_dict(next(s for s in desc.sensors if s.name == "base_scan"))
+    assert lidar["parent_frame"] == "lidar_link"
+    # lidar_link in the root frame, from the vendored URDF: base_footprint -> base_link
+    # -> lidar_link (0.330, 0, 0.124, yaw pi); the mount itself is identity.
+    root_to_lidar = mod.mount_matrix([0.33, 0.0, 0.124, 0.0, 0.0, np.pi]) @ mod.mount_matrix(
+        lidar["static_transform_xyz_rpy"]
+    )
+    x, y, z, _yaw = mod.lidar_world_pose((0.0, 0.0, 0.0, 0.0), root_to_lidar)
+    assert (x, y) == pytest.approx((0.33, 0.0))
+
+    assert z == pytest.approx(0.124)
+
+    def wall_ahead(start: tuple[float, float, float], d: Any, span: float) -> Any:
+        """The PhysX query (`raycast_closest`), over a wall at world x = 3 m."""
+        if d[0] <= 1e-9:
+            return None
+        dist = (3.0 - start[0]) / d[0]
+        return {"hit": True, "distance": dist, "rigidBody": "/wall"} if 0 <= dist <= span else None
+
+    from types import SimpleNamespace
+
+    def scan(root_to_lidar: Any) -> Any:
+        """The scene's own `_scan_ranges`, on the state `build` leaves it in."""
+        scene = SimpleNamespace(
+            _scan_query=SimpleNamespace(raycast_closest=wall_ahead),
+            _lidar={"n_channels": 360, "range_min_m": 0.0, "range_max_m": 12.0},
+            _spawn=(0.0, 0.0, 0.0, 0.0),
+            _base_pose=[0.0, 0.0, 0.0],
+            _root_to_lidar=root_to_lidar,
+            _scan_z=0.30,
+            _robot_prim="/openamrobot",
+        )
+        return mod.IsaacManifestScene._scan_ranges(scene)
+
+    mounted = scan(root_to_lidar)
+    # The lidar frame faces backwards: its -pi beam (index 0) looks along the robot's
+    # +x, from 0.33 m ahead of the base; its 0 beam (index 180) looks behind: nothing.
+    assert float(mounted[0]) == pytest.approx(3.0 - 0.33)
+    assert float(mounted[180]) == pytest.approx(12.0)
+    # The old base-frame fan: the wall shows up at the 0 beam, 3 m out (mirrored).
+    base = scan(None)
+    assert float(base[180]) == pytest.approx(3.0)
+    assert float(base[0]) == pytest.approx(12.0)
+
+
+def _world_all(inside: str | None, *bodies: tuple[float, str]) -> object:
+    """PhysX's ``raycast_all(start, dir, span, report_fn)`` over bodies at +x distances.
+
+    ``inside`` is a collider the ray STARTS in (PhysX reports it at distance 0, the
+    initial overlap); ``bodies`` are ``(x_from_origin_m, prim_path)`` ahead.
+    """
+    from types import SimpleNamespace
+
+    def raycast_all(start: tuple[float, float, float], _d: object, span: float, report) -> bool:  # type: ignore[no-untyped-def]  # reason: PhysX callback shape
+        if inside is not None:
+            report(SimpleNamespace(distance=0.0, rigid_body=inside, collision=inside))
+        for x, prim in sorted(bodies):
+            distance = x - start[0]
+            if 0.0 <= distance <= span and not report(
+                SimpleNamespace(distance=distance, rigid_body=prim, collision=prim)
+            ):
+                break
+        return True
+
+    return raycast_all
+
+
+def test_a_lidar_inside_the_chassis_collider_still_sees_the_wall(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenAMRobot's lidar sits inside the chassis collision box (Isaac, 2026-11-05).
+
+    PhysX reports a ray that starts inside a shape as a hit at distance 0. The
+    closest-hit walk stepped 1 mm per self hit and read range_max for the beam (no
+    beam returned in full_warehouse; the SLAM map stayed empty). With every hit
+    reported, the robot's own are dropped and the wall is the range.
+    """
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    def closest_inside(start: object, _d: object, span: float) -> dict[str, object]:
+        del start, span
+        return {"hit": True, "distance": 0.0, "rigidBody": "/panda/base_link"}
+
+    stuck = resolve_beam_range(closest_inside, range_min_m=0.05, **_BEAM)
+    assert stuck == pytest.approx(12.0), "the closest-hit walk cannot leave a collider it starts in"
+    got = resolve_beam_range(
+        closest_inside,
+        range_min_m=0.05,
+        raycast_all=_world_all(
+            "/panda/base_link", (0.30, "/panda/wheel_left"), (3.0, "/World/wall")
+        ),
+        **_BEAM,
+    )
+    assert got == pytest.approx(3.0, abs=1e-6)
+
+
+def test_raycast_all_keeps_a_near_world_hit_and_misses_read_range_max(
+    _manifest_scene_mod: object,
+) -> None:
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    near = resolve_beam_range(
+        None,
+        range_min_m=0.05,
+        raycast_all=_world_all("/panda/base_link", (0.25, "/World/toe_kick"), (3.0, "/World/w")),
+        **_BEAM,
+    )
+    assert near == pytest.approx(0.25, abs=1e-6)
+    empty = resolve_beam_range(
+        None, range_min_m=0.05, raycast_all=_world_all("/panda/base_link"), **_BEAM
+    )
+    assert empty == pytest.approx(12.0)

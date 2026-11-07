@@ -22,7 +22,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 from openral_core.assets import AssetRefError, resolve_asset
 from openral_core.schemas import RobotDescription
 
@@ -42,7 +41,7 @@ _URDF_JOINT_NAME_MISMATCH: dict[str, str] = {
 
 
 def _load(mf: Path) -> RobotDescription:
-    return RobotDescription.model_validate(yaml.safe_load(mf.read_text()))
+    return RobotDescription.from_yaml(str(mf))
 
 
 #: Lower bound, not an exact count — guards against the glob silently matching

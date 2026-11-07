@@ -27,6 +27,8 @@ than an inline branch:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import structlog
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode
@@ -60,12 +62,17 @@ _JOINTLESS_MODES = frozenset(
 def compose_slot_group(
     actions: list[Action],
     joint_names: list[str],
+    *,
+    hold: Mapping[str, float] | None = None,
 ) -> list[float]:
     """Merge one tick's slot actions into a single full-dof target row.
 
     Args:
         actions: Every slot action of one inference tick, in any order.
         joint_names: The robot's actuated joint names, in HAL/action order.
+        hold: Joints a group may leave uncommanded, each with the target it then
+            keeps (a mobile base and lift under an arms-only skill). Any other
+            uncommanded joint is still refused.
 
     Returns:
         One target value per entry of ``joint_names``.
@@ -100,6 +107,8 @@ def compose_slot_group(
                 "composer cannot place into a joint-position command."
             )
     targets = slot_group_targets(actions, joint_names)
+    if hold:
+        targets = [hold.get(joint_names[i]) if v is None else v for i, v in enumerate(targets)]
     missing = [joint_names[i] for i, v in enumerate(targets) if v is None]
     if missing:
         raise ROSConfigError(
@@ -211,12 +220,18 @@ def slot_group_targets(
     return targets
 
 
-def compose_slot_group_action(group: list[Action], joint_names: list[str]) -> Action:
+def compose_slot_group_action(
+    group: list[Action],
+    joint_names: list[str],
+    *,
+    hold: Mapping[str, float] | None = None,
+) -> Action:
     """Compose one tick's slot actions into a single full-dof ``JOINT_POSITION`` action.
 
     Args:
         group: Every slot action of one inference tick.
         joint_names: The robot's actuated joint names, in HAL/action order.
+        hold: Uncommanded joints' kept targets (``compose_slot_group``).
 
     Returns:
         A one-step ``JOINT_POSITION`` action carrying the first slot's stamp
@@ -229,7 +244,7 @@ def compose_slot_group_action(group: list[Action], joint_names: list[str]) -> Ac
     return Action(
         control_mode=ControlMode.JOINT_POSITION,
         horizon=1,
-        joint_targets=[compose_slot_group(group, joint_names)],
+        joint_targets=[compose_slot_group(group, joint_names, hold=hold)],
         stamp_ns=first.stamp_ns,
         confidence=first.confidence,
     )

@@ -227,10 +227,14 @@ def test_every_static_link_vertex_is_inside_its_primitives_with_headroom(
         f"{robot_id}/{link_name}: a vertex sits {float(sd.max()) * 1e3:+.2f} mm from the union's "
         f"surface (must be <= {-CAPSULE_HEADROOM_M / 2 * 1e3:.2f} mm)"
     )
+    refined = [g for g in geoms if g.tight_geometry is not None]
+    if not refined:
+        # Box-only pieces (OpenAMRobot's platform links): the kernel checks the boxes
+        # themselves (refine_self_pair is inert without a hull), and the union and
+        # headroom asserts above already hold the mesh inside them.
+        return
     escape = np.full(len(pts), np.inf)
-    for g in geoms:
-        if g.tight_geometry is None:
-            continue
+    for g in refined:
         local = (pts - np.asarray(g.origin_xyz_rpy[:3])) @ _rpy(*g.origin_xyz_rpy[3:])
         escape = np.minimum(escape, tight_escape_per_point_m(g, local))
     assert float(escape.max()) <= TIGHT_CONTAINMENT_EPSILON_M, (

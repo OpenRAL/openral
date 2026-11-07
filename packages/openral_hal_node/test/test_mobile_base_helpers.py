@@ -14,7 +14,7 @@ import math
 import pytest
 from openral_core.geometry import yaw_to_quat_xyzw
 from openral_hal.panda_mobile import PANDA_MOBILE_DESCRIPTION
-from openral_hal.sim_sensor_bridge import constant_scan_no_hit_ranges
+from openral_hal.sim_sensor_bridge import constant_scan_no_hit_ranges, scan_ranges_on_wire
 
 PANDA_MOBILE_ODOM_FRAME_ID = PANDA_MOBILE_DESCRIPTION.odom_frame
 PANDA_MOBILE_BASE_FRAME_ID = PANDA_MOBILE_DESCRIPTION.base_frame
@@ -100,3 +100,17 @@ def test_frame_id_constants_match_research_doc() -> None:
     # `base_link -> base_scan` by `deploy_e2e.launch.py`. Measured: base_link ->
     # base_scan z = -0.400, odom -> base_scan z = 0.300.
     assert PANDA_MOBILE_SCAN_FRAME_ID == "base_scan"
+
+
+def test_scan_ranges_on_wire_publishes_a_missed_beam_as_inf() -> None:
+    """A ray-cast beam clamped to range_max goes out as +inf (REP-117), returns unchanged.
+
+    slam_toolbox (Karto, inclusive range check) mapped range_max beams as wall points
+    riding with the robot and under-counted travel by ~14 %.
+    """
+    import math
+
+    fan = [*constant_scan_no_hit_ranges(n_beams=3, max_range_m=12.0), 0.1, 11.99]
+    wire = scan_ranges_on_wire(fan, max_range_m=12.0)
+    assert [math.isinf(r) and r > 0 for r in wire] == [True, True, True, False, False]
+    assert wire[3:] == [0.1, 11.99]

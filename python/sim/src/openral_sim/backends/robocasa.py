@@ -1815,8 +1815,10 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
     n_beams: int = _LASER_DEFAULT_N_BEAMS,
     max_range_m: float = _LASER_DEFAULT_MAX_RANGE_M,
     laser_height_m: float = _LASER_DEFAULT_HEIGHT_M,
+    origin_body_name: str | None = None,
+    mount_xyz_rpy: tuple[float, float, float, float, float, float] | None = None,
 ) -> NDArray[np.float32]:
-    """Cast ``n_beams`` rays in a planar fan from the panda_mobile base.
+    """Cast ``n_beams`` rays in a planar fan from the panda_mobile base, or a named body.
 
     Casts one ``mj_ray`` per beam — not the batched ``mj_multiRay`` — so
     each beam can be re-cast past a hit on the robot's own kinematic tree
@@ -1846,6 +1848,14 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
             the floor). Absolute, not relative to the base body — pass a
             value derived from the robot's own pose plus its manifest mount
             offset if the fan must follow the robot.
+        origin_body_name: The MJCF body the lidar frame rides (the manifest's
+            ``parent_frame``). When the model has it, the fan is cast from that
+            body's world pose composed with ``mount_xyz_rpy``: origin, height
+            and heading follow it (``laser_height_m`` and the base joints are
+            then unused), and hits on its kinematic tree are skipped. Absent
+            from the model, the base-joint path above applies.
+        mount_xyz_rpy: The lidar frame's pose in ``origin_body_name``; only its
+            yaw turns the fan, which stays planar.
 
     Returns:
         ``(n_beams,)`` float32 ranges in metres.
@@ -1914,6 +1924,17 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
             origin[1] = qpos[int(model.jnt_qposadr[y_jid])]
             yaw_world = float(qpos[int(model.jnt_qposadr[yaw_jid])])
     origin[2] = float(laser_height_m)
+    mount_body = (
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, origin_body_name)
+        if origin_body_name
+        else -1
+    )
+    if mount_body >= 0:
+        mx, my, mz, _roll, _pitch, myaw = mount_xyz_rpy or (0.0,) * 6
+        xmat = np.asarray(data.xmat[mount_body], dtype=np.float64).reshape(3, 3)
+        origin = np.asarray(data.xpos[mount_body], dtype=np.float64) + xmat @ np.array([mx, my, mz])
+        yaw_world = float(math.atan2(xmat[1, 0], xmat[0, 0])) + float(myaw)
+        base_body_id = int(mount_body)  # self-exclusion covers the mount's whole tree
 
     # Beam directions: world-frame unit vectors at angles
     # (yaw + body_angle) in the xy plane.

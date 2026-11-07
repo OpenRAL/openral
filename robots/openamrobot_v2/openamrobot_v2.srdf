@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OpenAMRobot 2.0 — hand-reviewed self-collision exemptions.
+
+  Like robots/openarm/openarm.srdf, this SRDF exists ONLY to carry deliberate
+  ACM exemptions into the MJCF collision lowering (`openral collision lower`,
+  acm-only, source: mjcf). The sweep can auto-disable a pair only when it
+  collides in EVERY sampled pose; these pairs do not, so each is a reviewed
+  judgment recorded here instead of a hand edit to the generated ACM block.
+
+  ARM ROWS: copied from robots/openarm/openarm.srdf (re-measured 2026-09-24,
+  hazard-log Entry 045) with only the link names translated to this robot's
+  URDF/TF names, because the arm collision_geometry is OpenArm's, copied
+  byte-for-byte (see robot.yaml):
+      openarm_{s}_finger_pair -> openarm_{s}_ee_link1
+      openarm_{s}_link7       -> openarm_{s}_ee_base_link
+  Every arm link frame (joint1..7, gripper, mimic finger) is identical between
+  the two manifests, so the measured mesh clearances carry over unchanged.
+  OpenArm's two torso rows (openarm_body_link0 vs the pedestals) have no
+  counterpart: this robot has no OpenArm torso.
+
+  NO rigid body rows. The carriage, adapter plate, arm profile, tablet, head
+  light, head camera, column and chassis are rigid to each other and to the
+  arm pedestals; any rigid pair that overlaps is always-colliding and the
+  sweep disables it on its own, and one that does not overlap can never trip.
+  A MOVING arm link (link1 .. ee_link2) is never exempted against any body
+  part: those are exactly the contacts the kernel must stop.
+
+  LIFT-INTERNAL ROWS (2026-11-04). The only non-arm pairs that move relative
+  to each other are carriage-side vs column-side parts, and the lift's own
+  design brings three of them together. Measured with the kernel predicates
+  on the committed boxes (tests/unit/_collision_kernel_verdict.kernel_link_gap)
+  over lift_joint 0..0.35 m in 1 mm steps; every other carriage/column pair
+  keeps >= 2.4 mm at every lift height and stays checked:
+    adapter_plate  vs column          -2.2 mm at q <= 2 mm  (plate seats on the column top
+                                                             at the bottom of the stroke)
+    lift_flag      vs stop_sensor_l1000  -20.2 mm, q 0.000-0.024
+    lift_flag      vs stop_sensor_l1175  -20.2 mm, q 0.151-0.199
+    lift_flag      vs stop_sensor_l1350  -20.2 mm, q 0.326-0.350
+    lift_flag_rod  vs stop_sensor_l1000  -12.2 mm, q 0.000-0.034
+    lift_flag_rod  vs stop_sensor_l1175  -12.2 mm, q 0.000-0.209
+  (lift_flag_rod vs stop_sensor_l1350 overlaps over the WHOLE stroke and the
+  sweep already disables it.) The flag on its rod rides through each stop
+  sensor's fork by design: that pass is how the lift senses 0 / 175 / 350 mm.
+  Upstream's boxes for these parts are placeholders (`placeholder_*`), so the
+  overlap depth is not a mesh measurement. None of these links is an arm link,
+  and every arm link vs each of them stays checked.
+  The lift_joint itself drives these pairs only; it is bounded by its own
+  position limits [0, 0.35] and the kernel's joint-limit check, not by these.
+
+  SAFETY (CLAUDE.md §3): every row here REDUCES what the kernel checks and
+  needs safety-WG sign-off to change.
+-->
+<robot name="openamrobot_v2">
+  <disable_collisions link1="openarm_left_ee_link1" link2="openarm_left_link5" reason="OpenArm row (finger_pair/link5): meshes never closer than 16.3 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
+  <disable_collisions link1="openarm_right_ee_link1" link2="openarm_right_link5" reason="OpenArm row (finger_pair/link5): meshes never closer than 16.1 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
+  <disable_collisions link1="openarm_left_ee_link1" link2="openarm_left_link6" reason="OpenArm row (finger_pair/link6): meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>
+  <disable_collisions link1="openarm_right_ee_link1" link2="openarm_right_link6" reason="OpenArm row (finger_pair/link6): meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>
+  <disable_collisions link1="openarm_left_link5" link2="openarm_left_ee_base_link" reason="OpenArm row (link5/link7): wrist housings either side of link6, meshes never closer than 2.9 mm (1500 certified poses, 1st percentile 3.0 mm); fitted primitives overlap in 67%."/>
+  <disable_collisions link1="openarm_right_link5" link2="openarm_right_ee_base_link" reason="OpenArm row (link5/link7): wrist housings either side of link6, meshes never closer than 2.9 mm (1500 certified poses, 1st percentile 3.0 mm); fitted primitives overlap in 69%."/>
+  <disable_collisions link1="adapter_plate_link" link2="lift_column_base_link" reason="Lift-internal: the carriage's adapter plate seats on the column top at the bottom of the stroke (boxes overlap 2.2 mm, lift q &lt;= 2 mm only, 1 mm headroom each side); no arm link."/>
+  <disable_collisions link1="lift_flag_link" link2="lift_stop_sensor_l1000_link" reason="Lift-internal: the position flag rides through the 0 mm stop sensor's fork by design (placeholder boxes overlap 20.2 mm, lift q 0.000-0.024 m); no arm link."/>
+  <disable_collisions link1="lift_flag_link" link2="lift_stop_sensor_l1175_link" reason="Lift-internal: the position flag rides through the 175 mm stop sensor's fork by design (placeholder boxes overlap 20.2 mm, lift q 0.151-0.199 m); no arm link."/>
+  <disable_collisions link1="lift_flag_link" link2="lift_stop_sensor_l1350_link" reason="Lift-internal: the position flag rides through the 350 mm stop sensor's fork by design (placeholder boxes overlap 20.2 mm, lift q 0.326-0.350 m); no arm link."/>
+  <disable_collisions link1="lift_flag_rod_link" link2="lift_stop_sensor_l1000_link" reason="Lift-internal: the flag rod passes the 0 mm stop sensor's fork by design (placeholder boxes overlap 12.2 mm, lift q 0.000-0.034 m); no arm link."/>
+  <disable_collisions link1="lift_flag_rod_link" link2="lift_stop_sensor_l1175_link" reason="Lift-internal: the flag rod passes the 175 mm stop sensor's fork by design (placeholder boxes overlap 12.2 mm, lift q 0.000-0.209 m); no arm link."/>
+</robot>

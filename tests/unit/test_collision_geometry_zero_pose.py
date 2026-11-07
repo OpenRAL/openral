@@ -286,7 +286,24 @@ def test_no_non_allowed_pair_interpenetrates_at_rest(manifest_path: Path) -> Non
 #     for, issue #356): the link7 box centre sits 29.2 mm inside the torso's
 #     watertight collision mesh (body_link0_symp.stl) at body z = 0.661 m;
 #     kernel gap -118 mm. Found by a seeded search over the left arm's limits.
+#   openamrobot_v2: the left hand swung behind the shoulder into the lift carriage
+#     (lift at 0): 38 of the twin hand's 458 vertices inside the carriage's box
+#     geom, up to 22 mm deep; kernel gap -45 mm. Seeded search (seed 7) over the
+#     left arm's limits, on the OpenArm arm geometry this robot reuses.
 _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
+    (
+        "openamrobot_v2",
+        {
+            "left_joint1": -2.38,
+            "left_joint2": -2.88,
+            "left_joint3": -1.47,
+            "left_joint4": 1.23,
+            "left_joint5": -1.18,
+            "left_joint6": -0.51,
+            "left_joint7": 1.13,
+        },
+        ("lift_carriage_link", "openarm_left_ee_base_link"),
+    ),
     (
         "openarm",
         {

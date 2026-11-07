@@ -185,21 +185,35 @@ def test_hal_drives_panda_mobile_arm_gripper_and_base_into_their_own_slots(
         arm = [0.0, 0.5, 0.0, -1.0, 0.0, 1.0, 0.0]
         hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[arm]))
         hal.send_action(Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[1.0]))
+        before = len(_rows(recorded))
         hal.send_action(
             Action(
                 control_mode=ControlMode.BODY_TWIST,
                 body_twist=[(0.5, 0.0, 0.0, 0.0, 0.0, 0.0)],
             )
         )
+        assert len(_rows(recorded)) == before, "a /cmd_vel setpoint steps nothing itself"
+        t0 = hal.sim_time_ns()
+        assert t0 is not None, "the Isaac sidecar reports its sim clock"
+        time.sleep(0.6)  # wall time alone does not expire the hold: it is sim time
+        # Step past the 0.5 s setpoint hold (diff_drive cmd_vel_timeout) in sim time.
+        while (hal.sim_time_ns() or 0) - t0 < 500_000_000:
+            assert hal.idle_step()
         hal.idle_step()
     finally:
         hal.disconnect()
         env.close()  # stops the sidecar — a leaked one is adopted by the next test
-    joint, grip, twist, idle = _rows(recorded)[-4:]
+    rows = _rows(recorded)
+    joint, grip = rows[before - 2 : before]
     _nan_eq(np.asarray(joint), [*arm, NAN, 0.0, 0.0, 0.0])  # base untouched
     _nan_eq(np.asarray(grip), [*arm, 1.0, 0.0, 0.0, 0.0])  # gripper slot, not wz
-    _nan_eq(np.asarray(twist), [*arm, 1.0, 0.5, 0.0, 0.0])  # the arm holds
-    _nan_eq(np.asarray(idle), [NAN] * 8 + [0.0, 0.0, 0.0])  # idle HOLDs, never 0 rad
+    # Every idle step inside the hold integrates the held twist (joints HOLD), then
+    # the hold expires.
+    held, stopped = rows[before:-1], rows[-1]
+    assert len(held) >= 2
+    for row in held:
+        _nan_eq(np.asarray(row), [NAN] * 8 + [0.5, 0.0, 0.0])
+    _nan_eq(np.asarray(stopped), [NAN] * 8 + [0.0, 0.0, 0.0])  # idle HOLDs, never 0 rad
 
 
 def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
@@ -244,6 +258,62 @@ def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
     assert len(rows) == before + 1, "a slot tick must commit as exactly one env step"
     # Manifest order: left arm, left gripper, right arm, right gripper.
     _nan_eq(np.asarray(rows[-1]), [0.3] * 7 + [0.7] + [-0.3] * 7 + [-0.7])
+
+
+def test_an_openarm_tick_drives_openamrobot_v2_and_holds_lift_and_base(recorded: Path) -> None:
+    """A 16-D OpenArm rSkill tick on OpenAMRobot 2.0: the arms move by name, the lift
+    HOLDs (NaN) and the base stays still, all in one env step."""
+    desc = _desc("openamrobot_v2")
+    names = [j.name for j in desc.joints]
+    left = [f"left_joint{i}" for i in range(1, 8)]
+    right = [f"right_joint{i}" for i in range(1, 8)]
+
+    def padded(value: float, sel: list[str]) -> list[list[float]]:
+        row = [0.0] * len(names)
+        for name in sel:
+            row[names.index(name)] = value
+        return [row]
+
+    def slot(**kw: object) -> Action:
+        return Action(tick_index=1, tick_group_size=4, **kw)
+
+    hal, env = _hal("openamrobot_v2", "isaac_openamrobot_v2_warehouse.yaml")
+    try:
+        before = len(_rows(recorded))
+        for action in (
+            slot(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=padded(0.3, left),
+                joint_names=left,
+            ),
+            slot(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.7], ee_name="left_gripper"),
+            slot(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=padded(-0.3, right),
+                joint_names=right,
+            ),
+            slot(
+                control_mode=ControlMode.GRIPPER_POSITION, gripper=[-0.7], ee_name="right_gripper"
+            ),
+        ):
+            hal.send_action(action)
+        with pytest.raises(ROSConfigError, match="differential"):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.BODY_TWIST,
+                    body_twist=[(0.0, 0.2, 0.0, 0.0, 0.0, 0.0)],
+                )
+            )
+    finally:
+        hal.disconnect()
+        env.close()
+    rows = _rows(recorded)
+    assert len(rows) == before + 1, "a slot tick must commit as one env step; vy never steps"
+    # Layout: lift, left arm, left gripper, right arm, right gripper, then (vx, vy, wz).
+    _nan_eq(
+        np.asarray(rows[-1]),
+        [NAN, *[0.3] * 7, 0.7, *[-0.3] * 7, -0.7, 0.0, 0.0, 0.0],
+    )
 
 
 def test_a_mobile_manipulation_tick_keeps_its_twist(recorded: Path) -> None:
@@ -293,6 +363,7 @@ def test_reconnect_drops_pre_reset_targets(recorded: Path) -> None:
                 body_twist=[(0.2, 0.0, 0.0, 0.0, 0.0, 0.0)],
             )
         )
+        hal.idle_step()  # the setpoint is integrated by the next step
     finally:
         hal.disconnect()
         env.close()

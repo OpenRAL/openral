@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import struct
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -128,6 +129,7 @@ __all__ = [
     "kernel_checked_body_ids",
     "occupied_cell_keys",
     "preattach_verdict",
+    "scan_ranges_on_wire",
     "should_idle_step",
     "voxel_backing_record",
 ]
@@ -175,17 +177,44 @@ BARRIER_VOXEL_WARN_S = 5.0
 def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[float]:
     """Return an ``n_beams``-long list with every beam clamped to ``max_range_m``.
 
-    The synthetic ``/scan`` published when no live MuJoCo handle is bound (the
-    in-process digital twin has no scene to ray-cast). slam_toolbox and Nav2
-    both treat per-beam ``max_range`` as "no hit" rather than ``inf`` / ``NaN``,
-    so this is the honest "nothing in front of me" reading. Pure (no rclpy) so
-    it is unit-testable in isolation.
+    The synthetic fan used when no live MuJoCo handle is bound (the in-process
+    digital twin has no scene to ray-cast), in the ray-casters' convention: a
+    beam that hit nothing reads ``max_range_m``. ``/scan`` carries those beams as
+    ``+inf`` (``scan_ranges_on_wire``). Pure (no rclpy) so it is unit-testable
+    in isolation.
 
     Example:
         >>> constant_scan_no_hit_ranges(n_beams=3, max_range_m=12.0)
         [12.0, 12.0, 12.0]
     """
     return [float(max_range_m)] * int(n_beams)
+
+
+def scan_ranges_on_wire(ranges: Sequence[float], *, max_range_m: float) -> list[float]:
+    """The ``LaserScan.ranges`` for a ray-cast fan: a beam that hit nothing is ``+inf``.
+
+    The ray-casters clamp a missed beam to ``max_range_m``; a real lidar driver
+    publishes ``+inf`` for it (REP-117). On the wire ``max_range_m`` reads as a return:
+    Karto's range check is inclusive, so slam_toolbox took every missed beam as a wall
+    point riding with the robot, and those points dragged its scan match towards "did
+    not move". In a 20 m walled MuJoCo room it under-counted travel by ~14 % (4.31 m
+    true, 3.72 m mapped), and Nav2 drove past its goals. Nav2 discards ``+inf``
+    (``inf_is_valid`` off), as it does on hardware: a beam clears the costmap only
+    up to a return, so free space with nothing in range is not cleared, on the
+    real lidar as here. ``inf_is_valid`` stays off because the payload filter's
+    dropped beams are ``+inf`` too, and clearing through a payload could erase a
+    real obstacle behind it (``payload_scan_filter_node``).
+
+    Example:
+        >>> scan_ranges_on_wire([1.5, 12.0, 12.0001], max_range_m=12.0)
+        [1.5, inf, inf]
+        >>> scan_ranges_on_wire([5.599999904632568], max_range_m=5.6)  # float32(5.6)
+        [inf]
+    """
+    # The ray-casters clamp in float32; float32(5.6) is just below the float64 5.6, so
+    # the clamp must be compared at float32 precision or it reads as a return.
+    limit = min(max_range_m, struct.unpack("f", struct.pack("f", max_range_m))[0])
+    return [float(r) if r < limit else math.inf for r in ranges]
 
 
 def should_idle_step(
@@ -3599,7 +3628,7 @@ class SimSensorBridge:
         msg.time_increment = 0.0
         msg.range_min = min_range
         msg.range_max = max_range
-        msg.ranges = list(ranges)
+        msg.ranges = scan_ranges_on_wire(ranges, max_range_m=max_range)
         msg.intensities = []
         self._scan_pub.publish(msg)
 
@@ -3641,6 +3670,13 @@ class SimSensorBridge:
         height = self._scan_world_height_m()
         if height is not None:
             kwargs["laser_height_m"] = height
+        # Cast from the lidar's own mount body when the twin has it, so origin,
+        # height and heading are the lidar frame's (a mount turned by yaw pi, or
+        # 0.33 m ahead of the base, is then what the scan's frame_id says).
+        lidar = self._description.lidar_sensor
+        if lidar is not None and lidar.parent_frame:
+            kwargs["origin_body_name"] = lidar.parent_frame
+            kwargs["mount_xyz_rpy"] = lidar.static_transform_xyz_rpy
 
         ranges = synthesize_laser_scan_2d(
             model=model,

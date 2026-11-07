@@ -245,9 +245,12 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     # the bodies of joints equality-coupled to the joint that drives it (followers)
     # — unless the manifest models that follower as a `mimic_joints` link of its
     # own (the OpenArm's follower finger), which then holds its own body.
+    # MuJoCo's world body (id 0) is the scene, not the robot: a mobile base's
+    # planar joints map the manifest's `world` root to it, and its floor plane
+    # is no part of any link.
     coupled = mjcf_coupled_joints(model)
     driven: dict[int, int] = {}  # MJCF joint the manifest drives -> its qpos address
-    bodies_of: dict[str, list[int]] = {ln: [b] for ln, b in link_body.items()}
+    bodies_of: dict[str, list[int]] = {ln: [b] for ln, b in link_body.items() if b != 0}
     own_body = {
         b for m in robot.mimic_joints for b in [link_body.get(m.child_link)] if b is not None
     }
@@ -388,3 +391,51 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
         if d > (SWEPT_TOLERANCE_M if ln in swept else -HEADROOM_FLOOR_M)
     }
     assert not bad, f"{robot_id}: twin mesh vertices outside their primitives (mm): {bad}"
+
+
+def test_openamrobot_v2_base_box_holds_the_whole_chassis() -> None:
+    """openamrobot_v2's base_link box stands in for every chassis-mounted body.
+
+    The casters, wheels, lidar and cameras are not kernel links of their own
+    (KNOWN_GAPS in test_collision_fleet_static_links.py says why: they are
+    inside this box). Every geom vertex of every body in base_link's twin
+    subtree must sit inside it with the declared headroom, at the rest pose
+    (the subtree is rigid, so one pose is every pose).
+    """
+    from openral_safety.urdf_lowering import _body_mesh
+
+    manifest = REPO / "robots" / "openamrobot_v2" / "robot.yaml"
+    robot = RobotDescription.from_yaml(str(manifest))
+    assert robot.assets.mjcf is not None
+    try:
+        mjcf = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest.parent)
+    except AssetRefError as exc:
+        pytest.skip(f"openamrobot_v2: MJCF twin unavailable on this host: {exc}")
+    model = mujoco.MjModel.from_xml_path(str(mjcf))
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    base = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link"))
+
+    def under_base(b: int) -> bool:
+        while b > 0:
+            if b == base:
+                return True
+            b = int(model.body_parentid[b])
+        return False
+
+    (box,) = [g for g in robot.collision_geometry if g.link_name == "base_link"]
+    he = np.asarray(box.shape.half_extents_m)  # type: ignore[union-attr]  # reason: base_link carries one box
+    to_box = np.linalg.inv(_tf(np.asarray(box.origin_xyz_rpy, dtype=float)))
+    base_rot, base_pos = data.xmat[base].reshape(3, 3), data.xpos[base]
+    bodies = [b for b in range(model.nbody) if under_base(b)]
+    assert len(bodies) > 10, "the chassis subtree went missing from the twin"
+    worst = -np.inf
+    for b in bodies:
+        mesh = _body_mesh(model, data, b)
+        if mesh is None:
+            continue
+        world = (data.xmat[b].reshape(3, 3) @ np.asarray(mesh.vertices).T).T + data.xpos[b]
+        in_base = (world - base_pos) @ base_rot
+        local = (to_box[:3, :3] @ in_base.T).T + to_box[:3, 3]
+        worst = max(worst, float((np.abs(local) - he).max()))
+    assert worst <= -HEADROOM_FLOOR_M, f"chassis vertex {worst * 1e3:.2f} mm from the box face"

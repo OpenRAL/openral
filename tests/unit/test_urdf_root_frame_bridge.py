@@ -81,9 +81,7 @@ _MANIFESTS = _file_urdf_manifests()
 )
 def test_base_frame_reaches_the_urdf_root(robot_id: str, manifest: Path, urdf: Path) -> None:
     """`base_frame` is the URDF root, or a declared bridge connects it to one."""
-    description = RobotDescription.model_validate(
-        yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    )
+    description = RobotDescription.from_yaml(str(manifest))
     urdf_links, urdf_root = _urdf_links_and_root(urdf)
     asset = description.assets.urdf
     assert asset is not None  # reason: _file_urdf_manifests filtered on assets.urdf.ref
@@ -125,9 +123,7 @@ def test_openarm_bridge_matches_the_offset_in_its_urdf() -> None:
     is -0.698 in z.
     """
     manifest = _ROBOTS / "openarm" / "robot.yaml"
-    description = RobotDescription.model_validate(
-        yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    )
+    description = RobotDescription.from_yaml(str(manifest))
     root = ET.parse(_ROBOTS / "openarm" / "openarm.urdf").getroot()
     joints = {j.get("name"): j for j in root.findall("joint")}
 
