@@ -45,26 +45,12 @@ def test_hf_rskills_pin_weights_revision() -> None:
     assert not unpinned, f"hf:// weights_uri must pin '@<40-hex sha>': {unpinned}"
 
 
-# These manifests declare policy_{pre,post}processor.json files their repos do
-# not contain at any revision checked (2026-11-07), so there is nothing to pin.
-# Fix the manifest (drop the block or point it at a real file), then delete it here.
-_PROCESSOR_FILES_ABSENT_UPSTREAM = frozenset(
-    {
-        "diffusion-pusht",
-        "molmoact2-libero-nf4",
-        "molmoact2-so101-nf4",
-        "rldx1-ft-gr1-nf4",
-        "rldx1-ft-libero-nf4",
-        "rldx1-ft-rc365-nf4",
-        "rldx1-ft-simpler-widowx-nf4",
-    }
-)
 _PROCESSOR_PIN = re.compile(r"^hf://[^/]+/[^/@]+@[0-9a-f]{40}/")
 
 
 def test_hf_rskill_processor_files_pin_revision() -> None:
     """Processor JSONs load at a pinned SHA too, or the run is only half replayable."""
-    unpinned = set()
+    unpinned = []
     for manifest_path in sorted((_ROOT / "rskills").glob("*/rskill.yaml")):
         if manifest_path.parent.name == "template":
             continue
@@ -73,8 +59,5 @@ def test_hf_rskill_processor_files_pin_revision() -> None:
             continue
         for uri in (processors.preprocessor_uri, processors.postprocessor_uri):
             if not _PROCESSOR_PIN.match(uri):
-                unpinned.add(manifest_path.parent.name)
-    assert unpinned == _PROCESSOR_FILES_ABSENT_UPSTREAM, (
-        f"unpin: {sorted(unpinned - _PROCESSOR_FILES_ABSENT_UPSTREAM)}; "
-        f"now pinned, drop from the list: {sorted(_PROCESSOR_FILES_ABSENT_UPSTREAM - unpinned)}"
-    )
+                unpinned.append(manifest_path.parent.name)
+    assert not unpinned, f"processor URIs must pin '@<40-hex sha>': {sorted(set(unpinned))}"

@@ -79,9 +79,6 @@ min_vram_gb:
 weights_uri: "hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4@7cd8070161663a2dfe11c00cd1e1a7b59e4787fd"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
-processors:
-  preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4/policy_preprocessor.json"
-  postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4/policy_postprocessor.json"
 # Default LIBERO image preprocessing (180° rotation) and the canonical LIBERO
 # 8-D proprio state.
 image_preprocessing:

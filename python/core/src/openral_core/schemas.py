@@ -8564,9 +8564,12 @@ _LICENSES_ALLOWING_COMMERCIAL: frozenset[RSkillLicensePosture] = frozenset(
 # ``PolicyProcessorPipeline``. Manifests of these families MUST declare a
 # ``RSkillProcessors`` block; ``act`` may omit it to use the legacy
 # norm-stats-in-safetensors path (e.g. ``rskills/act-aloha``).
-_MODERN_PROCESSOR_FAMILIES: frozenset[str] = frozenset(
-    {"smolvla", "pi05", "xvla", "diffusion", "rldx", "molmoact2"}
-)
+# Families whose adapters load a lerobot PolicyProcessorPipeline. Not diffusion
+# (stats come from the checkpoint; the processor path is opt-in), rldx (the
+# sidecar reads its own statistics.json) or molmoact2 (reads norm_stats.json):
+# their checkpoints ship no processor JSONs, so requiring the block forced URIs
+# to files that do not exist.
+_MODERN_PROCESSOR_FAMILIES: frozenset[str] = frozenset({"smolvla", "pi05", "xvla"})
 
 
 class RSkillProcessors(BaseModel):
@@ -9671,21 +9674,22 @@ class RSkillManifest(BaseModel):
     def _check_processors_required_for_modern_families(self) -> RSkillManifest:
         """Modern lerobot families MUST declare a ``processors`` block.
 
-        Closes Gap 1 + Gap 3: SmolVLA / pi05 / xVLA / Diffusion / RLDX
-        adapters consume the modern ``PolicyProcessorPipeline`` and must
-        be able to download exactly the preprocessor + postprocessor
-        artefacts from per-file URIs. Only the ``act`` family may omit
-        the block — its legacy checkpoints carry norm stats inside
-        ``model.safetensors`` and the ACT adapter dispatches on
-        ``manifest.processors is not None``.
+        Closes Gap 1 + Gap 3: SmolVLA / pi05 / xVLA adapters consume the
+        modern ``PolicyProcessorPipeline`` and must be able to download
+        exactly the preprocessor + postprocessor artefacts from per-file
+        URIs. Other families may omit the block: ACT's legacy checkpoints
+        carry norm stats inside ``model.safetensors`` (the adapter dispatches
+        on ``manifest.processors is not None``), Diffusion reads stats from
+        the checkpoint, RLDX's sidecar and MolmoAct2's model read their own
+        stats files.
         """
         # model_family is an open ``ModelFamily`` id or None for wrapped-ROS
         # kinds; the `in` check is safe against None and unknown families.
         if self.model_family in _MODERN_PROCESSOR_FAMILIES and self.processors is None:
             raise ValueError(
                 f"RSkillManifest({self.name!r}): model_family={self.model_family!r} "
-                "requires a `processors` block (preprocessor_uri + postprocessor_uri). "
-                "Only `act` may omit it (legacy norm-stats-in-safetensors path)."
+                "requires a `processors` block (preprocessor_uri + postprocessor_uri): "
+                "its adapter loads a lerobot PolicyProcessorPipeline."
             )
         return self
 
