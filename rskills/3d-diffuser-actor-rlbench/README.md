@@ -9,6 +9,10 @@ tags:
 - diffuser_actor
 - vision-language-action
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:mit
 - diffuser-actor
 - 3d-diffuser-actor
 - rlbench
@@ -17,6 +21,16 @@ tags:
 - manipulation
 - franka
 inference: false
+openral:
+  description: 3D Diffuser Actor (Ke et al., 2024) — a diffusion policy over end-effector
+    keyposes fusing multi-view RGB-D into a 3D scene representation, on the RLBench
+    PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar
+    with the rlbench scene backend. MIT code + checkpoints. The PerAct checkpoint
+    is loaded verbatim; ships three live-verified starter tasks.
+  min_vram_gb: 2.0
+  latency_ms: 3000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 <!--

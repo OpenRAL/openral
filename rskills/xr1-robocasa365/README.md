@@ -11,11 +11,23 @@ tags:
 - nf4
 - 4-bit
 - panda_mobile
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:panda_mobile
+- rskill-license:apache-2.0
 - robocasa365
 base_model:
 - XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa365
 base_model_relation: quantized
 inference: false
+openral:
+  description: Apache-2.0 XR-1 RoboCasa365 checkpoint. The adapter keeps seven frames,
+    samples four at interval two, converts OpenRAL's 16-D quaternion layout to XR-1's
+    14-D axis-angle state, and replays sixteen decoded actions per query.
+  min_vram_gb: null
+  latency_ms: 120000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # XR-1 RoboCasa365

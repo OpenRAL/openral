@@ -148,6 +148,12 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
             tags.append("nf4" if dt == "int4" else dt)
             tags.append("4-bit" if dt == "int4" else "8-bit" if dt == "int8" else "quantized")
     tags += list(manifest.embodiment_tags)
+    # Reserved, namespaced catalog tags (the contract the website catalog and
+    # ``openral rskill search`` read for repos whose rskill.yaml is gated).
+    # ``rskill-license:`` not ``license:`` — HF derives ``license:`` tags itself.
+    tags += [f"rskill-kind:{kind}", f"rskill-role:{manifest.role}"]
+    tags += [f"embodiment:{t}" for t in manifest.embodiment_tags]
+    tags.append(f"rskill-license:{manifest.license.value}")
     fm["tags"] = _dedup(tags)
 
     base = _hf_repo(getattr(manifest, "source_repo", None))
@@ -166,7 +172,25 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
 
     # rSkills are packaging manifests, not HF-inference-servable checkpoints.
     fm["inference"] = False
+    fm["openral"] = _catalog_block(manifest)
     return fm
+
+
+def _catalog_block(manifest: RSkillManifest) -> dict[str, Any]:
+    """The ``openral:`` front-matter mapping: catalog fields readable without rskill.yaml."""
+    q = manifest.quantization
+    dtype = str(getattr(q.dtype, "value", q.dtype)) if q is not None else None
+    vram = manifest.min_vram_gb
+    min_vram = (manifest.active_min_vram_gb() or min(vram.values())) if vram else None
+    budget = manifest.latency_budget
+    runtime = manifest.runtime
+    return {
+        "description": " ".join(manifest.description.split()),
+        "min_vram_gb": min_vram,
+        "latency_ms": budget.per_chunk_ms if budget is not None else None,
+        "runtime": str(getattr(runtime, "value", runtime)) if runtime else None,
+        "dtype": dtype,
+    }
 
 
 def render_frontmatter(fm: dict[str, Any]) -> str:

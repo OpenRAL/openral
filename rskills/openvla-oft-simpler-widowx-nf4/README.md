@@ -11,6 +11,10 @@ tags:
 - nf4
 - 4-bit
 - widowx
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:widowx
+- rskill-license:mit
 - openral
 - openvla-oft
 - vla
@@ -18,6 +22,14 @@ tags:
 - maniskill3
 - manipulation
 inference: false
+openral:
+  description: OpenVLA-OFT (RLinf, PPO on ManiSkill3 PutOnPlateInScene25) WidowX bridge
+    policy, evaluated on SimplerEnv WidowX carrot-on-plate. Loaded in-process via
+    transformers custom-code (trust_remote_code), NF4 for 8 GB hosts. MIT license.
+  min_vram_gb: 7.0
+  latency_ms: 2000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-openvla_oft-widowx-simpler_env-nf4

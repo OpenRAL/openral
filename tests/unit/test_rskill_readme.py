@@ -84,3 +84,38 @@ def test_every_intree_readme_is_current_and_valid() -> None:
         errs = [i for i in report.issues if "error" in str(getattr(i, "severity", "")).lower()]
         assert not errs, f"{d.name}: doc-validator errors {errs}"
     assert not stale, "stale READMEs (run the model-card regen): " + "; ".join(stale)
+
+
+def test_catalog_tags_and_openral_block_contract() -> None:
+    """The reserved tags + ``openral:`` block the website / gated search read (exact shape)."""
+    m = _manifest("act-aloha")
+    fm = build_rskill_frontmatter(m)
+    reserved = [t for t in fm["tags"] if ":" in t]
+    assert reserved == [
+        f"rskill-kind:{m.kind}",
+        f"rskill-role:{m.role}",
+        *[f"embodiment:{t}" for t in m.embodiment_tags],
+        f"rskill-license:{m.license.value}",
+    ]
+    assert not any(t.startswith("license:") for t in fm["tags"])
+    block = fm["openral"]
+    assert list(block) == ["description", "min_vram_gb", "latency_ms", "runtime", "dtype"]
+    assert block["description"] == " ".join(m.description.split())
+    assert block["latency_ms"] == m.latency_budget.per_chunk_ms
+    assert block["runtime"] == m.runtime.value
+    assert block["dtype"] == m.quantization.dtype.value
+    # deterministic: same manifest, same card
+    assert build_rskill_readme(m, "# b\n") == build_rskill_readme(m, "# b\n")
+
+
+def test_openral_min_vram_gb_per_dtype_map() -> None:
+    """Per-dtype ``min_vram_gb`` → the active dtype's entry, else the smallest; unset → null."""
+    m = _manifest("pi05-libero-int8")  # {fp32: 16.1, bf16: 8.1, int8: 6.4}, dtype int8
+    assert build_rskill_frontmatter(m)["openral"]["min_vram_gb"] == 6.4
+    assert m.min_vram_gb is not None
+    no_active = m.model_copy(
+        update={"min_vram_gb": {k: v for k, v in m.min_vram_gb.items() if k.value != "int8"}}
+    )
+    assert build_rskill_frontmatter(no_active)["openral"]["min_vram_gb"] == 8.1
+    unset = m.model_copy(update={"min_vram_gb": None})
+    assert build_rskill_frontmatter(unset)["openral"]["min_vram_gb"] is None

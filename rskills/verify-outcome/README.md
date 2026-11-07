@@ -7,7 +7,20 @@ tags:
 - OpenRAL
 - rskill
 - any
+- rskill-kind:playbook
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: 'S2 closed-loop decision procedure (Inner Monologue): after a skill
+    or subtask completes, check whether it ACTUALLY succeeded using scene/reward queries
+    before the reasoner proceeds. Composes query_scene, query_task_progress, locate_in_view,
+    memory_write and emit_prompt.'
+  min_vram_gb: null
+  latency_ms: 5000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-playbook-verify_outcome

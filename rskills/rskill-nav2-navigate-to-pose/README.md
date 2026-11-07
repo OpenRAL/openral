@@ -8,8 +8,23 @@ tags:
 - rskill
 - ros2
 - mobile_base
+- rskill-kind:ros_action
+- rskill-role:s1
+- embodiment:mobile_base
+- rskill-license:apache-2.0
 - nav2
 inference: false
+openral:
+  description: 'Navigate the mobile base to a target pose via Nav2''s NavigateToPose.
+    Supports BOTH absolute and relative goals via pose.header.frame_id: "map" = absolute
+    world coordinates (drive to (3.5, 2.1)); "base_link" = relative to current pose,
+    used for turns / forward / back-up (Nav2 transforms via tf2 on goal accept — the
+    LLM does NOT need to compose quaternions against the live pose). Result-only mode:
+    Nav2 publishes cmd_vel directly; collision avoidance relies on its costmap.'
+  min_vram_gb: null
+  latency_ms: 60000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-nav2-mobile_base-navigate_to_pose

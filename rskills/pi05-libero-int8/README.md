@@ -14,12 +14,28 @@ tags:
 - int8
 - 8-bit
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:permissive_research
 - nf4
 - 4-bit
 - vla
 - libero
 - manipulation
 inference: false
+openral:
+  description: 'π0.5 (PaliGemma 3B + flow-matching) fine-tuned on LIBERO v0.44, LLM.int8-packed
+    at load so 8 GB GPUs can run it at all — bf16 peaks at 8.1 GB and will not load
+    there. int8 is a memory fit, not a free one: over 300 LIBERO-Spatial episodes
+    it scores 62% vs bf16''s 95%, task-dependent (22-82%), and is ~2.6x slower per
+    step. With >9 GB prefer bf16 via `policy_extras.dtype`, or openral-pro''s TensorRT
+    FP8; see the README. PI permissive-research weights: commercial use needs a vendor
+    agreement.'
+  min_vram_gb: 6.4
+  latency_ms: 200.0
+  runtime: pytorch
+  dtype: int8
 base_model:
 - lerobot/pi05_libero_finetuned_v044
 base_model_relation: quantized

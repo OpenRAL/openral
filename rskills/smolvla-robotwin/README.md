@@ -11,6 +11,10 @@ tags:
 - lerobot
 - vision-language-action
 - aloha_agilex
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:aloha_agilex
+- rskill-license:apache-2.0
 - vla
 - robotwin
 - bimanual
@@ -18,6 +22,16 @@ tags:
 datasets:
 - lerobot/robotwin_unified
 inference: false
+openral:
+  description: 'SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on the RoboTwin 2.0
+    unified dataset (50 dual-arm tasks, aloha-agilex embodiment, SAPIEN). Multi-task:
+    action chunks of length 50 across three RGB views (head + per-wrist) driving a
+    14-DoF dual-arm joint command. Runs on the RoboTwin scene backend through the
+    out-of-process SAPIEN sidecar.'
+  min_vram_gb: null
+  latency_ms: 250.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-smolvla-aloha_agilex-robotwin-bf16

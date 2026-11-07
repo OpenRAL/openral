@@ -11,9 +11,22 @@ tags:
 - lerobot
 - vision-language-action
 - pusht
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:pusht
+- rskill-license:apache-2.0
 - diffusion-policy
 - manipulation
 inference: false
+openral:
+  description: Diffusion Policy (~263M-param U-Net with 100-step DDPM denoiser) for
+    the PushT 2-DoF pushing benchmark. Action chunks of length 8 within a horizon
+    of 16. The chunk inference cost is dominated by the denoising loop, so cached
+    pops are essentially free — this is the extreme test of the queue-drain contract.
+  min_vram_gb: null
+  latency_ms: 1250.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-diffusion-pusht-pusht-fp32
