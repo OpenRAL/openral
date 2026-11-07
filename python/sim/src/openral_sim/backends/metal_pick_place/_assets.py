@@ -43,6 +43,7 @@ __all__ = [
     "ClutterItem",
     "MetalPickPlaceOptions",
     "PhotoDecal",
+    "add_light_grid",
     "compose_metal_pick_place",
     "mujoco_principal_pixel",
 ]
@@ -444,23 +445,50 @@ def compose_metal_pick_place(
 
 
 def _add_lights(spec: mujoco.MjSpec, opts: MetalPickPlaceOptions) -> None:
-    # An n x n grid of shadow-casting lights sharing ``light_diffuse``: their
-    # overlapping hard shadows add up to the soft contact shadow the real
-    # overhead lighting gives (MuJoCo's own shadows are hard-edged).
-    n = opts.light_grid
+    add_light_grid(
+        spec,
+        pos=opts.light_pos,
+        diffuse=opts.light_diffuse,
+        grid=opts.light_grid,
+        spread_m=opts.light_spread_m,
+        bulb_radius_m=opts.light_bulb_radius_m,
+        cutoff_deg=opts.light_cutoff_deg,
+        exponent=opts.light_exponent,
+        castshadow=opts.light_castshadow,
+    )
+
+
+def add_light_grid(
+    spec: mujoco.MjSpec,
+    *,
+    pos: _Vec3,
+    diffuse: _Vec3,
+    grid: int,
+    spread_m: float,
+    bulb_radius_m: float,
+    cutoff_deg: float,
+    exponent: float,
+    castshadow: bool,
+) -> None:
+    """Add a ``grid`` x ``grid`` of downward spot lights centred on ``pos``, sharing ``diffuse``.
+
+    Their overlapping hard shadows add up to the soft contact shadow the real overhead
+    lighting gives (MuJoCo's own shadows are hard-edged). Shared by the Metal scenes.
+    """
+    n = grid
     for i in range(n):
         for j in range(n):
             light = spec.worldbody.add_light()
             light.name = f"ceiling_{i}_{j}"
-            off = [(k / (n - 1) - 0.5) * opts.light_spread_m if n > 1 else 0.0 for k in (i, j)]
-            light.pos = [opts.light_pos[0] + off[0], opts.light_pos[1] + off[1], opts.light_pos[2]]
+            off = [(k / (n - 1) - 0.5) * spread_m if n > 1 else 0.0 for k in (i, j)]
+            light.pos = [pos[0] + off[0], pos[1] + off[1], pos[2]]
             light.dir = [0.0, 0.0, -1.0]
-            light.diffuse = [c / (n * n) for c in opts.light_diffuse]
+            light.diffuse = [c / (n * n) for c in diffuse]
             light.specular = [0.15 / (n * n)] * 3
-            light.castshadow = opts.light_castshadow
-            light.bulbradius = opts.light_bulb_radius_m
-            light.cutoff = opts.light_cutoff_deg
-            light.exponent = opts.light_exponent
+            light.castshadow = castshadow
+            light.bulbradius = bulb_radius_m
+            light.cutoff = cutoff_deg
+            light.exponent = exponent
 
 
 def _static_geom(
