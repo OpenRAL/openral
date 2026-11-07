@@ -407,7 +407,7 @@ _Advisory, queryable Layer-2 world model the S2 Reasoner consults to recall obje
   fields: `paper, arxiv, model_variant, evaluated_by, reproduced_locally, reproduction_planned, reproduction_cli, table, status`
 - `class RSkillEvalBenchmark(BaseModel)` — Suite identity for a benchmark block. (L10739)
   fields: `name, dataset, protocol, robot, simulator`
-- `class RSkillEvalResult(BaseModel)` — On-disk shape of `rskills/<id>/eval/*.json`; optional `trace_id` cross-references the OTel trace tree when the run had an OTLP endpoint to export to. (L10761)
+- `class RSkillEvalResult(BaseModel)` — On-disk shape of `rskills/<id>/eval/*.json`; optional `trace_id` cross-references the OTel trace tree when the run had an OTLP endpoint to export to; optional `grade_counts` (episodes per final placement grade on a graded scene). (L10596)
   fields: `schema_version, source, benchmark, eval_config, results, baselines`
   - `from_json(cls, path: str) -> RSkillEvalResult` [@classmethod] — Load and validate a single benchmark JSON. (L10811)
 
