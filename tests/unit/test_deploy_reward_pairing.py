@@ -106,6 +106,20 @@ def test_preflight_passes_on_8gb_card() -> None:
     assert "OpenRAL/rskill-act-franka_panda-libero-fp32" in refused  # undeclared
 
 
+def test_preflight_budgets_the_dtype_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``$OPENRAL_QUANTIZATION_DTYPE`` is what the runner loads, so the preflight budgets
+    it: smolvla fits 8 GB at its manifest bf16, but declares no fp32 size, so under an
+    fp32 override the pair cannot be verified and smolvla is refused."""
+    monkeypatch.setenv("OPENRAL_QUANTIZATION_DTYPE", "fp32")
+    refused = _preflight_reward_vram_fit(
+        repo_root=_REPO_ROOT,
+        description=_franka(),
+        reward_manifest_path=str(_ROBOMETER),
+        gpu_budget_gb=80.0,  # only fp32-declared policies (pi05 / 3dda …) remain
+    )
+    assert "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16" in refused
+
+
 def test_preflight_hard_exits_when_no_vla_fits(tmp_path: pathlib.Path) -> None:
     """On a 4 GB card the franka smolvla cannot co-reside with robometer (1.2 + 5.5 =
     6.7 > 4.0); with no wrapped-ROS skill beside it the deploy could dispatch nothing →

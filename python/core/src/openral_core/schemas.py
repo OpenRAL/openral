@@ -9439,20 +9439,36 @@ class RSkillManifest(BaseModel):
                 raise ValueError(f"min_vram_gb[{dtype.value!r}] = {gb!r} must be > 0")
         return v
 
-    def active_min_vram_gb(self, *, pro_installed: bool = False) -> float | None:
+    def active_min_vram_gb(
+        self, *, pro_installed: bool = False, dtype: QuantizationDtype | None = None
+    ) -> float | None:
         """Declared VRAM (GB) for this skill at its **active** quantization dtype.
 
-        Reads ``min_vram_gb[quantization.runtime_dtype(pro_installed=...)]`` — the
-        footprint the skill will actually use at load: ``quantization.dtype``, or
-        ``quantization.extra["pro_dtype"]`` when the caller reports OpenRAL Pro's
-        quantization module installed (core cannot detect it itself). Returns
-        ``None`` when ``min_vram_gb`` is unset or has no entry for the active dtype
+        Reads ``min_vram_gb[dtype]`` when the caller passes the dtype the load
+        resolved to (a policy's loader lets ``$OPENRAL_QUANTIZATION_DTYPE`` and the
+        ``VLASpec`` override the manifest — ``openral_sim._quantization.
+        resolved_runtime_dtype`` computes it; core cannot read those). Otherwise
+        ``min_vram_gb[quantization.runtime_dtype(pro_installed=...)]``:
+        ``quantization.dtype``, or ``quantization.extra["pro_dtype"]`` when the
+        caller reports OpenRAL Pro's quantization module installed. Returns
+        ``None`` when ``min_vram_gb`` is unset or has no entry for that dtype
         (the size is simply not declared — the caller decides whether that is an
         error). See ``assert_vla_reward_fits`` for the pair check that consumes this.
+
+        Example:
+            >>> m = RSkillManifest.from_yaml(
+            ...     "rskills/rskill-internvla_n1-mobile_base-vln-nf4/rskill.yaml"
+            ... )
+            >>> m.active_min_vram_gb(), m.active_min_vram_gb(pro_installed=True)
+            (16.6, 7.0)
+            >>> m.active_min_vram_gb(pro_installed=True, dtype=QuantizationDtype.BF16)
+            16.6
         """
         if self.min_vram_gb is None:
             return None
-        return self.min_vram_gb.get(self.quantization.runtime_dtype(pro_installed=pro_installed))
+        if dtype is None:
+            dtype = self.quantization.runtime_dtype(pro_installed=pro_installed)
+        return self.min_vram_gb.get(dtype)
 
     @model_validator(mode="before")
     @classmethod
@@ -10589,6 +10605,7 @@ def assert_vla_reward_fits(
     *,
     margin_gb: float = 0.5,
     pro_installed: bool = False,
+    vla_dtype: QuantizationDtype | None = None,
 ) -> float:
     """Verify a VLA + its paired reward model co-reside in GPU VRAM.
 
@@ -10606,6 +10623,11 @@ def assert_vla_reward_fits(
         margin_gb: Headroom reserved for fragmentation / framework overhead.
         pro_installed: OpenRAL Pro's quantization module is installed, so each
             manifest's ``quantization.extra["pro_dtype"]`` is what loads.
+        vla_dtype: The dtype the VLA's loader resolved to, when the caller knows it
+            (``openral_sim._quantization.resolved_runtime_dtype``:
+            ``$OPENRAL_QUANTIZATION_DTYPE`` and the ``VLASpec`` override the
+            manifest). ``None`` budgets ``vla.quantization.runtime_dtype``. The
+            reward model always loads at its manifest's runtime dtype.
 
     Returns:
         The combined VRAM (GB) the pair requires (``vla + reward``).
@@ -10620,13 +10642,15 @@ def assert_vla_reward_fits(
     See ``tests/unit/test_vla_reward_pairing.py`` for fixture-backed coverage
     (smolvla-libero + robometer-4b-nf4 = 6.7 GB, fits 8 GB, OOMs a 4 GB card).
     """
-    vla_gb = vla.active_min_vram_gb(pro_installed=pro_installed)
+    vla_gb = vla.active_min_vram_gb(pro_installed=pro_installed, dtype=vla_dtype)
+    vla_dtype = vla_dtype or vla.quantization.runtime_dtype(pro_installed=pro_installed)
     reward_gb = reward.active_min_vram_gb(pro_installed=pro_installed)
     missing = [m.name for m, gb in ((vla, vla_gb), (reward, reward_gb)) if gb is None]
     if missing:
         raise ROSConfigError(
             f"cannot verify VLA+reward VRAM co-residency: {missing!r} do not declare "
-            f"min_vram_gb for their active dtype. Declare it so the pair can be "
+            f"min_vram_gb for their active dtype (VLA {vla_dtype.value}). Declare it "
+            f"so the pair can be "
             f"checked before load."
         )
     assert vla_gb is not None and reward_gb is not None  # narrowed by the guard above
@@ -10634,7 +10658,7 @@ def assert_vla_reward_fits(
     if combined + margin_gb > gpu_total_gb:
         raise ROSGPUMemoryError(
             f"VLA {vla.name!r} ({vla_gb:.2f} GB @ "
-            f"{vla.quantization.runtime_dtype(pro_installed=pro_installed).value}) + "
+            f"{vla_dtype.value}) + "
             f"reward {reward.name!r} ({reward_gb:.2f} GB @ "
             f"{reward.quantization.runtime_dtype(pro_installed=pro_installed).value}) "
             f"= {combined:.2f} GB + {margin_gb:.2f} GB margin exceeds GPU VRAM "

@@ -4775,7 +4775,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return manifest
         return None
 
-    def _refuse_unfittable_vla(
+    def _refuse_unfittable_vla(  # noqa: PLR0911  # reason: one early return per refusal tier
         self,
         call: ExecuteRskillTool,
         *,
@@ -4830,7 +4830,26 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         vla = self._manifest_for_rskill(call.rskill_id)
         if vla is None or vla.kind not in POLICY_KINDS:
             return False
-        vla_min_gb = vla.active_min_vram_gb(pro_installed=self._pro_quantization)
+        from openral_sim._quantization import resolved_runtime_dtype
+
+        # The dtype the runner will load at: $OPENRAL_QUANTIZATION_DTYPE and the
+        # manifest's policy_extras override quantization.dtype / pro_dtype.
+        try:
+            vla_dtype = resolved_runtime_dtype(vla)
+        except ROSConfigError as exc:
+            self.get_logger().error(f"dispatch: refusing execute_rskill — {exc}")
+            self._publish_skill_failure(
+                kind=_KIND_CONTROLLER,
+                rskill_id=call.rskill_id,
+                evidence=ControllerEvidence(
+                    controller_name=call.rskill_id,
+                    state="vram_insufficient",
+                    detail=str(exc)[:480],
+                ),
+                traceparent=traceparent,
+            )
+            return True
+        vla_min_gb = vla.active_min_vram_gb(dtype=vla_dtype)
         if call.rskill_id == self._resident_vla_id:
             # Re-dispatch of the skill the runner already holds warm: its own
             # residency is why free VRAM is low, and re-running it needs ~0
@@ -4845,7 +4864,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             if 0.0 < free_gb < vla_min_gb:
                 detail = (
                     f"VLA {call.rskill_id!r} declares {vla_min_gb:.1f} GB at its active "
-                    f"quantization but only {free_gb:.1f} GB of GPU VRAM is free right now "
+                    f"quantization ({vla_dtype.value}) but only {free_gb:.1f} GB of GPU VRAM "
+                    "is free right now "
                     f"(total {self._gpu_total_vram_gb:.1f} GB) — another process is likely "
                     "holding the difference. Refusing before dispatch instead of OOMing "
                     "mid-load; free VRAM or pick a smaller skill."
@@ -4876,6 +4896,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 self._reward_manifest,
                 self._gpu_total_vram_gb,
                 pro_installed=self._pro_quantization,
+                vla_dtype=vla_dtype,
             )
         except (ROSGPUMemoryError, ROSConfigError) as exc:
             self.get_logger().error(

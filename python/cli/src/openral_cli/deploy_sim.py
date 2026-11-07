@@ -978,7 +978,7 @@ def _vram_refused_launch_args(refused: list[str]) -> list[str]:
     return [f"vram_refused_rskill_ids:={','.join(refused)}"] if refused else []
 
 
-def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy classification (fit / oom / undeclared) + the notify branches read clearest inline
+def _preflight_reward_vram_fit(  # noqa: PLR0912, PLR0915  # reason: linear per-policy classification (fit / oom / undeclared) + the notify branches read clearest inline
     *,
     repo_root: Path,
     description: RobotDescription,
@@ -1027,6 +1027,7 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy cl
     from openral_core.exceptions import ROSGPUMemoryError
     from openral_core.schemas import assert_vla_reward_fits
     from openral_rskill.quantization_gate import pro_quantization_installed
+    from openral_sim._quantization import resolved_runtime_dtype
 
     # Under Pro, a manifest's quantization.extra.pro_dtype is what loads.
     pro_installed = pro_quantization_installed()
@@ -1053,14 +1054,21 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy cl
     undeclared: list[str] = []
     for vla in vlas:
         try:
+            # Budget the dtype the runner will load ($OPENRAL_QUANTIZATION_DTYPE /
+            # policy_extras override the manifest), not just the manifest's.
             combined = assert_vla_reward_fits(
-                vla, reward, gpu_budget_gb, pro_installed=pro_installed
+                vla,
+                reward,
+                gpu_budget_gb,
+                pro_installed=pro_installed,
+                vla_dtype=resolved_runtime_dtype(vla),
             )
         except ROSGPUMemoryError as exc:
             oom.append(f"{vla.name}: {exc}")
             refused.append(vla.name)
         except ROSConfigError:
-            # min_vram_gb undeclared for the active dtype — the pair cannot be
+            # min_vram_gb undeclared for the resolved dtype (or the dtype is not
+            # one the schema knows) — the pair cannot be
             # verified, so the reasoner will refuse this policy at dispatch too.
             undeclared.append(vla.name)
             refused.append(vla.name)

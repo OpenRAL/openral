@@ -8,8 +8,8 @@ unification must not change which dtype any shipped skill loads at.
 from __future__ import annotations
 
 import pytest
-from openral_core import QuantizationConfig, QuantizationDtype, VLASpec
-from openral_core.exceptions import ROSConfigError
+from openral_core import QuantizationConfig, QuantizationDtype, VLASpec, assert_vla_reward_fits
+from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError
 from openral_rskill.loader import load_rskill_manifest
 from openral_rskill.quantization_gate import pro_quantization_installed
 from openral_sim._quantization import (
@@ -18,6 +18,7 @@ from openral_sim._quantization import (
     plan_quantization,
     quantization_extra,
     require_supported_dtype,
+    resolved_runtime_dtype,
     sidecar_quant_token,
 )
 
@@ -85,6 +86,60 @@ def test_internvla_runs_bf16_on_open_and_nf4_under_pro(monkeypatch: pytest.Monke
     # An explicit override still wins over pro_dtype.
     monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
     assert plan_quantization(_spec(skill), manifest, default="bf16").dtype == "bf16"
+
+
+def test_vram_checks_budget_the_resolved_dtype(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pair check budgets what loads: an env override beats ``pro_dtype``.
+
+    A Pro host running InternVLA-N1 with ``OPENRAL_QUANTIZATION_DTYPE=bf16`` loads
+    16.6 GB; budgeting the manifest's Pro dtype (7.0 GB) accepted a pair that OOMs.
+    """
+    vla = load_rskill_manifest("rskills/rskill-internvla_n1-mobile_base-vln-nf4")
+    reward = load_rskill_manifest("rskills/robometer-4b")  # int4, 5.5 GB
+
+    monkeypatch.delenv(QUANTIZATION_DTYPE_ENV, raising=False)
+    pro = pro_quantization_installed()
+    # No override: the resolver agrees with the manifest-only path.
+    assert resolved_runtime_dtype(vla) == vla.quantization.runtime_dtype(pro_installed=pro)
+
+    # The bug: Pro budget 7.0 + 5.5 = 12.5 GB "fits" a 16 GB card.
+    assert assert_vla_reward_fits(vla, reward, 16.0, pro_installed=True) == pytest.approx(12.5)
+
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
+    dtype = resolved_runtime_dtype(vla)
+    assert dtype == QuantizationDtype.BF16
+    assert vla.active_min_vram_gb(pro_installed=True, dtype=dtype) == 16.6
+    with pytest.raises(ROSGPUMemoryError, match=r"16\.60 GB @ bf16"):
+        assert_vla_reward_fits(vla, reward, 16.0, pro_installed=True, vla_dtype=dtype)
+
+    # The canonical nf4 token maps back onto the schema's int4 key.
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "nf4")
+    assert resolved_runtime_dtype(vla) == QuantizationDtype.INT4
+
+    # A resolved dtype with no declared size is still refused, not budgeted at 0.
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "fp16")
+    with pytest.raises(ROSConfigError, match="VLA fp16"):
+        assert_vla_reward_fits(
+            vla, reward, 80.0, pro_installed=True, vla_dtype=resolved_runtime_dtype(vla)
+        )
+
+    # A token the schema has no dtype for cannot key min_vram_gb at all.
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "q3_k")
+    with pytest.raises(ROSConfigError, match="not a QuantizationDtype"):
+        resolved_runtime_dtype(vla)
+
+
+def test_resolved_dtype_reads_policy_extras_like_the_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``spec=None`` is the deploy runner's spec: ``policy_extras["dtype"]`` overrides."""
+    monkeypatch.delenv(QUANTIZATION_DTYPE_ENV, raising=False)
+    vla = load_rskill_manifest("rskills/rskill-internvla_n1-mobile_base-vln-nf4")
+    pinned = vla.model_copy(update={"policy_extras": {**vla.policy_extras, "dtype": "bf16"}})
+    assert resolved_runtime_dtype(pinned) == QuantizationDtype.BF16
+    assert resolved_runtime_dtype(vla, _spec("rskill-internvla_n1-mobile_base-vln-nf4")) == (
+        resolved_runtime_dtype(vla)
+    )
 
 
 def test_pro_dtype_must_be_a_quantization_dtype() -> None:
