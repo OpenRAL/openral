@@ -57,7 +57,7 @@ a message pointing at the bare-list format. Use YAML anchors (`&scene` /
 | `robotwin.yaml`                    | aloha_agilex   | robotwin (SAPIEN via lerobot, py3.10 sidecar)                           |  5 | 100 | `is_success` | 300 | 500 |
 | `rlbench.yaml`                     | franka_panda   | RLBench PerAct subset: open_drawer / meat_off_grill / close_jar (CoppeliaSim/PyRep, py3.10 sidecar) |  3 | 25 | `is_success` | 25 |  75 |
 | `behavior.yaml`                    | r1pro          | BEHAVIOR-1K 2026 challenge, all 100 public tasks (OmniGibson / Isaac Sim, sidecar) | 100 |  1 | `is_success` | 3224–39090 | 100 |
-| `makermods_metal_pick_place.yaml`  | makermods_metal | metal_pick_place (MuJoCo sim twin of `HappyEthan/metal_pick_place`), 10 scenes over layouts A/B/C/D (3/3/2/2), positions jittered ±1.5 cm and baked in; graded complete / partial / semi / fail | 10 |  3 | `is_success` | 900 |  30 |
+| `makermods_metal_pick_place.yaml`  | makermods_metal | metal_pick_place (MuJoCo sim twin of `HappyEthan/metal_pick_place`), 3 scenes in the dataset's layout A (a showcase; the checkpoint never reaches the cube in B/C/D), positions jittered ±1.5 cm and baked in; graded complete / partial / semi / fail |  3 |  3 | `is_success` | 900 |  30 |
 
 Per-suite `max_steps` mirrors the upstream `lerobot.envs.libero.TASK_SUITE_MAX_STEPS`
 table for the LIBERO suites and the ACT / Diffusion Policy paper protocols for
