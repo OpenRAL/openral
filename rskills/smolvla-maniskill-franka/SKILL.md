@@ -24,7 +24,7 @@ metadata:
   latency_budget: {per_chunk_ms: 200.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://Calvert0921/smolvla_franka_liftcube_1000
+  weights_uri: hf://Calvert0921/smolvla_franka_liftcube_1000@3cef6b29f29d5e6c454f7c77f41d31832fad7861
   source_repo: hf://Calvert0921/smolvla_franka_liftcube_1000
   paper_url: https://arxiv.org/abs/2506.01844
 ---

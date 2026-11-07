@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 3000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-robometer_4b-any-general-nf4
+  weights_uri: hf://OpenRAL/rskill-robometer_4b-any-general-nf4@554736f3b2110fb8337680df6e6f4bc7d7de1fd4
   source_repo: hf://robometer/Robometer-4B@beef63bc914c5c189329d49c6d712d96d632aa34
 ---
 

@@ -460,7 +460,7 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
     # the cube.
     stats: dict[str, Any] = {}
     if not preprocessor and not postprocessor:
-        stats = _try_load_act_norm_stats(repo_id, device, torch, cam_keys)
+        stats = _try_load_act_norm_stats(repo_id, device, torch, cam_keys, revision=revision)
 
     return _ACTAdapter(
         spec=spec,
@@ -590,6 +590,7 @@ def _try_load_act_norm_stats(
     device: str,
     torch: Any,
     cam_keys: tuple[str, ...],
+    revision: str | None = None,
 ) -> dict[str, Any]:
     """Pull ``normalize_*`` / ``unnormalize_*`` mean/std tensors from the checkpoint.
 
@@ -603,7 +604,7 @@ def _try_load_act_norm_stats(
     except ImportError:
         return {}
     try:
-        local = local_snapshot_dir(repo_id)
+        local = local_snapshot_dir(repo_id, revision=revision)  # same snapshot as the model
     except Exception:
         return {}
     import os

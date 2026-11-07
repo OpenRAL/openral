@@ -42,15 +42,15 @@ runtime: "pytorch"
 quantization:
   dtype: "fp32"
   backend: "pytorch"
-weights_uri: "hf://Deepkar/libero-test-act"
+weights_uri: "hf://Deepkar/libero-test-act@b6a5253edf0c9d9e458629fdeb489f514ff6300f"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # Modern ACT path: this checkpoint ships lerobot policy_preprocessor.json /
 # policy_postprocessor.json sidecars. The ACT adapter dispatches on
 # manifest.processors is not None and downloads each file via hf_hub_download.
 processors:
-  preprocessor_uri: "hf://Deepkar/libero-test-act/policy_preprocessor.json"
-  postprocessor_uri: "hf://Deepkar/libero-test-act/policy_postprocessor.json"
+  preprocessor_uri: "hf://Deepkar/libero-test-act@b6a5253edf0c9d9e458629fdeb489f514ff6300f/policy_preprocessor.json"
+  postprocessor_uri: "hf://Deepkar/libero-test-act@b6a5253edf0c9d9e458629fdeb489f514ff6300f/policy_postprocessor.json"
 image_preprocessing:
   flip_180: true
   # Map the scene's source camera keys (camera1/camera2, per sensors_required

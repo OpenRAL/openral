@@ -54,7 +54,7 @@ min_vram_gb:
   fp32: 1.0
   fp16: 0.6
 
-weights_uri: "hf://omlab/omdet-turbo-swin-tiny-hf"
+weights_uri: "hf://omlab/omdet-turbo-swin-tiny-hf@7fe93cecfb770c4d76cf71163956221249cab566"
 
 chunk_size: 1
 latency_budget:

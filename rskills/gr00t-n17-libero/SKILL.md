@@ -24,7 +24,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1500.0}
   license_code: Apache-2.0
   license_weights: nvidia_open_model
-  weights_uri: hf://OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16
+  weights_uri: hf://OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16@99ae8a637cb389a39117f9247423a5f723df6ff2
   source_repo: hf://nvidia/GR00T-N1.7-LIBERO
   paper_url: https://arxiv.org/abs/2503.14734
 ---

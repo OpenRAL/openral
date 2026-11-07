@@ -144,11 +144,13 @@ def cpu_segmenter() -> Sam2Segmenter:
         reason="SAM 2.1 backend needs the opt-in group: just sync --group sam2",
     )
     pytest.importorskip("torch", reason="SAM 2.1 backend needs torch (just sync --group sam2)")
+    from openral_runner.backends.gstreamer.detector_factory import weights_source_from_manifest
+
     manifest = _manifest()
     assert manifest.segmenter is not None
     return Sam2Segmenter(
         model_id=manifest.name,
-        weights_source="facebook/sam2.1-hiera-small",
+        weights_source=weights_source_from_manifest(manifest),  # pinned repo@sha
         max_prompt_points=manifest.segmenter.max_prompt_points,
         multimask=manifest.segmenter.multimask,
         min_mask_area_px=manifest.segmenter.min_mask_area_px,

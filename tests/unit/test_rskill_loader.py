@@ -1115,7 +1115,7 @@ def test_snapshot_dir_with_weights_resolves_to_itself(tmp_path: Path) -> None:
     # (this is every in-tree ``rskills/<name>/``).
     repo_id, revision = resolve_rskill_to_hf_with_revision(str(snapshot))
     assert not repo_id.startswith("/"), repo_id
-    assert revision is None
+    assert revision is not None and len(revision) == 40  # the manifest's @<sha> pin
 
     (snapshot / "model.safetensors").write_bytes(b"")
     repo_id, revision = resolve_rskill_to_hf_with_revision(str(snapshot))
