@@ -16,12 +16,15 @@ import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING
 
+import structlog
 from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = ["fetch_pinned_file", "is_download_failure", "sha256_file"]
+
+log = structlog.get_logger(__name__)
 
 
 def sha256_file(path: Path) -> str:
@@ -83,19 +86,33 @@ def fetch_pinned_file(
             while chunk := response.read(1024 * 1024):
                 output.write(chunk)
     except (OSError, urllib.error.URLError) as exc:
-        temporary.unlink(missing_ok=True)
+        _discard_temporary(temporary)
         raise ROSConfigError(f"Could not download pinned {what}: {exc}") from exc
     actual_sha256 = sha256_file(temporary)
     if actual_sha256 != expected_sha256:
-        temporary.unlink(missing_ok=True)
+        _discard_temporary(temporary)
         raise ROSConfigError(
             f"{what} failed SHA-256 verification: expected {expected_sha256}, got {actual_sha256}."
         )
     try:
         os.replace(temporary, destination)
     except OSError as exc:
-        temporary.unlink(missing_ok=True)
+        _discard_temporary(temporary)
         raise ROSConfigError(f"Cannot install verified {what} into the cache: {exc}") from exc
+
+
+def _discard_temporary(temporary: Path) -> None:
+    """Best-effort removal of a partial download; never masks the caller's typed error.
+
+    Runs while a ``ROSConfigError`` is about to be raised. If the cache directory
+    turned read-only, ``unlink`` itself fails: that is logged (the stray
+    ``.<name>.<pid>.tmp`` is harmless — it is never read as a verified file) and
+    the caller still raises its own typed error.
+    """
+    try:
+        temporary.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("pinned_files.temp_cleanup_failed", path=str(temporary), error=str(exc))
 
 
 def is_download_failure(exc: BaseException) -> bool:

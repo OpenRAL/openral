@@ -399,9 +399,9 @@ _Shared floating-base helpers for the pinned-humanoid twins (G1, H2): the ADR-00
 ### `python/hal/src/openral_hal/_pinned_files.py`
 _Single-file pinned download with SHA-256 verification and atomic install, shared by `_g1_walking` and `_unitree_h2_assets` (the clone-based fetchers use `_pinned_clone`)._
 
-- `sha256_file(path) -> str` (L27) — Streamed hex SHA-256 of a file.
-- `fetch_pinned_file(url, expected_sha256, destination, *, what, user_agent=...) -> None` (L44) — Reuse a verified cached file, else download to a per-process temp file, verify, `os.replace` into place. Raises `ROSConfigError` on download failure, digest mismatch, or a cache directory / install error (fail-closed). Reuse watch: the canonical single-file pinned fetcher.
-- `is_download_failure(exc) -> bool` (L101) — whether a `urllib.error.URLError` / `TimeoutError` / `ConnectionError` is in the `__cause__` chain: separates "could not download" (skippable missing dependency; `unitree:` → `AssetFetchError`) from a SHA-256 mismatch or cache error (never skipped; `unitree:` → `AssetRefError`).
+- `sha256_file(path) -> str` (L30) — Streamed hex SHA-256 of a file.
+- `fetch_pinned_file(url, expected_sha256, destination, *, what, user_agent=...) -> None` (L47) — Reuse a verified cached file, else download to a per-process temp file, verify, `os.replace` into place. Raises `ROSConfigError` on download failure, digest mismatch, or a cache directory / install error (fail-closed). Reuse watch: the canonical single-file pinned fetcher.
+- `is_download_failure(exc) -> bool` (L118) — whether a `urllib.error.URLError` / `TimeoutError` / `ConnectionError` is in the `__cause__` chain: separates "could not download" (skippable missing dependency; `unitree:` → `AssetFetchError`) from a SHA-256 mismatch or cache error (never skipped; `unitree:` → `AssetRefError`).
 
 ### `python/hal/src/openral_hal/flexiv_rizon4.py`
 _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body force sensitivity (0.1 N).  Structurally identical to the UR / Franka sim HALs: position actuators, no gripper, no floating base, no PD-loop overrides — a clean `MujocoArmHAL` subclass._

@@ -56,3 +56,23 @@ def test_cache_dir_error_is_typed_and_not_a_download_failure(tmp_path: Path) -> 
 def test_sha256_mismatch_is_not_a_download_failure() -> None:
     """Integrity failures carry no network cause, so callers never skip them."""
     assert not is_download_failure(ROSConfigError("x failed SHA-256 verification"))
+
+
+def test_install_failure_is_typed_and_leaves_no_temp_file(tmp_path: Path) -> None:
+    """A verified download that cannot be moved into place raises ROSConfigError.
+
+    The source is a real local file (``file://``), so this runs offline; the
+    destination is an existing non-empty directory, which ``os.replace`` refuses.
+    """
+    payload = b"<mujoco/>"
+    source = tmp_path / "source.xml"
+    source.write_bytes(payload)
+    dest = tmp_path / "cache" / "scene.xml"
+    dest.mkdir(parents=True)
+    (dest / "occupied").write_bytes(b"")
+    with pytest.raises(ROSConfigError, match="Cannot install verified test asset") as caught:
+        fetch_pinned_file(
+            source.as_uri(), hashlib.sha256(payload).hexdigest(), dest, what="test asset"
+        )
+    assert not is_download_failure(caught.value)
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["scene.xml"]
