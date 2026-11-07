@@ -847,7 +847,7 @@ def _capability_matched_manifests(
     """In-tree rSkill manifests that match this robot's reasoner palette.
 
     Loads every ``rskills/*/rskill.yaml`` and runs the same
-    capability/role/license filter the reasoner seeds at ``on_configure``
+    kind/capability/embodiment/license filter the reasoner seeds at ``on_configure``
     (``openral_reasoner.palette.build_tool_palette``), returning the matched
     manifests. ``openral deploy sim`` does not preselect a VLA — the reasoner picks
     one at runtime from exactly this set — so reward resolution + the VRAM

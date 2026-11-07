@@ -245,7 +245,8 @@ class TestBuildRuntimeSkillSceneCameras:
 
         with pytest.raises(ROSRuntimeError):
             _build_runtime_skill_from_manifest(
-                yaml_path=yaml_path,
+                manifest=RSkillManifest.from_yaml(str(yaml_path)),
+                skill_dir=yaml_path.parent,
                 prompt="put the mango into the blue bowl",
                 scene_cameras=("front", "wrist"),
                 description=description,
@@ -310,7 +311,8 @@ class TestBuildRuntimeSkillSceneCameras:
 
         monkeypatch.setattr(_sim_factory, "make_policy", _make)
         skill = _build_runtime_skill_from_manifest(
-            yaml_path=yaml_path,
+            manifest=RSkillManifest.from_yaml(str(yaml_path)),
+            skill_dir=yaml_path.parent,
             prompt="put the mango into the blue bowl",
             scene_cameras=("front", "wrist"),
             description=description,
@@ -354,7 +356,6 @@ class TestBuildRuntimeSkillSceneCameras:
         no_state = RSkillManifest.from_yaml(str(yaml_path)).model_copy(
             update={"state_contract": None}
         )
-        monkeypatch.setattr(RSkillManifest, "from_yaml", staticmethod(lambda _p: no_state))
 
         steps: list[object] = []
 
@@ -386,7 +387,8 @@ class TestBuildRuntimeSkillSceneCameras:
         monkeypatch.setattr(_RUNNER, "log", _CapturingLogger())
 
         skill = _build_runtime_skill_from_manifest(
-            yaml_path=yaml_path,
+            manifest=no_state,
+            skill_dir=yaml_path.parent,
             prompt="put the mango into the blue bowl",
             scene_cameras=("front", "wrist"),
             description=None,
@@ -421,7 +423,8 @@ class TestBuildRuntimeSkillSceneCameras:
 
         with pytest.raises(ROSRuntimeError):
             _build_runtime_skill_from_manifest(
-                yaml_path=yaml_path,
+                manifest=RSkillManifest.from_yaml(str(yaml_path)),
+                skill_dir=yaml_path.parent,
                 prompt="place the erase on the blue square",
                 scene_cameras=("top", "wrist"),
                 description=description,
@@ -461,7 +464,8 @@ class TestBuildRuntimeSkillSceneCameras:
 
         with pytest.raises(ROSRuntimeError):  # factory translates the ImportError
             _build_runtime_skill_from_manifest(
-                yaml_path=yaml_path,
+                manifest=RSkillManifest.from_yaml(str(yaml_path)),
+                skill_dir=yaml_path.parent,
                 prompt="pick up the milk",
                 scene_cameras=("top", "wrist"),  # sensor names, as runtime_node passes
                 description=_franka(),
@@ -494,7 +498,8 @@ class TestBuildRuntimeSkillSceneCameras:
 
         with pytest.raises(ROSRuntimeError):  # factory translates the ImportError
             _build_runtime_skill_from_manifest(
-                yaml_path=yaml_path,
+                manifest=RSkillManifest.from_yaml(str(yaml_path)),
+                skill_dir=yaml_path.parent,
                 prompt="pick up the milk",
                 scene_cameras=("stale", "values"),  # caller's value is discarded
                 description=_franka(),
@@ -522,7 +527,8 @@ class TestBuildRuntimeSkillSceneCameras:
 
         with pytest.raises(ROSRuntimeError):  # factory translates the ImportError
             _build_runtime_skill_from_manifest(
-                yaml_path=yaml_path,
+                manifest=RSkillManifest.from_yaml(str(yaml_path)),
+                skill_dir=yaml_path.parent,
                 prompt="pick up the milk",
                 scene_cameras=("camera1", "camera2"),
                 description=None,
@@ -548,7 +554,10 @@ def test_the_runner_refuses_a_slot_the_robot_cannot_serve() -> None:
 
     with pytest.raises(ROSCapabilityMismatch, match=r"vla_feature_key='observation\.images\.top'"):
         _build_runtime_skill_from_manifest(
-            yaml_path=_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml",
+            manifest=RSkillManifest.from_yaml(
+                str(_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml")
+            ),
+            skill_dir=(_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml").parent,
             prompt="",
             description=_robot("aloha_agilex"),
         )
@@ -597,5 +606,8 @@ def test_the_runner_matches_the_full_feature_key(tmp_path: Path) -> None:
 
     with pytest.raises(ROSCapabilityMismatch, match=r"'observation\.image\.top'"):
         _build_runtime_skill_from_manifest(
-            yaml_path=yaml_path, prompt="", description=_robot("aloha_bimanual")
+            manifest=RSkillManifest.from_yaml(str(yaml_path)),
+            skill_dir=yaml_path.parent,
+            prompt="",
+            description=_robot("aloha_bimanual"),
         )

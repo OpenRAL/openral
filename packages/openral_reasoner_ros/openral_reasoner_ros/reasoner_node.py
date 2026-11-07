@@ -2739,7 +2739,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         merged_node_ids = self._palette.node_ids
 
         # Capability-filter FIRST: drop manifests whose embodiment_tags / sensors_required /
-        # actuators_required / role / license don't match this robot; only then probe
+        # actuators_required / kind / license don't match this robot; only then probe
         # import-deps on the survivors. Deps-first would generate noisy warnings for
         # manifests never in the palette anyway — e.g. on ``panda_mobile``, ``xvla-libero``
         # targets ``franka_panda`` (filtered by embodiment) but deps-first would still emit

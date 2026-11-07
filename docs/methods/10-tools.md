@@ -598,7 +598,7 @@ _Generate the standard agent-skill `SKILL.md` discovery view for every in-tree r
 The single canonical producer of the `SKILL.md` mirror: `rskill.yaml` is authoritative and the generated file is discovery-only, never hand-edited. `--check` fails on any stale or missing `SKILL.md`, across every skill kind including `playbook`.
 
 - `render_skill_md(manifest_path: Path) -> str` (L162) — Render the `SKILL.md` text (YAML frontmatter + capability/verb summary + license/provenance) from one manifest; `_KIND_NOUN` maps each `kind` to its discovery noun.
-- `main(argv=None) -> int` (L261) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
+- `main(argv=None) -> int` (L266) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
 
 ### `tools/rldx_sidecar.py`
 _Boot helper for the RLDX-1 inference sidecar, companion to `openral_sim.policies.rldx`._

@@ -39,7 +39,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast, runtime_checkable
 
 import structlog
 from openral_core import (
@@ -86,11 +86,12 @@ def _cuda_allocated_mb() -> float | None:
     return gpu_allocated_mb(no_import=True)
 
 
-# Type for the injected skill resolver. Takes the goal's rskill_id /
+# Type for an opaque injected skill resolver. Takes the goal's rskill_id /
 # revision / prompt / prompt_metadata_json and returns a *configured +
-# activated* rSkill ready to receive `step` calls. Production deployments
-# pass `openral_rskill.rSkill.from_pretrained`-shaped callables;
-# integration tests pass a real local-only resolver.
+# activated* rSkill ready to receive `step` calls; the runner can only gate
+# what it built. Production uses a `ManifestSkillResolver`
+# (`TwoPhaseSkillResolver`), gated before anything loads; test harnesses
+# pass plain callables.
 SkillResolver = Callable[..., "rSkillBase"]
 
 # 100 ms cancel drain (F1 design).
@@ -201,19 +202,39 @@ def _drop_exception_type(
     return ROSPerceptionStale if code in stale else ROSRuntimeError
 
 
-def _release_refused_skill(skill: Any, logger: Any) -> None:
-    """Shut down a resolved skill a dispatch gate refused, freeing its weights.
+def _shutdown_skill(skill: Any, logger: Any, *, why: str) -> None:
+    """Shut a skill down and log how much GPU memory that freed.
 
-    Best-effort like the resident eviction: a handle without ``shutdown`` (or
-    whose teardown raises) is logged, never allowed to mask the gate's error.
+    The one teardown for a skill the runner lets go of: the resident skill on
+    eviction (``why="evicted"``) and a built skill a dispatch gate refused
+    (``why="refused"``, never made resident, so nothing else would free it).
+    Best-effort: a handle with no callable ``shutdown`` is logged and skipped,
+    and a teardown that raises is logged, never allowed to block the next goal
+    or mask the gate's typed error.
+
+    The freed-memory line is the one signal for an adapter whose ``shutdown()``
+    flushes without dropping its model reference: ``torch.cuda.empty_cache()``
+    returns only already-free blocks, so it reports success while the card
+    stays full, and the next skill OOMs on an 8 GB machine even though each
+    fits alone.
     """
     shutdown = getattr(skill, "shutdown", None)
     if not callable(shutdown):
+        logger.warning(f"rskill_runner.shutdown_skipped: {type(skill).__name__} has no shutdown()")
         return
+    before_mb = _cuda_allocated_mb()
     try:
         shutdown()
-    except Exception as exc:  # reason: the gate's typed error must reach the goal
-        logger.warning(f"rskill_runner.release_refused_failed: {exc!s}")
+    except Exception as exc:  # reason: teardown must never block the next goal
+        logger.warning(f"rskill_runner.shutdown_failed ({why}): {exc!s}")
+    after_mb = _cuda_allocated_mb()
+    if before_mb is not None and after_mb is not None:
+        log.info(
+            f"rskill_runner.{why}",
+            freed_mb=round(before_mb - after_mb, 1),
+            resident_mb_before=round(before_mb, 1),
+            resident_mb_after=round(after_mb, 1),
+        )
 
 
 def _commercial_deployment() -> bool:
@@ -344,10 +365,11 @@ if _ROS2_AVAILABLE:
             aggregator: The single shared ``WorldStateAggregator`` constructed by
                 ``compose_so100_runtime``. The runner calls ``.snapshot()`` against it
                 in-process; never subscribes to ``/world_state`` over ROS.
-            skill_resolver: Callable that resolves the goal's ``rskill_id`` / ``revision``
-                into a configured + active ``rSkillBase``. Defaults to a thin wrapper
-                around ``openral_rskill.rSkill.from_pretrained``; tests inject a
-                local-only resolver to avoid HF Hub access.
+            skill_resolver: Resolves the goal's ``rskill_id`` / ``revision`` into a
+                configured + active ``rSkillBase``. Defaults to
+                ``make_default_skill_resolver(self)`` (a ``ManifestSkillResolver``,
+                gated before anything loads); tests inject a plain callable,
+                gated after it has built the skill.
         """
 
         def __init__(  # noqa: PLR0915  # reason: linear parameter declarations + per-goal state
@@ -1174,10 +1196,12 @@ if _ROS2_AVAILABLE:
             ``goal_params_json`` in when it is built (a wrapped-ROS skill
             lowers its goal from them), so for it those stay in the key.
 
-            A differing key evicts the resident skill (``shutdown()`` → frees
-            VRAM) before loading the next; a match reuses it; a miss resolves
-            + caches. Resolve failures propagate to the caller's abort path
-            unchanged.
+            A miss is gated first (``_resolve_and_gate``: the requested skill's
+            manifest against this robot, before anything loads), so a refused
+            dispatch leaves the resident skill loaded. Only then does a
+            differing key evict the resident skill (``shutdown()`` → frees
+            VRAM) and build the next; a match reuses it. Resolve failures
+            propagate to the caller's abort path unchanged.
 
             A ``ROSActionRskill`` is never reused. It merges
             ``goal_params_json`` into its goal at ``configure()`` (a reuse
@@ -1209,9 +1233,20 @@ if _ROS2_AVAILABLE:
                 set_goal_prompt(prompt)
                 self._resident_key = req_key
                 return resident
-            if self._resident_skill is not None and (
-                self._resident_key != req_key or isinstance(self._resident_skill, ROSActionRskill)
+            resident = cast("rSkillBase | None", self._resident_skill)
+            if (
+                resident is not None
+                and self._resident_key == req_key
+                and not isinstance(resident, ROSActionRskill)
+                and resident.info.state is RSkillState.ACTIVE
             ):
+                return resident
+            # Gate the requested skill BEFORE touching the resident one: a refused
+            # dispatch (wrong kind / embodiment / sensors / gripper / license) must
+            # not unload a preloaded policy, whose next goal would then cold-load
+            # inside the deadman's first-chunk window.
+            resolved = self._resolve_and_gate(rskill_id=rskill_id, revision=revision)
+            if resident is not None:
                 if self._resident_key != req_key:
                     # Loud on purpose: the cost of a mismatch is the full cold
                     # load — inside the goal's watchdog window this time.
@@ -1219,26 +1254,23 @@ if _ROS2_AVAILABLE:
                         f"rskill_runner.resident_key_mismatch: resident={self._resident_key!r} "
                         f"requested={req_key!r} — evicting and reloading"
                     )
+                elif not isinstance(resident, ROSActionRskill):
+                    # A key-matching resident that is no longer steppable
+                    # (finalized by a lifecycle deactivate / estop teardown,
+                    # error from a crashed rollout) must never be handed to a
+                    # new goal — its next step() would raise "must be 'active'".
+                    # Evict and re-resolve fresh. Surfaced by #21's faster
+                    # re-dispatch cadence; the pre-async ~76 s reaction gap
+                    # masked it.
+                    self.get_logger().warning(
+                        f"rskill_runner.stale_resident: {rskill_id!r} cached in state "
+                        f"'{resident.info.state.value}' — evicting and reloading"
+                    )
                 self._evict_resident_skill()
-            if self._resident_skill is not None and self._resident_key == req_key:
-                resident = cast("rSkillBase", self._resident_skill)
-                if resident.info.state is RSkillState.ACTIVE:
-                    return resident
-                # A key-matching resident that is no longer steppable
-                # (finalized by a lifecycle deactivate / estop teardown,
-                # error from a crashed rollout) must never be handed to a
-                # new goal — its next step() would raise "must be 'active'".
-                # Evict and re-resolve fresh. Surfaced by #21's faster
-                # re-dispatch cadence; the pre-async ~76 s reaction gap
-                # masked it.
-                self.get_logger().warning(
-                    f"rskill_runner.stale_resident: {rskill_id!r} cached in state "
-                    f"'{resident.info.state.value}' — evicting and reloading"
-                )
-                self._evict_resident_skill()
-            skill = self._resolve_and_check_skill(
+            skill = self._build_and_check(
                 rskill_id=rskill_id,
                 revision=revision,
+                resolved=resolved,
                 prompt=prompt,
                 prompt_metadata_json=prompt_metadata_json,
                 goal_params_json=goal_params_json,
@@ -1248,41 +1280,17 @@ if _ROS2_AVAILABLE:
             return skill
 
         def _evict_resident_skill(self) -> None:
-            """Shut down the GPU-resident skill, freeing its VRAM.
+            """Shut down the GPU-resident skill, freeing its VRAM (``_shutdown_skill``).
 
             ``shutdown()`` drives ``on_unload_weights`` per the rSkill lifecycle
-            contract. Best-effort: a resolver that returns a non-lifecycle handle
-            (the HF-Hub production path) or a skill whose teardown raises must
-            not block the next dispatch.
+            contract. Best-effort: a skill whose teardown raises must not block
+            the next dispatch.
             """
             skill = self._resident_skill
             self._resident_skill = None
             self._resident_key = ()
-            if skill is None:
-                return
-            shutdown = getattr(skill, "shutdown", None)
-            if not callable(shutdown):
-                return
-            before_mb = _cuda_allocated_mb()
-            try:
-                shutdown()
-            except Exception as exc:  # reason: eviction must never block the next goal
-                self.get_logger().warning(f"rskill_runner.evict_failed: {exc!s}")
-            after_mb = _cuda_allocated_mb()
-            if before_mb is not None and after_mb is not None:
-                # An eviction that frees nothing is the failure mode this run
-                # cannot otherwise see: `torch.cuda.empty_cache()` returns only
-                # already-free blocks, so an adapter that flushes without
-                # dropping its model reference reports success while the card
-                # stays full — and the next skill OOMs on an 8 GB machine even
-                # though each fits alone. Logging the delta makes a silent
-                # regression of that fix visible in one line.
-                log.info(
-                    "rskill_runner.evicted",
-                    freed_mb=round(before_mb - after_mb, 1),
-                    resident_mb_before=round(before_mb, 1),
-                    resident_mb_after=round(after_mb, 1),
-                )
+            if skill is not None:
+                _shutdown_skill(skill, self.get_logger(), why="evicted")
 
         # ── Action callbacks ─────────────────────────────────────────────────
 
@@ -1624,29 +1632,60 @@ if _ROS2_AVAILABLE:
             prompt_metadata_json: str,
             goal_params_json: str = "",
         ) -> rSkillBase:
-            """Resolve the skill and run every dispatch gate, the manifest ones before any load.
+            """Gate the manifest (``_resolve_and_gate``), then build and check the skill."""
+            resolved = self._resolve_and_gate(rskill_id=rskill_id, revision=revision)
+            return self._build_and_check(
+                rskill_id=rskill_id,
+                revision=revision,
+                resolved=resolved,
+                prompt=prompt,
+                prompt_metadata_json=prompt_metadata_json,
+                goal_params_json=goal_params_json,
+            )
 
-            A ``ManifestSkillResolver`` (production) is driven in its two steps:
-            its manifest is gated (``check_manifest_gates``) before ``build``
-            downloads or loads anything. An opaque resolver (test harnesses)
-            returns a built skill, so its gates can only run afterwards; a
-            refusal then shuts the skill down, since it is never made resident.
+        def _resolve_and_gate(self, *, rskill_id: str, revision: str) -> ResolvedRskill | None:
+            """Resolve the skill's manifest and run ``check_manifest_gates`` — nothing loads.
+
+            Only a two-phase resolver (``TwoPhaseSkillResolver``: production's
+            ``ManifestSkillResolver``, or anything exposing the same ``resolve``
+            / ``build``) can be gated this early. An opaque callable resolver
+            returns a built skill, so it returns ``None`` here and is gated after
+            the build (``_check_resolved_skill``).
             """
             resolver = self._skill_resolver
             assert resolver is not None  # invariant set in on_configure
-            prechecked = isinstance(resolver, ManifestSkillResolver)
-            if isinstance(resolver, ManifestSkillResolver):
-                manifest = resolver.manifest(rskill_id=rskill_id, revision=revision)
-                self._check_manifest(manifest)
+            if not isinstance(resolver, TwoPhaseSkillResolver):
+                return None
+            resolved = resolver.resolve(rskill_id=rskill_id, revision=revision)
+            self._check_manifest(resolved.manifest)
+            return resolved
+
+        def _build_and_check(
+            self,
+            *,
+            rskill_id: str,
+            revision: str,
+            resolved: ResolvedRskill | None,
+            prompt: str,
+            prompt_metadata_json: str,
+            goal_params_json: str,
+        ) -> rSkillBase:
+            """Build the skill (from ``resolved`` when gated) and run the post-build checks.
+
+            A skill a post-build check refuses is already configured + activated
+            (weights loaded) and is never made resident, so it is shut down here
+            (``_shutdown_skill``) or its VRAM leaks on every retry.
+            """
+            resolver = self._skill_resolver
+            assert resolver is not None  # invariant set in on_configure
+            if resolved is not None:
+                assert isinstance(resolver, TwoPhaseSkillResolver)  # set by _resolve_and_gate
                 skill = resolver.build(
-                    rskill_id=rskill_id,
-                    revision=revision,
-                    manifest=manifest,
+                    resolved,
                     prompt=prompt,
                     prompt_metadata_json=prompt_metadata_json,
                     goal_params_json=goal_params_json,
                     description=self._description,
-                    commercial_deployment=_commercial_deployment(),
                 )
             else:
                 skill = resolver(
@@ -1659,18 +1698,16 @@ if _ROS2_AVAILABLE:
                     commercial_deployment=_commercial_deployment(),
                     ros_node=self,
                 )
-            # Every gate below runs on an already configured + activated skill
-            # (weights loaded). Nothing else holds a refused skill — it is never
-            # made resident — so release it here or its VRAM leaks on every retry.
             try:
-                self._check_resolved_skill(rskill_id, skill, prechecked=prechecked)
+                self._check_resolved_skill(rskill_id, skill, gated=resolved is not None)
             except Exception:
-                _release_refused_skill(skill, self.get_logger())
+                _shutdown_skill(skill, self.get_logger(), why="refused")
                 raise
             return skill
 
         def _check_manifest(self, manifest: RSkillManifest) -> None:
             """``check_manifest_gates`` against this runner's robot, deployment and scene."""
+            assert self._description is not None  # invariant from on_configure
             scene_convention = str(self.get_parameter("gripper_convention").value or "")
             check_manifest_gates(
                 manifest,
@@ -1679,13 +1716,15 @@ if _ROS2_AVAILABLE:
                 scene_gripper_convention=scene_convention or None,
             )
 
-        def _check_resolved_skill(self, rskill_id: str, skill: Any, *, prechecked: bool) -> None:
-            """Gates on a built skill: its manifest's (unless already run), then its state.
+        def _check_resolved_skill(self, rskill_id: str, skill: Any, *, gated: bool) -> None:
+            """Post-build checks: the rSkillBase contract, the gates if not yet run, ACTIVE state.
 
             A skill from an opaque resolver gets ``check_manifest_gates`` here
-            when it carries a manifest. One without (a code-built harness skill)
-            has only its ``info`` to go on: it must declare ``role: s1`` and an
-            embodiment tag this robot has.
+            when it carries a manifest. A code-built skill without one has only
+            its ``info`` to go on, so the kind rule cannot apply: it must declare
+            ``role: s1``, and its embodiment tags (when it declares any) must
+            intersect the robot's — a robot that declares none matches none,
+            as on the manifest path.
             """
             from openral_core import RSkillManifest as _Manifest
             from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
@@ -1706,22 +1745,23 @@ if _ROS2_AVAILABLE:
                     "therefore not an rSkillBase; a resolver must return a "
                     "configured, activated runtime skill"
                 )
-            manifest = getattr(skill, "manifest", None)
-            if not prechecked and isinstance(manifest, _Manifest):
-                self._check_manifest(manifest)
-            elif not prechecked:
-                if info.role != "s1":
-                    raise ROSCapabilityMismatch(
-                        f"skill {rskill_id!r} declares role={info.role!r}; "
-                        "only s1 skills run on the ExecuteRskill path"
-                    )
-                tags = list(info.embodiment_tags or [])
-                allowed = set(self._description.capabilities.embodiment_tags or [])
-                if tags and allowed and not any(t in allowed for t in tags):
-                    raise ROSCapabilityMismatch(
-                        f"skill embodiment_tags {tags!r} disjoint from "
-                        f"robot embodiment_tags {sorted(allowed)!r}"
-                    )
+            if not gated:
+                manifest = getattr(skill, "manifest", None)
+                if isinstance(manifest, _Manifest):
+                    self._check_manifest(manifest)
+                else:
+                    if info.role != "s1":
+                        raise ROSCapabilityMismatch(
+                            f"skill {rskill_id!r} declares role={info.role!r}; "
+                            "only s1 skills run on the ExecuteRskill path"
+                        )
+                    tags = set(info.embodiment_tags or [])
+                    allowed = set(self._description.capabilities.embodiment_tags or [])
+                    if tags and not tags & allowed:
+                        raise ROSCapabilityMismatch(
+                            f"skill embodiment_tags {sorted(tags)!r} disjoint from "
+                            f"robot embodiment_tags {sorted(allowed)!r}"
+                        )
 
             # Hand-validate that the skill is in a runnable state. The
             # resolver is expected to have driven `configure` + `activate`;
@@ -3503,55 +3543,112 @@ def _ros_action_adapter_cls(builder: str | None) -> type[ROSActionRskill]:
 def check_manifest_gates(
     manifest: RSkillManifest,
     *,
-    description: RobotDescription | None,
+    description: RobotDescription,
     commercial_deployment: bool,
     scene_gripper_convention: str | None = None,
 ) -> None:
     """The runner's dispatch gates on a skill's manifest, run before any weights load.
 
-    In order: the kind is ExecuteRskill-dispatchable (``rSkill.check_dispatchable``),
-    the license allows this deployment, and — given the robot — the embodiment
-    tags intersect and the gripper encoding fits its end effector. Sensor fit is
-    checked by ``_build_runtime_skill_from_manifest``, also before weights load.
+    In order:
+
+    1. ``rSkill.check_dispatchable``: an ExecuteRskill kind (policy or wrapped
+       ROS server) that names the embodiments it actuates;
+    2. the license allows this deployment (``rSkill._check_license``);
+    3. ``rSkill.check_compatibility`` against the robot: embodiment tags,
+       capability flags, runtime / dtype against its compute spec, sensors,
+       and the gripper encoding (``scene_gripper_convention`` overrides the end
+       effector's in a simulated scene). The same umbrella ``openral sim run``
+       and ``openral detect`` apply, so the three never disagree on a pairing.
 
     Raises:
-        ROSCapabilityMismatch: Kind, embodiment or gripper mismatch.
+        ROSCapabilityMismatch: Kind, embodiment, capability, sensor or gripper mismatch.
         ROSConfigError: The license blocks this deployment.
     """
     from openral_rskill.loader import rSkill
 
     rSkill.check_dispatchable(manifest)
     rSkill._check_license(manifest, commercial_use=commercial_deployment)
-    if description is None:
-        return
-    rSkill.check_embodiment_tags(manifest, description.capabilities)
-    rSkill.check_gripper_conventions(
+    rSkill.check_compatibility(
         manifest, description, scene_gripper_convention=scene_gripper_convention
     )
+
+
+class ResolvedRskill(NamedTuple):
+    """A skill's manifest resolved for dispatch, and where it came from.
+
+    Attributes:
+        rskill_id: The id the goal named.
+        manifest: The validated manifest: what the gates check and what the
+            build binds, the same object.
+        manifest_path: The in-tree ``rskill.yaml``; for a Hub skill, the cached
+            ``.../snapshots/<commit>/rskill.yaml`` the weight download is pinned to.
+        in_tree: Whether it was found under the resolver's search paths.
+        revision: The revision the goal asked for (``""`` = default branch).
+    """
+
+    rskill_id: str
+    manifest: RSkillManifest
+    manifest_path: Path
+    in_tree: bool
+    revision: str
+
+
+@runtime_checkable
+class TwoPhaseSkillResolver(Protocol):
+    """A resolver the runner can gate before anything loads: ``resolve`` then ``build``.
+
+    ``RskillRunnerNode`` checks a resolved manifest (``check_manifest_gates``)
+    between the two calls, so a refused skill never downloads or loads weights
+    and never evicts the resident one. ``ManifestSkillResolver`` is the
+    production implementation; a wrapper (tracing, caching) keeps the gate as
+    long as it exposes both methods. Any other callable is an opaque
+    ``SkillResolver``, gated only after it has built the skill.
+    """
+
+    def resolve(self, *, rskill_id: str, revision: str) -> ResolvedRskill:
+        """Return the validated manifest for ``rskill_id`` without loading any weights."""
+        ...
+
+    def build(
+        self,
+        resolved: ResolvedRskill,
+        *,
+        prompt: str,
+        prompt_metadata_json: str,
+        goal_params_json: str,
+        description: RobotDescription | None,
+    ) -> rSkillBase:
+        """Build a configured + activated runtime skill from a gated ``resolved``."""
+        ...
 
 
 class ManifestSkillResolver:
     """Resolve an ``rskill_id`` in two steps: look up its manifest, then build the skill.
 
-    The split lets ``RskillRunnerNode`` run ``check_manifest_gates`` between the
-    steps, so a refused skill never downloads or loads weights. Calling the
-    instance does lookup + gates + build in one go (the plain ``SkillResolver``
-    shape, for callers outside the runner).
+    The ``TwoPhaseSkillResolver`` the runner gates between the steps, so a
+    refused skill never downloads or loads weights.
 
-    Lookup order: the in-tree index over ``search_paths`` (``*/rskill.yaml`` by
-    ``name``, built on first use and rebuilt once on a miss), then — when
-    ``hub_fallback`` — the HF Hub manifest alone via ``rSkill.fetch_manifest``.
+    ``resolve`` looks the id up by name under ``search_paths``
+    (``manifest_paths_by_name``: first match in search-path order, read fresh on
+    every dispatch), then — when ``hub_fallback`` and only for an id not found
+    in-tree — fetches the Hub manifest alone (``rSkill.fetch_manifest``). An
+    in-tree manifest that fails validation raises its own typed error; it is
+    never replaced by a published copy of the same name.
 
-    Build per ``manifest.kind``: a policy (``POLICY_KINDS``) binds through
-    ``_build_runtime_skill_from_manifest`` (a Hub policy's snapshot is fetched
-    first); a wrapped ROS server (``ROS_WRAPPER_KINDS``) becomes a
-    ``ROSActionRskill`` on ``ros_node`` and must be in-tree — it has no weights,
-    the manifest is the whole artefact.
+    ``build`` binds exactly the manifest that was gated: a policy
+    (``POLICY_KINDS``) through ``_build_runtime_skill_from_manifest``, after
+    ``rSkill.install_snapshot`` for a Hub skill (pinned to the commit
+    ``resolve`` fetched); a wrapped ROS server (``ROS_WRAPPER_KINDS``) as a
+    ``ROSActionRskill`` on ``ros_node``, in-tree only — it has no weights, the
+    manifest is the whole artefact.
+
+    Calling the instance runs ``resolve`` + ``check_manifest_gates`` + ``build``
+    in one go (the plain ``SkillResolver`` shape, for callers outside the runner).
 
     Args:
         search_paths: Directories holding ``<id>/rskill.yaml``; the reasoner seeds
             its palette from the same paths.
-        hub_fallback: Fall back to the HF Hub for ids not found in-tree.
+        hub_fallback: Resolve ids not found in-tree on the HF Hub.
         ros_node: Lifecycle node wrapped-ROS skills build their clients on
             (the runner itself); ``None`` refuses wrapped-ROS skills.
         scene_cameras: Camera keys forwarded to the policy factory.
@@ -3572,110 +3669,85 @@ class ManifestSkillResolver:
         tf_lookup: Any = None,
         tf_lookup_getter: Callable[[], Any] | None = None,
     ) -> None:
-        """Store the sources; reads nothing from disk until the first lookup."""
+        """Store the sources; reads nothing from disk until the first ``resolve``."""
         self._paths = [Path(p) for p in search_paths if str(p)]
         self._hub_fallback = hub_fallback
         self._ros_node = ros_node
         self._scene_cameras = tuple(str(c) for c in scene_cameras)
         self._tf_lookup = tf_lookup
         self._tf_lookup_getter = tf_lookup_getter
-        self._index: dict[str, tuple[RSkillManifest, Path]] | None = None
 
-    def _build_index(self) -> dict[str, tuple[RSkillManifest, Path]]:
-        from openral_core import RSkillManifest as _RSkillManifest
-
-        index: dict[str, tuple[RSkillManifest, Path]] = {}
-        for root in self._paths:
-            if not root.exists():
-                continue
-            for yaml_path in sorted(root.glob("*/rskill.yaml")):
-                try:
-                    manifest = _RSkillManifest.from_yaml(str(yaml_path))
-                except Exception as exc:  # reason: one bad manifest must not hide the tree
-                    log.warning(
-                        "rskill_runner.manifest_skipped", path=str(yaml_path), error=str(exc)
-                    )
-                    continue
-                index[manifest.name] = (manifest, yaml_path)
-        return index
-
-    def _local(self, rskill_id: str) -> tuple[RSkillManifest, Path] | None:
-        if self._index is None or rskill_id not in self._index:
-            # Built lazily, rebuilt on a miss: picks up a manifest added after
-            # the first dispatch without re-parsing the tree on every goal.
-            self._index = self._build_index()
-        return self._index.get(rskill_id)
-
-    def manifest(self, *, rskill_id: str, revision: str) -> RSkillManifest:
+    def resolve(self, *, rskill_id: str, revision: str) -> ResolvedRskill:
         """Return the validated manifest for ``rskill_id`` without loading any weights.
 
         Raises:
-            ROSConfigError: Not in-tree and no Hub fallback (naming the known
-                ids), or the Hub manifest cannot be fetched or is invalid.
+            ROSConfigError: The in-tree manifest is invalid; the id is not in-tree
+                and there is no Hub fallback (naming the known ids); or the Hub
+                manifest cannot be fetched or is invalid.
         """
-        local = self._local(rskill_id)
+        from openral_rskill.loader import manifest_paths_by_name, parse_rskill_manifest, rSkill
+
+        index = manifest_paths_by_name(self._paths)
+        local = index.get(rskill_id)
         if local is not None:
-            return local[0]
+            manifest = parse_rskill_manifest(local, source=rskill_id)
+            return ResolvedRskill(rskill_id, manifest, local, True, revision)
         if not self._hub_fallback:
-            assert self._index is not None  # built by _local
             raise ROSConfigError(
                 f"rskill_id {rskill_id!r} not in local search paths "
-                f"({[str(p) for p in self._paths]!r}); known ids: {sorted(self._index)!r}. "
+                f"({[str(p) for p in self._paths]!r}); known ids: {sorted(index)!r}. "
                 "The reasoner picked a skill the runner cannot resolve — "
                 "either add it under one of the search paths or fix the "
                 "reasoner's palette so it doesn't surface unresolvable ids.",
             )
-        from openral_rskill.loader import rSkill
-
-        return rSkill.fetch_manifest(rskill_id, revision=revision or None)[0]
+        manifest, path = rSkill.fetch_manifest(rskill_id, revision=revision or None)
+        return ResolvedRskill(rskill_id, manifest, path, False, revision)
 
     def build(
         self,
+        resolved: ResolvedRskill,
         *,
-        rskill_id: str,
-        revision: str,
-        manifest: RSkillManifest,
         prompt: str,
         prompt_metadata_json: str,
         goal_params_json: str,
         description: RobotDescription | None,
-        commercial_deployment: bool,
     ) -> rSkillBase:
-        """Build a configured + activated runtime skill from an already-gated manifest.
+        """Build a configured + activated runtime skill from the gated ``resolved``.
 
         Raises:
-            ROSCapabilityMismatch: ``manifest.kind`` is not dispatchable.
+            ROSCapabilityMismatch: ``resolved.manifest`` is not dispatchable.
             ROSConfigError: A wrapped-ROS skill that is not in-tree or has no
                 ``ros_node``, or the policy cannot be bound.
         """
         from openral_rskill.loader import rSkill
 
+        manifest = resolved.manifest
         rSkill.check_dispatchable(manifest)
-        local = self._local(rskill_id)
         if manifest.kind in POLICY_KINDS:
-            if local is not None:
-                yaml_path = local[1]
+            if resolved.in_tree:
+                skill_dir = resolved.manifest_path.parent
             else:
-                handle = rSkill.from_pretrained(
-                    repo_id=rskill_id,
-                    revision=revision or None,
-                    commercial_use=commercial_deployment,
-                )
-                yaml_path = handle.local_dir / "rskill.yaml"
+                skill_dir = rSkill.install_snapshot(
+                    resolved.rskill_id,
+                    manifest,
+                    resolved.manifest_path,
+                    revision=resolved.revision or None,
+                ).local_dir
             tf_lookup = (
                 self._tf_lookup_getter() if self._tf_lookup_getter is not None else self._tf_lookup
             )
             return _build_runtime_skill_from_manifest(
-                yaml_path=yaml_path,
+                manifest=manifest,
+                skill_dir=skill_dir,
                 prompt=prompt,
                 scene_cameras=self._scene_cameras,
                 description=description,
                 tf_lookup=tf_lookup,
             )
-        if local is None or self._ros_node is None:
+        if not resolved.in_tree or self._ros_node is None:
             raise ROSConfigError(
-                f"wrapped-ROS rSkill {rskill_id!r} (kind={manifest.kind!r}) needs an in-tree "
-                "manifest and a host node; it has no Hub weights to fall back to."
+                f"wrapped-ROS rSkill {resolved.rskill_id!r} (kind={manifest.kind!r}) needs an "
+                "in-tree manifest and a host node; it has no Hub weights to fall back to."
             )
         builder = (
             manifest.ros_integration.goal_builder if manifest.ros_integration is not None else None
@@ -3688,8 +3760,13 @@ class ManifestSkillResolver:
             prompt_metadata_json=prompt_metadata_json,
             goal_params_json=goal_params_json,
         )
-        skill.configure()
-        skill.activate()
+        try:
+            skill.configure()
+            skill.activate()
+        except BaseException:
+            # Nothing else holds a skill that failed to come up.
+            _shutdown_skill(skill, log, why="refused")
+            raise
         return skill
 
     def __call__(
@@ -3702,23 +3779,35 @@ class ManifestSkillResolver:
         goal_params_json: str = "",
         description: RobotDescription | None,
         commercial_deployment: bool,
+        scene_gripper_convention: str | None = None,
         ros_node: Any = None,
     ) -> rSkillBase:
-        """Lookup, ``check_manifest_gates``, build; the bound ``ros_node`` wins over the kwarg."""
+        """``resolve`` + ``check_manifest_gates`` + ``build``; the bound ``ros_node`` wins.
+
+        Raises:
+            ROSConfigError: ``description`` is ``None`` (nothing to gate against),
+                or as ``resolve`` / ``check_manifest_gates`` / ``build``.
+            ROSCapabilityMismatch: As ``check_manifest_gates``.
+        """
         del ros_node
-        manifest = self.manifest(rskill_id=rskill_id, revision=revision)
+        if description is None:
+            raise ROSConfigError(
+                f"cannot resolve rSkill {rskill_id!r} without a RobotDescription: the "
+                "dispatch gates check the skill against the robot it will run on"
+            )
+        resolved = self.resolve(rskill_id=rskill_id, revision=revision)
         check_manifest_gates(
-            manifest, description=description, commercial_deployment=commercial_deployment
+            resolved.manifest,
+            description=description,
+            commercial_deployment=commercial_deployment,
+            scene_gripper_convention=scene_gripper_convention,
         )
         return self.build(
-            rskill_id=rskill_id,
-            revision=revision,
-            manifest=manifest,
+            resolved,
             prompt=prompt,
             prompt_metadata_json=prompt_metadata_json,
             goal_params_json=goal_params_json,
             description=description,
-            commercial_deployment=commercial_deployment,
         )
 
 
@@ -4150,7 +4239,8 @@ def _effective_goal_prompt(manifest: RSkillManifest, prompt: str) -> str:
 
 def _build_runtime_skill_from_manifest(
     *,
-    yaml_path: Path,
+    manifest: RSkillManifest,
+    skill_dir: Path,
     prompt: str,
     scene_cameras: tuple[str, ...] = (),
     description: RobotDescription | None = None,
@@ -4169,8 +4259,14 @@ def _build_runtime_skill_from_manifest(
     * forwards ``_step_impl(world_state)`` to ``adapter.step(obs, task)``
       after building an ``Observation`` from
       ``world_state.image_frames`` + ``joint_state``.
+
+    ``manifest`` is bound as given (the runner passes the one it gated), never
+    re-read from ``skill_dir``; ``skill_dir`` is where the weights live.
+    If anything fails after the adapter is built, the adapter is closed before
+    the error propagates: no skill holds it yet, so its weights or sidecar would
+    otherwise stay allocated until the process exits.
     """
-    from openral_core import RSkillManifest, VLASpec
+    from openral_core import VLASpec
     from openral_core.exceptions import ROSConfigError, ROSRuntimeError
     from openral_sim.factory import make_policy
     from openral_sim.policy_deps import (
@@ -4178,28 +4274,19 @@ def _build_runtime_skill_from_manifest(
         purge_partial_imports,
     )
 
-    manifest = RSkillManifest.from_yaml(str(yaml_path))
     prompt = _effective_goal_prompt(manifest, prompt)
-    # Defensive guard: this helper builds a VLA policy adapter shim;
-    # wrapped-ROS rSkills (kind: ros_action / ros_service) must NOT come
-    # through here because they have no model weights to bind. The
-    # production dispatch (``make_default_skill_resolver``) branches on
-    # ``manifest.kind`` and routes those to ``ROSActionRskill`` directly;
-    # this branch protects the legacy call sites that still go via
-    # ``make_local_skill_resolver`` from accidentally invoking
-    # ``make_policy`` on a manifest that doesn't carry a model_family.
+    # This helper binds a policy adapter; ``ManifestSkillResolver.build`` sends
+    # only ``POLICY_KINDS`` here. A direct caller with another kind gets a
+    # typed refusal instead of ``make_policy`` on a manifest with no model_family.
     if manifest.kind not in POLICY_KINDS:
         raise ROSConfigError(
             f"_build_runtime_skill_from_manifest({manifest.name!r}): "
-            f"kind={manifest.kind!r} is not a VLA policy. Wrapped-ROS skills "
-            "are resolved via make_default_skill_resolver(), which branches "
-            "on manifest.kind before reaching this helper."
+            f"kind={manifest.kind!r} is not a policy kind ({sorted(POLICY_KINDS)})."
         )
-    # Before any weights are loaded into memory (a Hub skill's snapshot is
-    # already on disk): a required camera the robot cannot serve would
-    # otherwise be dropped from every observation and masked by the policy.
-    # Same rule as `openral sim run` and `openral detect` (full key, modality,
-    # resolution), so the three never disagree on a pairing.
+    # The runner's ``check_manifest_gates`` already ran this before any
+    # download; repeated for direct callers, before any weights load. A
+    # required camera the robot cannot serve would otherwise be dropped from
+    # every observation and masked by the policy.
     if description is not None:
         from openral_rskill.loader import rSkill
 
@@ -4215,7 +4302,7 @@ def _build_runtime_skill_from_manifest(
         id=manifest.model_family,
         # Pass the absolute local directory so the same resolver that
         # `openral sim run` uses can find the manifest on disk.
-        weights_uri=str(yaml_path.parent),
+        weights_uri=str(skill_dir),
         device="auto",
         extra=policy_extra,
     )
@@ -4259,13 +4346,25 @@ def _build_runtime_skill_from_manifest(
             f"{manifest.name!r}: {type(exc).__name__}: {exc}. "
             f"{install_hint}"
         ) from exc
-    return _make_policy_adapter_skill(
-        manifest=manifest,
-        adapter=adapter,
-        prompt=prompt,
-        description=description,
-        tf_lookup=tf_lookup,
-    )
+    try:
+        return _make_policy_adapter_skill(
+            manifest=manifest,
+            adapter=adapter,
+            prompt=prompt,
+            description=description,
+            tf_lookup=tf_lookup,
+        )
+    except BaseException:
+        # The codec (``PolicyIOCodec.from_manifest``) or configure / activate
+        # refused after the adapter loaded; no skill holds the adapter, so
+        # release its weights / sidecar now.
+        close = getattr(adapter, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:  # reason: the build error must reach the goal
+                log.warning("rskill_runner.adapter_close_failed", error=str(exc))
+        raise
 
 
 class _SimpleSceneCfg:

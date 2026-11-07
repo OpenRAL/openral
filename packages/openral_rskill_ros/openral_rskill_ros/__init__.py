@@ -17,6 +17,8 @@ from openral_rskill_ros.compose import (
 )
 from openral_rskill_ros.rskill_runner_node import (
     ManifestSkillResolver,
+    ResolvedRskill,
+    TwoPhaseSkillResolver,
     check_manifest_gates,
     main,
     make_default_skill_resolver,
@@ -26,6 +28,8 @@ from openral_rskill_ros.rskill_runner_node import (
 __all__ = [
     "ComposedRuntime",
     "ManifestSkillResolver",
+    "ResolvedRskill",
+    "TwoPhaseSkillResolver",
     "check_manifest_gates",
     "compose_runtime",
     "compose_so100_runtime",

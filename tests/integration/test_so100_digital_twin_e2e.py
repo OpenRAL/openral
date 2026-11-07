@@ -108,7 +108,12 @@ def _local_skill_resolver(*_args: Any, **_kwargs: Any) -> Any:
 
 
 def _starting_pose_skill() -> Any:
-    """Constant real skill carrying the in-tree SO-101 starting pose."""
+    """Constant real skill carrying the in-tree SO-101 starting pose.
+
+    The manifest's embodiment tag is retargeted from ``so101_follower`` to this
+    harness's ``so100_follower``: the runner gates a borrowed manifest's tags
+    against the robot, and every other gate passes unchanged.
+    """
     from pathlib import Path
 
     from openral_rskill.loader import load_rskill_manifest
@@ -120,7 +125,7 @@ def _starting_pose_skill() -> Any:
             / "rskills"
             / "rskill-smolvla-so101-eraser_place-bf16"
         )
-    )
+    ).model_copy(update={"embodiment_tags": ["so100_follower"]})
     return skill
 
 

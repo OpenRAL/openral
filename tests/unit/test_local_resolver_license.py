@@ -20,6 +20,7 @@ _REPO = Path(__file__).resolve().parents[2]
 def test_local_resolver_refuses_non_commercial_weights_in_a_commercial_deployment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from openral_core import RobotDescription
     from openral_rskill_ros.rskill_runner_node import make_local_skill_resolver
 
     monkeypatch.delenv("OPENRAL_ALLOW_NONCOMMERCIAL", raising=False)
@@ -37,6 +38,6 @@ def test_local_resolver_refuses_non_commercial_weights_in_a_commercial_deploymen
             revision="",
             prompt="pick",
             prompt_metadata_json="",
-            description=None,
+            description=RobotDescription.from_yaml(str(_REPO / "robots/franka_panda/robot.yaml")),
             commercial_deployment=True,
         )

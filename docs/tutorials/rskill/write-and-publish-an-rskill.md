@@ -56,7 +56,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most to consumers
 | --- | --- |
 | `name` | `<owner>/rskill-<model>-<robot>-<task>-<quant>` — the Hub repo id (enforced; see [Naming convention](#naming-convention)). |
 | `license` | License **posture**; drives `commercial_use_allowed`. |
-| `role` | Optional — the slot the `kind` runs in (`RSKILL_ROLE_BY_KIND`), filled in when omitted: `s1` for `vla` / `wam` / `ros_action` / `ros_service` / `detector` / `segmenter`, `s2` for `vlm` / `reward` / `playbook`. A declared value that disagrees fails validation; `s0` is never an rSkill (S0 ships as ros2_control controllers). |
+| `role` | Optional — the slot the `kind` runs in (`RSKILL_ROLE_BY_KIND`), filled in when omitted: `s1` for `vla` / `wam` / `ros_action` / `ros_service` / `detector` / `segmenter`, `s2` for `vlm` / `reward` / `playbook`. A declared value that disagrees fails validation under `schema_version: "0.2"` (a `0.1` file is migrated with a warning); `s0` is never an rSkill (S0 ships as ros2_control controllers). |
 | `kind` | `vla` for a learnable policy; detector kinds also exist. |
 | `embodiment_tags` | Must match a robot's `RobotCapabilities.embodiment_tags`. |
 | `sensors_required` | Modality + `vla_feature_key` + min resolution per camera. |

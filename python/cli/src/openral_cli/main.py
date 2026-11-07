@@ -2019,7 +2019,9 @@ def rskill_search(
     kind: str = typer.Option(
         "", "--kind", help="Filter by manifest kind (vla, ros_action, detector, …)."
     ),
-    role: str = typer.Option("", "--role", help="Filter by control role (s0, s1, s2)."),
+    role: str = typer.Option(
+        "", "--role", help="Filter by role (s1, s2); a role follows from the kind."
+    ),
     embodiment: str = typer.Option(
         "", "--embodiment", help="Filter by embodiment tag (e.g. franka_panda)."
     ),

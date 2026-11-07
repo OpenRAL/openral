@@ -393,6 +393,22 @@ class TestFromPretrained:
         assert [c["revision"] for c in hub.download_calls] == ["deadbeef"]
         assert all(c["revision"] == "deadbeef" for c in hub.snapshot_calls)
 
+    def test_snapshot_is_pinned_to_the_commit_the_manifest_came_from(self, tmp_path: Path) -> None:
+        """An unpinned install downloads the weights at the manifest's commit, not ``main`` again.
+
+        ``hf_hub_download`` caches under ``snapshots/<commit>/``; a branch moving
+        between the manifest fetch and the snapshot download must not swap in a
+        manifest or weights that were never license- or gate-checked.
+        """
+        commit = "0123456789abcdef0123456789abcdef01234567"
+        snapshot = tmp_path / "snapshots" / commit
+        snapshot.mkdir(parents=True)
+        hub = _FakeHub(_write_yaml(snapshot, _APACHE_YAML), snapshot)
+        with self._patch(hub):
+            rSkill.from_pretrained("test/rskill-alpha", registry_path=tmp_path / "rskills.json")
+        assert [c["revision"] for c in hub.download_calls] == [None]
+        assert [c["revision"] for c in hub.snapshot_calls] == [commit]
+
 
 # ── License guard ──────────────────────────────────────────────────────────────
 

@@ -1861,8 +1861,9 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
     The harness robot is the SO-100 (gripper ``normalized_open_unit``, end
     effector ``gripper``); the RoboCasa skill sends ``normalized_close_symmetric``
     to ``panda_gripper``, so resolving it must fail before any chunk is sent. Its
-    embodiment tags are retargeted to the SO-100 so the gripper gate, not the
-    embodiment gate, is the one that refuses it.
+    embodiment tags are retargeted to the SO-100 and its camera requirements
+    dropped, so the gripper gate, not the embodiment or sensor gate, is the one
+    that refuses it.
     """
     from openral_core import RSkillManifest
     from openral_core.exceptions import ROSCapabilityMismatch
@@ -1870,7 +1871,7 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
 
     manifest = RSkillManifest.from_yaml(
         str(_REPO / "rskills" / "xr1-robocasa365" / "rskill.yaml")
-    ).model_copy(update={"embodiment_tags": ["so100_follower"]})
+    ).model_copy(update={"embodiment_tags": ["so100_follower"], "sensors_required": []})
     resolved: list[Any] = []
 
     def _resolver(**_k: Any) -> Any:
@@ -1900,31 +1901,41 @@ def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() 
     [
         # An S2 scene-query VLM: not an ExecuteRskill kind.
         ("qwen35-4b-nf4", "kind='vlm'"),
-        # A RoboCasa policy on the SO-100 harness: wrong embodiment. Its build
-        # would bind remote-code XR-1 weights, so this refusal proves the gate
-        # runs on the manifest before anything loads.
-        ("xr1-robocasa365", "panda_mobile"),
+        # A RoboCasa policy on the SO-100 harness: the embodiment gate's message,
+        # which no build-time check produces.
+        ("xr1-robocasa365", r"requires embodiment tag\(s\) \['panda_mobile'\]"),
     ],
 )
-def test_production_resolver_gates_the_manifest_before_loading(skill_dir: str, match: str) -> None:
-    """``ManifestSkillResolver`` is driven lookup → gate → build: a refusal loads nothing."""
+def test_a_refused_dispatch_leaves_the_resident_skill_loaded(skill_dir: str, match: str) -> None:
+    """The production resolver is gated before eviction: a refusal loads and unloads nothing.
+
+    A resident (preloaded) skill must survive a goal the gates refuse. Eviction
+    happens only after the gate and before ``build()``, so the resident still
+    being loaded and ACTIVE afterwards proves the refusal came from the manifest
+    gate, before any eviction or weight load.
+    """
     from openral_core import RSkillManifest
     from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_core.schemas import RSkillState
     from openral_rskill_ros.rskill_runner_node import ManifestSkillResolver
 
     resolver = ManifestSkillResolver(search_paths=[_REPO / "rskills"], hub_fallback=False)
     rskill_id = RSkillManifest.from_yaml(str(_REPO / "rskills" / skill_dir / "rskill.yaml")).name
-    with (
-        _compose_harness(resolver=resolver) as (_executor, runtime, _safety, _observed),
-        pytest.raises(ROSCapabilityMismatch, match=match),
-    ):
-        runtime.skill_runner_node._acquire_skill(
-            rskill_id=rskill_id,
-            revision="",
-            prompt="go",
-            prompt_metadata_json="",
-            goal_params_json="",
-        )
+    with _compose_harness(resolver=resolver) as (_executor, runtime, _safety, _observed):
+        node = runtime.skill_runner_node
+        resident = _make_constant_skill()
+        node._resident_skill = resident
+        node._resident_key = ("openral/test-constant-skill", "", "go", "", "")
+        with pytest.raises(ROSCapabilityMismatch, match=match):
+            node._acquire_skill(
+                rskill_id=rskill_id,
+                revision="",
+                prompt="go",
+                prompt_metadata_json="",
+                goal_params_json="",
+            )
+        assert node._resident_skill is resident
+        assert resident.info.state is RSkillState.ACTIVE
 
 
 def test_runner_refuses_a_manifestless_s2_skill_and_releases_it() -> None:

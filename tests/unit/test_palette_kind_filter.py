@@ -1,13 +1,14 @@
-"""Pin that ``build_tool_palette`` does not filter on ``kind``.
+"""Pin that ``build_tool_palette`` treats every ExecuteRskill kind alike.
 
 The Reasoner's tool palette filter at
-``python/reasoner/src/openral_reasoner/palette.py`` consults only
-``role``, ``embodiment_tags``, ``capabilities_required``, and the license
-posture. A wrapped-ROS rSkill (``kind: ros_action`` / ``ros_service``)
-with ``role: s1`` and a matching embodiment MUST surface as one
-``execute_rskill__<slug>`` LLM tool, exactly the same way a VLA does.
-This test pins that behaviour so a future change can't accidentally
-start gating on ``kind`` or ``model_family``.
+``python/reasoner/src/openral_reasoner/palette.py`` admits a skill whose
+``kind`` is in ``EXECUTE_RSKILL_KINDS`` (policies and wrapped ROS servers)
+and whose ``embodiment_tags``, ``capabilities_required`` and license posture
+fit. A wrapped-ROS rSkill (``kind: ros_action`` / ``ros_service``) with a
+matching embodiment MUST surface as one ``execute_rskill__<slug>`` LLM tool,
+exactly the same way a VLA does. This test pins that behaviour so a future
+change can't accidentally split the dispatchable kinds or gate on
+``model_family``.
 
 No mocks (CLAUDE.md §1.11) — drives the real in-tree manifests through
 the real palette builder.
@@ -83,9 +84,9 @@ def test_panda_mobile_robot_yaml_surfaces_wrapped_nav2_skill() -> None:
 def test_palette_does_not_distinguish_vla_from_ros_wrapper() -> None:
     """Both kinds surface in the same palette for matching embodiments.
 
-    Catches a regression that adds a ``manifest.kind`` predicate to
-    ``build_tool_palette``: any such change would silently drop one
-    side or the other.
+    Catches a regression that narrows the ``EXECUTE_RSKILL_KINDS`` predicate
+    in ``build_tool_palette``: any such change would silently drop one side
+    or the other.
     """
     caps = RobotCapabilities(embodiment_tags=["franka_panda"])
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)

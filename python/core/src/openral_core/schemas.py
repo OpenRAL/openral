@@ -29,7 +29,6 @@ from typing import (
     Self,
     TypeAlias,
     TypeVar,
-    cast,
 )
 
 from pydantic import (
@@ -6616,8 +6615,9 @@ class RSkillInfo(BaseModel):
         quantized: Whether weights have been quantized for the target runtime.
         warmed_up: Whether the model has been warmed up (first inference run).
         embodiment_tags: Embodiment tags from the skill manifest.
-        role: rSkill role: ``"s1"`` (fast policy) or ``"s2"`` (slow reasoning);
-            ``"s0"`` (cerebellar) is never loaded as an rSkill.
+        role: rSkill role: ``"s1"`` (fast policy) or ``"s2"`` (slow reasoning).
+            S0 cerebellar control is never an rSkill (it ships as ros2_control
+            controllers), so there is no ``"s0"``.
         latency_budget_ms: Maximum allowed inference latency in milliseconds.
         last_inference_ms: Actual latency of the most recent ``step()`` call.
         error_msg: Human-readable error description when ``state == "error"``.
@@ -6638,7 +6638,7 @@ class RSkillInfo(BaseModel):
     quantized: bool = False
     warmed_up: bool = False
     embodiment_tags: list[str] = Field(default_factory=list)
-    role: Literal["s0", "s1", "s2"] = "s1"
+    role: Literal["s1", "s2"] = "s1"
     latency_budget_ms: float | None = None
     last_inference_ms: float | None = None
     error_msg: str | None = None
@@ -8695,6 +8695,12 @@ dispatchable only while their ``ros_integration.interface_name`` is on the ROS g
 # imagines future frames, which the adapter keeps for itself).
 POLICY_KINDS: frozenset[str] = frozenset({"vla", "wam"})
 
+
+def _drop_json_schema_default(schema: dict[str, Any]) -> None:
+    """Remove ``default`` from a field's JSON Schema whose value a validator always sets."""
+    schema.pop("default", None)
+
+
 RSKILL_ROLE_BY_KIND: dict[RSkillKind, Literal["s1", "s2"]] = {
     "vla": "s1",
     "wam": "s1",
@@ -8707,7 +8713,8 @@ RSKILL_ROLE_BY_KIND: dict[RSkillKind, Literal["s1", "s2"]] = {
     "playbook": "s2",
 }
 """Slot each ``RSkillKind`` runs in (CLAUDE.md §3 dual-system pattern). A manifest that
-omits ``role`` gets this value; one that declares it must match. No kind maps to ``"s0"``:
+omits ``role`` gets this value; one that declares it must match (schema 0.2; 0.1 files are
+migrated with a warning). No kind maps to ``"s0"``:
 S0 cerebellar control ships as ros2_control controllers, never as an rSkill."""
 
 EXECUTE_RSKILL_KINDS: frozenset[str] = POLICY_KINDS | ROS_WRAPPER_KINDS
@@ -9223,14 +9230,18 @@ class RSkillManifest(BaseModel):
     ``license`` via ``is_commercial_use_allowed``.
 
     Attributes:
-        schema_version: On-disk format version; ``"0.1"`` today (CLAUDE.md §1.6).
+        schema_version: On-disk format version (CLAUDE.md §1.6). ``"0.2"`` is
+            current; ``"0.2"`` made ``role`` derived from ``kind``. ``"0.1"`` files
+            still load: a declared role that disagrees with the kind is migrated to
+            the kind's slot with a ``UserWarning`` (see ``_derive_role``).
         name: HF Hub identifier ``<owner>/<repo>``, e.g. ``"openral/rskill-pick-cube-so100"``.
         version: SemVer string of the rSkill package (not the wrapped weights).
         license: License posture surfaced at install time; drives ``is_commercial_use_allowed``.
         role: rSkill slot, fixed by ``kind`` — ``"s1"`` (policies, ROS wrappers,
-            detector / segmenter) or ``"s2"`` (vlm / reward / playbook). Optional:
-            omitted, it is filled from ``RSKILL_ROLE_BY_KIND``; declared, it must
-            match. ``"s0"`` is refused: S0 ships as ros2_control controllers.
+            detector / segmenter) or ``"s2"`` (vlm / reward / playbook). Optional on
+            disk: omitted, it is filled from ``RSKILL_ROLE_BY_KIND``; declared, it
+            must match (schema 0.2). ``"s0"`` is refused in every version: S0
+            ships as ros2_control controllers.
         model_family: Closed VLA / policy family; drives the runner's adapter dispatch.
         embodiment_tags: Robot embodiments targeted; must intersect the robot's tags.
             ``"custom"`` requires ``embodiment_extra``.
@@ -9311,13 +9322,14 @@ class RSkillManifest(BaseModel):
 
     model_config = ConfigDict(use_enum_values=False, extra="forbid")
 
-    schema_version: Literal["0.1"] = "0.1"
+    schema_version: Literal["0.1", "0.2"] = "0.2"
     name: str = Field(pattern=_HF_HUB_ID_PATTERN)
     version: str = Field(pattern=_SEMVER_PATTERN)
     license: RSkillLicensePosture = RSkillLicensePosture.UNKNOWN
-    # Optional on disk: ``_default_role_from_kind`` fills it from ``RSKILL_ROLE_BY_KIND``
-    # before validation, so a validated manifest always carries a role.
-    role: Literal["s0", "s1", "s2"] = Field(default=None)  # type: ignore[arg-type]  # reason: never None once validated; the before-validator fills it from kind
+    # Optional on disk: ``_derive_role`` sets it from ``kind`` before validation, so the
+    # default is never what a validated manifest carries. The published JSON Schema
+    # therefore states no default (``_drop_json_schema_default``).
+    role: Literal["s1", "s2"] = Field(default="s1", json_schema_extra=_drop_json_schema_default)
     # Discriminator selecting the loader / runner branch. Required (no
     # default) so every manifest declares it explicitly — see
     # ``RSkillKind`` for the semantics of each value and which other
@@ -9410,40 +9422,52 @@ class RSkillManifest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _default_role_from_kind(cls, data: object) -> object:
-        """Fill an omitted ``role`` from ``RSKILL_ROLE_BY_KIND`` — the role is derived, not free.
+    def _derive_role(cls, data: object) -> object:
+        """Set ``role`` to the slot ``kind`` runs in (``RSKILL_ROLE_BY_KIND``); refuse ``s0``.
 
-        An unknown or missing ``kind`` is left for the field validator to reject.
+        ``role`` is derived, not free: omitted, it is filled from the kind.
+
+        * ``"s0"`` is refused in every schema version: S0 cerebellar control
+          ships as ros2_control controllers, and there is no S0 rSkill runtime.
+        * A declared role that differs from the kind's slot is refused under
+          schema ``"0.2"``. A ``"0.1"`` file predates the rule, so an ``s1`` /
+          ``s2`` declared there is migrated to the kind's slot with a
+          ``UserWarning`` naming both values. Anything 0.1 already refused stays
+          refused: an unknown value, and a playbook not declaring ``s2``.
+
+        A ``kind`` that is not a known kind name, including a non-string such as
+        a YAML list, is left for field validation to reject.
         """
-        if not isinstance(data, Mapping) or data.get("role") is not None:
+        if not isinstance(data, Mapping):
             return data
         kind = data.get("kind")
-        if kind not in RSKILL_ROLE_BY_KIND:
+        if not isinstance(kind, str) or kind not in RSKILL_ROLE_BY_KIND:
             return data
-        return {**data, "role": RSKILL_ROLE_BY_KIND[cast("RSkillKind", kind)]}
-
-    @model_validator(mode="after")
-    def _check_role_matches_kind(self) -> RSkillManifest:
-        """A declared ``role`` must be the slot ``kind`` runs in (``RSKILL_ROLE_BY_KIND``).
-
-        ``"s0"`` is refused outright: S0 ships as ros2_control controllers and
-        there is no S0 rSkill runtime. A mismatched ``s1`` / ``s2`` would put an
-        S2 component in the reasoner's S1 palette, or hide an S1 policy from it.
-        """
-        expected = RSKILL_ROLE_BY_KIND[self.kind]
-        if self.role == "s0":
+        expected = RSKILL_ROLE_BY_KIND[kind]
+        declared = data.get("role")
+        name = data.get("name")
+        if declared == "s0":
             raise ValueError(
-                f"RSkillManifest({self.name!r}): role='s0' is not loadable as an rSkill; "
+                f"RSkillManifest({name!r}): role='s0' is not loadable as an rSkill; "
                 "S0 cerebellar control ships as ros2_control controllers, and there is "
-                f"no S0 rSkill runtime. kind={self.kind!r} requires role={expected!r}."
+                f"no S0 rSkill runtime. kind={kind!r} requires role={expected!r}."
             )
-        if self.role != expected:
-            raise ValueError(
-                f"RSkillManifest({self.name!r}): kind={self.kind!r} requires "
-                f"role={expected!r} (got {self.role!r}); the role is the slot the kind "
-                "runs in."
-            )
-        return self
+        if declared is not None and declared != expected:
+            migratable = declared in ("s1", "s2") and kind != "playbook"
+            if migratable and str(data.get("schema_version", "0.2")) == "0.1":
+                warnings.warn(
+                    f"RSkillManifest({name!r}): schema_version 0.1 declares role="
+                    f"{declared!r} for kind={kind!r}; migrated to {expected!r}, the slot "
+                    "the kind runs in (schema 0.2 refuses the mismatch).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            else:
+                raise ValueError(
+                    f"RSkillManifest({name!r}): kind={kind!r} requires role={expected!r} "
+                    f"(got {declared!r}); the role is the slot the kind runs in."
+                )
+        return {**data, "role": expected}
 
     @model_validator(mode="after")
     def _check_self_referential_fallback(self) -> RSkillManifest:
