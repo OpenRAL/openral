@@ -247,7 +247,10 @@ def make_so100_lift_env(
             local frame. Negative ``x`` puts the cube closer to the
             robot.
         y_range: Cube placement bounds along table y.
-        seed: RNG seed for placement sampling.
+        seed: Seeds the env's own RNG (robot reset) and the cube placement
+            sampler (position + yaw). robosuite>=1.5 samplers draw from a
+            private ``numpy.random.Generator``, not the global
+            ``np.random`` state, so the sampler gets its own seeded one.
         lift_height_m: Block bottom-face clearance above the table top
             that counts as a successful lift.
         reward_shaping: Enable the dense reaching+grasping reward
@@ -272,10 +275,9 @@ def make_so100_lift_env(
         ensure_valid_placement=True,
         reference_pos=panda_default_table_offset,
         z_offset=0.01,
+        rng=np.random.default_rng(seed),
     )
 
-    if seed is not None:
-        np.random.seed(int(seed))
     return _So100Lift(
         robots=["SO100"],
         gripper_types="default",
@@ -296,4 +298,5 @@ def make_so100_lift_env(
         lift_height_m=lift_height_m,
         cube_half_extent_m=cube_half_extent_m,
         cube_block_height_m=cube_block_height_m,
+        seed=seed,
     )
