@@ -411,8 +411,16 @@ OPENARM_DESCRIPTION = RobotDescription(
     # otherwise.  qpos[8] is the left follower finger (passive); qpos[17]
     # is the right follower finger — we skip both.
     assets=AssetRefs(
-        urdf=UrdfAsset(ref="file:openarm.urdf"),
+        # Mirrors robots/openarm/robot.yaml: openarm.urdf roots at `world`,
+        # which sits 0.698 m below `openarm_base` (derivation in the manifest).
+        urdf=UrdfAsset(
+            ref="file:openarm.urdf",
+            root_frame="world",
+            base_to_root_xyz_rpy=(0.0, 0.0, -0.698, 0.0, 0.0, 0.0),
+        ),
         mjcf="openarm:bimanual",
+        # Hand-reviewed ACM exemptions unioned into the MJCF lowering.
+        srdf="file:openarm.srdf",
     ),
     sim=SimDescription(
         joint_qpos_addr={
