@@ -153,10 +153,15 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
     velocity, if needed, waits for a separately reviewed arbitrated input upstream
     defines, with its own priority, timeout, stale-message rejection and stop
     behaviour; only then does the base part get a `cmd_vel_topic`.
-- **Stop.** The platform's software stop covers the base only, and its recovery
-  contract is still being implemented (`openamr-platform-sw` #119). Owed: an explicit
-  relationship between it and OpenRAL's stop, where each inhibits the other's base
-  commands, a stop cancels the active goal, and recovery never restarts old work. The
+- **Stop.** The platform's software stop covers the base only. Its recovery contract is
+  decided (`openamr-platform-sw` #119, closed 2026-11-07): engaging it cancels every
+  navigation and docking goal, and release waits until those cancellations are confirmed
+  and every direct `cmd_vel` input is quiet. It is not published yet: `openamr-platform-sw`
+  #90 and its `StopState` interface (`openamrobot-interfaces` #35, `/safety/stop_state`)
+  are still open. OpenRAL waits for both before building the two-way stop (ADR-0127
+  Decision 4): each stop inhibits the other's base commands, a stop cancels the active
+  goal, and recovery never restarts old work. OpenRAL's own half already holds: an OpenRAL
+  e-stop cancels its in-flight Nav2 goal and nothing re-sends it (openral#501). The
   hardwired E-stop stays separate from both.
 - **TF.** Upstream's EKF publishes `odom → base_link`; in the integrated profile the
   platform owns that transform, and its legacy real bringup needs a coordinated TF
