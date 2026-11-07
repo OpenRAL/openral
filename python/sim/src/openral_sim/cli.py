@@ -174,18 +174,27 @@ def _sim_run_callback(
         help=(
             "With --video-style world: also write <scene>_<rskill>_grid.mp4 tiling "
             "every episode in one clip (ceil(sqrt(n)) columns, 448 px tiles that keep "
-            "the frame's aspect), each tile labelled with its episode and outcome and "
-            "outlined green (success) / amber (reward > 0) / red."
+            "the frame's aspect), each tile labelled with its episode and outcome (the "
+            "grade on a graded scene) and outlined live: grey while running, then "
+            "green (success) / yellow (partial) / orange (semi) / red."
         ),
     ),
     video_size: int = typer.Option(
         1024,
         "--video-size",
         help=(
-            "Square edge (px) for --video-style world output. Frames are "
-            "center-cropped to a square and resized to this size. Source "
+            "Long edge (px) for --video-style world output; frames keep their "
+            "native aspect (with --video-square: the square edge). Source "
             "sharpness is bounded by the scene's native render resolution; "
             "this does not change the policy's observation resolution."
+        ),
+    ),
+    video_square: bool = typer.Option(
+        False,
+        "--video-square",
+        help=(
+            "With --video-style world: center-crop each clip to a square "
+            "(the website canvas) instead of keeping the frame's aspect."
         ),
     ),
     dataset_out: Path | None = typer.Option(
@@ -288,6 +297,7 @@ def _sim_run_callback(
         video_style=video_style,
         video_size=video_size,
         video_grid=video_grid,
+        video_square=video_square,
         dataset_out=dataset_out,
         dataset_repo_id=dataset_repo_id,
         dataset_license=dataset_license,
@@ -974,6 +984,7 @@ def _write_website_videos(
         size=int(getattr(args, "video_size", 1024)),
         fps=round(_scene_control_rate_hz(env_cfg)),
         grid=bool(getattr(args, "video_grid", False)),
+        square=bool(getattr(args, "video_square", False)),
     )
 
 

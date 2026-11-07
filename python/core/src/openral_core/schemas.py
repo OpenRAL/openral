@@ -10704,6 +10704,9 @@ class RSkillEvalResult(BaseModel):
             endpoint configured (no ``--dashboard``, no
             ``OTEL_EXPORTER_OTLP_ENDPOINT``), where observability is in
             no-op mode.
+        grade_counts: Episodes per final placement grade (``complete`` /
+            ``partial`` / ``semi`` / ``fail``) on a graded scene
+            (``info["placement_grade"]``); ``None`` when no episode was graded.
 
     Example:
         >>> # RSkillEvalResult.model_validate_json(
@@ -10723,6 +10726,7 @@ class RSkillEvalResult(BaseModel):
     # — the dataset / trace cross-reference is a one-way pointer at
     # the top of the run, not a propagation seam.
     trace_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    grade_counts: dict[str, Annotated[int, Field(ge=0)]] | None = None
 
     @classmethod
     def from_json(cls, path: str) -> RSkillEvalResult:

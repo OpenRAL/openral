@@ -85,6 +85,9 @@ from openral_core.schemas import (
     RobotDescription,
     RobotUnit,
     RSkillAction,
+    RSkillEvalBenchmark,
+    RSkillEvalResult,
+    RSkillEvalSource,
     RSkillLatencyBudget,
     RSkillLicensePosture,
     RSkillManifest,
@@ -1115,6 +1118,7 @@ def _build_rskill_manifest(draw: st.DrawFn) -> RSkillManifest:
         processors: RSkillProcessors | None = draw(_processors_st)
     else:
         processors = draw(st.one_of(st.none(), _processors_st))
+    weights_uri = draw(_weights_uri)
     return RSkillManifest(
         name=draw(_hub_id),
         version=draw(_semver),
@@ -1125,7 +1129,7 @@ def _build_rskill_manifest(draw: st.DrawFn) -> RSkillManifest:
         embodiment_tags=draw(st.lists(_embodiment_tag, min_size=1, max_size=3, unique=True)),
         runtime=draw(st.sampled_from(list(RSkillRuntime))),
         quantization=draw(_quant_config_st),
-        weights_uri=draw(_weights_uri),
+        weights_uri=weights_uri,
         chunk_size=draw(st.integers(min_value=1, max_value=1000)),
         latency_budget=draw(_rskill_latency_budget_st),
         actuators_required=draw(st.lists(_actuator_requirement_st, min_size=1, max_size=3)),
@@ -1674,3 +1678,37 @@ def test_fuzz_deploy_runtime(instance: DeployRuntime) -> None:
 def test_fuzz_vision_attachment_runtime(instance: VisionAttachmentRuntime) -> None:
     """VisionAttachmentRuntime round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(VisionAttachmentRuntime, instance)
+
+
+_eval_result_st = st.builds(
+    RSkillEvalResult,
+    source=st.builds(
+        RSkillEvalSource,
+        paper=st.just("https://huggingface.co/datasets/HappyEthan/metal_pick_place"),
+        model_variant=st.just("pi05"),
+        evaluated_by=st.just("OpenRAL:openral benchmark run"),
+        reproduced_locally=st.booleans(),
+    ),
+    benchmark=st.builds(
+        RSkillEvalBenchmark,
+        name=st.just("makermods_metal_pick_place"),
+        protocol=st.just("3 episodes per task"),
+        robot=st.just("makermods_metal"),
+        simulator=st.just("metal_pick_place"),
+    ),
+    results=st.fixed_dictionaries({"avg_success_rate": st.floats(0.0, 1.0)}),
+    grade_counts=st.one_of(
+        st.none(),
+        st.dictionaries(
+            st.sampled_from(["complete", "partial", "semi", "fail"]),
+            st.integers(min_value=0, max_value=30),
+        ),
+    ),
+)
+
+
+@_FUZZ_SETTINGS
+@given(_eval_result_st)
+def test_fuzz_rskill_eval_result(instance: RSkillEvalResult) -> None:
+    """RSkillEvalResult (incl. the optional grade_counts) round-trips + validates its schema."""
+    _round_trip_and_validate(RSkillEvalResult, instance)

@@ -3024,6 +3024,13 @@ def benchmark_run(
         console.print(f"[cyan]videos[/cyan] {effective_video_dir}")
 
     out_path.write_text(result.model_dump_json(indent=2))
+    from openral_sim.benchmark import episode_records
+
+    # Beside, not in, eval/: every eval/*.json must validate as an RSkillEvalResult.
+    episodes_path = out_path.parent / "episodes" / f"{out_path.stem}.json"
+    episodes_path.parent.mkdir(parents=True, exist_ok=True)
+    episodes_path.write_text(_json.dumps(episode_records(episodes), indent=2))
+    console.print(f"[cyan]episodes[/cyan] {episodes_path}")
     avg = result.results.get("avg_success_rate", 0.0)
     console.print(
         f"[green]wrote {out_path}[/green] — avg success "
@@ -3276,10 +3283,15 @@ def benchmark_scene(  # noqa: PLR0915  # reason: linear CLI flow of guards and p
         1024,
         "--video-size",
         help=(
-            "Square edge (px) for --save-video output. Frames are "
-            "center-cropped to a square and resized to this size. Source "
-            "sharpness is bounded by the scene's native render resolution."
+            "Long edge (px) for --save-video output; frames keep their native "
+            "aspect (with --video-square: the square edge). Source sharpness "
+            "is bounded by the scene's native render resolution."
         ),
+    ),
+    video_square: bool = typer.Option(
+        False,
+        "--video-square",
+        help="Center-crop --save-video clips to a square (the website canvas).",
     ),
     n_episodes: int | None = typer.Option(
         None,
@@ -3436,8 +3448,13 @@ def benchmark_scene(  # noqa: PLR0915  # reason: linear CLI flow of guards and p
         )
 
     if save_video is not None:
+        from openral_core.time_base import scene_control_rate_hz
         from openral_sim._website_video import write_world_videos
+        from openral_sim.cli import _robot_control_rate_hz
 
+        rate = scene_control_rate_hz(
+            scene.scene.backend_options, _robot_control_rate_hz(scene.robot_id)
+        )
         write_world_videos(
             episodes,
             save_video,
@@ -3445,6 +3462,8 @@ def benchmark_scene(  # noqa: PLR0915  # reason: linear CLI flow of guards and p
             rskill=Path(rskill).name,
             section=Path(config).parent.name,
             size=video_size,
+            fps=round(rate) if rate is not None else 30,
+            square=video_square,
         )
 
     avg = result.results.get("avg_success_rate", 0.0)

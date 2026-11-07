@@ -308,18 +308,22 @@ def run_benchmark(
             finally:
                 runner.deactivate()
             episode = episodes[0]
+            episode.metadata.update(task_id=task_id, seed=seed)
             if video_dir is not None:
                 from openral_sim._website_video import write_world_videos
 
                 # Suffix the seed so multi-episode sweeps of one task don't
                 # overwrite each other's <task>_<rskill>_<outcome>.mp4.
                 video_slug = task_id if len(seeds) == 1 else f"{task_id}_seed{seed}"
+                from openral_sim.cli import _scene_control_rate_hz
+
                 write_world_videos(
                     [episode],
                     Path(video_dir),
                     scene=video_slug,
                     rskill=Path(str(vla.weights_uri)).name,
                     section="benchmark",
+                    fps=round(_scene_control_rate_hz(env_cfg)),
                 )
                 episode.frames.clear()
             per_task[task_id].append(episode.success)
@@ -456,6 +460,7 @@ def _aggregate_results(
         },
         results=results,
         trace_id=current_trace_id(),
+        grade_counts=grade_counts(episodes),
     )
 
 
@@ -693,7 +698,51 @@ def _aggregate_scene_results(
         },
         results=results,
         trace_id=current_trace_id(),
+        grade_counts=grade_counts(episodes),
     )
+
+
+def grade_counts(episodes: list[EpisodeResult]) -> dict[str, int] | None:
+    """Episodes per final ``placement_grade``; ``None`` when no episode was graded.
+
+    Example:
+        >>> from openral_sim.rollout import EpisodeResult
+        >>> grade_counts([EpisodeResult(final_info={"placement_grade": g}) for g in "aab"])
+        {'a': 2, 'b': 1}
+        >>> grade_counts([EpisodeResult()]) is None
+        True
+    """
+    from collections import Counter
+
+    counts = Counter(
+        g for e in episodes if isinstance(g := e.final_info.get("placement_grade"), str)
+    )
+    return dict(counts) or None
+
+
+def episode_records(episodes: list[EpisodeResult]) -> list[dict[str, object]]:
+    """One JSON-ready record per episode: task, seed, outcome and its last step's ``info``.
+
+    ``final_info`` carries a graded scene's ``placement_grade`` / ``placement_score`` and
+    whatever else the scene reports (``lifted``, ``placement_overlap``, ...).
+
+    Example:
+        >>> from openral_sim.rollout import EpisodeResult
+        >>> r = EpisodeResult(metadata={"task_id": "t", "seed": 1}, final_info={"lifted": True})
+        >>> episode_records([r])[0]["lifted"]
+        True
+    """
+    return [
+        {
+            "task_id": e.metadata.get("task_id"),
+            "seed": e.metadata.get("seed"),
+            "success": e.success,
+            "steps": e.steps,
+            "total_reward": e.total_reward,
+            **e.final_info,
+        }
+        for e in episodes
+    ]
 
 
 def default_output_path(weights_uri: str, benchmark_id: str) -> str:
