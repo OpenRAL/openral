@@ -161,9 +161,9 @@ _Derive an HF model-card README from an rSkill manifest, the single source of tr
 
 The manifest-derived front-matter is emitted uniformly so every published repo, private or public, carries a consistent card; `tools/rskill_publisher.py` rebuilds it at publish time while preserving the human-written prose body verbatim. Hand-curated extras already in the in-tree README are unioned in; derived fields win on conflict.
 
-- `build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]` — Pure, deterministic derivation of the model-card front-matter dict (no network). `base_model` comes from `source_repo` (NF4 repos self-host weights via `weights_uri`); `base_model_relation` is `quantized` when a quantization block is present, else `finetune`. (L113)
-- `render_frontmatter(fm: dict[str, Any]) -> str` — Render the dict as a `---`-fenced YAML block, stable field order. (L172)
-- `build_rskill_readme(manifest: RSkillManifest, body: str) -> str` — Full README = merged front-matter + prose body; strips any existing front-matter from `body` and merges its curated extras. Idempotent. (L178)
+- `build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]` — Pure, deterministic derivation of the model-card front-matter dict (no network). `base_model` comes from `source_repo` (NF4 repos self-host weights via `weights_uri`); `base_model_relation` is `quantized` when a quantization block is present, else `finetune`; a LoRA rSkill (`base_weights_uri`) instead gets `base_model` = that base and `base_model_relation: adapter`. (L113)
+- `render_frontmatter(fm: dict[str, Any]) -> str` — Render the dict as a `---`-fenced YAML block, stable field order. (L177)
+- `build_rskill_readme(manifest: RSkillManifest, body: str) -> str` — Full README = merged front-matter + prose body; strips any existing front-matter from `body` and merges its curated extras. Idempotent. (L183)
 - `_LEROBOT_FAMILIES: frozenset[str]` — `model_family` values that load through lerobot's `PolicyProcessorPipeline` (so `library_name` should point there); gr00t/rldx (out-of-process) and molmoact2 (transformers custom-code) are excluded. (L38)
 - `_LICENSE_MAP: dict[RSkillLicensePosture, tuple[str, str | None]]` — License posture → `(HF license id, optional license_name)`; non-standard postures map to `"other"` + a descriptive `license_name`. (L43)
 - `_NON_QUANTIZED_DTYPES: frozenset[str]` — dtype strings (`fp32`/`bf16`/`fp16`/`float32`/`float16`) that do NOT imply a quantized `base_model_relation`. (L55)

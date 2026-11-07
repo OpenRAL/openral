@@ -1,0 +1,139 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 "rSkill packaging")
+#
+# Wraps makermods/pi05_metal_pick_place_lora (pinned commit 87595e59): a PEFT LoRA
+# (peft 0.19.1, r=16, lora_alpha=32, plain LoRA) over lerobot/pi05_base, trained
+# with lerobot 30k steps (batch 1) on HappyEthan/metal_pick_place (100 real
+# teleop episodes, 76 865 frames @ 30 FPS, robot_type metal_follower), task
+# "Pick up the cube and place it at the marked location".
+#
+# LORA — `weights_uri` is the adapter repo: its config.json (7-D state/action,
+# chunk 50, two 480x640 cameras top + wrist), processors (QUANTILES normalizer)
+# and adapter_model.safetensors (152 lora_A/B tensors on 76 Linear layers:
+# PaliGemma + action-expert q/v_proj, action_in/out_proj, time_mlp_in/out).
+# `base_weights_uri` is the backbone. The pi05 adapter loads the base, merges
+# W += (32/16) * B @ A in fp32 right after the load (before any quantization;
+# openral_sim.policies._lora, logged `lora.merged`), then runs the dense model.
+# No `peft` dependency.
+#
+# UNITS — the dataset records joint1..6 in DEGREES (same sign and zero as the
+# URDF: joint2 spans [-120, 0.4], joint3 [-0.8, 82]) and the gripper as a stroke
+# 0 .. 125 (~100 open, 2.5 closed). The codec converts rad<->deg on the arm and
+# x100 on the normalised [0 closed, 1 open] gripper, both directions; a commanded
+# stroke above 100 clamps to fully open.
+#
+# CAMERAS — the checkpoint's views are `top` (MakerMods' static rig camera) and
+# `wrist`, the same slot names robots/makermods_metal declares, so no alias. The
+# robot's sim placements are fits of the dataset video, not measured mounts.
+#
+# LICENSE — the LoRA and the dataset are Apache-2.0; the π0.5 base weights are
+# Physical Intelligence "permissive research" (CLAUDE.md §3 VLA license matrix),
+# and the merged policy inherits that posture.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-pi05-makermods_metal-pick_place-bf16"
+version: "0.1.0"
+license: "permissive_research"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "pi05"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "makermods_metal"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.top"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.wrist"
+    min_width: 224
+    min_height: 224
+
+actuators_required:
+  - kind: "joint_position"
+    n_dof: 6
+    control_mode_semantics:
+      mode: "absolute"
+  - kind: "gripper_position"
+    n_dof: 1
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_open_unit"
+
+# ── Home / starting pose ─────────────────────────────────────────────────
+# Median first frame over the 100 episodes (deg): [0.741, 0.044, -0.049, 0.494,
+# -0.099, -1.378], gripper 2.5 (closed). Radians, gripper /100. joint2 (limit
+# [-3.14, 0]) and joint3 ([0, 3.14]) start at their limit, so they sit 1 mrad
+# inside it.
+starting_pose: [0.0129, -0.001, 0.001, 0.0086, -0.0017, -0.0241, 0.025]
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# Measured on Spark (GB10, 2026-11-07): 8.81 GiB peak allocated over load + merge +
+# inference (= 9.46 GB); 7.8 s warm load, 191 ms per 50-step chunk.
+min_vram_gb:
+  bf16: 9.5
+weights_uri: "hf://makermods/pi05_metal_pick_place_lora@87595e59df01dc78e794b41df756241cb5efd7b6"
+base_weights_uri: "hf://lerobot/pi05_base@22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0"
+
+processors:
+  preprocessor_uri: "hf://makermods/pi05_metal_pick_place_lora@87595e59df01dc78e794b41df756241cb5efd7b6/policy_preprocessor.json"
+  postprocessor_uri: "hf://makermods/pi05_metal_pick_place_lora@87595e59df01dc78e794b41df756241cb5efd7b6/policy_postprocessor.json"
+image_preprocessing:
+  flip_180: false
+state_contract:
+  dim: 7
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# The checkpoint's own chunk_size / n_action_steps: 50 steps (1.67 s at 30 Hz),
+# replayed in full before the next inference.
+chunk_size: 50
+n_action_steps: 50
+latency_budget:
+  per_chunk_ms: 500.0
+
+default_prompt: "Pick up the cube and place it at the marked location"
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2504.16054"
+dataset_uri: "hf://HappyEthan/metal_pick_place"
+source_repo: "hf://makermods/pi05_metal_pick_place_lora"
+
+description: >
+  π0.5 with MakerMods' LoRA for the MakerMods Metal arm: picks a cube and places it
+  on a marked spot from a fixed table-facing and a wrist RGB view and the 7-D joint +
+  gripper state, at 30 Hz in 50-step chunks of absolute joint positions (degrees in
+  the checkpoint). The LoRA is merged into lerobot/pi05_base at load. PI
+  permissive-research base weights: commercial use needs a vendor agreement.
+
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+objects:
+  - "cube"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 7
+  representation: "joint_positions"
+  joint_units: "degrees"
+  gripper_scale: 100.0
+  control_freq_hz: 30.0
+  joint_names:
+    - "joint1"
+    - "joint2"
+    - "joint3"
+    - "joint4"
+    - "joint5"
+    - "joint6"
+    - "gripper"

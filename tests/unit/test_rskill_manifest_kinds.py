@@ -121,6 +121,29 @@ def test_wam_kind_follows_vla_rules() -> None:
         RSkillManifest(**_vla_kwargs(kind="wam", ros_integration=_VALID_ROS_INTEGRATION))
 
 
+def test_base_weights_uri_on_policy_kinds() -> None:
+    """A LoRA rSkill names its base; the real fixture carries one and round-trips."""
+    base = "hf://lerobot/pi05_base@22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0"
+    assert RSkillManifest(**_vla_kwargs(base_weights_uri=base)).base_weights_uri == base
+    assert RSkillManifest(**_vla_kwargs(kind="wam", base_weights_uri=base)).base_weights_uri
+    fixture = pathlib.Path(__file__).resolve().parents[2] / "rskills/pi05-metal-pick-place"
+    m = RSkillManifest.from_yaml(str(fixture / "rskill.yaml"))
+    assert m.base_weights_uri == base
+    assert m.base_weights_uri != m.weights_uri
+    assert RSkillManifest.model_validate(m.model_dump()) == m
+    # Absent on every older manifest: backward compatible, no schema_version bump.
+    assert RSkillManifest(**_vla_kwargs()).base_weights_uri is None
+
+
+def test_base_weights_uri_refusals() -> None:
+    with pytest.raises(ValidationError, match="equals `weights_uri`"):
+        RSkillManifest(**_vla_kwargs(base_weights_uri="hf://example/test"))
+    with pytest.raises(ValidationError, match="base_weights_uri"):
+        RSkillManifest(**_vla_kwargs(base_weights_uri="https://example.com/base"))
+    with pytest.raises(ValidationError, match="forbids `base_weights_uri`"):
+        RSkillManifest(**_ros_action_kwargs(base_weights_uri="hf://lerobot/pi05_base"))
+
+
 # ── embodiment_tags: kind-aware presence ──────────────────────────────────────
 
 
