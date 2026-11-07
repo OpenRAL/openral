@@ -545,6 +545,10 @@ if _ROS2_AVAILABLE:
             self._resident_key: tuple[str, ...] = ()
             self._chunks_published: int = 0
             self._estop_latched: bool = False
+            # (skill name, result future) of a wrapped goal whose cancel was never
+            # confirmed: it may still be driving the robot, so no goal is accepted until
+            # the future completes. An e-stop reset does not clear it.
+            self._unterminated_wrapped: tuple[str, Any] | None = None
             self._cancel_requested: bool = False
             # Issue #418: set when the tracker exhausts a query of this goal's armed
             # declaration (/openral/failure/world_state); the goal then ends along the
@@ -1294,6 +1298,16 @@ if _ROS2_AVAILABLE:
                     "and HAL latched"
                 )
                 return GoalResponse.REJECT
+            if self._unterminated_wrapped is not None:
+                name, future = self._unterminated_wrapped
+                if not future.done():
+                    self.get_logger().error(
+                        f"rskill_runner.goal_rejected: wrapped goal of {name!r} was never "
+                        "confirmed ended after its cancel and may still be driving the robot; "
+                        "stop it at its own server (or restart that server) first"
+                    )
+                    return GoalResponse.REJECT
+                self._unterminated_wrapped = None
             if self._preload_in_flight.is_set():
                 # Not accept-and-wait: acceptance is what arms the deadman
                 # watchdog's first-chunk window, and a goal parked on
@@ -1504,40 +1518,17 @@ if _ROS2_AVAILABLE:
                             deadline_s=deadline_s,
                         )
                     except ROSEStopRequested as exc:
-                        # Latched by /openral/estop or HAL.estop().
-                        span.record_exception(exc)
-                        result.success = False
-                        result.failure_reason = f"safety_estop:{exc!s}"
-                        result.failure_kind = _failure_kind_for_exception(exc)
-                        self._finalize_goal(goal_handle, "abort")
-                        self._reset_active_goal()
+                        # Latched by /openral/estop or HAL.estop(), or a safety stop a
+                        # wrapped goal's stop_check raised (after cancelling that goal).
+                        self._note_unterminated_wrapped(skill)
+                        self._end_safety_stopped(goal_handle, result, span, exc)
                         return result
                     except ROSSafetyViolation:
                         # Never convert a safety violation into a soft failure_reason
                         # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
                         raise
                     except ROSError as exc:
-                        safety_reason = self._safety_abort_reason()
-                        if safety_reason is not None:
-                            # A wait that ended under a safety stop (a wrapped goal
-                            # cancelled by ``stop_check``, or one whose cancel the
-                            # server did not confirm) is the stop, not a deadline or
-                            # runtime fault: the reasoner must see FAILURE_SAFETY_ESTOP
-                            # and its no-retry hint. The original error rides along.
-                            span.record_exception(exc)
-                            self.get_logger().error(
-                                f"rskill_runner.safety_abort: goal ended under a safety "
-                                f"stop ({safety_reason}): {type(exc).__name__}: {exc!s}"
-                            )
-                            result.success = False
-                            result.failure_reason = (
-                                f"safety_estop:safety stop latched ({safety_reason}); "
-                                f"{type(exc).__name__}: {exc!s}"
-                            )
-                            result.failure_kind = ExecuteRskill.Result.FAILURE_SAFETY_ESTOP
-                            self._finalize_goal(goal_handle, "abort")
-                            self._reset_active_goal()
-                            return result
+                        self._note_unterminated_wrapped(skill)
                         if self._cancel_requested or goal_handle.is_cancel_requested:
                             # A wrapped wait that gave up because the goal was
                             # cancelled (``ROSActionRskill.stop_check``) ends as a
@@ -1583,6 +1574,23 @@ if _ROS2_AVAILABLE:
                         self._reset_active_goal()
                         return result
 
+                    # The per-tick guard runs before each step, so a step already
+                    # running when a stop latched (a wrapped wait, a slow policy) ends
+                    # here. A latched stop outranks a cancel and a completion, as it does
+                    # inside a wrapped wait: neither is reported over it.
+                    safety_reason = self._safety_abort_reason()
+                    if safety_reason is not None:
+                        self._end_safety_stopped(
+                            goal_handle,
+                            result,
+                            span,
+                            ROSEStopRequested(
+                                f"goal ended ({exit_reason}) while a safety stop was latched "
+                                f"({safety_reason})"
+                            ),
+                        )
+                        return result
+
                     # Honour cancel — drain then idle-hold (F1 design).
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         self._drain_and_idle_hold(skill)
@@ -1608,25 +1616,6 @@ if _ROS2_AVAILABLE:
                             else f"deadline_exceeded: elapsed=?s budget={deadline_s:.1f}s"
                         )
                         result.failure_kind = ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
-                        self._finalize_goal(goal_handle, "abort")
-                        self._reset_active_goal()
-                        return result
-
-                    # The per-tick guard runs before each step, so a step already
-                    # running when a stop latched (a wrapped wait, a slow policy)
-                    # reaches here. Completing under a latched stop is not a success.
-                    safety_reason = self._safety_abort_reason()
-                    if safety_reason is not None:
-                        self.get_logger().error(
-                            f"rskill_runner.safety_abort: goal completed while a safety "
-                            f"stop was latched ({safety_reason})"
-                        )
-                        result.success = False
-                        result.failure_reason = (
-                            f"safety_estop:goal completed while a safety stop was latched "
-                            f"({safety_reason})"
-                        )
-                        result.failure_kind = ExecuteRskill.Result.FAILURE_SAFETY_ESTOP
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
@@ -1877,7 +1866,7 @@ if _ROS2_AVAILABLE:
             (skips per-stage timing); the full integration lands with F2's
             ``WorldStateStamped`` typed staleness array.
             """
-            from openral_core.exceptions import ROSRskillGoalSatisfied
+            from openral_core.exceptions import ROSEStopRequested, ROSRskillGoalSatisfied
             from openral_msgs.action import ExecuteRskill
             from openral_observability import inference_span
 
@@ -1898,7 +1887,12 @@ if _ROS2_AVAILABLE:
                 def _goal_ended() -> str | None:
                     safety_reason = self._safety_abort_reason()
                     if safety_reason is not None:
-                        return f"safety stop latched ({safety_reason})"
+                        # Typed, so the cause reaches the runner as the stop it is,
+                        # whatever the latch reads by the time the cancel is confirmed.
+                        raise ROSEStopRequested(
+                            f"safety stop latched ({safety_reason}) while waiting on the "
+                            "wrapped goal"
+                        )
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         return "cancel requested"
                     miss = budget.check()
@@ -2115,6 +2109,24 @@ if _ROS2_AVAILABLE:
                 self._finalize_goal(goal_handle, "canceled")
             self._reset_active_goal()
 
+        def _end_safety_stopped(
+            self, goal_handle: Any, result: Any, span: Any, exc: BaseException
+        ) -> None:
+            """End the goal as a safety stop: the one ``FAILURE_SAFETY_ESTOP`` result shape."""
+            span.record_exception(exc)
+            self.get_logger().error(f"rskill_runner.safety_abort: {exc!s}")
+            result.success = False
+            result.failure_reason = f"safety_estop:{exc!s}"
+            result.failure_kind = _failure_kind_for_exception(exc)
+            self._finalize_goal(goal_handle, "abort")
+            self._reset_active_goal()
+
+        def _note_unterminated_wrapped(self, skill: Any) -> None:
+            """Remember a wrapped goal whose cancel was never confirmed (see ``_goal_cb``)."""
+            future = getattr(skill, "unterminated_result_future", None)
+            if future is not None and not future.done():
+                self._unterminated_wrapped = (str(getattr(skill, "name", "?")), future)
+
         def _end_stopped_before_skill(self, goal_handle: Any, result: Any, span: Any) -> bool:
             """End a goal stopped before its skill loaded; ``True`` when it was ended.
 
@@ -2124,13 +2136,12 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSEStopRequested
 
             if self._estop_latched:
-                exc = ROSEStopRequested("e-stop latched before the skill loaded")
-                span.record_exception(exc)
-                result.success = False
-                result.failure_reason = f"safety_estop:{exc!s}"
-                result.failure_kind = _failure_kind_for_exception(exc)
-                self._finalize_goal(goal_handle, "abort")
-                self._reset_active_goal()
+                self._end_safety_stopped(
+                    goal_handle,
+                    result,
+                    span,
+                    ROSEStopRequested("e-stop latched before the skill loaded"),
+                )
                 return True
             if self._cancel_requested or goal_handle.is_cancel_requested:
                 self._end_cancelled(goal_handle, result, span)

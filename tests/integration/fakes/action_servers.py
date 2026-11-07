@@ -50,10 +50,12 @@ def held_navigate_to_pose_server(
 ) -> Any:
     """Serve ``/navigate_to_pose`` holding each goal open, as Nav2 does while driving.
 
-    A goal ends ``canceled`` when a cancel arrives and ``accept_cancel`` is set, else
-    ``succeeded`` after ``hold_s``. Each ending is appended to ``outcomes``, so a test sees
-    whether the robot would still have been driving.
+    Each goal appends ``"executing"`` to ``outcomes`` when it starts, then ends
+    ``"canceled"`` when a cancel arrives and ``accept_cancel`` is set, else ``"succeeded"``
+    after ``hold_s`` or once the returned server's ``release()`` is called. Tests call
+    ``release()`` before ``destroy()`` so no held goal outlives its server.
     """
+    import threading
     import time
 
     from nav2_msgs.action import NavigateToPose
@@ -61,12 +63,15 @@ def held_navigate_to_pose_server(
     from rclpy.action.server import CancelResponse
     from rclpy.callback_groups import ReentrantCallbackGroup
 
+    released = threading.Event()
+
     def _cancel(_request: Any) -> Any:
         return CancelResponse.ACCEPT if accept_cancel else CancelResponse.REJECT
 
     def _execute(handle: Any) -> Any:
+        outcomes.append("executing")
         end = time.monotonic() + hold_s
-        while time.monotonic() < end:
+        while time.monotonic() < end and not released.is_set():
             if handle.is_cancel_requested:
                 handle.canceled()
                 outcomes.append("canceled")
@@ -76,7 +81,7 @@ def held_navigate_to_pose_server(
         outcomes.append("succeeded")
         return NavigateToPose.Result()
 
-    return ActionServer(
+    server = ActionServer(
         node,
         NavigateToPose,
         "/navigate_to_pose",
@@ -84,3 +89,5 @@ def held_navigate_to_pose_server(
         cancel_callback=_cancel,
         callback_group=ReentrantCallbackGroup(),
     )
+    server.release = released.set
+    return server
