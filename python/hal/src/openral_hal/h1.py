@@ -283,7 +283,9 @@ H1_DESCRIPTION = RobotDescription(
     # Floating-base humanoid — same offset arithmetic as G1 (qpos +7,
     # qvel +6).  ``MujocoArmHAL`` derives both from ``floating_base=True``.
     assets=AssetRefs(
-        urdf=UrdfAsset(ref="rd:h1_description"),
+        # Vendored copy with the upstream `_joint` suffix stripped from joint
+        # names (see robots/h1/README.md); resolves against the manifest dir.
+        urdf=UrdfAsset(ref="file:h1.urdf"),
         mjcf="rd:h1_mj_description",
     ),
     sim=SimDescription(
