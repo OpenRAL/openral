@@ -110,24 +110,14 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
     )
 
 
-def _robot_loader_table() -> dict[str, Callable[[str, AssetKind], Path]]:
-    """The robot-specific ``<scheme>:<variant>`` loaders, keyed by scheme."""
-    return {
-        "gym_aloha": _resolve_gym_aloha,
-        "openarm": _resolve_openarm,
-        "menagerie": _resolve_menagerie,
-        "makermods": _resolve_makermods,
-    }
-
-
 def resolve_package_uri(uri: str) -> Path:
     """Resolve a ROS ``package://<pkg>/<relpath>`` mesh URI to a file on disk.
 
     Only for the description packages OpenRAL fetches itself as pinned clones
-    (``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`` — today
-    ``openarm_description``); a sourced ROS workspace is not consulted, so the
-    answer is the same on every host. Lazy import, as ``_resolve_openarm``: the
-    fetchers stay off the import path for robots that never need them.
+    (the keys of ``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES``); a
+    sourced ROS workspace is not consulted, so the answer is the same on every
+    host. Lazy import, as ``_resolve_openarm``: the fetchers stay off the
+    import path for robots that never need them.
 
     Args:
         uri: The ``package://`` reference as the URDF spells it.
@@ -383,4 +373,10 @@ def _resolve_menagerie(model: str, kind: AssetKind) -> Path:
     raise AssetRefError(f"menagerie:{model} not yet wired — widowx is sim-only via SimplerEnv")
 
 
-_ROBOT_ASSET_LOADERS: dict[str, Callable[[str, AssetKind], Path]] = _robot_loader_table()
+# The robot-specific ``<scheme>:<variant>`` loaders, keyed by scheme.
+_ROBOT_ASSET_LOADERS: dict[str, Callable[[str, AssetKind], Path]] = {
+    "gym_aloha": _resolve_gym_aloha,
+    "openarm": _resolve_openarm,
+    "menagerie": _resolve_menagerie,
+    "makermods": _resolve_makermods,
+}
