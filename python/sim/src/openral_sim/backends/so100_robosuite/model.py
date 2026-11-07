@@ -33,7 +33,8 @@ class SO100Gripper(GripperModel):  # type: ignore[misc]  # reason: robosuite has
     1 DOF (``Jaw``), driven by a single torque actuator. The
     ``robosuite.controllers.parts.gripper.simple_grip.SimpleGripController``
     (registered as ``"GRIP"``) maps a scalar in [-1, 1] to ± full
-    actuator torque; positive closes the jaw, negative opens it.
+    actuator torque; positive drives the jaw to its 0.5 rad open stop,
+    negative toward its -0.174 rad closed stop.
     """
 
     def __init__(self, idn: int | str = 0) -> None:
@@ -54,7 +55,7 @@ class SO100Gripper(GripperModel):  # type: ignore[misc]  # reason: robosuite has
 
     @property
     def init_qpos(self) -> NDArray[np.float64]:
-        """Jaw starts wide open (~0.05 rad past the lower limit)."""
+        """Jaw starts at 0 rad, between the closed (-0.174) and open (0.5) stops."""
         return np.array([0.0])
 
     @property
