@@ -19,6 +19,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import rSkill
 from openral_sim.policies.molmoact2 import (
     _hf_offline_if_cached,
+    _norm_stats_path,
     _resolve_max_crops,
     _split_repo_revision,
 )
@@ -168,3 +169,20 @@ class TestResolveMaxCrops:
         monkeypatch.delenv("OPENRAL_MOLMOACT2_MAX_CROPS", raising=False)
         spec = self._spec("rskills/molmoact2-so101-nf4")
         assert _resolve_max_crops(spec, None) is None
+
+
+@pytest.mark.parametrize("skill", ["molmoact2-libero-nf4", "molmoact2-so101-nf4"])
+def test_norm_stats_resolve_at_the_pinned_source_revision(skill: str) -> None:
+    """``_get_robot_stats`` reads ``config._name_or_path``; it gets the pinned snapshot dir.
+
+    A bare repo id there makes MolmoAct2 ``hf_hub_download`` the stats at HEAD.
+    """
+    pkg = rSkill.from_yaml(f"rskills/{skill}/rskill.yaml")
+    assert pkg.manifest.source_repo is not None
+    repo, revision = _split_repo_revision(pkg.manifest.source_repo.removeprefix("hf://"))
+    assert revision is not None and len(revision) == 40
+    try:
+        path = _norm_stats_path(repo, revision)
+    except (OSError, huggingface_hub.errors.HfHubHTTPError) as exc:
+        pytest.skip(f"Hub unreachable and norm_stats.json not cached: {exc}")
+    assert path.endswith(f"/snapshots/{revision}/norm_stats.json")

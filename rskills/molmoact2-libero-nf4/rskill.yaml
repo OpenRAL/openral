@@ -111,7 +111,7 @@ latency_budget:
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2605.02881"
-source_repo: "hf://allenai/MolmoAct2-LIBERO"
+source_repo: "hf://allenai/MolmoAct2-LIBERO@0d24a92bd1faf321ef497c3bbd5681af97c65aa2"  # the revision its NF4 pack was built from (quantization_metadata.json)
 
 description: >
   MolmoAct2 (Ai2) finetuned on the full LIBERO training mixture, NF4-quantized
