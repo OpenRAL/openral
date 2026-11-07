@@ -76,3 +76,28 @@ def test_install_failure_is_typed_and_leaves_no_temp_file(tmp_path: Path) -> Non
         )
     assert not is_download_failure(caught.value)
     assert sorted(p.name for p in dest.parent.iterdir()) == ["scene.xml"]
+
+
+def test_cleanup_failure_preserves_the_typed_error(tmp_path: Path) -> None:
+    """When the partial file cannot be removed, the caller still gets ROSConfigError.
+
+    A directory squatting on the per-process temp path makes both the write and the
+    cleanup ``unlink`` fail (root-safe, no mocks); the unlink failure is logged and
+    must not replace the typed error. It is a local error, not a download failure.
+    """
+    import os
+
+    payload = b"<mujoco/>"
+    source = tmp_path / "source.xml"
+    source.write_bytes(payload)
+    dest = tmp_path / "scene.xml"
+    squatter = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
+    squatter.mkdir()
+    with pytest.raises(ROSConfigError, match="test asset") as caught:
+        fetch_pinned_file(
+            source.as_uri(), hashlib.sha256(payload).hexdigest(), dest, what="test asset"
+        )
+    assert isinstance(caught.value.__cause__, IsADirectoryError)
+    assert not is_download_failure(caught.value)
+    assert squatter.is_dir()  # cleanup failed and was tolerated
+    assert not dest.exists()
