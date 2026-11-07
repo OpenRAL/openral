@@ -120,7 +120,8 @@ Before publication:
 - README passes doc validator and has no template sentinels.
 - Eval artifacts are real or clearly labeled as unreproduced paper values.
 - License and provenance warnings are visible in README/manifest.
-- Repo is private, unless `--public` and the license allows commercial use.
+- Repo is private, unless `--public` and the license allows commercial use, or
+  `--gated` (manual HF access approval) and the license is commercial or `proprietary`.
 - Upstream `weights_uri` is pinned when appropriate.
 - Docs and tests travel with any code/schema changes.
 

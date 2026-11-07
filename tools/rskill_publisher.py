@@ -13,6 +13,10 @@ Usage
     # Publish as PUBLIC (only allowed for commercially-licensed weights):
     uv run python tools/rskill_publisher.py rskills/rtdetr-coco-r18/ --publish --public
 
+    # Publish as a GATED premium (OpenRAL Pro) rSkill: public repo, manual
+    # access approval on the Hub (commercial or proprietary licences only):
+    uv run python tools/rskill_publisher.py rskills/<dir>/ --publish --gated
+
     # Pin upstream weights to a specific commit SHA and then publish:
     uv run python tools/rskill_publisher.py rskills/smolvla-libero/ --bump-revision --publish
 
@@ -35,7 +39,12 @@ to ``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for
 
 Design constraints: private by default; ``--public`` requires
 ``manifest.is_commercial_use_allowed`` (license-lineage §9), re-verified
-against the API post-``create_repo``. Requires an HF token with
+against the API post-``create_repo``. ``--gated`` (exclusive with ``--public``)
+creates a public repo, sets Hub gating to ``manual`` approval *before any file
+is uploaded* and verifies it; allowed for commercial or ``proprietary``
+licences. Hugging Face gating is the only enforcement — no entitlement check
+lives in this code. A pre-existing repo that is private, or ungated with files
+in it, is refused rather than changed. Requires an HF token with
 ``repo.write`` scope. Validates ``openral_core.schemas.RSkillManifest``
 before any network call, then
 ``openral_cli._rskill_doc_validator.validate_rskill_docs`` as a hard gate
@@ -105,6 +114,34 @@ def public_visibility_error(manifest: RSkillManifest, public: bool) -> str | Non
             "public (CLAUDE.md §1.9). Publish privately instead (drop --public)."
         )
     return None
+
+
+def gated_visibility_error(manifest: RSkillManifest, gated: bool) -> str | None:  # type: ignore[name-defined]  # noqa: F821
+    """Return an error message if ``--gated`` is not allowed, else ``None``.
+
+    A gated repo is publicly listed (only its files sit behind Hub access
+    approval), so it is allowed for commercially-licensed weights and for the
+    ``proprietary`` posture (premium rSkills), and refused for every research-only
+    or non-commercial posture. Pure (no network) so it fails fast before any HF call.
+
+    Args:
+        manifest: The validated rSkill manifest.
+        gated: Whether ``--gated`` was requested.
+
+    Returns:
+        ``None`` when the request is allowed; otherwise an explanatory string.
+    """
+    from openral_core.schemas import RSkillLicensePosture
+
+    if not gated or manifest.is_commercial_use_allowed:
+        return None
+    if manifest.license is RSkillLicensePosture.PROPRIETARY:
+        return None
+    return (
+        f"--gated refused: {manifest.name!r} has license {manifest.license.value!r}; "
+        "a gated repo is publicly listed, so only commercially-licensed or "
+        "'proprietary' weights may be gated (CLAUDE.md §1.9). Publish privately instead."
+    )
 
 
 def _validate_docs(skill_dir: Path, manifest: RSkillManifest) -> DocValidationReport:  # type: ignore[name-defined]  # noqa: F821
@@ -424,19 +461,66 @@ def _ensure_public(api: HfApi, repo_id: str) -> None:  # type: ignore[name-defin
     log.info("rskill_publisher.visibility_verified", repo_id=repo_id, private=False)
 
 
+def _ensure_gated(api: HfApi, repo_id: str) -> None:  # type: ignore[name-defined]  # noqa: F821
+    """Set manual-approval gating on a public repo and verify it; ``sys.exit(1)`` on failure.
+
+    Runs before any upload. A reused repo that is private, or that is not
+    manually gated but already holds files, is refused rather than changed —
+    its content was published under a different access posture.
+    """
+    try:
+        info = api.model_info(repo_id)
+        if getattr(info, "private", False):
+            log.error(
+                "rskill_publisher.gated_repo_private",
+                repo_id=repo_id,
+                hint="A PRIVATE repo with this id exists; refusing to gate it. "
+                "Delete/rename it or drop --gated.",
+            )
+            sys.exit(1)
+        if info.gated != "manual":
+            files = [s.rfilename for s in info.siblings or [] if s.rfilename != ".gitattributes"]
+            if files:
+                log.error(
+                    "rskill_publisher.gated_repo_has_files",
+                    repo_id=repo_id,
+                    gated=info.gated,
+                    files=len(files),
+                    hint="The repo already holds files without manual gating; refusing to "
+                    "change its access. Gate it by hand on the Hub or use a new repo id.",
+                )
+                sys.exit(1)
+            api.update_repo_settings(repo_id, gated="manual", repo_type="model")
+            info = api.model_info(repo_id)
+    except Exception as exc:  # reason: HF SDK raises many specific types; abort before upload
+        log.error("rskill_publisher.gating_failed", repo_id=repo_id, error=str(exc))
+        sys.exit(1)
+    if info.gated != "manual" or getattr(info, "private", False):
+        log.error(
+            "rskill_publisher.not_gated",
+            repo_id=repo_id,
+            gated=info.gated,
+            private=getattr(info, "private", None),
+        )
+        sys.exit(1)
+    log.info("rskill_publisher.gating_verified", repo_id=repo_id, gated="manual")
+
+
 def _publish(
     skill_dir: Path,
     manifest: RSkillManifest,  # type: ignore[name-defined]  # noqa: F821
     token: str,
     *,
     public: bool = False,
+    gated: bool = False,
 ) -> str:
     """Create an HF Hub repo (private by default) and upload the rSkill directory.
 
     Steps:
-    1. Create (or reuse) the repo with ``private = not public``.
+    1. Create (or reuse) the repo with ``private = not (public or gated)``.
     2. Re-fetch repo metadata and abort if the visibility does not match the
-       requested mode (safety gate — catches a reused repo of the wrong kind).
+       requested mode (safety gate — catches a reused repo of the wrong kind);
+       for ``gated``, set and verify manual gating here, before any upload.
     3. Upload all files from ``skill_dir`` (excluding ``_IGNORE_PATTERNS``).
 
     Args:
@@ -445,6 +529,8 @@ def _publish(
         token: HF API token with ``repo.write`` scope.
         public: When ``True`` create/verify a **public** repo; otherwise private.
             The caller (``main``) only passes ``True`` after the license gate.
+        gated: When ``True`` create a public repo with **manual** access approval.
+            The caller only passes ``True`` after ``gated_visibility_error``.
 
     Returns:
         The HF Hub URL of the published repo.
@@ -460,7 +546,7 @@ def _publish(
 
     api = HfApi(token=token)
     repo_id = manifest.name
-    private = not public
+    private = not (public or gated)
 
     # ── 1. Create repo (private unless --public) ───────────────────────────────
     log.info("rskill_publisher.creating_repo", repo_id=repo_id, private=private)
@@ -488,7 +574,9 @@ def _publish(
         sys.exit(1)
 
     # ── 2. Visibility safety gate ──────────────────────────────────────────────
-    if public:
+    if gated:
+        _ensure_gated(api, repo_id)
+    elif public:
         _ensure_public(api, repo_id)
     else:
         _ensure_private(api, repo_id)
@@ -522,7 +610,7 @@ def _publish(
         sys.exit(1)
 
     url = str(repo_url)
-    log.info("rskill_publisher.published", url=url, repo_id=repo_id, private=private)
+    log.info("rskill_publisher.published", url=url, repo_id=repo_id, private=private, gated=gated)
     return url
 
 
@@ -534,7 +622,8 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(
         description="Validate and publish a local rSkill directory to the HF Hub "
-        "(private by default; --public for commercially-licensed weights).",
+        "(private by default; --public for commercially-licensed weights; --gated for "
+        "premium rSkills behind Hub access approval).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -549,13 +638,24 @@ def main() -> None:
         default=False,
         help="Actually create the HF Hub repo and upload files (default: dry-run only).",
     )
-    parser.add_argument(
+    visibility_group = parser.add_mutually_exclusive_group()
+    visibility_group.add_argument(
         "--public",
         action="store_true",
         default=False,
         help=(
             "Create/verify a PUBLIC repo instead of private. Only allowed for "
             "commercially-licensed weights (refused for non-commercial skills, §9)."
+        ),
+    )
+    visibility_group.add_argument(
+        "--gated",
+        action="store_true",
+        default=False,
+        help=(
+            "Create a PUBLIC repo with MANUAL access approval (premium rSkills). "
+            "Gating is set and verified before any upload. Only allowed for "
+            "commercially-licensed or 'proprietary' weights."
         ),
     )
     parser.add_argument(
@@ -606,8 +706,12 @@ def main() -> None:
     if public_error:
         log.error("rskill_publisher.public_refused", error=public_error)
         sys.exit(1)
+    gated_error = gated_visibility_error(manifest, args.gated)
+    if gated_error:
+        log.error("rskill_publisher.gated_refused", error=gated_error)
+        sys.exit(1)
 
-    visibility = "public" if args.public else "private"
+    visibility = "gated (manual approval)" if args.gated else "public" if args.public else "private"
 
     if not args.publish and not args.bump_revision:
         if doc_report.is_valid:
@@ -649,9 +753,9 @@ def main() -> None:
 
     # ── Publish ────────────────────────────────────────────────────────────────
     if args.publish:
-        url = _publish(skill_dir, manifest, token, public=args.public)
+        url = _publish(skill_dir, manifest, token, public=args.public, gated=args.gated)
         print(f"\nPublished: {url}")
-        print(f"Repo is private: {not args.public}")
+        print(f"Repo visibility: {visibility}")
         print("\nInstall with:")
         print(f"  ral skill install hf://{manifest.name}")
         print("  # or in Python:")
