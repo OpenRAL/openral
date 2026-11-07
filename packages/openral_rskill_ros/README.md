@@ -107,10 +107,17 @@ a goal earlier.
 
 `_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period sleep wait on the
 clock, not the safety layer. `ROSActionRskill._poll_future` (a wrapped `ros_action`/
-`ros_service` skill blocking on its server's result — Nav2 will never arrive if the robot
-can't move) **can** be starved, but instrumenting it needs a new injected seam across the
-rSkill layer boundary plus a real wrapped action server; the per-waypoint guard above bounds
-the exposure to one blocking `step()`.
+`ros_service` skill blocking on its server's result) reads it through the `stop_check` seam
+the runner already injects: a latched `/openral/estop` or `/openral/safety_status` (or a
+silent status publisher, the same `_safety_abort_reason`) ends the wait within one 20 ms
+poll. The skill then cancels the wrapped goal and waits up to 5 s each for the cancel
+response and the terminal result. The goal ends `FAILURE_SAFETY_ESTOP`, with the original
+error appended; a server that rejects the cancel or never confirms it is named in the
+reason ("may still be running"). This matters most where the wrapped server drives the
+robot itself: in a standalone deploy the HAL already drops Nav2's `/cmd_vel` once latched,
+but the Nav2 goal stayed alive and resumed after a reset. A goal whose step completes while
+a stop is latched (a stop that landed mid-step) ends `FAILURE_SAFETY_ESTOP`
+("goal completed while a safety stop was latched"), never as a success.
 
 ## Composition (one shared `WorldStateAggregator`)
 

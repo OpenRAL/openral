@@ -22,7 +22,10 @@ Action-goal lifecycle (CLAUDE.md §3 rSkill packaging + the F1 design):
    ``failure_kind=FAILURE_SAFETY_ESTOP`` and transitions to ``inactive``. OR-ed into one seam,
    ``RskillRunnerNode._safety_abort_reason``, read by the ``ROSPublishingHAL`` apply-wait
    and (via ``RskillRunnerNode._raise_if_safety_aborted``) every other blocking wait on the
-   dispatch path, so a latched safety layer is never reported as a generic timeout.
+   dispatch path, so a latched safety layer is never reported as a generic timeout. A wrapped
+   result-only goal (Nav2) blocked inside one step reads it through its ``stop_check``: the
+   stop cancels the wrapped server's goal and waits for the server to confirm, and a goal
+   that completes while a stop is latched is never reported as a success.
 
 The action-goal path is the only way an external client triggers a rskill; the legacy CLI /
 single-process invocation is a thin wrapper that sends a goal to this server.
@@ -1514,6 +1517,27 @@ if _ROS2_AVAILABLE:
                         # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
                         raise
                     except ROSError as exc:
+                        safety_reason = self._safety_abort_reason()
+                        if safety_reason is not None:
+                            # A wait that ended under a safety stop (a wrapped goal
+                            # cancelled by ``stop_check``, or one whose cancel the
+                            # server did not confirm) is the stop, not a deadline or
+                            # runtime fault: the reasoner must see FAILURE_SAFETY_ESTOP
+                            # and its no-retry hint. The original error rides along.
+                            span.record_exception(exc)
+                            self.get_logger().error(
+                                f"rskill_runner.safety_abort: goal ended under a safety "
+                                f"stop ({safety_reason}): {type(exc).__name__}: {exc!s}"
+                            )
+                            result.success = False
+                            result.failure_reason = (
+                                f"safety_estop:safety stop latched ({safety_reason}); "
+                                f"{type(exc).__name__}: {exc!s}"
+                            )
+                            result.failure_kind = ExecuteRskill.Result.FAILURE_SAFETY_ESTOP
+                            self._finalize_goal(goal_handle, "abort")
+                            self._reset_active_goal()
+                            return result
                         if self._cancel_requested or goal_handle.is_cancel_requested:
                             # A wrapped wait that gave up because the goal was
                             # cancelled (``ROSActionRskill.stop_check``) ends as a
@@ -1584,6 +1608,25 @@ if _ROS2_AVAILABLE:
                             else f"deadline_exceeded: elapsed=?s budget={deadline_s:.1f}s"
                         )
                         result.failure_kind = ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
+                        self._finalize_goal(goal_handle, "abort")
+                        self._reset_active_goal()
+                        return result
+
+                    # The per-tick guard runs before each step, so a step already
+                    # running when a stop latched (a wrapped wait, a slow policy)
+                    # reaches here. Completing under a latched stop is not a success.
+                    safety_reason = self._safety_abort_reason()
+                    if safety_reason is not None:
+                        self.get_logger().error(
+                            f"rskill_runner.safety_abort: goal completed while a safety "
+                            f"stop was latched ({safety_reason})"
+                        )
+                        result.success = False
+                        result.failure_reason = (
+                            f"safety_estop:goal completed while a safety stop was latched "
+                            f"({safety_reason})"
+                        )
+                        result.failure_kind = ExecuteRskill.Result.FAILURE_SAFETY_ESTOP
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
@@ -1848,8 +1891,14 @@ if _ROS2_AVAILABLE:
 
             if isinstance(skill, ROSActionRskill):
                 # A wrapped result-only goal (Nav2) blocks inside one ``step()``,
-                # where this loop cannot check cancel or the budget; hand both in.
+                # where this loop cannot check a safety stop, cancel or the budget;
+                # hand all three in. A safety stop first: the wrapped server may be
+                # driving the robot itself, so the stop must end its goal (the skill
+                # cancels it and waits for the server to confirm), not only latch here.
                 def _goal_ended() -> str | None:
+                    safety_reason = self._safety_abort_reason()
+                    if safety_reason is not None:
+                        return f"safety stop latched ({safety_reason})"
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         return "cancel requested"
                     miss = budget.check()
@@ -3406,6 +3455,9 @@ if _ROS2_AVAILABLE:
             """
             if self._estop_latched:
                 return
+            # The in-flight goal aborts at its next guard: the per-tick check, or, for a
+            # wrapped goal blocked in one step, its ``stop_check`` (which cancels the
+            # wrapped server's goal and waits for it to confirm).
             self._estop_latched = True
             self.get_logger().error(
                 "rskill_runner.estop_received; "
