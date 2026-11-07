@@ -92,6 +92,18 @@ print(hal.read_state().name)
 hal.disconnect()
 ```
 
+## Safety: no self-collision checking yet
+
+> **Hazard.** This manifest declares no `collision_geometry`, so the safety kernel's
+> envelope loader runs with self-collision checking **disabled** (only the workspace
+> box and joint/velocity limits apply). On the station the two arms are 0.78 m apart with 0.6125 m reach each, so their workspaces overlap and the kernel will **not** refuse an arm-to-arm collision. The repo's collision fitter cannot lower
+> this arm yet: its MJCF path reads the `gripper` fraction as metres when checking
+> the finger `mimic_joints` rows, and its URDF path leaves the `metal_description`
+> `package://` meshes unresolved; it also emits no finger geometry. Closing this
+> needs a `packages/openral_safety` lowering change (Safety-WG review). Until then,
+> do not run this manifest on real hardware behind the kernel's self-collision
+> guarantee.
+
 ## Real hardware
 
 No HAL exists yet (`hal.real: null`). The upstream driver runs one CAN bus per
