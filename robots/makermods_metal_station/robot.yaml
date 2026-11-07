@@ -125,7 +125,7 @@ joints:
   sim_joint_name: left_joint8
   joint_type: prismatic
   parent_link: left_gripper_base
-  child_link: left_link8
+  child_link: left_finger_pair
   axis_xyz: [1, 0, 0]
   position_limits: [0.0, 1.0]
   velocity_limit: 1.0
@@ -215,7 +215,7 @@ joints:
   sim_joint_name: right_joint8
   joint_type: prismatic
   parent_link: right_gripper_base
-  child_link: right_link8
+  child_link: right_finger_pair
   axis_xyz: [1, 0, 0]
   position_limits: [0.0, 1.0]
   velocity_limit: 1.0
@@ -244,6 +244,48 @@ fixed_attachments:
   child_link: right_gripper_base
   origin_xyz: [0.0758, 0.0, 0.0]
   origin_rpy: [1.57079745225378, -1.57079631189374, 1.57079520133601]
+# Per-arm finger mimic rows; see robots/makermods_metal/robot.yaml.
+mimic_joints:
+- name: left_joint7
+  parent_link: left_gripper_base
+  child_link: left_link7
+  mimics: left_gripper
+  multiplier: -0.05
+  offset: 0.0
+  joint_type: prismatic
+  axis_xyz: [1.0, 0.0, 0.0]
+  origin_xyz: [0.0, -0.00275, 0.0]
+  origin_rpy: [0.0, 0.0, -1.5707963267949]
+- name: left_joint8
+  parent_link: left_gripper_base
+  child_link: left_link8
+  mimics: left_gripper
+  multiplier: 0.05
+  offset: 0.0
+  joint_type: prismatic
+  axis_xyz: [1.0, 0.0, 0.0]
+  origin_xyz: [0.0, 0.00275, 0.0]
+  origin_rpy: [0.0, 0.0, -1.5707963267949]
+- name: right_joint7
+  parent_link: right_gripper_base
+  child_link: right_link7
+  mimics: right_gripper
+  multiplier: -0.05
+  offset: 0.0
+  joint_type: prismatic
+  axis_xyz: [1.0, 0.0, 0.0]
+  origin_xyz: [0.0, -0.00275, 0.0]
+  origin_rpy: [0.0, 0.0, -1.5707963267949]
+- name: right_joint8
+  parent_link: right_gripper_base
+  child_link: right_link8
+  mimics: right_gripper
+  multiplier: 0.05
+  offset: 0.0
+  joint_type: prismatic
+  axis_xyz: [1.0, 0.0, 0.0]
+  origin_xyz: [0.0, 0.00275, 0.0]
+  origin_rpy: [0.0, 0.0, -1.5707963267949]
 end_effectors:
 - {name: left_gripper, command_convention: normalized_open_unit, kind: parallel_gripper, hand: left, n_dof: 1,
   max_grip_force_n: 3.0, max_payload_kg: 0.3, workspace_radius_m: 0.6125}
