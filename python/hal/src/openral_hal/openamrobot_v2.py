@@ -10,7 +10,7 @@ Subclassing ``OpenArmMujocoHAL`` would buy nothing: that class only binds the
 OpenArm manifest. The arms here differ only by their joint names in the
 manifest. The real robot is ``openral_hal.composed.ComposedHAL`` (the manifest's
 ``hal.real``), which reuses ``OpenArmRealHAL`` unchanged beside a platform base and
-a held lift; it has not run on hardware (units ship 2027-04).
+a held lift; it has not run on hardware.
 """
 
 from __future__ import annotations

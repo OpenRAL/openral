@@ -16,7 +16,11 @@ from typing import Any
 
 import pytest
 from openral_core import Action, ControlMode, RobotDescription, ROSConfigError
-from openral_core.exceptions import ROSEStopRequested, ROSPerceptionStale
+from openral_core.exceptions import (
+    ROSCapabilityMismatch,
+    ROSEStopRequested,
+    ROSPerceptionStale,
+)
 
 rclpy = pytest.importorskip("rclpy")
 pytest.importorskip("nav_msgs.msg")
@@ -262,3 +266,28 @@ def test_disconnect_releases_the_ros_endpoints(
     assert node.count_publishers("/test_platform/cmd_vel") == 0
     assert node.count_subscribers("/test_platform/odom") == subs - 1
     hal.disconnect()  # idempotent
+
+
+def test_without_a_command_topic_the_base_is_odometry_only(ros_init: None) -> None:
+    """No ``cmd_vel_topic``: no publisher, a zero twist is a no-op, motion is refused."""
+    node = rclpy.create_node("platform_base_odom_only_test")
+    hal = PlatformBaseHAL(description=_base_description(), odom_topic="/odom_only/odom")
+    try:
+        hal.attach_ros_node(node)
+        hal.connect()
+        assert hal._pub is None
+        assert not [
+            n
+            for n, _ in node.get_publisher_names_and_types_by_node(
+                node.get_name(), node.get_namespace()
+            )
+            if n.endswith("cmd_vel")
+        ]
+        hal.send_action(_twist(0.0, 0.0, 0.0))
+        with pytest.raises(ROSCapabilityMismatch, match="odometry-only"):
+            hal.send_action(_twist(0.2, 0.0, 0.0))
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+    finally:
+        hal.disconnect()
+        node.destroy_node()

@@ -5,7 +5,7 @@ DOLD v4 lift and two Enactic OpenArm v2.0 arms with pinch grippers. With the lif
 travel the shoulders sit between 1.00 and 1.35 m.
 
 Status: **sim** (MuJoCo twin and Isaac Sim); the **real** HAL is composed and has
-not yet run on hardware. Upstream's dual-arm units ship from 2027-04.
+not yet run on hardware.
 
 ## Provenance
 
@@ -113,9 +113,10 @@ hits (`resolve_beam_range`).
     transport (the composite delegates the seam), so 16-D OpenArm rSkills reach the
     arms as the same four-slot tick they send to the OpenArm. Upstream's real profile
     runs the same `openarm_hardware` over CAN-FD.
-  - **base:** `PlatformBaseHAL` over the platform's own stack. It reads odometry
-    from `/platform/odom` and publishes twist on `/platform/cmd_vel`. Nav2 drives the
-    base through `MobileBaseBridge` (`/cmd_vel` → `BODY_TWIST` → this part).
+  - **base:** `PlatformBaseHAL`, **odometry-only**. It reads the platform's odometry
+    from `/platform/odom` and publishes no twist: the manifest sets no `cmd_vel_topic`,
+    so a non-zero `BODY_TWIST` is refused (`ROSCapabilityMismatch`) before any part
+    moves, and a zero twist is a no-op. See "Command ownership" below.
   - **lift:** `HeldJointsHAL` at a declared height. The real lift has no
     ros2_control interface (its firmware owns it), so a command that would move it
     is refused. When upstream exposes it, the lift becomes a stock `RosControlHAL` on
@@ -126,16 +127,40 @@ hits (`resolve_beam_range`).
     arm controllers. `tests/sim/test_openamrobot_v2_lift_ros2_control.py` runs this against
     a real `controller_manager` with mock hardware. In sim the lift is already
     commanded: the MuJoCo twin and Isaac drive `lift_joint` from `JOINT_POSITION`.
-    Upstream's firmware enforces register LIFT (lift motion only with the arms stowed
-    and the base stopped). OpenRAL does not enforce it, so the commanded lift waits on
-    that interlock and Safety-WG sign-off.
+    Upstream's register LIFT interlock (lift motion only with the arms stowed and the
+    base stopped) is **designed, not yet implemented** in the lift firmware, and
+    OpenRAL does not enforce it. Nothing provides a measured lift position to this HAL
+    yet either; upstream's lift design includes position feedback, homing and validity.
+    The model's continuous `lift_joint` is right for geometry; the permitted
+    destinations (L1000, L1175, L1350) and the interlocks belong in a command policy,
+    not in the model. The commanded lift waits on the implemented interlock, a measured
+    position, that policy and Safety-WG sign-off.
 
-Open before the first real run:
+Open before the first real run (agreed with the OpenAMRobot project in openral#497):
 
-- **Platform remap.** Remap the platform's `/odom` and `/cmd_vel` onto
-  `/platform/*`, and turn its EKF TF broadcast off. `MobileBaseBridge` owns `/cmd_vel`
-  and `odom → base_footprint`, and upstream's EKF publishes `odom → base_link`, which
-  would give `base_link` two parents.
+- **Command ownership.** On OpenAMRobot the final `/cmd_vel` is the
+  `collision_monitor` output to the base controller, after the platform's `twist_mux`
+  arbitration, its software stop and its smoother (`openamr-platform-sw` #90). A
+  remapped copy of that topic is not an input: publishing there bypasses the platform
+  chain, and `MobileBaseBridge`'s own Nav2 path bypasses OpenRAL's supervisor. Two
+  profiles:
+  - *standalone simulation* (what this directory ships): OpenRAL owns Nav2, odometry,
+    TF and the base command.
+  - *integrated hardware*: the platform owns navigation, localization, odometry, TF
+    and the final command; OpenRAL requests base motion through the platform's
+    `navigate_to_pose` action. That path is not implemented yet (it changes how a
+    deploy reaches the base, so it needs a recorded decision first). Direct base
+    velocity, if needed, waits for a separately reviewed arbitrated input upstream
+    defines, with its own priority, timeout, stale-message rejection and stop
+    behaviour; only then does the base part get a `cmd_vel_topic`.
+- **Stop.** The platform's software stop covers the base only, and its recovery
+  contract is still being implemented (`openamr-platform-sw` #119). Owed: an explicit
+  relationship between it and OpenRAL's stop, where each inhibits the other's base
+  commands, a stop cancels the active goal, and recovery never restarts old work. The
+  hardwired E-stop stays separate from both.
+- **TF.** Upstream's EKF publishes `odom → base_link`; in the integrated profile the
+  platform owns that transform, and its legacy real bringup needs a coordinated TF
+  migration to the composed model (upstream is handling it).
 - **Arm controllers.** The OpenArm bringup (`openral_hal_openarm`) and upstream's
   `arm_controllers.yaml` name the controllers differently
   (`left_joint_trajectory_controller` vs `left_arm_controller`), and upstream's
@@ -150,14 +175,16 @@ Open before the first real run:
   ones `openral detect` fills) reaches the arm part over its `params`: `ComposedHAL`
   hands every keyword to the parts whose constructor takes it. So does the manifest's
   `safety.joint_state_staleness_limit_s` (0.1 s), which bounds the odometry age too.
-- **Platform command timeout.** If the HAL node dies, nothing republishes
-  `/platform/cmd_vel`, and the base keeps its last twist unless the platform stops on
-  its own. The platform's twist input must have a command timeout (micro-ROS firmware
-  or `twist_mux`), as `diff_drive_controller`'s `cmd_vel_timeout` gives. Stale
-  odometry no longer kills the node (`MobileBaseBridge` skips the `/odom` tick, and
-  Nav2 stops on the stale TF), but the timeout is still the last line.
+- **Platform command timeout.** Any arbitrated twist input upstream defines for
+  OpenRAL must time out on its own: if the HAL node dies, nothing republishes it.
 
 ## Known gaps
+
+- **Pinned geometry predates recent upstream decisions.** The second E-stop now sits
+  on the moving lift adapter plate, and the head camera and tablet placement has been
+  updated upstream; the vendored URDF at `17cf693` has neither. Upstream will publish
+  tagged releases with resolved commits and checksums for the expanded URDF and meshes;
+  the pin moves to the first one.
 
 - **Collision model: reused, not refitted; Safety-WG sign-off owed.** The arms
   import `robots/openarm`'s `collision_geometry` at load (`collision_geometry_imports`:

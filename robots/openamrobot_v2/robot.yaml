@@ -376,10 +376,11 @@ safety:
   max_ee_accel_m_s2: 1.0
   contact_force_threshold_n: 30.0
   self_collision_margin_m: 0.0
-  # BODY_TWIST kernel bounds. Provisional and conservative: upstream publishes no
-  # base speed yet (its Nav2 config is a placeholder), so these are a slow
-  # indoor-AMR envelope, to be replaced by the platform's measured limits.
-  max_base_linear_speed_m_s: 0.3
+  # BODY_TWIST kernel bounds; nav2.launch.py also clamps Nav2's vx_max/wz_max to them.
+  # Linear: upstream's current Nav2 profile runs the base at 0.20 m/s (OpenAMRobot
+  # project lead, openral#497, 2026-11-07). Angular: provisional, a slow indoor-AMR
+  # value until the platform publishes its own.
+  max_base_linear_speed_m_s: 0.2
   max_base_angular_speed_rad_s: 0.5
   # Runner ramp to a skill's starting_pose: the OpenArm manifest's values for the
   # revolute joints; the prismatic pair covers the lift (DOLD datasheet 0.018 m/s,
@@ -409,12 +410,15 @@ hal:
   #  - arm: OpenArmRealHAL built from robots/openarm/robot.yaml, unchanged. It owns the
   #    16 OpenArm joints by name, and the lifecycle node wires its ros2_control transport
   #    as on the OpenArm. Upstream's real profile runs the same openarm_hardware over CAN-FD.
-  #  - base: PlatformBaseHAL over the platform's own drive stack (odometry in, twist
-  #    out). MobileBaseBridge keeps /cmd_vel (Nav2) and odom TF, so the platform's
-  #    topics are remapped onto /platform/* with its EKF TF broadcast off.
+  #  - base: PlatformBaseHAL, odometry-only. The platform's final /cmd_vel is its
+  #    collision_monitor output, after twist_mux, its software stop and its smoother;
+  #    OpenRAL may not publish into that chain, and upstream has not yet defined an
+  #    arbitrated input for it. With no cmd_vel_topic the part refuses any non-zero
+  #    BODY_TWIST before an arm moves. On hardware the platform owns navigation,
+  #    localization, odometry, TF and the final command (README "Command ownership").
   #  - lift: HeldJointsHAL. The real lift has no ros2_control interface (its firmware
   #    owns it), so its height is declared, not measured.
-  # NOT YET RUN ON HARDWARE (dual-arm units ship 2027-04). Open integration items are
+  # NOT YET RUN ON HARDWARE. Open integration items are
   # in robots/openamrobot_v2/README.md.
   real: "openral_hal.composed:ComposedHAL"
   parameters:
@@ -429,9 +433,10 @@ hal:
             right_can_interface: "openarm_right"
         - entry: "openral_hal.platform_base:PlatformBaseHAL"
           joints: ["base_x", "base_y", "base_yaw"]
+          # No cmd_vel_topic: odometry-only until upstream defines a reviewed, arbitrated
+          # twist input (priority, timeout, stale-message rejection, stop behaviour).
           params:
             odom_topic: "/platform/odom"
-            cmd_vel_topic: "/platform/cmd_vel"
             # Its own odometry window (the 0.1 s joint-state limit would fail 10 Hz /odom).
             staleness_limit_s: 0.5
         - entry: "openral_hal.composed:HeldJointsHAL"
@@ -443,13 +448,16 @@ hal:
           # A COMMANDED lift, for when upstream exposes it on real hardware: upstream's
           # mock and Gazebo profiles already drive lift_joint through `lift_controller`
           # (a position JointTrajectoryController, ros2_control.xacro issue #17); its
-          # real profile declares no interface yet (the lift firmware owns it and
-          # enforces register LIFT: lift motion only with the arms stowed and the base
-          # stopped). Replace the entry above with this one, on the arms'
+          # real profile declares no interface yet (the lift firmware owns it; its
+          # register LIFT interlock, lift motion only with the arms stowed and the base
+          # stopped, is designed but NOT yet implemented). The permitted destinations
+          # (L1000, L1175, L1350) and the interlocks belong in a command policy, not in
+          # this model, whose continuous lift_joint is for geometry. Replace the entry above with this one, on the arms'
           # controller_manager; ComposedHAL merges both ros2_control parts onto one
           # transport and /openral/estop deactivates lift_controller with the arms'.
           # Live-tested: tests/sim/test_openamrobot_v2_lift_ros2_control.py. Before using it
-          # on hardware: Safety-WG sign-off, and the LIFT interlock in the firmware.
+          # on hardware: Safety-WG sign-off, measured lift position, the LIFT interlock
+          # implemented in the firmware, and that command policy.
           #   - entry: "openral_hal.ros_control:RosControlHAL"
           #     joints: ["lift_joint"]
           #     params: {controller_name: "lift_controller"}

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from openral_core import RobotDescription, ROSConfigError
-from openral_core.exceptions import ROSEStopRequested
+from openral_core.exceptions import ROSCapabilityMismatch, ROSEStopRequested
 from openral_hal.composed import ComposedHAL
 from openral_hal.platform_base import PlatformBaseHAL
 from openral_hal.resolver import vendor_publishes_urdf_joint_states
@@ -108,6 +108,38 @@ def test_the_base_refuses_a_joint_target_before_any_part_is_commanded(
     hal = ComposedHAL(description=base_lift, parts=_parts())
     with pytest.raises(ROSConfigError, match="BODY_TWIST only"):
         hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0] * 4]))
+
+
+def test_the_manifest_real_base_is_odometry_only(amr: RobotDescription) -> None:
+    """The OpenAMRobot platform owns its final base command (openral#497).
+
+    The manifest gives the base part no ``cmd_vel_topic``, so a non-zero twist is
+    refused before any part, the arm included, is commanded; a zero twist passes.
+    """
+    from openral_core import Action, ControlMode
+    from openral_hal import build_hal
+
+    real = build_hal(amr, mode="real", transport={"require_can_links": False})
+    assert isinstance(real, ComposedHAL)
+    base = next(p for p in real._parts if isinstance(p, PlatformBaseHAL))
+    assert base._cmd_vel_topic is None
+
+    def twist(vx: float) -> Action:
+        return Action(
+            control_mode=ControlMode.BODY_TWIST, horizon=1, body_twist=[(vx, 0, 0, 0, 0, 0)]
+        )
+
+    with pytest.raises(ROSCapabilityMismatch, match="odometry-only"):
+        base.check_action(twist(0.1))
+    assert base.check_action(twist(0.0)) == (0.0,) * 6
+    hal = ComposedHAL(
+        description=amr.model_copy(
+            update={"joints": [j for j in amr.joints if j.name in _BASE_LIFT], "end_effectors": []}
+        ),
+        parts=_parts(),
+    )
+    with pytest.raises(ROSCapabilityMismatch):
+        hal.send_action(twist(0.1))
 
 
 def test_without_a_ros2_control_part_the_stop_surface_falls_back(

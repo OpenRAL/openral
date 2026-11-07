@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (58)
+## Topics (57)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -69,7 +69,6 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/world_state_slow` | `openral_msgs/WorldStateStamped` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/world_voxels` | `openral_msgs/OccupancyVoxels` | packages/openral_octomap_bridge/src/octomap_voxel_bridge.hpp [param `output_topic`]<br>tools/voxel_transport_probe.py (run_pub) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `object_voxels_topic`]<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup)<br>tools/_validation_matrix_monitor.py (Monitor.__init__)<br>tools/voxel_transport_probe.py (run_sub) |
 | `/openral/world_voxels_cloud` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |
-| `/platform/cmd_vel` | `geometry_msgs/Twist` | python/hal/src/openral_hal/platform_base.py (PlatformBaseHAL.attach_ros_node) | — |
 | `/platform/odom` | `nav_msgs/Odometry` | — | python/hal/src/openral_hal/platform_base.py (PlatformBaseHAL.attach_ros_node) |
 | `/probe/cloud` | `sensor_msgs/PointCloud2` | tools/cloud_transport_probe.py (run_pub) [param `--topic`] | tools/cloud_transport_probe.py (run_sub) [param `--topic`] |
 | `/scan` | `sensor_msgs/LaserScan` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_scan) | packages/openral_nav2_bringup/openral_nav2_bringup/payload_scan_filter_node.py (main.PayloadScanFilterNode.__init__) [param `input_topic`] |
@@ -130,7 +129,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (48)
+## Unresolved endpoints (49)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -149,6 +148,7 @@ caller's argument). Shown as their source expression.
 | topic | pub | `gp('depth_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | pub | `out[c]` | `sensor_msgs/Image` | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | topic | pub | `points_topic` | `sensor_msgs/PointCloud2` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
+| topic | pub | `self._cmd_vel_topic` | `geometry_msgs/Twist` | python/hal/src/openral_hal/platform_base.py (PlatformBaseHAL.attach_ros_node) |
 | topic | pub | `self._info_topic` | `sensor_msgs/CameraInfo` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |
 | topic | pub | `self._topic` | `openral_msgs/FailureTrigger` | python/observability/src/openral_observability/failure_bus.py (FailureBusPublisher.create_publisher) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher._start_ros) |

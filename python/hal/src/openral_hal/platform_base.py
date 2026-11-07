@@ -5,13 +5,22 @@ micro-ROS motor board and a ``robot_localization`` EKF (``openamr-platform-sw``
 ``real_bringup.launch.py``). OpenRAL does not replace that stack; it talks to it:
 
 * the base pose and velocity come from the platform's ``nav_msgs/Odometry``;
-* ``BODY_TWIST`` is published as ``geometry_msgs/Twist`` on the platform's command topic.
+* ``BODY_TWIST`` is published as ``geometry_msgs/Twist`` on ``cmd_vel_topic``, only
+  when one is configured.
 
-In an OpenRAL deploy, ``MobileBaseBridge`` owns ``/cmd_vel`` (Nav2's output) and
-``odom -> base_frame``. The platform's stack must therefore be remapped onto
-``odom_topic`` / ``cmd_vel_topic`` with its own odom TF broadcast off, so neither
-topic nor TF has two owners. The defaults (``/platform/odom``, ``/platform/cmd_vel``)
-make that remapping explicit.
+Without ``cmd_vel_topic`` (the default) the part is odometry-only: it creates no
+publisher, a zero twist is a no-op and any non-zero twist is refused with
+``ROSCapabilityMismatch`` before any part of a composite moves. A platform whose final
+base command passes through its own arbitration (OpenAMRobot: ``twist_mux``, a
+software stop, a smoother and ``collision_monitor``) has no input OpenRAL may publish
+on until the platform defines a reviewed, arbitrated one with its own priority,
+timeout, stale-message rejection and stop behaviour. Publishing onto a remapped copy of
+its final ``/cmd_vel`` would bypass that chain.
+
+When a ``cmd_vel_topic`` is configured, ``MobileBaseBridge`` owns ``/cmd_vel``
+(Nav2's output) and ``odom -> base_frame``, so the platform's odometry must be remapped
+onto ``odom_topic`` with its own odom TF broadcast off and neither topic nor TF has two
+owners.
 
 The part's joints are the robot's three planar base joints; their positions are the
 odometry pose (x, y, yaw).
@@ -27,6 +36,7 @@ from typing import Any
 import structlog
 from openral_core import BODY_TWIST_DIM, RobotDescription
 from openral_core.exceptions import (
+    ROSCapabilityMismatch,
     ROSConfigError,
     ROSEStopRequested,
     ROSPerceptionStale,
@@ -48,7 +58,8 @@ class PlatformBaseHAL:
     Args:
         description: Description whose joints are the three ``base_joints``.
         odom_topic: The platform's ``nav_msgs/Odometry``.
-        cmd_vel_topic: The platform's ``geometry_msgs/Twist`` input.
+        cmd_vel_topic: An arbitrated ``geometry_msgs/Twist`` input the platform
+            defines for OpenRAL; ``None`` (default) leaves the part odometry-only.
         staleness_limit_s: Odometry older than this fails ``read_state``.
 
     Raises:
@@ -60,7 +71,7 @@ class PlatformBaseHAL:
         *,
         description: RobotDescription,
         odom_topic: str = "/platform/odom",
-        cmd_vel_topic: str = "/platform/cmd_vel",
+        cmd_vel_topic: str | None = None,
         staleness_limit_s: float = 0.5,
     ) -> None:
         """Store the wiring; ROS resources are created at ``attach_ros_node``."""
@@ -83,7 +94,7 @@ class PlatformBaseHAL:
         self._connected = False
 
     def attach_ros_node(self, node: Any) -> None:  # noqa: ANN401  # reason: rclpy node
-        """Create the odometry subscription and twist publisher on ``node``."""
+        """Create the odometry subscription, and the twist publisher if configured."""
         from geometry_msgs.msg import Twist  # noqa: PLC0415  # reason: ROS-only import
         from nav_msgs.msg import Odometry  # noqa: PLC0415
         from rclpy.qos import QoSProfile, ReliabilityPolicy  # noqa: PLC0415
@@ -96,7 +107,8 @@ class PlatformBaseHAL:
             self._on_odom,
             QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
-        self._pub = node.create_publisher(Twist, self._cmd_vel_topic, 1)
+        if self._cmd_vel_topic is not None:
+            self._pub = node.create_publisher(Twist, self._cmd_vel_topic, 1)
 
     def _on_odom(self, msg: Any) -> None:  # noqa: ANN401  # reason: nav_msgs/Odometry
         p, q, t = msg.pose.pose.position, msg.pose.pose.orientation, msg.twist.twist
@@ -177,10 +189,15 @@ class PlatformBaseHAL:
         )
 
     def send_action(self, action: Action) -> None:
-        """Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``."""
-        if not self._connected or self._pub is None:
+        """Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``.
+
+        Odometry-only (no ``cmd_vel_topic``): a zero twist is a no-op, others are refused.
+        """
+        if not self._connected:
             raise ROSRuntimeError("PlatformBaseHAL.send_action() while not connected.")
         vx, vy, _vz, _wx, _wy, wz = self.check_action(action)
+        if self._pub is None:
+            return  # odometry-only; check_action refused any non-zero twist
         msg = self._twist_type()
         msg.linear.x, msg.linear.y, msg.angular.z = vx, vy, wz
         self._pub.publish(msg)
@@ -204,13 +221,21 @@ class PlatformBaseHAL:
                 f"PlatformBaseHAL ({self.description.base_kinematics} base) cannot actuate "
                 f"{(vx, vy, vz, wx, wy, wz)}."
             )
+        if self._cmd_vel_topic is None and any(
+            abs(v) > _UNACTUATED_TWIST_EPS for v in (vx, vy, vz, wx, wy, wz)
+        ):
+            raise ROSCapabilityMismatch(
+                f"PlatformBaseHAL on '{self.description.name}' is odometry-only: no "
+                "cmd_vel_topic is configured, so OpenRAL has no arbitrated input to drive "
+                "the base through. Base motion goes through the platform's own navigation."
+            )
         return (vx, vy, vz, wx, wy, wz)
 
     def estop(self) -> None:
         """Command zero twist, then raise.
 
         The platform's own E-stop chain is the authority over its motors. This
-        only stops OpenRAL from commanding motion.
+        only stops OpenRAL from commanding motion; an odometry-only part has none to stop.
         """
         if self._pub is not None:
             self._pub.publish(self._twist_type())

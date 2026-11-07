@@ -520,16 +520,16 @@ _One robot HAL composed from part HALs that each own a disjoint set of its joint
 ### `python/hal/src/openral_hal/platform_base.py`
 _A mobile base driven by its own platform stack, through its odometry and twist topics._
 
-- `class PlatformBaseHAL` — `PlatformBaseHAL(*, description, odom_topic="/platform/odom", cmd_vel_topic="/platform/cmd_vel", staleness_limit_s=0.5)`: joints are the three `base_joints`, positioned at the odometry pose; `BODY_TWIST` → `geometry_msgs/Twist` (non-zero `vy` refused on a differential base; `check_action` refuses every other mode, without publishing); stale or absent odometry raises `ROSPerceptionStale`; `effort` is empty (unmeasured); `disconnect` destroys its subscription and publisher on the node; `estop` publishes zero twist and raises. Needs `attach_ros_node(node)` before `connect`. (L45)
-  - `check_action(action) -> tuple[float, ...]` — Refuses a non-`BODY_TWIST` or an unactuable twist and returns the twist; publishes nothing, needs no connection. (L188)
-  - `attach_ros_node(node)` — Create the odometry subscription and twist publisher on ``node``. (L85)
-  - `connect()` — Require the node; odometry freshness is checked at ``read_state``. (L109)
-  - `disconnect()` — Stop the base and release; idempotent. (L118)
-  - `base_pose` [@property] — The latest odometry ``(x, y, yaw)``. (L138)
-  - `base_twist` [@property] — The latest odometry body twist. (L143)
-  - `read_state()` — The base joints at the odometry pose. (L159)
-  - `send_action(action)` — Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``. (L179)
-  - `estop()` — Command zero twist, then raise. (L209)
+- `class PlatformBaseHAL` — `PlatformBaseHAL(*, description, odom_topic="/platform/odom", cmd_vel_topic=None, staleness_limit_s=0.5)`: joints are the three `base_joints`, positioned at the odometry pose; with `cmd_vel_topic=None` it is odometry-only (no publisher; a zero `BODY_TWIST` is a no-op, a non-zero one raises `ROSCapabilityMismatch` in `check_action`); with a topic, `BODY_TWIST` → `geometry_msgs/Twist` (non-zero `vy` refused on a differential base; `check_action` refuses every other mode, without publishing); stale or absent odometry raises `ROSPerceptionStale`; `effort` is empty (unmeasured); `disconnect` destroys its subscription and publisher on the node; `estop` publishes zero twist (when it has a publisher) and raises. Needs `attach_ros_node(node)` before `connect`. (L55)
+  - `check_action(action) -> tuple[float, ...]` — Refuses a non-`BODY_TWIST` or an unactuable twist and returns the twist; publishes nothing, needs no connection. (L205)
+  - `attach_ros_node(node)` — Create the odometry subscription and twist publisher on ``node``. (L96)
+  - `connect()` — Require the node; odometry freshness is checked at ``read_state``. (L121)
+  - `disconnect()` — Stop the base and release; idempotent. (L130)
+  - `base_pose` [@property] — The latest odometry ``(x, y, yaw)``. (L150)
+  - `base_twist` [@property] — The latest odometry body twist. (L155)
+  - `read_state()` — The base joints at the odometry pose. (L171)
+  - `send_action(action)` — Publish a ``BODY_TWIST``; refuse other modes and, on a diff base, any ``vy``. (L191)
+  - `estop()` — Command zero twist, then raise. (L234)
 
 ### `python/hal/src/openral_hal/_openamrobot_v2_assets.py`
 _Build the OpenAMRobot 2.0 MJCF from the vendored `robots/openamrobot_v2/openamrobot_v2.urdf` (upstream ships no MJCF)._
