@@ -77,6 +77,20 @@ def test_station_gripper_attachment_equals_single_arm(
         assert by_name[prefix + att.name].model_dump() == expected
 
 
+@pytest.mark.parametrize("prefix", _PREFIXES)
+def test_station_finger_mimics_equal_single_arm(
+    arm: RobotDescription, station: RobotDescription, prefix: str
+) -> None:
+    """Each arm's finger ``mimic_joints`` rows match the single arm's, prefixed."""
+    by_name = {m.name: m for m in station.mimic_joints}
+    assert len(station.mimic_joints) == 2 * len(arm.mimic_joints)
+    for mimic in arm.mimic_joints:
+        expected = _prefixed(
+            mimic.model_dump(), prefix, ("name", "parent_link", "child_link", "mimics")
+        )
+        assert by_name[prefix + mimic.name].model_dump() == expected
+
+
 def test_station_mounts_match_spacing_constant(station: RobotDescription) -> None:
     """``left_mount`` / ``right_mount`` sit at ``y = ±STATION_ARM_SPACING_M / 2``."""
     by_name = {a.name: a for a in station.fixed_attachments}

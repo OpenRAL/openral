@@ -120,7 +120,12 @@ joints:
     sim_joint_name: "joint8"
     joint_type: "prismatic"
     parent_link: "gripper_base"
-    child_link: "link8"
+    # `finger_pair` is a LOGICAL link (like so101's `moving_jaw` and
+    # franka_panda's `panda_finger_pair`): this channel is the normalised
+    # [0, 1] opening, which the kernel would read as metres along the axis.
+    # It carries no primitive; the real fingers `link7` / `link8` are
+    # `mimic_joints` rows posed from this fraction at their URDF origins.
+    child_link: "finger_pair"
     axis_xyz: [1, 0, 0]
     position_limits: [0.0, 1.0]
     velocity_limit: 1.0
@@ -136,6 +141,36 @@ fixed_attachments:
     child_link: "gripper_base"
     origin_xyz: [0.0758, 0.0, 0.0]
     origin_rpy: [1.57079745225378, -1.57079631189374, 1.57079520133601]
+
+# The two fingers as moving links of the collision model, posed from the
+# `gripper` fraction f with the upstream URDF joint origins / axes. The MuJoCo
+# twin drives joint8 = 0.05 f m (`sim.grippers[].ctrl_range`) and couples
+# joint7 = -joint8 (the URDF `<mimic multiplier="-1">` on joint8, whose master
+# is joint7). joint7 is the URDF's non-mimic finger joint, so
+# `urdf_joint_map` publishes the gripper's state to it as -0.05 f m and
+# robot_state_publisher derives joint8. The real gripper's stroke -> metres map
+# is UNVERIFIED (no real HAL yet).
+mimic_joints:
+  - name: "joint7"
+    parent_link: "gripper_base"
+    child_link: "link7"
+    mimics: "gripper"
+    multiplier: -0.05
+    offset: 0.0
+    joint_type: "prismatic"
+    axis_xyz: [1.0, 0.0, 0.0]
+    origin_xyz: [0.0, -0.00275, 0.0]
+    origin_rpy: [0.0, 0.0, -1.5707963267949]
+  - name: "joint8"
+    parent_link: "gripper_base"
+    child_link: "link8"
+    mimics: "gripper"
+    multiplier: 0.05
+    offset: 0.0
+    joint_type: "prismatic"
+    axis_xyz: [1.0, 0.0, 0.0]
+    origin_xyz: [0.0, 0.00275, 0.0]
+    origin_rpy: [0.0, 0.0, -1.5707963267949]
 
 end_effectors:
   - name: "gripper"

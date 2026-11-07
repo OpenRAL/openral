@@ -72,6 +72,10 @@ for the full derivation.
 | left | 0–5 `left_joint1..6`, 6 `left_joint7` (mimic), 7 `left_joint8` (→ `left_gripper`) | 0–5 joints, 6 gripper |
 | right | 8–13 `right_joint1..6`, 14 `right_joint7` (mimic), 15 `right_joint8` (→ `right_gripper`) | 7–12 joints, 13 gripper |
 
+Each `<side>_gripper` joint's child is the logical `<side>_finger_pair`; the
+fingers `<side>_link7` / `<side>_link8` are `mimic_joints` rows, as in the
+[single arm](../makermods_metal/README.md#gripper-kinematics).
+
 ## Sim usage
 
 There is no scene or rSkill for the station yet; drive the bare twin through
