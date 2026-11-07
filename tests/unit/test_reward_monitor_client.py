@@ -44,9 +44,11 @@ def test_build_reward_monitor_propagates_contract() -> None:
     assert manifest.reward is not None
     assert mon._num_bins == manifest.reward.num_bins
     assert mon._success_threshold == manifest.reward.success_threshold
-    # hf:// scheme stripped from the weights source; the manifest now points at the
+    # hf:// scheme stripped, pinned revision kept; the manifest points at the
     # published pre-quantized NF4 repo (the sidecar meta-loads it directly as 4-bit).
-    assert mon._weights_source == "OpenRAL/rskill-robometer_4b-any-general-nf4"
+    assert manifest.weights_uri is not None
+    assert mon._weights_source == manifest.weights_uri.removeprefix("hf://")
+    assert mon._weights_source.startswith("OpenRAL/rskill-robometer_4b-any-general-nf4@")
 
 
 @pytest.mark.skipif(

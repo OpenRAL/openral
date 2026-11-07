@@ -90,6 +90,9 @@ def test_internvla_runs_bf16_on_open_and_nf4_under_pro(monkeypatch: pytest.Monke
 def test_pro_dtype_must_be_a_quantization_dtype() -> None:
     with pytest.raises(ValueError, match="pro_dtype"):
         QuantizationConfig(dtype="bf16", extra={"pro_dtype": "nf4"})
+    # A non-string is a clean validation error, not a TypeError from the set lookup.
+    with pytest.raises(ValueError, match="pro_dtype"):
+        QuantizationConfig(dtype="bf16", extra={"pro_dtype": ["int4"]})
 
 
 def test_gr00t_manifests_declare_the_runtime_dtype() -> None:
