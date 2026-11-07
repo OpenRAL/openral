@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as ET
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -96,8 +96,13 @@ def _target(desc: RobotDescription, gripper: float) -> list[float]:
     return out
 
 
-def _drive(hal: MujocoArmHAL, target: list[float]) -> list[float]:
-    """Hold ``target`` for ``_SETTLE_SIM_S`` of sim time; return the final positions."""
+def _drive(
+    hal: MujocoArmHAL, target: list[float], on_tick: Callable[[], None] | None = None
+) -> list[float]:
+    """Hold ``target`` for ``_SETTLE_SIM_S`` of sim time; return the final positions.
+
+    ``on_tick`` runs after every ``send_action`` (each control tick's physics).
+    """
     tick_s = hal.sim_dt_per_tick_s
     assert tick_s is not None and tick_s > 0.0
     for _ in range(round(_SETTLE_SIM_S / tick_s)):
@@ -110,6 +115,8 @@ def _drive(hal: MujocoArmHAL, target: list[float]) -> list[float]:
                 stamp_ns=state.stamp_ns,
             )
         )
+        if on_tick is not None:
+            on_tick()
     return list(hal.read_state().position)
 
 
@@ -159,19 +166,26 @@ def test_station_arms_contact_free_at_zero_pose() -> None:
 
 
 def test_station_arms_stay_apart_while_tracking() -> None:
-    """Driving both arms to the mirrored target pose produces no inter-arm contact."""
+    """Driving both arms to the mirrored target pose: no inter-arm contact on any tick."""
     desc = _description("makermods_metal_station")
     hal = MujocoArmHAL.from_description(desc, gravity_enabled=True)
     hal.connect()
     try:
-        _drive(hal, _target(desc, 1.0))
         handles = hal.mujoco_handles()
         assert handles is not None
         model, data = handles
-        for c in data.contact[: data.ncon]:
-            b1 = str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom1]))
-            b2 = str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom2]))
-            assert b1.split("_", 1)[0] == b2.split("_", 1)[0], f"inter-arm contact {b1} / {b2}"
+
+        def no_inter_arm_contact() -> None:
+            for c in data.contact[: data.ncon]:
+                b1 = str(
+                    mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom1])
+                )
+                b2 = str(
+                    mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom2])
+                )
+                assert b1.split("_", 1)[0] == b2.split("_", 1)[0], f"inter-arm contact {b1} / {b2}"
+
+        _drive(hal, _target(desc, 1.0), on_tick=no_inter_arm_contact)
     finally:
         hal.disconnect()
 
