@@ -7,7 +7,7 @@ scenes, the eval registry, the HAL itself) validates against. The
 time and auto-registers each one; `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` is
 looked up first, for out-of-tree manifests.
 
-There are 21 robot directories, each with a `robot.yaml` and most with a
+There are 22 robot directories, each with a `robot.yaml` and most with a
 `README.md` of provenance notes (kinematic source, MJCF wiring, sim-vs-real
 caveats). `hal.real` is the source of truth for real-hardware support:
 `null`/absent means sim-only (no HAL, no HIL tests, no physical rig).
