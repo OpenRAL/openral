@@ -331,8 +331,9 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
     or an MJCF, derived by ``openral_hal._makermods_metal_assets`` from a
     pinned clone of ``makermods-robotics/metal-python-ros``. A failed clone is
     an ``AssetFetchError`` (an offline host may skip on it); a missing
-    ``openral_hal`` or ``mujoco``, a derive failure, or an unknown variant /
-    kind is an ``AssetRefError``.
+    ``openral_hal`` or ``mujoco``, a derive failure (including an ``OSError``
+    writing the derived files into the cache), or an unknown variant / kind is
+    an ``AssetRefError``.
     """
     from openral_core.exceptions import ROSConfigError
 
@@ -362,9 +363,11 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
         metal.fetch_metal_clone()
     except ROSConfigError as exc:
         raise AssetFetchError(f"makermods:{variant} ({kind}): {exc}") from exc
+    # ``OSError``: the derive step writes into the cache (mkdir / mkstemp /
+    # rename); an unwritable cache is a broken reference, not a skip.
     try:
         return loader()
-    except ROSConfigError as exc:
+    except (ROSConfigError, OSError) as exc:
         raise AssetRefError(f"makermods:{variant} ({kind}): {exc}") from exc
 
 
