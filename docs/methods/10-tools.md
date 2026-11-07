@@ -600,7 +600,7 @@ _Generate the standard agent-skill `SKILL.md` discovery view for every in-tree r
 The single canonical producer of the `SKILL.md` mirror: `rskill.yaml` is authoritative and the generated file is discovery-only, never hand-edited. `--check` fails on any stale or missing `SKILL.md`, across every skill kind including `playbook`.
 
 - `render_skill_md(manifest_path: Path) -> str` (L162) — Render the `SKILL.md` text (YAML frontmatter + capability/verb summary + license/provenance) from one manifest; `_KIND_NOUN` maps each `kind` to its discovery noun.
-- `main(argv=None) -> int` (L261) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
+- `main(argv=None) -> int` (L266) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
 
 ### `tools/rldx_sidecar.py`
 _Boot helper for the RLDX-1 inference sidecar, companion to `openral_sim.policies.rldx`._
@@ -775,6 +775,37 @@ _In-process stateless scorer for the Robometer-4B reward monitor, companion to `
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._
 
 - `main() -> int` (L56) — argparse (`--source`, `--out`, required `--quantization-config`: OpenRAL Pro's `BitsAndBytesConfig` kwargs from `sidecar_quantization_args`, ADR-0123); loads the upstream model once, quantizes to NF4, saves the weights + processor, then verifies the checkpoint reloads directly as 4-bit and answers a smoke query.
+
+### `tools/build_gr00t_wbc_leapp.py`
+_Builds the GR00T Decoupled WBC (Unitree G1) S0 policy as a LEAPP bundle NVIDIA's isaac_ros_deploy `InferenceController` loads unchanged: one ONNX graph wrapping the two pinned GR00T networks (Walk/Balance, SHA-256-checked, NVIDIA Open Model License — fetched, never vendored) with GR00T's runner logic (86-D obs, 6-frame history and last action as feedback tensors, walk iff ‖cmd‖ > 0.05, `q* = 0.25·a + default`, per-joint kp/kd outputs). Parity: `tests/unit/test_gr00t_wbc_leapp_bundle.py`._
+
+- module const `GR00T_WBC_COMMIT` (L57) — NVlabs/GR00T-WholeBodyControl pin.
+- module const `WALK_ONNX` (L60) — `(file, sha256)` of the Walk network.
+- module const `BALANCE_ONNX` (L64) — `(file, sha256)` of the Balance network.
+- module const `DEFAULT_BUNDLE_DIR` (L70) — `~/.cache/openral/unitree/g1/gr00t_decoupled_wbc`, the policy file's `bundle_dir`.
+- module const `MODEL_NAME` (L71) — `gr00t_wbc_g1` (bundle file stem and LEAPP model key).
+- module const `JOINTS29` (L74) — the policy's 29-joint observation order (menagerie).
+- module const `S0_JOINTS` (L106) — the 15 joints the action commands (legs + waist).
+- module const `DEFAULT_ANGLES` (L109) — `g1_gear_wbc.yaml` `default_angles`.
+- module const `KPS` (L110) — `g1_gear_wbc.yaml` `kps`.
+- module const `KDS` (L111) — `g1_gear_wbc.yaml` `kds`.
+- module const `CMD_SCALE` (L112) — `(2, 2, 0.5)`.
+- module const `HEIGHT_CMD` (L113) — `0.74`.
+- module const `RPY_CMD` (L114) — `(0, 0, 0)`.
+- module const `ANG_VEL_SCALE` (L115) — `0.5`.
+- module const `DOF_VEL_SCALE` (L116) — `0.05`.
+- module const `ACTION_SCALE` (L117) — `0.25`.
+- module const `OBS_DIM` (L118) — `86`.
+- module const `HISTORY` (L119) — `6` frames.
+- module const `WALK_THRESHOLD` (L120) — `0.05`.
+- module const `CONTROL_HZ` (L121) — `50.0`.
+- `sha256(path) -> str` (L125)
+- `verified(path, expected) -> Path` — `ValueError` on a SHA-256 mismatch. (L134)
+- `fetch(name_sha, dest_dir) -> Path` — Download one pinned network from the GR00T-WholeBodyControl LFS store and verify it. (L146)
+- `build_model(walk, balance) -> onnx.ModelProto` — The wrapper graph (opset 11), `onnx.checker` full-checked. (L187)
+- `leapp_config(onnx_name, onnx_sha256) -> dict` — The LEAPP YAML (`models` / `pipeline` with `feedback_flow`, zero-initialised). (L296)
+- `build_bundle(walk, balance, out_dir) -> Path` — Verify, write `gr00t_wbc_g1.{onnx,yaml}`, return the YAML path. (L382)
+- `main(argv=None) -> int` — CLI: `--walk`, `--balance`, `--out`. (L397)
 
 ### `tools/fix_libero_config.py`
 _Auto-fix for the stale `~/.libero/config.yaml` pitfall._

@@ -89,7 +89,7 @@ If a command needs an HF token, the user must type the secret into the terminal 
 - `version` matches the package intent.
 - `license` reflects weights posture, not only code license.
 - The derived `is_commercial_use_allowed` (true for `apache-2.0` / `mit` / `bsd` / `nvidia_open_model`) matches the intended use.
-- `role` is correct: `s1` for fast VLA policy, `s2` for reasoner-like skill, `s0` only for bounded low-level control.
+- `role` is the slot the `kind` runs in (`RSKILL_ROLE_BY_KIND`), or omitted to derive it: `s1` for vla / wam / ros_action / ros_service / detector / segmenter, `s2` for vlm / reward / playbook. Schema 0.2 refuses a mismatch; `s0` is never valid (S0 cerebellar control ships as ros2_control controllers, not rSkills).
 - `kind` matches the package behavior, such as VLA or detector.
 - `embodiment_tags` intersect the target robot capabilities.
 - `sensors_required` maps to real VLA feature keys and camera geometry.

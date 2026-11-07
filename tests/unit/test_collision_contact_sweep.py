@@ -57,6 +57,7 @@ URDF_LOWERED = (
     "franka_panda",
     "g1",
     "h1",
+    "h2",
     "rizon4",
     "so100_follower",
     "ur10e",

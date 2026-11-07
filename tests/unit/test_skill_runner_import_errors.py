@@ -25,6 +25,7 @@ import pytest
 pytest.importorskip("rclpy")
 pytest.importorskip("openral_msgs")
 
+from openral_core import RSkillManifest
 from openral_core.exceptions import ROSRuntimeError
 from openral_rskill_ros.rskill_runner_node import (
     _build_runtime_skill_from_manifest,
@@ -98,7 +99,8 @@ def test_build_runtime_skill_translates_import_error(
 
     with pytest.raises(ROSRuntimeError) as ei:
         _build_runtime_skill_from_manifest(
-            yaml_path=yaml_path,
+            manifest=RSkillManifest.from_yaml(str(yaml_path)),
+            skill_dir=yaml_path.parent,
             prompt="pick up the cup",
             scene_cameras=(),
         )

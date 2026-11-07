@@ -64,13 +64,15 @@ try:
 except Exception as exc:  # pragma: no cover - cold-cache / no network
     _MENAGERIE_ERROR = str(exc)
 
-from openral_core import Action, ControlMode
+from openral_core import Action, ControlMode, ROSConfigError
+from openral_core.assets import AssetFetchError
 from openral_core.schemas import WorldState
 from openral_hal import (
     AlohaMujocoHAL,
     FrankaPandaHAL,
     G1MujocoHAL,
     H1MujocoHAL,
+    H2MujocoHAL,
     SO100FollowerHAL,
     SO100MujocoHAL,
     UR5eHAL,
@@ -199,6 +201,15 @@ def _h1_factory() -> HAL:
     return H1MujocoHAL(gravity_enabled=False, settle_steps=10)
 
 
+def _h2_factory() -> HAL:
+    try:
+        return H2MujocoHAL(gravity_enabled=False, settle_steps=10)
+    except ROSConfigError as exc:  # the pinned unitree:h2 assets download on first use
+        if isinstance(exc.__cause__, AssetFetchError):
+            pytest.skip(f"H2 assets unavailable: {exc}")
+        raise
+
+
 # ``(label, factory, n_joints, embodiment_tag)`` per HAL.  The label is
 # the pytest test id; the embodiment tag must match the description's
 # tags so a future ``rSkill.check_compatibility`` call upstream of the
@@ -213,6 +224,7 @@ _HAL_CASES: list[tuple[str, Callable[[], HAL], int, str]] = [
     ("aloha_bimanual", _aloha_factory, 14, "aloha"),
     ("g1", _g1_factory, 29, "g1"),
     ("h1", _h1_factory, 19, "h1"),
+    ("h2", _h2_factory, 31, "h2"),
 ]
 
 

@@ -38,6 +38,7 @@ _ROBOT_IDS: list[str] = [
     "google_robot",
     "gr1",
     "h1",
+    "h2",
     "openarm",
     "openamrobot_v2",
     "panda_mobile",

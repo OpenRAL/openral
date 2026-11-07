@@ -37,7 +37,7 @@ Read only the context needed for the task:
 
 1. Establish the source and target.
    - Source may be a local checkpoint, HF repo, existing rSkill folder, lerobot policy, transformers custom-code model, detector, or adapter.
-   - Target must include rSkill ID, HF owner/repo, embodiment tags, robot/sim target, and intended role: `s0`, `s1`, or `s2`.
+   - Target must include rSkill ID, HF owner/repo, embodiment tags, robot/sim target, and the `kind` (the role follows from it: `s1` for vla / wam / ros_action / ros_service / detector / segmenter, `s2` for vlm / reward / playbook; never `s0`).
    - Record the exact upstream revision whenever possible.
 
 2. Scaffold the package.

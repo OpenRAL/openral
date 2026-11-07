@@ -9,12 +9,15 @@ The ``*_DESCRIPTION`` constants in ``python/hal/src/openral_hal/`` survive
 only as in-code **mirrors** of the manifests (tests and direct
 ``FrankaPandaHAL()``-style construction use them). The parametrised test
 below checks each mirror against its manifest, so a joint-limit/payload/
-torque-sensor/safety-envelope bump in the YAML fails loudly until the mirror follows
-(issues #54-58). The manifest wins; fix the constant, never the YAML.
+torque-sensor/safety-envelope/asset-ref/sim-wiring bump in the YAML fails loudly
+until the mirror follows (issues #54-58). The manifest wins; fix the constant,
+never the YAML. ``sensors:`` and ``collision_geometry:`` are deliberately not
+compared: they are manifest-only (``build_hal`` threads them from the YAML) and
+most mirrors leave them empty.
 
-UR5e/UR10e/Franka/Sawyer/ALOHA mirror their ``*_REAL_DESCRIPTION`` (derived
+UR5e/UR10e/Franka/Sawyer/ALOHA/G1 mirror their ``*_REAL_DESCRIPTION`` (derived
 via ``openral_hal._real_description.make_real_description`` — only
-``sdk_kind`` differs from the sim baseline). G1/H1/Rizon4/OpenArm/Anvil-v2
+``sdk_kind`` differs from the sim baseline). H1/H2/Rizon4/OpenArm/Anvil-v2
 mirror their sim baseline. SO-100 and ``pusht_2d`` are out of scope.
 """
 
@@ -34,9 +37,10 @@ from openral_core import RobotDescription
         ("robots/franka_panda/robot.yaml", "FRANKA_PANDA_REAL_DESCRIPTION"),
         ("robots/sawyer/robot.yaml", "SAWYER_REAL_DESCRIPTION"),
         ("robots/aloha_bimanual/robot.yaml", "ALOHA_REAL_DESCRIPTION"),
+        ("robots/g1/robot.yaml", "G1_REAL_DESCRIPTION"),
         # Sim-baseline pins (no real-HW HAL yet) — see module docstring.
-        ("robots/g1/robot.yaml", "G1_DESCRIPTION"),
         ("robots/h1/robot.yaml", "H1_DESCRIPTION"),
+        ("robots/h2/robot.yaml", "H2_DESCRIPTION"),
         ("robots/rizon4/robot.yaml", "RIZON4_DESCRIPTION"),
         ("robots/openarm/robot.yaml", "OPENARM_DESCRIPTION"),
         # Anvil OpenARM 2.0: standard v2 + Anvil's J1/J6 range deltas + wrist
@@ -91,6 +95,13 @@ def test_hal_constant_mirrors_robot_yaml(manifest_path: str, hal_constant_attr: 
     assert yaml_modes == hal_modes or yaml_modes == [m.value for m in hal_modes]
     assert yaml_desc.sdk_kind == hal_desc.sdk_kind
     assert yaml_desc.hal == hal_desc.hal  # sim/real HAL entrypoints
+    # URDF / MJCF / SRDF refs (incl. the URDF root bridge): a mirror on a
+    # different URDF publishes /tf under different joint names (H1 drift).
+    assert yaml_desc.assets == hal_desc.assets, "asset refs drifted between YAML and HAL constant"
+    assert yaml_desc.safety == hal_desc.safety, (
+        "safety envelope drifted between YAML and HAL constant"
+    )
+    assert yaml_desc.sim == hal_desc.sim, "sim wiring drifted between YAML and HAL constant"
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

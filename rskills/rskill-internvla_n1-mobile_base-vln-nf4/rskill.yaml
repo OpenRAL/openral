@@ -28,7 +28,7 @@ license: "cc-by-nc-sa-4.0"   # InternVLA-N1 weights are non-commercial (guard: O
 # pi05). InternVLA-N1 is internally dual-system, but OpenRAL dispatches it as ONE
 # executable policy (RGB + instruction → base velocity), so it is s1 from the
 # reasoner's palette/dispatch perspective. (The reasoner's own S2 planning is the
-# LLM, not this skill.) A `role: s2` here would exclude it from the palette.
+# LLM, not this skill.) The role follows from `kind: vla`; a declared `s2` would be refused.
 role: "s1"
 kind: "vla"
 model_family: "internvla_n1"

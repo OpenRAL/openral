@@ -29,6 +29,10 @@ Public surface:
 - ``H1MujocoHAL`` / ``H1_DESCRIPTION``: Unitree H1, 19-DoF (predecessor to
   G1: 5-DoF/leg, 1-DoF torso, 4-DoF/arm); same validator scope as
   ``G1MujocoHAL``; real-HW also waits on the M2 S0 cerebellum.
+- ``H2MujocoHAL`` / ``H2_DESCRIPTION``: Unitree H2, 31-DoF in unitree_sdk2
+  motor order (6-DoF legs, 3-DoF waist, 7-DoF arms, 2-DoF head); official
+  Unitree MJCF/URDF fetched pinned by ``openral_hal._unitree_h2_assets``
+  (``unitree:h2``); pinned-base glide + software PD over torque motors.
 - ``Rizon4MujocoHAL`` / ``RIZON4_DESCRIPTION``: Flexiv Rizon 4, 7-DoF
   cobot, whole-body force sensitivity; structurally like the UR/Franka
   sim HALs.
@@ -47,6 +51,11 @@ Public surface:
   visual-only wrist bracket; MJCF pinned at a SHA from
   ``bensonlee5/anvil-openarm-mujoco`` via
   ``openral_hal._anvil_openarm_v2_assets`` (``openarm:anvil_v2_bimanual``).
+- ``UnitreeHgRealHAL`` / ``G1_REAL_DESCRIPTION``: real adapter for the Unitree
+  hg humanoids (G1 now) over NVIDIA's isaac_ros_robots / isaac_ros_deploy
+  ros2_control stack; the legs belong to the C++ S0 whole-body policy, so it
+  commands the upper body (JointCommandTrajectory) and a base twist only, and
+  its e-stop swaps the S0 chain for ``freeze_controller`` in one request.
 - ``SimTransport``: typed in-memory ros2_control transport for unit tests.
 - ``GalaxeaA1HAL`` / ``GALAXEA_A1_DESCRIPTION``: real Galaxea A1 via an
   isolated ROS 1 Noetic sidecar (vendor SDK operator-provided).
@@ -77,6 +86,7 @@ from openral_hal.franka_panda_real import (
 from openral_hal.g1 import G1_DESCRIPTION, G1MujocoHAL
 from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1HAL
 from openral_hal.h1 import H1_DESCRIPTION, H1MujocoHAL
+from openral_hal.h2 import H2_DESCRIPTION, H2MujocoHAL
 from openral_hal.openarm import OPENARM_DESCRIPTION, OpenArmMujocoHAL
 from openral_hal.openarm_real import OPENARM_REAL_DESCRIPTION, OpenArmRealHAL
 from openral_hal.panda_mobile import (
@@ -97,6 +107,7 @@ from openral_hal.ros_control import (
     ControllerKind,
     ControllerStoppable,
     ControllerStopSeam,
+    ControllerSwapSeam,
     ControllerSwitchReport,
     DownstreamStopReport,
     DownstreamStopReporting,
@@ -116,6 +127,10 @@ from openral_hal.so100_follower import (
 )
 from openral_hal.so100_mujoco import SO100MujocoHAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
+from openral_hal.unitree_real import (
+    G1_REAL_DESCRIPTION,
+    UnitreeHgRealHAL,
+)
 from openral_hal.ur import (
     UR5e_DESCRIPTION,
     UR5eHAL,
@@ -138,8 +153,10 @@ __all__ = [
     "FRANKA_PANDA_DESCRIPTION",
     "FRANKA_PANDA_REAL_DESCRIPTION",
     "G1_DESCRIPTION",
+    "G1_REAL_DESCRIPTION",
     "GALAXEA_A1_DESCRIPTION",
     "H1_DESCRIPTION",
+    "H2_DESCRIPTION",
     "HAL",
     "OPENARM_DESCRIPTION",
     "OPENARM_REAL_DESCRIPTION",
@@ -155,6 +172,7 @@ __all__ = [
     "ControllerKind",
     "ControllerStopSeam",
     "ControllerStoppable",
+    "ControllerSwapSeam",
     "ControllerSwitchReport",
     "DownstreamStopReport",
     "DownstreamStopReporting",
@@ -164,6 +182,7 @@ __all__ = [
     "G1MujocoHAL",
     "GalaxeaA1HAL",
     "H1MujocoHAL",
+    "H2MujocoHAL",
     "HALHealthProvider",
     "HALHealthReport",
     "LifecycleEStopHAL",
@@ -188,6 +207,7 @@ __all__ = [
     "UR10eRealHAL",
     "UR10e_DESCRIPTION",
     "UR10e_REAL_DESCRIPTION",
+    "UnitreeHgRealHAL",
     "build_hal",
     "franka_panda_with_sensors",
     "hal_joint_states_topic",

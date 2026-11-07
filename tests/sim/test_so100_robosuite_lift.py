@@ -87,6 +87,7 @@ except ImportError as exc:
     _SO100_BACKEND_ERROR = str(exc)
 
 import numpy as np
+from numpy.typing import NDArray
 
 pytestmark = [
     pytest.mark.sim,
@@ -196,6 +197,22 @@ class TestEnvBasics:
         assert isinstance(reward, (float, np.floating))
         assert isinstance(done, (bool, np.bool_))
 
+    def test_seed_pins_the_initial_state(self) -> None:
+        # robosuite>=1.5 samplers ignore global ``np.random``; a seed that is not
+        # threaded into the sampler and env leaves the cube pose random per
+        # process, which made the scripted-policy assertions flaky in CI.
+        def initial_state(seed: int) -> NDArray[np.float64]:
+            e = make_so100_lift_env(has_offscreen_renderer=False, use_camera_obs=False, seed=seed)
+            try:
+                obs = e.reset()
+                return np.concatenate([obs["cube_pos"], obs["cube_quat"], obs["robot0_joint_pos"]])
+            finally:
+                e.close()
+
+        first = initial_state(42)
+        np.testing.assert_array_equal(first, initial_state(42))
+        assert not np.array_equal(first, initial_state(7)), "seed has no effect"
+
     def test_cube_initially_above_table(self, env: Any) -> None:
         obs = env.reset()
         table_top_z = float(env.model.mujoco_arena.table_offset[2])
@@ -238,6 +255,7 @@ def _run_policy(
     telemetry: list[PolicyTelemetry] = []
     min_eef_to_cube = float("inf")
     max_cube_z = initial_cube_z
+    moving_jaw_geoms = env.robots[0].gripper["right"].important_geoms["right_finger"]
     min_jaw_qpos = float(env.sim.data._data.qpos[jaw_addr])
     max_jaw_qpos = min_jaw_qpos
 
@@ -251,6 +269,15 @@ def _run_policy(
         min_jaw_qpos = min(min_jaw_qpos, jaw_q)
         max_jaw_qpos = max(max_jaw_qpos, jaw_q)
 
+    # Where the jaw came to rest, judged at the last step rather than at its
+    # deepest point: a jaw swinging shut onto the cube can bounce a few
+    # hundredths of a radian past its resting pose with the pad momentarily
+    # apart. Moving-jaw contact with the table or the cube tells "stopped
+    # against an obstacle" from "stalled in free air".
+    jaw_contact_at_end = env.check_contact(moving_jaw_geoms, "table_collision") or (
+        env.check_contact(moving_jaw_geoms, env.cube)
+    )
+
     summary = {
         "initial_cube_z": initial_cube_z,
         "max_cube_z": max_cube_z,
@@ -259,6 +286,8 @@ def _run_policy(
         "min_jaw_qpos": min_jaw_qpos,
         "max_jaw_qpos": max_jaw_qpos,
         "jaw_qpos_range": max_jaw_qpos - min_jaw_qpos,
+        "final_jaw_qpos": float(env.sim.data._data.qpos[jaw_addr]),
+        "jaw_contact_at_end": float(jaw_contact_at_end),
     }
     return telemetry, summary
 
@@ -324,18 +353,28 @@ class TestScriptedPolicy:
         self, rollout: tuple[list[PolicyTelemetry], dict[str, float]]
     ) -> None:
         _telemetry, summary = rollout
-        # The Jaw joint range is [-0.174, 0.5] (see ``_assets``). Under the
-        # scripted open(+1) command the jaw rests near ~0.10 (not the -0.174
-        # lower limit), then closes fully to the 0.5 upper limit — an achievable
-        # sweep of ~0.40 rad, not the full 0.674. Assert it both (a) reaches the
-        # closed limit and (b) sweeps a healthy range; a run where the gripper
-        # never actuated would show a near-zero range and a max far below 0.5.
+        # The Jaw joint range is [-0.174, 0.5] (see ``_assets``); the open(+1)
+        # command drives it to the 0.5 OPEN stop during settle and the close(-1)
+        # command drives it toward the -0.174 closed stop. How far it closes
+        # depends on the placement: the moving jaw often lands on the table top
+        # (or the cube) mid-sweep and stops at ~0.1-0.25 rad, and may only
+        # finish closing once the lift frees it. So the swept range is not an
+        # actuation measure. Assert instead that the jaw (a) opened, (b) moved
+        # off the open stop under the close command, and (c) ended the rollout at
+        # its closed stop or against the table/cube, never stalled in free air. A
+        # dead jaw stays pinned at 0.5 and fails (b).
         assert summary["max_jaw_qpos"] > 0.45, (
-            f"jaw never reached its closed limit (0.5): max={summary['max_jaw_qpos']:.3f} rad"
+            f"jaw never reached its open stop (0.5): max={summary['max_jaw_qpos']:.3f} rad"
         )
-        assert summary["jaw_qpos_range"] > 0.3, (
-            f"jaw did not actuate end-to-end: range={summary['jaw_qpos_range']:.3f} rad "
+        assert summary["jaw_qpos_range"] > 0.05, (
+            f"jaw never moved off its open stop under the close command: "
+            f"range={summary['jaw_qpos_range']:.3f} rad "
             f"(min={summary['min_jaw_qpos']:.3f}, max={summary['max_jaw_qpos']:.3f})"
+        )
+        at_closed_stop = summary["final_jaw_qpos"] < -0.15
+        assert at_closed_stop or summary["jaw_contact_at_end"], (
+            f"jaw ended at {summary['final_jaw_qpos']:.3f} rad with the moving jaw off the "
+            f"table and cube: it neither reached the closed stop (-0.174) nor met an obstacle"
         )
 
     def test_close_phase_commands_negative_gripper(
