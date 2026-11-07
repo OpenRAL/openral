@@ -96,7 +96,7 @@ window open and the bound fires. The runner executes one goal at a time, so a go
 behind a result-only goal gets a fresh first-chunk window when that goal ends. A goal
 never announced, an announcement for another goal id, a non-positive or non-finite bound,
 and a start in the future all keep the first-chunk window. The relaxation is a Safety-WG item (hazard log
-Entry 075).
+Entry 076).
 
 The node also **subscribes** `/openral/estop`: an estop from any other source
 latches its internal `_triggered` flag so it never storms the topic behind the
