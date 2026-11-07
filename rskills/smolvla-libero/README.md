@@ -11,6 +11,10 @@ tags:
 - lerobot
 - vision-language-action
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:apache-2.0
 - vla
 - so100
 - libero
@@ -18,6 +22,16 @@ tags:
 datasets:
 - HuggingFaceVLA/libero
 inference: false
+openral:
+  description: SmolVLA finetuned on the LIBERO task suite (Apache-2.0). Action chunks
+    of length 50, of which 25 steps are replayed per inference, across two RGB camera
+    views (wrist + overhead) matching the original LIBERO dataset convention. The
+    lerobot checkpoint wrapped here matches the paper's reported configuration on
+    all five architecture fields — see header comment for the rejected sibling.
+  min_vram_gb: 1.2
+  latency_ms: 150.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-smolvla-franka_panda-libero_spatial-bf16

@@ -11,12 +11,27 @@ tags:
 - lerobot
 - vision-language-action
 - sawyer
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:sawyer
+- rskill-license:apache-2.0
 - vla
 - metaworld
 - manipulation
 datasets:
 - lerobot/metaworld_mt50
 inference: false
+openral:
+  description: 'SmolVLA (0.45 B) finetuned on MetaWorld MT50 — 50 manipulation tasks
+    on a Rethink Sawyer arm (MuJoCo via lerobot). Runs the MT10/MT50 suites (benchmarks/metaworld_mt{10,50}.yaml)
+    and 5 demo scenes (scenes/benchmark/metaworld_*.yaml). Locally reproduced on MT50:
+    15/50 solved at 1 ep/seed-0 (avg 0.30); see eval/metaworld_mt50.json. 4-D proprio
+    / camera1 contract verified against the checkpoint (no adapter flip — lerobot''s
+    MetaworldEnv already corrects the corner camera''s 180° inversion).'
+  min_vram_gb: null
+  latency_ms: 150.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-smolvla-sawyer-metaworld-bf16

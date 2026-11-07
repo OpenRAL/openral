@@ -11,9 +11,24 @@ tags:
 - lerobot
 - vision-language-action
 - so101_follower
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:so101_follower
+- rskill-license:apache-2.0
 datasets:
 - LightwheelAI/leisaac-pick-orange
 inference: false
+openral:
+  description: SmolVLA finetuned in LeIsaac (Isaac Sim) to pick three oranges off
+    a kitchen counter and put them on a plate with an SO-101 follower arm (Apache-2.0).
+    Emits 6-DoF absolute joint-position chunks (size 50) in LeIsaac's normalized SO-101
+    motor units from two RGB views (fixed front + wrist), one action per 1/60 s simulation
+    step. Trained on 60 sim teleop episodes of LightwheelAI/leisaac-pick-orange; ONE
+    task string — "Grab orange and place into plate".
+  min_vram_gb: 1.5
+  latency_ms: 400.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-smolvla-so101-leisaac_pick_orange-bf16

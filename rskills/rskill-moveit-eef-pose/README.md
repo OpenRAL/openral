@@ -16,7 +16,28 @@ tags:
 - rizon4
 - sawyer
 - widowx
+- rskill-kind:ros_action
+- rskill-role:s1
+- embodiment:franka_panda
+- embodiment:ur5e
+- embodiment:ur10e
+- embodiment:so100_follower
+- embodiment:openarm
+- embodiment:rizon4
+- embodiment:sawyer
+- embodiment:widowx
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: Plan and execute a collision-free motion that brings the end-effector
+    link to a target 6-DOF Cartesian pose (position + orientation) via MoveIt's MoveGroup
+    (self + planning-scene collision checked). Use when you have a Cartesian end-effector
+    goal (e.g. a pre-grasp pose); for a joint-space goal use rskill-moveit-multi-joints,
+    and to aim a camera at a point use rskill-moveit-multi-look_at.
+  min_vram_gb: null
+  latency_ms: 2000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-moveit-multi-eef_pose

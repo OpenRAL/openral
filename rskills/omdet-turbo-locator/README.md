@@ -9,12 +9,26 @@ tags:
 - detector
 - object-detection
 - any
+- rskill-kind:detector
+- rskill-role:s1
+- embodiment:any
+- rskill-license:apache-2.0
 - open-vocabulary
 - zero-shot
 - omdet-turbo
 - on-demand
 - locate-in-view
 inference: false
+openral:
+  description: OmDet-Turbo (Swin-tiny) on-demand open-vocabulary locator. The reasoner
+    prompts it via the read-only locate_in_view tool to find a specific object in
+    the current frame — a lightweight, real-time, Apache-2.0 in-process alternative
+    to the 3B LocateAnything VLM for simple "find X" queries. Wraps omlab/omdet-turbo-swin-tiny-hf.
+    This is the on-demand half of the continuous-vs-on_demand detector mode split.
+  min_vram_gb: 0.6
+  latency_ms: 200.0
+  runtime: pytorch
+  dtype: fp16
 base_model:
 - omlab/omdet-turbo-swin-tiny-hf
 ---

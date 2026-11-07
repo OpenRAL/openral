@@ -12,12 +12,23 @@ tags:
 - nf4
 - 4-bit
 - widowx
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:widowx
+- rskill-license:rlwrld_non_commercial
 - openral
 - vla
 - simpler
 - manipulation
 - non-commercial
 inference: false
+openral:
+  description: RLDX-1 fine-tuned on the SIMPLER WidowX benchmark. Shares the rldx
+    sidecar runtime. Non-commercial license.
+  min_vram_gb: 7.0
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: int4
 license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 ---
 
