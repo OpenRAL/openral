@@ -13,12 +13,15 @@
 #
 # `G1MujocoHAL` is the only execution path today; real-HW HAL over
 # `unitree_sdk2` is the M2 milestone (CLAUDE.md §3 dual-system pattern), needs a C++ S0
-# cerebellar controller first. The digital twin runs with gravity on in two
-# sim-only modes: by default ADR-0087's kinematic glide re-pins the floating
-# base upright every physics step (no balance — the pin is what keeps it
-# standing); with `walking_enabled: true` ADR-0089's pinned MuJoCo Playground
-# ONNX controller walks BODY_TWIST commands on its policy-tuned MJCF. Neither is
-# a hardware balance controller. tests/sim/test_g1_hal_mujoco.py zeroes gravity
+# cerebellar controller first. The digital twin runs with gravity on in three
+# sim-only modes (HAL parameter `s0_controller`): by default (`none`) ADR-0087's
+# kinematic glide re-pins the floating base upright every physics step (no
+# balance — the pin is what keeps it standing); `playground_walk` (legacy
+# `walking_enabled: true`) is ADR-0089's pinned MuJoCo Playground ONNX
+# controller on its policy-tuned MJCF; `gr00t_wbc` is NVIDIA's GR00T Decoupled
+# WBC (NVIDIA Open Model License weights, fetched pinned + SHA-256-verified)
+# balancing and walking the unpinned Menagerie twin while S1 drives the arms
+# (robots/g1/README.md). None is a hardware balance controller. tests/sim/test_g1_hal_mujoco.py zeroes gravity
 # only in its joint-convergence fixtures, to keep those assertions deterministic.
 #
 # 29 actuated joints: legs 6+6 (hip_pitch/roll/yaw, knee, ankle_pitch/roll),
@@ -448,9 +451,9 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: true
-  # body_twist rides the ADR-0087 kinematic-glide base by default, or the
-  # ADR-0089 learned walking controller with `walking_enabled: true` (both
-  # sim-only); a hardware gait is the M2 S0 cerebellum.
+  # body_twist rides the ADR-0087 kinematic-glide base by default, or a sim-only
+  # learned S0 (`s0_controller: playground_walk | gr00t_wbc`); a hardware gait
+  # is the M2 S0 cerebellum.
   supported_control_modes:
     - "joint_position"
     - "body_twist"
@@ -493,6 +496,12 @@ sdk_kind: "open"
 hal:
   sim: "openral_hal.g1:G1MujocoHAL"
   real: null
+
+# 50 Hz: the rate both sim S0 controllers (ADR-0089 Playground walking, GR00T
+# Decoupled WBC) run their policy at, so one send_action is one S0 control
+# period (10 physics steps of the Menagerie 2 ms timestep).
+action_spec:
+  control_freq_hz: 50.0
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
 # Source: ``unitree_g1/g1.xml`` in mujoco_menagerie.  The G1 MJCF has a

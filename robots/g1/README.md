@@ -8,25 +8,78 @@ MJCF).
 
 ## What this is — and what it isn't
 
-The MuJoCo twin is a **HAL contract validator** with two sim-only base modes,
-both with gravity on. By default ADR-0087's kinematic glide re-pins the
-floating base upright every physics step — there is no balance, the pin is what
-keeps it standing. With `walking_enabled=True` (`hal: {defaults: {walking_enabled:
-true}}` in a deploy scene, as `scenes/deploy/g1_vln.yaml` does) ADR-0089's pinned
-MuJoCo Playground ONNX controller walks `body_twist` commands on its own
-policy-tuned MJCF. The joint-convergence sim tests zero gravity
-(`gravity_enabled=False`) only to keep those assertions deterministic. It
-verifies:
+The MuJoCo twin is a **HAL contract validator** with three sim-only base modes,
+all with gravity on, picked by the `s0_controller` HAL parameter
+(`hal: {defaults: {s0_controller: …}}` in a deploy scene, or `--hal`):
+
+| `s0_controller` | What keeps the twin up | MJCF | Base |
+| --- | --- | --- | --- |
+| `none` (default) | ADR-0087 kinematic glide — the free base is re-pinned upright every physics step; no balance | Menagerie `g1.xml` | pinned |
+| `playground_walk` (= legacy `walking_enabled: true`, used by `scenes/deploy/g1_vln.yaml`) | ADR-0089 pinned MuJoCo Playground ONNX walker (Apache-2.0) | its own policy-tuned MJCF | free while walking, pinned while idle |
+| `gr00t_wbc` | NVIDIA GR00T Decoupled WBC Balance + Walk ONNX policies own legs + waist; S1 keeps the arms | Menagerie `g1.xml` | **free, never pinned** |
+
+The joint-convergence sim tests zero gravity (`gravity_enabled=False`) only to
+keep those assertions deterministic. It verifies:
 
 - 29-DoF joint-position action layout,
 - lifecycle wiring (`connect → read_state → send_action → estop`),
 - joint indexing and ordering,
 - `RobotDescription` round-trip,
 - embodiment / VLA tag plumbing,
-- the `body_twist` path: by default ADR-0087's upright kinematic glide (no
-  balance); with `walking_enabled=True`, ADR-0089's pinned MuJoCo Playground
-  ONNX walking controller for gravity-on sim walking — a sim-only learned
+- the `body_twist` path under each `s0_controller` — every one a sim-only
   controller that a real HAL must never reuse.
+
+### `gr00t_wbc`: GR00T Decoupled WBC as the sim S0
+
+A Python port of the upstream MuJoCo runner (`decoupled_wbc/sim2mujoco/scripts/run_mujoco_gear_wbc.py`,
+[`NVlabs/GR00T-WholeBodyControl`](https://github.com/NVlabs/GR00T-WholeBodyControl) @ `1e1ec4f5`)
+in `python/hal/src/openral_hal/_g1_gr00t_wbc.py`:
+
+- **Weights / licence.** `GR00T-WholeBodyControl-{Walk,Balance}.onnx` and the
+  `NVIDIA Open Model License` text beside them are downloaded on first use from
+  that pinned commit into `$OPENRAL_CACHE_DIR/g1_gr00t_wbc/<sha>/`, each
+  SHA-256-verified, fail-closed (`ROSConfigError`). Code is Apache-2.0; the
+  weights are **NVIDIA Open Model License** (commercial use permitted, posture
+  `nvidia_open_model`) and are not bundled here. The HAL logs the posture and
+  the licence-text path (`hal.g1.s0_controller`) at construction.
+- **Policy.** 50 Hz; owns joints 0–14 (12 legs + 3 waist). Observation: one
+  86-D frame (`[vx·2, vy·2, wz·0.5, height 0.74, torso rpy 0, pelvis ω·0.5,
+  projected gravity, q − default, dq·0.05, last action]`), 6-frame history,
+  516-D input; Balance runs when `‖(vx, vy, wz)‖ ≤ 0.05`, Walk otherwise.
+  Targets `0.25·a + default` (legs `[-0.1, 0, 0, 0.3, -0.2, 0]`, waist 0).
+  Base height and torso orientation stay at the upstream defaults: the
+  `Action` schema has no field for them.
+- **Actuation.** The Menagerie `<position kp=500>` actuators are turned into
+  torque motors **in the loaded model** (the MJCF on disk is untouched); a PD
+  law `τ = kp(q* − q) − kd·dq` runs every 2 ms physics step (implicitfast),
+  clamped by the MJCF `actuatorfrcrange`. Legs kp `[150,150,150,200,40,40]` kd
+  `[2,2,2,4,2,2]`, waist kp 250 kd 5 (upstream sim gains); arms GR00T's
+  real-robot `MOTOR_KP [100,100,40,40,20,20,20]` / `MOTOR_KD [5,5,2,2,2,2,2]`
+  (stable at 2 ms and as accurate as the upstream sim runner's kp 100 / kd 0.5,
+  with the damping the hardware uses). The camera rig's visual-only floor is
+  made to collide in the loaded model so the free base has ground to stand on.
+- **S1 contract.** `body_twist` sets the held `(vx, vy, wz)` command (arm
+  actions do not change it; an idle tick zeroes it). `joint_position` must name
+  its joints (`Action.joint_names`, ADR-0102) and may name only the 14 arm
+  joints; a command on a leg / waist joint, or a whole-vector 29-D action, is
+  refused with `ROSCapabilityMismatch`. `idle_step` keeps the Balance policy
+  running instead of pinning.
+- **Fall latch.** Pelvis below 0.5 m or torso tilt above 45° cuts every joint
+  torque and raises `ROSSafetyViolation` from `send_action` until
+  `reset_to_pose` (which re-seats the base upright) or a reconnect.
+- **Measured** (Menagerie MJCF; bake-off, 10 seeds per row, 5 ms physics;
+  `tests/sim/test_g1_gr00twbc_mujoco.py` re-checks the headline rows at the
+  HAL's 2 ms): stand 20 s 0/10 falls (drift 0.06 m); `vx 0.6` tracked at
+  0.51 m/s; lateral pushes on the torso (100 ms) 0/10 falls up to 400 N
+  standing and 300 N walking, 10/10 at 500 N; random / aggressive arm motion
+  with 2 kg per hand while walking 0/10 falls. Policy latency ~0.2 ms median
+  on one CPU thread.
+
+`gr00t_wbc` stays **opt-in**: it fetches third-party weights under a licence
+other than Apache-2.0, and the contract-validator default must stay
+dependency-free and deterministic. `scenes/deploy/g1_vln.yaml` keeps
+`playground_walk` until a `deploy sim` run validates `gr00t_wbc` end to end
+behind InternVLA-N1.
 
 Real balance and walking belong to the C++ S0 cerebellum (CLAUDE.md §3, M2
 milestone) and are out of scope here; see the "HAL · Unitree G1 (real-HW)" planned block in
@@ -43,6 +96,7 @@ milestone) and are out of scope here; see the "HAL · Unitree G1 (real-HW)" plan
 | Embodiment tags | `g1`, `unitree_g1`, `humanoid`, `mobile_base` |
 | Supported VLA embodiments | `g1`, `humanoid_everyday_g1` |
 | Supported control modes | `joint_position`, `body_twist` |
+| Control rate | 50 Hz (`action_spec.control_freq_hz`; the sim S0 policy rate — one `send_action` = 10 × 2 ms physics steps) |
 | Locomotion | `bipedal` |
 | Bimanual | yes |
 | `sdk_kind` | `open` (menagerie MJCF + `mujoco` Python package, Apache-2.0) |
@@ -55,7 +109,7 @@ milestone) and are out of scope here; see the "HAL · Unitree G1 (real-HW)" plan
 | --- | --- |
 | Python HAL adapter | `openral_hal.g1.G1MujocoHAL` (MuJoCo digital twin) |
 | Python description | `openral_hal.G1_DESCRIPTION` |
-| Sim test | `tests/sim/test_g1_hal_mujoco.py` |
+| Sim test | `tests/sim/test_g1_hal_mujoco.py`, `tests/sim/test_g1_gr00twbc_mujoco.py` (GR00T WBC S0) |
 | Future real-HW HAL | planned under M2 (CLAUDE.md §3, S0), `unitree_sdk2` + C++ S0 cerebellum |
 
 ## Joints
@@ -114,6 +168,11 @@ these.
   against real MuJoCo physics on the Menagerie MJCF: lifecycle, schema-drift
   guard, per-section convergence on legs, waist, left arm and right arm, the
   head camera, and the `body_twist` glide and walking paths.
+- Sim: `tests/sim/test_g1_gr00twbc_mujoco.py` (13 tests) runs the
+  `gr00t_wbc` S0 on the real pinned weights: observation layout and history,
+  ONNX parity with a reference port of the upstream runner, 20 s stand, 0.5 m/s
+  walk, arm tracking while walking, S0-joint refusal, 300 N push recovery, and
+  the fall latch.
 - HIL: planned alongside the real-HW HAL under M2.
 
 ## Asymmetric joint conventions

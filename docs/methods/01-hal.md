@@ -503,44 +503,73 @@ _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions`
 - module const `_OPENARM_V2_MJCF_REL: str` (L42) — the bimanual MJCF's path within the clone.
 
 ### `python/hal/src/openral_hal/g1.py`
-_MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; explicit `walking_enabled=True` selects ADR-0089's pinned MuJoCo Playground ONNX policy and matching gravity-on dynamics._
+_MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; `s0_controller` selects a sim-only S0: `"playground_walk"` (= `walking_enabled=True`, ADR-0089's pinned MuJoCo Playground ONNX policy + MJCF) or `"gr00t_wbc"` (NVIDIA GR00T Decoupled WBC on the unpinned Menagerie twin, arms left to S1)._
 
-- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; walking mode swaps in the pinned policy-tuned MJCF + ONNX controller. Floating-base joint remains implicit world state. (L397)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False)` (L437)
-  - `connect() -> None` (L511) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`. Raises `ROSConfigError` (and disconnects) if the walking MJCF lacks that keyframe.
-  - `disconnect() -> None` (L531) — Release the walking controller, then the MuJoCo model.
-  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking base pose. (L499)
-  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action. (L507)
-  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Non-planar twist components raise `ROSConfigError`. (L536)
-  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned; walking state resets so a stale velocity command is never replayed. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L583)
-  - `reset_to_pose(pose: list[float]) -> None` (L595) — Reset the joint pose plus the base pin and (when walking) the gait state.
-  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin: `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L623)
-- module const `_PLANAR_TWIST_EPS` (L80) — tolerance for detecting a non-planar `BODY_TWIST` component (`send_action`'s validation).
-- module const `_G1_LEFT_LEG_JOINTS: tuple[str, ...]` (L92) — left-leg joint names.
-- module const `_G1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L100) — right-leg joint names.
-- module const `_G1_WAIST_JOINTS: tuple[str, ...]` (L108) — waist joint names.
-- module const `_G1_LEFT_ARM_JOINTS: tuple[str, ...]` (L113) — left-arm joint names.
-- module const `_G1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L122) — right-arm joint names.
-- module const `_G1_JOINT_NAMES: tuple[str, ...]` (L131) — full 29-DoF joint order (legs + waist + arms).
-- module const `_G1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L156) — per-joint position limits.
-- module const `_G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L193) — per-kinematic-group velocity limits.
-- module const `_G1_EFFORT_LIMITS: dict[str, float]` (L204) — per-joint effort limits keyed by side-less joint name (Unitree `g1_29dof.urdf` vendor ratings).
-- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L227)
-- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L232)
-- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L282)
-- const `G1_DESCRIPTION = RobotDescription(...)` (L310) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"`, `hal.real=None` (sim-only); in-code mirror — `build_hal` passes the loaded `robots/g1/robot.yaml` as `description=`. Advertises `supported_control_modes=[joint_position, body_twist]`, `mobile_base` in `embodiment_tags`, and a forward `head` RGB camera so BODY_TWIST nav skills (InternVLA-N1) match. All MuJoCo wiring lives in `G1_DESCRIPTION.sim`; drift-guarded against `robots/g1/robot.yaml`.
+- `G1S0Controller = Literal["none", "playground_walk", "gr00t_wbc"]` (L110) — the `s0_controller` choices.
+- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; `playground_walk` swaps in the pinned policy-tuned MJCF + ONNX controller; `gr00t_wbc` keeps the Menagerie MJCF, converts its position actuators to torque motors in memory and never pins the base. Floating-base joint remains implicit world state. (L433)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False, s0_controller=None, description=None)` (L487) — `s0_controller=None` resolves from `walking_enabled`; a contradicting pair, an unknown value, or an S0 with gravity off raise `ROSConfigError`. `gr00t_wbc` fetches its weights here and logs the `nvidia_open_model` weight posture (`hal.g1.s0_controller`).
+  - `s0_controller -> G1S0Controller` (property) (L595) — the active S0 mode.
+  - `s0_fallen -> bool` (property) (L600) — the GR00T WBC fall latch (torques cut).
+  - `connect() -> None` (L622) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`; in `gr00t_wbc` mode, validates the Menagerie joint/actuator layout and the 50 Hz decimation, converts actuators to torque motors, makes the camera-rig floor collide, and builds the `Gr00tWbcController`. Raises `ROSConfigError` (and disconnects) on a mismatch.
+  - `disconnect() -> None` (L648) — Release the S0 controller, then the MuJoCo model.
+  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking / GR00T WBC base pose. (L605)
+  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action — except under `gr00t_wbc`, where it is a held setpoint only a new twist or an idle tick changes. (L613)
+  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Under `gr00t_wbc`: twist sets the S0 command, `JOINT_POSITION` must name arm joints only (`ROSCapabilityMismatch` otherwise, incl. whole-vector actions), ADR-0102 slot ticks may mix one twist + arm slots, one control period is stepped, and a latched fall raises `ROSSafetyViolation`. Non-planar twist components raise `ROSConfigError`. (L654)
+  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned (glide / walking state reset), or under `gr00t_wbc` zero the command and keep the Balance policy running. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L706)
+  - `reset_to_pose(pose: list[float]) -> None` (L720) — Reset the joint pose plus the base pin and (when walking) the gait state; under `gr00t_wbc` also re-seats the base upright at its MJCF height, takes the pose's arm entries as targets and clears policy history + fall latch.
+  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin: `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L766)
+  - `_gr00t_physics_step()` / `_send_gr00t_wbc(action)` / `_gr00t_tick_commands(actions)` / `_idle_gr00t_wbc(wall_dt_s)` / `_enable_ground_contact()` — the GR00T WBC loop: 50 Hz policy step, 29-joint PD torque every physics step, fall detection; tick parsing; idle Balance; world-plane collision switch-on (incl. the compiled `body_contype` broad-phase bits). (L930)
+- module const `_PLANAR_TWIST_EPS` (L103) — tolerance for detecting a non-planar `BODY_TWIST` component (`send_action`'s validation).
+- module consts `_FALL_PELVIS_HEIGHT_M`, `_FALL_TILT_RAD`, `_RATE_TOLERANCE` (L114) — GR00T WBC fall thresholds (0.5 m, 45°) and the decimation check slack.
+- module const `_G1_LEFT_LEG_JOINTS: tuple[str, ...]` (L125) — left-leg joint names.
+- module const `_G1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L133) — right-leg joint names.
+- module const `_G1_WAIST_JOINTS: tuple[str, ...]` (L141) — waist joint names.
+- module const `_G1_LEFT_ARM_JOINTS: tuple[str, ...]` (L146) — left-arm joint names.
+- module const `_G1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L155) — right-arm joint names.
+- module const `_G1_JOINT_NAMES: tuple[str, ...]` (L164) — full 29-DoF joint order (legs + waist + arms).
+- module const `_G1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L189) — per-joint position limits.
+- module const `_G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L226) — per-kinematic-group velocity limits.
+- module const `_G1_EFFORT_LIMITS: dict[str, float]` (L237) — per-joint effort limits keyed by side-less joint name (Unitree `g1_29dof.urdf` vendor ratings).
+- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L260)
+- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L265)
+- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L315)
+- const `G1_DESCRIPTION = RobotDescription(...)` (L343) — Sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"`, `hal.real=None` (sim-only); in-code mirror — `build_hal` passes the loaded `robots/g1/robot.yaml` as `description=`. Advertises `supported_control_modes=[joint_position, body_twist]`, `mobile_base` in `embodiment_tags`, and a forward `head` RGB camera so BODY_TWIST nav skills (InternVLA-N1) match. All MuJoCo wiring lives in `G1_DESCRIPTION.sim`; drift-guarded against `robots/g1/robot.yaml`.
 
 ### `python/hal/src/openral_hal/_g1_walking.py`
 _ADR-0089's private, sim-only walking implementation._
 
-- `ensure_g1_walking_assets() -> tuple[str, str]` (L84) — downloads four files from pinned MuJoCo Playground commit `43d180a`, verifies SHA-256, links the cached Menagerie meshes, flattens the included MJCF, and returns `(mjcf_path, policy_path)`.
+- `_download(relative_path, expected_sha256, destination, *, root=_RAW_ROOT, label=...) -> None` (L53) — the pinned-commit + per-file SHA-256 fail-closed fetch; `root` lets `_g1_gr00t_wbc` reuse it for another pinned repo.
+- `ensure_g1_walking_assets() -> tuple[str, str]` (L96) — downloads four files from pinned MuJoCo Playground commit `43d180a`, verifies SHA-256, links the cached Menagerie meshes, flattens the included MJCF, and returns `(mjcf_path, policy_path)`.
 - module const `_PINNED_SHA: str` (L19) — pinned MuJoCo Playground commit.
 - module const `_RAW_ROOT: str` (L20) — raw-GitHub root URL derived from `_PINNED_SHA`.
 - module const `_ASSETS: dict[str, str]` (L21) — the four pinned-asset relative paths mapped to their expected SHA-256 hex digests, verified by `ensure_g1_walking_assets`.
-- `class G1WalkingController` (L128) — 50 Hz CPU ONNX inference over 500 Hz MuJoCo physics; builds the upstream 103-D observation, validates the 29-D finite output, scales/clips joint targets, and persists gait phase/action history.
-  - `initialize(data: mujoco.MjData) -> None` (L157) — Capture `data.qpos[7:]` as the standing default-angle reference, then `reset_state()`.
-  - `reset_state() -> None` (L161) — Zero the last-action history and gait phase, reset the decimation counter.
-  - `apply(model: mujoco.MjModel, data: mujoco.MjData, command: tuple[float, float, float]) -> None` (L166) — Every `_CONTROL_DECIMATION`-th physics step, build the 103-D observation (base linear velocity, gyro, projected gravity, command, joint-angle delta, joint velocity, last action, phase sin/cos), run the ONNX policy, and scale/clip/apply the resulting joint targets.
+- `class G1WalkingController` (L140) — 50 Hz CPU ONNX inference over 500 Hz MuJoCo physics; builds the upstream 103-D observation, validates the 29-D finite output, scales/clips joint targets, and persists gait phase/action history.
+  - `initialize(data: mujoco.MjData) -> None` (L169) — Capture `data.qpos[7:]` as the standing default-angle reference, then `reset_state()`.
+  - `reset_state() -> None` (L173) — Zero the last-action history and gait phase, reset the decimation counter.
+  - `apply(model: mujoco.MjModel, data: mujoco.MjData, command: tuple[float, float, float]) -> None` (L178) — Every `_CONTROL_DECIMATION`-th physics step, build the 103-D observation (base linear velocity, gyro, projected gravity, command, joint-angle delta, joint velocity, last action, phase sin/cos), run the ONNX policy, and scale/clip/apply the resulting joint targets.
+
+### `python/hal/src/openral_hal/_g1_gr00t_wbc.py`
+_Sim-only port of NVIDIA GR00T Decoupled WBC's MuJoCo runner (`NVlabs/GR00T-WholeBodyControl` @ `1e1ec4f5`) — the G1 `gr00t_wbc` S0. Code Apache-2.0; weights NVIDIA Open Model License._
+
+- module const `GR00T_WBC_PINNED_SHA` (L55) — pinned upstream commit.
+- module const `GR00T_WBC_LICENSE_POSTURE` (L57) — the weights' `RSkillLicensePosture.NVIDIA_OPEN_MODEL`.
+- `class Gr00tWbcAssets` (L112) — frozen dataclass: verified `walk_onnx`, `balance_onnx`, `license_text` paths.
+- `ensure_gr00t_wbc_assets() -> Gr00tWbcAssets` (L120) — fetch / reuse the two ONNX files (Git LFS media URL) and the licence text into `$OPENRAL_CACHE_DIR/g1_gr00t_wbc/<sha>/`, each SHA-256-verified via `_g1_walking._download`; `ROSConfigError` on failure.
+- `position_actuators_to_torque_motors(model) -> None` (L155) — in-memory conversion of position actuators to unit-gain torque motors (`actuatorfrcrange` still clamps).
+- `gr00t_wbc_observation(*, command, base_height, torso_rpy, base_quat_wxyz, base_ang_vel_body, joint_pos, joint_vel, last_action) -> NDArray[float32]` (L172) — one 86-D frame in the upstream layout.
+- `class Gr00tWbcController` (L231) — loads Walk + Balance (signature-checked `input[B,516] -> output[B,15]`), keeps the 6-frame history and last action.
+  - `reset() -> None` (L284) — zero history and last action.
+  - `policy_input(frame) -> NDArray[float32]` (L291) — append a frame, return the `[1, 516]` input (oldest first).
+  - `step(data, *, command, base_height=0.74, torso_rpy=(0,0,0)) -> NDArray[float64]` (L296) — one 50 Hz step: Balance when `‖command‖ ≤ 0.05` else Walk; returns `0.25·a + S0_DEFAULT_ANGLES`; `used_walk` records the net.
+- module const `S0_JOINT_COUNT` (L77) — 15 policy-owned joints (12 legs + 3 waist).
+- module const `S0_DEFAULT_ANGLES` (L92) — stance the action offsets from.
+- module const `S0_KP` (L97) — leg/waist PD stiffness (upstream sim gains).
+- module const `S0_KD` (L100) — leg/waist PD damping.
+- module const `ARM_KP` (L105) — arm PD stiffness (GR00T real-robot `MOTOR_KP`).
+- module const `ARM_KD` (L106) — arm PD damping (`MOTOR_KD`).
+- module const `CONTROL_RATE_HZ` (L108) — 50 Hz policy rate.
+- module const `DEFAULT_BASE_HEIGHT_M` (L89) — 0.74 m height command.
+- module const `WALK_COMMAND_THRESHOLD` (L83) — 0.05 Balance/Walk switch.
 
 ### `python/hal/src/openral_hal/so100_mujoco.py`
 _MuJoCo digital twin for the SO-100 follower arm (Menagerie MJCF)._
