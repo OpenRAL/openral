@@ -201,6 +201,21 @@ def _drop_exception_type(
     return ROSPerceptionStale if code in stale else ROSRuntimeError
 
 
+def _release_refused_skill(skill: Any, logger: Any) -> None:
+    """Shut down a resolved skill a dispatch gate refused, freeing its weights.
+
+    Best-effort like the resident eviction: a handle without ``shutdown`` (or
+    whose teardown raises) is logged, never allowed to mask the gate's error.
+    """
+    shutdown = getattr(skill, "shutdown", None)
+    if not callable(shutdown):
+        return
+    try:
+        shutdown()
+    except Exception as exc:  # reason: the gate's typed error must reach the goal
+        logger.warning(f"rskill_runner.release_refused_failed: {exc!s}")
+
+
 def _commercial_deployment() -> bool:
     """Return whether the running deployment is commercial.
 
@@ -1611,8 +1626,6 @@ if _ROS2_AVAILABLE:
             goal_params_json: str = "",
         ) -> rSkillBase:
             """Resolve the skill via the configured resolver + license / capability gates."""
-            from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
-
             assert self._skill_resolver is not None  # invariant set in on_configure
             # `ros_node=self` lets resolvers that build ROS-wrapped skills
             # (kind: ros_action / ros_service) create ActionClient / service
@@ -1631,6 +1644,20 @@ if _ROS2_AVAILABLE:
                 commercial_deployment=_commercial_deployment(),
                 ros_node=self,
             )
+
+            # Every gate below runs on an already configured + activated skill
+            # (weights loaded). Nothing else holds a refused skill — it is never
+            # made resident — so release it here or its VRAM leaks on every retry.
+            try:
+                self._check_resolved_skill(rskill_id, skill)
+            except Exception:
+                _release_refused_skill(skill, self.get_logger())
+                raise
+            return skill
+
+        def _check_resolved_skill(self, rskill_id: str, skill: Any) -> None:
+            """Run the embodiment / gripper / state gates on a resolved skill."""
+            from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
             # Embodiment gate — skill must declare this robot's
             # embodiment tags. Skip when the resolver returned a Skill
@@ -1686,7 +1713,6 @@ if _ROS2_AVAILABLE:
                     f"resolver returned skill in state {skill.info.state!r}; "
                     "expected ACTIVE — drive configure() + activate() first"
                 )
-            return skill
 
         def _resolve_inference_labels(
             self, skill: rSkillBase
