@@ -157,7 +157,7 @@ supplied via `--rskill <name>`.
 `scene.backend_options` is an opaque dict to the tier schemas; each backend
 owns its model (`options_model=` on `@SCENES.register`: RoboCasa's
 `RoboCasaBackendOptions`, `tabletop_push`'s `TabletopOptions`, `so101_box`'s
-`BoxSceneOptions`, `metal_pick_place`'s `MetalPickPlaceOptions`). `SCENES.validate_options` runs it at load time in
+`BoxSceneOptions`, `metal_pick_place`'s `MetalPickPlaceOptions`, `metal_pen_holder`'s `MetalPenHolderOptions`). `SCENES.validate_options` runs it at load time in
 `openral sim run`, `openral benchmark scene`, `openral deploy validate` and
 `make_env`, so a misspelled or out-of-range key fails with a
 `ROSConfigError` naming the scene id and the field.
@@ -178,6 +178,7 @@ owns its model (`options_model=` on `@SCENES.register`: RoboCasa's
 | Custom OpenArm      | `openarm_tabletop_pnp` (bimanual; default top camera matches the mddoai dataset POV)                                                                                                                                                                                                        | `python/sim/.../backends/openarm_*/env.py`|
 | Custom SO-101       | `so101_box` (100 × 61.5 × 75 cm box arena + OAK-D Pro overhead RGB-D + wrist camera + tube-insertion task — geometry/sensors/spawn ranges configurable via `BoxSceneOptions`)                                                                                                               | `python/sim/.../backends/so101_box/env.py`|
 | Custom MakerMods Metal | `metal_pick_place` (sim twin of the real `HappyEthan/metal_pick_place` rig: calibrated top + wrist cameras, real background plate composited under the top view, wood-textured desk, cube → marker layouts A–D; every pose/size/colour configurable via `MetalPickPlaceOptions`) | `python/sim/.../backends/metal_pick_place/env.py` |
+| Custom MakerMods Metal Arm Station | `metal_pen_holder` (sim twin of the real `makermods/pen_holder_bi_20260723_161553` station: both arms, the measured top camera and the wrist refit from the manifest, real top background plate, desk-wood / shelf textures, a rounded hex-perforated pen cup and a glossy marker; cup / pen starts and every size / colour configurable via `MetalPenHolderOptions`) | `python/sim/.../backends/metal_pen_holder/env.py` |
 | Custom tabletop     | `tabletop_push` (robot-agnostic cube push-to-goal; free-axis — pass `--robot`; SO-101 sim YAML pins pi0.5-style degree reset pose + top/front/wrist camera routing)                                                                                                                        | `python/sim/.../backends/tabletop_push/env.py` |
 | RoboTwin 2.0 (SAPIEN, sidecar) | `robotwin` (scene-fixed AgileX ALOHA; task selected via `backend_options`, e.g. `lift_pot`, `beat_block_hammer`, `handover_block`, `place_empty_cup`, `stack_blocks_two`)                                                                                                            | `python/sim/.../backends/robotwin.py`     |
 | VLABench (lerobot envs) | `vlabench` (scene-fixed Franka Panda; task selected via `backend_options`, e.g. `select_fruit`)                                                                                                                                                                                        | `python/sim/.../backends/vlabench.py`     |
@@ -201,6 +202,7 @@ Some scenes hard-wire the physics robot(s) via `@SCENES.register(..., fixed_robo
 | `rlbench`                                       | `franka_panda`      |
 | `so101_box`                                      | `so101_follower`    |
 | `metal_pick_place`                               | `makermods_metal`   |
+| `metal_pen_holder`                               | `makermods_metal_station` |
 | `robocasa`, `robocasa/*` (kitchen)               | `panda_mobile`, `panda_mobile_vslam` |
 | `robocasa/gr1/*` (humanoid tabletop)             | `gr1`               |
 | `behavior`                                       | `r1pro`              |
@@ -579,6 +581,7 @@ Per-adapter viewer support:
 | `openarm_*`     | ✅                 | Direct MJCF compile.                                                                                   |
 | `so101_box`     | ✅                 | Direct MJCF compile.                                                                                   |
 | `metal_pick_place` | ✅              | MjSpec compile; `render()` returns the composited top view plus a world-only white ring around the marker. Graded (`placement_grade`: complete / partial / semi / fail). |
+| `metal_pen_holder` | ✅              | MjSpec compile; `render()` returns the composited top view plus a world-only outline of the cup's rim. Graded (`placement_grade`: complete / partial / semi / fail). |
 | `tabletop_push` | ✅                 | Direct MJCF compile.                                                                                   |
 | `robocasa/*`    | ✅                 | robosuite physics handles.                                                                             |
 | `rlbench`       | ❌                 | CoppeliaSim/PyRep sidecar; `render()` returns the latest RGB frame for video capture, not MuJoCo handles. |
