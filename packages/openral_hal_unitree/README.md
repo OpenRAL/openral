@@ -214,7 +214,7 @@ loosen it, if a policy's range turns out smaller.
 |---|---|---|
 | `controller_manager` (hardware read/write, safety, forward controller) | 200 Hz | `config/g1/controller_manager.yaml` (upstream's validated value) |
 | S0 policy (`inference_controller`, decimation 4) | 50 Hz | policy file (GR00T's own rate: dt 0.005 × 4) |
-| OpenRAL runner / HAL (`action_spec.control_freq_hz`) | 20 Hz | `robots/g1/robot.yaml` |
+| OpenRAL runner / HAL (`action_spec.control_freq_hz`) | 50 Hz | `robots/g1/robot.yaml` |
 
 CLAUDE.md §3 sketches S0 at 500–1000 Hz. **This S0 runs at 200 Hz** (policy at 50 Hz),
 because that is the rate NVIDIA validated for this hardware interface and policy; raising
