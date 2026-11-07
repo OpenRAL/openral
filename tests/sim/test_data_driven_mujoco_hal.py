@@ -84,6 +84,44 @@ def _repo_root() -> Path:
     raise RuntimeError("could not locate repo root from test file")
 
 
+#: Robots that also keep a hand-coded ``<ROBOT>_DESCRIPTION`` constant, which
+#: ``test_python_description_matches_yaml`` holds to the manifest. Manifest-only
+#: robots (``makermods_metal*``) have none by design, so they are not parametrised
+#: there (an undeclared skip fails the heavy-lanes ledger).
+_PYTHON_DESCRIPTIONS: dict[str, tuple[str, str]] = {
+    "so100_follower": ("openral_hal.so100_follower", "SO100_DESCRIPTION"),
+    "franka_panda": ("openral_hal.franka_panda", "FRANKA_PANDA_DESCRIPTION"),
+    "ur5e": ("openral_hal.ur", "UR5e_DESCRIPTION"),
+    "ur10e": ("openral_hal.ur", "UR10e_DESCRIPTION"),
+    "rizon4": ("openral_hal.flexiv_rizon4", "RIZON4_DESCRIPTION"),
+    "g1": ("openral_hal.g1", "G1_DESCRIPTION"),
+    "h1": ("openral_hal.h1", "H1_DESCRIPTION"),
+    "h2": ("openral_hal.h2", "H2_DESCRIPTION"),
+    "aloha_bimanual": ("openral_hal.aloha", "ALOHA_DESCRIPTION"),
+    "openarm": ("openral_hal.openarm", "OPENARM_DESCRIPTION"),
+    "anvil_openarm_v2": ("openral_hal.anvil_openarm_v2", "ANVIL_OPENARM_V2_DESCRIPTION"),
+}
+
+
+def _param_robot(param: object) -> str:
+    """The robot id of a ``_MANIFEST_DRIVEN_ROBOTS`` entry (a str or a ``pytest.param``)."""
+    if isinstance(param, str):
+        return param
+    values: tuple[object, ...] = getattr(param, "values", ())
+    return str(values[0])
+
+
+def _resolved_robot(robot: str) -> str:
+    """``robot`` after resolving its MJCF: an unfetchable pinned clone skips, a broken ref fails."""
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / robot / "robot.yaml"))
+    if desc.assets.mjcf is not None:
+        try:
+            resolve_asset(desc.assets.mjcf, "mjcf")
+        except AssetFetchError as exc:
+            pytest.skip(f"{robot}: MJCF {desc.assets.mjcf!r} not fetchable on this host: {exc}")
+    return robot
+
+
 @pytest.fixture(params=_MANIFEST_DRIVEN_ROBOTS)
 def robot_id(request: pytest.FixtureRequest) -> str:
     """One robot id per test case (see _MANIFEST_DRIVEN_ROBOTS).
@@ -93,14 +131,15 @@ def robot_id(request: pytest.FixtureRequest) -> str:
     host without a warm cache skips that parametrization (``AssetFetchError``)
     instead of failing (CLAUDE.md §1.11). A broken reference still fails.
     """
-    robot: str = request.param
-    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / robot / "robot.yaml"))
-    if desc.assets.mjcf is not None:
-        try:
-            resolve_asset(desc.assets.mjcf, "mjcf")
-        except AssetFetchError as exc:
-            pytest.skip(f"{robot}: MJCF {desc.assets.mjcf!r} not fetchable on this host: {exc}")
-    return robot
+    return _resolved_robot(request.param)
+
+
+@pytest.fixture(
+    params=[p for p in _MANIFEST_DRIVEN_ROBOTS if _param_robot(p) in _PYTHON_DESCRIPTIONS]
+)
+def python_described_robot_id(request: pytest.FixtureRequest) -> str:
+    """``robot_id`` restricted to robots that keep a ``_PYTHON_DESCRIPTIONS`` constant."""
+    return _resolved_robot(request.param)
 
 
 @pytest.fixture
@@ -171,7 +210,7 @@ def test_no_user_facing_python_required(robot_id: str) -> None:
     assert len(state.position) == len(description.joints)
 
 
-def test_python_description_matches_yaml(robot_id: str, description: RobotDescription) -> None:
+def test_python_description_matches_yaml(python_described_robot_id: str) -> None:
     """The hand-coded ``<ROBOT>_DESCRIPTION`` Python constant carries the same sim wiring.
 
     Drift between the Python-side constant and ``robots/<id>/robot.yaml``
@@ -180,22 +219,9 @@ def test_python_description_matches_yaml(robot_id: str, description: RobotDescri
     block; otherwise the manifest-driven path and the legacy
     subclass-driven path would silently diverge.
     """
-    py_map = {
-        "so100_follower": ("openral_hal.so100_follower", "SO100_DESCRIPTION"),
-        "franka_panda": ("openral_hal.franka_panda", "FRANKA_PANDA_DESCRIPTION"),
-        "ur5e": ("openral_hal.ur", "UR5e_DESCRIPTION"),
-        "ur10e": ("openral_hal.ur", "UR10e_DESCRIPTION"),
-        "rizon4": ("openral_hal.flexiv_rizon4", "RIZON4_DESCRIPTION"),
-        "g1": ("openral_hal.g1", "G1_DESCRIPTION"),
-        "h1": ("openral_hal.h1", "H1_DESCRIPTION"),
-        "h2": ("openral_hal.h2", "H2_DESCRIPTION"),
-        "aloha_bimanual": ("openral_hal.aloha", "ALOHA_DESCRIPTION"),
-        "openarm": ("openral_hal.openarm", "OPENARM_DESCRIPTION"),
-        "anvil_openarm_v2": ("openral_hal.anvil_openarm_v2", "ANVIL_OPENARM_V2_DESCRIPTION"),
-    }
-    if robot_id not in py_map:
-        pytest.skip(f"no Python-side description for {robot_id!r}")
-    module_name, attr = py_map[robot_id]
+    robot_id = python_described_robot_id
+    description = RobotDescription.from_yaml(str(_repo_root() / "robots" / robot_id / "robot.yaml"))
+    module_name, attr = _PYTHON_DESCRIPTIONS[robot_id]
     import importlib
 
     module = importlib.import_module(module_name)
