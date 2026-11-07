@@ -16,7 +16,30 @@ tags:
 - rizon4
 - sawyer
 - widowx
+- rskill-kind:ros_action
+- rskill-role:s1
+- embodiment:franka_panda
+- embodiment:ur5e
+- embodiment:ur10e
+- embodiment:so100_follower
+- embodiment:openarm
+- embodiment:rizon4
+- embodiment:sawyer
+- embodiment:widowx
+- rskill-license:apache-2.0
 inference: false
+openral:
+  description: Plan and execute a collision-free motion to a target JOINT configuration
+    via MoveIt's MoveGroup (self + planning-scene collision checked). Provide one
+    target angle per planning-group joint. Defaults target the Franka Panda home pose;
+    override the manifest to retarget. Use when you have a joint-space goal (e.g.
+    a policy's in-distribution starting pose); for a Cartesian end-effector target
+    use rskill-moveit-multi-eef_pose instead.
+  model_family: null
+  min_vram_gb: null
+  latency_ms: 2000.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-moveit-multi-joints

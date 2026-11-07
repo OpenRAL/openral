@@ -9,6 +9,10 @@ tags:
 - nf4
 - 4-bit
 - any
+- rskill-kind:reward
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 - reward
 - reward-model
 - robot-learning
@@ -20,6 +24,17 @@ base_model:
 - robometer/Robometer-4B
 base_model_relation: quantized
 inference: false
+openral:
+  description: 'Robometer-4B (Qwen3-VL-4B robotic reward foundation model, arXiv 2603.02115)
+    as an NF4 reward rSkill. Runs parallel to a VLA: given rollout frames + the task
+    instruction it emits per-frame normalized progress (0-1) and success probability,
+    queried on demand by the Reasoner. Advisory-only — never gates motors. Embodiment-agnostic.
+    Apache-2.0.'
+  model_family: null
+  min_vram_gb: 5.5
+  latency_ms: 3000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-robometer_4b-any-general-nf4

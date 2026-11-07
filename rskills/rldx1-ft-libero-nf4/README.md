@@ -12,6 +12,10 @@ tags:
 - nf4
 - 4-bit
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:rlwrld_non_commercial
 - openral
 - vla
 - franka
@@ -19,6 +23,18 @@ tags:
 - manipulation
 - non-commercial
 inference: false
+openral:
+  description: RLDX-1 fine-tuned on the LIBERO benchmark task suite. RLDX-1 pairs
+    a Qwen3-VL-8B-Instruct backbone (~6.9 B params total) with a Multi-Stream Action
+    Transformer flow-matching head producing 16-step LIBERO action chunks. Weights
+    ship under RLWRLD Model License v1.0 (non-commercial). Runs out-of-process via
+    the `rldx` sidecar adapter; NF4 quantization (Qwen3-VL backbone and MSAT head)
+    is required to fit on 8 GiB GPUs.
+  model_family: rldx
+  min_vram_gb: 7.0
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: int4
 license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 ---
 

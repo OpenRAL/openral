@@ -12,12 +12,26 @@ tags:
 - nf4
 - 4-bit
 - gr1
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:gr1
+- rskill-license:rlwrld_non_commercial
 - openral
 - vla
 - humanoid
 - manipulation
 - non-commercial
 inference: false
+openral:
+  description: RLDX-1 fine-tuned on the Fourier GR-1 humanoid tabletop tasks (RoboCasa
+    GR1 fork, 24-task suite). 29-D action space (per-arm joint deltas + waist + Fourier
+    dexhand grasps); 39-D proprio (joint_pos + per-hand gripper_qpos). Shares the
+    out-of-process rldx sidecar runtime with the LIBERO finetune. Non-commercial license.
+  model_family: rldx
+  min_vram_gb: 7.0
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: int4
 license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 ---
 

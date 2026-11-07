@@ -12,6 +12,11 @@ tags:
 - 4-bit
 - so100_follower
 - so101_follower
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:so100_follower
+- embodiment:so101_follower
+- rskill-license:apache-2.0
 - transformers
 - vla
 - so101
@@ -21,6 +26,16 @@ base_model:
 - allenai/MolmoAct2-SO100_101
 base_model_relation: quantized
 inference: false
+openral:
+  description: MolmoAct2 (Ai2) finetuned on the SO-100/SO-101 teleop mixture, NF4-quantized
+    for 8 GB GPUs. Emits 6-DoF absolute joint-position chunks (size 10) for the SO-100/SO-101
+    follower arm. Flow-matching action expert on Molmo2-ER VLM. Apache-2.0. norm_tag="so100_so101_molmoact2"
+    travels in the manifest's image_preprocessing block (overridable via vla.extra.norm_tag).
+  model_family: molmoact2
+  min_vram_gb: 4.0
+  latency_ms: 1000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-molmoact2-multi-so101-nf4

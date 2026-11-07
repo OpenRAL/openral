@@ -11,10 +11,25 @@ tags:
 - lerobot
 - vision-language-action
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:apache-2.0
 - vla
 - libero
 - manipulation
 inference: false
+openral:
+  description: xVLA official LIBERO fine-tune from the lerobot team — a Vision-Language-Action
+    model developed in collaboration with the lerobot ecosystem; weights are Apache-2.0.
+    State dimensions, camera names, and normalisation statistics have not been locally
+    verified — see docs/reference/vla_compatibility.md §3.1. Latency budget is a conservative
+    placeholder; update after local profiling.
+  model_family: xvla
+  min_vram_gb: null
+  latency_ms: 200.0
+  runtime: pytorch
+  dtype: fp32
 ---
 
 # rskill-xvla-franka_panda-libero_spatial-bf16

@@ -12,8 +12,24 @@ tags:
 - lerobot
 - vision-language-action
 - droid_franka_robotiq
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:droid_franka_robotiq
+- rskill-license:permissive_research
 - droid
 inference: false
+openral:
+  description: 'π0.5 DROID joint-position policy (openpi pi05_droid_jointpos, the
+    checkpoint Isaac Lab-Arena evaluates) for a Franka Panda + Robotiq 2F-85: picks
+    a tabletop object and places it in a container from one exterior and one wrist
+    RGB view and the 8-D joint + gripper state, at 15 Hz in 15-step chunks of 7 joint
+    deltas plus an absolute gripper. PI permissive-research weights: commercial use
+    needs a vendor agreement.'
+  model_family: pi05
+  min_vram_gb: 8.1
+  latency_ms: 400.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-pi05-droid_franka_robotiq-droid_jointpos-bf16

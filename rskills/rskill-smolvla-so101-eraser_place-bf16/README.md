@@ -11,12 +11,28 @@ tags:
 - lerobot
 - vision-language-action
 - so101_follower
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:so101_follower
+- rskill-license:apache-2.0
 base_model:
 - makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54
 base_model_relation: finetune
 datasets:
 - makermods/eraser_place_unblurry_real
 inference: false
+openral:
+  description: SmolVLA finetuned to place an eraser on a blue square with a real SO-101
+    follower arm (Apache-2.0). Emits 6-DoF absolute joint-position chunks (size 50,
+    in joint degrees) from two RGB views (fixed front overview + arm-mounted wrist).
+    20k steps on 25 teleop episodes (10 534 frames @ 30 FPS) from makermods/eraser_place_unblurry_real.
+    ONE training task string — "place the erase on the blue square" (upstream typo
+    included); deploy it verbatim.
+  model_family: smolvla
+  min_vram_gb: 1.5
+  latency_ms: 400.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-smolvla-so101-eraser_place-bf16

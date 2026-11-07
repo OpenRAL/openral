@@ -11,6 +11,10 @@ tags:
 - lerobot
 - vision-language-action
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:apache-2.0
 - vla
 - maniskill
 - maniskill3
@@ -18,6 +22,18 @@ tags:
 datasets:
 - Calvert0921/SmolVLA_LiftCube_Franka_1000
 inference: false
+openral:
+  description: SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on Calvert0921/SmolVLA_LiftCube_Franka_1000
+    (1000 demos of a Franka Panda lifting a cube in ManiSkill3 SAPIEN). Action chunks
+    of length 50 across overhead + wrist RGB views and a 9-D Franka qpos state. The
+    checkpoint loads and actuates on ManiSkill3 PickCube-v1 with a live SAPIEN viewer,
+    but cannot satisfy that task's goal-placement success — the evaluated_tasks gate
+    blocks the pairing (see the LiftCube-gap note).
+  model_family: smolvla
+  min_vram_gb: null
+  latency_ms: 200.0
+  runtime: pytorch
+  dtype: bf16
 ---
 
 # rskill-smolvla-franka_panda-maniskill3-bf16

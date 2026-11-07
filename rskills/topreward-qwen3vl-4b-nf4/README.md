@@ -9,6 +9,10 @@ tags:
 - nf4
 - 4-bit
 - any
+- rskill-kind:reward
+- rskill-role:s2
+- embodiment:any
+- rskill-license:apache-2.0
 - reward
 - reward-model
 - robot-learning
@@ -21,6 +25,17 @@ base_model:
 - Qwen/Qwen3-VL-4B-Instruct
 base_model_relation: quantized
 inference: false
+openral:
+  description: 'TOPReward (arXiv 2602.19313) as an NF4 reward rSkill on lerobot 0.6.0.
+    A ZERO-SHOT reward: asks an off-the-shelf Qwen3-VL-4B VLM how likely the task
+    instruction is given the rollout video, reading log P("True") as the signal. Per-frame
+    progress (0-1) comes from lerobot''s prefix sweep. Runs parallel to a VLA, queried
+    on demand by the Reasoner. Advisory-only — never gates motors. Embodiment-agnostic.'
+  model_family: null
+  min_vram_gb: 3.2
+  latency_ms: 3000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-topreward_qwen3vl_4b-any-general-nf4

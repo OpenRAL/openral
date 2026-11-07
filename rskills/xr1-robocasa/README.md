@@ -11,11 +11,25 @@ tags:
 - nf4
 - 4-bit
 - panda_mobile
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:panda_mobile
+- rskill-license:apache-2.0
 - robocasa
 base_model:
 - XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa
 base_model_relation: quantized
 inference: false
+openral:
+  description: Apache-2.0 XR-1 RoboCasa benchmark checkpoint. The OpenRAL adapter
+    runs Xiaomi's pinned Transformers custom code in an isolated sidecar, supplies
+    three 256x256 views plus seven arm joints and one gripper value, and replays ten
+    7-D delta-EEF actions per query.
+  model_family: xr1
+  min_vram_gb: null
+  latency_ms: 120000.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # XR-1 RoboCasa

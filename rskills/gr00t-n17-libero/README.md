@@ -12,6 +12,10 @@ tags:
 - nf4
 - 4-bit
 - franka_panda
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:franka_panda
+- rskill-license:nvidia_open_model
 - nvidia
 - vla
 - franka
@@ -21,6 +25,17 @@ base_model:
 - nvidia/GR00T-N1.7-LIBERO
 base_model_relation: quantized
 inference: false
+openral:
+  description: NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned
+    on the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space (delta
+    end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot
+    0.6.0's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits
+    an 8 GB GPU). Open Model License — commercial use permitted.
+  model_family: gr00t
+  min_vram_gb: null
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: int4
 ---
 
 # rskill-gr00t_n17-franka_panda-libero_spatial-bf16
