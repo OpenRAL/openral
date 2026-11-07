@@ -75,6 +75,20 @@ model, so the MJCF's `kp` / `kv` say nothing about the real Damiao control loop.
 range limit at qpos 0, so `sim.seed_ctrl_from_qpos: true` keeps the position
 actuators holding the initial pose instead of driving to 0.
 
+## Gripper kinematics
+
+The manifest's `gripper` joint carries the normalised `[0, 1]` fraction, not
+metres, so its `child_link` is the LOGICAL `finger_pair` (no primitive), as
+`so101_follower`'s `moving_jaw`. The two real fingers are `mimic_joints` rows
+at the upstream URDF joint origins / axes: `link8` at `joint8 = 0.05 f` m (the
+MuJoCo twin's driven finger) and `link7` at `joint7 = -0.05 f` m (the URDF's
+`<mimic multiplier="-1">` master). The safety kernel and
+`openral_core.kinematics` pose both fingers from the commanded fraction, and
+`openral_hal.resolver.urdf_joint_map` publishes the gripper's state to
+`robot_state_publisher` as `joint7` in metres (`-0.05 f`), from which it
+derives `joint8`. The real gripper's stroke-to-metres map is unverified (no
+real HAL yet).
+
 ## Cameras
 
 The camera names and feature keys match MakerMods' pick-and-place dataset
