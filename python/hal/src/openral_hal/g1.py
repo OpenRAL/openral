@@ -140,12 +140,18 @@ _G1_JOINT_NAMES: tuple[str, ...] = (
 # ── Joint limits ─────────────────────────────────────────────────────────────
 # Position limits (rad) come from the menagerie MJCF, verbatim — the
 # menagerie pins them to the upstream Unitree G1 URDF / data sheet.
-# Velocity + effort are conservative published-spec values: the G1
-# Edition 6f spec sheet lists ~30 N·m peak for the small-actuator
-# joints (wrist / waist) and ~88 N·m for the large ones (hip / knee).
-# These show up in ``JointSpec.effort_limit`` / ``velocity_limit`` for
-# capability matching only — MuJoCo's ``mj_step`` does not honour them
-# (its actuators use ``ctrlrange`` from the MJCF instead).
+# Effort limits are the vendor's per-joint ratings from Unitree's own
+# ``g1_29dof.urdf`` (github.com/unitreerobotics/unitree_ros @ 267182b8,
+# robots/g1_description, ``<limit effort=…>``). The menagerie MJCF
+# (unitree_g1/g1.xml @ feadf76d) rates hip_roll at 139 and ankle / waist
+# roll+pitch at 50 N·m via ``actuatorfrcrange``; where the two disagree the
+# vendor URDF (the lower value) is used, and where the vendor rating is above
+# the previous OpenRAL cap (knee 139 -> 88, ankles 35 -> 30) the previous cap
+# is kept: a limits correction must never loosen the safety envelope without a
+# safety-WG review (CLAUDE.md §3 Safety). They reach the safety kernel as
+# per-joint torque caps (``envelope_loader``), further capped by
+# ``safety.max_torque_nm``. MuJoCo's ``mj_step`` does not honour them (its
+# actuators use ``ctrlrange`` / ``actuatorfrcrange`` from the MJCF instead).
 
 _G1_POSITION_LIMITS: dict[str, tuple[float, float]] = {
     "left_hip_pitch_joint": (-2.5307, 2.8798),
@@ -179,10 +185,11 @@ _G1_POSITION_LIMITS: dict[str, tuple[float, float]] = {
     "right_wrist_yaw_joint": (-1.61443, 1.61443),
 }
 
-# Conservative velocity limits — the G1 spec lists ~12 rad/s peak for
-# hip / knee, ~20 rad/s for wrists.  Halved here for the safety
-# envelope (CLAUDE.md §1.1 — refuse a request before it can damage the
-# hardware).
+# Conservative velocity limits, deliberately far below the vendor ratings
+# (Unitree ``g1_29dof.urdf`` @ 267182b8 ``<limit velocity=…>``: hip / waist
+# yaw 32, knee 20, ankle / waist roll+pitch 30, shoulder / elbow / wrist roll
+# 37, wrist pitch+yaw 22 rad/s) for the safety envelope (CLAUDE.md §1.1 —
+# refuse a request before it can damage the hardware).
 _G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float] = {
     "hip": 6.0,
     "knee": 6.0,
@@ -192,14 +199,25 @@ _G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float] = {
     "elbow": 6.0,
     "wrist": 10.0,
 }
-_G1_EFFORT_LIMITS_BY_GROUP: dict[str, float] = {
-    "hip": 88.0,
-    "knee": 88.0,
-    "ankle": 30.0,
-    "waist": 88.0,
-    "shoulder": 30.0,
-    "elbow": 30.0,
-    "wrist": 30.0,
+# Per joint (not per group): waist yaw vs roll/pitch and wrist roll vs
+# pitch/yaw use different actuators. Keyed by the side-less joint name.
+_G1_EFFORT_LIMITS: dict[str, float] = {
+    "hip_pitch_joint": 88.0,
+    "hip_roll_joint": 88.0,
+    "hip_yaw_joint": 88.0,
+    "knee_joint": 88.0,
+    "ankle_pitch_joint": 30.0,
+    "ankle_roll_joint": 30.0,
+    "waist_yaw_joint": 88.0,
+    "waist_roll_joint": 35.0,
+    "waist_pitch_joint": 35.0,
+    "shoulder_pitch_joint": 25.0,
+    "shoulder_roll_joint": 25.0,
+    "shoulder_yaw_joint": 25.0,
+    "elbow_joint": 25.0,
+    "wrist_roll_joint": 25.0,
+    "wrist_pitch_joint": 5.0,
+    "wrist_yaw_joint": 5.0,
 }
 
 
@@ -274,7 +292,7 @@ def _g1_joint_specs() -> list[JointSpec]:
                 child_link=child,
                 position_limits=_G1_POSITION_LIMITS[name],
                 velocity_limit=_G1_VELOCITY_LIMITS_BY_GROUP[group],
-                effort_limit=_G1_EFFORT_LIMITS_BY_GROUP[group],
+                effort_limit=_G1_EFFORT_LIMITS[name.removeprefix("left_").removeprefix("right_")],
                 has_torque_sensor=False,  # tau_est is current-derived, not a joint torque sensor
                 actuator_kind="bldc",
             )

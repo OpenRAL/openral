@@ -1,8 +1,15 @@
 # RobotDescription — Unitree G1 humanoid (physical embodiment, sim baseline).
 #
 # Mirrors `G1_DESCRIPTION` in python/hal/src/openral_hal/g1.py (drift guarded
-# by tests/unit/test_robot_manifests_match_hal_constants.py). Joint limits
-# come from the upstream Unitree G1 URDF / mujoco_menagerie.
+# by tests/unit/test_robot_manifests_match_hal_constants.py). Position limits
+# come from mujoco_menagerie unitree_g1/g1.xml @ feadf76d. effort_limit is the
+# vendor's per-joint rating from Unitree's g1_29dof.urdf (unitreerobotics/
+# unitree_ros @ 267182b8, robots/g1_description; the menagerie MJCF's
+# actuatorfrcrange is higher for hip_roll/ankle/waist roll+pitch, so the lower
+# vendor value wins). Where the vendor rating exceeds the previous OpenRAL cap
+# (knee 139, ankles 35 N·m) the previous cap (88 / 30) is kept so the safety
+# envelope never loosens without safety-WG review. velocity_limit is deliberately far below the URDF's
+# 20-37 rad/s ratings (conservative safety envelope; see g1.py).
 #
 # `G1MujocoHAL` is the only execution path today; real-HW HAL over
 # `unitree_sdk2` is the M2 milestone (CLAUDE.md §3 dual-system pattern), needs a C++ S0
@@ -209,7 +216,7 @@ joints:
     child_link: "waist_roll_link"
     position_limits: [-0.52, 0.52]
     velocity_limit: 6.0
-    effort_limit: 88.0
+    effort_limit: 35.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   # child_link is "torso_link", NOT a "waist_pitch_link" — the G1 has no such
@@ -228,7 +235,7 @@ joints:
     child_link: "torso_link"
     position_limits: [-0.52, 0.52]
     velocity_limit: 6.0
-    effort_limit: 88.0
+    effort_limit: 35.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Left arm (7) ─────────────────────────────────────────────────
@@ -241,7 +248,7 @@ joints:
     child_link: "left_shoulder_pitch_link"
     position_limits: [-3.0892, 2.6704]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_shoulder_roll_joint"
@@ -253,7 +260,7 @@ joints:
     child_link: "left_shoulder_roll_link"
     position_limits: [-1.5882, 2.2515]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_shoulder_yaw_joint"
@@ -265,7 +272,7 @@ joints:
     child_link: "left_shoulder_yaw_link"
     position_limits: [-2.618, 2.618]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_elbow_joint"
@@ -277,7 +284,7 @@ joints:
     child_link: "left_elbow_link"
     position_limits: [-1.0472, 2.0944]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_roll_joint"
@@ -289,7 +296,7 @@ joints:
     child_link: "left_wrist_roll_link"
     position_limits: [-1.97222, 1.97222]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_pitch_joint"
@@ -301,7 +308,7 @@ joints:
     child_link: "left_wrist_pitch_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_yaw_joint"
@@ -313,7 +320,7 @@ joints:
     child_link: "left_wrist_yaw_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Right arm (7) ────────────────────────────────────────────────
@@ -326,7 +333,7 @@ joints:
     child_link: "right_shoulder_pitch_link"
     position_limits: [-3.0892, 2.6704]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_shoulder_roll_joint"
@@ -338,7 +345,7 @@ joints:
     child_link: "right_shoulder_roll_link"
     position_limits: [-2.2515, 1.5882]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_shoulder_yaw_joint"
@@ -350,7 +357,7 @@ joints:
     child_link: "right_shoulder_yaw_link"
     position_limits: [-2.618, 2.618]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_elbow_joint"
@@ -362,7 +369,7 @@ joints:
     child_link: "right_elbow_link"
     position_limits: [-1.0472, 2.0944]
     velocity_limit: 6.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_roll_joint"
@@ -374,7 +381,7 @@ joints:
     child_link: "right_wrist_roll_link"
     position_limits: [-1.97222, 1.97222]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 25.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_pitch_joint"
@@ -386,7 +393,7 @@ joints:
     child_link: "right_wrist_pitch_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_yaw_joint"
@@ -398,7 +405,7 @@ joints:
     child_link: "right_wrist_yaw_link"
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
-    effort_limit: 30.0
+    effort_limit: 5.0
     has_torque_sensor: false
     actuator_kind: "bldc"
 

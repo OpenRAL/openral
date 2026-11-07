@@ -97,9 +97,16 @@ menagerie MJCF and the `Action.joint_targets[i]` slot order):
 
 Position limits come from the upstream `mujoco_menagerie` MJCF
 (which the menagerie pins to the published Unitree G1 spec sheet).
-Velocity and effort limits in the manifest are conservative
-published-spec values used for capability matching only — MuJoCo's
-`mj_step` honours the MJCF's own `ctrlrange`, not these.
+Effort limits are the vendor's per-joint ratings from Unitree's
+`g1_29dof.urdf` (`unitreerobotics/unitree_ros` @ `267182b8`): hip and waist
+yaw 88, knee 139, ankle and waist roll/pitch 35, shoulder / elbow / wrist roll
+25, wrist pitch/yaw 5 N·m (the menagerie MJCF rates a few joints higher; the
+lower vendor value is used). Where the vendor rating is above the previous
+OpenRAL cap, the previous cap is kept so this correction never loosens the
+safety envelope: knee 88 (vendor 139) and ankles 30 (vendor 35) N·m. Velocity limits are deliberately far below the
+URDF's 20–37 rad/s ratings. Both reach the safety kernel as per-joint caps;
+MuJoCo's `mj_step` honours the MJCF's own `ctrlrange` / `actuatorfrcrange`, not
+these.
 
 ## Tests
 
