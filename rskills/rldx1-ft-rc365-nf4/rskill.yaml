@@ -76,7 +76,7 @@ quantization:
 min_vram_gb:
   bf16: 18.0
   int4: 7.0
-weights_uri: "hf://RLWRLD/RLDX-1-FT-RC365"
+weights_uri: "hf://RLWRLD/RLDX-1-FT-RC365@c53d0bc01f723dd536fe505d9a3dac25bacbe78a"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:

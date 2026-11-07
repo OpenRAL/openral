@@ -119,13 +119,13 @@ class TestResolveRskillRepoRevision:
         with pytest.raises(ROSConfigError, match="hf://"):
             resolve_rskill_repo_revision("hf://lerobot/smolvla_base", adapter_name="SmolVLA")
 
-    def test_real_unpinned_fixture_returns_none_revision(self) -> None:
-        """The committed SmolVLA-LIBERO rSkill is unpinned → revision is None."""
+    def test_real_pinned_fixture_returns_its_revision(self) -> None:
+        """The committed SmolVLA-LIBERO rSkill pins a SHA → repo and revision split."""
         repo_id, revision = resolve_rskill_repo_revision(
             "rskills/smolvla-libero", adapter_name="SmolVLA"
         )
-        assert "/" in repo_id and not repo_id.startswith(("hf://", "rskill://"))
-        assert revision is None  # fixture's weights_uri carries no @<sha>
+        assert repo_id == "lerobot/smolvla_libero"
+        assert revision is not None and len(revision) == 40
 
 
 # ── run_inference ─────────────────────────────────────────────────────────────

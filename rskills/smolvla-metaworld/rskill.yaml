@@ -49,12 +49,12 @@ quantization:
   dtype: "bf16"
   backend: "pytorch"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
-weights_uri: "hf://lerobot/smolvla_metaworld"
+weights_uri: "hf://lerobot/smolvla_metaworld@8d82bdf3487776404e5e863f585c9d5210b96d14"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:
-  preprocessor_uri: "hf://lerobot/smolvla_metaworld/policy_preprocessor.json"
-  postprocessor_uri: "hf://lerobot/smolvla_metaworld/policy_postprocessor.json"
+  preprocessor_uri: "hf://lerobot/smolvla_metaworld@8d82bdf3487776404e5e863f585c9d5210b96d14/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/smolvla_metaworld@8d82bdf3487776404e5e863f585c9d5210b96d14/policy_postprocessor.json"
 # MetaWorld uses a single 4-D proprio state (eef_pos + gripper). NO adapter-level
 # flip: lerobot's MetaworldEnv already corrects the corner2 camera's 180°
 # inversion at the source (lerobot/envs/metaworld.py — "corner2 outputs images

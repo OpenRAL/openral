@@ -58,12 +58,12 @@ quantization:
 min_vram_gb:
   fp32: 4.0
   bf16: 2.0
-weights_uri: "hf://lerobot/smolvla_vlabench"
+weights_uri: "hf://lerobot/smolvla_vlabench@7ef370813eb35823caa94088b50f5389a51e4c47"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
 processors:
-  preprocessor_uri: "hf://lerobot/smolvla_vlabench/policy_preprocessor.json"
-  postprocessor_uri: "hf://lerobot/smolvla_vlabench/policy_postprocessor.json"
+  preprocessor_uri: "hf://lerobot/smolvla_vlabench@7ef370813eb35823caa94088b50f5389a51e4c47/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/smolvla_vlabench@7ef370813eb35823caa94088b50f5389a51e4c47/policy_postprocessor.json"
 # No adapter-level flip — VLABench renders upright. The stored preprocessor
 # handles the camera rename + resize to 256; the backend emits native frames.
 image_preprocessing:

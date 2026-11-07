@@ -24,7 +24,7 @@ metadata:
   latency_budget: {per_chunk_ms: 25.0}
   license_code: Apache-2.0
   license_weights: mit
-  weights_uri: hf://lerobot/act_aloha_sim_transfer_cube_human
+  weights_uri: hf://lerobot/act_aloha_sim_transfer_cube_human@ba73b2766f1371cdc133ca4efb97eb090d744625
   source_repo: hf://lerobot/act_aloha_sim_transfer_cube_human
   paper_url: https://arxiv.org/abs/2304.13705
 ---

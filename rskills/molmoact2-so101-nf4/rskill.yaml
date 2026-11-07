@@ -92,7 +92,7 @@ min_vram_gb:
   fp32: 22.0
   bf16: 11.0
   int4: 4.0
-weights_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4"
+weights_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4@85bfeb1e97f198d2906e3585528bdfd8ca58cfb2"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:

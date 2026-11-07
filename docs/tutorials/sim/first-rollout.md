@@ -142,10 +142,6 @@ That took about two minutes end to end on a 20-core laptop CPU, including a
 ~10 s policy load from a warm cache. With a GPU, add `--device cuda:0` and use
 the full episode.
 
-The `rskill.unpinned_weights` warning means this rSkill's `weights_uri` names a
-branch, not a commit, so the load is not byte-reproducible. Harmless here; pin
-anything you publish.
-
 ---
 
 ## 5. Get something back from it

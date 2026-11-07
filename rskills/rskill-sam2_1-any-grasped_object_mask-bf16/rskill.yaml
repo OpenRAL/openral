@@ -56,7 +56,7 @@ min_vram_gb:
   bf16: 0.45
   fp32: 0.9
 
-weights_uri: "hf://facebook/sam2.1-hiera-small"
+weights_uri: "hf://facebook/sam2.1-hiera-small@ee5bba1d82bb8749febdf90f45e84b687142ba03"
 
 chunk_size: 1
 # MEASURED on the same host: 53 ms warm median, 742 ms first call (weights load

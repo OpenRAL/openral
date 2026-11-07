@@ -210,7 +210,8 @@ def test_build_manifest_detector_dispatches_zeroshot_in_process() -> None:
         assert isinstance(det, OmDetTurboDetector)
         assert m.detector is not None
         assert det._labels == m.detector.labels  # fixed vocabulary
-        assert weights_source_from_manifest(m) == "omlab/omdet-turbo-swin-tiny-hf"
+        # The @sha pin survives; the detector splits it into revision= at load.
+        assert weights_source_from_manifest(m).startswith("omlab/omdet-turbo-swin-tiny-hf@")
         # The "unprompted" intent is declared by the manifest mode, not
         # by the backend lacking the capability (one backend serves both modes).
         from openral_core.schemas import DetectorMode

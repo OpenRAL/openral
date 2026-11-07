@@ -154,7 +154,31 @@ def test_resolve_model_id_from_manifest() -> None:
     adapter = _RLDXSidecarAdapter.__new__(_RLDXSidecarAdapter)
     adapter.spec = spec
     adapter.model_id = None
-    assert adapter._resolve_model_id() == "RLWRLD/RLDX-1-FT-LIBERO"
+    # The @sha pin rides along; the sidecar's boot wrapper resolves it.
+    assert adapter._resolve_model_id().startswith("RLWRLD/RLDX-1-FT-LIBERO@")
+
+
+def test_boot_wrapper_resolves_a_pinned_model_to_its_revision(tmp_path: Path) -> None:
+    """Upstream's ``snapshot_download(model_path)`` takes no revision; the wrapper splits it."""
+    import argparse
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rldx_sidecar", _REPO_ROOT / "tools" / "rldx_sidecar.py"
+    )
+    assert spec is not None and spec.loader is not None
+    sidecar = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sidecar)
+    manifest = load_rskill_manifest(str(_REPO_ROOT / "rskills" / "rldx1-ft-libero-nf4"))
+    model = str(manifest.weights_uri).removeprefix("hf://")
+    args = argparse.Namespace(
+        model=model, quantization="none", embodiment_tag="GENERAL_EMBODIMENT", port=5555
+    )
+    src = sidecar._make_wrapper(work=tmp_path, source=tmp_path, args=args).read_text()
+    compile(src, "boot_server.py", "exec")
+    assert "snapshot_download(_repo, revision=_rev)" in src
+    assert '"--model-path", _model_path,' in src
+    assert f"_model_path = {model!r}" in src
 
 
 def test_resolve_model_id_explicit_override_wins() -> None:

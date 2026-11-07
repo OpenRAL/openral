@@ -42,7 +42,7 @@ def test_hub_id_resolves_in_tree_past_a_malformed_manifest(
     """The broken manifest sorts first; the lookup still finds smolvla without reporting it."""
     manifest = loader.load_rskill_manifest(_SMOLVLA_ID)
     assert manifest.name == _SMOLVLA_ID
-    assert manifest.weights_uri == "hf://lerobot/smolvla_libero"  # the in-tree config
+    assert str(manifest.weights_uri).startswith("hf://lerobot/smolvla_libero@")  # in-tree
     # The broken manifest is skipped silently. (The DEBUG resolution event may reach
     # stdout when structlog is unconfigured; it names the resolved file, not the broken one.)
     captured = capsys.readouterr()

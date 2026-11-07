@@ -75,7 +75,8 @@ quantization:
 min_vram_gb:
   int4: 7.0
   bf16: 16.6
-weights_uri: "hf://InternRobotics/InternVLA-N1-DualVLN"
+# Pinned to upstream HEAD on 2026-11-07 (last modified 2025-12-10), CLAUDE.md §1.8.
+weights_uri: "hf://InternRobotics/InternVLA-N1-DualVLN@a698a9e898b4001621a319e1bc89f02ec715cc86"
 
 # ── Execution semantics ────────────────────────────────────────────────────
 # One BODY_TWIST command per step (closed-loop base velocity control); the

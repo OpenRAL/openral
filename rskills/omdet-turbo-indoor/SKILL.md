@@ -30,7 +30,7 @@ metadata:
   latency_budget: {per_chunk_ms: 200.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://omlab/omdet-turbo-swin-tiny-hf
+  weights_uri: hf://omlab/omdet-turbo-swin-tiny-hf@7fe93cecfb770c4d76cf71163956221249cab566
   source_repo: hf://omlab/omdet-turbo-swin-tiny-hf
   paper_url: https://arxiv.org/abs/2403.06892
 ---

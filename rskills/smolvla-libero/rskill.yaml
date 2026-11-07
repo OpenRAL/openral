@@ -72,15 +72,15 @@ min_vram_gb:
 reward_rskill_name: "OpenRAL/rskill-robometer_4b-any-general-nf4"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
 # Update by re-running: tools/rskill_publisher.py --bump-revision
-weights_uri: "hf://lerobot/smolvla_libero"
+weights_uri: "hf://lerobot/smolvla_libero@a24f1f380461b665158d52acd140152c79e8b36d"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # Per-file URIs for the lerobot PolicyProcessorPipeline — closes Gap 1 + Gap 3
 # of the rSkill self-containment audit. The SmolVLA adapter downloads
 # exactly these files via hf_hub_download rather than snapshot_download.
 processors:
-  preprocessor_uri: "hf://lerobot/smolvla_libero/policy_preprocessor.json"
-  postprocessor_uri: "hf://lerobot/smolvla_libero/policy_postprocessor.json"
+  preprocessor_uri: "hf://lerobot/smolvla_libero@a24f1f380461b665158d52acd140152c79e8b36d/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/smolvla_libero@a24f1f380461b665158d52acd140152c79e8b36d/policy_postprocessor.json"
 # Per-checkpoint knobs the processor JSONs don't encode. SmolVLA on
 # LIBERO uses the same 180° H/W flip as the pi05 LIBERO checkpoint, and the
 # same 8-D proprio state contract. No camera aliases: the slots camera1/camera2
