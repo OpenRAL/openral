@@ -241,13 +241,21 @@ def _provision_rlbench(dry_run: bool = False) -> int:  # noqa: PLR0911
         patch_rc = _patch_3dda_cpu_fps()
         if patch_rc != 0:
             return patch_rc
+    # The revision the rSkill manifest pins, so the provisioned files match it.
+    manifest = (REPO_ROOT / "rskills/3d-diffuser-actor-rlbench/rskill.yaml").read_text()
+    pin = re.search(r'weights_uri: "hf://katefgroup/3d_diffuser_actor@([0-9a-f]{40})"', manifest)
+    if pin is None:
+        print("3d-diffuser-actor-rlbench weights_uri is not a pinned katefgroup repo")
+        return 1
+    rev = pin.group(1)
     download = textwrap.dedent(
         f"""
         from pathlib import Path
         from zipfile import ZipFile
         from huggingface_hub import hf_hub_download
-        ckpt = hf_hub_download('katefgroup/3d_diffuser_actor', 'diffuser_actor_peract.pth')
-        inst = hf_hub_download('katefgroup/3d_diffuser_actor', 'instructions.zip')
+        repo = 'katefgroup/3d_diffuser_actor'
+        ckpt = hf_hub_download(repo, 'diffuser_actor_peract.pth', revision={rev!r})
+        inst = hf_hub_download(repo, 'instructions.zip', revision={rev!r})
         out = Path({str(RLBENCH_HOME / "instructions")!r})
         out.mkdir(parents=True, exist_ok=True)
         with ZipFile(inst) as zf:
