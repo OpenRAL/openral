@@ -160,8 +160,8 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   #90 and its `StopState` interface (`openamrobot-interfaces` #35, `/safety/stop_state`)
   are still open. OpenRAL waits for both before building the two-way stop (ADR-0127
   Decision 4): each stop inhibits the other's base commands, a stop cancels the active
-  goal, and recovery never restarts old work. OpenRAL's own half already holds: an OpenRAL
-  e-stop cancels its in-flight Nav2 goal and nothing re-sends it (openral#501). The
+  goal, and recovery never restarts old work. OpenRAL's own half lands with openral#501: an
+  OpenRAL e-stop cancels its in-flight Nav2 goal and nothing re-sends it. The
   hardwired E-stop stays separate from both.
 - **TF.** Upstream's EKF publishes `odom → base_link`; in the integrated profile the
   platform owns that transform, and its legacy real bringup needs a coordinated TF
