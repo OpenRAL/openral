@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 3000.0}
   license_code: Apache-2.0
   license_weights: mit
-  weights_uri: hf://katefgroup/3d_diffuser_actor
+  weights_uri: hf://katefgroup/3d_diffuser_actor@a5a7819af75491d0e7d9e606f635cc3f95cb3a1c
   source_repo: hf://katefgroup/3d_diffuser_actor
   paper_url: https://arxiv.org/abs/2402.10885
 ---

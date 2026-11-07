@@ -46,7 +46,7 @@ runtime: "pytorch"
 quantization:
   dtype: "fp32"
   backend: "pytorch"
-weights_uri: "hf://lerobot/diffusion_pusht"
+weights_uri: "hf://lerobot/diffusion_pusht@84a7c23178445c6bbf7e1a884ff497017910f653"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:

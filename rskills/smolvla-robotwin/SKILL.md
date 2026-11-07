@@ -25,7 +25,7 @@ metadata:
   latency_budget: {per_chunk_ms: 250.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://lerobot/smolvla_robotwin
+  weights_uri: hf://lerobot/smolvla_robotwin@eb55d3a74f6cd26c6388aecd116b37b63fac144d
   source_repo: hf://lerobot/smolvla_robotwin
   paper_url: https://arxiv.org/abs/2506.18088
 ---

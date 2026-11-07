@@ -59,12 +59,12 @@ quantization:
   dtype: "fp32"
   backend: "pytorch"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
-weights_uri: "hf://lerobot/xvla-libero"
+weights_uri: "hf://lerobot/xvla-libero@8e6aeef01f634f5d3b5be4340328f19cc2c25a65"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:
-  preprocessor_uri: "hf://lerobot/xvla-libero/policy_preprocessor.json"
-  postprocessor_uri: "hf://lerobot/xvla-libero/policy_postprocessor.json"
+  preprocessor_uri: "hf://lerobot/xvla-libero@8e6aeef01f634f5d3b5be4340328f19cc2c25a65/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/xvla-libero@8e6aeef01f634f5d3b5be4340328f19cc2c25a65/policy_postprocessor.json"
 # xVLA on LIBERO uses the same 180° image flip as SmolVLA/pi05 LIBERO
 # and the canonical 8-D LIBERO proprio state.
 image_preprocessing:

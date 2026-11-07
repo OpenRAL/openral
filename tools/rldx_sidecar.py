@@ -289,9 +289,16 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
             # tyro.cli at module __main__. We import the config dataclass +
             # main directly and call tyro.cli ourselves so the monkey-patch
             # above is already in place.
+            # A pinned `repo@sha`: upstream's snapshot_download(model_path) takes no
+            # revision and rejects `@` in a repo id, so resolve the pin here.
+            _model_path = {args.model!r}
+            if "@" in _model_path:
+                from huggingface_hub import snapshot_download
+                _repo, _, _rev = _model_path.partition("@")
+                _model_path = snapshot_download(_repo, revision=_rev)
             sys.argv = [
                 "run_rldx_server",
-                "--model-path", {args.model!r},
+                "--model-path", _model_path,
                 "--embodiment-tag", {args.embodiment_tag!r},
                 "--host", "0.0.0.0",
                 "--port", str({args.port}),
