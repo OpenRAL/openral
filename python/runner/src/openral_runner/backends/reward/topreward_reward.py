@@ -32,6 +32,22 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# Card, preview media and eval JSONs in an rSkill repo the reward model never reads.
+_SNAPSHOT_IGNORE = ["*.md", "media/*", "eval/*"]
+
+
+def _pinned_snapshot_dir(repo: str, revision: str) -> str:
+    """The repo's snapshot at ``revision`` as a local dir (model files only).
+
+    lerobot loads ``vlm_name`` with no ``revision=``, so a pin is honoured by
+    handing it this directory instead of the repo id. No ``local_files_only``
+    shortcut: it returns a snapshot dir that exists even when only some files
+    were cached, which would hand lerobot a directory without the weights.
+    """
+    from huggingface_hub import snapshot_download  # noqa: PLC0415
+
+    return str(snapshot_download(repo, revision=revision, ignore_patterns=_SNAPSHOT_IGNORE))
+
 
 class TOPRewardMonitor:
     """In-process TOPReward scorer with the reward-monitor ``score``/``assess`` API."""
@@ -105,12 +121,11 @@ class TOPRewardMonitor:
         # returns the raw log-prob; score() normalizes the prefix sweep.
         # lerobot loads ``vlm_name`` with no revision, so a pinned ``repo@sha`` is
         # resolved to its local snapshot first and handed over as a path.
-        vlm_name = self._weights_source
-        if "@" in vlm_name:
-            from huggingface_hub import snapshot_download  # noqa: PLC0415
+        from openral_rskill import split_repo_revision  # noqa: PLC0415
 
-            repo, _, rev = vlm_name.partition("@")
-            vlm_name = snapshot_download(repo, revision=rev)
+        vlm_name, rev = split_repo_revision(self._weights_source)
+        if rev is not None:
+            vlm_name = _pinned_snapshot_dir(vlm_name, rev)
         cfg = TOPRewardConfig(vlm_name=vlm_name, device=self._device, fps=self._fps)
         self._model = TOPRewardModel(cfg).eval()
         self._encoder = TOPRewardEncoderProcessorStep(

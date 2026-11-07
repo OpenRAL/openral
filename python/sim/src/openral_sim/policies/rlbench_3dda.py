@@ -105,16 +105,16 @@ def _resolve_checkpoint(manifest: RSkillManifest) -> Path:
         )
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import LocalEntryNotFoundError
-    from openral_rskill._vla_core import hf_download_cached_first
+    from openral_rskill import hf_download_cached_first, split_repo_revision
 
-    repo, _, revision = uri.removeprefix("hf://").partition("@")
+    repo, revision = split_repo_revision(uri.removeprefix("hf://"))
     return Path(
         hf_download_cached_first(
             hf_hub_download,
             LocalEntryNotFoundError,
             repo_id=repo,
             filename=_CKPT_FILE,
-            revision=revision or None,
+            revision=revision,
         )
     )
 

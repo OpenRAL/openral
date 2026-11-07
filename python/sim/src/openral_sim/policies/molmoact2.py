@@ -64,6 +64,7 @@ from openral_rskill._vla_core import (
     resolve_n_action_steps,
     resolve_rskill_repo_id,
     resolve_state_dim,
+    split_repo_revision,
 )
 
 # NF4 quantization + prequantized-state load live in the adapter-agnostic
@@ -245,11 +246,10 @@ def _norm_stats_path(repo_id: str, revision: str | None) -> str:
         return str(hf_hub_download(repo_id, "norm_stats.json", revision=revision))
 
 
-def _norm_stats_camera_keys(repo_id: str, revision: str | None, norm_tag: str) -> tuple[str, ...]:
+def _norm_stats_camera_keys(path: str, norm_tag: str) -> tuple[str, ...]:
     """The checkpoint's camera order for ``norm_tag`` from its ``norm_stats.json``."""
     import json
 
-    path = _norm_stats_path(repo_id, revision)
     with open(path, encoding="utf-8") as fh:
         stats = json.load(fh)
     meta = stats.get("metadata_by_tag", {}).get(norm_tag, {})
@@ -311,25 +311,6 @@ def _strip_hf_uri(uri: str | None, *, field_name: str) -> str:
     return value[len("hf://") :]
 
 
-def _split_repo_revision(repo: str) -> tuple[str, str | None]:
-    """Split a ``owner/repo@revision`` string into ``(repo_id, revision)``.
-
-    HuggingFace ``from_pretrained`` treats its first positional argument as a
-    bare repo id; a ``@<sha>`` pin must be passed via the ``revision`` kwarg or
-    it is silently ignored (security audit 2026-06, finding H5 — the pin was
-    being concatenated onto the repo id and dropped). Returns ``revision=None``
-    when no pin is present.
-
-    Args:
-        repo: A repo id, optionally suffixed with ``@<branch-or-sha>``.
-
-    Returns:
-        ``(repo_id, revision_or_None)``.
-    """
-    repo_id, _, revision = repo.partition("@")
-    return repo_id, (revision or None)
-
-
 # NOTE: the former ``_require_remote_code_ack`` / ``OPENRAL_ALLOW_REMOTE_CODE``
 # gate is gone. The load path builds the model from lerobot's in-tree
 # ``MolmoAct2ForConditionalGeneration`` (first-party, no ``trust_remote_code``),
@@ -345,10 +326,6 @@ class _MolmoAct2Adapter:
     _model: Any
     _processor: Any
     _torch: Any
-    # source_repo for the lazy norm_stats.json fetch predict_action does on its
-    # first call (outside the load path); used to keep that fetch offline on a
-    # warm cache so inference emits no httpx HEAD stream either. None disables.
-    _source_repo: str | None = None
     _norm_tag: str = _DEFAULT_NORM_TAG
     _num_steps: int = _DEFAULT_NUM_STEPS
     _n_action_steps: int | None = None
@@ -435,16 +412,9 @@ class _MolmoAct2Adapter:
         if self._n_action_steps is not None:
             predict_kwargs["n_action_steps"] = self._n_action_steps
 
-        # predict_action lazily fetches norm_stats.json from source_repo on its
-        # first call; gate offline on norm_stats.json itself (not config.json) so
-        # a cold-norm_stats first run stays online to download it, and only a
-        # warm cache flips offline (no httpx HEAD stream).
-        offline_ctx = (
-            _hf_offline_if_cached(self._source_repo, probe_file="norm_stats.json")
-            if self._source_repo is not None
-            else contextlib.nullcontext()
-        )
-        with torch.no_grad(), autocast_ctx, offline_ctx:
+        # predict_action reads norm_stats.json from config._name_or_path, the local
+        # pinned snapshot dir set at load, so inference makes no Hub call.
+        with torch.no_grad(), autocast_ctx:
             out = self._model.predict_action(**predict_kwargs)
 
         actions = out.actions if hasattr(out, "actions") else out
@@ -547,6 +517,8 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     processor_cls: Any,
     source_repo: str,
     revision: str | None,
+    norm_stats_dir: str,
+    weights_revision: str | None,
     spec: VLASpec,
     device: str,
     dtype_str: str,
@@ -603,7 +575,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         # reason: accelerate ships no py.typed; the exact code differs by install state
         from accelerate import init_empty_weights  # type: ignore[import-untyped,unused-ignore]
 
-        fast_state_keys = peek_safetensors_keys(prequant_repo)
+        fast_state_keys = peek_safetensors_keys(prequant_repo, revision=weights_revision)
         with (
             _hf_offline_if_cached(source_repo, revision=revision),
             _molmoact2_phase("load_config", repo=source_repo),
@@ -614,7 +586,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         # norm_stats.json on the first predict_action. Point it at the pinned
         # snapshot dir: a local dir is read directly, while a repo id would be
         # hf_hub_download-ed with no revision (HEAD, not the pin).
-        config._name_or_path = os.path.dirname(_norm_stats_path(source_repo, revision))
+        config._name_or_path = norm_stats_dir
         prev_dtype = torch.get_default_dtype()
         torch.set_default_dtype(torch.bfloat16)
         try:
@@ -666,7 +638,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         )
     # See the fast-path note: transformers 5.x leaves config._name_or_path empty,
     # which MolmoAct2's `_get_robot_stats` needs to fetch norm_stats.json.
-    model.config._name_or_path = os.path.dirname(_norm_stats_path(source_repo, revision))
+    model.config._name_or_path = norm_stats_dir
 
     if not use_nf4:
         with _molmoact2_phase("cast_and_to_device", device=device, dtype=dtype_str):
@@ -746,9 +718,11 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
             "MolmoAct2 adapter requires a bare rSkill reference as weights_uri "
             f"resolving to a manifest; got {spec.weights_uri!r}."
         )
-    source_repo, source_revision = _split_repo_revision(
+    source_repo, source_revision = split_repo_revision(
         _strip_hf_uri(manifest.source_repo, field_name="source_repo")
     )
+    # Resolved once: the camera order and the model's lazy stats read share it.
+    norm_stats = _norm_stats_path(source_repo, source_revision)
 
     plan = resolve_quant_plan(spec, manifest, default=default_dtype_for_device(device))
     # No int8 path: the load either NF4-packs or casts to a plain precision.
@@ -761,6 +735,11 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
         processor_cls=processor_cls,
         source_repo=source_repo,
         revision=source_revision,
+        norm_stats_dir=os.path.dirname(norm_stats),
+        # The NF4 pack's own pin (weights_uri); Pro's prequant probe returns the bare repo.
+        weights_revision=split_repo_revision(str(manifest.weights_uri or "").removeprefix("hf://"))[
+            1
+        ],
         spec=spec,
         device=device,
         dtype_str=dtype_str,
@@ -796,7 +775,7 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
     cam_keys = _checkpoint_camera_order(
         cam_keys,
         checkpoint_image_keys(ip, cam_keys),
-        _norm_stats_camera_keys(source_repo, source_revision, norm_tag),
+        _norm_stats_camera_keys(norm_stats, norm_tag),
     )
     # CUDA graphs default OFF: they pin static buffers (extra VRAM) and don't
     # compose cleanly with bnb's 4-bit dequant on an 8 GiB card.
@@ -815,7 +794,6 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
         _model=model,
         _processor=processor,
         _torch=torch,
-        _source_repo=source_repo,
         _norm_tag=norm_tag,
         _num_steps=num_steps,
         _n_action_steps=int(n_action_steps) if n_action_steps else None,

@@ -65,13 +65,16 @@ actuators_required:
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
-# Open default is bf16, the upstream checkpoint's own precision (ADR-0123: open
-# runs fp32/fp16/bf16). OpenRAL Pro runs it NF4 via
-# OPENRAL_QUANTIZATION_DTYPE=nf4 (Qwen2.5-VL-7B backbone NF4, NavDP S1 head bf16),
-# which is what fits an 8 GB card. The "-nf4" in the name predates this default.
+# Open runs bf16, the upstream checkpoint's own precision (ADR-0123: open runs
+# fp32/fp16/bf16). With OpenRAL Pro installed, extra.pro_dtype switches the load
+# to NF4 (Qwen2.5-VL-7B backbone NF4, NavDP S1 head bf16), which is what fits an
+# 8 GB card. OPENRAL_QUANTIZATION_DTYPE overrides either. The "-nf4" in the name
+# predates the bf16 open default.
 quantization:
   dtype: "bf16"
   backend: "pytorch"
+  extra:
+    pro_dtype: "int4"
 # bf16: full checkpoint (~16.6 GB), needs a 24 GB card. int4 (Pro): NF4 backbone
 # (~5.0 GB) + bf16 NavDP head (~0.6 GB) measured peak on an 8 GB card; declared
 # with render/activation headroom for the co-resident sim EGL context.

@@ -460,7 +460,7 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
     # the cube.
     stats: dict[str, Any] = {}
     if not preprocessor and not postprocessor:
-        stats = _try_load_act_norm_stats(repo_id, device, torch, cam_keys, revision=revision)
+        stats = _try_load_act_norm_stats(str(pretrained_path), device, torch, cam_keys)
 
     return _ACTAdapter(
         spec=spec,
@@ -586,26 +586,21 @@ def _apply_temporal_ensemble(policy: Any, spec_extra: dict[str, Any]) -> float |
 
 
 def _try_load_act_norm_stats(
-    repo_id: str,
+    local: str,
     device: str,
     torch: Any,
     cam_keys: tuple[str, ...],
-    revision: str | None = None,
 ) -> dict[str, Any]:
     """Pull ``normalize_*`` / ``unnormalize_*`` mean/std tensors from the checkpoint.
 
+    ``local`` is the (pinned) snapshot directory the model itself loaded from.
     Returns an empty dict if the checkpoint doesn't carry them — in
     which case the adapter falls back to feeding raw inputs (the lerobot
     behaviour and what we did before this fix).
     """
     try:
-        from openral_rskill import local_snapshot_dir
         from safetensors import safe_open
     except ImportError:
-        return {}
-    try:
-        local = local_snapshot_dir(repo_id, revision=revision)  # same snapshot as the model
-    except Exception:
         return {}
     import os
 

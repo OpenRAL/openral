@@ -1026,6 +1026,10 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy cl
     from openral_core import RSkillManifest
     from openral_core.exceptions import ROSGPUMemoryError
     from openral_core.schemas import assert_vla_reward_fits
+    from openral_rskill.quantization_gate import pro_quantization_installed
+
+    # Under Pro, a manifest's quantization.extra.pro_dtype is what loads.
+    pro_installed = pro_quantization_installed()
 
     try:
         reward = RSkillManifest.from_yaml(reward_manifest_path)
@@ -1049,7 +1053,9 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy cl
     undeclared: list[str] = []
     for vla in vlas:
         try:
-            combined = assert_vla_reward_fits(vla, reward, gpu_budget_gb)
+            combined = assert_vla_reward_fits(
+                vla, reward, gpu_budget_gb, pro_installed=pro_installed
+            )
         except ROSGPUMemoryError as exc:
             oom.append(f"{vla.name}: {exc}")
             refused.append(vla.name)

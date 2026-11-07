@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import os
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -1485,6 +1486,26 @@ def local_snapshot_dir(
             repo_id=repo_id, revision=revision, ignore_patterns=list(ignore_patterns), **extra
         )
     )
+
+
+def split_repo_revision(ref: str) -> tuple[str, str | None]:
+    """Split an ``owner/repo@<rev>`` reference into ``(repo_id, revision)``.
+
+    HF ``from_pretrained`` / ``hf_hub_download`` reject an ``@`` inside a repo id,
+    so a pin must travel as ``revision=``. An existing local path is returned
+    whole (a directory name may contain ``@``). ``revision`` is ``None`` when the
+    reference is unpinned or ends in a bare ``@``.
+
+    Example:
+        >>> split_repo_revision("lerobot/smolvla_libero@a24f1f3")
+        ('lerobot/smolvla_libero', 'a24f1f3')
+        >>> split_repo_revision("lerobot/smolvla_libero")
+        ('lerobot/smolvla_libero', None)
+    """
+    if os.path.exists(ref):
+        return ref, None
+    repo, _, revision = ref.partition("@")
+    return repo, revision or None
 
 
 def parse_hf_file_uri(uri: str) -> tuple[str, str | None, str]:

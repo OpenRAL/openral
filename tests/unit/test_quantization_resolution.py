@@ -11,6 +11,7 @@ import pytest
 from openral_core import QuantizationConfig, QuantizationDtype, VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import load_rskill_manifest
+from openral_rskill.quantization_gate import pro_quantization_installed
 from openral_sim._quantization import (
     QUANTIZATION_DTYPE_ENV,
     canonical_quant_token,
@@ -49,8 +50,6 @@ _SHIPPED: list[tuple[str, str | None, str]] = [
     ("rldx1-ft-gr1-nf4", "nf4", "nf4"),
     ("xr1-vlabench", None, "nf4"),
     ("lingbot-vla2-robotwin", "nf4", "nf4"),
-    # InternVLA-N1 defaults to bf16 in open; NF4 is the Pro override.
-    ("rskill-internvla_n1-mobile_base-vln-nf4", "bf16", "bf16"),
     ("smolvla-libero", None, "bf16"),
     ("act-aloha", None, "fp32"),
     ("diffusion-pusht", None, "fp32"),
@@ -67,6 +66,30 @@ def test_shipped_skill_dtype_is_unchanged(skill: str, default: str | None, expec
     plan = plan_quantization(_spec(skill), manifest, default=default)
     assert plan.dtype == expected
     assert plan.quantize is (expected in {"nf4", "int8"})
+
+
+def test_internvla_runs_bf16_on_open_and_nf4_under_pro(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``quantization.extra.pro_dtype``: one manifest, bf16 on open, NF4 once Pro is installed.
+
+    Runs either way: the expectation follows whether Pro is installed on this host.
+    """
+    monkeypatch.delenv(QUANTIZATION_DTYPE_ENV, raising=False)
+    skill = "rskill-internvla_n1-mobile_base-vln-nf4"
+    manifest = load_rskill_manifest(f"rskills/{skill}")
+    pro = pro_quantization_installed()
+    plan = plan_quantization(_spec(skill), manifest, default="bf16")
+    assert (plan.dtype, plan.source) == (("nf4", "manifest_pro") if pro else ("bf16", "manifest"))
+    # The VRAM checks budget the same dtype the load picks.
+    assert manifest.active_min_vram_gb(pro_installed=False) == 16.6
+    assert manifest.active_min_vram_gb(pro_installed=True) == 7.0
+    # An explicit override still wins over pro_dtype.
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
+    assert plan_quantization(_spec(skill), manifest, default="bf16").dtype == "bf16"
+
+
+def test_pro_dtype_must_be_a_quantization_dtype() -> None:
+    with pytest.raises(ValueError, match="pro_dtype"):
+        QuantizationConfig(dtype="bf16", extra={"pro_dtype": "nf4"})
 
 
 def test_gr00t_manifests_declare_the_runtime_dtype() -> None:

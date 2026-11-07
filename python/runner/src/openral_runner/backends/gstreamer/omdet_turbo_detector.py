@@ -244,7 +244,9 @@ class OmDetTurboDetector:
         else:
             self._device = self._device_pref
         # A pinned ``repo@sha`` source: HF wants the SHA as ``revision=``, not in the id.
-        repo, _, rev = self._weights_source.partition("@")
+        from openral_rskill import split_repo_revision  # noqa: PLC0415
+
+        repo, rev = split_repo_revision(self._weights_source)
         self._processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]  # reason: transformers ships AutoProcessor.from_pretrained unannotated
             repo, revision=rev or "main"
         )

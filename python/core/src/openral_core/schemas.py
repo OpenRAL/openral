@@ -6538,6 +6538,9 @@ class QuantizationConfig(BaseModel):
         calibration_dataset: HuggingFace dataset ID or local path used for
             post-training calibration (INT8 / TensorRT only).
         extra: Backend-specific overrides (e.g. ``{"calibration_steps": 128}``).
+            ``extra["pro_dtype"]`` names the dtype to run at when OpenRAL Pro's
+            quantization module is installed (e.g. ``"int4"`` over an open
+            ``bf16``); it must be a ``QuantizationDtype`` value.
 
     Example:
         >>> cfg = QuantizationConfig(dtype=QuantizationDtype.INT8)
@@ -6550,6 +6553,31 @@ class QuantizationConfig(BaseModel):
     per_channel: bool = False
     calibration_dataset: str | None = None
     extra: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("extra")
+    @classmethod
+    def _check_pro_dtype(cls, v: dict[str, object]) -> dict[str, object]:
+        """``extra["pro_dtype"]``, when set, must name a ``QuantizationDtype``."""
+        pro = v.get("pro_dtype")
+        if pro is not None and pro not in {d.value for d in QuantizationDtype}:
+            raise ValueError(
+                f"quantization.extra.pro_dtype={pro!r} is not a QuantizationDtype "
+                f"({sorted(d.value for d in QuantizationDtype)})"
+            )
+        return v
+
+    def runtime_dtype(self, *, pro_installed: bool = False) -> QuantizationDtype:
+        """The dtype the skill loads at: ``extra["pro_dtype"]`` under Pro, else ``dtype``.
+
+        Example:
+            >>> cfg = QuantizationConfig(dtype="bf16", extra={"pro_dtype": "int4"})
+            >>> cfg.runtime_dtype().value, cfg.runtime_dtype(pro_installed=True).value
+            ('bf16', 'int4')
+        """
+        pro = self.extra.get("pro_dtype")
+        if pro_installed and pro is not None:
+            return QuantizationDtype(str(pro))
+        return self.dtype
 
 
 class DeviceInfo(BaseModel):
@@ -9409,19 +9437,20 @@ class RSkillManifest(BaseModel):
                 raise ValueError(f"min_vram_gb[{dtype.value!r}] = {gb!r} must be > 0")
         return v
 
-    def active_min_vram_gb(self) -> float | None:
+    def active_min_vram_gb(self, *, pro_installed: bool = False) -> float | None:
         """Declared VRAM (GB) for this skill at its **active** quantization dtype.
 
-        Reads ``min_vram_gb[quantization.dtype]`` — the footprint the skill will
-        actually use at load, since ``quantization.dtype`` pins the runtime format
-        . Returns ``None`` when ``min_vram_gb`` is unset or has no entry
-        for the active dtype (the size is simply not declared — the caller decides
-        whether that is an error). See ``assert_vla_reward_fits`` for the pair
-        check that consumes this.
+        Reads ``min_vram_gb[quantization.runtime_dtype(pro_installed=...)]`` — the
+        footprint the skill will actually use at load: ``quantization.dtype``, or
+        ``quantization.extra["pro_dtype"]`` when the caller reports OpenRAL Pro's
+        quantization module installed (core cannot detect it itself). Returns
+        ``None`` when ``min_vram_gb`` is unset or has no entry for the active dtype
+        (the size is simply not declared — the caller decides whether that is an
+        error). See ``assert_vla_reward_fits`` for the pair check that consumes this.
         """
         if self.min_vram_gb is None:
             return None
-        return self.min_vram_gb.get(self.quantization.dtype)
+        return self.min_vram_gb.get(self.quantization.runtime_dtype(pro_installed=pro_installed))
 
     @model_validator(mode="before")
     @classmethod
@@ -10557,6 +10586,7 @@ def assert_vla_reward_fits(
     gpu_total_gb: float,
     *,
     margin_gb: float = 0.5,
+    pro_installed: bool = False,
 ) -> float:
     """Verify a VLA + its paired reward model co-reside in GPU VRAM.
 
@@ -10572,6 +10602,8 @@ def assert_vla_reward_fits(
         reward: Its paired reward manifest (``kind == "reward"``).
         gpu_total_gb: The GPU's total VRAM in GB.
         margin_gb: Headroom reserved for fragmentation / framework overhead.
+        pro_installed: OpenRAL Pro's quantization module is installed, so each
+            manifest's ``quantization.extra["pro_dtype"]`` is what loads.
 
     Returns:
         The combined VRAM (GB) the pair requires (``vla + reward``).
@@ -10586,8 +10618,8 @@ def assert_vla_reward_fits(
     See ``tests/unit/test_vla_reward_pairing.py`` for fixture-backed coverage
     (smolvla-libero + robometer-4b-nf4 = 6.7 GB, fits 8 GB, OOMs a 4 GB card).
     """
-    vla_gb = vla.active_min_vram_gb()
-    reward_gb = reward.active_min_vram_gb()
+    vla_gb = vla.active_min_vram_gb(pro_installed=pro_installed)
+    reward_gb = reward.active_min_vram_gb(pro_installed=pro_installed)
     missing = [m.name for m, gb in ((vla, vla_gb), (reward, reward_gb)) if gb is None]
     if missing:
         raise ROSConfigError(
@@ -10599,8 +10631,10 @@ def assert_vla_reward_fits(
     combined = vla_gb + reward_gb
     if combined + margin_gb > gpu_total_gb:
         raise ROSGPUMemoryError(
-            f"VLA {vla.name!r} ({vla_gb:.2f} GB @ {vla.quantization.dtype.value}) + "
-            f"reward {reward.name!r} ({reward_gb:.2f} GB @ {reward.quantization.dtype.value}) "
+            f"VLA {vla.name!r} ({vla_gb:.2f} GB @ "
+            f"{vla.quantization.runtime_dtype(pro_installed=pro_installed).value}) + "
+            f"reward {reward.name!r} ({reward_gb:.2f} GB @ "
+            f"{reward.quantization.runtime_dtype(pro_installed=pro_installed).value}) "
             f"= {combined:.2f} GB + {margin_gb:.2f} GB margin exceeds GPU VRAM "
             f"{gpu_total_gb:.2f} GB. A VLA must run with its reward model resident; "
             f"pick a smaller-footprint pair or a larger GPU."
