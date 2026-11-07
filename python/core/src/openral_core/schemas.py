@@ -29,6 +29,7 @@ from typing import (
     Self,
     TypeAlias,
     TypeVar,
+    cast,
 )
 
 from pydantic import (
@@ -8705,9 +8706,15 @@ RSKILL_ROLE_BY_KIND: dict[RSkillKind, Literal["s1", "s2"]] = {
     "reward": "s2",
     "playbook": "s2",
 }
-"""Slot each ``RSkillKind`` runs in (CLAUDE.md §3 dual-system pattern); a manifest's
-``role`` must equal it. No kind maps to ``"s0"``: S0 cerebellar control ships as
-ros2_control controllers, never as an rSkill."""
+"""Slot each ``RSkillKind`` runs in (CLAUDE.md §3 dual-system pattern). A manifest that
+omits ``role`` gets this value; one that declares it must match. No kind maps to ``"s0"``:
+S0 cerebellar control ships as ros2_control controllers, never as an rSkill."""
+
+EXECUTE_RSKILL_KINDS: frozenset[str] = POLICY_KINDS | ROS_WRAPPER_KINDS
+"""Kinds the ExecuteRskill runner can dispatch: policies and wrapped ROS servers. Every
+other kind is a perception producer (detector / segmenter), a scene-query or reward model
+(vlm / reward), or a decision procedure the reasoner reads (playbook). The reasoner palette,
+the runner's resolver and its pre-load gate all read this one set."""
 
 # Embodiment-agnostic rSkills (perception kinds detector / vlm / reward, and
 # ``playbook`` decision procedures) do not target a specific embodiment. They
@@ -9221,9 +9228,9 @@ class RSkillManifest(BaseModel):
         version: SemVer string of the rSkill package (not the wrapped weights).
         license: License posture surfaced at install time; drives ``is_commercial_use_allowed``.
         role: rSkill slot, fixed by ``kind`` — ``"s1"`` (policies, ROS wrappers,
-            detector / segmenter) or ``"s2"`` (vlm / reward / playbook). ``"s0"``
-            is refused: S0 ships as ros2_control controllers. Enforced by
-            ``_check_role_matches_kind`` against ``RSKILL_ROLE_BY_KIND``.
+            detector / segmenter) or ``"s2"`` (vlm / reward / playbook). Optional:
+            omitted, it is filled from ``RSKILL_ROLE_BY_KIND``; declared, it must
+            match. ``"s0"`` is refused: S0 ships as ros2_control controllers.
         model_family: Closed VLA / policy family; drives the runner's adapter dispatch.
         embodiment_tags: Robot embodiments targeted; must intersect the robot's tags.
             ``"custom"`` requires ``embodiment_extra``.
@@ -9308,7 +9315,9 @@ class RSkillManifest(BaseModel):
     name: str = Field(pattern=_HF_HUB_ID_PATTERN)
     version: str = Field(pattern=_SEMVER_PATTERN)
     license: RSkillLicensePosture = RSkillLicensePosture.UNKNOWN
-    role: Literal["s0", "s1", "s2"] = "s1"
+    # Optional on disk: ``_default_role_from_kind`` fills it from ``RSKILL_ROLE_BY_KIND``
+    # before validation, so a validated manifest always carries a role.
+    role: Literal["s0", "s1", "s2"] = Field(default=None)  # type: ignore[arg-type]  # reason: never None once validated; the before-validator fills it from kind
     # Discriminator selecting the loader / runner branch. Required (no
     # default) so every manifest declares it explicitly — see
     # ``RSkillKind`` for the semantics of each value and which other
@@ -9399,9 +9408,23 @@ class RSkillManifest(BaseModel):
             return None
         return self.min_vram_gb.get(self.quantization.dtype)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_role_from_kind(cls, data: object) -> object:
+        """Fill an omitted ``role`` from ``RSKILL_ROLE_BY_KIND`` — the role is derived, not free.
+
+        An unknown or missing ``kind`` is left for the field validator to reject.
+        """
+        if not isinstance(data, Mapping) or data.get("role") is not None:
+            return data
+        kind = data.get("kind")
+        if kind not in RSKILL_ROLE_BY_KIND:
+            return data
+        return {**data, "role": RSKILL_ROLE_BY_KIND[cast("RSkillKind", kind)]}
+
     @model_validator(mode="after")
     def _check_role_matches_kind(self) -> RSkillManifest:
-        """``role`` must be the slot ``kind`` runs in (``RSKILL_ROLE_BY_KIND``).
+        """A declared ``role`` must be the slot ``kind`` runs in (``RSKILL_ROLE_BY_KIND``).
 
         ``"s0"`` is refused outright: S0 ships as ros2_control controllers and
         there is no S0 rSkill runtime. A mismatched ``s1`` / ``s2`` would put an
