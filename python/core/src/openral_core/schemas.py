@@ -9317,7 +9317,7 @@ class RSkillManifest(BaseModel):
         >>> m.is_commercial_use_allowed
         True
         >>> m.schema_version
-        '0.1'
+        '0.2'
     """
 
     model_config = ConfigDict(use_enum_values=False, extra="forbid")
