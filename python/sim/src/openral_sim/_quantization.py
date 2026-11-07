@@ -24,7 +24,11 @@ from typing import Any, NamedTuple
 
 import structlog
 from openral_core.exceptions import ROSConfigError
-from openral_rskill.quantization_gate import require_pro_for_checkpoint, require_pro_for_dtype
+from openral_rskill.quantization_gate import (
+    pro_quantization_installed,
+    require_pro_for_checkpoint,
+    require_pro_for_dtype,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -610,7 +614,10 @@ def plan_quantization(
     3. ``spec.extra["dtype"]`` — the untyped override (a programmatic
        ``VLASpec``, or a scene that pins the dtype for one pairing).
     4. ``manifest.quantization.dtype`` — the rSkill's declared *runtime*
-       dtype, the normal case. A checkpoint stored at a different precision
+       dtype, the normal case. When OpenRAL Pro's quantization module is
+       installed and the manifest names ``quantization.extra.pro_dtype``, that
+       token is used instead (source ``manifest_pro``), so one manifest runs
+       bf16 on open and NF4 on Pro. A checkpoint stored at a different precision
        than it runs records that in ``quantization.extra.stored_dtype``; the
        resolver never reads it.
     5. ``default`` — the adapter's own fallback, for families that quantize
@@ -648,7 +655,11 @@ def plan_quantization(
     elif spec_raw:
         token, source = canonical_quant_token(spec_raw), "spec_extra"
     elif manifest_token:
-        token, source = manifest_token, "manifest"
+        pro_token = canonical_quant_token(quantization_extra(manifest).get("pro_dtype"))
+        if pro_token is not None and pro_quantization_installed():
+            token, source = pro_token, "manifest_pro"
+        else:
+            token, source = manifest_token, "manifest"
     elif default:
         token, source = canonical_quant_token(default), "default"
     else:

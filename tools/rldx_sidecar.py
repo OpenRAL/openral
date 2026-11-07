@@ -292,7 +292,7 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
             # A pinned `repo@sha`: upstream's snapshot_download(model_path) takes no
             # revision and rejects `@` in a repo id, so resolve the pin here.
             _model_path = {args.model!r}
-            if "@" in _model_path:
+            if "@" in _model_path and not os.path.exists(_model_path):
                 from huggingface_hub import snapshot_download
                 _repo, _, _rev = _model_path.partition("@")
                 _model_path = snapshot_download(_repo, revision=_rev)

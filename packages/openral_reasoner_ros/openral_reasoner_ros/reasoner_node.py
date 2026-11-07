@@ -1026,13 +1026,19 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         f"default_patience_s={self._reward_contract.default_patience_s:.0f}",
                     )
 
+        # With OpenRAL Pro installed a manifest's quantization.extra.pro_dtype is what
+        # loads, so the VRAM checks budget that footprint (logged below, §1.4).
+        from openral_rskill.quantization_gate import pro_quantization_installed
+
+        self._pro_quantization = pro_quantization_installed()
         # Make the pair fit check's state explicit in the logs (§1.4):
         # armed only when a reward model is active AND the GPU total is known.
         if self._reward_manifest is not None and self._gpu_total_vram_gb > 0.0:
             self.get_logger().info(
                 f"VLA+reward VRAM fit check ARMED — reward="
                 f"{self._reward_manifest.name!r} "
-                f"({self._reward_manifest.active_min_vram_gb()} GB), "
+                f"({self._reward_manifest.active_min_vram_gb(pro_installed=self._pro_quantization)}"
+                f" GB), pro_quantization={self._pro_quantization}, "
                 f"gpu_total={self._gpu_total_vram_gb:.2f} GB",
             )
         else:
@@ -4824,7 +4830,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         vla = self._manifest_for_rskill(call.rskill_id)
         if vla is None or vla.kind not in POLICY_KINDS:
             return False
-        vla_min_gb = vla.active_min_vram_gb()
+        vla_min_gb = vla.active_min_vram_gb(pro_installed=self._pro_quantization)
         if call.rskill_id == self._resident_vla_id:
             # Re-dispatch of the skill the runner already holds warm: its own
             # residency is why free VRAM is low, and re-running it needs ~0
@@ -4865,7 +4871,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"{self._reward_manifest.name!r}",
             )
         try:
-            assert_vla_reward_fits(vla, self._reward_manifest, self._gpu_total_vram_gb)
+            assert_vla_reward_fits(
+                vla,
+                self._reward_manifest,
+                self._gpu_total_vram_gb,
+                pro_installed=self._pro_quantization,
+            )
         except (ROSGPUMemoryError, ROSConfigError) as exc:
             self.get_logger().error(
                 f"dispatch: refusing execute_rskill {call.rskill_id!r} — VLA + reward "

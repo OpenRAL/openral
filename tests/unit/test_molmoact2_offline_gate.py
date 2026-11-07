@@ -11,17 +11,19 @@ file is missing". The gate must probe the file the inner block actually reads.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import huggingface_hub
 import huggingface_hub.constants as hc
 import pytest
 from openral_core import VLASpec
 from openral_core.exceptions import ROSConfigError
+from openral_rskill import split_repo_revision
 from openral_rskill.loader import rSkill
 from openral_sim.policies.molmoact2 import (
     _hf_offline_if_cached,
     _norm_stats_path,
     _resolve_max_crops,
-    _split_repo_revision,
 )
 
 
@@ -30,25 +32,31 @@ class TestSplitRepoRevision:
     the repo id where HF silently drops it (security audit 2026-06, H5)."""
 
     def test_no_pin_returns_none_revision(self) -> None:
-        assert _split_repo_revision("allenai/MolmoAct2-LIBERO") == (
+        assert split_repo_revision("allenai/MolmoAct2-LIBERO") == (
             "allenai/MolmoAct2-LIBERO",
             None,
         )
 
     def test_pinned_sha_is_split_out(self) -> None:
-        assert _split_repo_revision("allenai/MolmoAct2-LIBERO@abc123") == (
+        assert split_repo_revision("allenai/MolmoAct2-LIBERO@abc123") == (
             "allenai/MolmoAct2-LIBERO",
             "abc123",
         )
 
     def test_pinned_branch_is_split_out(self) -> None:
-        assert _split_repo_revision("allenai/MolmoAct2-LIBERO@main") == (
+        assert split_repo_revision("allenai/MolmoAct2-LIBERO@main") == (
             "allenai/MolmoAct2-LIBERO",
             "main",
         )
 
+    def test_local_path_is_never_split(self, tmp_path: Path) -> None:
+        """A local checkpoint dir may contain ``@``; it is not a repo@rev pin."""
+        ckpt = tmp_path / "rldx@v2"
+        ckpt.mkdir()
+        assert split_repo_revision(str(ckpt)) == (str(ckpt), None)
+
     def test_trailing_at_yields_none_revision(self) -> None:
-        assert _split_repo_revision("allenai/MolmoAct2-LIBERO@") == (
+        assert split_repo_revision("allenai/MolmoAct2-LIBERO@") == (
             "allenai/MolmoAct2-LIBERO",
             None,
         )
@@ -179,7 +187,7 @@ def test_norm_stats_resolve_at_the_pinned_source_revision(skill: str) -> None:
     """
     pkg = rSkill.from_yaml(f"rskills/{skill}/rskill.yaml")
     assert pkg.manifest.source_repo is not None
-    repo, revision = _split_repo_revision(pkg.manifest.source_repo.removeprefix("hf://"))
+    repo, revision = split_repo_revision(pkg.manifest.source_repo.removeprefix("hf://"))
     assert revision is not None and len(revision) == 40
     try:
         path = _norm_stats_path(repo, revision)

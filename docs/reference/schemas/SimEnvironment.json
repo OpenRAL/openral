@@ -81,7 +81,7 @@
       "type": "string"
     },
     "QuantizationConfig": {
-      "description": "Full specification of how to quantize a skill's model weights.\n\nAttributes:\n    dtype: Target numeric format.\n    backend: Inference backend that will execute the model.\n    per_channel: Use per-channel (vs per-tensor) quantization.\n    calibration_dataset: HuggingFace dataset ID or local path used for\n        post-training calibration (INT8 / TensorRT only).\n    extra: Backend-specific overrides (e.g. ``{\"calibration_steps\": 128}``).\n\nExample:\n    >>> cfg = QuantizationConfig(dtype=QuantizationDtype.INT8)\n    >>> cfg.backend\n    <QuantizationBackend.PYTORCH: 'pytorch'>",
+      "description": "Full specification of how to quantize a skill's model weights.\n\nAttributes:\n    dtype: Target numeric format.\n    backend: Inference backend that will execute the model.\n    per_channel: Use per-channel (vs per-tensor) quantization.\n    calibration_dataset: HuggingFace dataset ID or local path used for\n        post-training calibration (INT8 / TensorRT only).\n    extra: Backend-specific overrides (e.g. ``{\"calibration_steps\": 128}``).\n        ``extra[\"pro_dtype\"]`` names the dtype to run at when OpenRAL Pro's\n        quantization module is installed (e.g. ``\"int4\"`` over an open\n        ``bf16``); it must be a ``QuantizationDtype`` value.\n\nExample:\n    >>> cfg = QuantizationConfig(dtype=QuantizationDtype.INT8)\n    >>> cfg.backend\n    <QuantizationBackend.PYTORCH: 'pytorch'>",
       "properties": {
         "dtype": {
           "$ref": "#/$defs/QuantizationDtype",
