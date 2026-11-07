@@ -158,7 +158,12 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
 
     base = _hf_repo(getattr(manifest, "source_repo", None))
     own = _hf_repo(manifest.weights_uri)
-    if base and base != own:
+    lora_base = _hf_repo(getattr(manifest, "base_weights_uri", None))
+    if lora_base:
+        # A LoRA rSkill: the adapter is merged into this base at load.
+        fm["base_model"] = [lora_base]
+        fm["base_model_relation"] = "adapter"
+    elif base and base != own:
         fm["base_model"] = [base]
         # relation reflects what the packaging did to the upstream: quantized when
         # a real quantization block is present, else a plain finetune/wrapper.

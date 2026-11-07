@@ -22,7 +22,7 @@ The two-arm Metal Arm Station is a separate manifest:
 | End effector | parallel gripper, normalised `[0 = closed, 1 = open]` mapped onto `joint8`'s `[0, 0.05]` m finger travel |
 | Reach | 612.5 mm (vendor figure) → `workspace_radius_m: 0.6125` |
 | Payload | vendor rates the arm at 3 kg; the manifest declares 0.3 kg, capped by what a 3 N two-finger friction grasp holds (the URDF finger effort limit is the only upstream gripper figure) |
-| Sensors | `front` RGB (workcell camera, `observation.images.front`) + `wrist` RGB on `gripper_base` (`observation.images.wrist`); both placements are sim choices, not measured mounts |
+| Sensors | `top` RGB (static overhead camera, `observation.images.top`) + `wrist` RGB on `gripper_base` (`observation.images.wrist`); both poses / intrinsics are a fit on MakerMods' `HappyEthan/metal_pick_place` videos, not measured mounts |
 | Embodiment tags | `makermods_metal`, `makermods` |
 | Supported control modes | `joint_position`, `gripper_position` |
 | Action / observation spec | 7-D joint positions @ 30 Hz / `(7,)` joint state |
@@ -75,10 +75,62 @@ model, so the MJCF's `kp` / `kv` say nothing about the real Damiao control loop.
 range limit at qpos 0, so `sim.seed_ctrl_from_qpos: true` keeps the position
 actuators holding the initial pose instead of driving to 0.
 
+## Cameras
+
+The camera names and feature keys match MakerMods' pick-and-place dataset
+(`HappyEthan/metal_pick_place`): `top` (`observation.images.top`) and `wrist`
+(`observation.images.wrist`). Both poses were fit on that dataset's videos
+(top: f 373 px, principal point (287.8, 195), reprojection ~3 px; wrist:
+an offline fit on 120 frames with known states against appearance-free
+features — held-out desk edges 1–3 px, marker 4.4 px median; f 285.6 px,
+principal point (325.8, 249.9), no measurable radial distortion), so they describe *that* rig, not a
+measured mount — `static_transform_calibrated` stays `false`. The generic HAL
+camera rig has no principal-point offset, so the `top` `sim_placement` is aimed
+along the ray through the image centre (fovy 65.5°); the `metal_pick_place`
+scene renders the exact intrinsics. `robots/makermods_metal_station` keeps its
+wrist cameras identical to this one.
+
 ## Sim usage
 
-There is no scene or rSkill for this arm yet, so drive the bare MuJoCo twin
-through the HAL:
+### `metal_pick_place` scene
+
+[`scenes/sim/makermods_metal_pick_place.yaml`](../../scenes/sim/makermods_metal_pick_place.yaml)
+is a sim twin of the dataset's rig: the calibrated cameras, a dark wood desk
+against a grey wall, the white cart, the desk grommet, a 3 cm orange cube and the
+real marker sticker in the dataset's layouts A–D, and a visual-only leader arm.
+The cube is 25 mm: at 30 mm it renders 1.23x too large in the wrist view. The
+upstream finger STL is thicker than the fingers on the dataset's arm: with the
+camera pinned by the desk edges and markers, the real finger silhouettes give a
+mesh scale of (0.676, 1, 0.93) in the STL frame (`finger_mesh_scale`). The
+gripper mapping is joint8 = stroke / 2000 - 1.25 mm (the closed real gripper
+reads 2.5) with a stiff finger servo (`finger_kp`), so the simulated grip on the
+cube reads stroke 22-27 where the real arm reads 24-30. The
+static top view is MuJoCo's arm / cube / marker composited over a real background
+plate taken from the dataset (so a policy trained on the real top images sees
+the real room). The wrist view is rendered with real textures: a seamless desk-wood tile
+rectified from near-nadir wrist frames (de-shaded, grain frequency matched to the
+real frames), the white cart as a mosaic of rectified wrist frames, and the
+marker as the real sticker. Desk, wall, cube, fingers and marker match the real
+wrist frames' mean colour to within 7 % per region; a grid of soft shadow lights
+keeps the gripper's shadow on the desk, which the pi0.5 LoRA uses as a cue.
+
+```bash
+openral sim run --config scenes/sim/makermods_metal_pick_place.yaml \
+    --rskill rskills/<metal-pick-place-skill>
+```
+
+Replaying eight recorded episodes open-loop (two per layout, the cube and marker
+measured from each episode's own top frames, its own start state) grasps, lifts
+and places the cube in all eight, 0.3-0.95 cm from the marker centre, with
+joint tracking errors of 0.04-0.25 deg; one episode per layout runs in
+`tests/sim/test_makermods_metal_hal_metal_pick_place.py`. The scene adds
+gravity compensation to the arm links (`arm_gravcomp`): the derived MJCF's
+sim-only gains otherwise sag the fingertips into the desk at the dataset's
+grasp poses.
+
+### Bare HAL
+
+Without a scene, drive the bare MuJoCo twin through the HAL:
 
 ```python
 from openral_core import RobotDescription
@@ -117,7 +169,7 @@ leader arm for teleoperation. Two integration options are open:
 
 The manifest's `safety` block holds sim values. None of them was measured on a
 real arm, and the camera mounts are uncalibrated
-(`static_transform_calibrated: false` on `wrist`). Re-measure all of them before
+(`static_transform_calibrated: false` on `top` and `wrist`). Re-measure all of them before
 a real deploy.
 
 ## References
