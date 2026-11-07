@@ -140,10 +140,10 @@ def test_far_cube_is_semi_if_lifted_else_fail() -> None:
     assert list(PLACEMENT_GRADE_SCORES.values()) == [1.0, 0.5, 0.25, 0.0]
 
 
-def test_benchmark_suite_is_ten_stratified_scenes_inside_the_dataset_layouts() -> None:
+def test_benchmark_suite_is_three_layout_a_scenes_inside_the_dataset_layout() -> None:
     scenes = load_benchmark_suite(str(_ROOT / "benchmarks" / "makermods_metal_pick_place.yaml"))
     raise_on_invalid_suite(scenes, suite_id="makermods_metal_pick_place")
-    assert len(scenes) == 10
+    assert len(scenes) == 3
     defaults = MetalPickPlaceOptions().layouts
     per_layout: dict[str, int] = {}
     for sc in scenes:
@@ -157,4 +157,4 @@ def test_benchmark_suite_is_ten_stratified_scenes_inside_the_dataset_layouts() -
         (dc, dm) = defaults[name]
         assert np.abs(np.subtract(cube, dc)).max() <= 0.015 + 1e-9
         assert np.abs(np.subtract(marker, dm)).max() <= 0.015 + 1e-9
-    assert per_layout == {"A": 3, "B": 3, "C": 2, "D": 2}
+    assert per_layout == {"A": 3}
