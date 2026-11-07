@@ -162,6 +162,18 @@ hal.disconnect()
 --resolve-remote-assets` also resolves the `makermods:` refs (clone + MuJoCo
 compile).
 
+## Safety: no self-collision checking yet
+
+> **Hazard.** This manifest declares no `collision_geometry`, so the safety kernel's
+> envelope loader runs with self-collision checking **disabled** (only the workspace
+> box and joint/velocity limits apply). The repo's collision fitter cannot lower
+> this arm yet: its MJCF path reads the `gripper` fraction as metres when checking
+> the finger `mimic_joints` rows, and its URDF path leaves the `metal_description`
+> `package://` meshes unresolved; it also emits no finger geometry. Closing this
+> needs a `packages/openral_safety` lowering change (Safety-WG review). Until then,
+> do not run this manifest on real hardware behind the kernel's self-collision
+> guarantee.
+
 ## Real hardware
 
 No HAL exists yet (`hal.real: null`). `openral deploy run` refuses the robot
