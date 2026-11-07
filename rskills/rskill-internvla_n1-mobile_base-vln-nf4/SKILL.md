@@ -17,7 +17,7 @@ metadata:
   sensors_required: ['rgb:observation.images.head']
   action_dim: 6
   runtime: pytorch
-  quantization: int4/pytorch
+  quantization: bf16/pytorch
   min_vram_gb: {int4: 7.0, bf16: 16.6}
   chunk_size: 1
   latency_budget: {per_chunk_ms: 2500.0, max_execution_s: 300.0}

@@ -45,9 +45,9 @@ def _spec(skill: str) -> VLASpec:
     )
 
 
-def test_the_twenty_quantized_skills_are_found() -> None:
+def test_the_nineteen_quantized_skills_are_found() -> None:
     """The catalogue still lists the quantized skills; ADR-0123 keeps them in open."""
-    assert len(_QUANTIZED) == 20, _QUANTIZED
+    assert len(_QUANTIZED) == 19, _QUANTIZED
 
 
 @pytest.mark.parametrize("skill", _QUANTIZED)
