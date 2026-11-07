@@ -344,6 +344,7 @@ def _report_loosening(robot_path: Path, findings: list[GeometryLoosening]) -> No
 
 
 _JOINT_NAME_RE = re.compile(r'^(\s*)-\s*name:\s*["\']?([^"\'\s]+)')
+_TOP_KEY_RE = re.compile(r"^([A-Za-z_][\w]*):")
 
 
 # FK via matrix inverse leaves sub-nm noise; snap anything below this to zero
@@ -365,7 +366,8 @@ def inject_joint_fk(text: str, joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]]) 
     """Inject ``origin_xyz`` / ``origin_rpy`` / ``axis_xyz`` into named joint blocks.
 
     For each joint in ``joint_fk`` (keyed by manifest joint name), find its
-    ``- name: "<name>"`` list item under ``joints:``, drop any existing
+    ``- name: "<name>"`` list item under ``joints:`` or ``mimic_joints:`` (never
+    an ``end_effectors`` / ``sensors`` item that shares the name), drop any existing
     origin/axis lines in that item, and insert the lowered values right after the
     name line. The kernel needs these to place the link capsules. Joints
     not in ``joint_fk`` are untouched. Idempotent: re-running drops and re-inserts
@@ -376,11 +378,20 @@ def inject_joint_fk(text: str, joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]]) 
     lines = text.splitlines(keepends=True)
     out: list[str] = []
     i, n = 0, len(lines)
+    section = ""
     while i < n:
         ln = lines[i]
+        top = _TOP_KEY_RE.match(ln)
+        if top:
+            section = top.group(1)
         m = _JOINT_NAME_RE.match(ln)
         jname = m.group(2) if m else None
-        if m is None or jname is None or jname not in joint_fk:
+        if (
+            m is None
+            or jname is None
+            or jname not in joint_fk
+            or section not in ("joints", "mimic_joints")
+        ):
             out.append(ln)
             i += 1
             continue
