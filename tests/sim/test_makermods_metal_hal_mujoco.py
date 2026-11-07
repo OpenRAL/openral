@@ -44,6 +44,7 @@ from openral_core.assets import (  # noqa: E402
 from openral_core.exceptions import ROSConfigError  # noqa: E402
 from openral_hal import _makermods_metal_assets as metal  # noqa: E402
 from openral_hal._mujoco_arm import MujocoArmHAL  # noqa: E402
+from openral_hal.resolver import urdf_joint_map  # noqa: E402
 
 pytestmark = pytest.mark.sim
 
@@ -290,9 +291,38 @@ def test_single_arm_gripper_matches_derived_urdf(arm: RobotDescription) -> None:
     (gripper,) = [j for j in arm.joints if j.role == "gripper"]
     assert gripper.sim_joint_name is not None
     src = urdf[gripper.sim_joint_name]
-    limit, parent, child = src.find("limit"), src.find("parent"), src.find("child")
-    assert limit is not None and parent is not None and child is not None
-    assert (parent.get("link"), child.get("link")) == (gripper.parent_link, gripper.child_link)
+    limit, parent = src.find("limit"), src.find("parent")
+    assert limit is not None and parent is not None
+    assert parent.get("link") == gripper.parent_link
+    # The manifest joint's child is LOGICAL (a [0, 1] fraction is not metres):
+    # the real fingers are mimic rows at the URDF joints' own origins / axes.
+    assert gripper.child_link not in {
+        str(c.get("link")) for j in urdf.values() if (c := j.find("child")) is not None
+    }
+    mimics = {m.name: m for m in arm.mimic_joints}
+    assert set(mimics) == {"joint7", "joint8"}
+    for name, mimic in mimics.items():
+        joint = urdf[name]
+        origin, axis, child = joint.find("origin"), joint.find("axis"), joint.find("child")
+        assert origin is not None and axis is not None and child is not None
+        assert mimic.child_link == child.get("link")
+        assert mimic.mimics == gripper.name
+        assert mimic.joint_type.value == joint.get("type")
+        assert mimic.origin_xyz == pytest.approx(_floats(origin.get("xyz")), abs=1e-6)
+        assert mimic.origin_rpy == pytest.approx(_floats(origin.get("rpy")))
+        assert mimic.axis_xyz == pytest.approx(_floats(axis.get("xyz")))
+        lim = joint.find("limit")
+        assert lim is not None
+        # f = 1 (open) reaches the finger's far URDF limit, f = 0 its closed 0.
+        far = float(str(lim.get("lower" if mimic.multiplier < 0 else "upper")))
+        assert mimic.value_at(1.0) == pytest.approx(far)
+        assert mimic.value_at(0.0) == pytest.approx(0.0)
+    # The URDF's own coupling: joint8 mimics joint7 with multiplier -1.
+    urdf_mimic = urdf["joint8"].find("mimic")
+    assert urdf_mimic is not None and urdf_mimic.get("joint") == "joint7"
+    assert mimics["joint8"].multiplier == pytest.approx(
+        float(str(urdf_mimic.get("multiplier"))) * mimics["joint7"].multiplier
+    )
     travel = (float(str(limit.get("lower"))), float(str(limit.get("upper"))))
     (sim_gripper,) = arm.sim.grippers
     assert sim_gripper.ctrl_range == pytest.approx(travel)
@@ -345,3 +375,26 @@ def test_unwritable_cache_is_an_asset_ref_error(
     finally:
         cache.chmod(0o700)
     assert isinstance(info.value.__cause__, PermissionError)
+
+
+@pytest.mark.parametrize("robot_id", ["makermods_metal", "makermods_metal_station"])
+def test_urdf_joint_map_publishes_the_finger_master_in_metres(robot_id: str) -> None:
+    """``robot_state_publisher`` gets each gripper as URDF ``joint7`` in metres.
+
+    joint7 is the URDF's non-mimic finger (joint8 mimics it), so the fraction
+    f goes out as ``-0.05 f`` m and every other joint passes through unscaled.
+    """
+    desc = RobotDescription.from_yaml(str(_ROOT / "robots" / robot_id / "robot.yaml"))
+    assert desc.assets.urdf is not None and desc.assets.urdf.ref is not None
+    urdf_xml = _resolve(desc.assets.urdf.ref, "urdf").read_text(encoding="utf-8")
+    joint_map = urdf_joint_map(desc, urdf_xml)
+    assert joint_map is not None
+    expected = [
+        (str(j.sim_joint_name).replace("joint8", "joint7"), -0.05)
+        if j.role == "gripper"
+        else (str(j.sim_joint_name), 1.0)
+        for j in desc.joints
+    ]
+    assert list(joint_map.names) == [name for name, _ in expected]
+    assert list(joint_map.scales) == pytest.approx([scale for _, scale in expected])
+    assert list(joint_map.offsets) == [0.0] * len(desc.joints)
