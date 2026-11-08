@@ -252,6 +252,10 @@ class TaskState:
         attempts: Number of ``execute_rskill`` dispatches made for this task —
             the loop guard for the replanning ladder.
         last_rskill_id: rSkill id of the most recent attempt, or ``None``.
+        tried_rskill_ids: Every rSkill id dispatched for this task, in first-try
+            order. A task still active after a skill ran was not finished by it,
+            so the skill-subset ranking demotes these among equal scores (the
+            substitute-skill rung reaches skills outside the top-k).
         last_trace_id: Trace id of the most recent attempt, or ``None``.
         last_verdict: Short human-readable verdict of the last verification
             (e.g. ``"success=0.91"``, ``"stalled@0.73"``, ``"unverified"``).
@@ -266,6 +270,7 @@ class TaskState:
     status: TaskStatus = "pending"
     attempts: int = 0
     last_rskill_id: str | None = None
+    tried_rskill_ids: tuple[str, ...] = ()
     last_trace_id: str | None = None
     last_verdict: str | None = None
     depth: int = 0
@@ -370,6 +375,8 @@ class MissionState:
             return
         task.attempts += 1
         task.last_rskill_id = rskill_id
+        if rskill_id and rskill_id not in task.tried_rskill_ids:
+            task.tried_rskill_ids = (*task.tried_rskill_ids, rskill_id)
         if trace_id is not None:
             task.last_trace_id = trace_id
 
@@ -505,6 +512,7 @@ class MissionState:
                     "status": t.status,
                     "attempts": t.attempts,
                     "last_rskill_id": t.last_rskill_id,
+                    "tried_rskill_ids": list(t.tried_rskill_ids),
                     "last_trace_id": t.last_trace_id,
                     "last_verdict": t.last_verdict,
                     "depth": t.depth,
@@ -530,6 +538,7 @@ class MissionState:
                     status=raw["status"],  # validated against the Literal set below
                     attempts=int(raw.get("attempts", 0)),
                     last_rskill_id=raw.get("last_rskill_id"),
+                    tried_rskill_ids=tuple(str(i) for i in raw.get("tried_rskill_ids") or ()),
                     last_trace_id=raw.get("last_trace_id"),
                     last_verdict=raw.get("last_verdict"),
                     depth=int(raw.get("depth", 0)),

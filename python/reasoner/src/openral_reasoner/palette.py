@@ -27,6 +27,7 @@ from typing import (
 from openral_core import (
     EXECUTE_RSKILL_KINDS,
     DetectorMode,
+    QuantizationDtype,
     RobotCapabilities,
     RobotDescription,
     RSkillAction,
@@ -265,6 +266,9 @@ class RSkillToolEntry(BaseModel):
             the per-skill tool's ``parameters.properties.goal_params_json``
             so the provider's structured-output path generates a
             well-formed payload.
+        quantization_dtype: The dtype the skill runs at
+            (``RSkillManifest.quantization.dtype``). Not shown to the LLM; the
+            skill-subset ranking prefers higher precision among equal scores.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -275,6 +279,7 @@ class RSkillToolEntry(BaseModel):
     objects: tuple[str, ...] = ()
     scenes: tuple[str, ...] = ()
     goal_params_schema: dict[str, Any] | None = None
+    quantization_dtype: QuantizationDtype = QuantizationDtype.FP32
 
 
 class ToolPalette(BaseModel):
@@ -559,6 +564,7 @@ def build_tool_palette(
                 objects=tuple(skill.objects),
                 scenes=tuple(skill.scenes),
                 goal_params_schema=skill.goal_params_schema,
+                quantization_dtype=skill.quantization.dtype,
             ),
         )
     # Stable order so tool schemas are deterministic across builds.

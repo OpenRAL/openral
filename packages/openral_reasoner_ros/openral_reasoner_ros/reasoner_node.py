@@ -161,6 +161,7 @@ from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_que
 from openral_reasoner.tool_use import (
     ToolUseClient,
     build_tool_use_client_from_env,
+    resolve_max_skill_tools,
     resolve_reasoner_system_prompt,
 )
 from pydantic import ValidationError
@@ -1261,6 +1262,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         try:
             client = self._injected_client or build_tool_use_client_from_env()
+            # Small models get a mission-ranked top-k of the skills per tick (#494).
+            # Resolved here, before any pool / subscription / sidecar boot exists, so
+            # a bad OPENRAL_REASONER_MAX_SKILL_TOOLS fails configure without leaking.
+            max_skill_tools = resolve_max_skill_tools(client)
         except ROSConfigError as exc:
             self.get_logger().error(f"on_configure: {exc}")
             return TransitionCallbackReturn.FAILURE
@@ -1505,11 +1510,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._core = ReasonerCore(
             client=client,
             system_prompt=system_prompt,
+            max_skill_tools=max_skill_tools,
         )
 
         self.get_logger().info(
             f"on_configure: reasoner ready at {self._tick_hz} Hz "
-            f"({len(self._palette.execute_rskill_ids)} skills in palette)",
+            f"({len(self._palette.execute_rskill_ids)} skills in palette; "
+            f"offered per tick: {max_skill_tools or 'all'})",
         )
         return TransitionCallbackReturn.SUCCESS
 

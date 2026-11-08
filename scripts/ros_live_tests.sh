@@ -37,6 +37,9 @@ TARGETS=(
     tests/integration/test_reasoner_lifecycle_peers_without_seed.py
     # A blank query_task_progress task is the active mission task; stale replies drop.
     tests/integration/test_reasoner_task_progress_live.py
+    # #494: OPENRAL_REASONER_MAX_SKILL_TOOLS reaches ReasonerCore through on_configure;
+    # a real tick offers the fake LLM only the top-k skills of the seeded franka palette.
+    tests/integration/test_reasoner_skill_cap_live.py
     tests/integration/test_critic_producer_node.py
     # The scene-VLM node ends the sidecar its warm-up spawned (fake sidecar, no GPU).
     tests/integration/test_scene_vlm_node_teardown_live.py

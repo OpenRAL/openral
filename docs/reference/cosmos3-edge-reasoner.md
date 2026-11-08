@@ -182,8 +182,42 @@ Failed ticks are whitespace runaways inside the tool-call JSON, cut off by the
 512-token cap. They follow the number of near-identical skill tools, not the
 token count: 17K tokens with 4 skills decodes, 22K with 14 does not, and the
 query tools are harmless. Temperature 0.6 did not help (1/20 and 2/20 for the
-query-tool palette). Large palettes need a smaller set of skills per tick:
-OpenRAL/openral#494.
+query-tool palette).
+
+So the registry entry sets `max_skill_tools=4` (OpenRAL/openral#494): each tick
+`ReasonerCore.offered_palette` ranks the palette's skills against the active
+mission task and any pending operator prompts (objects and action verbs weigh
+most) and offers at most four. Those four slots go first to the skill in flight,
+then to the best match for the newest top-priority operator prompt, then to the
+task's last dispatched skill, then to the best navigate and look-at skill (never
+the last free slot), then to the highest scores. Equal scores prefer skills not yet tried for the task (so each
+failed attempt brings in untried skills), then higher weight precision, then the
+id. The query tools,
+lifecycle peers and detectors are unchanged, and a call to a skill outside the
+subset is refused like an off-palette id. The subset changes only when the task
+does, so vLLM's prefix cache still holds across ticks. The offered ids are on
+the `reasoner.offered_skills` span attribute; the scores on the
+`reasoner.skill_subset` log, emitted whenever the ranking is recomputed. To bench
+another `k`, set `OPENRAL_REASONER_MAX_SKILL_TOOLS` (`0` offers every skill).
+
+The cap measured on Thor (2026-11-08; vLLM 0.28.0, BF16, the open sidecar's
+Jetson defaults: 32K window, 512-token cap, the checkpoint's own sampling;
+20 ticks each with openral-pro's `tools/cosmos3_edge_bench.py`). Prompts are
+`franka_panda` with every query tool, narrowed by `select_skill_subset` against
+the bench's own mission ("Put the red cube in the blue bowl."):
+
+| prompt | skills | tokens | valid | median warm tick | ticks hitting the 512 cap |
+|---|---|---|---|---|---|
+| `so100_follower` + query tools (baseline) | 4 | 12,706 | 20/20 | 2.7 s | 0 |
+| `franka_panda` + query tools, full palette | 14 | 25,322 | 2/20 | 13.4 s | 18 |
+| same, `k` = 4 (the default) | 4 | 12,470 | **19/20** | 1.7 s | 1 |
+| same, `k` = 8 | 8 | 17,624 | 16/20 | 1.9 s | 4 |
+| same, `k` = 12 | 12 | 22,655 | 0/20 | 12.8 s | 20 |
+
+`k` = 4 meets the #494 bar (≥ 17/20, the `so100_follower` level) and halves the
+warm tick; `k` = 8 is just short of it, and `k` = 12 fails like the full palette.
+The k = 4 subset was act, smolvla and xvla (the LIBERO skills, tied, broken toward
+full precision) plus the look-at skill.
 
 ## Risks and open questions
 
