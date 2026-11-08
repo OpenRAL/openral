@@ -9,5 +9,7 @@ f9f3d9959464d123a164b1e4bc11d0f0e56ad97d, license Apache-2.0.
   layout_<ep>              float32 (6,): the episode's start layout in station_base (the
                            midpoint of the arm bases): cup x, y (m), cup face yaw (deg, mod 90),
                            pen centre x, y (m), pen yaw (deg). Cup from left-arm forward
-                           kinematics at the grasp (0.087 m along gripper_base z); pen from
-                           top-camera back-projection with the measured station camera.
+                           kinematics at the grasp (0.102 m along gripper_base z: the cup's
+                           centre, fitted to the left wrist frames); pen centre = midpoint of
+                           its two ends back-projected from the top camera (the blob's pixel
+                           centroid sat 2-2.5 cm short in x, toward the camera).

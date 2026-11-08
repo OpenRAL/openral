@@ -7,8 +7,10 @@
 # metres in station_base, yaw degrees, from the dataset analysis of
 # makermods/pen_holder_bi_20260723_161553 (40 valid episodes, one tight cluster): P00 is the
 # dataset mean; P01..P09 a Latin hypercube (seed 42) over the 5th-95th percentile box -- cup
-# x 0.446-0.477, y 0.281-0.313, yaw -5.6..3.1; pen x 0.224-0.271, y -0.340..-0.294, yaw
-# -6.3..4.6. Each episode jitters both starts by +-5 mm / +-2 deg from its seed, so the three
+# x 0.460-0.492, y 0.280-0.313, yaw -5.6..3.1; pen x 0.246-0.288, y -0.342..-0.294, yaw
+# -6.3..4.6. Cup = the left grasp point 0.102 m along the gripper axis (its centre, fitted to
+# the left wrist frames); pen = the midpoint of its two back-projected ends (the blob's pixel
+# centroid sat 2-2.5 cm short in x, toward the top camera). Each episode jitters both starts by +-5 mm / +-2 deg from its seed, so the three
 # seeds of a layout differ; the demonstrations only vary +-1-2 cm.
 #
 # Grading (restock's placement_grade contract), once the pen is released and at rest:
@@ -33,8 +35,8 @@
         top_background: plate
         spawn_jitter_m: 0.005
         yaw_jitter_deg: 2.0
-      holder_start: [0.461, 0.295, 0.0]
-      pen_start: [0.248, -0.318, -1.7]  # dataset mean
+      holder_start: [0.475, 0.294, 0.0]
+      pen_start: [0.27, -0.318, -1.7]  # dataset mean
   task:
     id: metal_pen_holder/P00
     scene_id: metal_pen_holder
@@ -65,8 +67,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.467, 0.313, -1.9]
-      pen_start: [0.246, -0.338, -6.1]
+      holder_start: [0.482, 0.313, -1.9]
+      pen_start: [0.266, -0.34, -6.1]
   task:
     id: metal_pen_holder/P01
     scene_id: metal_pen_holder
@@ -86,8 +88,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.447, 0.287, 2.8]
-      pen_start: [0.242, -0.311, 3.0]
+      holder_start: [0.461, 0.286, 2.8]
+      pen_start: [0.262, -0.312, 3.0]
   task:
     id: metal_pen_holder/P02
     scene_id: metal_pen_holder
@@ -107,8 +109,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.469, 0.299, 0.0]
-      pen_start: [0.269, -0.32, -0.7]
+      holder_start: [0.484, 0.299, 0.0]
+      pen_start: [0.286, -0.321, -0.7]
   task:
     id: metal_pen_holder/P03
     scene_id: metal_pen_holder
@@ -128,8 +130,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.457, 0.294, -4.9]
-      pen_start: [0.236, -0.294, 2.1]
+      holder_start: [0.471, 0.294, -4.9]
+      pen_start: [0.256, -0.295, 2.1]
   task:
     id: metal_pen_holder/P04
     scene_id: metal_pen_holder
@@ -149,8 +151,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.455, 0.282, 1.1]
-      pen_start: [0.258, -0.316, 0.7]
+      holder_start: [0.469, 0.281, 1.1]
+      pen_start: [0.276, -0.317, 0.7]
   task:
     id: metal_pen_holder/P05
     scene_id: metal_pen_holder
@@ -170,8 +172,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.461, 0.307, 1.7]
-      pen_start: [0.248, -0.303, -3.7]
+      holder_start: [0.475, 0.306, 1.7]
+      pen_start: [0.267, -0.303, -3.7]
   task:
     id: metal_pen_holder/P06
     scene_id: metal_pen_holder
@@ -191,8 +193,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.477, 0.304, -4.0]
-      pen_start: [0.232, -0.306, 3.9]
+      holder_start: [0.491, 0.303, -4.0]
+      pen_start: [0.253, -0.307, 3.9]
   task:
     id: metal_pen_holder/P07
     scene_id: metal_pen_holder
@@ -212,8 +214,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.451, 0.293, -3.2]
-      pen_start: [0.226, -0.33, -4.5]
+      holder_start: [0.465, 0.292, -3.2]
+      pen_start: [0.248, -0.331, -4.5]
   task:
     id: metal_pen_holder/P08
     scene_id: metal_pen_holder
@@ -233,8 +235,8 @@
     cameras: ["top", "wrist_left", "wrist_right"]
     backend_options:
       <<: *opts
-      holder_start: [0.472, 0.29, -2.7]
-      pen_start: [0.255, -0.323, -2.6]
+      holder_start: [0.486, 0.289, -2.7]
+      pen_start: [0.274, -0.324, -2.6]
   task:
     id: metal_pen_holder/P09
     scene_id: metal_pen_holder
