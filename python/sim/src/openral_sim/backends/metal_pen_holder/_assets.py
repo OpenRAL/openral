@@ -55,6 +55,7 @@ __all__ = [
     "MetalPenHolderOptions",
     "compose_metal_pen_holder",
     "holder_hex_texture",
+    "holder_hole_mask",
     "holder_inner_half_width",
 ]
 
@@ -174,6 +175,14 @@ class MetalPenHolderOptions(BaseModel):
     holder_friction: _Vec3 = (1.0, 0.03, 0.0005)
     holder_rgba: _Vec4 = _srgb(220, 222, 230)
     holder_emission: float = 0.25
+    # The real cup's hexagonal holes go through its walls (the wrists see the desk through
+    # them; MuJoCo ignores texture alpha) and one wall is solid plastic. Each wall is a grid
+    # of this many cells per row and column, the hole cells left out; 0 paints the holes on
+    # all four walls with a texture instead.
+    holder_hole_grid: int = Field(default=96, ge=0)
+    # The solid wall, by its outward normal in the cup frame: 0 +y, 1 -x, 2 -y, 3 +x. Side 2
+    # is the solid wall on the right of the left wrist view in episode 0 (ticks 120-196).
+    holder_solid_side: int | None = Field(default=2, ge=0, le=3)
     # Start (x, y, yaw_deg) on the shelf; the dataset mean.
     holder_start: _Vec3 = (0.475, 0.294, 0.0)
 
@@ -554,6 +563,29 @@ def holder_hex_texture(size: int = 256) -> NDArray[np.uint8]:
     """
     import numpy as np
 
+    v = np.mgrid[0:size, 0:size][0] / float(size)
+    hole = holder_hole_mask(size)
+    rim_band, bottom_band = 0.15, 0.12
+    img = np.full((size, size, 3), 255, dtype=np.uint8)
+    shade = np.clip((v - rim_band) / (1.0 - rim_band - bottom_band), 0.0, 1.0)[..., None]
+    inside = (1.0 - shade) * np.array([165.0, 165.0, 172.0]) + shade * np.array([92.0, 92.0, 98.0])
+    img[hole] = inside[hole].astype(np.uint8)
+    return img
+
+
+def holder_hole_mask(size: int = 256) -> NDArray[np.bool_]:
+    """Where one cup wall is open: rows of hexagonal holes (``size`` squared, True = hole).
+
+    u runs across a wall, v up it (row 0 = the rim). Solid bands at the rim (15 %) and the
+    bottom (12 %) as on the real cup; ~7.5 holes across with thin webs.
+
+    Example:
+        >>> m = holder_hole_mask(64)
+        >>> bool(m[0].any()), 0.2 < float(m.mean()) < 0.6
+        (False, True)
+    """
+    import numpy as np
+
     v, u = np.mgrid[0:size, 0:size] / float(size)
     dx = 1.0 / 7.5
     dy = dx * math.sqrt(3.0) / 2.0
@@ -565,27 +597,28 @@ def holder_hex_texture(size: int = 256) -> NDArray[np.uint8]:
     hole = (oy <= r * math.sqrt(3) / 2) & (ox * math.sqrt(3) / 2 + oy / 2 <= r * math.sqrt(3) / 2)
     rim_band, bottom_band = 0.15, 0.12  # solid plastic at the rim and the bottom
     hole &= (v > rim_band) & (v < 1.0 - bottom_band)
-    img = np.full((size, size, 3), 255, dtype=np.uint8)
-    shade = np.clip((v - rim_band) / (1.0 - rim_band - bottom_band), 0.0, 1.0)[..., None]
-    inside = (1.0 - shade) * np.array([165.0, 165.0, 172.0]) + shade * np.array([92.0, 92.0, 98.0])
-    img[hole] = inside[hole].astype(np.uint8)
-    return img
+    return np.asarray(hole, dtype=bool)
 
 
-def _texture_holder_material(spec: mujoco.MjSpec, material: str) -> None:
-    """Put the hex-perforation texture (``holder_hex_texture``) on the cup's material."""
+def _texture_holder_material(spec: mujoco.MjSpec, material: str, *, painted: bool) -> None:
+    """The cup's plastic finish; ``painted`` adds the hex texture (``holder_hex_texture``).
+
+    Without ``painted`` the holes are cut out of the mesh and the plastic stays plain white.
+    """
     import mujoco as mj
 
+    mat = next(m for m in spec.materials if m.name == material)
+    mat.specular = 0.3
+    mat.shininess = 0.3
+    if not painted:
+        return
     img = holder_hex_texture()
     tex = spec.add_texture()
     tex.name = "holder_hex"
     tex.type = mj.mjtTexture.mjTEXTURE_2D
     tex.height, tex.width, tex.nchannel = img.shape
     tex.data = img.tobytes()
-    mat = next(m for m in spec.materials if m.name == material)
     mat.textures[mj.mjtTextureRole.mjTEXROLE_RGB] = "holder_hex"
-    mat.specular = 0.3
-    mat.shininess = 0.3
 
 
 def _rounded_square(half: float, radius: float, n_corner: int) -> list[tuple[float, float]]:
@@ -599,6 +632,48 @@ def _rounded_square(half: float, radius: float, n_corner: int) -> list[tuple[flo
     return pts
 
 
+def _holed_wall(
+    mesh: tuple[list[float], list[float], list[int]],
+    lo: list[tuple[float, float, float]],
+    hi: list[tuple[float, float, float]],
+    u: list[float],
+    v: tuple[float, float],
+    opts: MetalPenHolderOptions,
+    holes: NDArray[np.bool_],
+) -> None:
+    """Append one cup wall (ring ``lo`` up to ring ``hi``) with the hole cells left out.
+
+    Per outline segment a shared vertex grid of ``holder_hole_grid`` rows; a cell gets its two
+    triangles unless its texture point is a hole (``holes``, once per side), except on
+    ``holder_solid_side`` (side = the integer part of ``u``).
+    """
+    vert, uv, face = mesh
+    res, n = opts.holder_hole_grid, len(lo)
+    for i in range(n):
+        k = max(1, math.ceil((u[i + 1] - u[i]) * res))
+        base = len(vert) // 3
+        for c in range(k + 1):
+            f_ = c / k
+            a = [lo[i][j] * (1 - f_) + lo[(i + 1) % n][j] * f_ for j in range(3)]
+            b = [hi[i][j] * (1 - f_) + hi[(i + 1) % n][j] * f_ for j in range(3)]
+            for r_ in range(res + 1):
+                g = r_ / res
+                vert.extend(a[j] * (1 - g) + b[j] * g for j in range(3))
+                uv.extend((u[i] + f_ * (u[i + 1] - u[i]), v[0] + g * (v[1] - v[0])))
+        for c in range(k):
+            uc = u[i] + (c + 0.5) / k * (u[i + 1] - u[i])
+            solid_side = int(uc) % 4 == opts.holder_solid_side
+            for r_ in range(res):
+                vc = v[0] + (r_ + 0.5) / res * (v[1] - v[0])
+                if (
+                    not solid_side
+                    and holes[min(int(vc * 256), 255), min(int((uc % 1.0) * 256), 255)]
+                ):
+                    continue
+                p, q = base + c * (res + 1) + r_, base + (c + 1) * (res + 1) + r_
+                face.extend((p, q, q + 1, p, q + 1, p + 1))
+
+
 def _add_holder_visual(
     spec: mujoco.MjSpec, body: mujoco.MjsBody, opts: MetalPenHolderOptions, material: str
 ) -> None:
@@ -606,9 +681,10 @@ def _add_holder_visual(
 
     The collision walls stand apart at the corners (slits narrower than the pen); the
     rendered cup is the real cup's closed shape with rounded corners
-    (``holder_corner_radius_m`` at the rim), its walls textured with the hexagonal
-    perforation (``holder_hex_texture``, once per side). MuJoCo draws a visual mesh's own
-    faces, with smooth normals around the ring.
+    (``holder_corner_radius_m`` at the rim). With ``holder_hole_grid`` its walls are cell
+    grids with the hexagonal holes (``holder_hole_mask``, once per side) cut out, except on
+    ``holder_solid_side``; with 0 the holes are painted (``holder_hex_texture``). MuJoCo
+    draws a visual mesh's own faces, with smooth normals around the ring.
     """
     import mujoco as mj
 
@@ -645,9 +721,13 @@ def _add_holder_visual(
             a, b = base + i, base + n + 1 + i
             face.extend((a, a + 1, b + 1, a, b + 1, b))
 
-    band(rings[0], rings[1], (1.0, 0.0))  # outer wall (texture row 0 = the rim)
-    band(rings[1], rings[2], (0.0, 0.0))  # rim: the solid band
-    band(rings[2], rings[3], (0.0, 1.0))  # inner wall
+    holes = holder_hole_mask(256) if opts.holder_hole_grid else None
+    # Outer wall (texture row 0 = the rim), the rim (the solid band), the inner wall.
+    for k, v in enumerate(((1.0, 0.0), (0.0, 0.0), (0.0, 1.0))):
+        if holes is not None and k != 1:
+            _holed_wall((vert, uv, face), rings[k], rings[k + 1], u, v, opts, holes)
+        else:
+            band(rings[k], rings[k + 1], v)
     for pts, z_up in ((rings[0], False), (rings[3], True)):  # bottom (down), inner floor (up)
         base = len(vert) // 3
         cz = pts[0][2]
@@ -665,7 +745,7 @@ def _add_holder_visual(
     mesh.usertexcoord = uv
     mesh.userface = face
     mesh.inertia = mj.mjtMeshInertia.mjMESH_INERTIA_SHELL
-    _texture_holder_material(spec, material)
+    _texture_holder_material(spec, material, painted=not opts.holder_hole_grid)
     g = body.add_geom()
     g.name = "holder_visual"
     g.type = mj.mjtGeom.mjGEOM_MESH
