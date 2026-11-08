@@ -192,7 +192,7 @@ MuJoCo twin, local RTX 5070 Laptop and q5090, 2026-11-07.
   against the recorded actions, at 4 episodes × 6 ticks.
 - **Benchmark, 30 episodes** (`benchmarks/makermods_metal_pen_holder.yaml`, 10 layouts ×
   seeds 0–2, 900 steps, q5090, 2026-11-08): **30 `fail`** (`eval/makermods_metal_pen_holder.json`,
-  per-episode grades in `eval/episodes/`; rerun with the cut-out cup, same result). From the
+  per-episode grades in `eval/episodes/`; rerun with the cut-out cup and the refit left wrist camera, same result). From the
   start the policy never grasps.
 - **Warm starts** (dataset replay to a handover, then the policy): from H1 (cup lifted)
   it grasps and lifts the pen by itself but releases it beside the cup; from H2/H3 it
@@ -236,10 +236,10 @@ alpha-cut holes (MuJoCo ignores texture alpha), and holes cut through the walls 
 with the one solid wall the real cup has (`holder_hole_grid`, `holder_solid_side`; now the
 default look). A left-arm joint + camera refit to the real frames moved it to 4.45°, and the
 left wrist camera refit to 56 real pre-grasp frames of four episodes (pose + focal: (1.5, -0.8,
--2.1) cm in the gripper frame, fx 285.6 → 336 px, lens distortion ~0; edge correlation
-0.62 → 0.72) frames the held cup at the real size but does not lower the first-action error
-averaged over seven episode-0 ticks (3.02° → 3.24°; cut-out holes vs painted 3.02° vs 3.13°;
-all real images 1.27°). Pasting real patches into the sim view puts the gain on the left half of the
+-2.1) cm in the gripper frame, fx 285.6 → 335.4 px, lens distortion ~0; edge correlation
+0.62 → 0.72; now the station manifest's and the twin's default) frames the held cup at the
+real size but does not lower the first-action error averaged over seven episode-0 ticks
+(3.02° → 3.08° with it and the 5-across holes; painted holes 3.13°; all real images 1.27°). Pasting real patches into the sim view puts the gain on the left half of the
 real image (desk and shelf edge seen past the cup: 4.9° → 2.7°), not its centre (5.1°). The
 real camera sees the cup side-on: per-episode in-hand fits put the real cup 10-46° tilted in
 the grip (episodes 7, 15, 30), where the twin's cup stays within ~11° of upright.
