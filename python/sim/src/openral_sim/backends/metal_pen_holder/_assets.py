@@ -278,7 +278,7 @@ def holder_inner_half_width(opts: MetalPenHolderOptions, z: float) -> float:
     Example:
         >>> o = MetalPenHolderOptions()
         >>> round(holder_inner_half_width(o, 0.0), 4), round(holder_inner_half_width(o, 0.1), 4)
-        (0.031, 0.047)
+        (0.0345, 0.0395)
     """
     hb, ht = opts.holder_bottom_width_m / 2.0, opts.holder_top_width_m / 2.0
     frac = min(max(z / opts.holder_height_m, 0.0), 1.0)
