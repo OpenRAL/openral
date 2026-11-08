@@ -124,6 +124,10 @@ class MetalPenHolderOptions(BaseModel):
     table_emission: float = Field(default=0.3, ge=0.0)
     table_texture: str | None = "desk_wood.png"  # file under assets/, or absolute
     table_texture_size_m: _Vec2 = (0.13, 0.13)  # one texture tile along (y, x)
+    # The real desk's lacquer catches the lights as a soft sheen in the wrist views.
+    table_specular: float = Field(default=0.3, ge=0.0, le=1.0)
+    table_shininess: float = Field(default=0.45, ge=0.0, le=1.0)
+    table_reflectance: float = Field(default=0.04, ge=0.0, le=1.0)
     # The riser shelf the cup starts and ends on (left_base x 0.385-0.59, y +0.18..-0.70). The
     # front edge sits 2 cm behind the plate estimate (0.382): there the replayed pens, at their
     # true centres, hit its front face while being lifted (3 of 8 replays); the left wrist's
@@ -435,8 +439,9 @@ def _add_station(spec: mujoco.MjSpec, opts: MetalPenHolderOptions) -> None:
         mat.textures[mj.mjtTextureRole.mjTEXROLE_RGB] = "wood"
         mat.texuniform = True  # one period spans 2 / texrepeat metres
         mat.texrepeat = [2.0 / opts.table_texture_size_m[1], 2.0 / opts.table_texture_size_m[0]]
-        mat.specular = 0.1
-        mat.shininess = 0.2
+        mat.specular = opts.table_specular
+        mat.shininess = opts.table_shininess
+        mat.reflectance = opts.table_reflectance
         mat.rgba = list(opts.table_rgba)
         mat.emission = opts.table_emission
         table.material = "wood"
@@ -588,7 +593,7 @@ def holder_hole_mask(size: int = 256, aspect: float = 0.84) -> NDArray[np.bool_]
 
     u runs across a wall, v up it (row 0 = the rim). ``aspect`` is the wall's width over its
     height (the cup's mean 80 mm over 95 mm), so the holes are regular hexagons on the wall:
-    ~7.5 across, ~9 rows of whole holes between thin solid bands at the rim
+    5 across (4-5 whole holes a row on a wall), ~6 rows between thin solid bands at the rim
     (``_HOLE_RIM_BAND``) and the bottom (``_HOLE_BOTTOM_BAND``), as on the real cup.
 
     Example:
@@ -600,9 +605,9 @@ def holder_hole_mask(size: int = 256, aspect: float = 0.84) -> NDArray[np.bool_]
 
     v, u = np.mgrid[0:size, 0:size] / float(size)
     u = u * aspect  # wall units: the height is 1
-    dx = aspect / 7.5
+    dx = aspect / 5.0
     dy = dx * math.sqrt(3.0) / 2.0
-    r = 0.42 * dx  # hole radius (corner), the rest is the web between holes
+    r = 0.38 * dx  # hole radius (corner), the rest is the web between holes
     hh = r * math.sqrt(3) / 2  # a hole's half height
     row = np.floor((v - _HOLE_RIM_BAND) / dy)
     cx = (np.floor((u - (row % 2) * dx / 2) / dx) + 0.5) * dx + (row % 2) * dx / 2
