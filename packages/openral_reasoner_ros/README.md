@@ -196,10 +196,13 @@ The env contract is:
   The reasoner ranks the palette's skills against the active mission task and
   any pending operator prompts by keyword overlap and offers at most `k` (#494).
   Inside those `k` slots it keeps, in order: the skill in flight; the best match
-  for the top pending operator prompt (with `k` ≥ 2 it is offered on the tick the
-  prompt arrives); the task's last dispatched skill; the best navigate and look-at
-  skill (the workflow's APPROACH / FRAME steps, at most
-  `k - 1` of them); then the highest scores. Equal scores prefer
+  for the newest top-priority pending operator prompt (with `k` ≥ 2 it is offered
+  on the tick the prompt arrives); the task's last dispatched skill (outside a
+  mission, the last one dispatched); the best navigate and look-at skill not
+  already kept (the workflow's APPROACH / FRAME steps; never the last free slot);
+  then the highest scores, so at least one ranked substitute is always offered
+  while a slot remains. With no task and no pending prompt the last ranking is
+  kept. Equal scores (in every pick) prefer
   skills not yet tried for the active task (so substituting a skill reaches past the
   top `k`), then higher weight precision (fp32/bf16/fp16, then fp8, int8, 4-bit, from
   the manifest's `quantization.dtype`), then the id. `cosmos3-edge` defaults to 4 (its tool

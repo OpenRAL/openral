@@ -227,6 +227,9 @@ class ReasonerCore:
         # clients' per-palette-object tool render (and the provider's prefix cache)
         # survive across ticks.
         self._subset: tuple[ToolPalette, tuple[str, ...], SkillSubset] | None = None
+        # rskill_id of the last ExecuteRskillTool this core returned; the
+        # ``recent`` slot when no mission task is active.
+        self._last_dispatched: str | None = None
         self._min_interval_s = min_interval_s
         self._retry_cap = retry_cap_per_kind
         self._system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -283,13 +286,28 @@ class ReasonerCore:
         active = mission.active() if mission is not None else None
         texts = ([active.text] if active is not None else []) + [p.text for p in renderer.prompts]
         query = "\n".join(texts)
+        cached = self._subset
+        if not query.strip() and cached is not None:
+            # No task and no pending prompt (mission finished, or the prompt was
+            # drained last tick) but a failure / perception event woke the tick:
+            # keep ranking on the last real query instead of an empty one, which
+            # would offer the alphabetical first k and refuse the retry.
+            query = cached[2].query
         inflight = renderer.inflight_skill
-        recent = active.last_rskill_id if active is not None else None
+        # Outside a mission the last execute_rskill this core dispatched stays
+        # offered, so a retry after its failure is not refused off-palette.
+        recent = active.last_rskill_id if active is not None else self._last_dispatched
         tried = active.tried_rskill_ids if active is not None else ()
         sticky = (inflight or "", recent or "", *tried)
-        # The buffer is priority-ordered, highest first: [0] is the operator's ask.
-        focus = renderer.prompts[0].text if renderer.prompts else ""
-        cached = self._subset
+        # The buffer is priority-ordered (highest first), arrival order within a
+        # priority: the newest prompt of the top band is the operator's latest ask
+        # ("no, the cup instead" outranks the "pick the bowl" it corrects).
+        prompts = renderer.prompts
+        focus = (
+            next(p for p in reversed(prompts) if p.priority == prompts[0].priority).text
+            if prompts
+            else ""
+        )
         if (
             cached is not None
             and cached[0] is palette
@@ -667,6 +685,7 @@ class ReasonerCore:
             rskill_id = getattr(call, "rskill_id", None)
             if rskill_id:
                 span.set_attribute(semconv.REASONER_RSKILL_ID, rskill_id)
+                self._last_dispatched = rskill_id
             # Structured log for every successful tick so the multi-task
             # deploy flow can be inspected from the structured log stream
             # without opening Jaeger (Criterion 4 of the libero multi-task

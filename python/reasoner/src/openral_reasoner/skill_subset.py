@@ -22,7 +22,7 @@ precision (``PRECISION_RANK``), then ``rskill_id``.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from openral_core import QuantizationDtype, RSkillAction
 from pydantic import BaseModel, ConfigDict, Field
@@ -140,7 +140,10 @@ def _forms(word: str) -> frozenset[str]:
         if stem[-1] == stem[-2]:
             forms.add(stem[:-1])
     if len(word) >= _MIN_ED_LEN and word.endswith("ed"):
-        forms.update({word[:-2], word[:-1]})
+        stem = word[:-2]
+        forms.update({stem, word[:-1]})
+        if stem[-1] == stem[-2]:  # dropped -> drop, grabbed -> grab
+            forms.add(stem[:-1])
     return frozenset(forms)
 
 
@@ -184,12 +187,18 @@ _VERB_SYNONYMS: dict[str, str] = {
 def query_keywords(text: str) -> frozenset[str]:
     """``mission_keywords`` plus the ``RSkillAction`` verb each everyday verb names.
 
+    Inflected verbs map too (``putting`` / ``dropped`` -> ``place``).
+
     Example:
         >>> sorted(query_keywords("put the apple in the basket"))
         ['apple', 'basket', 'place', 'put']
+        >>> "pick" in query_keywords("grabbing the cup")
+        True
     """
     words = mission_keywords(text)
-    return words | {_VERB_SYNONYMS[w] for w in words if w in _VERB_SYNONYMS}
+    return words | {
+        _VERB_SYNONYMS[form] for w in words for form in _forms(w) if form in _VERB_SYNONYMS
+    }
 
 
 def _field_forms(values: Iterable[str]) -> frozenset[str]:
@@ -283,25 +292,38 @@ class SkillSubset(BaseModel):
 
     @property
     def max_score(self) -> float:
-        """The best score; ``0.0`` means the query matched no skill (alphabetical pick)."""
+        """The best score; ``0.0`` means the query matched no skill (tie-breaks decide)."""
         return self.scores[0][1] if self.scores else 0.0
 
 
 def _support_ids(
-    entries: tuple[RSkillToolEntry, ...], scores: dict[str, float], slots: int
+    entries: tuple[RSkillToolEntry, ...],
+    rank: Callable[[str], tuple[float, bool, int, str]],
+    slots: int,
+    chosen: Iterable[str],
 ) -> list[str]:
-    """Best-scoring skill per ``SUPPORT_ACTIONS`` action (only-support skills), up to ``slots``."""
+    """Best skill (by ``rank``) per ``SUPPORT_ACTIONS`` action, up to ``slots`` new ids.
+
+    Only skills whose actions are all support actions qualify. An action already
+    covered by a ``chosen`` id (e.g. the look-at skill in flight) needs no slot,
+    and neither consumes the budget nor blocks the other action.
+    """
+    taken = set(chosen)
+    by_id = {e.rskill_id: e for e in entries}
     picked: list[str] = []
     for action in sorted(SUPPORT_ACTIONS, key=lambda a: a.value):
+        if len(picked) >= slots:
+            break
+        if any(action in by_id[i].actions for i in taken if i in by_id):
+            continue
         candidates = [
             e.rskill_id
             for e in entries
             if action in e.actions and set(e.actions) <= SUPPORT_ACTIONS
         ]
-        if candidates and len(picked) < slots:
-            best = min(candidates, key=lambda i: (-scores[i], i))
-            if best not in picked:
-                picked.append(best)
+        best = min(candidates, key=rank) if candidates else None
+        if best is not None and best not in picked and best not in taken:
+            picked.append(best)
     return picked
 
 
@@ -323,9 +345,12 @@ def select_skill_subset(
     any skill; then the ``recent`` ids (the last one dispatched for the active task)
     so the model can re-dispatch it; then the best skill of each ``SUPPORT_ACTIONS``
     action (navigate, look) the system prompt's workflow uses around any object
-    task, at most ``k - 1`` of them; then the highest-scoring skills. Equal scores
-    break on skills not in ``tried`` first, then ``PRECISION_RANK`` of the run
-    dtype, then ``rskill_id`` (``scores`` lists that order). With one skill in
+    task, never taking the last free slot (an action already covered by a kept id
+    needs none); then the highest-scoring skills, so at least one ranked skill (the
+    best untried substitute) is offered whenever a slot remains after the kept ids.
+    Every pick, focus and support included, orders by score, then skills not in
+    ``tried`` first, then ``PRECISION_RANK`` of the run dtype, then ``rskill_id``
+    (``scores`` lists that order). With one skill in
     flight, any ``k`` >= 2 leaves the focus a slot, so an operator's ask is offered
     on the tick it arrives (the tick then drains it). Sticky / recent ids not in the
     palette (a skill dropped after a permanent failure) are ignored. The narrowed
@@ -387,17 +412,13 @@ def select_skill_subset(
     raw = scores_for(query)
     tried_set = frozenset(tried)
     precision = {e.rskill_id: PRECISION_RANK[e.quantization_dtype] for e in palette.skills}
-    scored = tuple(
-        sorted(
-            raw.items(),
-            key=lambda item: (
-                -item[1],
-                item[0] in tried_set,
-                precision.get(item[0], 0),
-                item[0],
-            ),
-        )
-    )
+
+    def ranker(scores: dict[str, float]) -> Callable[[str], tuple[float, bool, int, str]]:
+        """One ordering for every pick: score, then untried, precision, id."""
+        return lambda i: (-scores[i], i in tried_set, precision.get(i, 0), i)
+
+    rank = ranker(raw)
+    scored = tuple((i, raw[i]) for i in sorted(raw, key=rank))
 
     def present(ids: Iterable[str | None]) -> list[str]:
         out: list[str] = []
@@ -417,7 +438,7 @@ def select_skill_subset(
         chosen = list(kept_sticky)
         focus_scores = scores_for(focus) if focus.strip() else {}
         if focus_scores and len(chosen) < k:
-            best_focus = min(focus_scores, key=lambda i: (-focus_scores[i], i))
+            best_focus = min(focus_scores, key=ranker(focus_scores))
             if focus_scores[best_focus] > 0 and best_focus not in chosen:
                 chosen.append(best_focus)
                 focused = (best_focus,)
@@ -425,8 +446,10 @@ def select_skill_subset(
             if len(chosen) < k and rskill_id not in chosen:
                 chosen.append(rskill_id)
                 kept_sticky.append(rskill_id)
-        free = max(0, min(k - 1, k - len(chosen)))
-        support = [i for i in _support_ids(palette.skills, raw, free) if i not in chosen]
+        # Support slots never take the last free slot: at least one ranked skill
+        # (the best untried substitute) is always offered while room remains.
+        support_slots = max(0, k - len(chosen) - 1)
+        support = _support_ids(palette.skills, rank, support_slots, chosen)
         chosen += support
         for rskill_id, _score_value in scored:
             if len(chosen) >= k:

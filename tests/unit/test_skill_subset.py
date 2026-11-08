@@ -612,3 +612,102 @@ def test_tried_skills_survive_a_restart() -> None:
         "tasks": [{k: v for k, v in t.items() if k != "tried_rskill_ids"} for t in tasks]
     }
     assert MissionState.from_state_dict(legacy).tasks[0].tried_rskill_ids == ()
+
+
+# ── /code-review high follow-ups ─────────────────────────────────────────────
+
+
+def _toy(slug: str, actions: tuple[str, ...], objects: tuple[str, ...] = ()) -> RSkillToolEntry:
+    from openral_core import RSkillAction
+
+    return RSkillToolEntry(
+        rskill_id=f"OpenRAL/rskill-{slug}",
+        description=slug,
+        actions=tuple(RSkillAction(a) for a in actions),
+        objects=objects,
+    )
+
+
+_TOY = ToolPalette(
+    skills=(
+        _toy("a-pick", ("pick", "place"), ("bowl", "apple")),
+        _toy("b-pick", ("pick", "place"), ("bowl", "apple")),
+        _toy("look", ("look",)),
+        _toy("nav", ("navigate",)),
+        _toy("wave", ("wave",)),
+    )
+)
+_A, _B, _LOOK, _NAV = (f"OpenRAL/rskill-{s}" for s in ("a-pick", "b-pick", "look", "nav"))
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["putting the apple down", "dropped the apple", "grabbing the bowl", "lifted the bowl"],
+)
+def test_inflected_everyday_verbs_map_to_actions(query: str) -> None:
+    """putting / dropped / grabbing / lifted reach place / pick like their base verbs."""
+    from openral_reasoner.skill_subset import query_keywords, score_skill
+
+    keywords = query_keywords(query)
+    assert {"place", "pick"} & keywords
+    entry = next(e for e in _TOY.skills if e.rskill_id == _A)
+    assert score_skill(entry, keywords) >= 6.0  # object 3 + action 3
+
+
+def test_support_never_starves_the_substitute() -> None:
+    """k=3 with the failed skill kept for retry: the untried tie still gets a slot."""
+    subset = select_skill_subset(_TOY, query="pick the bowl", k=3, recent=(_A,), tried=(_A,))
+    assert _B in subset.offered
+    assert _A in subset.offered
+    assert len(subset.support) == 1
+
+
+def test_focus_pick_uses_the_shared_tie_break() -> None:
+    """The operator re-asks after a-pick failed: the focus slot goes to untried b-pick."""
+    subset = select_skill_subset(
+        _TOY, query="", k=2, focus="pick the bowl", tried=(_A,), sticky=(_LOOK,)
+    )
+    assert subset.focused == (_B,)
+
+
+def test_support_skips_an_action_already_kept() -> None:
+    """The look skill in flight covers look; a budget of one goes to navigate."""
+    from openral_reasoner.skill_subset import _support_ids
+
+    def rank(i: str) -> tuple[float, bool, int, str]:
+        return (0.0, False, 0, i)
+
+    assert _support_ids(_TOY.skills, rank, 1, chosen=(_LOOK, _A)) == [_NAV]
+    subset = select_skill_subset(_TOY, query="pick the bowl", k=4, sticky=(_LOOK,), recent=(_A,))
+    assert subset.support == (_NAV,)
+    assert {_LOOK, _NAV, _A} <= set(subset.offered)
+
+
+def test_newest_top_priority_prompt_is_the_focus(franka_palette: ToolPalette) -> None:
+    """Two operator prompts at the same priority: the later correction wins the focus."""
+    core = ReasonerCore(client=FakeToolUseClient(responses=[]), max_skill_tools=2)
+    renderer = ContextRenderer()
+    for i, text in enumerate(
+        ("pick up the cube", "no, move the end-effector to the pre-grasp pose instead")
+    ):
+        renderer.append_prompt(
+            PromptRecord(text=text, metadata_json='{"priority": 100}', stamp_ns=i)
+        )
+    offered = core.offered_palette(franka_palette, renderer)
+    assert _EEF_POSE in offered.execute_rskill_ids
+
+
+def test_empty_query_keeps_the_last_ranking_and_dispatch(franka_palette: ToolPalette) -> None:
+    """After the prompt drains, a failure-woken tick keeps the last offer and dispatch."""
+    client = FakeToolUseClient(
+        responses=[ExecuteRskillTool(rskill_id=_MANISKILL, prompt="pick up the cube")]
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0, max_skill_tools=4)
+    renderer = ContextRenderer()
+    renderer.append_prompt(PromptRecord(text="pick up the cube", metadata_json="", stamp_ns=0))
+    result = core.tick(world_state=None, renderer=renderer, palette=franka_palette)
+    assert isinstance(result.tool_call, ExecuteRskillTool)
+    assert renderer.prompts == ()  # drained; no mission
+    after = core.offered_palette(franka_palette, renderer)
+    assert _MANISKILL in after.execute_rskill_ids  # the retry is offered
+    assert after.execute_rskill_ids == client.traces[0].palette.execute_rskill_ids
