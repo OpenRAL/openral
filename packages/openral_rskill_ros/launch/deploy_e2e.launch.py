@@ -2610,12 +2610,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         "true",
         "yes",
     )
-    # Read-only Foxglove live-scene bridge. Off by default;
-    # ``openral deploy sim --foxglove`` opts in.
-    enable_foxglove = LaunchConfiguration("enable_foxglove").perform(context).lower() in (
-        "1",
-        "true",
-        "yes",
+    # Read-only Foxglove live-scene bridge. On whenever the dashboard is (its 3D panel
+    # reaches the bridge through the dashboard's /ws proxy, ADR-0129); an explicit
+    # ``enable_foxglove:=true|false`` overrides.
+    _foxglove_raw = LaunchConfiguration("enable_foxglove").perform(context).lower()
+    enable_foxglove = (
+        enable_dashboard if _foxglove_raw == "" else _foxglove_raw in ("1", "true", "yes")
     )
     foxglove_port = LaunchConfiguration("foxglove_port").perform(context)
     # Graph-wide clock domain (single source of truth). The CLI resolves the
@@ -3237,6 +3237,17 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # octomap_server gets.
         "grasp_target_voxel_m": _octomap_resolution(hal_mode),
     }
+    # ADR-0129 — the robot manifest the reasoner emits to the dashboard: this deploy's
+    # resolved toggles (never "auto"), whether the 3D bridge runs, and the unit's serial.
+    reasoner_params["manifest_runtime_json"] = DeployRuntime(
+        enable_reasoner=enable_reasoner,
+        enable_slam=enable_slam,
+        enable_octomap=enable_octomap,
+        enable_reward_monitor=enable_reward_monitor,
+        enable_object_detector=enable_object_detector,
+    ).model_dump_json(exclude_none=True)
+    reasoner_params["manifest_bridge_on"] = enable_foxglove
+    reasoner_params["manifest_unit_serial"] = unit_identity.serial or ""
     if lifecycle_peer_node_ids:
         reasoner_params["lifecycle_peer_node_ids"] = lifecycle_peer_node_ids
     # Same empty-list-omission rule as lifecycle_peer_node_ids
@@ -5929,10 +5940,11 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "enable_foxglove",
-            default_value="false",
+            default_value="",
             description=(
                 "Spawn the read-only foxglove_bridge as part of "
-                "the deploy-sim runtime graph. Default off. The bridge binds "
+                "the deploy-sim runtime graph. Default (empty): on whenever the "
+                "dashboard is, which proxies it at /ws. The bridge binds "
                 "to 127.0.0.1:<foxglove_port> and exposes only the Bucket-1 "
                 "topic allowlist (no safety/e-stop/action topics). View-only: "
                 "clientPublish, services, and parameters capabilities are "

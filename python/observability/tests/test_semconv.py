@@ -74,6 +74,8 @@ def test_namespace_invariants() -> None:
         "openral.schema.",
         "openral.retention.",
         "openral.failure.",
+        # The robot manifest log record (ADR-0129).
+        "openral.robot.",
     )
     openral_keys = {
         getattr(semconv, name)

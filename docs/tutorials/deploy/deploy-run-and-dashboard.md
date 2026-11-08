@@ -478,7 +478,7 @@ groups](../../contributing/toolchain.md#managing-the-python-environment-dependen
 
 ### Reading the collision view in Foxglove
 
-`openral deploy sim --foxglove` starts a read-only Foxglove bridge next to the graph. Its 3D
+`openral deploy sim` starts a read-only Foxglove bridge next to the graph (with the dashboard, or `--foxglove`). Its 3D
 panel shows the same world the safety kernel checks: the voxel map, the declared fixtures and
 the boxes the grasp leg measures. The frames below come from a bimanual OpenArm pick-and-place
 run in Isaac Sim with the [manipulation-workspace contact](../../reference/manipulation-workspace-contact.md)

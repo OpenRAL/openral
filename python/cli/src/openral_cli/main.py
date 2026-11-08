@@ -4001,10 +4001,10 @@ def deploy_run(
         "--dashboard-port",
         help="Dashboard OTLP port.",
     ),
-    foxglove: bool = typer.Option(
-        False,
+    foxglove: bool | None = typer.Option(
+        None,
         "--foxglove/--no-foxglove",
-        help="Spawn the read-only Foxglove scene view.",
+        help="Spawn the read-only Foxglove scene view (default: on with the dashboard).",
     ),
     foxglove_port: int = typer.Option(
         8765,

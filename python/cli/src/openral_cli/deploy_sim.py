@@ -276,8 +276,8 @@ class LaunchInvocation:
     ``WorldState.detected_objects`` so ``recall_object`` recalls what the robot
     has seen. Defaults to "auto" = enabled when the object detector is."""
     enable_foxglove: bool
-    """Opt-in. Off by default. Set by ``openral deploy sim --foxglove``;
-    forwarded as ``enable_foxglove:=true``. Spawns the read-only
+    """On with the dashboard unless ``--no-foxglove`` (ADR-0129: the dashboard's 3D view
+    proxies it at ``/ws``); forwarded as ``enable_foxglove:=…``. Spawns the read-only
     ``foxglove_bridge`` as part of the deploy-sim runtime graph so operators
     can view the live scene (cameras, /tf, joint states, nav map) in
     Foxglove Studio without an extra bring-up step. Cannot actuate the robot
@@ -1166,7 +1166,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     spatial_memory_ingest: bool | None = None,
     memory_dir: str | None = None,
     enable_dashboard: bool = True,
-    enable_foxglove: bool = False,
+    enable_foxglove: bool | None = None,
     foxglove_port: int = 8765,
     initial_task_prompt: str | None = None,
     runtime_overrides: dict[str, object] | None = None,
@@ -1200,6 +1200,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
 
     if hal_mode not in ("sim", "real"):
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
+    # The 3D bridge follows the dashboard unless asked (ADR-0129: the UI proxies it at /ws).
+    if enable_foxglove is None:
+        enable_foxglove = enable_dashboard
     # The skip exists for parallel sim harnesses. On real hardware an abnormal
     # exit would leave a live HAL behind with no kernel, watchdog or E-stop
     # wiring. Safety-WG HZ-0390-5 option (b): refuse, no override.
@@ -3916,13 +3919,14 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "collector instead."
         ),
     ),
-    foxglove: bool = typer.Option(
-        False,
+    foxglove: bool | None = typer.Option(
+        None,
         "--foxglove/--no-foxglove",
         help=(
             "spawn the read-only Foxglove WebSocket bridge "
-            "as part of the deploy-sim runtime graph. Default: off. "
-            "When enabled, open Foxglove Studio and connect via "
+            "as part of the deploy-sim runtime graph. Default: on whenever the "
+            "dashboard is (its 3D view proxies the bridge at /ws). "
+            "Foxglove Studio can also connect via "
             "``ws://127.0.0.1:<foxglove-port>`` to see live cameras, "
             "joint states, /tf, and the navigation map. **View-only** "
             "(cannot actuate the robot): ``clientPublish``, "
@@ -3939,7 +3943,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         help=(
             "Foxglove WebSocket port (ws://127.0.0.1:<port>). "
             "Default 8765 (the foxglove_bridge upstream default). "
-            "Ignored unless ``--foxglove`` is set."
+            "Ignored when the bridge is off."
         ),
     ),
     initial_task: str | None = typer.Option(
@@ -4072,7 +4076,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         "  foxglove:      "
         + (
             f"[green]enabled[/green] (view-only, cannot actuate) at ws://127.0.0.1:{foxglove_port}"
-            if foxglove
+            if (dashboard if foxglove is None else foxglove)
             else "[dim]disabled[/dim] (pass --foxglove to enable read-only live scene view)"
         )
     )
