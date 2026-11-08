@@ -52,12 +52,12 @@ class PinnedAsset(NamedTuple):
 
 
 ROBOT_UI: PinnedAsset | None = PinnedAsset(
-    url="https://github.com/OpenRAL/openral/releases/download/robot-ui-dev1/openral-robot-ui-robot-ui-dev1.tar.gz",
-    sha256="084f6c03d215dfbfd47c21c48e6bfda52422ed8894ec6b9ee86d039593481b5c",
-    size=184223,
+    url="https://github.com/OpenRAL/openral/releases/download/robot-ui-dev2/openral-robot-ui-robot-ui-dev2.tar.gz",
+    sha256="18db12f38610dc2ace4cded9ff3625311df00fd9e204c767e9715b5a7b5edac3",
+    size=184304,
 )
 """The robot UI release this dashboard serves (``robot-ui.yml``'s tarball), or ``None``
-to serve the built-in fallback page. Pre-release ``robot-ui-dev1`` until the next tag."""
+to serve the built-in fallback page. Pre-release ``robot-ui-dev2`` until the next tag."""
 
 
 def _cache_root() -> Path:
