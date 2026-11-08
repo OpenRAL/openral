@@ -197,10 +197,27 @@ lifecycle peers and detectors are unchanged, and a call to a skill outside the
 subset is refused like an off-palette id. The subset changes only when the task
 does, so vLLM's prefix cache still holds across ticks. The offered ids are on
 the `reasoner.offered_skills` span attribute; the scores on the
-`reasoner.skill_subset` log, emitted whenever the ranking is recomputed. Four is
-the measured-good point (20/20 above); the
-curve between 4 and 14 is unmeasured. To bench another `k`, set
-`OPENRAL_REASONER_MAX_SKILL_TOOLS` (`0` offers every skill).
+`reasoner.skill_subset` log, emitted whenever the ranking is recomputed. To bench
+another `k`, set `OPENRAL_REASONER_MAX_SKILL_TOOLS` (`0` offers every skill).
+
+The cap measured on Thor (2026-11-08; vLLM 0.28.0, BF16, the open sidecar's
+Jetson defaults: 32K window, 512-token cap, the checkpoint's own sampling;
+20 ticks each with openral-pro's `tools/cosmos3_edge_bench.py`). Prompts are
+`franka_panda` with every query tool, narrowed by `select_skill_subset` against
+the bench's own mission ("Put the red cube in the blue bowl."):
+
+| prompt | skills | tokens | valid | median warm tick | ticks hitting the 512 cap |
+|---|---|---|---|---|---|
+| `so100_follower` + query tools (baseline) | 4 | 12,706 | 20/20 | 2.7 s | 0 |
+| `franka_panda` + query tools, full palette | 14 | 25,322 | 2/20 | 13.4 s | 18 |
+| same, `k` = 4 (the default) | 4 | 12,470 | **19/20** | 1.7 s | 1 |
+| same, `k` = 8 | 8 | 17,624 | 16/20 | 1.9 s | 4 |
+| same, `k` = 12 | 12 | 22,655 | 0/20 | 12.8 s | 20 |
+
+`k` = 4 meets the #494 bar (≥ 17/20, the `so100_follower` level) and halves the
+warm tick; `k` = 8 is just short of it, and `k` = 12 fails like the full palette.
+The k = 4 subset was act, smolvla and xvla (the LIBERO skills, tied, broken toward
+full precision) plus the look-at skill.
 
 ## Risks and open questions
 
