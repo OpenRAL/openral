@@ -712,7 +712,7 @@ def _add_pen(spec: mujoco.MjSpec, opts: MetalPenHolderOptions) -> None:
     g.conaffinity = 0
     g.density = 0.0
     if opts.pen_label_texture is not None:
-        _add_pen_sleeve(spec, body, opts)
+        _add_pen_sleeve(spec, body, opts, opts.pen_label_texture)
 
 
 # The sleeve spans 27 %..81.5 % of the length from the cap end (+x); its texture covers the
@@ -721,7 +721,9 @@ _PEN_SLEEVE_SPAN = (0.27, 0.815)
 _PEN_SLEEVE_WRAPS = 3.0
 
 
-def _add_pen_sleeve(spec: mujoco.MjSpec, body: mujoco.MjsBody, opts: MetalPenHolderOptions) -> None:
+def _add_pen_sleeve(
+    spec: mujoco.MjSpec, body: mujoco.MjsBody, opts: MetalPenHolderOptions, texture: str
+) -> None:
     """A textured open cylinder just outside the barrel: the real marker's print, visual only."""
     import mujoco as mj
 
@@ -748,7 +750,7 @@ def _add_pen_sleeve(spec: mujoco.MjSpec, body: mujoco.MjsBody, opts: MetalPenHol
     tex = spec.add_texture()
     tex.name = "pen_label"
     tex.type = mj.mjtTexture.mjTEXTURE_2D
-    tex.file = str(opts.asset_path(opts.pen_label_texture))
+    tex.file = str(opts.asset_path(texture))
     mat = spec.add_material()
     mat.name = "pen_label"
     mat.textures[mj.mjtTextureRole.mjTEXROLE_RGB] = "pen_label"
