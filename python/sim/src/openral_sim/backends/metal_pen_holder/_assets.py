@@ -565,7 +565,7 @@ def holder_hex_texture(size: int = 256) -> NDArray[np.uint8]:
 
     v = np.mgrid[0:size, 0:size][0] / float(size)
     hole = holder_hole_mask(size)
-    rim_band, bottom_band = 0.15, 0.12
+    rim_band, bottom_band = _HOLE_RIM_BAND, _HOLE_BOTTOM_BAND
     img = np.full((size, size, 3), 255, dtype=np.uint8)
     shade = np.clip((v - rim_band) / (1.0 - rim_band - bottom_band), 0.0, 1.0)[..., None]
     inside = (1.0 - shade) * np.array([165.0, 165.0, 172.0]) + shade * np.array([92.0, 92.0, 98.0])
@@ -573,30 +573,40 @@ def holder_hex_texture(size: int = 256) -> NDArray[np.uint8]:
     return img
 
 
-def holder_hole_mask(size: int = 256) -> NDArray[np.bool_]:
+# Solid plastic above the top row of holes and below the bottom row, as fractions of the
+# wall height: the real cup's rim strip is ~1/2 a hole row (left wrist close-ups, ep 0/15).
+_HOLE_RIM_BAND = 0.05
+_HOLE_BOTTOM_BAND = 0.06
+
+
+def holder_hole_mask(size: int = 256, aspect: float = 0.84) -> NDArray[np.bool_]:
     """Where one cup wall is open: rows of hexagonal holes (``size`` squared, True = hole).
 
-    u runs across a wall, v up it (row 0 = the rim). Solid bands at the rim (15 %) and the
-    bottom (12 %) as on the real cup; ~7.5 holes across with thin webs.
+    u runs across a wall, v up it (row 0 = the rim). ``aspect`` is the wall's width over its
+    height (the cup's mean 80 mm over 95 mm), so the holes are regular hexagons on the wall:
+    ~7.5 across, ~9 rows of whole holes between thin solid bands at the rim
+    (``_HOLE_RIM_BAND``) and the bottom (``_HOLE_BOTTOM_BAND``), as on the real cup.
 
     Example:
         >>> m = holder_hole_mask(64)
-        >>> bool(m[0].any()), 0.2 < float(m.mean()) < 0.6
-        (False, True)
+        >>> bool(m[0].any()), bool(m[-1].any()), 0.3 < float(m.mean()) < 0.7
+        (False, False, True)
     """
     import numpy as np
 
     v, u = np.mgrid[0:size, 0:size] / float(size)
-    dx = 1.0 / 7.5
+    u = u * aspect  # wall units: the height is 1
+    dx = aspect / 7.5
     dy = dx * math.sqrt(3.0) / 2.0
-    row = np.floor(v / dy)
-    cx = (np.floor((u - (row % 2) * dx / 2) / dx) + 0.5) * dx + (row % 2) * dx / 2
-    cy = (row + 0.5) * dy
-    ox, oy = np.abs(u - cx), np.abs(v - cy)
     r = 0.42 * dx  # hole radius (corner), the rest is the web between holes
-    hole = (oy <= r * math.sqrt(3) / 2) & (ox * math.sqrt(3) / 2 + oy / 2 <= r * math.sqrt(3) / 2)
-    rim_band, bottom_band = 0.15, 0.12  # solid plastic at the rim and the bottom
-    hole &= (v > rim_band) & (v < 1.0 - bottom_band)
+    hh = r * math.sqrt(3) / 2  # a hole's half height
+    row = np.floor((v - _HOLE_RIM_BAND) / dy)
+    cx = (np.floor((u - (row % 2) * dx / 2) / dx) + 0.5) * dx + (row % 2) * dx / 2
+    cy = _HOLE_RIM_BAND + (row + 0.5) * dy
+    ox, oy = np.abs(u - cx), np.abs(v - cy)
+    hole = (oy <= hh) & (ox * math.sqrt(3) / 2 + oy / 2 <= hh)
+    # Whole holes only: a row is open when it fits between the two solid bands.
+    hole &= (cy - hh >= _HOLE_RIM_BAND) & (cy + hh <= 1.0 - _HOLE_BOTTOM_BAND)
     return np.asarray(hole, dtype=bool)
 
 
@@ -721,7 +731,8 @@ def _add_holder_visual(
             a, b = base + i, base + n + 1 + i
             face.extend((a, a + 1, b + 1, a, b + 1, b))
 
-    holes = holder_hole_mask(256) if opts.holder_hole_grid else None
+    aspect = (opts.holder_bottom_width_m + opts.holder_top_width_m) / 2 / opts.holder_height_m
+    holes = holder_hole_mask(256, aspect) if opts.holder_hole_grid else None
     # Outer wall (texture row 0 = the rim), the rim (the solid band), the inner wall.
     for k, v in enumerate(((1.0, 0.0), (0.0, 0.0), (0.0, 1.0))):
         if holes is not None and k != 1:

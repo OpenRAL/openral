@@ -231,15 +231,18 @@ sim-to-real-gap measurement, not a capability claim.
 **What is left: the cup in the left wrist.** After the desk, pen-label, pen-size and layout
 fixes the all-sim first-action error is 1.65° at H1 (all real 0.94°) but still 5.0° at H2,
 the moment both arms hold their objects, against 2.5° with the real left wrist. Attempts that
-left it unchanged: the cup's fitted in-hand pose, a deeper grasp, a taller cup (10.5-12.5 cm),
+left it unchanged: the cup's fitted in-hand pose, a deeper grasp, a taller cup (10.5-12.5 cm reads less like the real frames),
 alpha-cut holes (MuJoCo ignores texture alpha), and holes cut through the walls as geometry
 with the one solid wall the real cup has (`holder_hole_grid`, `holder_solid_side`; now the
 default look). A left-arm joint + camera refit to the real frames moved it to 4.45°, and the
-pre-grasp camera refit (1.5-2.6 cm, ~2°) did not lower the error averaged over five ticks
-(3.0° → 3.1°). Pasting real patches into the sim view puts the gain on the left half of the
-real image (desk and shelf edge seen past the cup: 4.9° → 2.7°), not its centre (5.1°): the
-real camera sees the cup side-on and farther away, which no single cup or camera parameter
-reproduced.
+left wrist camera refit to 56 real pre-grasp frames of four episodes (pose + focal: (1.5, -0.8,
+-2.1) cm in the gripper frame, fx 285.6 → 336 px, lens distortion ~0; edge correlation
+0.62 → 0.72) frames the held cup at the real size but does not lower the first-action error
+averaged over seven episode-0 ticks (3.02° → 3.24°; cut-out holes vs painted 3.02° vs 3.13°;
+all real images 1.27°). Pasting real patches into the sim view puts the gain on the left half of the
+real image (desk and shelf edge seen past the cup: 4.9° → 2.7°), not its centre (5.1°). The
+real camera sees the cup side-on: per-episode in-hand fits put the real cup 10-46° tilted in
+the grip (episodes 7, 15, 30), where the twin's cup stays within ~11° of upright.
 
 **What it is not.** Measured on q5090 (MuJoCo warm starts and perturbed replays, 2026-11-08):
 - *Execution mode.* The adapter's default temporal ensembling (coeff 0.01) and the
