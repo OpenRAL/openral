@@ -299,15 +299,16 @@ def build_layout(
     """Build the OpenRAL Foxglove layout for a scene's camera slots.
 
     The hero 3D panel draws the robot (URDF + TF) inside its environment (map,
-    octomap voxels, odometry, laser). One Image
-    panel per entry in ``cameras`` stacks beside it. The remaining telemetry —
-    node logs, diagnostics, world state, mission/episode transitions, reward,
-    detected objects, the topic graph — is tabbed so it is one click away
-    without crowding the scene.
+    octomap voxels, odometry, laser). One Image panel per entry in ``cameras``
+    stacks beside it; with no cameras (the robot UI shows them itself, ADR-0129)
+    the telemetry tabs take that column. The remaining telemetry — node logs,
+    diagnostics, world state, mission/episode transitions, reward, detected
+    objects, the topic graph — is tabbed so it is one click away without
+    crowding the scene.
 
     Args:
         cameras: Camera slot names, in display order. Typically a deploy
-            scene's ``cameras:`` list.
+            scene's ``cameras:`` list; empty for a layout without Image panels.
         compressed: Point the Image panels at the ``/compressed`` siblings
             (needs ``republish_compressed:=true`` on the bridge launch).
         follow_frame: TF frame the 3D panels follow. Must be a frame the
@@ -321,9 +322,6 @@ def build_layout(
     Returns:
         A Foxglove layout dict, ready to serialise to JSON and import.
 
-    Raises:
-        ValueError: If ``cameras`` is empty.
-
     Example:
         >>> layout = build_layout(["head", "left_wrist"])
         >>> sorted(k for k in layout["configById"] if k.startswith("Image"))
@@ -333,9 +331,6 @@ def build_layout(
         >>> layout["configById"]["3D!scene"]["followTf"]
         'base_link'
     """
-    if not cameras:
-        raise ValueError("cameras must not be empty — the layout needs at least one Image panel")
-
     camera_ids = [f"Image!cam_{i}" for i, _ in enumerate(cameras)]
     config_by_id: dict[str, Any] = {
         # ---- hero: the robot in its environment -------------------------
@@ -430,7 +425,9 @@ def build_layout(
         "layout": _split(
             "row",
             _split("column", "3D!scene", "Tab!scene_aux", 62),
-            _split("column", _stack(camera_ids), "Tab!telemetry", 58),
+            _split("column", _stack(camera_ids), "Tab!telemetry", 58)
+            if camera_ids
+            else "Tab!telemetry",
             62,
         ),
     }

@@ -124,10 +124,12 @@ def test_camera_panels_track_the_requested_slots(compressed: bool) -> None:
         assert panel["imageMode"]["imageTopic"] == f"/openral/cameras/{name}/image{suffix}"
 
 
-def test_empty_camera_list_is_rejected() -> None:
-    """A layout with no Image panel is a bug, not a degenerate case."""
-    with pytest.raises(ValueError, match="cameras must not be empty"):
-        build_layout([])
+def test_no_cameras_gives_the_scene_and_telemetry_only() -> None:
+    """The generic viz.openral.com layout: the robot UI shows the cameras (ADR-0129)."""
+    layout = build_layout([])
+    assert not [k for k in layout["configById"] if k.startswith("Image!")]
+    assert layout["layout"]["second"] == "Tab!telemetry"
+    assert "3D!scene" in json.dumps(layout["layout"])
 
 
 def test_every_panel_id_is_placed_in_the_layout_tree() -> None:
