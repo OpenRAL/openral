@@ -330,8 +330,11 @@ sensors:
     pos: [0.0677, -0.0004, -0.0134]
     target: [0.0056, 0.0003, 0.1768]
     up: [0.9507, -0.0028, 0.3102]
-    fovy_deg: 80.1
-  intrinsics: {width: 640, height: 480, fx: 285.6, fy: 285.6, cx: 325.8, cy: 249.9}
+    fovy_deg: 71.2
+  # Fitted on this station's left-wrist frames (56 pre-grasp frames, 4 episodes, edge
+  # correlation with the pose refit): fx 335.4, not the single-arm camera's 285.6; the
+  # principal point is not separable from pitch there, so it stays the single-arm value.
+  intrinsics: {width: 640, height: 480, fx: 335.4, fy: 335.4, cx: 325.8, cy: 249.9}
   encoding: rgb8
   vla_feature_key: observation.images.wrist_left
   vendor: generic_usb
