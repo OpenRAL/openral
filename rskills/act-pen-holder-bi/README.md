@@ -102,6 +102,13 @@ A commanded stroke above 100 clamps to fully open. The `metal_pen_holder` scene 
 in-scene (`converts_policy_units`): joint8 = stroke / 2000 − 1.25 mm, the single-arm
 twin's map, per arm.
 
+**Pen grip.** The pen is 20 mm (`pen_diameter_m`; 55–57 px across in the right wrist
+view, as the real one). Over the dataset's 40 right-hand holds the held stroke is p10 19.1 /
+median 21.2 / p90 23.2 (max 25.6); the twin's rigid fingers settle at 22.2 on it and hold
+up to a commanded 24. Where the policy drops the pen in the warm-start runs, it is
+opening the gripper steadily (21 → 26 over ~20 steps): its release, fired away from the
+cup, not a slip.
+
 **Time base.** 30 Hz, the dataset's `fps`.
 
 ## Upstream model / training
@@ -176,10 +183,10 @@ in, graded `complete`.
 
 MuJoCo twin, local RTX 5070 Laptop and q5090, 2026-11-07.
 
-- **Open-loop dataset replay:** 7 of 8 episodes (0, 1, 2, 7, 10, 25, 30; 3 `semi`) end
-  `complete` from their own start layout with the current cup (13 tried with the earlier
-  cup: 9 `complete`). This validates kinematics, units, the gripper map and the object
-  physics.
+- **Open-loop dataset replay:** 7 of 8 episodes (0, 1, 2, 3, 7, 10, 30; 25 `semi`) end
+  `complete` from their own start layout (v2 layouts: cup centre 0.102 m along the left
+  gripper axis, pen centre at the midpoint of its back-projected ends; the shelf front at
+  x 0.402). This validates kinematics, units, the gripper map and the object physics.
 - **Wiring on real frames:** real dataset observations through the composed `sim run`
   path give 1.3–1.5° joint MAE over the first 10 predicted steps (2.5–5° over 100)
   against the recorded actions, at 4 episodes × 6 ticks.

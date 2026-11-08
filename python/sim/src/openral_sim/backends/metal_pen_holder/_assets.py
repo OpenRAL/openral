@@ -98,7 +98,7 @@ class MetalPenHolderOptions(BaseModel):
 
     Example:
         >>> MetalPenHolderOptions().holder_start
-        (0.461, 0.295, 0.0)
+        (0.475, 0.294, 0.0)
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -123,8 +123,11 @@ class MetalPenHolderOptions(BaseModel):
     table_emission: float = Field(default=0.3, ge=0.0)
     table_texture: str | None = "desk_wood.png"  # file under assets/, or absolute
     table_texture_size_m: _Vec2 = (0.13, 0.13)  # one texture tile along (y, x)
-    # The riser shelf the cup starts and ends on (left_base x 0.385-0.59, y +0.18..-0.70).
-    shelf_x_range: _Vec2 = (0.382, 0.587)
+    # The riser shelf the cup starts and ends on (left_base x 0.385-0.59, y +0.18..-0.70). The
+    # front edge sits 2 cm behind the plate estimate (0.382): there the replayed pens, at their
+    # true centres, hit its front face while being lifted (3 of 8 replays); the left wrist's
+    # view of the front face agrees it is further away than 0.382.
+    shelf_x_range: _Vec2 = (0.402, 0.587)
     shelf_y_range: _Vec2 = (-0.394, 0.486)
     shelf_top_z: float = 0.09
     shelf_rgba: _Vec4 = (0.22, 0.19, 0.15, 1.0)  # the board's sides and front edge
@@ -172,21 +175,25 @@ class MetalPenHolderOptions(BaseModel):
     holder_rgba: _Vec4 = _srgb(220, 222, 230)
     holder_emission: float = 0.25
     # Start (x, y, yaw_deg) on the shelf; the dataset mean.
-    holder_start: _Vec3 = (0.461, 0.295, 0.0)
+    holder_start: _Vec3 = (0.475, 0.294, 0.0)
 
     # ---- the pen: a black marker lying on the desk, origin at its centre
     pen_length_m: float = Field(default=0.153, gt=0.0)
-    pen_diameter_m: float = Field(default=0.018, gt=0.0)
+    # 20 mm: 55-57 px across in the right wrist view, as the real marker; the twin's fingers
+    # settle at stroke 22.2 on it (real holds: p10 19.1 / median 21.2 / p90 23.2).
+    pen_diameter_m: float = Field(default=0.020, gt=0.0)
     pen_mass_kg: float = Field(default=0.015, gt=0.0)
     pen_friction: _Vec3 = (1.2, 0.01, 0.0005)
     pen_rgba: _Vec4 = (0.012, 0.012, 0.014, 1.0)  # glossy black barrel
-    pen_band_rgba: _Vec4 = _srgb(225, 225, 225)  # the white ring near the cap
-    pen_label_rgba: _Vec4 = (0.30, 0.30, 0.31, 1.0)  # white print on black, as one grey
+    # The printed sleeve (both white rings, the label text, the grey tip section), unwrapped
+    # from a real right-wrist frame; None leaves the barrel plain black.
+    pen_label_texture: str | None = "pen_label.png"
+    pen_label_emission: float = Field(default=0.5, ge=0.0)  # the camera-baked print, self-lit
     pen_specular: float = Field(default=0.9, ge=0.0, le=1.0)
     pen_shininess: float = Field(default=0.85, ge=0.0, le=1.0)
     pen_reflectance: float = Field(default=0.08, ge=0.0, le=1.0)
     # Start (x, y, yaw_deg) on the desk; yaw 0 = the pen along x. The dataset mean.
-    pen_start: _Vec3 = (0.248, -0.318, -1.7)
+    pen_start: _Vec3 = (0.27, -0.318, -1.7)
     # Per-reset uniform jitter of both starts (x / y +-spawn_jitter_m, yaw +-yaw_jitter_deg),
     # drawn from the episode seed; 0 keeps the declared starts.
     spawn_jitter_m: float = Field(default=0.0, ge=0.0)
@@ -244,6 +251,11 @@ class MetalPenHolderOptions(BaseModel):
     # arms / cup against the real top frames: arms 50 vs 33, cup 166 vs 140).
     top_material_gain: dict[str, float] = Field(
         default_factory=lambda: {"anodised_black": 0.565, "holder": 0.85}
+    )
+    # Per-camera material gains for the wrist renders: the real left wrist sees the desk at
+    # 0.65x the right wrist's brightness (arm shadow + exposure; region means 65 vs 96).
+    wrist_material_gain: dict[str, dict[str, float]] = Field(
+        default_factory=lambda: {"wrist_left": {"wood": 0.65}}
     )
 
     @model_validator(mode="after")
@@ -684,28 +696,73 @@ def _add_pen(spec: mujoco.MjSpec, opts: MetalPenHolderOptions) -> None:
     col.condim = 4
     col.group = 3  # not rendered: the cylinder below is the pen's look
     along_x = [math.cos(math.pi / 4), 0.0, math.sin(math.pi / 4), 0.0]
-    for name, pos, half, grow, rgba in (
-        ("pen_body", 0.0, half_l, 1.0, opts.pen_rgba),
-        # The white ring near the cap end and the printed label mid-barrel (real marker).
-        ("pen_band", half_l * 0.55, 0.004, 1.03, opts.pen_band_rgba),
-        ("pen_label", -half_l * 0.1, 0.022, 1.015, opts.pen_label_rgba),
-    ):
-        mat = spec.add_material()
-        mat.name = name
-        mat.rgba = list(rgba)
-        mat.specular = opts.pen_specular
-        mat.shininess = opts.pen_shininess
-        mat.reflectance = opts.pen_reflectance if name == "pen_body" else 0.0
-        g = body.add_geom()
-        g.name = name
-        g.type = mj.mjtGeom.mjGEOM_CYLINDER
-        g.pos = [pos, 0.0, 0.0]
-        g.quat = along_x
-        g.size = [r * grow, half, 0.0]
-        g.material = name
-        g.contype = 0
-        g.conaffinity = 0
-        g.density = 0.0
+    mat = spec.add_material()
+    mat.name = "pen_body"
+    mat.rgba = list(opts.pen_rgba)
+    mat.specular = opts.pen_specular
+    mat.shininess = opts.pen_shininess
+    mat.reflectance = opts.pen_reflectance
+    g = body.add_geom()
+    g.name = "pen_body"
+    g.type = mj.mjtGeom.mjGEOM_CYLINDER
+    g.quat = along_x
+    g.size = [r, half_l, 0.0]
+    g.material = "pen_body"
+    g.contype = 0
+    g.conaffinity = 0
+    g.density = 0.0
+    if opts.pen_label_texture is not None:
+        _add_pen_sleeve(spec, body, opts)
+
+
+# The sleeve spans 27 %..81.5 % of the length from the cap end (+x); its texture covers the
+# +-60 deg face the camera saw, so it repeats 3x around the barrel.
+_PEN_SLEEVE_SPAN = (0.27, 0.815)
+_PEN_SLEEVE_WRAPS = 3.0
+
+
+def _add_pen_sleeve(spec: mujoco.MjSpec, body: mujoco.MjsBody, opts: MetalPenHolderOptions) -> None:
+    """A textured open cylinder just outside the barrel: the real marker's print, visual only."""
+    import mujoco as mj
+
+    half_l, r = opts.pen_length_m / 2.0, opts.pen_diameter_m / 2.0 * 1.01
+    x_hi, x_lo = (half_l - f * opts.pen_length_m for f in _PEN_SLEEVE_SPAN)
+    n = 32
+    vert: list[float] = []
+    uv: list[float] = []
+    face: list[int] = []
+    for i in range(n + 1):  # seam vertex repeated
+        a = 2.0 * math.pi * i / n
+        for x, v in ((x_hi, 0.0), (x_lo, 1.0)):
+            vert.extend((x, r * math.cos(a), r * math.sin(a)))
+            uv.extend((_PEN_SLEEVE_WRAPS * i / n, v))
+    for i in range(n):
+        a, b = 2 * i, 2 * i + 2
+        face.extend((a, a + 1, b + 1, a, b + 1, b))
+    mesh = spec.add_mesh()
+    mesh.name = "pen_sleeve"
+    mesh.uservert = vert
+    mesh.usertexcoord = uv
+    mesh.userface = face
+    mesh.inertia = mj.mjtMeshInertia.mjMESH_INERTIA_SHELL
+    tex = spec.add_texture()
+    tex.name = "pen_label"
+    tex.type = mj.mjtTexture.mjTEXTURE_2D
+    tex.file = str(opts.asset_path(opts.pen_label_texture))
+    mat = spec.add_material()
+    mat.name = "pen_label"
+    mat.textures[mj.mjtTextureRole.mjTEXROLE_RGB] = "pen_label"
+    mat.specular = 0.3
+    mat.shininess = 0.5
+    mat.emission = opts.pen_label_emission
+    g = body.add_geom()
+    g.name = "pen_label"
+    g.type = mj.mjtGeom.mjGEOM_MESH
+    g.meshname = "pen_sleeve"
+    g.material = "pen_label"
+    g.contype = 0
+    g.conaffinity = 0
+    g.density = 0.0
 
 
 def _quat_mul(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, float, float, float]:

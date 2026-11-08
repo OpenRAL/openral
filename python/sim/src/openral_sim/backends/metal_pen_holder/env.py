@@ -376,9 +376,15 @@ class _MetalPenHolderRollout:
         return self._renderer
 
     def _render_rgb(self, camera: str) -> NDArray[np.uint8]:
+        m, gains = self._model, self.options.wrist_material_gain.get(camera, {})
+        saved = (m.mat_rgba.copy(), m.geom_rgba.copy())
+        _scale_materials(m, gains)
         r = self._ensure_renderer()
-        r.update_scene(self._data, camera=camera)
-        return np.asarray(r.render(), dtype=np.uint8).copy()
+        try:
+            r.update_scene(self._data, camera=camera)
+            return np.asarray(r.render(), dtype=np.uint8).copy()
+        finally:
+            m.mat_rgba[:], m.geom_rgba[:] = saved
 
     def _render_top(self) -> NDArray[np.uint8]:
         import mujoco
@@ -392,12 +398,7 @@ class _MetalPenHolderRollout:
             m.mat_rgba.copy(),
             m.geom_rgba.copy(),
         )
-        for name, gain in o.top_material_gain.items():
-            mat = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MATERIAL, name)
-            if mat >= 0:  # a geom's own (non-default) rgba overrides its material's
-                m.mat_rgba[mat, :3] *= gain
-                own = (m.geom_matid == mat) & np.any(m.geom_rgba != _DEFAULT_GEOM_RGBA, axis=1)
-                m.geom_rgba[own, :3] *= gain
+        _scale_materials(m, o.top_material_gain)
         m.vis.headlight.ambient[:] = o.top_headlight_ambient
         m.vis.headlight.diffuse[:] = o.top_headlight_diffuse
         m.light_diffuse[:] = saved[2] * o.top_light_gain
@@ -430,6 +431,18 @@ class _MetalPenHolderRollout:
         mask = _feather(mask, o.top_mask_feather_px)[..., None]
         out = mask * rgb.astype(np.float32) + (1.0 - mask) * self._plate.astype(np.float32)
         return np.clip(out + 0.5, 0, 255).astype(np.uint8)
+
+
+def _scale_materials(m: Any, gains: dict[str, float]) -> None:
+    """Scale named materials' colours in place; the caller restores ``mat_rgba`` / ``geom_rgba``."""
+    import mujoco
+
+    for name, gain in gains.items():
+        mat = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MATERIAL, name)
+        if mat >= 0:  # a geom's own (non-default) rgba overrides its material's
+            m.mat_rgba[mat, :3] *= gain
+            own = (m.geom_matid == mat) & np.any(m.geom_rgba != _DEFAULT_GEOM_RGBA, axis=1)
+            m.geom_rgba[own, :3] *= gain
 
 
 @SCENES.register(

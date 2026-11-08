@@ -9,8 +9,8 @@
 #       --rskill rskills/act-pen-holder-bi --save-video out/ --video-style world
 #
 # Every pose, size and colour is a MetalPenHolderOptions field (backend_options); defaults are
-# the measured station and the dataset's mean layout (cup on the shelf at (0.461, 0.295), pen on
-# the desk at (0.248, -0.318), yaw -1.7 deg, station_base frame).
+# the measured station and the dataset's mean layout (cup on the shelf at (0.475, 0.294), pen on
+# the desk at (0.27, -0.318), yaw -1.7 deg, station_base frame).
 
 robot_id: makermods_metal_station
 
