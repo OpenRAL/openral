@@ -18,6 +18,9 @@ build/
 htmlcov/
 *.cover
 
+# Node (the robot UI, python/observability/ui; its build output is dist/, ignored above)
+node_modules/
+
 # uv
 .venv/
 .venv-*/  # isolated sidecar dev venvs (e.g. .venv-la for the LocateAnything sidecar)
