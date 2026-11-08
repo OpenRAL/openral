@@ -175,6 +175,27 @@ def filter_scenes_for_skill(
     return kept, skipped
 
 
+def release_episode_frames(episode: EpisodeResult) -> None:
+    """Drop an episode's image buffers once its video is written.
+
+    ``run_benchmark`` keeps every ``EpisodeResult`` for the eval JSON, so any frame
+    left on one is held for the whole suite: the world ``frames`` and the policy-input
+    ``vla_input_frames`` (a 3-camera policy records ~4 GB of these per 900-step
+    episode). Grades, actions and joint traces stay.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_sim.rollout import EpisodeResult
+        >>> img = np.zeros((2, 2, 3), np.uint8)
+        >>> ep = EpisodeResult(frames=[img], vla_input_frames=[img], frame_grades=[None])
+        >>> release_episode_frames(ep)
+        >>> (len(ep.frames), len(ep.vla_input_frames), len(ep.frame_grades))
+        (0, 0, 1)
+    """
+    episode.frames.clear()
+    episode.vla_input_frames.clear()
+
+
 def run_benchmark(
     scenes: list[BenchmarkScene],
     *,
@@ -325,7 +346,7 @@ def run_benchmark(
                     section="benchmark",
                     fps=round(_scene_control_rate_hz(env_cfg)),
                 )
-                episode.frames.clear()
+                release_episode_frames(episode)
             per_task[task_id].append(episode.success)
             all_episodes.append(episode)
             _log.info(
