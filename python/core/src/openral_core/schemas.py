@@ -14870,6 +14870,12 @@ class ReasonerModel(BaseModel):
             operator sets none — bounds a metered gateway's up-front reservation
             for reasoning models (GPT-5.x), or a small local model's runaway
             tool call (Cosmos 3 Edge). ``None`` sends no cap.
+        max_skill_tools: Offer at most this many skill tools per tick, ranked
+            against the active mission task (``ReasonerCore.offered_palette``).
+            For small models whose tool calls run away once they see many
+            near-identical skill tools (Cosmos 3 Edge: 0/20 valid ticks with 14
+            franka skills, 19/20 with 4; #494). ``None`` offers every
+            capability-matched skill.
         min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.
             ``None`` for ``cloud`` models (not a local-compute question).
         required_dtype: Dtype the local runtime must support, matched against
@@ -14897,6 +14903,7 @@ class ReasonerModel(BaseModel):
     auth_required: bool
     tool_choice: Literal["required", "auto"] = "required"
     max_tokens_default: int | None = None
+    max_skill_tools: int | None = Field(default=None, ge=1)
     min_gpu_vram_gb: float | None = None
     required_dtype: QuantizationDtype | None = None
     weights_license: str | None = None
@@ -14956,6 +14963,10 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         # costs 12-19 s on a Thor at BF16; the longest valid call measured was
         # 503 tokens.
         max_tokens_default=512,
+        # Runaway tool calls track the number of near-identical skill tools, not
+        # prompt tokens: on Thor franka_panda + query tools is 0/20 valid with its
+        # 14 skills and 19/20 with 4 (#494). 4 is the measured-good point.
+        max_skill_tools=4,
         min_gpu_vram_gb=12.0,
         required_dtype=QuantizationDtype.BF16,
         weights_license="OpenMDW-1.1",

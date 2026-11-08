@@ -192,6 +192,14 @@ The env contract is:
   way past it. Before raising it, read `llm_s` / `prompt_tokens` on the tick
   (below) — a ceiling hit driven by a growing prompt wants context management,
   not a longer timeout.
+- `OPENRAL_REASONER_MAX_SKILL_TOOLS` — optional per-tick cap on skill tools.
+  The reasoner ranks the palette's skills against the active mission task by
+  keyword overlap and offers the best `k`, plus the skill in flight and the
+  task's last dispatched one (#494). `cosmos3-edge` defaults to 4 (its tool
+  calls run away with 14 near-identical skills; 19/20 valid with 4); every other
+  curated model sees the whole palette. `0` removes the cap; any positive value
+  sets it for any model, curated or not. A call to a skill outside the subset is
+  refused like an off-palette id.
 - `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
   raw model id.
 - `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — the bare-URL `openai` path
@@ -399,6 +407,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.llm_s` | Ticks that reached the LLM | Wall-clock of the LLM round-trip alone. |
 | `reasoner.prompt_tokens` | When the client surfaces usage | Provider-reported prompt tokens, cache reads included. |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
+| `reasoner.offered_skills` | When a skill-tool cap is set | Skill ids offered this tick (`ReasonerCore.offered_palette`). The ranking (every skill's score and the query) is on the `reasoner.skill_subset` log, emitted when the subset changes. |
 | `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
 | `reasoner.llm_s` | Every tick that reached the LLM | Wall-clock of the provider round-trip **alone**. `ReasonerTickResult.elapsed_s` is end-to-end tick time (context render + call + bookkeeping), so `elapsed_s - llm_s` is the reasoner-side overhead — without the split a tick that grew from 6 s to 99 s cannot be attributed. |

@@ -65,6 +65,7 @@ from openral_reasoner.persistence import (
     load_ladder_state,
     save_ladder_state,
 )
+from openral_reasoner.skill_subset import SkillSubset, select_skill_subset
 from openral_reasoner.spatial_query import (
     SpatialMemoryQuerier,
     SpatialQueryOutcome,
@@ -85,6 +86,7 @@ from openral_reasoner.tool_use import (
     ToolUseClient,
     build_tool_use_client_from_env,
     render_robot_context_prompt,
+    resolve_max_skill_tools,
     resolve_reasoner_system_prompt,
 )
 
@@ -117,6 +119,7 @@ __all__ = [
     "SearchBudget",
     "SearchCandidate",
     "SearchProgress",
+    "SkillSubset",
     "SpatialMemoryQuerier",
     "SpatialQueryOutcome",
     "SpatialQueryTool",
@@ -142,11 +145,13 @@ __all__ = [
     "plan_active_search",
     "recall_object_tool_to_query",
     "render_robot_context_prompt",
+    "resolve_max_skill_tools",
     "resolve_place_tool_to_query",
     "resolve_reasoner_system_prompt",
     "run_spatial_query",
     "run_spatial_query_detailed",
     "save_ladder_state",
+    "select_skill_subset",
     "should_rebuild_mission",
 ]
 __version__ = _pkg_version("openral-reasoner")

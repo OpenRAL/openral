@@ -182,8 +182,19 @@ Failed ticks are whitespace runaways inside the tool-call JSON, cut off by the
 512-token cap. They follow the number of near-identical skill tools, not the
 token count: 17K tokens with 4 skills decodes, 22K with 14 does not, and the
 query tools are harmless. Temperature 0.6 did not help (1/20 and 2/20 for the
-query-tool palette). Large palettes need a smaller set of skills per tick:
-OpenRAL/openral#494.
+query-tool palette).
+
+So the registry entry sets `max_skill_tools=4` (OpenRAL/openral#494): each tick
+`ReasonerCore.offered_palette` ranks the palette's skills against the active
+mission task (objects and action verbs weigh most) and offers the best four,
+plus the skill in flight and the task's last dispatched one. The query tools,
+lifecycle peers and detectors are unchanged, and a call to a skill outside the
+subset is refused like an off-palette id. The subset changes only when the task
+does, so vLLM's prefix cache still holds across ticks. The offered ids are on
+the `reasoner.offered_skills` span attribute; the scores on the
+`reasoner.skill_subset` log. Four is the measured-good point (20/20 above); the
+curve between 4 and 14 is unmeasured. To bench another `k`, set
+`OPENRAL_REASONER_MAX_SKILL_TOOLS` (`0` offers every skill).
 
 ## Risks and open questions
 

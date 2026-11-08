@@ -161,6 +161,7 @@ from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_que
 from openral_reasoner.tool_use import (
     ToolUseClient,
     build_tool_use_client_from_env,
+    resolve_max_skill_tools,
     resolve_reasoner_system_prompt,
 )
 from pydantic import ValidationError
@@ -1502,14 +1503,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         system_prompt = (
             f"{base_prompt}\n\n{self._playbooks_block}" if self._playbooks_block else base_prompt
         )
+        # Small models get a mission-ranked top-k of the skills per tick (#494).
+        max_skill_tools = resolve_max_skill_tools()
         self._core = ReasonerCore(
             client=client,
             system_prompt=system_prompt,
+            max_skill_tools=max_skill_tools,
         )
 
         self.get_logger().info(
             f"on_configure: reasoner ready at {self._tick_hz} Hz "
-            f"({len(self._palette.execute_rskill_ids)} skills in palette)",
+            f"({len(self._palette.execute_rskill_ids)} skills in palette; "
+            f"offered per tick: {max_skill_tools or 'all'})",
         )
         return TransitionCallbackReturn.SUCCESS
 

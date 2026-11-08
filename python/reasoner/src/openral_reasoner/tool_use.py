@@ -80,6 +80,7 @@ __all__ = [
     "ToolUseClient",
     "build_tool_use_client_from_env",
     "render_robot_context_prompt",
+    "resolve_max_skill_tools",
     "resolve_reasoner_system_prompt",
 ]
 
@@ -590,6 +591,8 @@ REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
+# Per-tick skill-tool cap override (``resolve_max_skill_tools``); ``0`` = no cap.
+REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"
 # Escape hatch for the uncurated bare-URL path only (openai dialect): some
 # OpenAI-compatible gateways front a "thinking mode" model that rejects
 # ``tool_choice: "required"`` outright (HTTP 400, "Thinking mode does not
@@ -671,6 +674,9 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     * ``OPENRAL_REASONER_DIALECT`` (escape hatch only) — ``anthropic`` |
       ``openai``. Needed only for an uncurated model on a **bare URL**; a
       named endpoint already knows its wire format.
+    * ``OPENRAL_REASONER_MAX_SKILL_TOOLS`` (optional) — read by
+      ``resolve_max_skill_tools``, not by this builder: the per-tick skill-tool
+      cap ``ReasonerCore`` applies.
     * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
       registry defaults.
     * ``OPENRAL_REASONER_TOOL_CHOICE`` (escape hatch only, openai dialect) —
@@ -716,6 +722,44 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     if tool_choice is not None:
         _warn_tool_choice_ignored(tool_choice, f"curated model {entry.id!r}")
     return _build_curated_model(entry)
+
+
+def resolve_max_skill_tools() -> int | None:
+    """The per-tick skill-tool cap for the configured reasoner model (#494).
+
+    ``OPENRAL_REASONER_MAX_SKILL_TOOLS`` wins when set (``0`` = no cap, for
+    benchmarking a curated model on its full palette, or capping an uncurated
+    small model); otherwise the curated ``ReasonerModel.max_skill_tools``;
+    otherwise ``None`` (every capability-matched skill is offered).
+
+    Returns:
+        The cap, or ``None`` for no cap.
+
+    Raises:
+        ROSConfigError: When the env value is not an integer or is negative.
+
+    Example:
+        >>> import os
+        >>> saved = {
+        ...     k: os.environ.pop(k, None)
+        ...     for k in (REASONER_MODEL_ENV, REASONER_MAX_SKILL_TOOLS_ENV)
+        ... }
+        >>> os.environ[REASONER_MODEL_ENV] = "cosmos3-edge"
+        >>> resolve_max_skill_tools()
+        4
+        >>> os.environ[REASONER_MAX_SKILL_TOOLS_ENV] = "0"
+        >>> resolve_max_skill_tools() is None
+        True
+        >>> for k, v in saved.items():
+        ...     _ = os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    """
+    env = _env_int(REASONER_MAX_SKILL_TOOLS_ENV)
+    if env is not None:
+        if env < 0:
+            raise ROSConfigError(f"{REASONER_MAX_SKILL_TOOLS_ENV}={env} must be >= 0 (0 = no cap).")
+        return env or None
+    entry = REASONER_MODELS.get(os.environ.get(REASONER_MODEL_ENV, "").strip())
+    return entry.max_skill_tools if entry is not None else None
 
 
 def _warn_tool_choice_ignored(tool_choice: str, why: str) -> None:
