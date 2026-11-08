@@ -229,14 +229,33 @@ sim-to-real-gap measurement, not a capability claim.
 
 **What is left: the cup in the left wrist.** After the desk, pen-label, pen-size and layout
 fixes the all-sim first-action error is 1.65° at H1 (all real 0.94°) but still 5.0° at H2,
-the moment both arms hold their objects, against 2.5° with the real left wrist. Swapping
-image regions puts almost all of it on the cup: real pixels pasted inside the sim cup's
-outline bring it to 2.8°, while the sim arms and pen pasted into the real frame change
-nothing (2.6°). Four attempts left it unchanged: the cup's fitted in-hand pose
-(+1.7 cm along the gripper), a deeper grasp, lighter or see-through alpha-cut hex holes
-with a glossy white material, and a wider cup. The policy keys on fine detail of the real
-translucent mesh cup that this renderer does not reproduce; that is why, from every warm
-start, the arms never bring the pen over the cup.
+the moment both arms hold their objects, against 2.5° with the real left wrist. Attempts that
+left it unchanged: the cup's fitted in-hand pose, a deeper grasp, a taller cup (10.5-12.5 cm),
+alpha-cut holes (MuJoCo ignores texture alpha), and holes cut through the walls as geometry
+with the one solid wall the real cup has (`holder_hole_grid`, `holder_solid_side`; now the
+default look). A left-arm joint + camera refit to the real frames moved it to 4.45°, and the
+pre-grasp camera refit (1.5-2.6 cm, ~2°) did not lower the error averaged over five ticks
+(3.0° → 3.1°). Pasting real patches into the sim view puts the gain on the left half of the
+real image (desk and shelf edge seen past the cup: 4.9° → 2.7°), not its centre (5.1°): the
+real camera sees the cup side-on and farther away, which no single cup or camera parameter
+reproduced.
+
+**What it is not.** Measured on q5090 (MuJoCo warm starts and perturbed replays, 2026-11-08):
+- *Execution mode.* The adapter's default temporal ensembling (coeff 0.01) and the
+  checkpoint's own 100-step chunks both carry the pen and release it beside the cup (9/9
+  handovers each); 10/25-step chunks and newest-weighted ensembling hold it beside the cup and
+  never release. RTC does not apply (ACT is not a flow-matching policy).
+- *Physics.* Replays tolerate about ±1 cm of aim error: a 1.6 cm left-arm miss pushes the cup
+  away (0/8), as the 13 mm per-side finger clearance predicts. Friction ×2, cup mass 20/150 g
+  and finger stiffness ×0.27/×3.3 do not widen that, and the sim joints track the real ones
+  within 0.35° (1-2 frame lag).
+- *Arm spacing.* Over all 39 replayable episodes the measured 0.612 m spacing places the most
+  pens (32/39); the 0.584 m kinematic estimate places 8/39. Moving the right base 1.4 cm
+  forward gives 34/39 and centres the pen in the grip (bias 0.95 ± 0.18 cm → -0.44 cm), a
+  candidate refinement not applied here.
+
+So the checkpoint's sim misses come from aim errors above ~1 cm driven by what its wrist
+cameras see; any sim score of it is a sim-to-real-gap measurement.
 
 ## License
 

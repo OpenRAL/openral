@@ -24,6 +24,7 @@ from openral_sim import SCENES
 from openral_sim.backends.metal_pen_holder._assets import (
     MetalPenHolderOptions,
     holder_hex_texture,
+    holder_hole_mask,
     holder_inner_half_width,
 )
 from openral_sim.backends.metal_pen_holder.env import pen_holder_grade, pen_points_in_holder
@@ -82,6 +83,24 @@ def test_hex_texture_is_white_with_grey_holes() -> None:
     assert img.shape == (128, 128, 3)
     assert (img[:10] == 255).all()  # the solid band at the rim
     assert img.min() < 200 and (img == 255).mean() > 0.3
+
+
+def test_cup_walls_are_open_through_the_holes_except_the_solid_side() -> None:
+    import mujoco
+    from openral_sim.backends.metal_pen_holder._assets import MetalPenHolderOptions, _add_holder
+
+    def faces(**kw: object) -> int:
+        spec = mujoco.MjSpec()
+        _add_holder(spec, MetalPenHolderOptions(**kw))
+        m = spec.compile()
+        return int(m.mesh_facenum[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MESH, "holder_visual")])
+
+    open_all, one_solid = faces(holder_solid_side=None), faces(holder_solid_side=2)
+    hole_share = float(holder_hole_mask(256).mean())
+    # One of four walls closed adds about a quarter of the cut-out cells back.
+    assert one_solid > open_all
+    assert abs((one_solid - open_all) / one_solid - hole_share / 4) < 0.05
+    assert faces(holder_hole_grid=0) < open_all  # painted holes: a few big wall quads
 
 
 def test_suite_is_ten_layouts_inside_the_dataset_spread() -> None:
