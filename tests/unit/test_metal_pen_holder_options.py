@@ -81,7 +81,7 @@ def test_the_grading_follows_the_cup_frame() -> None:
 def test_hex_texture_is_white_with_grey_holes() -> None:
     img = holder_hex_texture(128)
     assert img.shape == (128, 128, 3)
-    assert (img[:10] == 255).all()  # the solid band at the rim
+    assert (img[:5] == 255).all()  # the thin solid band at the rim
     assert img.min() < 200 and (img == 255).mean() > 0.3
 
 
@@ -96,10 +96,11 @@ def test_cup_walls_are_open_through_the_holes_except_the_solid_side() -> None:
         return int(m.mesh_facenum[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MESH, "holder_visual")])
 
     open_all, one_solid = faces(holder_solid_side=None), faces(holder_solid_side=2)
-    hole_share = float(holder_hole_mask(256).mean())
-    # One of four walls closed adds about a quarter of the cut-out cells back.
+    h = float(holder_hole_mask(256).mean())
+    # Closing one of four walls adds its holes back: a quarter of the cut-out cells, relative
+    # to the open cells left on the four walls.
     assert one_solid > open_all
-    assert abs((one_solid - open_all) / one_solid - hole_share / 4) < 0.05
+    assert abs((one_solid - open_all) / open_all - (h / 4) / (1 - h)) < 0.02
     assert faces(holder_hole_grid=0) < open_all  # painted holes: a few big wall quads
 
 

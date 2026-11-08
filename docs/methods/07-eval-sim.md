@@ -643,7 +643,7 @@ _MakerMods Metal Arm Station pen-holder scene, a sim twin of the rig behind the 
   - `compose_metal_pen_holder(description, options=None, *, width=640, height=480) -> mujoco.MjModel` — Loads the station MJCF into an MjSpec, recolours the arms, scales the fingers, appends the station, cup, pen and the manifest's cameras and compiles. (_assets.py L313)
   - `holder_inner_half_width(opts, z) -> float` — The cup's inner half-width at height `z` above its bottom (the walls lean out). (_assets.py L284)
   - `holder_hex_texture(size=256) -> NDArray[np.uint8]` — The cup's look: white plastic with rows of hexagonal holes between solid rim and bottom bands. (_assets.py L552)
-  - `holder_hole_mask(size=256) -> NDArray[np.bool_]` — Where one cup wall is open: the hexagonal holes (True) between the solid rim and bottom bands; the visual cup leaves these cells out of its walls (one wall solid, `holder_solid_side`). (_assets.py L576)
+  - `holder_hole_mask(size=256, aspect=0.84) -> NDArray[np.bool_]` — Where one cup wall is open: regular hexagonal holes (True), whole rows between thin solid rim and bottom bands; the visual cup leaves these cells out of its walls (one wall solid, `holder_solid_side`). (_assets.py L582)
   - `const ASSET_DIR: Path` — Bundled plate / textures (with `SOURCE.txt`). (`_assets.py` L63)
   - `const ARMS: tuple[str, str]` — The arm prefixes, left first. (`_assets.py` L65)
 - `env.py`:
