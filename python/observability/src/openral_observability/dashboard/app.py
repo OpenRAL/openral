@@ -1102,6 +1102,8 @@ async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None
         )
         for task in pending:
             task.cancel()
+        # Await the cancelled pump so it never outlives the socket (or the event loop).
+        await asyncio.gather(*pending, return_exceptions=True)
         expired = not done
         with contextlib.suppress(RuntimeError, OSError):
             await websocket.close(
@@ -1195,7 +1197,10 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
             req = ExportLogsServiceRequest.FromString(body)
         except DecodeError as exc:
             return _bad_request(f"log decode failed: {exc}")
-        request.app.state.store.ingest_logs(list(req.resource_logs))
+        client = request.client.host if request.client else ""
+        request.app.state.store.ingest_logs(
+            list(req.resource_logs), trust_manifest=_is_loopback(client)
+        )
         return _protobuf_response(ExportLogsServiceResponse())
 
     @app.get("/api/traces")

@@ -542,7 +542,7 @@ class TelemetryStore:
             self._publish(snapshot_payload)
         return recorded
 
-    def ingest_logs(self, payload: list[ResourceLogs]) -> int:
+    def ingest_logs(self, payload: list[ResourceLogs], *, trust_manifest: bool = True) -> int:
         """Decode + record a batch of ``ResourceLogs`` as event-log rows.
 
         Each OTLP ``LogRecord`` becomes one ``TelemetryEvent``: the
@@ -556,6 +556,10 @@ class TelemetryStore:
         event ring as spans/span-events; the UI defaults the Debug chip
         off so high-rate DEBUG (e.g. world_state ~30 Hz) stays opt-in and
         does not crowd the 60-event view.
+
+        A robot-manifest record is applied only with ``trust_manifest`` (loopback
+        ingest): the manifest decides which actions exist, so another host on the LAN
+        must not be able to rewrite it (ADR-0129).
 
         Returns the number of log records recorded.
         """
@@ -575,7 +579,10 @@ class TelemetryStore:
                     scope_name = scope_logs.scope.name or "log"
                     for record in scope_logs.log_records:
                         if record.event_name == semconv.EVENT_ROBOT_MANIFEST:
-                            self._set_manifest(record)
+                            if trust_manifest:
+                                self._set_manifest(record)
+                            else:
+                                _logger.warning("dashboard.manifest_refused", reason="not loopback")
                         else:
                             self._record_log(record, scope_name, identity)
                         recorded += 1

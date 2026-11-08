@@ -373,3 +373,17 @@ async def test_a_launch_manifest_is_served_until_the_runtime_sends_a_fresher_one
     assert [a["id"] for a in served["actions"]] == ["estop"]
     assert rev == 1 and store.snapshot()["manifest_rev"] == 2
     assert len(fresher["actions"]) > 1
+
+
+@pytest.mark.asyncio
+async def test_a_lan_host_cannot_rewrite_the_manifest() -> None:
+    # The manifest decides which actions exist; LAN OTLP ingest still records telemetry
+    # (ADR-0017) but its manifest records are dropped. Loopback's are applied.
+    store = TelemetryStore()
+    async with _client(store, client=("192.168.1.50", 50000)) as lan:
+        resp = await lan.post("/v1/logs", content=_manifest_logs(_manifest()))
+    assert resp.status_code == 200
+    assert store.manifest() is None
+    async with _client(store) as local:
+        await _with_manifest(local)
+    assert store.manifest() == _manifest()
