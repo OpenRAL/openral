@@ -75,6 +75,9 @@ from openral_rskill._vla_core import (
 from openral_rskill.quantization_gate import pro_quantization
 
 from openral_sim._quantization import (
+    WEIGHTS_FILE,
+    WEIGHTS_INDEX_FILE,
+    _shards_from_index,
     default_dtype_for_device,
     peek_safetensors_keys,
     require_supported_dtype,
@@ -316,22 +319,25 @@ def _hf_weights_cached(repo_id: str, revision: str | None) -> bool:
     """Whether every safetensors weight file of ``repo_id@revision`` is cached.
 
     A sharded checkpoint needs ``model.safetensors.index.json`` plus every shard
-    its ``weight_map`` lists; an unsharded one needs ``model.safetensors``.
+    its ``weight_map`` lists; an unsharded one needs ``model.safetensors``. An
+    unreadable or malformed cached index counts as uncached, so the load stays
+    online and re-fetches it instead of crashing in the probe.
     """
-    import json
-
     from huggingface_hub import try_to_load_from_cache
 
     def cached(filename: str) -> str | None:
         path = try_to_load_from_cache(repo_id, filename, revision=revision)
         return path if isinstance(path, str) else None
 
-    index = cached("model.safetensors.index.json")
+    index = cached(WEIGHTS_INDEX_FILE)
     if index is None:
-        return cached("model.safetensors") is not None
-    with open(index, encoding="utf-8") as fh:
-        shards = set(json.load(fh).get("weight_map", {}).values())
-    return bool(shards) and all(cached(shard) is not None for shard in shards)
+        return cached(WEIGHTS_FILE) is not None
+    try:
+        shards = _shards_from_index(index)
+    # AttributeError: valid JSON whose top level is not an object.
+    except (OSError, ValueError, AttributeError, ROSConfigError):
+        return False
+    return all(cached(shard) is not None for shard in shards)
 
 
 def _strip_hf_uri(uri: str | None, *, field_name: str) -> str:

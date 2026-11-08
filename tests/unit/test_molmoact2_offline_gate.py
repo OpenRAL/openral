@@ -167,6 +167,23 @@ class TestHfOfflineIfCached:
         with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_weights=True):
             assert hc.HF_HUB_OFFLINE is True
 
+    @pytest.mark.parametrize("body", ['{"weight_map": {"w": "model-00001', "[]", "{}", ""])
+    def test_weights_gate_malformed_index_stays_online(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str
+    ) -> None:
+        """A truncated / malformed cached index → stay online, never crash the probe."""
+        index = tmp_path / "model.safetensors.index.json"
+        index.write_text(body)
+        cache = {index.name: str(index), "model.safetensors": "/cache/model.safetensors"}
+        monkeypatch.setattr(
+            huggingface_hub,
+            "try_to_load_from_cache",
+            lambda _repo, filename, revision=None: cache.get(filename),
+        )
+        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
+        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_weights=True):
+            assert hc.HF_HUB_OFFLINE is False
+
 
 class TestResolveMaxCrops:
     """``_resolve_max_crops`` precedence: vla.extra → env → manifest → None.
