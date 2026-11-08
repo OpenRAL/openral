@@ -221,11 +221,12 @@ class ReasonerCore:
             )
         self._client = client
         self._max_skill_tools = max_skill_tools
-        # (full palette, query, sticky ids) -> subset, for the last tick. Reused
-        # while the key holds, and its palette object reused while the offered set
-        # holds, so the clients' per-palette-object tool render (and the provider's
-        # prefix cache) survive across ticks.
-        self._subset: tuple[ToolPalette, str, tuple[str, ...], SkillSubset] | None = None
+        # (full palette, sticky ids asked for, subset) for the last tick. Reused while
+        # the palette object, query (``subset.query``) and sticky ids hold; its
+        # narrowed palette object is reused while the offered set holds, so the
+        # clients' per-palette-object tool render (and the provider's prefix cache)
+        # survive across ticks.
+        self._subset: tuple[ToolPalette, tuple[str, ...], SkillSubset] | None = None
         self._min_interval_s = min_interval_s
         self._retry_cap = retry_cap_per_kind
         self._system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -260,39 +261,55 @@ class ReasonerCore:
     def offered_palette(self, palette: ToolPalette, renderer: ContextRenderer) -> ToolPalette:
         """The palette the LLM is shown this tick: ``palette`` narrowed to the skill cap.
 
-        Ranked against the active mission task (else the newest pending operator
-        prompt). The skill in flight and the active task's last dispatched skill
-        stay offered so the model can wait on or re-dispatch them. Without a cap
-        the palette is returned unchanged.
+        Ranked against the active mission task plus every pending operator prompt
+        (an operator reply mid-mission reaches the LLM through PROMPTS without
+        rebuilding the mission, so it must be able to change the offer too). The
+        skill in flight and the active task's last dispatched skill stay offered
+        so the model can wait on or re-dispatch them, and the best match for the
+        highest-priority pending prompt keeps a slot so the operator's ask is not
+        outvoted by a long task text. Without a cap the palette is returned
+        unchanged.
+
+        The ranking (query, every score, offered and kept ids) is logged as
+        ``reasoner.skill_subset`` each time it is recomputed, i.e. whenever the
+        palette, query or sticky ids change.
         """
         if self._max_skill_tools is None:
             return palette
         mission = renderer.mission
         active = mission.active() if mission is not None else None
-        if active is not None:
-            query = active.text
-        else:
-            query = renderer.prompts[-1].text if renderer.prompts else ""
+        texts = ([active.text] if active is not None else []) + [p.text for p in renderer.prompts]
+        query = "\n".join(texts)
         sticky = tuple(
             s for s in (renderer.inflight_skill, active.last_rskill_id if active else None) if s
         )
+        # The buffer is priority-ordered, highest first: [0] is the operator's ask.
+        focus = renderer.prompts[0].text if renderer.prompts else ""
         cached = self._subset
-        if cached is not None and cached[0] is palette and cached[1:3] == (query, sticky):
-            return cached[3].palette
-        subset = select_skill_subset(palette, query=query, k=self._max_skill_tools, sticky=sticky)
-        if cached is not None and cached[3].palette == subset.palette:
-            subset = subset.model_copy(update={"palette": cached[3].palette})
-        else:
-            log.info(
-                "reasoner.skill_subset",
-                k=subset.k,
-                offered=list(subset.offered),
-                total=len(palette.skills),
-                query=query[:200],
-                sticky=list(subset.sticky),
-                scores=dict(subset.scores),
-            )
-        self._subset = (palette, query, sticky, subset)
+        if (
+            cached is not None
+            and cached[0] is palette
+            and (cached[2].query, cached[1]) == (query, sticky)
+        ):
+            return cached[2].palette
+        subset = select_skill_subset(
+            palette, query=query, k=self._max_skill_tools, sticky=sticky, focus=focus
+        )
+        if cached is not None and cached[2].palette == subset.palette:
+            subset = subset.model_copy(update={"palette": cached[2].palette})
+        log.info(
+            "reasoner.skill_subset",
+            k=subset.k,
+            offered=list(subset.offered),
+            total=len(subset.scores),
+            query=query[:400],
+            sticky=list(subset.sticky),
+            focused=list(subset.focused),
+            support=list(subset.support),
+            max_score=subset.max_score,
+            scores=dict(subset.scores),
+        )
+        self._subset = (palette, sticky, subset)
         return subset.palette
 
     @property

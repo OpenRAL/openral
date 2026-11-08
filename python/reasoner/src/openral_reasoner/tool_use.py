@@ -724,13 +724,19 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     return _build_curated_model(entry)
 
 
-def resolve_max_skill_tools() -> int | None:
-    """The per-tick skill-tool cap for the configured reasoner model (#494).
+def resolve_max_skill_tools(client: ToolUseClient) -> int | None:
+    """The per-tick skill-tool cap for the reasoner model ``client`` talks to (#494).
 
     ``OPENRAL_REASONER_MAX_SKILL_TOOLS`` wins when set (``0`` = no cap, for
     benchmarking a curated model on its full palette, or capping an uncurated
-    small model); otherwise the curated ``ReasonerModel.max_skill_tools``;
-    otherwise ``None`` (every capability-matched skill is offered).
+    small model); otherwise the ``ReasonerModel.max_skill_tools`` of the curated
+    entry whose ``served_model_id`` is ``client.model_id``; otherwise ``None``
+    (every capability-matched skill is offered). Keyed on the client actually
+    built (or injected), not on ``OPENRAL_REASONER_MODEL``, so the two cannot
+    disagree.
+
+    Args:
+        client: The tool-use client the reasoner will call.
 
     Returns:
         The cap, or ``None`` for no cap.
@@ -739,27 +745,28 @@ def resolve_max_skill_tools() -> int | None:
         ROSConfigError: When the env value is not an integer or is negative.
 
     Example:
+        >>> client = OpenAICompatibleToolUseClient(model_id="nvidia/Cosmos3-Edge")
         >>> import os
-        >>> saved = {
-        ...     k: os.environ.pop(k, None)
-        ...     for k in (REASONER_MODEL_ENV, REASONER_MAX_SKILL_TOOLS_ENV)
-        ... }
-        >>> os.environ[REASONER_MODEL_ENV] = "cosmos3-edge"
-        >>> resolve_max_skill_tools()
+        >>> saved = os.environ.pop(REASONER_MAX_SKILL_TOOLS_ENV, None)
+        >>> resolve_max_skill_tools(client)
         4
-        >>> os.environ[REASONER_MAX_SKILL_TOOLS_ENV] = "0"
-        >>> resolve_max_skill_tools() is None
-        True
-        >>> for k, v in saved.items():
-        ...     _ = os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        >>> resolve_max_skill_tools(OpenAICompatibleToolUseClient(model_id="openai/gpt-5.5"))
+        >>> if saved is not None:
+        ...     os.environ[REASONER_MAX_SKILL_TOOLS_ENV] = saved
     """
     env = _env_int(REASONER_MAX_SKILL_TOOLS_ENV)
     if env is not None:
         if env < 0:
             raise ROSConfigError(f"{REASONER_MAX_SKILL_TOOLS_ENV}={env} must be >= 0 (0 = no cap).")
         return env or None
-    entry = REASONER_MODELS.get(os.environ.get(REASONER_MODEL_ENV, "").strip())
-    return entry.max_skill_tools if entry is not None else None
+    return next(
+        (
+            entry.max_skill_tools
+            for entry in REASONER_MODELS.values()
+            if entry.served_model_id == client.model_id
+        ),
+        None,
+    )
 
 
 def _warn_tool_choice_ignored(tool_choice: str, why: str) -> None:

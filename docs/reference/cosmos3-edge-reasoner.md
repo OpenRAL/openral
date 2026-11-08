@@ -186,13 +186,17 @@ query-tool palette).
 
 So the registry entry sets `max_skill_tools=4` (OpenRAL/openral#494): each tick
 `ReasonerCore.offered_palette` ranks the palette's skills against the active
-mission task (objects and action verbs weigh most) and offers the best four,
-plus the skill in flight and the task's last dispatched one. The query tools,
+mission task and any pending operator prompts (objects and action verbs weigh
+most) and offers at most four. Those four slots go first to the skill in flight
+and the task's last dispatched one, then to the best match for the top pending
+operator prompt, then to the best navigate and look-at skill, then to the
+highest scores (ties alphabetical on the id). The query tools,
 lifecycle peers and detectors are unchanged, and a call to a skill outside the
 subset is refused like an off-palette id. The subset changes only when the task
 does, so vLLM's prefix cache still holds across ticks. The offered ids are on
 the `reasoner.offered_skills` span attribute; the scores on the
-`reasoner.skill_subset` log. Four is the measured-good point (20/20 above); the
+`reasoner.skill_subset` log, emitted whenever the ranking is recomputed. Four is
+the measured-good point (20/20 above); the
 curve between 4 and 14 is unmeasured. To bench another `k`, set
 `OPENRAL_REASONER_MAX_SKILL_TOOLS` (`0` offers every skill).
 

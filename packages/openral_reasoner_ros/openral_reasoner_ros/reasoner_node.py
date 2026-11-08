@@ -1262,6 +1262,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         try:
             client = self._injected_client or build_tool_use_client_from_env()
+            # Small models get a mission-ranked top-k of the skills per tick (#494).
+            # Resolved here, before any pool / subscription / sidecar boot exists, so
+            # a bad OPENRAL_REASONER_MAX_SKILL_TOOLS fails configure without leaking.
+            max_skill_tools = resolve_max_skill_tools(client)
         except ROSConfigError as exc:
             self.get_logger().error(f"on_configure: {exc}")
             return TransitionCallbackReturn.FAILURE
@@ -1503,8 +1507,6 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         system_prompt = (
             f"{base_prompt}\n\n{self._playbooks_block}" if self._playbooks_block else base_prompt
         )
-        # Small models get a mission-ranked top-k of the skills per tick (#494).
-        max_skill_tools = resolve_max_skill_tools()
         self._core = ReasonerCore(
             client=client,
             system_prompt=system_prompt,
