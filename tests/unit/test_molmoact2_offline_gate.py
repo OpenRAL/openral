@@ -1,17 +1,22 @@
-"""Tests for the MolmoAct2 ``_hf_offline_if_cached`` offline gate.
+"""Tests for the MolmoAct2 ``_hf_cached_first`` cache-first loader.
 
-Regression for the cold-``norm_stats.json`` first-run bug: the gate probed
-``config.json`` as a proxy for "everything is cached" and flipped
-``HF_HUB_OFFLINE`` on, but ``predict_action`` fetches ``norm_stats.json``
-*inside* that block. On a first run the model load warms ``config.json`` but
-never ``norm_stats.json``, so the offline flag blocked the lazy norm-stats
-download with a ``LocalEntryNotFoundError`` surfaced as "normalization stats
-file is missing". The gate must probe the file the inner block actually reads.
+Regression for two cold-cache bugs in the old proxy-file offline gate, which
+flipped ``HF_HUB_OFFLINE`` on when one probe file was cached:
+
+- ``predict_action`` was gated on ``config.json`` but fetched
+  ``norm_stats.json``; the model load warms the former, never the latter, so
+  the first run failed with "normalization stats file is missing".
+- the weights ``from_pretrained`` was gated on ``config.json``, which the
+  config load just before it warms, so a cold-cache bf16 load (Jetson Thor,
+  2026-11-08) could not download its shards: "does not appear to have a file
+  named pytorch_model.bin or model.safetensors".
+
+``_hf_cached_first`` tries the load itself offline and retries online on a
+miss, so no probe file can disagree with what the load reads.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import huggingface_hub
@@ -22,7 +27,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_rskill import split_repo_revision
 from openral_rskill.loader import rSkill
 from openral_sim.policies.molmoact2 import (
-    _hf_offline_if_cached,
+    _hf_cached_first,
     _norm_stats_path,
     _resolve_max_crops,
 )
@@ -63,126 +68,86 @@ class TestSplitRepoRevision:
         )
 
 
-class TestHfOfflineIfCached:
-    def test_offline_flipped_when_probe_file_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A cached probe file → HF_HUB_OFFLINE True inside, restored on exit."""
-        monkeypatch.setattr(
-            huggingface_hub,
-            "try_to_load_from_cache",
-            lambda _repo, _f, revision=None: "/cache/config.json",
-        )
+class TestHfCachedFirst:
+    def test_warm_cache_loads_once_offline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A load that the cache satisfies runs once, offline, and the flag is restored."""
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
-        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO"):
-            assert hc.HF_HUB_OFFLINE is True
+        seen: list[bool] = []
+
+        def load() -> str:
+            seen.append(hc.HF_HUB_OFFLINE)
+            return "loaded"
+
+        assert _hf_cached_first(load, repo_id="allenai/MolmoAct2-LIBERO") == "loaded"
+        assert seen == [True]
         assert hc.HF_HUB_OFFLINE is False
 
-    def test_stays_online_when_probe_file_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An uncached probe file → stays online so the inner block can download."""
-        monkeypatch.setattr(
-            huggingface_hub, "try_to_load_from_cache", lambda _repo, _f, revision=None: None
-        )
+    def test_cache_miss_retries_online(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An offline miss (``OSError``) reruns the load with the Hub reachable."""
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
-        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO"):
-            assert hc.HF_HUB_OFFLINE is False
+        seen: list[bool] = []
 
-    def test_probe_file_gates_on_the_requested_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The bug: config.json cached but norm_stats.json not → must stay online.
+        def load() -> str:
+            seen.append(hc.HF_HUB_OFFLINE)
+            if hc.HF_HUB_OFFLINE:
+                raise huggingface_hub.errors.LocalEntryNotFoundError("not cached")
+            return "downloaded"
 
-        Probing ``norm_stats.json`` (what predict_action fetches) returns None
-        even though ``config.json`` is warm, so the gate keeps the inner block
-        online to download the norm stats instead of failing offline.
-        """
-        cache = {"config.json": "/cache/config.json"}
-        monkeypatch.setattr(
-            huggingface_hub,
-            "try_to_load_from_cache",
-            lambda _repo, filename, revision=None: cache.get(filename),
-        )
+        assert _hf_cached_first(load, repo_id="allenai/MolmoAct2-LIBERO") == "downloaded"
+        assert seen == [True, False]
+        assert hc.HF_HUB_OFFLINE is False
+
+    def test_online_failure_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A load that fails online too raises the online error, flag restored."""
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
-        # config.json gate would flip offline...
-        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_file="config.json"):
-            assert hc.HF_HUB_OFFLINE is True
-        # ...but the norm_stats.json gate (predict path) must stay online.
-        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_file="norm_stats.json"):
-            assert hc.HF_HUB_OFFLINE is False
 
-    def test_probe_checks_the_pinned_revision(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A file cached for ``main`` must not send a pinned-revision fetch offline."""
-        cache = {(None, "norm_stats.json"): "/cache/main/norm_stats.json"}
-        monkeypatch.setattr(
-            huggingface_hub,
-            "try_to_load_from_cache",
-            lambda _repo, filename, revision=None: cache.get((revision, filename)),
-        )
+        def load() -> str:
+            raise OSError("offline" if hc.HF_HUB_OFFLINE else "online")
+
+        with pytest.raises(OSError, match="online"):
+            _hf_cached_first(load, repo_id="allenai/MolmoAct2-LIBERO")
+        assert hc.HF_HUB_OFFLINE is False
+
+    def test_non_cache_error_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only a missing-file ``OSError`` falls back; other errors surface at once."""
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
-        repo = "allenai/MolmoAct2-LIBERO"
-        with _hf_offline_if_cached(repo, probe_file="norm_stats.json"):
-            assert hc.HF_HUB_OFFLINE is True
-        with _hf_offline_if_cached(repo, probe_file="norm_stats.json", revision="abc123"):
-            assert hc.HF_HUB_OFFLINE is False
+        calls: list[bool] = []
 
-    def test_weights_gate_stays_online_until_every_shard_is_cached(
+        def load() -> str:
+            calls.append(hc.HF_HUB_OFFLINE)
+            raise ValueError("bad config")
+
+        with pytest.raises(ValueError, match="bad config"):
+            _hf_cached_first(load, repo_id="allenai/MolmoAct2-LIBERO")
+        assert calls == [True]
+        assert hc.HF_HUB_OFFLINE is False
+
+    def test_config_warm_weights_cold_from_pretrained_downloads(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Cold-cache from_pretrained: config.json is warm, the shards are not.
+        """The Thor repro on a real (tiny) checkpoint: config cached, weights not.
 
-        Regression (Jetson Thor, 2026-11-08): the weights load was gated on
-        ``config.json``, which the config load warms, so a cold-cache bf16 load
-        went offline and could not download ``model-0000N-of-00005.safetensors``.
+        A plain offline ``from_pretrained`` raises the exact "does not appear to
+        have a file named ... model.safetensors" error; the cache-first load
+        must instead download the weights and return the model.
         """
-        shards = [f"model-0000{i}-of-00005.safetensors" for i in range(1, 6)]
-        index = tmp_path / "model.safetensors.index.json"
-        index.write_text(json.dumps({"weight_map": {f"w{i}": s for i, s in enumerate(shards)}}))
-        rev = "0d24a92bd1faf321ef497c3bbd5681af97c65aa2"
-        cache = {"config.json": "/cache/config.json", index.name: str(index)}
-        monkeypatch.setattr(
-            huggingface_hub,
-            "try_to_load_from_cache",
-            lambda _repo, filename, revision=None: cache.get(filename) if revision == rev else None,
-        )
+        transformers = pytest.importorskip("transformers")
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
-        repo = "allenai/MolmoAct2-LIBERO"
-        with _hf_offline_if_cached(repo, revision=rev, probe_weights=True):
-            assert hc.HF_HUB_OFFLINE is False
-        cache.update({s: f"/cache/{s}" for s in shards[:-1]})
-        with _hf_offline_if_cached(repo, revision=rev, probe_weights=True):
-            assert hc.HF_HUB_OFFLINE is False
-        cache[shards[-1]] = f"/cache/{shards[-1]}"
-        with _hf_offline_if_cached(repo, revision=rev, probe_weights=True):
-            assert hc.HF_HUB_OFFLINE is True
+        repo = "hf-internal-testing/tiny-random-bert"
+        try:
+            transformers.AutoConfig.from_pretrained(repo, cache_dir=tmp_path)
+        except OSError as exc:
+            pytest.skip(f"Hub unreachable: {exc}")
+        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", True)
+        with pytest.raises(OSError, match=r"model\.safetensors"):
+            transformers.AutoModel.from_pretrained(repo, cache_dir=tmp_path)
+        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
+        model = _hf_cached_first(
+            lambda: transformers.AutoModel.from_pretrained(repo, cache_dir=tmp_path),
+            repo_id=repo,
+        )
+        assert model.config.model_type == "bert"
         assert hc.HF_HUB_OFFLINE is False
-
-    def test_weights_gate_unsharded(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """No index → the single ``model.safetensors`` decides."""
-        cache: dict[str, str] = {"config.json": "/cache/config.json"}
-        monkeypatch.setattr(
-            huggingface_hub,
-            "try_to_load_from_cache",
-            lambda _repo, filename, revision=None: cache.get(filename),
-        )
-        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
-        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_weights=True):
-            assert hc.HF_HUB_OFFLINE is False
-        cache["model.safetensors"] = "/cache/model.safetensors"
-        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_weights=True):
-            assert hc.HF_HUB_OFFLINE is True
-
-    @pytest.mark.parametrize("body", ['{"weight_map": {"w": "model-00001', "[]", "{}", ""])
-    def test_weights_gate_malformed_index_stays_online(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str
-    ) -> None:
-        """A truncated / malformed cached index → stay online, never crash the probe."""
-        index = tmp_path / "model.safetensors.index.json"
-        index.write_text(body)
-        cache = {index.name: str(index), "model.safetensors": "/cache/model.safetensors"}
-        monkeypatch.setattr(
-            huggingface_hub,
-            "try_to_load_from_cache",
-            lambda _repo, filename, revision=None: cache.get(filename),
-        )
-        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
-        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_weights=True):
-            assert hc.HF_HUB_OFFLINE is False
 
 
 class TestResolveMaxCrops:
