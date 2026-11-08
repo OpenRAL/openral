@@ -229,10 +229,14 @@ class MetalPenHolderOptions(BaseModel):
     # (rx, ry, rz) deg in the camera frame. Fitted per wrist on the pen-holder dataset (both
     # arms posed at the recorded state, edge-map correlation over 4 episodes x 9-11 ticks from
     # rest to grasp): left 0.59 -> 0.77, right 0.56 -> 0.64. The manifest's wrist mount is the
-    # single-arm rig's refit.
+    # single-arm rig's refit. The left wrist was refitted with its focal length (manifest fx
+    # 335.4) on 56 pre-grasp frames of episodes 0/7/15/30, the cup still on the shelf: edge
+    # correlation 0.62 -> 0.72 (pose alone 0.66, focal alone 0.67, lens distortion ~0). The
+    # same fit on the right wrist (episode 0) keeps its focal (x1.01-1.04) and gains 0.014,
+    # too little to move it.
     camera_offsets: dict[str, tuple[float, float, float, float, float, float]] = Field(
         default_factory=lambda: {
-            "wrist_left": (0.0088, 0.0073, -0.0169, -3.32, -1.96, -2.40),
+            "wrist_left": (0.0007, 0.0154, 0.0076, -3.85, -2.22, -2.25),
             "wrist_right": (-0.0035, 0.0005, 0.0120, 1.13, -2.46, 1.25),
         }
     )

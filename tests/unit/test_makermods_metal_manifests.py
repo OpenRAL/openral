@@ -12,6 +12,7 @@ the unit tier) live in ``tests/sim/test_makermods_metal_hal_mujoco.py``.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -145,15 +146,26 @@ def test_station_sim_gripper_equals_single_arm(
 def test_station_wrist_camera_equals_single_arm(
     arm: RobotDescription, station: RobotDescription, prefix: str
 ) -> None:
-    """Each station wrist camera is the single-arm ``wrist`` camera on that arm."""
+    """Each station wrist camera is the single-arm ``wrist`` camera on that arm.
+
+    Except the left wrist's focal length: refitted on this station's own left-wrist frames
+    (fx 335.4 vs 285.6), with the fovy that pinhole implies; mount and principal point stay.
+    """
     (single,) = [s for s in arm.sensors if s.name == "wrist"]
     side = prefix.rstrip("_")
     (got,) = [s for s in station.sensors if s.name == f"wrist_{side}"]
     assert got.parent_frame == prefix + str(single.parent_frame)
     assert got.frame_id == f"{prefix}{single.frame_id}"
     assert got.static_transform_calibrated is single.static_transform_calibrated is False
-    assert got.intrinsics == single.intrinsics
+    assert single.intrinsics is not None and got.intrinsics is not None
     assert single.sim_placement is not None and got.sim_placement is not None
+    want_k = single.intrinsics.model_dump()
     want = single.sim_placement.model_dump()
     want["parent_body"] = prefix + str(want["parent_body"])
+    if side == "left":
+        want_k.update(fx=335.4, fy=335.4)
+        want["fovy_deg"] = pytest.approx(
+            2 * math.degrees(math.atan(got.intrinsics.height / 2 / 335.4)), abs=0.05
+        )
+    assert got.intrinsics.model_dump() == want_k
     assert got.sim_placement.model_dump() == want
