@@ -269,7 +269,9 @@ class ReasonerCore:
         operator's ask is not outvoted by a long task text (with ``k`` >= 2 it is
         always offered on the tick the prompt arrives, before that tick drains
         it); then the active task's last dispatched skill, so the model can
-        re-dispatch it. Without a cap the palette is returned unchanged.
+        re-dispatch it. Equal scores prefer skills not yet tried for the active task
+        (so substituting a skill reaches beyond the top-k), then higher weight
+        precision. Without a cap the palette is returned unchanged.
 
         The ranking (query, every score, offered and kept ids) is logged as
         ``reasoner.skill_subset`` each time it is recomputed, i.e. whenever the
@@ -283,7 +285,8 @@ class ReasonerCore:
         query = "\n".join(texts)
         inflight = renderer.inflight_skill
         recent = active.last_rskill_id if active is not None else None
-        sticky = (inflight or "", recent or "")
+        tried = active.tried_rskill_ids if active is not None else ()
+        sticky = (inflight or "", recent or "", *tried)
         # The buffer is priority-ordered, highest first: [0] is the operator's ask.
         focus = renderer.prompts[0].text if renderer.prompts else ""
         cached = self._subset
@@ -300,6 +303,7 @@ class ReasonerCore:
             sticky=(inflight,),
             focus=focus,
             recent=(recent,),
+            tried=tried,
         )
         if cached is not None and cached[2].palette == subset.palette:
             subset = subset.model_copy(update={"palette": cached[2].palette})
@@ -312,6 +316,7 @@ class ReasonerCore:
             sticky=list(subset.sticky),
             focused=list(subset.focused),
             support=list(subset.support),
+            tried=list(subset.tried),
             max_score=subset.max_score,
             scores=dict(subset.scores),
         )

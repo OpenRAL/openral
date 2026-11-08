@@ -190,7 +190,9 @@ mission task and any pending operator prompts (objects and action verbs weigh
 most) and offers at most four. Those four slots go first to the skill in flight,
 then to the best match for the top pending operator prompt, then to the task's
 last dispatched skill, then to the best navigate and look-at skill, then to the
-highest scores (ties alphabetical on the id). The query tools,
+highest scores. Equal scores prefer skills not yet tried for the task (so each
+failed attempt brings in untried skills), then higher weight precision, then the
+id. The query tools,
 lifecycle peers and detectors are unchanged, and a call to a skill outside the
 subset is refused like an off-palette id. The subset changes only when the task
 does, so vLLM's prefix cache still holds across ticks. The offered ids are on

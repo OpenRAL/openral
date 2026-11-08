@@ -13,7 +13,10 @@ mission text by keyword overlap and returns a narrowed ``ToolPalette`` holding a
 palette, so a call to a skill outside the subset is refused like any off-palette id.
 
 Keyword overlap rather than embeddings: no new dependency, deterministic, and
-replayable from the trace (CLAUDE.md §1.8). Ties break on ``rskill_id``.
+replayable from the trace (CLAUDE.md §1.8). Equal scores break, in order, on:
+skills not yet tried for the active task first (so the substitute-skill rung of
+the replanning ladder reaches skills outside the top-k), then higher weight
+precision (``PRECISION_RANK``), then ``rskill_id``.
 """
 
 from __future__ import annotations
@@ -21,12 +24,13 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from openral_core import RSkillAction
+from openral_core import QuantizationDtype, RSkillAction
 from pydantic import BaseModel, ConfigDict, Field
 
 from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 
 __all__ = [
+    "PRECISION_RANK",
     "SUPPORT_ACTIONS",
     "SkillSubset",
     "mission_keywords",
@@ -47,6 +51,19 @@ SUPPORT_ACTIONS: frozenset[RSkillAction] = frozenset({RSkillAction.LOOK, RSkillA
 task (APPROACH with navigation, FRAME with a look-at). A task text rarely names them
 ("pick up the bowl" says nothing about aiming the camera), so the best skill of each
 of these actions keeps a slot whatever it scores, up to ``k - 1`` slots in total."""
+
+PRECISION_RANK: dict[QuantizationDtype, int] = {
+    QuantizationDtype.FP32: 0,
+    QuantizationDtype.BF16: 0,
+    QuantizationDtype.FP16: 0,
+    QuantizationDtype.FP8: 1,
+    QuantizationDtype.INT8: 2,
+    QuantizationDtype.INT4: 3,
+    QuantizationDtype.FP4_NVFP4: 3,
+}
+"""Tie-break rank of a skill's run dtype, lower first: full / half precision, then
+8-bit float, int8, 4-bit. A coarse prior, not a measurement: quantization can cost a
+policy real success (pi05's own manifest: int8 62% vs bf16 95% on LIBERO-Spatial)."""
 
 # Words that carry no task meaning. Kept short on purpose: an over-eager list
 # drops real object names.
@@ -242,6 +259,7 @@ class SkillSubset(BaseModel):
         sticky: Ids kept regardless of score (in flight, then last dispatched).
         focused: The id kept as the best match for the top pending operator prompt.
         support: Ids kept as the best skill of a ``SUPPORT_ACTIONS`` action.
+        tried: Ids already dispatched for the active task (demoted among ties).
         k: The cap applied.
     """
 
@@ -253,6 +271,7 @@ class SkillSubset(BaseModel):
     sticky: tuple[str, ...] = ()
     focused: tuple[str, ...] = ()
     support: tuple[str, ...] = ()
+    tried: tuple[str, ...] = ()
     k: int = Field(ge=1)
 
     @property
@@ -294,6 +313,7 @@ def select_skill_subset(
     sticky: Iterable[str | None] = (),
     focus: str = "",
     recent: Iterable[str | None] = (),
+    tried: Iterable[str] = (),
 ) -> SkillSubset:
     """Offer at most ``k`` of the palette's skills, ranked by relevance to ``query``.
 
@@ -301,14 +321,16 @@ def select_skill_subset(
     so the model can wait on it; then the best match for ``focus`` (the top pending
     operator prompt, which a long task text would otherwise outvote), if it matches
     any skill; then the ``recent`` ids (the last one dispatched for the active task)
-    so the model can re-dispatch it; then the best skill of each ``SUPPORT_ACTIONS`` action
-    (navigate, look) the system prompt's workflow uses around any object task, at
-    most ``k - 1`` of them; then the highest-scoring skills, ties broken by
-    ``rskill_id``. With one skill in flight, any ``k`` >= 2 leaves the focus a slot,
-    so an operator's ask is offered on the tick it arrives (the tick then drains
-    it). Sticky / recent ids not in the palette (a skill dropped after a permanent
-    failure) are ignored. The narrowed palette keeps the full palette's skill order
-    so the rendered tool list is stable. A palette whose skills carry no metadata
+    so the model can re-dispatch it; then the best skill of each ``SUPPORT_ACTIONS``
+    action (navigate, look) the system prompt's workflow uses around any object
+    task, at most ``k - 1`` of them; then the highest-scoring skills. Equal scores
+    break on skills not in ``tried`` first, then ``PRECISION_RANK`` of the run
+    dtype, then ``rskill_id`` (``scores`` lists that order). With one skill in
+    flight, any ``k`` >= 2 leaves the focus a slot, so an operator's ask is offered
+    on the tick it arrives (the tick then drains it). Sticky / recent ids not in the
+    palette (a skill dropped after a permanent failure) are ignored. The narrowed
+    palette keeps the full palette's skill order so the rendered tool list is
+    stable. A palette whose skills carry no metadata
     (only ``execute_rskill_ids``, the single-tool fallback) is capped the same way,
     scored on the ids. A palette with ``k`` or fewer skills is returned unchanged
     (the same object).
@@ -322,6 +344,8 @@ def select_skill_subset(
             blank or when it matches no skill).
         recent: Skill ids kept after the focus, regardless of score (the active
             task's last dispatch).
+        tried: Skill ids already dispatched for the active task; demoted among
+            equal scores.
 
     Returns:
         The ``SkillSubset``.
@@ -361,7 +385,19 @@ def select_skill_subset(
         }
 
     raw = scores_for(query)
-    scored = tuple(sorted(raw.items(), key=lambda item: (-item[1], item[0])))
+    tried_set = frozenset(tried)
+    precision = {e.rskill_id: PRECISION_RANK[e.quantization_dtype] for e in palette.skills}
+    scored = tuple(
+        sorted(
+            raw.items(),
+            key=lambda item: (
+                -item[1],
+                item[0] in tried_set,
+                precision.get(item[0], 0),
+                item[0],
+            ),
+        )
+    )
 
     def present(ids: Iterable[str | None]) -> list[str]:
         out: list[str] = []
@@ -409,5 +445,6 @@ def select_skill_subset(
         sticky=tuple(kept_sticky),
         focused=focused,
         support=tuple(support),
+        tried=tuple(sorted(tried_set & raw.keys())),
         k=k,
     )

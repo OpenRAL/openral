@@ -525,3 +525,90 @@ def test_operator_ask_is_offered_on_the_tick_that_drains_it(franka_palette: Tool
     renderer.set_inflight_skill(None)
     after = core.offered_palette(franka_palette, renderer)
     assert _LOOK_AT in after.execute_rskill_ids
+
+
+# ── Tie-breaks: tried-for-this-task, then precision, then id ─────────────────
+
+_ACT = "OpenRAL/rskill-act-franka_panda-libero-fp32"
+_SMOLVLA = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
+_XVLA = "OpenRAL/rskill-xvla-franka_panda-libero_spatial-bf16"
+_PI05 = "OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8"
+_BOWL_TASK = "pick up the black bowl and place it on the plate"
+
+
+def test_palette_carries_the_manifest_run_dtype(franka_palette: ToolPalette) -> None:
+    from openral_core import QuantizationDtype
+
+    dtypes = {e.rskill_id: e.quantization_dtype for e in franka_palette.skills}
+    assert dtypes[_PI05] is QuantizationDtype.INT8
+    assert dtypes[_SMOLVLA] is QuantizationDtype.BF16
+    assert dtypes[_ACT] is QuantizationDtype.FP32
+
+
+def test_equal_scores_prefer_higher_precision(franka_palette: ToolPalette) -> None:
+    """The 7 LIBERO skills tie on a bowl task; full-precision ones win the slots."""
+    from openral_reasoner.skill_subset import PRECISION_RANK
+
+    subset = select_skill_subset(franka_palette, query=_BOWL_TASK, k=4)
+    assert set(subset.offered) == {_LOOK_AT, _ACT, _SMOLVLA, _XVLA}
+    by_id = {e.rskill_id: e for e in franka_palette.skills}
+    tied = [i for i, s in subset.scores if s == subset.max_score]
+    ranks = [PRECISION_RANK[by_id[i].quantization_dtype] for i in tied]
+    assert ranks == sorted(ranks)  # scores list the tie-break order
+
+
+def test_tried_skills_are_demoted_among_ties(franka_palette: ToolPalette) -> None:
+    """Skills already tried for the task give way; precision orders the rest."""
+    subset = select_skill_subset(
+        franka_palette, query=_BOWL_TASK, k=4, tried=(_ACT, _SMOLVLA, _XVLA)
+    )
+    assert _PI05 in subset.offered  # int8: the best untried precision
+    assert not {_ACT, _SMOLVLA, _XVLA} & set(subset.offered)
+    assert subset.tried == tuple(sorted((_ACT, _SMOLVLA, _XVLA)))
+
+
+def test_substitute_skill_rotates_beyond_the_top_k(franka_palette: ToolPalette) -> None:
+    """Each failed dispatch keeps the last skill (retry) and brings in an untried one."""
+    core = ReasonerCore(client=FakeToolUseClient(responses=[]), max_skill_tools=4)
+    renderer = _mission_renderer(_BOWL_TASK)
+    mission = renderer.mission
+    assert mission is not None
+    first = core.offered_palette(franka_palette, renderer).execute_rskill_ids
+    assert first == {_LOOK_AT, _ACT, _SMOLVLA, _XVLA}
+    seen: set[str] = set(first)
+    # look-at and the retry slot hold 2 of the 4 slots, so each failure brings in
+    # 2 untried skills: 5 attempts reach all 7 tied LIBERO skills.
+    attempts = (
+        _ACT,
+        _SMOLVLA,
+        _XVLA,
+        _PI05,
+        "OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16",
+    )
+    for attempt in attempts:
+        mission.record_attempt(rskill_id=attempt)  # dispatched; the task is still active
+        offered = core.offered_palette(franka_palette, renderer).execute_rskill_ids
+        assert attempt in offered  # the retry rung keeps the last dispatch
+        seen |= offered
+    # The failed attempts reached every LIBERO skill, not only the first top-4.
+    libero = {e.rskill_id for e in franka_palette.skills if "libero" in e.rskill_id}
+    assert libero <= seen
+    assert mission.active() is not None
+    assert mission.active().tried_rskill_ids == attempts  # type: ignore[union-attr]  # reason: asserted not None above
+
+
+def test_tried_skills_survive_a_restart() -> None:
+    """The ladder state persists the tried set; an older snapshot without it loads empty."""
+    mission = MissionState([_BOWL_TASK])
+    mission.record_attempt(rskill_id=_ACT)
+    mission.record_attempt(rskill_id=_ACT)
+    mission.record_attempt(rskill_id=_SMOLVLA)
+    state = mission.to_state_dict()
+    restored = MissionState.from_state_dict(state)
+    assert restored.tasks[0].tried_rskill_ids == (_ACT, _SMOLVLA)
+    tasks = state["tasks"]
+    assert isinstance(tasks, list)
+    legacy: dict[str, object] = {
+        "tasks": [{k: v for k, v in t.items() if k != "tried_rskill_ids"} for t in tasks]
+    }
+    assert MissionState.from_state_dict(legacy).tasks[0].tried_rskill_ids == ()

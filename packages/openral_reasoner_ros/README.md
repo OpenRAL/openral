@@ -199,7 +199,10 @@ The env contract is:
   for the top pending operator prompt (with `k` ≥ 2 it is offered on the tick the
   prompt arrives); the task's last dispatched skill; the best navigate and look-at
   skill (the workflow's APPROACH / FRAME steps, at most
-  `k - 1` of them); then the highest scores. Ties break alphabetically on the id. `cosmos3-edge` defaults to 4 (its tool
+  `k - 1` of them); then the highest scores. Equal scores prefer
+  skills not yet tried for the active task (so substituting a skill reaches past the
+  top `k`), then higher weight precision (fp32/bf16/fp16, then fp8, int8, 4-bit, from
+  the manifest's `quantization.dtype`), then the id. `cosmos3-edge` defaults to 4 (its tool
   calls run away with 14 near-identical skills; 19/20 valid with 4); every other
   curated model sees the whole palette. `0` removes the cap; any positive value
   sets it for any model, curated or not. A call to a skill outside the subset is
