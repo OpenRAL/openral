@@ -60,7 +60,10 @@ loopback. The local listener refuses a state-changing request whose `Origin` nam
 another host:port than `Host` (CSRF; DNS rebinding is not stopped by this).
 
 The **remote listener** opens when the robot is linked (`openral robot link <code>`
-writes `~/.config/openral/robot.json`; `OPENRAL_ROBOT_ENROLMENT` overrides the path).
+writes `~/.config/openral/robot.json`, `OPENRAL_ROBOT_ENROLMENT` overrides the path, and
+`tunnel.env` beside it). The robot's Cloudflare Tunnel (`dashboard/tunnel.py`, a pinned
+`cloudflared`) runs as the user service `openral-tunnel.service`, which survives reboots,
+or, without user systemd, as the dashboard's own child process.
 `dashboard/remote_auth.py` checks every request's `Authorization: Bearer <JWT>` in
 ADR-0129 Interface B order: header `alg` ES256 and `typ` absent or `at+jwt`, `kid` in
 the issuer's JWKS (cached on disk, refetched only for an unknown `kid`, at most once a
