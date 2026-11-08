@@ -42,6 +42,7 @@ _SKILL_SCENES: dict[str, str | None] = {
     "gr00t-n17-b1k-turning-on-radio": "behavior",
     "lingbot-va-galaxea-a1-fruit-placement": None,
     "pi05-metal-pick-place": "metal_pick_place",
+    "act-pen-holder-bi": "metal_pen_holder",
     # isaac_sim drives the robot end effector's own command_convention.
     "pi05-droid-jointpos-arena": None,
 }
