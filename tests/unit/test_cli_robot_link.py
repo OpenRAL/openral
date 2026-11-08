@@ -1,7 +1,8 @@
-"""`openral robot link <code>` (ADR-0129 Interface B).
+"""`openral robot link <code>` and the tunnel the dashboard runs (ADR-0129 §3, Interface B).
 
-`cloudflared` is a real executable on PATH that logs its argv (a process-boundary
-double, CLAUDE.md §1.11); the enrolment goes to a temp path via
+`cloudflared` is a real executable on PATH that logs its argv and TUNNEL_TOKEN (a
+process-boundary double, CLAUDE.md §1.11), and no pinned download applies
+(`tunnel.CLOUDFLARED` emptied); the enrolment goes to a temp path via
 `OPENRAL_ROBOT_ENROLMENT`.
 """
 
@@ -34,24 +35,32 @@ _CODE = base64.urlsafe_b64encode(json.dumps(_LINK).encode()).decode().rstrip("="
 
 @pytest.fixture
 def enrolment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from openral_observability.dashboard import tunnel
+
+    monkeypatch.setattr(tunnel, "CLOUDFLARED", {})  # never download in a unit test
     path = tmp_path / "config" / "robot.json"
     monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(path))
     return path
 
 
-def test_link_writes_the_enrolment_without_the_tunnel_token_and_installs_it(
-    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    argv_log = tmp_path / "cloudflared_argv.json"
+def _fake_cloudflared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    log = tmp_path / "cloudflared_call.json"
     fake = tmp_path / "bin" / "cloudflared"
     fake.parent.mkdir()
     fake.write_text(
-        f"#!{sys.executable}\nimport json, sys\n"
-        f"open({str(argv_log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        f"#!{sys.executable}\nimport json, os, sys\n"
+        f"open({str(log)!r}, 'w').write(json.dumps("
+        "{'argv': sys.argv[1:], 'token': os.environ.get('TUNNEL_TOKEN')}))\n"
     )
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    return log
 
+
+def test_link_writes_the_enrolment_and_keeps_the_token_apart(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_cloudflared(tmp_path, monkeypatch)
     result = CliRunner().invoke(app, ["robot", "link", _CODE])
 
     assert result.exit_code == 0, result.output
@@ -59,10 +68,13 @@ def test_link_writes_the_enrolment_without_the_tunnel_token_and_installs_it(
     stored = json.loads(enrolment.read_text())
     assert "tunnel" not in stored and _TUNNEL not in enrolment.read_text()
     assert RobotEnrolment.model_validate(stored).robot == "k3x9"
-    assert json.loads(argv_log.read_text()) == ["service", "install", _TUNNEL]
+    env_file = enrolment.with_name("tunnel.env")
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert env_file.read_text() == f"TUNNEL_TOKEN={_TUNNEL}\n"
+    assert "sudo" not in result.output and "openral dashboard" in result.output
 
 
-def test_link_without_cloudflared_prints_how_to_install_it(
+def test_link_without_any_cloudflared_still_links(
     enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     empty = tmp_path / "empty"
@@ -70,8 +82,23 @@ def test_link_without_cloudflared_prints_how_to_install_it(
     monkeypatch.setenv("PATH", str(empty))
     result = CliRunner().invoke(app, ["robot", "link", _CODE])
     assert result.exit_code == 0, result.output
-    assert enrolment.is_file()
-    assert f"sudo cloudflared service install {_TUNNEL}" in result.output
+    assert enrolment.is_file() and enrolment.with_name("tunnel.env").is_file()
+    assert "retries when it starts" in result.output
+
+
+def test_the_dashboard_runs_the_tunnel_with_the_token_in_its_env_only(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openral_observability.dashboard.tunnel import TUNNEL_PORT, start_tunnel
+
+    log = _fake_cloudflared(tmp_path, monkeypatch)
+    assert start_tunnel(TUNNEL_PORT) is None  # not linked yet: no tunnel
+    assert CliRunner().invoke(app, ["robot", "link", _CODE]).exit_code == 0
+    proc = start_tunnel(TUNNEL_PORT)
+    assert proc is not None
+    assert proc.wait(timeout=30) == 0
+    call = json.loads(log.read_text())
+    assert call == {"argv": ["tunnel", "--no-autoupdate", "run"], "token": _TUNNEL}
 
 
 def test_a_bad_code_writes_nothing(enrolment: Path) -> None:

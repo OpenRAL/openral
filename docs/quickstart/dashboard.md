@@ -93,9 +93,10 @@ openral robot link <code>
 ```
 
 This writes the robot's identity (no secrets) to `~/.config/openral/robot.json` (mode
-0600) and installs its Cloudflare Tunnel with `cloudflared service install` (it prints
-how to install `cloudflared`, or the `sudo` command, when it cannot). From then on
-`openral dashboard` also opens the remote listener on `127.0.0.1:4319`, the tunnel's
+0600), stores its tunnel token beside it in `tunnel.env` (mode 0600), and fetches a
+pinned `cloudflared`. Nothing to install and no root: from then on `openral dashboard`
+(and any deploy that starts it) runs the robot's Cloudflare Tunnel as its child and opens
+the remote listener on `127.0.0.1:4319`, the tunnel's
 target (`--remote-port` to move it). The listener answers only `/api/*` and `/ws`, with
 a valid token; the OTLP receiver is never reachable through it.
 

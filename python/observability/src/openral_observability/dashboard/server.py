@@ -304,9 +304,26 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
             file=sys.stderr,
             flush=True,
         )
+    tunnel = None
+    if enrolment is not None and remote_port is not None:
+        from openral_observability.dashboard.tunnel import start_tunnel
+
+        tunnel = start_tunnel(remote_port)
+        if tunnel is not None:
+            print(
+                f"OpenRAL robot tunnel: {enrolment.aud} -> 127.0.0.1:{remote_port}",
+                file=sys.stderr,
+                flush=True,
+            )
     try:
         asyncio.run(_serve(servers))
     finally:
+        if tunnel is not None and tunnel.poll() is None:
+            tunnel.terminate()
+            try:
+                tunnel.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                tunnel.kill()
         if discovery is not None:
             discovery.stop()
         if child is not None and child.poll() is None:
