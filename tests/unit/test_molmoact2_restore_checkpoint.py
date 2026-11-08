@@ -56,3 +56,13 @@ def test_refuses_a_checkpoint_that_leaves_a_tensor_unfilled(
     _snapshot(tmp_path, monkeypatch, partial)
     with pytest.raises(ROSConfigError, match="does not fill 1 model tensors"):
         molmoact2._restore_checkpoint_state(_net(), "allenai/MolmoAct2-LIBERO", None)
+
+
+def test_refuses_a_shard_with_a_wrong_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = dict(_net().state_dict())
+    state["0.weight"] = torch.zeros(5, 4)
+    _snapshot(tmp_path, monkeypatch, state)
+    with pytest.raises(ROSConfigError, match="does not fit the model"):
+        molmoact2._restore_checkpoint_state(_net(), "allenai/MolmoAct2-LIBERO", None)

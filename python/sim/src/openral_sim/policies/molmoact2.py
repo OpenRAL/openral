@@ -290,7 +290,12 @@ def _restore_checkpoint_state(model: Any, repo_id: str, revision: str | None) ->
     seen: set[str] = set()
     for shard in sorted(snapshot.glob("*.safetensors")):
         state = load_file(str(shard), device="cpu")
-        unexpected = model.load_state_dict(state, strict=False).unexpected_keys
+        try:
+            unexpected = model.load_state_dict(state, strict=False).unexpected_keys
+        except RuntimeError as exc:  # a known key with the wrong shape
+            raise ROSConfigError(
+                f"MolmoAct2: {repo_id} shard {shard.name} does not fit the model: {exc}"
+            ) from exc
         if unexpected:
             raise ROSConfigError(
                 f"MolmoAct2: {repo_id} shard {shard.name} carries tensors the model "
