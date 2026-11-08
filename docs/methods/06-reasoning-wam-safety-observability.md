@@ -1095,22 +1095,23 @@ _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `
 
 _**Event-log severity band** (distinct from the headline-card routing above). `_is_headline_span(name)` bands a span's Event Log row: ERROR status → `error`; a small allow-list of names/prefixes (`cli.command`, `rskill.execute`/`configure`/`activate`, `reasoner.tick`, `world.scene_objects`, `sim.run`, `detect.probe.*`) → `info`; everything else → `debug`. Deliberately an allow-list rather than a deny-list, so a new high-rate span stays quiet in the event log until promoted here instead of flooding it by default; every span is still indexed in full for `openral replay`._
 
-- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L237)
-  - `to_json(self) -> dict[str, Any]` (L263) — Return a plain-dict view suitable for JSON serialization.
-- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L389)
-  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L482)
-  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L516)
-  - `ingest_logs(self, payload) -> int` (L537) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
-  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L580)
-  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L758)
-  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L774)
-  - `set_estopped(self, value) -> None` (L585) — Force the e-stop latch flag from an authoritative operator action.
-  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L603)
-  - `list_traces(self) -> list[dict[str, Any]]` (L953) — Return one record per indexed trace_id, most-recent first.
-  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L971) — Return every indexed span for `trace_id` in chronological order, or `None`.
+- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L241)
+  - `to_json(self) -> dict[str, Any]` (L267) — Return a plain-dict view suitable for JSON serialization.
+- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L393)
+  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L490)
+  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L524)
+  - `ingest_logs(self, payload) -> int` (L545) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
+  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L591)
+  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L774)
+  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L790)
+  - `set_estopped(self, value) -> None` (L601) — Force the e-stop latch flag from an authoritative operator action.
+  - `manifest(self) -> RobotManifest | None` (L596) — The latest robot manifest (ADR-0129), cached from its `openral.robot.manifest` log record by `ingest_logs` (a malformed one keeps the last good one; the record is not an event-log row). `snapshot()` carries `manifest_rev`, bumped on every new manifest so the UI knows to refetch `GET /api/manifest`.
+  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L619)
+  - `list_traces(self) -> list[dict[str, Any]]` (L979) — Return one record per indexed trace_id, most-recent first.
+  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L997) — Return every indexed span for `trace_id` in chronological order, or `None`.
 
-- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L656) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
-- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L713) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
+- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L672) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
+- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L729) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
 
 ### `python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py`
 _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `safety_status_subscriber.py` — one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only and **advisory**: it decides what an operator sees, never what the robot does._
@@ -1158,17 +1159,46 @@ _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` e
   - `stop(self) -> None` (L151) — Unregister the advertised service, cancel the browser, and close Zeroconf.
 
 ### `python/observability/src/openral_observability/dashboard/app.py`
-- `create_app(store: TelemetryStore | None = None) -> FastAPI` — Build the dashboard ASGI app: the SSE/state routes, the OTLP/HTTP receivers, operator write endpoints (`/api/prompt`, `/api/estop_reset`), a live MJPEG camera stream, mDNS robot discovery, and the guarded write-controls (`/api/skill/execute`, `/api/param/set`, both OFF by default). A middleware refuses (403, audit-logged) any non-GET/HEAD/OPTIONS request whose `Origin` host:port differs from `Host` (CSRF; no `Origin` = non-browser client, allowed; `Origin: null` refused) — DNS rebinding is same-origin and stays open (#44). `/api/param/set` matches `_SAFETY_PARAM_DENYLIST` (now incl. `deadline`, `timeout`) against `"<node> <name>"`, so every param on a safety node is refused. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413; corrupt gzip 400); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413). (L902)
+_The robot dashboard's routes (ADR-0129). One app behind two listeners; `_gate` (an HTTP middleware) sets `request.state.principal` and enforces the listener rules before any route runs._
 
-### `python/observability/src/openral_observability/dashboard/vad_assets.py`
-- `class PinnedAsset(NamedTuple)` (L52) — `url: str`, `sha256: str`, `size: int` for one pinned binary asset.
-- module constant `PINNED_VAD_ASSETS: dict[str, PinnedAsset]` (L65) — The three voice-prompt binaries no longer committed to git, pinned to exact upstream URLs + sha256 recorded in `static/vendor/vad/NOTICE.md`.
-- `sha256_of(path: Path) -> str` — Hex sha256 digest of the file at `path`, read in chunks. (L94)
-- `ensure_vad_assets() -> bool` (L142) — Best-effort: for each pinned asset, reuse a sha256-verified cache hit or download + verify one, then serve it from `static/vendor/vad/`. Never raises; a failed asset logs a warning and does not stop the others. Called best-effort from `run_dashboard` on every start (never gates startup).
-- `vad_assets_available() -> bool` (L208) — Cheap presence-only check (no re-hash) of whether every pinned asset is currently served; backs `/api/config`'s `voice_prompt_enabled`.
+- `create_app(store: TelemetryStore | None = None, *, verifier: TokenVerifier | None = None, bridge_url: str = "ws://127.0.0.1:8765") -> FastAPI` (L1043) — Build the app: OTLP/HTTP receivers (`/v1/*`, local only), reads (`/api/config` → `mode`/`role`/`robot_id`/`write_controls`/`remote_control`/`jaeger_ui_url`, `/api/manifest` (404 until one arrives; skills dropped with write controls off, `remote` per the remote-control flag, only `estop` for a LAN client), `/api/state`, `/api/stream[?images=0]` (SSE; ends at the token's `exp` remotely), `/api/camera/{source}/snapshot.jpg`, `/api/traces`, `/api/spans/{id}`, `/api/robots`), `POST /api/actions/{id:path}` (E-STOP resolvable without a manifest and fired before the body is read, then announced in the background; others validated against `args_schema` with `jsonschema`, announced, then run: `estop_reset` → kernel service (409 on cooldown), `prompt` → `openral prompt`, `skill:<id>` → `ExecuteRskill` goal (202 + `goal_id`); refusals 403 per role / LAN / `OPENRAL_DASHBOARD_REMOTE_CONTROL` / `OPENRAL_DASHBOARD_WRITE_CONTROLS`), `POST /api/transcribe`, the 3D view (`POST /api/viz/ticket`, `GET /api/viz/layout.json` via `openral_foxglove_bringup.layout`, `WS /ws` proxy to `bridge_url` — ticket required remotely and off loopback, `Origin` checked on upgrade, closed at ticket expiry), `/viz/{path}` (Lichtblick, fetched on first use) and `/{path}` (the robot UI from `app.state.ui_dir`, else `static/fallback.html`). The local listener refuses a cross-origin write (CSRF) and any LAN write but `estop` / a viz ticket; `proxy_headers` is off in `run_dashboard`. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413).
+
+### `python/observability/src/openral_observability/dashboard/remote_auth.py`
+_Who is asking (ADR-0129 §6, Interface B): the local / LAN / remote principal and the robot-token check of the remote (tunnel) listener. Never logs Authorization headers or tickets._
+
+- module constant `ROLE_RANK: dict[str, int]` (L51) — `viewer` < `operator` < `admin`; admin acts as operator on the robot.
+- `class Principal` (L71) — Frozen dataclass: `mode` (`local` | `lan` | `remote`), `role`, `sub`, `jti`, `exp` (the last three remote only; `exp` ends streams).
+- `remote_listener(app) -> ASGIApp` (L89) — Wrap the app for the remote listener: tags each scope so `_gate` demands a token. Nothing a client sends sets the tag.
+- `is_remote(scope) -> bool` (L102) — Whether a request came in through `remote_listener`.
+- `load_enrolment(path: Path | None = None) -> RobotEnrolment | None` (L107) — The enrolment `openral robot link` wrote (`openral_core.enrolment_path()`), `None` when unlinked; `ValueError` for an invalid file.
+- `class JwksCache` (L122) — The issuer's ES256 keys, loaded from a disk cache, refetched (httpx) only for an unknown `kid` and at most once per `cooldown_s` (60 s), written back to disk.
+  - `key(self, kid: str) -> PyJWK | None` (L150) — The key `kid`, refetching once if unknown.
+- `class TokenVerifier` (L177) — Checks an openral.com robot token against this robot's enrolment and the issuer's `JwksCache`.
+  - `verify(self, token: str) -> Principal | str` (L185) — Interface B in order — header `alg` ES256 (never `none`/HMAC), `typ` absent or `at+jwt`, known `kid`; signature; `iss`; a single `aud` (`strict_aud`) equal to the enrolled origin; `exp`/`iat` with 60 s leeway and `exp − iat ≤ 300`; `sub`/`jti`/`org`/`role`/`robot` present; `robot`/`org` equal to the enrolment; a known role. A refusal is a reason string, never the token.
+- `class VizTickets` (L239) — Random 256-bit tickets for `/ws` and `/api/viz/layout.json` (a JWT never goes in a URL), bound to the caller's `sub`/role, reusable until `TTL_S` (900 s).
+  - `issue(self, principal: Principal) -> str` (L253) — A new ticket for `principal`; prunes expired ones.
+  - `expires_at(self, ticket: str | None) -> float | None` (L261) — When `ticket` expires, or `None` if unknown or expired.
+- `jwks_cache_file() -> Path` (L267) — `$OPENRAL_CACHE_DIR/dashboard/jwks.json`.
+- `bearer(authorization: str | None) -> str | None` (L273) — The token of an `Authorization: Bearer` header.
+- `allowed_origins() -> frozenset[str]` (L279) — `$OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (comma-separated), default openral.com's www, dev and viz origins.
+
+### `python/observability/src/openral_observability/dashboard/ui_assets.py`
+_The robot UI served at `/`: a pinned release of `python/observability/ui/`, fetched once; `$OPENRAL_DASHBOARD_UI_DIR` serves a local build instead; neither → `static/fallback.html` (status + E-STOP)._
+
+- `class PinnedAsset(NamedTuple)` (L46) — `url`, `sha256`, `size` of one pinned download.
+- module constant `ROBOT_UI: PinnedAsset | None` (L54) — The pinned robot-UI release; `None` until the first one is cut.
+- module constant `UI_DIR_ENV = "OPENRAL_DASHBOARD_UI_DIR"` (L42)
+- `sha256_of(path: Path) -> str` (L65) — Hex sha256 of a file, read in chunks.
+- `ensure_bundle(name: str, asset: PinnedAsset) -> Path | None` (L100) — Download (size + sha256 verified), extract with the `data` tar filter minus `*.map`, and move into `$OPENRAL_CACHE_DIR/dashboard_assets/<name>/<sha256>/` only when complete; the directory holding `index.html`, or `None` (logged). Shared with `viz_assets`.
+- `ui_dir() -> Path | None` (L135) — The local build, else the fetched pin, else `None`; no download.
+- `ensure_ui_assets() -> Path | None` (L146) — Fetch the pin if not cached; called best-effort by `run_dashboard`.
+
+### `python/observability/src/openral_observability/dashboard/viz_assets.py`
+- module constant `LICHTBLICK: PinnedAsset` (L20) — Lichtblick v1.30.0 `lichtblick-web.tar.gz` (MPL-2.0), pinned by sha256 + size.
+- `ensure_viz_assets() -> Path | None` (L35) — The Lichtblick build (via `ensure_bundle`), with a `NOTICE.txt` naming its MPL-2.0 source; fetched on the first `/viz/` request.
 
 ### `python/observability/src/openral_observability/dashboard/server.py`
-- `run_dashboard(*, host="127.0.0.1", port=4318, inprocess_cmd=None, store=None, log_level="warning") -> None` — Start uvicorn on `host:port` and block until SIGINT/SIGTERM. Calls `vad_assets.ensure_vad_assets()` best-effort before binding. Prints a single URL banner to stderr before binding. When `inprocess_cmd` is set, spawns the argv as a child process pointed at this dashboard's OTLP endpoint. Default port `4318` (OTLP/HTTP standard) rather than `8000`, to avoid clashing with common dev servers. (L56)
+- `run_dashboard(*, host="127.0.0.1", port=4318, remote_port=None, bridge_port=8765, inprocess_cmd=None, store=None, log_level="warning") -> None` (L59) — Start the local listener on `host:port` and, when the robot is linked (`load_enrolment`), the remote listener on `127.0.0.1:remote_port` (default 4319; a `remote_port` without an enrolment is a `ValueError`) with a `TokenVerifier`; both with `proxy_headers` off and a 30 s WebSocket ping, run together until SIGINT/SIGTERM (one stopping stops both). Fetches the robot UI best-effort (`ensure_ui_assets`), starts the persistent `EstopPublisher`, the safety-status and perception-overlay subscribers and mDNS discovery, prints the URL banner and warnings for a non-loopback bind, write controls and remote control. When `inprocess_cmd` is set, spawns it pointed at this dashboard's OTLP endpoint.
 - `spawn_dashboard` / `attached_dashboard` — Inverse of `--inprocess`; see `dashboard/attach.py` below (a separate module despite the name symmetry with this file).
 
 ### `python/observability/src/openral_observability/dashboard/attach.py`
@@ -1186,7 +1216,7 @@ _The `--inprocess` inverse: spawn `openral dashboard` as a child process and att
 ### `python/observability/src/openral_observability/dashboard/store.py` — F7 trace index additions
 _Bounded per-trace_id span index for query-time bag↔OTel join._
 
-- `class _IndexedSpan` (L275) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
+- `class _IndexedSpan` (L279) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
 - `TelemetryStore.list_traces() -> list[dict]` — One row per indexed trace_id (`trace_id`, `span_count`, `last_seen_unix`), most-recent first. Backs `GET /api/traces`.
 - `TelemetryStore.lookup_trace(trace_id: str) -> list[dict] | None` — Every indexed span for `trace_id`, sorted ascending by `start_unix_ns`. `None` when the trace is not (or no longer) in the bounded index. Backs `GET /api/spans/{trace_id}`.
 - `_TRACE_INDEX_MAX_TRACES = 64` / `_TRACE_INDEX_MAX_SPANS = 2048` — Memory caps. Older trace_ids evict FIFO on insertion.
@@ -1194,7 +1224,6 @@ _Bounded per-trace_id span index for query-time bag↔OTel join._
 ### `python/observability/src/openral_observability/dashboard/app.py` — F7 routes
 - `GET /api/traces` — JSON `{"traces": [...]}` from `TelemetryStore.list_traces`.
 - `GET /api/spans/{trace_id}` — JSON `{"trace_id", "spans": [...]}` from `TelemetryStore.lookup_trace`; 404 when the trace is not indexed.
-- `GET /api/config` — JSON `{"jaeger_ui_url": "..."}` from the `OPENRAL_JAEGER_UI_URL` env (default `""`). The UI uses this to enable/disable the footer "open in jaeger" link rather than guessing a `localhost:16686` link that may be dead.
 
 ### `python/observability/src/openral_observability/tracing_lttng.py`
 _Opt-in LTTng tracepoints around the realtime hot path. No-op when `OPENRAL_ROS2_TRACING` is unset; falls back to JSONL when `lttngust` is missing._

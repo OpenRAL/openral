@@ -14,7 +14,7 @@ made of it. Two producers, two very different upstream shapes:
 Split the way `test_dashboard_safety_status.py` splits: the rclpy half needs a
 ROS workspace CI's cheap env does not have, so it is import-gated; the store +
 snapshot contract the frontend reads is covered unconditionally. The UI contract
-is pinned by asserting the exact snapshot keys `dashboard.js`'s `drawOverlay`
+is pinned by asserting the exact snapshot keys the robot UI's camera overlay
 reads, which is how the rest of this suite pins card behaviour (no test parses
 the JS).
 
@@ -40,7 +40,7 @@ from openral_observability.dashboard.perception_overlay_subscriber import (
     mono8_mask_to_png_b64,
 )
 
-# The keys dashboard.js's drawOverlay() reads off
+# The keys the robot UI's camera overlay reads off
 # ``snapshot()["topics"]["perception"]["overlays"][camera]``. Renaming one
 # without touching the JS silently blanks the overlay while the camera tile
 # keeps looking healthy — the operator then believes perception saw nothing.

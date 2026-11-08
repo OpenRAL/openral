@@ -3082,7 +3082,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         reasoner_env["OPENRAL_REASONER_ENDPOINT"] = reasoner_endpoint
 
     dashboard = ExecuteProcess(
-        cmd=[_RAL_EXECUTABLE, "dashboard", "--port", dashboard_port],
+        cmd=[
+            _RAL_EXECUTABLE,
+            "dashboard",
+            "--port",
+            dashboard_port,
+            "--bridge-port",
+            foxglove_port,
+        ],
         name="openral_dashboard",
         output="screen",
     )

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenRAL robot</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f4f4f5; --fg: #18181b; --muted: #71717a; --stop: #dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #15151a; --fg: #e4e4e7; --muted: #a1a1aa; } }
+  body { margin: 0; padding: 16px; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 40rem; margin: 0 auto; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  button { width: 100%; padding: 24px; border: 0; border-radius: 8px; background: var(--stop);
+           color: #fff; font: 700 28px system-ui, sans-serif; cursor: pointer; }
+  #result, .note { color: var(--muted); }
+  code { font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>OpenRAL robot</h1>
+  <button id="estop" type="button">E-STOP</button>
+  <p id="result" role="status"></p>
+  <dl>
+    <dt>Service</dt><dd id="service">waiting for telemetry</dd>
+    <dt>Run</dt><dd id="run"></dd>
+    <dt>E-stop latched</dt><dd id="estopped"></dd>
+    <dt>Safety</dt><dd id="safety"></dd>
+  </dl>
+  <p class="note">
+    This is the dashboard's built-in fallback page: the robot UI is not installed.
+    The dashboard downloads the pinned UI release on start; check the network and restart
+    <code>openral dashboard</code>, or point <code>OPENRAL_DASHBOARD_UI_DIR</code> at a local
+    build of <code>python/observability/ui/</code>.
+    The physical e-stop stays authoritative.
+  </p>
+</main>
+<script>
+  // Plain values only, set with textContent: never render robot-supplied HTML.
+  const set = (id, value) => { document.getElementById(id).textContent = value ?? ""; };
+  async function refresh() {
+    try {
+      const state = await (await fetch("api/state")).json();
+      set("service", state.service_name || "waiting for telemetry");
+      set("run", [state.run_mode, state.run_id].filter(Boolean).join(" "));
+      const topics = state.topics || {};
+      set("estopped", (topics.safety || {}).estopped ? "yes" : "no");
+      const status = topics.safety_status || {};
+      set("safety", status.latched === undefined ? "waiting"
+        : status.latched ? `latched (${status.drop_reason_label || "stop"})` : "clear");
+    } catch (err) {
+      set("service", "dashboard unreachable");
+    }
+  }
+  document.getElementById("estop").addEventListener("click", async () => {
+    set("result", "sending E-STOP");
+    try {
+      const resp = await fetch("api/actions/estop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ args: {} }),
+      });
+      const body = await resp.json();
+      set("result", resp.ok ? "E-STOP sent" : `E-STOP failed: ${body.error || resp.status}`);
+    } catch (err) {
+      set("result", `E-STOP failed: ${err}`);
+    }
+    refresh();
+  });
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>

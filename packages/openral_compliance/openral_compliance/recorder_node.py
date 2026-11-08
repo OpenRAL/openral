@@ -15,7 +15,9 @@ Turns what the graph already publishes into ``openral_core.ComplianceRecord``s:
   ``STOP_EXPLAIN_WINDOW_S`` either side says who (channel + pseudonymous actor). A reset
   nobody announced is recorded as ``channel="unknown"``, ``legitimate=None``: MR Annex III
   §1.1.9 asks for evidence of illegitimate interventions too;
-* an announced ``param_set`` → ``InterventionRecord(param_set)``;
+* an announced ``param_set`` → ``InterventionRecord(param_set)``; an announced operator
+  E-STOP, prompt or skill run (the dashboard's actions, ADR-0129) →
+  ``InterventionRecord(override)``, ``diff_ref`` naming the action;
 * activate / deactivate (and process shutdown) → ``SessionRecord`` start / end, plus a
   ``SoftwareInventoryRecord`` at every activate.
 
@@ -123,6 +125,14 @@ def _trigger_source(drop_reason: int, cause: FailureRecord | None) -> str:
 
 
 _CHANNELS = frozenset({"local", "remote", "ota", "dashboard", "pendant", "chatops", "cli"})
+# Announced operator commands recorded as `override` interventions (ADR-0129 §6).
+_OVERRIDE_ACTIONS = frozenset(
+    {
+        OperatorAction.ACTION_ESTOP,
+        OperatorAction.ACTION_PROMPT,
+        OperatorAction.ACTION_SKILL_EXECUTE,
+    }
+)
 
 
 def _channel(label: str) -> str:
@@ -380,6 +390,16 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
                 channel=_channel(msg.channel_label),
                 legitimate=_legitimacy(actor),
                 diff_ref=msg.detail or None,
+            )
+            return
+        if msg.action in _OVERRIDE_ACTIONS:  # an operator stop, prompt or skill run
+            self._record(
+                InterventionRecord,
+                intervention_kind="override",
+                actor=(actor := _actor(msg)),
+                channel=_channel(msg.channel_label),
+                legitimate=_legitimacy(actor),
+                diff_ref=f"{msg.action}:{msg.detail}" if msg.detail else msg.action,
             )
             return
         if msg.action != OperatorAction.ACTION_ESTOP_RESET:

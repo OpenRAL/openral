@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import gzip
-import os
-import stat
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -195,19 +194,6 @@ async def test_post_traces_malformed_returns_400() -> None:
 
 
 @pytest.mark.asyncio
-async def test_index_serves_html() -> None:
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/")
-        assert resp.status_code == 200
-        assert "OpenRAL · Live Dashboard".encode() in resp.content
-        assert "<title>OpenRAL · Live Dashboard</title>".encode() in resp.content
-        assert b"Add Robot" not in resp.content
-        assert b"Write-controls enabled" not in resp.content
-
-
-@pytest.mark.asyncio
 async def test_healthz() -> None:
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
@@ -215,32 +201,6 @@ async def test_healthz() -> None:
         resp = await client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
-
-
-@pytest.mark.asyncio
-async def test_api_config_defaults_to_empty_jaeger_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    """/api/config returns an empty Jaeger URL when OPENRAL_JAEGER_UI_URL is unset.
-
-    The UI uses this to decide whether to enable the "open in jaeger"
-    footer link — an empty string keeps the link disabled with a
-    tooltip rather than producing a broken-link click against a
-    guessed ``localhost:16686``.
-    """
-    monkeypatch.delenv("OPENRAL_JAEGER_UI_URL", raising=False)
-    monkeypatch.delenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", raising=False)
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/config")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["jaeger_ui_url"] == ""
-        assert body["write_controls_enabled"] is False
-        # voice_prompt_enabled (vad_assets.py) reflects whether the offline
-        # VAD binary assets are present on disk — not asserted True/False
-        # here since that depends on whether they were ever downloaded on
-        # this host; only the shape of the flag is contractual.
-        assert isinstance(body["voice_prompt_enabled"], bool)
 
 
 @pytest.mark.asyncio
@@ -283,124 +243,15 @@ async def test_subscriber_queue_receives_ingest_payload(
         store.unsubscribe(queue)
 
 
-# ─────────────────────────── POST /api/prompt ────────────────────────────────
-#
-# These tests exercise the real subprocess-spawn path. Per CLAUDE.md §1.11 /
-# §2 we do not mock `subprocess` / `asyncio.create_subprocess_exec`; instead
-# we shadow `openral` on PATH with a tiny real script that records its argv to
-# a log file. That gives us a green test only if the production code actually
-# spawns a child with the expected args.
-
-
-@pytest.fixture
-def openral_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Install an `openral` shim on PATH that logs its argv and exits 0.
-
-    Yields the log file. Tests read the file to confirm the dashboard
-    spawned `openral prompt <text> --topic /openral/prompt_in/dashboard`.
-    """
-    log = tmp_path / "openral_calls.txt"
-    shim = tmp_path / "openral"
-    # Real shim — records argv (minus script path) as JSON and prints a
-    # line matching the canonical `openral prompt` stdout so the dashboard
-    # endpoint surfaces it back to the operator unchanged.
-    shim.write_text(
-        "#!"
-        + sys.executable
-        + "\n"
-        + "import json, sys, pathlib\n"
-        + f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
-        + "topic = sys.argv[sys.argv.index('--topic') + 1]\n"
-        + "print(f'openral prompt: published on {topic} text={sys.argv[2]!r}')\n"
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    yield log
-
-
-def _read_shim_argv(log: Path) -> list[str]:
-    """Sync helper so the async test stays clear of ASYNC240."""
-    import json as _json
-
-    return list(_json.loads(log.read_text()))
-
-
-@pytest.mark.asyncio
-async def test_post_prompt_invokes_openral_with_dashboard_topic(openral_shim: Path) -> None:
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/prompt", json={"text": "pick the red cube"})
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["status"] == "ok"
-        assert "published on /openral/prompt_in/dashboard" in body["stdout"]
-    # The shim logged the real argv — confirms we shelled out to `openral
-    # prompt` with --topic pointing at the dashboard source.
-    argv = _read_shim_argv(openral_shim)
-    assert argv == ["prompt", "pick the red cube", "--topic", "/openral/prompt_in/dashboard"]
-
-
-@pytest.mark.asyncio
-async def test_post_prompt_rejects_empty_text(openral_shim: Path) -> None:
-    del openral_shim  # fixture present so PATH is shimmed, but no call expected
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        for payload in ({}, {"text": ""}, {"text": "   "}, {"text": 42}):
-            resp = await client.post("/api/prompt", json=payload)
-            assert resp.status_code == 400, payload
-
-
-@pytest.mark.asyncio
-async def test_post_prompt_propagates_subprocess_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Real shim, but exits non-zero — exercises the 502 path without mocks.
-    shim = tmp_path / "openral"
-    shim.write_text(
-        "#!"
-        + sys.executable
-        + "\n"
-        + "import sys\n"
-        + "print('boom', file=sys.stderr)\n"
-        + "sys.exit(7)\n"
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/prompt", json={"text": "go"})
-        assert resp.status_code == 502
-        body = resp.json()
-        assert body["returncode"] == 7
-        assert "boom" in body["stderr"]
-
-
-@pytest.mark.asyncio
-async def test_post_prompt_returns_503_when_openral_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Force an empty PATH so `shutil.which("openral")` returns None.
-    monkeypatch.setenv("PATH", str(tmp_path))
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/prompt", json={"text": "go"})
-        assert resp.status_code == 503
-        assert "not on PATH" in resp.json()["error"]
-
-
 # ───────────────────────── POST /api/transcribe (STT) ────────────────────────
 #
-# Operator voice prompt: the dashboard mic POSTs captured audio here and the
-# endpoint runs a local faster-whisper model (ships with the dashboard extra).
-# Per CLAUDE.md §1.11 we use the real model on a real (public-domain) speech
-# clip — no mocked transcriber. The heavy end-to-end test importorskips
-# faster-whisper (it is a default dep, so it runs in a normal env; the skip is
-# only the CI-without-the-dashboard-extra path, §1.12); the contract tests
-# (empty body, dependency-stripped 503) run everywhere with no model download.
+# Operator speech to text: a client POSTs captured audio here and the endpoint
+# runs a local faster-whisper model (ships with the dashboard extra). Per
+# CLAUDE.md §1.11 we use the real model on a real (public-domain) speech clip —
+# no mocked transcriber. The heavy end-to-end test importorskips faster-whisper
+# (it is a default dep, so it runs in a normal env; the skip is only the
+# CI-without-the-dashboard-extra path, §1.12); the contract tests (empty body,
+# dependency-stripped 503) run everywhere with no model download.
 
 _JFK_WAV = Path(__file__).parent / "fixtures" / "jfk.wav"
 
@@ -492,49 +343,6 @@ def _otlp_camera_payload(av: Callable[[object], AnyValue]) -> Callable[[str, str
 
 
 @pytest.mark.asyncio
-async def test_camera_stream_emits_jpeg_part(
-    _otlp_camera_payload: Callable[[str, str], bytes],
-) -> None:
-    # httpx.ASGITransport buffers the full response body before returning,
-    # so a true infinite MJPEG StreamingResponse deadlocks it (same limitation
-    # noted in test_subscriber_queue_receives_ingest_payload for SSE). We
-    # therefore exercise the two helpers directly — the same bytes the live
-    # server would push over the wire — confirming the store ingest → b64
-    # thumbnail → MJPEG part bytes round-trip produces valid framing.
-    # Wire-format coverage (route response headers, Content-Type boundary,
-    # 404 for unknown sources over a real socket) lives in
-    # test_dashboard_mjpeg_integration.py which launches a real uvicorn server.
-    import base64
-
-    from openral_observability.dashboard.app import _camera_thumb, _mjpeg_part
-
-    store = TelemetryStore()
-    app = create_app(store)
-    jpeg = b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"
-    thumb_b64 = base64.b64encode(jpeg).decode("ascii")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await client.post("/v1/traces", content=_otlp_camera_payload("wrist", thumb_b64))
-
-    # Helpers: round-trip through the store → b64 → MJPEG part bytes.
-    thumb = _camera_thumb(store, "wrist")
-    assert thumb == thumb_b64
-    chunk = _mjpeg_part(thumb)
-    assert b"Content-Type: image/jpeg" in chunk
-    assert b"Content-Length: " in chunk
-    assert jpeg in chunk
-
-
-@pytest.mark.asyncio
-async def test_camera_stream_unknown_source_404() -> None:
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.get("/api/camera/nope/stream")
-        assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
 async def test_api_robots_disabled_when_no_discovery() -> None:
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
@@ -565,385 +373,76 @@ async def test_api_robots_lists_registry() -> None:
     assert body["robots"][0]["port"] == 4318
 
 
-# ─────────────────────── POST /api/skill/execute ─────────────────────────────
-#
-# issue #75c — flag-gated skill switch. DEFAULT OFF. Tests are
-# written BEFORE the implementation (TDD — safety-touching per CLAUDE.md §4.2).
-# The "no ros2" case reuses the empty-PATH trick from
-# test_post_prompt_returns_503_when_openral_missing above.
-
-
 @pytest.mark.asyncio
-async def test_skill_execute_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", raising=False)
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post("/api/skill/execute", json={"skill_id": "x"})
-    assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_skill_execute_requires_skill_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post("/api/skill/execute", json={"skill_id": "  "})
-    assert resp.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_skill_execute_503_without_ros2(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_camera_snapshot_serves_the_latest_jpeg(
+    _otlp_camera_payload: Callable[[str, str], bytes],
 ) -> None:
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    monkeypatch.setenv("PATH", str(tmp_path))  # empty PATH → shutil.which("ros2") is None
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
+    # Cameras are polled as JPEG snapshots, never streamed (ADR-0129 §3).
+    import base64
+
+    jpeg = b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"
+    transport = httpx.ASGITransport(app=create_app(TelemetryStore()))
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
-    assert resp.status_code == 503
-
-
-# ── async accept-then-track tests (issue #75c) ────────────────────────────────
-#
-# Fake `ros2` shims (process-boundary doubles, allowed per CLAUDE.md §1.11)
-# that simulate: goal accepted, goal rejected, slow action server (accept
-# timeout). Mirror the openral_shim pattern above.
-
-
-@pytest.fixture
-def ros2_accepted_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Install a fake `ros2` that prints 'Goal accepted with ID: test-123' then exits 0."""
-    log = tmp_path / "ros2_calls.txt"
-    shim = tmp_path / "ros2"
-    shim.write_text(
-        "#!"
-        + sys.executable
-        + "\n"
-        + "import json, sys, pathlib\n"
-        + f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
-        + "print('Waiting for an action server to become available...', flush=True)\n"
-        + "print('Sending goal:', flush=True)\n"
-        + "print('Goal accepted with ID: test-123', flush=True)\n"
-        # Simulate some trailing output that the background drain reads
-        + "print('Result:', flush=True)\n"
-        + "print('  success: True', flush=True)\n"
-        + "print('  trace_id: abc-trace-1', flush=True)\n"
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    yield log
-
-
-@pytest.fixture
-def ros2_rejected_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Install a fake `ros2` that prints 'Goal was rejected' then exits 1."""
-    log = tmp_path / "ros2_calls.txt"
-    shim = tmp_path / "ros2"
-    shim.write_text(
-        "#!"
-        + sys.executable
-        + "\n"
-        + "import json, sys, pathlib\n"
-        + f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
-        + "print('Waiting for an action server to become available...', flush=True)\n"
-        + "print('Sending goal:', flush=True)\n"
-        + "print('Goal was rejected :(', flush=True)\n"
-        + "sys.exit(1)\n"
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    yield log
-
-
-@pytest.fixture
-def ros2_slow_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Install a fake `ros2` that sleeps 5 s without printing any acceptance line."""
-    log = tmp_path / "ros2_calls.txt"
-    shim = tmp_path / "ros2"
-    shim.write_text(
-        "#!"
-        + sys.executable
-        + "\n"
-        + "import json, sys, pathlib, time\n"
-        + f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
-        + "time.sleep(5)\n"
-        + "print('Goal accepted with ID: too-late', flush=True)\n"
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    yield log
-
-
-@pytest.mark.asyncio
-async def test_skill_execute_accepted_returns_202(
-    monkeypatch: pytest.MonkeyPatch, ros2_accepted_shim: Path
-) -> None:
-    """A fake ros2 that prints 'Goal accepted with ID: test-123' → HTTP 202 with goal_id."""
-    del ros2_accepted_shim  # fixture installs the shim on PATH; log file not needed here
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
-    assert resp.status_code == 202, resp.text
-    body = resp.json()
-    assert body["status"] == "accepted"
-    assert body["goal_id"] == "test-123"
-    assert "detail" in body
-    # Give the background drain task a tick to complete (it's fire-and-forget)
-    await asyncio.sleep(0.05)
-
-
-@pytest.mark.asyncio
-async def test_skill_execute_rejected_returns_409(
-    monkeypatch: pytest.MonkeyPatch, ros2_rejected_shim: Path
-) -> None:
-    """A fake ros2 that prints 'Goal was rejected' → HTTP 409 status=rejected."""
-    del ros2_rejected_shim  # fixture installs the shim on PATH
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
-    assert resp.status_code == 409, resp.text
-    body = resp.json()
-    assert body["status"] == "rejected"
-
-
-@pytest.mark.asyncio
-async def test_skill_execute_accept_timeout_returns_504(
-    monkeypatch: pytest.MonkeyPatch, ros2_slow_shim: Path
-) -> None:
-    """A fake ros2 that sleeps 5 s without printing acceptance → HTTP 504 (accept timeout)."""
-    del ros2_slow_shim  # fixture installs the shim on PATH
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    # Set a very short acceptance timeout so the test runs fast
-    monkeypatch.setenv("OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S", "1")
-    app = create_app(TelemetryStore())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://t", timeout=10.0
-    ) as client:
-        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
-    assert resp.status_code == 504, resp.text
-    body = resp.json()
-    assert "accept" in body["error"].lower(), body
-
-
-@pytest.mark.asyncio
-async def test_skill_execute_rejects_non_one_truthy_value(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Only the exact string "1" enables write-controls.
-
-    Common truthy strings ("true", "yes", "on", "True") must NOT unlock the
-    endpoint. This locks the safety default against a future refactor that
-    loosens the check from a strict equality to a broader truthiness test.
-    """
-    for truthy_non_one in ("true", "True", "yes", "on", "1 ", " 1", "2"):
-        monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", truthy_non_one)
-        app = create_app(TelemetryStore())
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-            resp = await client.post("/api/skill/execute", json={"skill_id": "x"})
-        assert resp.status_code == 403, (
-            f"expected 403 for OPENRAL_DASHBOARD_WRITE_CONTROLS={truthy_non_one!r}, "
-            f"got {resp.status_code}"
+        await client.post(
+            "/v1/traces", content=_otlp_camera_payload("wrist", base64.b64encode(jpeg).decode())
         )
+        resp = await client.get("/api/camera/wrist/snapshot.jpg")
+        unknown = await client.get("/api/camera/nope/snapshot.jpg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.headers["cache-control"] == "no-store"
+    assert resp.content == jpeg
+    assert unknown.status_code == 404
 
 
-# ─────────────────────── POST /api/param/set ─────────────────────────────────
-#
-# issue #75c — flag-gated param tune. DEFAULT OFF; safety params
-# refused via denylist. Tests written BEFORE implementation (TDD — safety-
-# touching per CLAUDE.md §4.2).
+def test_stream_without_images_drops_only_camera_thumbnails() -> None:
+    # `?images=0`: the SSE payload minus thumbnails, without touching the shared snapshot.
+    from openral_observability.dashboard.app import _without_images
 
-
-@pytest.mark.asyncio
-async def test_param_set_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", raising=False)
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post(
-            "/api/param/set", json={"node": "/n", "name": "rate_hz", "value": "20"}
-        )
-    assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_param_set_refuses_safety_param(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post(
-            "/api/param/set", json={"node": "/n", "name": "max_velocity", "value": "9.9"}
-        )
-    assert resp.status_code == 403
-    assert "safety" in resp.json()["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_param_set_allowed_param_503_without_ros2(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    monkeypatch.setenv("PATH", str(tmp_path))
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post(
-            "/api/param/set", json={"node": "/n", "name": "rate_hz", "value": "20"}
-        )
-    assert resp.status_code == 503
-
-
-# ── Denylist gap regression (issue #75c) ──────────────────────────────────────
-#
-# Before this fix, "estop" did not match "e_stop_enable" and "deadman" did not
-# match "dead_man_timeout" because the substring "estop" ∉ "e_stop_enable" and
-# "deadman" ∉ "dead_man_timeout".  Likewise "safety" ∉ "safe_mode".  The new
-# tokens e_stop / dead_man / safe close all three gaps fail-closed.
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "param_name",
-    [
-        "e_stop_enable",  # was bypassing denylist (e_stop gap)
-        "dead_man_timeout",  # was bypassing denylist (dead_man gap)
-        "safe_mode",  # was bypassing denylist (safe/safety gap)
-        "VELOCITY_LIMIT",  # existing token, verifies case-insensitivity still works
-    ],
-)
-async def test_param_set_refuses_underscored_safety_params(
-    monkeypatch: pytest.MonkeyPatch, param_name: str
-) -> None:
-    """Underscored ROS 2 safety param names must return 403 and never shell out.
-
-    Regression lock for issue #75c: the original denylist missed
-    e_stop_enable, dead_man_timeout, and safe_mode because substring matching
-    on the compact tokens (estop, deadman, safety) does not cover the
-    underscored ROS 2 naming convention.
-    """
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    # No ros2 shim on PATH — a correct impl must refuse before shelling out.
-    # If a bug lets the name through, the subprocess path hits 503 (no ros2),
-    # not 403, so the assertion below catches the bypass clearly.
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post(
-            "/api/param/set",
-            json={"node": "/safety_kernel", "name": param_name, "value": "1"},
-        )
-    assert resp.status_code == 403, (
-        f"expected 403 (denylist) for param {param_name!r}, got {resp.status_code} — "
-        "underscored safety param bypassed the denylist"
-    )
-    body = resp.json()
-    assert "safety" in body["error"].lower() or "refused" in body["error"].lower(), body
-
-
-@pytest.mark.asyncio
-async def test_vad_static_text_assets_served_offline() -> None:
-    # The small browser glue files stay committed and must serve with
-    # browser-loadable MIME types. Large ONNX/WASM binaries are fetched by
-    # vad_assets.ensure_vad_assets() at dashboard startup, so this app-level
-    # static route test must not require them to exist in a fresh checkout.
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    expected = {
-        "bundle.min.js": "javascript",
-        "vad.worklet.bundle.min.js": "javascript",
-        "ort.wasm.min.js": "javascript",
-        "ort-wasm-simd-threaded.mjs": "javascript",
+    snapshot: dict[str, Any] = {
+        "topics": {
+            "perception": {"cameras": {"wrist": {"thumbnail_jpeg_b64": "x", "age_ms": 3}}},
+            "slam": {"png_b64": "map"},
+        },
+        "run_id": "r",
     }
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        for name, ctype in expected.items():
-            resp = await client.get(f"/static/vendor/vad/{name}")
-            assert resp.status_code == 200, name
-            if ctype is not None:
-                assert ctype in resp.headers["content-type"], (name, resp.headers["content-type"])
-
-
-# ─────────────────────── GET /api/config — write_controls_enabled ────────────
+    stripped = _without_images(snapshot)
+    assert stripped["topics"]["perception"]["cameras"] == {"wrist": {"age_ms": 3}}
+    assert stripped["topics"]["slam"] == {"png_b64": "map"}  # the map panel still draws
+    assert snapshot["topics"]["perception"]["cameras"]["wrist"]["thumbnail_jpeg_b64"] == "x"
 
 
 @pytest.mark.asyncio
-async def test_api_config_reports_write_controls_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+async def test_root_serves_the_fallback_page_without_a_ui(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENRAL_DASHBOARD_UI_DIR", raising=False)
     app = create_app(TelemetryStore())
+    app.state.ui_dir = None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        body = (await client.get("/api/config")).json()
-    assert body["write_controls_enabled"] is True
+        resp = await client.get("/")
+        missing = await client.get("/assets/app.js")
+    assert resp.status_code == 200
+    assert b"api/actions/estop" in resp.content  # the E-STOP button
+    assert missing.status_code == 404
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("node", "name"),
-    [
-        # Deadman watchdog params whose names carry no denylisted token; the node
-        # name is what marks them safety-relevant.
-        ("/openral_deadman_watchdog", "first_chunk_deadline_s"),
-        ("openral_deadman_watchdog", "check_period_s"),
-        ("/openral_safety_kernel", "hal_mode"),
-        ("/openral_hardware_estop", "topic"),
-    ],
-)
-async def test_param_set_refuses_params_on_safety_nodes(
-    monkeypatch: pytest.MonkeyPatch, node: str, name: str
+async def test_root_serves_a_local_ui_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html><title>robot ui</title>")
+    (tmp_path / "assets" / "app.js").write_text("console.log('ui')")
+    (tmp_path.parent / "secret.txt").write_text("outside the build")
+    monkeypatch.setenv("OPENRAL_DASHBOARD_UI_DIR", str(tmp_path))
+    transport = httpx.ASGITransport(app=create_app(TelemetryStore()))
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.post("/api/param/set", json={"node": node, "name": name, "value": "99"})
-    assert resp.status_code == 403, resp.text
-
-
-# ── Cross-site request forgery (state-changing POSTs) ─────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/api/estop_reset", "/api/prompt", "/api/param/set"])
-async def test_cross_origin_post_is_refused(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
-) -> None:
-    # A page on another origin POSTing through the operator's browser must be
-    # refused before anything shells out (no ros2/openral on PATH → would be 503).
-    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
-    monkeypatch.setenv("PATH", str(tmp_path))
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:4318") as client:
-        resp = await client.post(
-            path,
-            content=b'{"text": "go", "node": "/n", "name": "rate_hz", "value": "1"}',
-            headers={"origin": "http://evil.example", "content-type": "text/plain"},
-        )
-    assert resp.status_code == 403, resp.text
-
-
-@pytest.mark.asyncio
-async def test_same_origin_estop_reset_passes_origin_check(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("PATH", str(tmp_path))
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:4318") as client:
-        same = await client.post("/api/estop_reset", headers={"origin": "http://127.0.0.1:4318"})
-        no_origin = await client.post("/api/estop_reset")  # curl / CLI clients
-    assert same.status_code == 503  # reached the handler: no ros2 on PATH
-    assert no_origin.status_code == 503
-
-
-# ── Decoded-size budgets ──────────────────────────────────────────────────────
+        index = await client.get("/")
+        asset = await client.get("/assets/app.js")
+        escape = await client.get("/assets/%2E%2E/%2E%2E/secret.txt")
+    assert b"robot ui" in index.content
+    assert asset.text == "console.log('ui')"
+    assert escape.status_code == 404
 
 
 @pytest.mark.asyncio

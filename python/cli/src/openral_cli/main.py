@@ -3883,19 +3883,22 @@ app.add_typer(compliance_app, name="compliance")
 @app.command(
     "dashboard",
     help=(
-        "Serve a live debugging dashboard (read-only) at the given port. "
-        "The same port also acts as an OTLP/HTTP receiver, so any "
-        "`openral sim run` / `openral deploy run` pointed at "
-        "OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:<port> + "
-        "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf streams in live. "
-        "Works without Jaeger/Tempo running."
+        "Serve the robot dashboard at the given port: the robot UI, its API and "
+        "an OTLP/HTTP receiver, so any `openral sim run` / `openral deploy run` "
+        "pointed at OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:<port> + "
+        "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf streams in live. A robot linked "
+        "with `openral robot link` also gets the remote listener its Cloudflare "
+        "Tunnel points at (openral.com sign-in)."
     ),
 )
 def dashboard(
     host: str = typer.Option(
         "127.0.0.1",
         "--host",
-        help="Bind address. Loopback by default; no auth.",
+        help=(
+            "Local listener bind address. Loopback by default (full control, no auth); "
+            "on another address, other hosts get read-only + E-STOP."
+        ),
     ),
     port: int = typer.Option(
         4318,
@@ -3906,6 +3909,20 @@ def dashboard(
             "rather than 8000 (issue #132) — `mkdocs serve` and most "
             "FastAPI demos already squat on 8000."
         ),
+    ),
+    remote_port: int | None = typer.Option(
+        None,
+        "--remote-port",
+        help=(
+            "Remote listener port on 127.0.0.1, the robot's tunnel target: every request "
+            "needs an openral.com token. Default 4319 when the robot is linked "
+            "(`openral robot link`), off otherwise."
+        ),
+    ),
+    bridge_port: int = typer.Option(
+        8765,
+        "--bridge-port",
+        help="foxglove_bridge's loopback port, which the 3D view reaches through /ws.",
     ),
     log_level: str = typer.Option(
         "warning",
@@ -3930,12 +3947,18 @@ def dashboard(
     from openral_observability.dashboard import run_dashboard
 
     inprocess_cmd = shlex.split(inprocess) if inprocess else None
-    run_dashboard(
-        host=host,
-        port=port,
-        inprocess_cmd=inprocess_cmd,
-        log_level=log_level,
-    )
+    try:
+        run_dashboard(
+            host=host,
+            port=port,
+            remote_port=remote_port,
+            bridge_port=bridge_port,
+            inprocess_cmd=inprocess_cmd,
+            log_level=log_level,
+        )
+    except ValueError as exc:
+        typer.echo(f"openral dashboard: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
 
 # ── openral deploy {run, list} ───────────────────────────────────────────────────

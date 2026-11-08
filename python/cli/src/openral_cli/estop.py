@@ -6,7 +6,7 @@ post-estop cooldown) and, independently, every HAL and the rSkill runner
 (cleared only by an ``std_msgs/Empty`` on ``/openral/estop_cleared``). Calling
 the kernel service alone leaves the runner latched, and it then rejects every
 goal. This command performs the same sequence as the dashboard's
-``POST /api/estop_reset``:
+``estop_reset`` action (``POST /api/actions/estop_reset``):
 
 1. call ``/openral/estop_reset``;
 2. only if the kernel answered ``success=true``, broadcast
