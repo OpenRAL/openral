@@ -451,3 +451,31 @@ def test_skill_subset_round_trips_and_respects_k(k: int, query: str, n: int) -> 
     assert subset.palette.execute_rskill_ids == frozenset(subset.offered)
     assert SkillSubset.model_validate_json(subset.model_dump_json()) == subset
     assert SkillSubset.model_json_schema()["title"] == "SkillSubset"
+
+
+def test_id_only_palette_honours_the_focus_prompt() -> None:
+    """No mission, two prompts: the high-priority prompt's skill wins a slot (id-only palette)."""
+    ids = frozenset(
+        {"OpenRAL/rskill-mug-grasper", "OpenRAL/rskill-door-opener"}
+        | {f"OpenRAL/rskill-perception-helper{i}" for i in range(6)}
+    )
+    core = ReasonerCore(client=FakeToolUseClient(responses=[]), max_skill_tools=2)
+    renderer = ContextRenderer()
+    renderer.append_prompt(
+        PromptRecord(text="perception helper perception helper", metadata_json="", stamp_ns=0)
+    )
+    renderer.append_prompt(
+        PromptRecord(text="open the door", metadata_json='{"priority": 100}', stamp_ns=1)
+    )
+    offered = core.offered_palette(ToolPalette(execute_rskill_ids=ids), renderer)
+    assert "OpenRAL/rskill-door-opener" in offered.execute_rskill_ids
+    assert len(offered.execute_rskill_ids) == 2
+
+
+def test_sticky_takes_precedence_over_focus_when_it_fills_k(franka_palette: ToolPalette) -> None:
+    """With k=1 the in-flight skill stays; the operator's new ask waits for the next tick."""
+    subset = select_skill_subset(
+        franka_palette, query="move the end-effector", k=1, sticky=(_MANISKILL,), focus="move"
+    )
+    assert subset.offered == (_MANISKILL,)
+    assert subset.focused == ()

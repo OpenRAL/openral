@@ -344,14 +344,18 @@ def select_skill_subset(
     """
     if k < 1:
         raise ValueError(f"select_skill_subset: k must be >= 1; got {k!r}")
-    keywords = query_keywords(query)
-    if palette.skills:
-        raw = {entry.rskill_id: score_skill(entry, keywords) for entry in palette.skills}
-    else:
-        raw = {
+
+    def scores_for(text: str) -> dict[str, float]:
+        keywords = query_keywords(text)
+        if palette.skills:
+            return {entry.rskill_id: score_skill(entry, keywords) for entry in palette.skills}
+        # Id-only palette (single ``execute_rskill`` tool fallback): the id is the text.
+        return {
             rskill_id: _score(((_TEXT_WEIGHT, _field_forms((rskill_id,))),), keywords)
             for rskill_id in palette.execute_rskill_ids
         }
+
+    raw = scores_for(query)
     scored = tuple(sorted(raw.items(), key=lambda item: (-item[1], item[0])))
     kept_sticky: list[str] = []
     for rskill_id in sticky:
@@ -364,11 +368,9 @@ def select_skill_subset(
         narrowed = palette
     else:
         chosen = list(kept_sticky)
-        focus_scores = (
-            {e.rskill_id: score_skill(e, query_keywords(focus)) for e in palette.skills}
-            if focus.strip()
-            else {}
-        )
+        # Sticky ids go first and may fill k (k <= 2 with both set): the model must be
+        # able to wait on the skill in flight before it is offered anything new.
+        focus_scores = scores_for(focus) if focus.strip() else {}
         if focus_scores and len(chosen) < k:
             best_focus = min(focus_scores, key=lambda i: (-focus_scores[i], i))
             if focus_scores[best_focus] > 0 and best_focus not in chosen:
