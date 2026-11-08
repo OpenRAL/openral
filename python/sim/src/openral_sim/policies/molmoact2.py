@@ -260,6 +260,55 @@ def _norm_stats_camera_keys(path: str, norm_tag: str) -> tuple[str, ...]:
     return tuple(str(key) for key in meta.get("camera_keys") or ())
 
 
+def _restore_checkpoint_state(model: Any, repo_id: str, revision: str | None) -> None:
+    """Re-apply the checkpoint's tensors after ``from_pretrained``.
+
+    Under transformers 5.x, ``from_pretrained`` runs lerobot's MolmoAct2
+    ``_init_weights`` after the checkpoint load, and that init writes through
+    ``.data`` (``fill_`` / ``normal_``), which bypasses transformers' "already
+    loaded" guard. The result is a model with every norm at 1.0, every bias at
+    0 and every Linear re-drawn, and no missing-key warning: bf16 MolmoAct2
+    LIBERO scored 0/20 on libero_spatial task 0 on Jetson Thor (2026-11-08)
+    while the NF4 pack (whose loader fills every slot itself) scored 20/20.
+
+    Raises:
+        ROSConfigError: A model tensor is not in the checkpoint, or a
+            checkpoint tensor names no model tensor.
+    """
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+    from safetensors.torch import load_file
+
+    snapshot = Path(
+        _hf_cached_first(
+            lambda: snapshot_download(repo_id, revision=revision, allow_patterns=["*.safetensors"]),
+            repo_id=repo_id,
+        )
+    )
+    expected = set(model.state_dict())
+    seen: set[str] = set()
+    for shard in sorted(snapshot.glob("*.safetensors")):
+        state = load_file(str(shard), device="cpu")
+        try:
+            unexpected = model.load_state_dict(state, strict=False).unexpected_keys
+        except RuntimeError as exc:  # a known key with the wrong shape
+            raise ROSConfigError(
+                f"MolmoAct2: {repo_id} shard {shard.name} does not fit the model: {exc}"
+            ) from exc
+        if unexpected:
+            raise ROSConfigError(
+                f"MolmoAct2: {repo_id} shard {shard.name} carries tensors the model "
+                f"does not have: {unexpected[:5]}"
+            )
+        seen.update(state)
+    if missing := sorted(expected - seen):
+        raise ROSConfigError(
+            f"MolmoAct2: {repo_id} checkpoint does not fill {len(missing)} model "
+            f"tensors (e.g. {missing[:5]}); refusing to run on init values."
+        )
+
+
 def _hf_cached_first(load: Callable[[], _T], *, repo_id: str) -> _T:
     """Run ``load`` against the local HF cache only; fall back to the Hub on a miss.
 
@@ -629,6 +678,8 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
             ),
             repo_id=source_repo,
         )
+    with _molmoact2_phase("restore_checkpoint_state", repo=source_repo):
+        _restore_checkpoint_state(model, source_repo, revision)
     # See the fast-path note: transformers 5.x leaves config._name_or_path empty,
     # which MolmoAct2's `_get_robot_stats` needs to fetch norm_stats.json.
     model.config._name_or_path = norm_stats_dir
