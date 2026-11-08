@@ -94,8 +94,8 @@ def test_suite_is_ten_layouts_inside_the_dataset_spread() -> None:
         assert s.task.instruction == _PROMPT
         o = SCENES.validate_options(s.scene.id, s.scene.backend_options)
         assert isinstance(o, MetalPenHolderOptions)
-        assert 0.44 <= o.holder_start[0] <= 0.48 and 0.28 <= o.holder_start[1] <= 0.32
-        assert 0.22 <= o.pen_start[0] <= 0.28 and -0.35 <= o.pen_start[1] <= -0.29
+        assert 0.45 <= o.holder_start[0] <= 0.50 and 0.28 <= o.holder_start[1] <= 0.32
+        assert 0.24 <= o.pen_start[0] <= 0.30 and -0.35 <= o.pen_start[1] <= -0.29
         starts.add((o.holder_start, o.pen_start))
     assert len(starts) == 10
 
