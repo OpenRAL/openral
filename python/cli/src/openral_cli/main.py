@@ -3845,6 +3845,11 @@ def robot_link(
     code: str = typer.Argument(
         ..., help="The link code openral.com showed when the robot was added."
     ),
+    service: bool = typer.Option(
+        True,
+        "--service/--no-service",
+        help="Install the tunnel as a user systemd service that survives reboots (no root).",
+    ),
 ) -> None:
     """Link this robot to openral.com: store its enrolment and install its tunnel."""
     from openral_core.exceptions import ROSConfigError
@@ -3852,7 +3857,7 @@ def robot_link(
     from openral_cli.robot import link_robot
 
     try:
-        link_robot(code, echo=typer.echo)
+        link_robot(code, echo=typer.echo, service=service)
     except ROSConfigError as exc:
         typer.echo(f"openral robot link: {exc}", err=True)
         raise typer.Exit(code=2) from exc

@@ -1196,15 +1196,18 @@ _The robot UI served at `/`: a pinned release of `python/observability/ui/`, fet
 
 ### `python/observability/src/openral_observability/dashboard/tunnel.py`
 
-_The robot's Cloudflare Tunnel, run by `openral dashboard` itself (ADR-0129 §3): no install, no root. The token reaches cloudflared through `TUNNEL_TOKEN`, never argv._
+_The robot's Cloudflare Tunnel (ADR-0129 §3): a user systemd service that survives reboots, or the dashboard's own child without user systemd; no install, no root. The token reaches cloudflared through `TUNNEL_TOKEN` / `EnvironmentFile`, never argv._
 
-- `TUNNEL_PORT: int` (L40) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
-- `CLOUDFLARED: dict[str, PinnedAsset]` (L44) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
-- `tunnel_env_path() -> Path` (L59) — `tunnel.env` next to the enrolment file.
-- `write_tunnel_token(token: str) -> Path` (L64) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
-- `read_tunnel_token() -> str | None` (L75) — The stored token, or `None` when not linked.
-- `ensure_cloudflared() -> Path | None` (L87) — The pinned binary, fetched once into the cache; else one on `PATH`; else `None`.
-- `start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None` (L105) — Run `cloudflared tunnel --no-autoupdate run` as a child; `None` when not linked or no binary.
+- `TUNNEL_PORT: int` (L45) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
+- `CLOUDFLARED: dict[str, PinnedAsset]` (L49) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
+- `tunnel_env_path() -> Path` (L83) — `tunnel.env` next to the enrolment file.
+- `write_tunnel_token(token: str) -> Path` (L88) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
+- `read_tunnel_token() -> str | None` (L99) — The stored token, or `None` when not linked.
+- `SERVICE: str` (L64) — `openral-tunnel.service`, the user unit `openral robot link` installs.
+- `install_service(exe: Path) -> str | None` (L142) — Write the user unit (`EnvironmentFile=tunnel.env`, `Restart=always`), `systemctl --user enable --now` it and `loginctl enable-linger` (boot without login); `None`, or why not.
+- `service_active() -> bool` (L161) — Whether the user service is running.
+- `ensure_cloudflared() -> Path | None` (L111) — The pinned binary, fetched once into the cache; else one on `PATH`; else `None`.
+- `start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None` (L166) — Run `cloudflared tunnel --no-autoupdate run` as a child unless the user service already runs it; `None` when not linked, the service holds it, or no binary.
 
 ### `python/observability/src/openral_observability/dashboard/viz_assets.py`
 - module constant `LICHTBLICK: PinnedAsset` (L20) — Lichtblick v1.30.0 `lichtblick-web.tar.gz` (MPL-2.0), pinned by sha256 + size.

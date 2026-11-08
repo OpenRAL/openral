@@ -1,12 +1,14 @@
 """The robot's Cloudflare Tunnel, run by the dashboard itself (ADR-0129 §3).
 
 ``openral robot link <code>`` stores the tunnel token next to the enrolment
-(``tunnel.env``, mode 0600) and fetches a pinned ``cloudflared`` into the cache. From
-then on ``openral dashboard`` (and every deploy that starts it) runs
-``cloudflared tunnel run`` as its child, so the robot is reachable at its
-``https://r-<id>.openral.com`` exactly while its dashboard is up: nothing to install,
-no root, no system service. The tunnel's ingress is configured remotely by
-openral.com and points at ``localhost:4319``, the remote listener.
+(``tunnel.env``, mode 0600), fetches a pinned ``cloudflared`` into the cache, and
+installs it as a **user** systemd service (``openral-tunnel.service``, with
+``loginctl enable-linger`` so it starts at boot without a login): the tunnel stays up
+across reboots, with no root. Where there is no user systemd (containers, some
+minimal images) ``openral dashboard`` runs the same tunnel as its own child instead,
+up exactly while the dashboard is. The tunnel's ingress is configured remotely by
+openral.com and points at ``localhost:4319``, the remote listener; while the
+dashboard is down, openral.com shows the robot as unreachable.
 
 The token goes to cloudflared through ``TUNNEL_TOKEN`` in its environment, never on
 its command line (``ps`` shows argv to every user).
@@ -27,9 +29,12 @@ from openral_observability.dashboard.ui_assets import PinnedAsset, _cache_root, 
 
 __all__ = [
     "CLOUDFLARED",
+    "SERVICE",
     "TUNNEL_PORT",
     "ensure_cloudflared",
+    "install_service",
     "read_tunnel_token",
+    "service_active",
     "start_tunnel",
     "tunnel_env_path",
     "write_tunnel_token",
@@ -54,6 +59,25 @@ CLOUDFLARED: dict[str, PinnedAsset] = {
     ),
 }
 """cloudflared 2026.10.7 (2026-10-30) per ``platform.machine()``; digests from the release."""
+
+
+SERVICE = "openral-tunnel.service"
+"""The user systemd unit ``openral robot link`` installs."""
+
+_UNIT = """[Unit]
+Description=OpenRAL robot tunnel to openral.com (openral robot link)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile={env}
+ExecStart={exe} tunnel --no-autoupdate run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
 
 
 def tunnel_env_path() -> Path:
@@ -102,10 +126,52 @@ def ensure_cloudflared() -> Path | None:
     return Path(found) if found else None
 
 
+def _unit_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "systemd" / "user" / SERVICE
+
+
+def _run(*argv: str) -> bool:
+    """Run a systemd/logind tool quietly; ``False`` when it is missing or fails."""
+    exe = shutil.which(argv[0])
+    if exe is None:
+        return False
+    return subprocess.run([exe, *argv[1:]], capture_output=True, check=False).returncode == 0
+
+
+def install_service(exe: Path) -> str | None:
+    """Install and start ``openral-tunnel.service`` for this user, enabled at boot.
+
+    Returns:
+        ``None`` on success, else why it couldn't (the dashboard then runs the tunnel).
+    """
+    unit = _unit_path()
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(_UNIT.format(env=tunnel_env_path(), exe=exe), encoding="utf-8")
+    if not _run("systemctl", "--user", "daemon-reload"):
+        return "no user systemd here"
+    if not _run("systemctl", "--user", "enable", "--now", SERVICE):
+        return f"systemctl --user enable --now {SERVICE} failed"
+    # Start at boot, before anyone logs in. Allowed for yourself on stock polkit.
+    if not _run("loginctl", "enable-linger"):
+        return "the tunnel runs, but only while you are logged in (loginctl enable-linger failed)"
+    return None
+
+
+def service_active() -> bool:
+    """Whether ``openral-tunnel.service`` is running for this user."""
+    return _run("systemctl", "--user", "is-active", "--quiet", SERVICE)
+
+
 def start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None:
-    """Run the robot's tunnel as a child process; ``None`` (with a warning) when it can't."""
+    """Run the robot's tunnel as a child process, unless the user service already does.
+
+    ``None`` when the robot isn't linked, the service runs it, or there is no binary.
+    """
     token = read_tunnel_token()
     if token is None:
+        return None
+    if service_active():
         return None
     if remote_port != TUNNEL_PORT:
         _logger.warning(

@@ -86,19 +86,40 @@ listener accepts only the origins in `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (defaul
 
 ## Reaching the robot from openral.com
 
-Add the robot on openral.com (`/account` → Robots). It shows a one-time command:
+Sign in on openral.com and add the robot (**Dashboard → Robots → Add robot**; a free
+account has one remote robot, a Pro org as many as it needs). It shows a one-time
+command; run it on the robot, as the user that runs OpenRAL:
 
 ```bash
 openral robot link <code>
 ```
 
-This writes the robot's identity (no secrets) to `~/.config/openral/robot.json` (mode
-0600), stores its tunnel token beside it in `tunnel.env` (mode 0600), and fetches a
-pinned `cloudflared`. Nothing to install and no root: from then on `openral dashboard`
-(and any deploy that starts it) runs the robot's Cloudflare Tunnel as its child and opens
-the remote listener on `127.0.0.1:4319`, the tunnel's
-target (`--remote-port` to move it). The listener answers only `/api/*` and `/ws`, with
-a valid token; the OTLP receiver is never reachable through it.
+That is the only step on the robot. Nothing to install and no root:
+
+- the robot's identity (no secrets) goes to `~/.config/openral/robot.json` and its tunnel
+  token to `tunnel.env` beside it, both mode 0600;
+- a pinned `cloudflared` (sha256-checked) is fetched into `~/.cache/openral`;
+- the tunnel is installed as the **user** systemd service `openral-tunnel.service`, enabled
+  with `loginctl enable-linger`, so it is up now and after every reboot, before anyone
+  logs in. `--no-service` skips this; so does a machine without user systemd (a
+  container). Then `openral dashboard` runs the tunnel as its own child, up exactly while
+  the dashboard is.
+
+Start `openral dashboard` (or the deploy, which starts it): it opens the remote listener on
+`127.0.0.1:4319`, the tunnel's target, and the robot shows on openral.com/dashboard. While
+the dashboard is down the tunnel stays up and openral.com shows the robot as unreachable.
+The listener answers only `/api/*` and `/ws`, with a valid token; the OTLP receiver is
+never reachable through it.
+
+Manage the service like any user unit:
+
+```bash
+systemctl --user status openral-tunnel.service
+```
+
+To unlink, remove the robot on openral.com (its tunnel is deleted there), then
+`systemctl --user disable --now openral-tunnel.service` and delete
+`~/.config/openral/robot.json` and `tunnel.env`.
 
 ## The 3D view
 

@@ -723,8 +723,10 @@ http://localhost:4318
 ```
 
 On this machine you have full control; other hosts on the LAN (with `--host`) see it
-read-only plus E-STOP. To reach the robot from openral.com, link it once with
-`openral robot link <code>` (see the [dashboard quickstart](../../quickstart/dashboard.md)).
+read-only plus E-STOP. To reach the robot from openral.com from anywhere, add it there
+(**Dashboard → Robots → Add robot**) and run the one command it shows,
+`openral robot link <code>`: no install, no root, and its tunnel survives reboots (see the
+[dashboard quickstart](../../quickstart/dashboard.md)).
 Headless (e.g. CI): `--no-dashboard`; another port: `--dashboard-port 4400`.
 
 Or launch it standalone and point other workloads at it:

@@ -309,15 +309,16 @@ def _with_provenance(xml: str, *, id: str, src: str) -> str:
     return header + xml
 
 
-def link_robot(code: str, *, echo: Callable[[str], None]) -> Path:
+def link_robot(code: str, *, echo: Callable[[str], None], service: bool = True) -> Path:
     """``openral robot link <code>``: enrol this robot with openral.com (ADR-0129 Interface B).
 
     Writes everything in the link code except the tunnel token to the enrolment file
     (``openral_core.enrolment_path()``, mode 0600), which ``openral dashboard`` reads
     to open its remote listener; stores the tunnel token beside it (``tunnel.env``,
-    mode 0600); and fetches the pinned ``cloudflared`` now, so the robot needs no
-    internet-time download later. ``openral dashboard`` runs the tunnel itself: no
-    install, no root.
+    mode 0600); fetches the pinned ``cloudflared``; and, with ``service``, installs it as
+    the user service ``openral-tunnel.service`` (enabled at boot, no root) so the
+    tunnel survives reboots. Without the service ``openral dashboard`` runs the tunnel
+    itself while it is up.
 
     Returns:
         The enrolment file written.
@@ -326,7 +327,12 @@ def link_robot(code: str, *, echo: Callable[[str], None]) -> Path:
         ROSConfigError: ``code`` is not a valid link code.
     """
     from openral_core import enrolment_path, parse_robot_link_code
-    from openral_observability.dashboard.tunnel import ensure_cloudflared, write_tunnel_token
+    from openral_observability.dashboard.tunnel import (
+        SERVICE,
+        ensure_cloudflared,
+        install_service,
+        write_tunnel_token,
+    )
 
     enrolment, tunnel = parse_robot_link_code(code)
     path = enrolment_path()
@@ -337,8 +343,15 @@ def link_robot(code: str, *, echo: Callable[[str], None]) -> Path:
         fh.write(enrolment.model_dump_json(indent=2) + "\n")
     write_tunnel_token(tunnel)
     echo(f"Linked robot {enrolment.robot} ({enrolment.aud}); enrolment in {path}")
-    if ensure_cloudflared() is None:
+    exe = ensure_cloudflared()
+    if exe is None:
         echo("Couldn't fetch cloudflared for this machine; the dashboard retries when it starts.")
+    elif service:
+        problem = install_service(exe)
+        if problem is None:
+            echo(f"Tunnel installed as the user service {SERVICE}: up now and after every reboot.")
+        else:
+            echo(f"Tunnel service not installed ({problem}); `openral dashboard` runs it instead.")
     echo(
         "Start `openral dashboard` (or your deploy): the robot then shows on openral.com/dashboard."
     )
