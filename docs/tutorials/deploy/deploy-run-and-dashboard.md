@@ -680,8 +680,8 @@ On a cold-booted graph the router may not have discovered the publisher yet;
 `--discovery-wait-s 15` covers the stale-shared-memory case the 5 s default
 does not.
 
-**From the dashboard**, using the prompt box on the live pane, which posts to
-the same path as the CLI.
+**From the dashboard**, with its `prompt` action, which posts to the same path
+as the CLI.
 
 **After an e-stop**, clear it from the CLI with:
 
@@ -711,20 +711,21 @@ for the reasoner and never gates motors.
 
 ## 4. Open the dashboard
 
-`deploy run` spawns the live dashboard by default (`--dashboard/--no-dashboard`,
-port `--dashboard-port`, default **4318**): a read-only pane over the OTel stream
-(the most recent `rskill.execute`, `rskill.chunk_inference`, and `safety.check`
-spans, rolling metric histograms, per-camera thumbnails, and an event log).
-Operator discovery / write endpoints exist for tooling but are kept off the main
-surface.
+`deploy run` spawns the robot dashboard by default (`--dashboard/--no-dashboard`,
+port `--dashboard-port`, default **4318**), with the read-only Foxglove bridge behind
+its 3D view (`--no-foxglove` to skip it). It serves the robot UI: the panels and actions
+this robot declares in its manifest — cameras, joints, safety state, metrics, events,
+E-STOP, reset, prompt, and the installed rSkills when
+`OPENRAL_DASHBOARD_WRITE_CONTROLS=1`.
 
 ```
 http://localhost:4318
 ```
 
-The connection indicator (top right) turns green within a few hundred
-milliseconds. Headless (e.g. CI): `--no-dashboard`; another port:
-`--dashboard-port 4400`.
+On this machine you have full control; other hosts on the LAN (with `--host`) see it
+read-only plus E-STOP. To reach the robot from openral.com, link it once with
+`openral robot link <code>` (see the [dashboard quickstart](../../quickstart/dashboard.md)).
+Headless (e.g. CI): `--no-dashboard`; another port: `--dashboard-port 4400`.
 
 Or launch it standalone and point other workloads at it:
 

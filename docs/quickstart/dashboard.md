@@ -1,24 +1,25 @@
-# `openral dashboard` — live debugging UI
+# `openral dashboard` — the robot's own page
 
-A single-page, read-only debug pane over the OpenRAL OTel stream: the most
-recent `rskill.execute`, `rskill.chunk_inference`, and `safety.check` spans,
-rolling metric histograms, and an event log, live, without Jaeger. It is an
-embedded OTLP receiver, not an in-process exporter, so instrumented workloads
-stay decoupled from it. It does not replace Jaeger for post-hoc analysis.
+One process per robot serves the **robot UI**, its API, and an embedded OTLP/HTTP
+receiver. Locally and offline you open it on the robot; online, the same UI runs on
+**openral.com/dashboard** and reaches the robot through its own Cloudflare Tunnel
+(ADR-0129). The UI is robot-agnostic: it draws only the panels and actions the robot
+declares in its **manifest**.
 
 ## Run it
 
-One HTTP port serves the UI, the SSE event stream, and the OTLP/HTTP
-receiver. The default is **4318** (the OTLP/HTTP standard); `8000` collided
-with `mkdocs serve` (`just docs`) and most FastAPI demos.
+One port serves everything. The default is **4318** (the OTLP/HTTP standard; `8000`
+collided with `mkdocs serve` and most FastAPI demos).
 
 ```bash
-openral dashboard            # binds 127.0.0.1:4318 by default
-# → stderr prints: OpenRAL dashboard: http://localhost:4318/ …
+openral dashboard            # 127.0.0.1:4318
+# → OpenRAL dashboard: http://localhost:4318/ …
 ```
 
-Then point a workload at it. **Sim does not emit OTel by default**; an
-`openral sim run` without these env vars shows nothing:
+`openral deploy sim|run` starts it for you (opt out with `--no-dashboard`), together
+with the read-only `foxglove_bridge` for the 3D view (opt out with `--no-foxglove`).
+
+Point any other workload at it. **Sim does not emit OTel by default**:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
@@ -26,192 +27,118 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
   openral sim run --config scenes/sim/libero_spatial.yaml --rskill smolvla-libero
 ```
 
-Open `http://localhost:4318`. The connection indicator (top right) turns
-green within a few hundred ms.
+or let either side spawn the other: `openral dashboard --inprocess "openral sim run …"`,
+or `--dashboard` on `openral sim run`, `deploy run` and `benchmark run` (the child
+dashboard exits with the workload).
 
-## One-keystroke demo — two options
+## The page
 
-### Dashboard → sim (`--inprocess`)
-The dashboard spawns the workload as a child with the OTLP env vars set.
-Pass the whole command as **one shell-quoted string** (shlex-tokenised):
+`/` serves the robot UI, the React app in `python/observability/ui/`. The dashboard
+downloads its pinned release once (url + sha256 + size in
+`openral_observability.dashboard.ui_assets.ROBOT_UI`) into
+`$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`). To serve a local
+build instead, set `OPENRAL_DASHBOARD_UI_DIR=/path/to/ui/dist`.
+
+When no UI is available (no release pinned yet, or an offline first start) `/` serves a
+built-in fallback page: the robot's status and an **E-STOP** button.
+
+What the UI shows comes from the **robot manifest**, which the deploy runtime emits at
+start and again whenever the installed rSkills change (`/openral/skill_registry_changed`):
+
+- **Panels** — robot identity, one camera per image sensor, joints, then map (SLAM),
+  point cloud (octomap), reasoner, reward monitor (when that leg runs), the running
+  rSkill, safety status and ledger, system health, metrics, events, world state, and the
+  3D view when the bridge runs.
+- **Actions** — `estop`, `estop_reset` (with a "work cell clear?" confirmation),
+  `prompt` (when the reasoner runs), and one `skill:<rskill id>` per installed rSkill
+  the robot can run — the same set the reasoner may dispatch — whose form is the
+  rSkill's `goal_params_schema`. Skills appear only with
+  `OPENRAL_DASHBOARD_WRITE_CONTROLS=1`.
+
+The deploy's reasoner node emits the manifest, so a deploy with the reasoner off has
+none: the UI then has no panels, and only E-STOP answers. Cameras are polled JPEG
+snapshots (`/api/camera/<sensor>/snapshot.jpg`), never video.
+
+## Who may do what
+
+| Where the request comes from | Mode | Role | May |
+|---|---|---|---|
+| This machine (`127.0.0.1:4318`) | `local` | operator | everything the manifest offers |
+| Another host, with `--host <LAN address>` | `lan` | viewer | read, and press E-STOP |
+| openral.com, through the tunnel (`127.0.0.1:4319`) | `remote` | the user's role | see below |
+
+Over the tunnel, every request carries a 5-minute token openral.com mints for that user
+and that robot only. **viewer** may read and press E-STOP; **operator** and **admin**
+may also reset the e-stop, prompt and run skills — but only when the robot's site sets
+`OPENRAL_DASHBOARD_REMOTE_CONTROL=1` (default off: IEC 60204-1 expects a reset where
+the hazard can be seen). E-STOP is always allowed, from every role and listener.
+**Remote E-STOP is best-effort, not a safety function**: the physical e-stop stays
+authoritative.
+
+Every action is announced on `/openral/operator_action` and recorded by the compliance
+recorder as an intervention, attributed to the signed-in user (or, locally, the client
+address) — pseudonymised, see [compliance log](../reference/compliance-log.md).
+
+A request whose `Origin` names another site than the page is refused (CSRF); the tunnel
+listener accepts only the origins in `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (default
+`https://www.openral.com,https://dev.openral.com,https://viz.openral.com`).
+
+## Reaching the robot from openral.com
+
+Add the robot on openral.com (`/account` → Robots). It shows a one-time command:
 
 ```bash
-openral dashboard \
-  --inprocess "openral sim run --config scenes/sim/pusht.yaml --rskill diffusion-pusht"
+openral robot link <code>
 ```
 
-### Workload → dashboard (`--dashboard` on sim / deploy / benchmark)
-The workload spawns the dashboard as a child on `4318` (override with
-`--dashboard-port`) and shuts it down on exit. All three entry points take
-the flag:
+This writes the robot's identity (no secrets) to `~/.config/openral/robot.json` (mode
+0600) and installs its Cloudflare Tunnel with `cloudflared service install` (it prints
+how to install `cloudflared`, or the `sudo` command, when it cannot). From then on
+`openral dashboard` also opens the remote listener on `127.0.0.1:4319`, the tunnel's
+target (`--remote-port` to move it). The listener answers only `/api/*` and `/ws`, with
+a valid token; the OTLP receiver is never reachable through it.
 
-```bash
-openral sim run --dashboard \
-  --config scenes/sim/pusht.yaml \
-  --rskill diffusion-pusht
+## The 3D view
 
-openral deploy run --dashboard --config scenes/deploy/so101_bench.yaml
-
-openral benchmark run --dashboard \
-  --suite libero_spatial \
-  --rskill smolvla-libero
-```
-
-The workload prints `OpenRAL dashboard attached: http://localhost:4318/`
-once the child reports healthy, then routes traces+metrics to it for
-the rest of the run. The child is SIGINT'd at exit after OTel finishes
-draining (no `Connection refused` retries on the way down).
-
-## What you see
-
-- **Top bar** — service name, run mode (`sim` / `hardware` /
-  `benchmark`), short run id, connection status.
-- **Reasoner · mission** — the reasoner's active task queue,
-  rendered from `reasoner.mission_json` as an ordered checklist: each
-  subtask shows its status (done ✓ / active ▶ / verifying ? / abandoned ✗
-  / pending), a reward bar coloured by a three-tier verdict
-  band (green at/above the success threshold, amber in the VLM-adjudicated
-  ambiguous band, red below the check floor / unverified), the per-task
-  verdict text (the *why* behind done/abandoned, e.g.
-  `unverified after 3 attempt(s) (success=0.42)`), and the attempts/cap
-  ladder. Failed (abandoned) tasks get a red wash, strikethrough, and bold
-  ✗ rather than being dimmed, and the header tallies
-  them (`5 tasks · 1 done · 1 failed · on 3/5`). A mission that finishes
-  with ≥1 abandoned task gets a red **mission failed** banner above the
-  checklist. Subdivided children from a replan (`#123`: a blocked task
-  `t2` spliced into `t2.1`, `t2.2`, …) are indented under their parent
-  with a dim id badge — depth is read from the dot-path task id, so the
-  flat queue still reads as a hierarchy. The latest tick (tool / model /
-  error) is a footer line beneath it. Empty until the `reasoner_node` is
-  ACTIVE.
-- **Live signal · running skill** — one card for the active `rSkill`: skill id
-  (headline), role, action-applied, tick idx, and a `step Xms · forward Yms`
-  latency line. `step` is the full `rskill.execute` call; `forward` is the model
-  forward pass inside it (`rskill.chunk_inference`) — the gap between them is the
-  pre/post-processing cost. (The engine is shown in Identity; Safety has its own
-  zone.) Card border turns red on `Status.ERROR`.
-- **Safety** — the **Safety · current state** card, running counters of
-  `safety_violation`, `estop_requested`, `deadline_missed`, `sensor_stale`,
-  and `skill_failure` span events, and the **Safety check ledger** (per-check
-  pass/fail from `safety.check` spans).
-
-  *Safety · current state* (ADR-0096) is the only card **not** fed by OTel:
-  it subscribes the latched `/openral/safety_status`
-  topic (`openral_msgs/SafetyStatus`, RELIABLE + TRANSIENT_LOCAL +
-  KEEP_LAST=1) that the C++ safety kernel and `SafetyPassthroughNode` both
-  publish. It shows `latched` / `clear` / `stale`, the typed `drop_reason`
-  (e.g. `kind_collision`, `drop_envelope_unconfigured`), the publisher's
-  `detail`, the `rskill` in flight, and the **age of the last transition**.
-  Because the topic is durable, a dashboard opened *mid-mission* shows the
-  correct state immediately instead of "unknown until the next fault" — the
-  span-inferred latch under it can only move while command chunks are
-  flowing, and a latched kernel is exactly the state in which they stop.
-  The age matters: publishers re-stamp at 1 Hz, so an age past ~3 s renders
-  the card `stale` and the state is to be read as **unknown, not safe**
-  (the safety publisher may be gone). With no ROS workspace sourced the card
-  reads *waiting* — never a fabricated "clear". The **skill failures** counter
-  tallies every Reasoner-published `/openral/failure/rskill` event
-  (mirrored onto the OTLP `openral.event.skill_failure` span event) and
-  shows the latest failure state under it (e.g. `latest: vram_insufficient`).
-- **Embodiment** — robot joints (commanded values are the second trace),
-  **World state** (including the durable scene-object spatial-memory
-  table), and system health.
-- **Metrics** — every histogram, counter, and gauge that comes over
-  the wire, with p50/p95 (for histograms) and a sparkline of the
-  last ~600 samples. Empty until a workload starts emitting; the runner
-  also emits `openral.tick.duration`, `openral.inference.duration`,
-  `openral.hal.*.duration`, etc. Hover any sparkline for the exact
-  value + clock time of the nearest sample (a white-ringed marker
-  snaps to the point); each graph carries its own min/max Y labels and
-  shares one bottom time axis with dotted gridlines so every row reads
-  on the same clock. Metrics whose producer emits a contractual
-  threshold (`openral.metric.threshold_ms` — the runner latency budget
-  on `tick.duration`, the world-state staleness deadline on
-  `world_state.staleness_ms`) draw a dashed budget/deadline line and
-  redden the trace once the latest sample breaches it (`*_dir` set to
-  `lower` flips the test for floor-style metrics where dropping below is
-  the fault). Warn/error events appear as severity-coloured vertical
-  markers aligned across all graphs. **Click any point** to focus the
-  whole column on that instant — a line is drawn across every graph and
-  the event log scopes to a window around it (clear with the ✕).
-  **Scroll** over a graph to zoom the shared time window in/out (centred
-  on the cursor, bounded by the retained buffer; "reset zoom" restores
-  the full view), and Y rescales to whatever is visible. The **freeze**
-  toggle pauses live updates so you can inspect a moment.
-- **Event log** — chronological feed of the last 60 events (spans,
-  span events, and real log lines bridged from structlog over OTLP);
-  ESTOP / safety violation rows render in red. Filter chips toggle the
-  `info` / `warn` / `error` buckets (on by default) and a `debug` bucket
-  (off by default — high-rate DEBUG such as `world_state` ~30 Hz would
-  otherwise flood the bounded view; toggle it on when you need it).
-  Log lines are bucketed by OTLP `severity_number`
-  (DEBUG→`debug`, INFO→`info`, WARN→`warn`, ERROR/FATAL→`error`).
-
-The main page stays focused on telemetry. Discovery (`GET /api/robots`) and the
-guarded write endpoints (`POST /api/skill/execute`, `POST /api/param/set`) stay
-available for operator tooling, but they are not surfaced as dashboard cards.
-
-Every state-changing request (e-stop reset, prompt, skill execute, param set,
-OTLP ingest) whose `Origin` header names another host:port than `Host` is
-refused with `403`, so a page on another site cannot drive your browser into
-them (CSRF). Non-browser clients send no `Origin` and are unaffected. A
-DNS-rebinding page is same-origin by construction and is **not** stopped by
-this check; there is no operator auth yet (#44), so keep the dashboard bound
-to `127.0.0.1` (the default) on any host that browses untrusted sites.
+The dashboard serves a pinned [Lichtblick](https://github.com/Lichtblick-Suite/lichtblick)
+web build (MPL-2.0, the open Foxglove Studio fork) at `/viz/`, downloaded on first use.
+It connects to `foxglove_bridge` through the dashboard's `/ws` proxy — the bridge itself
+stays on loopback and read-only. Remote and LAN viewers need a ticket from
+`POST /api/viz/ticket` (valid 15 minutes, reusable for reconnects); the layout for the
+robot's cameras is at `/api/viz/layout.json`.
 
 ## Endpoints
 
-| Path           | What it serves                                       |
-|----------------|------------------------------------------------------|
-| `GET /`        | Single-page UI (vanilla JS + SSE, no npm)            |
-| `GET /healthz` | `{"status": "ok"}` for compose healthchecks          |
-| `GET /api/state`  | One-shot JSON snapshot of the current store       |
-| `GET /api/stream` | Server-Sent Events — every state update           |
-| `POST /v1/traces`  | OTLP/HTTP receiver — `application/x-protobuf`    |
-| `POST /v1/metrics` | OTLP/HTTP receiver — `application/x-protobuf`    |
-| `POST /v1/logs`    | OTLP/HTTP receiver — log lines into the event log |
+| Path | What it serves |
+|---|---|
+| `GET /` | The robot UI, or the fallback page |
+| `GET /viz/` | Lichtblick (3D) |
+| `GET /api/config` | `mode`, `role`, `robot_id`, `write_controls`, `remote_control` |
+| `GET /api/manifest` | The robot manifest (404 until the runtime sends one) |
+| `GET /api/state` | One-shot JSON snapshot (`manifest_rev` bumps when the manifest changes) |
+| `GET /api/stream[?images=0]` | Server-Sent Events; `images=0` drops camera thumbnails |
+| `GET /api/camera/{sensor}/snapshot.jpg` | Latest frame of one camera |
+| `POST /api/actions/{id}` | Run an action: body `{"args": {...}}` |
+| `POST /api/viz/ticket` · `GET /api/viz/layout.json` · `WS /ws` | The 3D view |
+| `GET /api/traces` · `GET /api/spans/{trace_id}` | Trace index (`openral replay`) |
+| `POST /api/transcribe` | Speech to text on the host (local Whisper) |
+| `POST /v1/{traces,metrics,logs}` | OTLP/HTTP receiver (this machine only) |
+| `GET /healthz` | `{"status": "ok"}` |
+
+`POST /api/actions/{id}` answers `200 {"ok": true}` (`202` with a `goal_id` for a
+skill), `400` for args that fail the action's schema, `403` for a role, listener or flag
+that does not allow it, `404` for an unknown action, `409` for a refused reset or goal,
+and `503` when ROS is not available.
 
 ## Running alongside Jaeger + Prometheus
 
-For post-hoc trace analysis or Prometheus-style metric history, also bring
-up the dev compose stack:
+For post-hoc trace analysis or metric history, bring up the dev compose stack and point
+the workload at the OTel Collector (`http://localhost:4317`) instead; it fans out to
+Jaeger (`http://localhost:16686`) and Prometheus (`http://localhost:9090`):
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d otelcol jaeger prometheus
 ```
 
-Point your workload at `http://localhost:4317` (the OTel Collector)
-to fan out: traces → Jaeger UI at `http://localhost:16686`, metrics →
-Prometheus at `http://localhost:9090`. Attach the dashboard on a different
-port for the live pane:
-
-```bash
-openral dashboard --port 4318
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
-  openral sim run ...   # → otelcol → jaeger + prometheus
-```
-
-Pointing at the dashboard *and* otelcol at once is a v2 feature (the OTel
-SDK supports multiple exporters); v1 expects one endpoint at a time.
-
-## Relationship to the Foxglove surface
-
-`openral deploy sim --foxglove` brings up a second, read-only pane
-(`packages/openral_foxglove_bringup`) that owns the **live ROS scene**: the
-robot's URDF posed by TF inside the occupancy grid and voxel map, one Image
-panel per camera slot, plus the ROS-side telemetry plane — `/rosout`,
-`/diagnostics`, `WorldStateStamped`, episode transitions, reward scores,
-detected objects.
-
-The two are complementary; nothing here was retired in favour of Foxglove.
-This dashboard is the only surface for:
-
-- traces (the trace chip, `/api/traces`, the Jaeger deep link) and OTLP metric
-  histograms — Foxglove has no span or histogram model;
-- `openral sim run` and `openral benchmark run`, which run HAL-only with no ROS
-  graph for a bridge to bridge;
-- every write path — E-stop, prompt (text + voice), skill execute, param set.
-  The bridge advertises no `clientPublish`, and the e-stop deliberately uses
-  this dashboard's launch-time, pre-matched publisher;
-- the latched safety state, since `/openral/safety_status` is withheld from the
-  bridge pending safety-WG sign-off.
+Set `OPENRAL_JAEGER_UI_URL` and the UI links traces to Jaeger. One OTLP endpoint per
+workload: either the dashboard or the collector.
