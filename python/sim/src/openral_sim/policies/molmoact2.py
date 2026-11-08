@@ -258,7 +258,11 @@ def _norm_stats_camera_keys(path: str, norm_tag: str) -> tuple[str, ...]:
 
 @contextlib.contextmanager
 def _hf_offline_if_cached(
-    repo_id: str, probe_file: str = "config.json", revision: str | None = None
+    repo_id: str,
+    probe_file: str = "config.json",
+    revision: str | None = None,
+    *,
+    probe_weights: bool = False,
 ) -> Any:
     """Flip ``HF_HUB_OFFLINE`` on for the inner block when ``probe_file`` is cached.
 
@@ -283,12 +287,20 @@ def _hf_offline_if_cached(
     ``revision`` must be the revision the inner block requests: a file cached
     for ``main`` says nothing about a pinned revision, and going offline on it
     would block that revision's first download.
+
+    ``probe_weights=True`` replaces the ``probe_file`` probe with
+    ``_hf_weights_cached`` for a model ``from_pretrained``: the config load
+    just before it warms ``config.json``, so probing that would take a cold
+    weights load offline and fail to fetch the shards.
     """
     import huggingface_hub.constants as _hc
     from huggingface_hub import try_to_load_from_cache
 
-    cached = try_to_load_from_cache(repo_id, probe_file, revision=revision)
-    if not isinstance(cached, str):
+    if probe_weights:
+        cached = _hf_weights_cached(repo_id, revision)
+    else:
+        cached = isinstance(try_to_load_from_cache(repo_id, probe_file, revision=revision), str)
+    if not cached:
         # Cold (or sentinel _CACHED_NO_EXIST) — let the load talk to the Hub.
         yield
         return
@@ -298,6 +310,28 @@ def _hf_offline_if_cached(
         yield
     finally:
         _hc.HF_HUB_OFFLINE = saved
+
+
+def _hf_weights_cached(repo_id: str, revision: str | None) -> bool:
+    """Whether every safetensors weight file of ``repo_id@revision`` is cached.
+
+    A sharded checkpoint needs ``model.safetensors.index.json`` plus every shard
+    its ``weight_map`` lists; an unsharded one needs ``model.safetensors``.
+    """
+    import json
+
+    from huggingface_hub import try_to_load_from_cache
+
+    def cached(filename: str) -> str | None:
+        path = try_to_load_from_cache(repo_id, filename, revision=revision)
+        return path if isinstance(path, str) else None
+
+    index = cached("model.safetensors.index.json")
+    if index is None:
+        return cached("model.safetensors") is not None
+    with open(index, encoding="utf-8") as fh:
+        shards = set(json.load(fh).get("weight_map", {}).values())
+    return bool(shards) and all(cached(shard) is not None for shard in shards)
 
 
 def _strip_hf_uri(uri: str | None, *, field_name: str) -> str:
@@ -627,7 +661,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     # instantiating the ~5.5 B backbone on CUDA in fp32 would OOM an 8 GiB card
     # before the nf4 rewrite ever runs.
     with (
-        _hf_offline_if_cached(source_repo, revision=revision),
+        _hf_offline_if_cached(source_repo, revision=revision, probe_weights=True),
         _molmoact2_phase("from_pretrained", repo=source_repo, dtype=dtype_str),
     ):
         model = model_cls.from_pretrained(

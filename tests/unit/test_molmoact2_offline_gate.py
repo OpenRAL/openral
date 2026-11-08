@@ -11,6 +11,7 @@ file is missing". The gate must probe the file the inner block actually reads.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import huggingface_hub
@@ -119,6 +120,52 @@ class TestHfOfflineIfCached:
             assert hc.HF_HUB_OFFLINE is True
         with _hf_offline_if_cached(repo, probe_file="norm_stats.json", revision="abc123"):
             assert hc.HF_HUB_OFFLINE is False
+
+    def test_weights_gate_stays_online_until_every_shard_is_cached(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cold-cache from_pretrained: config.json is warm, the shards are not.
+
+        Regression (Jetson Thor, 2026-11-08): the weights load was gated on
+        ``config.json``, which the config load warms, so a cold-cache bf16 load
+        went offline and could not download ``model-0000N-of-00005.safetensors``.
+        """
+        shards = [f"model-0000{i}-of-00005.safetensors" for i in range(1, 6)]
+        index = tmp_path / "model.safetensors.index.json"
+        index.write_text(json.dumps({"weight_map": {f"w{i}": s for i, s in enumerate(shards)}}))
+        rev = "0d24a92bd1faf321ef497c3bbd5681af97c65aa2"
+        cache = {"config.json": "/cache/config.json", index.name: str(index)}
+        monkeypatch.setattr(
+            huggingface_hub,
+            "try_to_load_from_cache",
+            lambda _repo, filename, revision=None: cache.get(filename) if revision == rev else None,
+        )
+        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
+        repo = "allenai/MolmoAct2-LIBERO"
+        with _hf_offline_if_cached(repo, revision=rev, probe_weights=True):
+            assert hc.HF_HUB_OFFLINE is False
+        cache.update({s: f"/cache/{s}" for s in shards[:-1]})
+        with _hf_offline_if_cached(repo, revision=rev, probe_weights=True):
+            assert hc.HF_HUB_OFFLINE is False
+        cache[shards[-1]] = f"/cache/{shards[-1]}"
+        with _hf_offline_if_cached(repo, revision=rev, probe_weights=True):
+            assert hc.HF_HUB_OFFLINE is True
+        assert hc.HF_HUB_OFFLINE is False
+
+    def test_weights_gate_unsharded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No index → the single ``model.safetensors`` decides."""
+        cache: dict[str, str] = {"config.json": "/cache/config.json"}
+        monkeypatch.setattr(
+            huggingface_hub,
+            "try_to_load_from_cache",
+            lambda _repo, filename, revision=None: cache.get(filename),
+        )
+        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
+        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_weights=True):
+            assert hc.HF_HUB_OFFLINE is False
+        cache["model.safetensors"] = "/cache/model.safetensors"
+        with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_weights=True):
+            assert hc.HF_HUB_OFFLINE is True
 
 
 class TestResolveMaxCrops:
