@@ -55,8 +55,9 @@ start and again whenever the installed rSkills change (`/openral/skill_registry_
   rSkill's `goal_params_schema`. Skills appear only with
   `OPENRAL_DASHBOARD_WRITE_CONTROLS=1`.
 
-The deploy's reasoner node emits the manifest, so a deploy with the reasoner off has
-none: the UI then has no panels, and only E-STOP answers. Cameras are polled JPEG
+The deploy launch writes the manifest and hands it to the dashboard
+(`openral dashboard --manifest <file>`); the reasoner, when it runs, re-sends it as an
+OTLP record whenever the installed rSkills change, and the fresher one wins. Cameras are polled JPEG
 snapshots (`/api/camera/<sensor>/snapshot.jpg`), never video.
 
 ## Who may do what

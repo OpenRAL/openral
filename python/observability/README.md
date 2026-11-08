@@ -24,10 +24,12 @@ port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
   `$OPENRAL_CACHE_DIR/dashboard_assets/`), or a local build named by
   `OPENRAL_DASHBOARD_UI_DIR`. Without either, `static/fallback.html` shows the
   robot's status and an E-STOP button.
-- **The manifest.** The deploy's reasoner node emits an `openral.robot.manifest`
-  OTLP log record (`producer.emit_robot_manifest`, body = `openral_core.RobotManifest`
-  JSON) at configure and on `/openral/skill_registry_changed`; the store caches the
-  latest (`TelemetryStore.manifest()`, `manifest_rev` on every snapshot) and
+- **The manifest.** The deploy launch writes one and passes `--manifest <file>`, so a
+  deploy without the reasoner has one too; the reasoner, when it runs, emits an
+  `openral.robot.manifest` OTLP log record (`producer.emit_robot_manifest`, body =
+  `openral_core.RobotManifest` JSON) at configure and on
+  `/openral/skill_registry_changed`. The store keeps the latest of either
+  (`TelemetryStore.manifest()`, `manifest_rev` on every snapshot) and
   `GET /api/manifest` serves it.
 - **Actions** run through `POST /api/actions/{id}` with `{"args": {...}}`, checked
   against the action's `args_schema` (`jsonschema`): `estop` (the persistent

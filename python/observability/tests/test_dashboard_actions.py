@@ -357,3 +357,19 @@ def test_an_emitted_manifest_reaches_the_dashboard() -> None:
     store = TelemetryStore()
     store.ingest_logs(list(encode_logs([record]).resource_logs))
     assert store.manifest() == manifest
+
+
+@pytest.mark.asyncio
+async def test_a_launch_manifest_is_served_until_the_runtime_sends_a_fresher_one() -> None:
+    # A deploy without the reasoner: the launch's `--manifest` file is all there is.
+    launch = _manifest().model_copy(update={"actions": _manifest().actions[:1]})
+    store = TelemetryStore()
+    store.set_manifest(launch)
+    async with _client(store) as client:
+        served = (await client.get("/api/manifest")).json()
+        rev = store.snapshot()["manifest_rev"]
+        await _with_manifest(client)  # the reasoner's record arrives
+        fresher = (await client.get("/api/manifest")).json()
+    assert [a["id"] for a in served["actions"]] == ["estop"]
+    assert rev == 1 and store.snapshot()["manifest_rev"] == 2
+    assert len(fresher["actions"]) > 1

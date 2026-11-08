@@ -3924,6 +3924,14 @@ def dashboard(
         "--bridge-port",
         help="foxglove_bridge's loopback port, which the 3D view reaches through /ws.",
     ),
+    manifest: Path | None = typer.Option(
+        None,
+        "--manifest",
+        help=(
+            "A robot manifest JSON file to serve until the runtime sends a fresher one "
+            "(the deploy launch passes it, so a deploy without the reasoner has a manifest)."
+        ),
+    ),
     log_level: str = typer.Option(
         "warning",
         "--log-level",
@@ -3953,6 +3961,7 @@ def dashboard(
             port=port,
             remote_port=remote_port,
             bridge_port=bridge_port,
+            manifest_path=manifest,
             inprocess_cmd=inprocess_cmd,
             log_level=log_level,
         )

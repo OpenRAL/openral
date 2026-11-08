@@ -14,7 +14,10 @@ import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+from openral_core import RobotManifest
 
 if TYPE_CHECKING:
     import uvicorn
@@ -62,6 +65,7 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     port: int = 4318,
     remote_port: int | None = None,
     bridge_port: int = 8765,
+    manifest_path: Path | None = None,
     inprocess_cmd: list[str] | None = None,
     store: TelemetryStore | None = None,
     log_level: str = "warning",
@@ -79,6 +83,9 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
             (``openral robot link``) and not otherwise; a port without an enrolment
             is refused.
         bridge_port: ``foxglove_bridge``'s loopback port, proxied at ``/ws``.
+        manifest_path: A robot manifest JSON file (the deploy launch writes one) served
+            until the runtime sends a fresher ``openral.robot.manifest`` record, so a
+            deploy without the reasoner still has one. Unreadable → logged, ignored.
         inprocess_cmd: Optional argv to spawn as a child process with
             ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``OTEL_EXPORTER_OTLP_PROTOCOL``
             pointed at the dashboard. Lets a user do
@@ -123,6 +130,13 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
         else None
     )
     app = create_app(store, verifier=verifier, bridge_url=f"ws://127.0.0.1:{bridge_port}")
+    if manifest_path is not None:
+        try:
+            manifest = RobotManifest.model_validate_json(manifest_path.read_text("utf-8"))
+        except (OSError, ValueError) as exc:  # never gate the dashboard (or its E-STOP) on it
+            _LOG.warning("dashboard.manifest_file_unreadable path=%s error=%s", manifest_path, exc)
+        else:
+            app.state.store.set_manifest(manifest)
 
     # The robot UI: the pinned release, fetched once into $OPENRAL_CACHE_DIR (see
     # ui_assets.py). Best-effort: offline, `/` serves the built-in fallback page.

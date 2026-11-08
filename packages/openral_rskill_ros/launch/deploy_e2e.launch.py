@@ -1910,6 +1910,50 @@ def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # 
     return includes
 
 
+def _write_robot_manifest(
+    description: RobotDescription,
+    runtime: DeployRuntime,
+    *,
+    bridge_on: bool,
+    unit_serial: str | None,
+) -> str:
+    """Write this deploy's robot manifest (ADR-0129) for the dashboard's ``--manifest``.
+
+    The dashboard serves it until the reasoner, when it runs, sends a fresher one; so a
+    deploy with the reasoner off still has panels and actions. Skills come from the same
+    search path the reasoner seeds from (``manifest_paths_by_name``); an unloadable
+    rSkill is left out. The write-/remote-control flags are this launch's env, which the
+    dashboard inherits. Returns the file.
+    """
+    from openral_core import (
+        REMOTE_CONTROL_ENV,
+        WRITE_CONTROLS_ENV,
+        RSkillManifest,
+        build_robot_manifest,
+    )
+    from openral_rskill.loader import manifest_paths_by_name
+
+    installed = []
+    for yaml_path in manifest_paths_by_name([_RSKILLS_DIR]).values():
+        try:
+            installed.append(RSkillManifest.from_yaml(str(yaml_path)))
+        except (OSError, ValueError) as exc:
+            print(f"[deploy_e2e] manifest: skipping rSkill {yaml_path}: {exc}", flush=True)
+    manifest = build_robot_manifest(
+        description,
+        runtime,
+        installed,
+        bridge_on=bridge_on,
+        write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
+        remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
+        unit_serial=unit_serial,
+    )
+    fd, path = tempfile.mkstemp(prefix=f"openral_manifest_{description.name}_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(manifest.model_dump_json(by_alias=True))
+    return path
+
+
 def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -> str | None:
     """Generate a Foxglove layout for the cameras this deploy actually publishes.
 
@@ -3081,18 +3125,35 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     if reasoner_endpoint:
         reasoner_env["OPENRAL_REASONER_ENDPOINT"] = reasoner_endpoint
 
-    dashboard = ExecuteProcess(
-        cmd=[
-            _RAL_EXECUTABLE,
-            "dashboard",
-            "--port",
-            dashboard_port,
-            "--bridge-port",
-            foxglove_port,
-        ],
-        name="openral_dashboard",
-        output="screen",
+    # ADR-0129 — this deploy's resolved toggles (never "auto") for the robot manifest:
+    # the launch writes one for the dashboard (so a deploy without the reasoner has one),
+    # and the reasoner re-emits it on every registry change when it runs.
+    manifest_runtime = DeployRuntime(
+        enable_reasoner=enable_reasoner,
+        enable_slam=enable_slam,
+        enable_octomap=enable_octomap,
+        enable_reward_monitor=enable_reward_monitor,
+        enable_object_detector=enable_object_detector,
     )
+    dashboard_cmd = [
+        _RAL_EXECUTABLE,
+        "dashboard",
+        "--port",
+        dashboard_port,
+        "--bridge-port",
+        foxglove_port,
+    ]
+    if enable_dashboard:
+        dashboard_cmd += [
+            "--manifest",
+            _write_robot_manifest(
+                description,
+                manifest_runtime,
+                bridge_on=enable_foxglove,
+                unit_serial=unit_identity.serial,
+            ),
+        ]
+    dashboard = ExecuteProcess(cmd=dashboard_cmd, name="openral_dashboard", output="screen")
 
     safety_kernel = LifecycleNode(
         package="openral_safety_kernel",
@@ -3244,15 +3305,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # octomap_server gets.
         "grasp_target_voxel_m": _octomap_resolution(hal_mode),
     }
-    # ADR-0129 — the robot manifest the reasoner emits to the dashboard: this deploy's
-    # resolved toggles (never "auto"), whether the 3D bridge runs, and the unit's serial.
-    reasoner_params["manifest_runtime_json"] = DeployRuntime(
-        enable_reasoner=enable_reasoner,
-        enable_slam=enable_slam,
-        enable_octomap=enable_octomap,
-        enable_reward_monitor=enable_reward_monitor,
-        enable_object_detector=enable_object_detector,
-    ).model_dump_json(exclude_none=True)
+    # ADR-0129 — the robot manifest the reasoner emits to the dashboard: the same
+    # resolved toggles, whether the 3D bridge runs, and the unit's serial.
+    reasoner_params["manifest_runtime_json"] = manifest_runtime.model_dump_json(exclude_none=True)
     reasoner_params["manifest_bridge_on"] = enable_foxglove
     reasoner_params["manifest_unit_serial"] = unit_identity.serial or ""
     if lifecycle_peer_node_ids:

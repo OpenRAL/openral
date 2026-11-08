@@ -598,6 +598,14 @@ class TelemetryStore:
         with self._lock:
             return self._manifest
 
+    def set_manifest(self, manifest: RobotManifest) -> None:
+        """Serve ``manifest`` (the launch's ``--manifest`` file) until a fresher record arrives."""
+        with self._lock:
+            self._manifest = manifest
+            self._manifest_rev += 1
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
     def set_estopped(self, value: bool) -> None:
         """Force the e-stop latch flag from an authoritative operator action.
 
