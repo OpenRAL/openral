@@ -122,8 +122,14 @@ class FakeBridge:
         async def main() -> None:
             nonlocal stop
             stop = loop.create_future()
+            # A short close timeout: shutdown must not outwait the join below on a
+            # connection the client side dropped without a close frame.
             async with serve(
-                echo, "127.0.0.1", 0, subprotocols=[Subprotocol("foxglove.websocket.v1")]
+                echo,
+                "127.0.0.1",
+                0,
+                subprotocols=[Subprotocol("foxglove.websocket.v1")],
+                close_timeout=0.5,
             ) as server:
                 self.port = next(iter(server.sockets)).getsockname()[1]
                 ready.set()
