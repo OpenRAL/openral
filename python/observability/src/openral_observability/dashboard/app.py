@@ -15,7 +15,8 @@ One ASGI app, served by up to two listeners (``remote_auth``):
 * ``POST /api/viz/ticket``, ``GET /api/viz/layout.json``, ``WS /ws`` — the 3D view's
   ticketed proxy to ``foxglove_bridge`` on loopback.
 * ``POST /api/transcribe`` — operator speech to text, on the host.
-* ``/v1/traces``, ``/v1/metrics``, ``/v1/logs`` — the OTLP/HTTP receiver, local only.
+* ``/v1/traces``, ``/v1/metrics``, ``/v1/logs`` — the OTLP/HTTP receiver, on the local
+  listener only (loopback or LAN).
 """
 
 from __future__ import annotations
@@ -100,8 +101,10 @@ def _remote_control_enabled() -> bool:
 _MAX_BODY_BYTES = 64 * 1024 * 1024
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-# The only writes a LAN client (non-loopback, local listener) may make: E-STOP, and a
-# ticket to watch the 3D view. Everything else from the LAN is read-only (ADR-0129 §3).
+# The only writes a LAN client (non-loopback, local listener) may make: E-STOP, a ticket
+# to watch the 3D view, and OTLP ingest on /v1/* (a robot computer exporting to a
+# dashboard on the LAN, ADR-0017). The UI and the other actions are read-only from the
+# LAN (ADR-0129 §3); only the remote (tunnel) listener refuses /v1/*.
 _LAN_WRITES = frozenset({"/api/actions/estop", "/api/viz/ticket"})
 _DEFAULT_BRIDGE_URL = "ws://127.0.0.1:8765"
 _WS_POLICY_VIOLATION = 1008
@@ -921,7 +924,7 @@ async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Respo
             "cross-origin request refused"
             if _cross_origin(request)
             else None
-            if loopback or request.url.path in _LAN_WRITES
+            if loopback or request.url.path in _LAN_WRITES or request.url.path.startswith("/v1/")
             else "read-only from the LAN: only E-STOP"
         )
         if refusal is not None:

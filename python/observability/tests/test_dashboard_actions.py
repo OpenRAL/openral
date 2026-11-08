@@ -173,6 +173,7 @@ async def test_lan_client_sees_read_only_plus_estop(monkeypatch: pytest.MonkeyPa
         config = (await lan.get("/api/config")).json()
         actions = (await lan.get("/api/manifest")).json()["actions"]
         prompt = await lan.post("/api/actions/prompt", json={"args": {"text": "go"}})
+        # A robot computer exporting to a dashboard on the LAN (ADR-0017) still can.
         otlp = await lan.post("/v1/logs", content=_manifest_logs(_manifest()))
     assert (local_config["mode"], local_config["role"]) == ("local", "operator")
     assert local_config["robot_id"] == "so101_follower"
@@ -180,7 +181,7 @@ async def test_lan_client_sees_read_only_plus_estop(monkeypatch: pytest.MonkeyPa
     assert config["write_controls"] is True
     assert [a["id"] for a in actions] == ["estop"]
     assert prompt.status_code == 403
-    assert otlp.status_code == 403  # no telemetry spoofing from the LAN
+    assert otlp.status_code == 200
 
 
 # ── E-STOP ────────────────────────────────────────────────────────────────────

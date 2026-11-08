@@ -47,7 +47,7 @@ port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
 | Listener | Client | Mode / role | Allowed |
 |---|---|---|---|
 | `--host`:`--port` (default `127.0.0.1:4318`) | loopback | `local` / operator | everything the manifest offers |
-| same, bound to a LAN address | any other host | `lan` / viewer | GETs, `estop`, `POST /api/viz/ticket` |
+| same, bound to a LAN address | any other host | `lan` / viewer | GETs, `estop`, `POST /api/viz/ticket`, OTLP ingest on `/v1/*` (a robot computer exporting to a LAN dashboard, ADR-0017) |
 | `127.0.0.1:--remote-port` (default 4319 once linked) | the Cloudflare Tunnel | `remote` / the token's role | see below |
 
 `proxy_headers` is off on both, so a forwarded-for header never makes a LAN client

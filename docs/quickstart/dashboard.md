@@ -64,7 +64,7 @@ snapshots (`/api/camera/<sensor>/snapshot.jpg`), never video.
 | Where the request comes from | Mode | Role | May |
 |---|---|---|---|
 | This machine (`127.0.0.1:4318`) | `local` | operator | everything the manifest offers |
-| Another host, with `--host <LAN address>` | `lan` | viewer | read, and press E-STOP |
+| Another host, with `--host <LAN address>` | `lan` | viewer | read, press E-STOP, and export OTLP to `/v1/*` |
 | openral.com, through the tunnel (`127.0.0.1:4319`) | `remote` | the user's role | see below |
 
 Over the tunnel, every request carries a 5-minute token openral.com mints for that user
@@ -122,7 +122,7 @@ robot's cameras is at `/api/viz/layout.json`.
 | `POST /api/viz/ticket` · `GET /api/viz/layout.json` · `WS /ws` | The 3D view |
 | `GET /api/traces` · `GET /api/spans/{trace_id}` | Trace index (`openral replay`) |
 | `POST /api/transcribe` | Speech to text on the host (local Whisper) |
-| `POST /v1/{traces,metrics,logs}` | OTLP/HTTP receiver (this machine only) |
+| `POST /v1/{traces,metrics,logs}` | OTLP/HTTP receiver (local listener, from this machine or the LAN; never through the tunnel) |
 | `GET /healthz` | `{"status": "ok"}` |
 
 `POST /api/actions/{id}` answers `200 {"ok": true}` (`202` with a `goal_id` for a
