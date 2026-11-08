@@ -190,6 +190,12 @@ MuJoCo twin, local RTX 5070 Laptop and q5090, 2026-11-07.
 - **Wiring on real frames:** real dataset observations through the composed `sim run`
   path give 1.3–1.5° joint MAE over the first 10 predicted steps (2.5–5° over 100)
   against the recorded actions, at 4 episodes × 6 ticks.
+- **Benchmark, 30 episodes** (`benchmarks/makermods_metal_pen_holder.yaml`, 10 layouts ×
+  seeds 0–2, 900 steps, q5090, 2026-11-08): **30 `fail`** (`eval/makermods_metal_pen_holder.json`,
+  per-episode grades in `eval/episodes/`). From the start the policy never grasps.
+- **Warm starts** (dataset replay to a handover, then the policy): from H1 (cup lifted)
+  it grasps and lifts the pen by itself but releases it beside the cup; from H2/H3 it
+  keeps both holds and releases the pen outside the cup (`semi`); the arms never converge.
 - **Closed loop, 6 episodes (layouts P00, P03, P05, P00 twice more after the wrist
   round, P03): all `fail`.** The left arm swings to 0.11 m of the cup (finger midpoint to
   the cup's axis) and parks beside it half open; the right arm hovers 0.17–0.20 m above

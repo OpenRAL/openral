@@ -1,0 +1,55 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://huggingface.co/datasets/makermods/pen_holder_bi_20260723_161553",
+    "arxiv": null,
+    "model_variant": "act",
+    "evaluated_by": "OpenRAL:openral benchmark run",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark run --suite makermods_metal_pen_holder --rskill rskills/act-pen-holder-bi",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "MakerMods Metal Station pen holder (10 layouts)",
+    "dataset": null,
+    "protocol": "3 episodes per task, success_key=is_success, max_steps=900",
+    "robot": "makermods_metal_station",
+    "simulator": "MuJoCo (metal_pen_holder sim twin)"
+  },
+  "eval_config": {
+    "n_episodes": 3,
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "success_key": "is_success",
+    "max_steps": 900,
+    "vla_id": "act",
+    "weights_uri": "rskills/act-pen-holder-bi"
+  },
+  "results": {
+    "metal_pen_holder/P00_success_rate": 0.0,
+    "metal_pen_holder/P01_success_rate": 0.0,
+    "metal_pen_holder/P02_success_rate": 0.0,
+    "metal_pen_holder/P03_success_rate": 0.0,
+    "metal_pen_holder/P04_success_rate": 0.0,
+    "metal_pen_holder/P05_success_rate": 0.0,
+    "metal_pen_holder/P06_success_rate": 0.0,
+    "metal_pen_holder/P07_success_rate": 0.0,
+    "metal_pen_holder/P08_success_rate": 0.0,
+    "metal_pen_holder/P09_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 10,
+    "n_episodes_per_task": 3,
+    "n_episodes_total": 30,
+    "mean_step_latency_ms_avg": 7.410194181291714
+  },
+  "baselines": {},
+  "trace_id": null,
+  "grade_counts": {
+    "fail": 30
+  }
+}
