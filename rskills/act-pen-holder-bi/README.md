@@ -222,9 +222,21 @@ a hex-perforated rounded cup, a glossy marker, matched arm colour and finish, de
 drawer unit for the right wrist, image blur, and per-wrist camera extrinsics fitted to the
 real frames (edge correlation left 0.59 → 0.77, right 0.56 → 0.64). Open questions: the
 right wrist sees the pen ~2× larger at mid-reach than the posed twin, and the pen pose that
-fits the wrist frames sits 2–3.5 cm further forward than the top-camera estimate (with it,
-replays catch the pen less often: 2 of 8). `eval/` stays empty; treat any sim score of this
-checkpoint as a sim-to-real-gap measurement, not a capability claim.
+fits the wrist frames sits 2–3.5 cm further forward than the top-camera estimate; the v2
+layouts now use it (pen centre = midpoint of its back-projected ends), with the shelf front
+moved back so the replays still pass. Treat any sim score of this checkpoint as a
+sim-to-real-gap measurement, not a capability claim.
+
+**What is left: the cup in the left wrist.** After the desk, pen-label, pen-size and layout
+fixes the all-sim first-action error is 1.65° at H1 (all real 0.94°) but still 5.0° at H2,
+the moment both arms hold their objects, against 2.5° with the real left wrist. Swapping
+image regions puts almost all of it on the cup: real pixels pasted inside the sim cup's
+outline bring it to 2.8°, while the sim arms and pen pasted into the real frame change
+nothing (2.6°). Four attempts left it unchanged: the cup's fitted in-hand pose
+(+1.7 cm along the gripper), a deeper grasp, lighter or see-through alpha-cut hex holes
+with a glossy white material, and a wider cup. The policy keys on fine detail of the real
+translucent mesh cup that this renderer does not reproduce; that is why, from every warm
+start, the arms never bring the pen over the cup.
 
 ## License
 
