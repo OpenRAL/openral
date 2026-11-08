@@ -195,9 +195,10 @@ The env contract is:
 - `OPENRAL_REASONER_MAX_SKILL_TOOLS` — optional per-tick cap on skill tools.
   The reasoner ranks the palette's skills against the active mission task and
   any pending operator prompts by keyword overlap and offers at most `k` (#494).
-  Inside those `k` slots it keeps, in order: the skill in flight and the task's
-  last dispatched one; the best match for the top pending operator prompt; the
-  best navigate and look-at skill (the workflow's APPROACH / FRAME steps, at most
+  Inside those `k` slots it keeps, in order: the skill in flight; the best match
+  for the top pending operator prompt (with `k` ≥ 2 it is offered on the tick the
+  prompt arrives); the task's last dispatched skill; the best navigate and look-at
+  skill (the workflow's APPROACH / FRAME steps, at most
   `k - 1` of them); then the highest scores. Ties break alphabetically on the id. `cosmos3-edge` defaults to 4 (its tool
   calls run away with 14 near-identical skills; 19/20 valid with 4); every other
   curated model sees the whole palette. `0` removes the cap; any positive value

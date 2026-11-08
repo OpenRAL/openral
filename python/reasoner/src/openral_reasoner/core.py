@@ -264,11 +264,12 @@ class ReasonerCore:
         Ranked against the active mission task plus every pending operator prompt
         (an operator reply mid-mission reaches the LLM through PROMPTS without
         rebuilding the mission, so it must be able to change the offer too). The
-        skill in flight and the active task's last dispatched skill stay offered
-        so the model can wait on or re-dispatch them, and the best match for the
-        highest-priority pending prompt keeps a slot so the operator's ask is not
-        outvoted by a long task text. Without a cap the palette is returned
-        unchanged.
+        skill in flight stays offered so the model can wait on it; next, the best
+        match for the highest-priority pending prompt keeps a slot so the
+        operator's ask is not outvoted by a long task text (with ``k`` >= 2 it is
+        always offered on the tick the prompt arrives, before that tick drains
+        it); then the active task's last dispatched skill, so the model can
+        re-dispatch it. Without a cap the palette is returned unchanged.
 
         The ranking (query, every score, offered and kept ids) is logged as
         ``reasoner.skill_subset`` each time it is recomputed, i.e. whenever the
@@ -280,9 +281,9 @@ class ReasonerCore:
         active = mission.active() if mission is not None else None
         texts = ([active.text] if active is not None else []) + [p.text for p in renderer.prompts]
         query = "\n".join(texts)
-        sticky = tuple(
-            s for s in (renderer.inflight_skill, active.last_rskill_id if active else None) if s
-        )
+        inflight = renderer.inflight_skill
+        recent = active.last_rskill_id if active is not None else None
+        sticky = (inflight or "", recent or "")
         # The buffer is priority-ordered, highest first: [0] is the operator's ask.
         focus = renderer.prompts[0].text if renderer.prompts else ""
         cached = self._subset
@@ -293,7 +294,12 @@ class ReasonerCore:
         ):
             return cached[2].palette
         subset = select_skill_subset(
-            palette, query=query, k=self._max_skill_tools, sticky=sticky, focus=focus
+            palette,
+            query=query,
+            k=self._max_skill_tools,
+            sticky=(inflight,),
+            focus=focus,
+            recent=(recent,),
         )
         if cached is not None and cached[2].palette == subset.palette:
             subset = subset.model_copy(update={"palette": cached[2].palette})

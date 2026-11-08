@@ -472,10 +472,56 @@ def test_id_only_palette_honours_the_focus_prompt() -> None:
     assert len(offered.execute_rskill_ids) == 2
 
 
-def test_sticky_takes_precedence_over_focus_when_it_fills_k(franka_palette: ToolPalette) -> None:
-    """With k=1 the in-flight skill stays; the operator's new ask waits for the next tick."""
+def test_inflight_takes_precedence_over_focus_only_at_k_1(franka_palette: ToolPalette) -> None:
+    """At k=1 the in-flight skill keeps the only slot; the model can still wait on it."""
     subset = select_skill_subset(
         franka_palette, query="move the end-effector", k=1, sticky=(_MANISKILL,), focus="move"
     )
     assert subset.offered == (_MANISKILL,)
     assert subset.focused == ()
+
+
+def test_focus_outranks_the_last_dispatch(franka_palette: ToolPalette) -> None:
+    """In flight, then the operator's ask, then the task's last dispatch."""
+    subset = select_skill_subset(
+        franka_palette,
+        query="pick up the cube",
+        k=2,
+        sticky=(_MANISKILL,),
+        focus="move the end-effector to the pre-grasp pose",
+        recent=(_LOOK_AT,),
+    )
+    assert set(subset.offered) == {_MANISKILL, _EEF_POSE}
+    assert subset.focused == (_EEF_POSE,)
+
+
+def test_operator_ask_is_offered_on_the_tick_that_drains_it(franka_palette: ToolPalette) -> None:
+    """Full tick at k=2 with a skill in flight and a last dispatch: the ask is not deferred.
+
+    A successful tick drains the prompts it rendered, so the operator's ask must be
+    in that tick's palette, not a later one.
+    """
+    from openral_core import WaitTool
+
+    client = FakeToolUseClient(responses=[WaitTool(rationale="skill still running")])
+    core = ReasonerCore(client=client, min_interval_s=0.0, max_skill_tools=2)
+    renderer = _mission_renderer("pick up the cube")
+    mission = renderer.mission
+    assert mission is not None
+    mission.record_attempt(rskill_id=_LOOK_AT)
+    renderer.set_inflight_skill(_MANISKILL)
+    renderer.append_prompt(
+        PromptRecord(
+            text="then move the end-effector to the pre-grasp pose",
+            metadata_json='{"priority": 100}',
+            stamp_ns=0,
+        )
+    )
+    result = core.tick(world_state=None, renderer=renderer, palette=franka_palette, force=True)
+    assert isinstance(result.tool_call, WaitTool)
+    assert client.traces[0].palette.execute_rskill_ids == {_MANISKILL, _EEF_POSE}
+    assert renderer.prompts == ()  # drained: the ask had its tick
+    # The skill ends; the next offer ranks on the task again, keeping the last dispatch.
+    renderer.set_inflight_skill(None)
+    after = core.offered_palette(franka_palette, renderer)
+    assert _LOOK_AT in after.execute_rskill_ids

@@ -239,7 +239,7 @@ class SkillSubset(BaseModel):
         scores: ``(rskill_id, score)`` for every skill in the full palette,
             best first, so a skill left out can be diagnosed from the trace.
         query: The mission text the skills were ranked against.
-        sticky: Ids kept regardless of score (in flight / last dispatched).
+        sticky: Ids kept regardless of score (in flight, then last dispatched).
         focused: The id kept as the best match for the top pending operator prompt.
         support: Ids kept as the best skill of a ``SUPPORT_ACTIONS`` action.
         k: The cap applied.
@@ -293,17 +293,20 @@ def select_skill_subset(
     k: int,
     sticky: Iterable[str | None] = (),
     focus: str = "",
+    recent: Iterable[str | None] = (),
 ) -> SkillSubset:
     """Offer at most ``k`` of the palette's skills, ranked by relevance to ``query``.
 
-    Slots fill in order, all inside ``k``: the ``sticky`` ids (the skill in flight,
-    the last one dispatched for the active task) so the model can wait on or
-    re-dispatch them; then the best match for ``focus`` (the top pending operator
-    prompt, which a long task text would otherwise outvote), if it matches any
-    skill; then the best skill of each ``SUPPORT_ACTIONS`` action
+    Slots fill in order, all inside ``k``: the ``sticky`` ids (the skill in flight)
+    so the model can wait on it; then the best match for ``focus`` (the top pending
+    operator prompt, which a long task text would otherwise outvote), if it matches
+    any skill; then the ``recent`` ids (the last one dispatched for the active task)
+    so the model can re-dispatch it; then the best skill of each ``SUPPORT_ACTIONS`` action
     (navigate, look) the system prompt's workflow uses around any object task, at
     most ``k - 1`` of them; then the highest-scoring skills, ties broken by
-    ``rskill_id``. Sticky ids not in the palette (a skill dropped after a permanent
+    ``rskill_id``. With one skill in flight, any ``k`` >= 2 leaves the focus a slot,
+    so an operator's ask is offered on the tick it arrives (the tick then drains
+    it). Sticky / recent ids not in the palette (a skill dropped after a permanent
     failure) are ignored. The narrowed palette keeps the full palette's skill order
     so the rendered tool list is stable. A palette whose skills carry no metadata
     (only ``execute_rskill_ids``, the single-tool fallback) is capped the same way,
@@ -314,9 +317,11 @@ def select_skill_subset(
         palette: The full capability-matched palette.
         query: Mission text: the active task plus any pending operator prompts.
         k: Maximum number of skill tools to offer; at least 1.
-        sticky: Skill ids to keep regardless of score, in priority order.
-        focus: Text whose best-matching skill keeps a slot (ignored when blank or
-            when it matches no skill).
+        sticky: Skill ids kept first, regardless of score (the skill in flight).
+        focus: Text whose best-matching skill keeps the next slot (ignored when
+            blank or when it matches no skill).
+        recent: Skill ids kept after the focus, regardless of score (the active
+            task's last dispatch).
 
     Returns:
         The ``SkillSubset``.
@@ -357,25 +362,33 @@ def select_skill_subset(
 
     raw = scores_for(query)
     scored = tuple(sorted(raw.items(), key=lambda item: (-item[1], item[0])))
-    kept_sticky: list[str] = []
-    for rskill_id in sticky:
-        if rskill_id and rskill_id in raw and rskill_id not in kept_sticky:
-            kept_sticky.append(rskill_id)
-    kept_sticky = kept_sticky[:k]
+
+    def present(ids: Iterable[str | None]) -> list[str]:
+        out: list[str] = []
+        for rskill_id in ids:
+            if rskill_id and rskill_id in raw and rskill_id not in out:
+                out.append(rskill_id)
+        return out
+
+    kept_sticky = present(sticky)[:k]
     support: list[str] = []
     focused: tuple[str, ...] = ()
     if len(raw) <= k:
         narrowed = palette
+        kept_sticky += [i for i in present(recent) if i not in kept_sticky]
     else:
+        # In flight first: the model must be able to wait on the running skill.
         chosen = list(kept_sticky)
-        # Sticky ids go first and may fill k (k <= 2 with both set): the model must be
-        # able to wait on the skill in flight before it is offered anything new.
         focus_scores = scores_for(focus) if focus.strip() else {}
         if focus_scores and len(chosen) < k:
             best_focus = min(focus_scores, key=lambda i: (-focus_scores[i], i))
             if focus_scores[best_focus] > 0 and best_focus not in chosen:
                 chosen.append(best_focus)
                 focused = (best_focus,)
+        for rskill_id in present(recent):
+            if len(chosen) < k and rskill_id not in chosen:
+                chosen.append(rskill_id)
+                kept_sticky.append(rskill_id)
         free = max(0, min(k - 1, k - len(chosen)))
         support = [i for i in _support_ids(palette.skills, raw, free) if i not in chosen]
         chosen += support
