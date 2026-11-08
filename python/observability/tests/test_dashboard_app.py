@@ -9,7 +9,10 @@ SSE framing on /api/stream — without binding a real socket.
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
+import hashlib
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -424,6 +427,14 @@ async def test_root_serves_the_fallback_page_without_a_ui(monkeypatch: pytest.Mo
     assert resp.status_code == 200
     assert b"api/actions/estop" in resp.content  # the E-STOP button
     assert missing.status_code == 404
+    # A strict CSP: the page's one inline script is allowed by hash, nothing else inline.
+    csp = resp.headers["content-security-policy"]
+    script = re.search(rb"<script>([\s\S]*?)</script>", resp.content)
+    assert script is not None
+    digest = base64.b64encode(hashlib.sha256(script.group(1)).digest()).decode()
+    assert f"script-src 'self' 'sha256-{digest}';" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'self' https://www.openral.com https://dev.openral.com" in csp
 
 
 @pytest.mark.asyncio
@@ -443,6 +454,24 @@ async def test_root_serves_a_local_ui_build(
     assert b"robot ui" in index.content
     assert asset.text == "console.log('ui')"
     assert escape.status_code == 404
+    assert "script-src 'self';" in index.headers["content-security-policy"]
+
+
+@pytest.mark.asyncio
+async def test_viz_serves_lichtblick_under_its_own_csp(tmp_path: Path) -> None:
+    # Lichtblick needs WebAssembly and blob: workers, and has one inline script.
+    inline = "global = globalThis;"
+    (tmp_path / "index.html").write_text(f"<html><script>{inline}</script></html>")
+    app = create_app(TelemetryStore())
+    app.state.viz_dir = tmp_path
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/viz/")
+    csp = resp.headers["content-security-policy"]
+    digest = base64.b64encode(hashlib.sha256(inline.encode()).digest()).decode()
+    assert f"script-src 'self' 'wasm-unsafe-eval' 'sha256-{digest}';" in csp
+    assert "worker-src 'self' blob:" in csp
+    assert "frame-ancestors 'self'" in csp
 
 
 @pytest.mark.asyncio

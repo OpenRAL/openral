@@ -25,6 +25,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import http
 import io
 import ipaddress
@@ -897,13 +898,44 @@ def _without_images(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {**snapshot, "topics": {**topics, "perception": perception}}
 
 
-def _file_in(root: Path, rel: str) -> Response:
-    """``root/rel`` as a file response, refusing anything outside ``root``."""
+# The robot UI and the fallback page: their own scripts only, styles may be inline (React
+# sets element styles), images from blob: snapshots, the API and the /ws bridge on this
+# origin, the 3D view framed from /viz/; framed only here and by openral.com.
+_UI_CSP = (
+    "default-src 'self'; script-src 'self'{inline}; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; "
+    "font-src 'self'; object-src 'none'; base-uri 'self'; "
+    "frame-ancestors 'self' https://www.openral.com https://dev.openral.com"
+)
+# Lichtblick: WebAssembly ('wasm-unsafe-eval'), blob: workers, and the one inline
+# script of its index.html (allowed by hash, as viz.openral.com does); framed by the UI.
+_VIZ_CSP = (
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'{inline}; "
+    "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
+    "img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; "
+    "base-uri 'self'; form-action 'none'; frame-ancestors 'self'"
+)
+_INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>")
+
+
+def _with_csp(target: Path, policy: str) -> FileResponse:
+    """Serve ``target`` under ``policy``, allowing an HTML file's own inline scripts by hash."""
+    inline = ""
+    if target.suffix == ".html":
+        inline = "".join(
+            f" 'sha256-{base64.b64encode(hashlib.sha256(m.encode()).digest()).decode()}'"
+            for m in _INLINE_SCRIPT.findall(target.read_text(encoding="utf-8"))
+        )
+    return FileResponse(target, headers={"Content-Security-Policy": policy.format(inline=inline)})
+
+
+def _file_in(root: Path, rel: str, policy: str) -> Response:
+    """``root/rel`` under CSP ``policy``, refusing anything outside ``root``."""
     base = root.resolve()
     target = (base / (rel or "index.html")).resolve()
     if not target.is_relative_to(base) or not target.is_file():
         return _error(404, "not found")
-    return FileResponse(target)
+    return _with_csp(target, policy)
 
 
 async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -1323,7 +1355,7 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
                 state.viz_dir = await asyncio.to_thread(ensure_viz_assets)
         if state.viz_dir is None:
             return _error(503, "the 3D view could not be downloaded (offline?)")
-        return _file_in(state.viz_dir, path)
+        return _file_in(state.viz_dir, path, _VIZ_CSP)
 
     @app.get("/{path:path}")
     async def get_ui(path: str, request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
@@ -1331,9 +1363,9 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
         root: Path | None = request.app.state.ui_dir
         if root is None:
             if path in ("", "index.html"):
-                return FileResponse(_STATIC_DIR / "fallback.html")
+                return _with_csp(_STATIC_DIR / "fallback.html", _UI_CSP)
             return _error(404, "not found")
-        return _file_in(root, path)
+        return _file_in(root, path, _UI_CSP)
 
     return app
 

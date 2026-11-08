@@ -23,7 +23,10 @@ port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
   (`dashboard/ui_assets.py`: url + sha256 + size, fetched once into
   `$OPENRAL_CACHE_DIR/dashboard_assets/`), or a local build named by
   `OPENRAL_DASHBOARD_UI_DIR`. Without either, `static/fallback.html` shows the
-  robot's status and an E-STOP button.
+  robot's status and an E-STOP button. Both are served under a strict
+  `Content-Security-Policy` (own scripts only, an HTML file's inline scripts by
+  sha256; framed only by this origin and openral.com); `/viz/` gets Lichtblick's own
+  (`'wasm-unsafe-eval'`, blob: workers).
 - **The manifest.** The deploy launch writes one and passes `--manifest <file>`, so a
   deploy without the reasoner has one too; the reasoner, when it runs, emits an
   `openral.robot.manifest` OTLP log record (`producer.emit_robot_manifest`, body =
