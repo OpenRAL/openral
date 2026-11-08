@@ -86,8 +86,10 @@ listener accepts only the origins in `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (defaul
 
 ## Reaching the robot from openral.com
 
-Sign in on openral.com and add the robot (**Dashboard → Robots → Add robot**; a free
-account has one remote robot, a Pro org as many as it needs). It shows a one-time
+Sign in on openral.com and add the robot (**Dashboard → Robots → Add robot**, with its
+name and serial number; a free account has one remote robot, a Pro org as many as it
+needs). The serial travels in the link: every deploy stamps it on its compliance records,
+so a linked robot needs no `OPENRAL_UNIT_SERIAL`. It shows a one-time
 command; run it on the robot, as the user that runs OpenRAL:
 
 ```bash

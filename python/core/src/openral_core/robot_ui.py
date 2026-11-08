@@ -335,6 +335,8 @@ class RobotEnrolment(BaseModel):
         org: The owning org's slug, ``""`` for a free robot.
         iss: The token issuer, ``https://www.openral.com/api/auth``.
         jwks: Where the issuer's signing keys are (``<iss>/jwks``).
+        serial: The unit's serial, entered when the robot was added on openral.com; a
+            deploy uses it when neither ``$OPENRAL_UNIT_SERIAL`` nor the unit file sets one.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -345,6 +347,7 @@ class RobotEnrolment(BaseModel):
     org: str
     iss: str
     jwks: str
+    serial: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._:-]{1,64}$")
 
     @field_validator("aud", "iss")
     @classmethod

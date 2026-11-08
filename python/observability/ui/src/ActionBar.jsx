@@ -93,7 +93,7 @@ function ActionForm({ api, action }) {
 // sticky header so it never scrolls away) and `rest` (whatever the manifest
 // allows this role over this connection).
 export function ActionBar({ api, cfg, actions, latched, part }) {
-  const { shown, hidden } = visibleActions(actions, cfg.role, cfg.mode === "remote");
+  const { shown, hidden, blocked } = visibleActions(actions, cfg.role, cfg.mode === "remote");
   const mine = shown.filter((a) => (a.kind === "estop") === (part === "estop"));
   if (part === "estop") {
     return (
@@ -107,13 +107,21 @@ export function ActionBar({ api, cfg, actions, latched, part }) {
   }
   const notes = [];
   if (hidden.role) notes.push(`Your role (${cfg.role}) can only watch and E-STOP.`);
-  if (hidden.remote) notes.push("This robot allows only E-STOP remotely (OPENRAL_DASHBOARD_REMOTE_CONTROL is off).");
+  if (hidden.remote)
+    notes.push(
+      "Off over the network on this robot: its site turns them on with OPENRAL_DASHBOARD_REMOTE_CONTROL=1. E-STOP always works.",
+    );
   if (cfg.mode === "lan") notes.push("LAN view: full control is on the robot's own screen.");
   if (!mine.length && !notes.length) return null;
   return (
     <section className="actions" aria-label="Robot actions">
       {mine.map((a) => (
         <ActionForm key={a.id} api={api} action={a} />
+      ))}
+      {blocked.map((a) => (
+        <button key={a.id} type="button" className="btn" disabled title="Off over the network on this robot">
+          {a.label || a.id}
+        </button>
       ))}
       {notes.length > 0 && <p className="actions-note">{notes.join(" ")}</p>}
     </section>

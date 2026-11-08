@@ -10,21 +10,26 @@ export const BUILTIN_ESTOP = { id: "estop", kind: "estop", label: "E-STOP", min_
 
 // Actions this session may use, E-STOP first. E-STOP is always offered, to
 // every role and over every connection (ADR-0129 §6). `hidden` counts what
-// was filtered so the UI can say why controls are missing.
+// was filtered so the UI can say why controls are missing; `blocked` lists the
+// ones the role allows but the robot refuses over the network, shown disabled.
 export function visibleActions(actions, role, remote) {
   const have = ROLE_RANK[role] ?? 0;
   const shown = [];
+  const blocked = [];
   const hidden = { role: 0, remote: 0 };
   for (const a of Array.isArray(actions) ? actions : []) {
     if (!a || typeof a.id !== "string") continue;
     if (a.kind === "estop") shown.push(a);
     else if (have < (ROLE_RANK[a.min_role] ?? Infinity)) hidden.role++;
-    else if (remote && a.remote !== true) hidden.remote++;
+    else if (remote && a.remote !== true) {
+      hidden.remote++;
+      blocked.push(a);
+    }
     else shown.push(a);
   }
   if (!shown.some((a) => a.kind === "estop")) shown.push(BUILTIN_ESTOP);
   shown.sort((a, b) => (b.kind === "estop") - (a.kind === "estop"));
-  return { shown, hidden };
+  return { shown, hidden, blocked };
 }
 
 const TYPES = ["string", "number", "integer", "boolean", "object", "array"];

@@ -26,6 +26,8 @@ test("remote drops actions the robot doesn't allow over the tunnel", () => {
   const r = visibleActions(A, "admin", true);
   assert.deepEqual(ids(r), ["estop", "estop_reset", "skill:x"]);
   assert.deepEqual(r.hidden, { role: 1, remote: 1 });
+  assert.equal(r.blocked.length, 1); // shown disabled, with the reason
+  assert.ok(r.blocked.every((a) => a.remote !== true && a.kind !== "estop"));
 });
 
 test("E-STOP survives an unknown role, a malformed list, and a manifest without one", () => {

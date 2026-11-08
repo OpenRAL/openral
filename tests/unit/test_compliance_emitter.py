@@ -99,10 +99,13 @@ def test_images_stay_home_without_consent(monkeypatch: pytest.MonkeyPatch) -> No
     assert images_may_leave_host("https://ingest.example.eu")
 
 
-def test_unit_identity_from_the_unit_file_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unit_identity_from_the_unit_file_and_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Env wins over the unit file; a real deploy without a serial is refused."""
     for var in ("OPENRAL_ROBOT_UNIT", "OPENRAL_UNIT_SERIAL", "OPENRAL_ORG_ID", "OPENRAL_SITE_ID"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(tmp_path / "not-linked.json"))
     so101 = _REPO / "robots" / "so101_follower" / "robot.yaml"
     franka = _REPO / "robots" / "franka_panda" / "robot.yaml"
     with pytest.raises(ROSConfigError, match="OPENRAL_UNIT_SERIAL"):
@@ -115,6 +118,26 @@ def test_unit_identity_from_the_unit_file_and_env(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("OPENRAL_UNIT_SERIAL", "has,comma")
     with pytest.raises(ROSConfigError, match="OTEL_RESOURCE_ATTRIBUTES"):
         resolve_unit_identity(so101, "bench_laptop", required=False)
+
+
+def test_a_linked_robot_takes_its_serial_and_org_from_the_enrolment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`openral robot link` carries the serial entered on openral.com; env still wins."""
+    for var in ("OPENRAL_ROBOT_UNIT", "OPENRAL_UNIT_SERIAL", "OPENRAL_ORG_ID", "OPENRAL_SITE_ID"):
+        monkeypatch.delenv(var, raising=False)
+    enrolment = tmp_path / "robot.json"
+    enrolment.write_text(
+        '{"v": 1, "robot": "k3x9", "aud": "https://r-k3x9.openral.com", "org": "acme",'
+        ' "iss": "https://www.openral.com/api/auth",'
+        ' "jwks": "https://www.openral.com/api/auth/jwks", "serial": "SO101-0007"}'
+    )
+    monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(enrolment))
+    franka = _REPO / "robots" / "franka_panda" / "robot.yaml"
+    identity = resolve_unit_identity(franka, None, required=True)
+    assert (identity.serial, identity.org_id) == ("SO101-0007", "acme")
+    monkeypatch.setenv("OPENRAL_UNIT_SERIAL", "SO101-0042")
+    assert resolve_unit_identity(franka, None, required=True).serial == "SO101-0042"
 
 
 def test_a_malformed_wire_trace_costs_the_link_not_the_record(

@@ -242,6 +242,7 @@ _LINK = {
     "org": "acme",
     "iss": "https://www.openral.com/api/auth",
     "jwks": "https://www.openral.com/api/auth/jwks",
+    "serial": "SO101-0007",
     "tunnel": "eyJhIjoiYWNjb3VudCJ9",
 }
 
@@ -268,6 +269,7 @@ def test_link_code_parses(pad: bool) -> None:
         _code({**_LINK, "aud": "http://r-k3x9.openral.com"}),
         _code({**_LINK, "jwks": "http://www.openral.com/api/auth/jwks"}),
         _code({**_LINK, "extra": "field"}),
+        _code({**_LINK, "serial": "has,comma"}),
     ],
 )
 def test_bad_link_codes_are_refused(bad: str) -> None:
