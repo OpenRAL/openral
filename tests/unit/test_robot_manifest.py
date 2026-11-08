@@ -243,6 +243,7 @@ _LINK = {
     "iss": "https://www.openral.com/api/auth",
     "jwks": "https://www.openral.com/api/auth/jwks",
     "serial": "SO101-0007",
+    "secret": "ors_0123abcd",
     "tunnel": "eyJhIjoiYWNjb3VudCJ9",
 }
 
@@ -254,9 +255,11 @@ def _code(payload: dict[str, Any], *, pad: bool = False) -> str:
 
 @pytest.mark.parametrize("pad", [False, True])
 def test_link_code_parses(pad: bool) -> None:
-    enrolment, tunnel = parse_robot_link_code(_code(_LINK, pad=pad))
-    assert tunnel == _LINK["tunnel"]
-    assert enrolment.model_dump() == {k: v for k, v in _LINK.items() if k != "tunnel"}
+    enrolment, tunnel, secret = parse_robot_link_code(_code(_LINK, pad=pad))
+    assert (tunnel, secret) == (_LINK["tunnel"], _LINK["secret"])
+    assert enrolment.model_dump() == {
+        k: v for k, v in _LINK.items() if k not in ("tunnel", "secret")
+    }
 
 
 @pytest.mark.parametrize(
@@ -270,6 +273,7 @@ def test_link_code_parses(pad: bool) -> None:
         _code({**_LINK, "jwks": "http://www.openral.com/api/auth/jwks"}),
         _code({**_LINK, "extra": "field"}),
         _code({**_LINK, "serial": "has,comma"}),
+        _code({**_LINK, "secret": "not-a-robot-secret"}),
     ],
 )
 def test_bad_link_codes_are_refused(bad: str) -> None:

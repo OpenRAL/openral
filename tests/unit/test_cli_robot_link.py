@@ -14,6 +14,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_cli.main import app
@@ -28,6 +29,8 @@ _LINK: dict[str, object] = {
     "org": "",
     "iss": "https://www.openral.com/api/auth",
     "jwks": "https://www.openral.com/api/auth/jwks",
+    "serial": "SO101-0007",
+    "secret": "ors_r0b0tsecret",
     "tunnel": _TUNNEL,
 }
 _CODE = base64.urlsafe_b64encode(json.dumps(_LINK).encode()).decode().rstrip("=")
@@ -83,6 +86,10 @@ def test_link_writes_the_enrolment_and_keeps_the_token_apart(
     assert stat.S_IMODE(enrolment.stat().st_mode) == 0o600
     stored = json.loads(enrolment.read_text())
     assert "tunnel" not in stored and _TUNNEL not in enrolment.read_text()
+    assert "ors_" not in enrolment.read_text()  # the robot secret lives in its own file
+    secret = enrolment.with_name("robot.secret")
+    assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+    assert secret.read_text() == "ors_r0b0tsecret\n"
     assert RobotEnrolment.model_validate(stored).robot == "k3x9"
     env_file = enrolment.with_name("tunnel.env")
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
@@ -158,3 +165,52 @@ def test_the_dashboard_leaves_the_tunnel_to_a_running_service(
     assert CliRunner().invoke(app, ["robot", "link", _CODE]).exit_code == 0
     assert start_tunnel(TUNNEL_PORT) is None  # the service holds the tunnel
     assert not log.exists()  # no second cloudflared started
+
+
+class _Resp:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self) -> _Resp:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
+def test_deploy_start_applies_account_settings_env_first_cache_offline(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The site's settings fill the env (a set variable wins); offline, the 0600 cache does."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    for var in ("OPENRAL_REASONER_API_KEY", "OPENRAL_REASONER_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "local-wins")
+    seen: list[tuple[str, str]] = []
+
+    def site(req: Any, timeout: float) -> _Resp:  # the openral.com boundary
+        seen.append((req.full_url, req.headers["Authorization"]))
+        body = {"settings": {"OPENRAL_REASONER_API_KEY": "sk-1", "OPENRAL_REASONER_MODEL": "m"}}
+        return _Resp(json.dumps(body).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", site)
+    assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_API_KEY"]
+    assert seen == [("https://www.openral.com/api/robot/settings", "Bearer ors_r0b0tsecret")]
+    assert os.environ["OPENRAL_REASONER_API_KEY"] == "sk-1"
+    assert os.environ["OPENRAL_REASONER_MODEL"] == "local-wins"
+    cache = enrolment.with_name("settings.json")
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o600
+
+    def offline(req: Any, timeout: float) -> _Resp:
+        raise OSError("no route to host")
+
+    monkeypatch.setattr("urllib.request.urlopen", offline)
+    monkeypatch.delenv("OPENRAL_REASONER_API_KEY")
+    assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_API_KEY"]
+    assert os.environ["OPENRAL_REASONER_API_KEY"] == "sk-1"

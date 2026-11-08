@@ -27,8 +27,10 @@ a ``_joint``-suffix strip.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
@@ -309,6 +311,77 @@ def _with_provenance(xml: str, *, id: str, src: str) -> str:
     return header + xml
 
 
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` as mode 0600 (parent 0700), never through a symlink."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)  # an existing file keeps its old mode through O_CREAT
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _secret_path() -> Path:
+    from openral_core import enrolment_path
+
+    return enrolment_path().with_name("robot.secret")
+
+
+def _settings_cache() -> Path:
+    from openral_core import enrolment_path
+
+    return enrolment_path().with_name("settings.json")
+
+
+def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
+    """Put this robot's openral.com account settings into ``os.environ`` (ADR-0129).
+
+    A linked robot (``openral robot link``) fetches its org's (or owner's) settings,
+    e.g. ``OPENRAL_REASONER_API_KEY``, with its own credential from
+    ``<site>/api/robot/settings``, and caches them (0600) for offline starts. A variable
+    already in the environment wins. Returns the names it set; never raises.
+    """
+    from urllib.parse import urlsplit
+
+    from openral_core import enrolment_path
+    from openral_observability.dashboard.remote_auth import load_enrolment
+
+    secret_file = _secret_path()
+    try:
+        enrolment = load_enrolment(enrolment_path())
+    except ValueError as exc:
+        echo(f"account settings: {exc}")
+        return []
+    if enrolment is None or not secret_file.is_file():
+        return []
+    site = "{0.scheme}://{0.netloc}".format(urlsplit(enrolment.iss))
+    request = urllib.request.Request(
+        f"{site}/api/robot/settings",
+        headers={"Authorization": f"Bearer {secret_file.read_text(encoding='utf-8').strip()}"},
+    )
+    try:
+        # The enrolled site's fixed https URL, not user input.
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            settings = json.loads(resp.read())["settings"]
+        _write_private(_settings_cache(), json.dumps(settings) + "\n")
+    except (OSError, ValueError, KeyError) as exc:
+        cache = _settings_cache()
+        if not cache.is_file():
+            echo(f"account settings: {site} unreachable ({exc}); none cached")
+            return []
+        echo(f"account settings: {site} unreachable ({exc}); using the cached ones")
+        settings = json.loads(cache.read_text(encoding="utf-8"))
+    applied = [
+        k
+        for k, v in settings.items()
+        if k.startswith("OPENRAL_") and isinstance(v, str) and k not in os.environ
+    ]
+    for name in applied:
+        os.environ[name] = settings[name]
+    if applied:
+        echo(f"account settings from {site}: {', '.join(sorted(applied))}")
+    return applied
+
+
 def link_robot(code: str, *, echo: Callable[[str], None], service: bool = True) -> Path:
     """``openral robot link <code>``: enrol this robot with openral.com (ADR-0129 Interface B).
 
@@ -334,14 +407,12 @@ def link_robot(code: str, *, echo: Callable[[str], None], service: bool = True) 
         write_tunnel_token,
     )
 
-    enrolment, tunnel = parse_robot_link_code(code)
+    enrolment, tunnel, secret = parse_robot_link_code(code)
     path = enrolment_path()
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    os.fchmod(fd, 0o600)  # an existing file keeps its old mode through O_CREAT
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(enrolment.model_dump_json(indent=2) + "\n")
+    _write_private(path, enrolment.model_dump_json(indent=2) + "\n")
     write_tunnel_token(tunnel)
+    if secret is not None:
+        _write_private(_secret_path(), secret + "\n")
     echo(f"Linked robot {enrolment.robot} ({enrolment.aud}); enrolment in {path}")
     exe = ensure_cloudflared()
     if exe is None:

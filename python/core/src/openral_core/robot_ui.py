@@ -366,11 +366,13 @@ def enrolment_path() -> Path:
     return Path(env) if env else Path.home() / ".config" / "openral" / "robot.json"
 
 
-def parse_robot_link_code(code: str) -> tuple[RobotEnrolment, str]:
-    """Decode an ``openral robot link`` code into the enrolment and the tunnel token.
+def parse_robot_link_code(code: str) -> tuple[RobotEnrolment, str, str | None]:
+    """Decode an ``openral robot link`` code into the enrolment, tunnel token and robot secret.
 
     The code is base64url (padding optional) of
-    ``{"v", "robot", "aud", "org", "iss", "jwks", "tunnel"}``.
+    ``{"v", "robot", "aud", "org", "iss", "jwks", "serial", "secret", "tunnel"}``.
+    ``secret`` is the robot's own credential for its openral.com account settings
+    (``ors_…``); codes from before it carry none.
 
     Raises:
         ROSConfigError: Not base64url JSON, a field missing or malformed, or no tunnel token.
@@ -399,7 +401,10 @@ def parse_robot_link_code(code: str) -> tuple[RobotEnrolment, str]:
     tunnel = raw.pop("tunnel", None)
     if not isinstance(tunnel, str) or not tunnel:
         raise ROSConfigError("the robot link code carries no tunnel token")
+    secret = raw.pop("secret", None)
+    if secret is not None and not (isinstance(secret, str) and secret.startswith("ors_")):
+        raise ROSConfigError("the robot link code carries a malformed robot secret")
     try:
-        return RobotEnrolment.model_validate(raw), tunnel
+        return RobotEnrolment.model_validate(raw), tunnel, secret
     except ValidationError as exc:
         raise ROSConfigError(f"invalid robot link code: {exc}") from exc

@@ -113,6 +113,13 @@ the dashboard is down the tunnel stays up and openral.com shows the robot as unr
 The listener answers only `/api/*` and `/ws`, with a valid token; the OTLP receiver is
 never reachable through it.
 
+**Account settings.** Settings on openral.com (**Account → Settings**: the reasoner's API
+key, model, endpoint and dialect, set by an org admin, or by you on a free account) reach
+the robot at every deploy start: the link stored the robot's own credential
+(`robot.secret`, 0600), the deploy fetches its settings with it, caches them
+(`settings.json`, 0600) for offline starts, and puts them in the environment. A variable
+already set on the robot wins.
+
 Manage the service like any user unit:
 
 ```bash
@@ -121,7 +128,7 @@ systemctl --user status openral-tunnel.service
 
 To unlink, remove the robot on openral.com (its tunnel is deleted there), then
 `systemctl --user disable --now openral-tunnel.service` and delete
-`~/.config/openral/robot.json` and `tunnel.env`.
+`~/.config/openral/robot.json`, `tunnel.env`, `robot.secret` and `settings.json`.
 
 ## The 3D view
 
