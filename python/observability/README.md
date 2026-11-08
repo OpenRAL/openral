@@ -26,7 +26,7 @@ port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
   robot's status and an E-STOP button. Both are served under a strict
   `Content-Security-Policy` (own scripts only, an HTML file's inline scripts by
   sha256; framed only by this origin and openral.com); `/viz/` gets Lichtblick's own
-  (`'wasm-unsafe-eval'`, blob: workers).
+  (`'unsafe-eval'`, `'wasm-unsafe-eval'`, blob: workers).
 - **The manifest.** The deploy launch writes one and passes `--manifest <file>`, so a
   deploy without the reasoner has one too; the reasoner, when it runs, emits an
   `openral.robot.manifest` OTLP log record (`producer.emit_robot_manifest`, body =
@@ -87,9 +87,11 @@ plus E-STOP, and the removal of free-form parameter writes (ADR-0129 §6).
 source noted in `NOTICE.txt` beside it), fetched on first use without its source maps.
 It reaches `foxglove_bridge` (loopback, read-only) through `WS /ws`, a proxy that pings
 every 30 s and checks `Origin` on upgrade. Remote and LAN clients need a ticket from
-`POST /api/viz/ticket` (256-bit, bound to the caller, reusable for 15 minutes; it also
-opens `GET /api/viz/layout.json`, built by `openral_foxglove_bringup.layout`). The
-bridge port is `--bridge-port` (default 8765).
+`POST /api/viz/ticket` (256-bit, bound to the caller, reusable for 15 minutes). The
+`/viz/` index.html carries this robot's layout (`openral_foxglove_bringup.layout`) in
+Lichtblick's default-layout slot, so it opens on the robot's cameras and base frame; its
+CSP allows `'unsafe-eval'` (Lichtblick v1.30 will not start without `new Function`) and
+the inline script by hash. The bridge port is `--bridge-port` (default 8765).
 
 ### Speech to text
 

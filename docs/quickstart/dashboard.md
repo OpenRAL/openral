@@ -105,8 +105,8 @@ The dashboard serves a pinned [Lichtblick](https://github.com/Lichtblick-Suite/l
 web build (MPL-2.0, the open Foxglove Studio fork) at `/viz/`, downloaded on first use.
 It connects to `foxglove_bridge` through the dashboard's `/ws` proxy — the bridge itself
 stays on loopback and read-only. Remote and LAN viewers need a ticket from
-`POST /api/viz/ticket` (valid 15 minutes, reusable for reconnects); the layout for the
-robot's cameras is at `/api/viz/layout.json`.
+`POST /api/viz/ticket` (valid 15 minutes, reusable for reconnects). `/viz/` opens with a
+layout for this robot's cameras and base frame already in place.
 
 ## Endpoints
 
@@ -120,7 +120,7 @@ robot's cameras is at `/api/viz/layout.json`.
 | `GET /api/stream[?images=0]` | Server-Sent Events; `images=0` drops camera thumbnails |
 | `GET /api/camera/{sensor}/snapshot.jpg` | Latest frame of one camera |
 | `POST /api/actions/{id}` | Run an action: body `{"args": {...}}` |
-| `POST /api/viz/ticket` · `GET /api/viz/layout.json` · `WS /ws` | The 3D view |
+| `POST /api/viz/ticket` · `WS /ws` | The 3D view's ticket and bridge proxy |
 | `GET /api/traces` · `GET /api/spans/{trace_id}` | Trace index (`openral replay`) |
 | `POST /api/transcribe` | Speech to text on the host (local Whisper) |
 | `POST /v1/{traces,metrics,logs}` | OTLP/HTTP receiver (local listener, from this machine or the LAN; never through the tunnel) |

@@ -237,7 +237,7 @@ class _Ticket:
 
 
 class VizTickets:
-    """Random 256-bit tickets for the 3D view (``/ws``, ``/api/viz/layout.json``).
+    """Random 256-bit tickets for the 3D view (``/ws``).
 
     A WebSocket and an iframe URL cannot carry a bearer token, and a JWT never goes in
     a URL (RFC 9700 §4.3.2), so the robot issues its own: bound to the caller's

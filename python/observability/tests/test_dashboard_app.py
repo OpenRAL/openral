@@ -459,7 +459,8 @@ async def test_root_serves_a_local_ui_build(
 
 @pytest.mark.asyncio
 async def test_viz_serves_lichtblick_under_its_own_csp(tmp_path: Path) -> None:
-    # Lichtblick needs WebAssembly and blob: workers, and has one inline script.
+    # Lichtblick needs eval (it will not start without `new Function`), WebAssembly and
+    # blob: workers, and has one inline script. No manifest yet: the slot stays empty.
     inline = "global = globalThis;"
     (tmp_path / "index.html").write_text(f"<html><script>{inline}</script></html>")
     app = create_app(TelemetryStore())
@@ -469,7 +470,7 @@ async def test_viz_serves_lichtblick_under_its_own_csp(tmp_path: Path) -> None:
         resp = await client.get("/viz/")
     csp = resp.headers["content-security-policy"]
     digest = base64.b64encode(hashlib.sha256(inline.encode()).digest()).decode()
-    assert f"script-src 'self' 'wasm-unsafe-eval' 'sha256-{digest}';" in csp
+    assert f"script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' 'sha256-{digest}';" in csp
     assert "worker-src 'self' blob:" in csp
     assert "frame-ancestors 'self'" in csp
 

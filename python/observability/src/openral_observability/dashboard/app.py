@@ -12,7 +12,7 @@ One ASGI app, served by up to two listeners (``remote_auth``):
   ``prompt``, ``skill:<rskill id>``. Role, LAN and remote-control rules are applied
   here, every action is announced on ``/openral/operator_action`` for the compliance
   recorder, and the safety kernel still disposes all motion.
-* ``POST /api/viz/ticket``, ``GET /api/viz/layout.json``, ``WS /ws`` — the 3D view's
+* ``POST /api/viz/ticket``, ``WS /ws`` — the 3D view's
   ticketed proxy to ``foxglove_bridge`` on loopback.
 * ``POST /api/transcribe`` — operator speech to text, on the host.
 * ``/v1/traces``, ``/v1/metrics``, ``/v1/logs`` — the OTLP/HTTP receiver, on the local
@@ -27,6 +27,7 @@ import binascii
 import contextlib
 import hashlib
 import http
+import importlib
 import io
 import ipaddress
 import itertools
@@ -45,7 +46,7 @@ from urllib.parse import urlsplit
 import jsonschema
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from google.protobuf.message import DecodeError
 from openral_core import (
     ACTOR_KEY_ENV,
@@ -907,10 +908,11 @@ _UI_CSP = (
     "font-src 'self'; object-src 'none'; base-uri 'self'; "
     "frame-ancestors 'self' https://www.openral.com https://dev.openral.com"
 )
-# Lichtblick: WebAssembly ('wasm-unsafe-eval'), blob: workers, and the one inline
-# script of its index.html (allowed by hash, as viz.openral.com does); framed by the UI.
+# Lichtblick: WebAssembly ('wasm-unsafe-eval'), eval ('unsafe-eval': v1.30 refuses to start
+# without `new Function` — canRenderApp.ts — and protobufjs decodes by generated code), blob:
+# workers, and the one inline script of its index.html, allowed by hash; framed by the UI.
 _VIZ_CSP = (
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'{inline}; "
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'{inline}; "
     "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
     "img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; "
     "base-uri 'self'; form-action 'none'; frame-ancestors 'self'"
@@ -918,15 +920,57 @@ _VIZ_CSP = (
 _INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>")
 
 
+# Lichtblick's index.html default-layout slot (its Docker entrypoint fills the same one).
+_LAYOUT_PLACEHOLDER = "/*LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACEHOLDER*/"
+
+
+def _csp(policy: str, html: str = "") -> str:
+    """``policy`` with ``html``'s inline scripts allowed by sha256."""
+    inline = "".join(
+        f" 'sha256-{base64.b64encode(hashlib.sha256(m.encode()).digest()).decode()}'"
+        for m in _INLINE_SCRIPT.findall(html)
+    )
+    return policy.format(inline=inline)
+
+
 def _with_csp(target: Path, policy: str) -> FileResponse:
     """Serve ``target`` under ``policy``, allowing an HTML file's own inline scripts by hash."""
-    inline = ""
-    if target.suffix == ".html":
-        inline = "".join(
-            f" 'sha256-{base64.b64encode(hashlib.sha256(m.encode()).digest()).decode()}'"
-            for m in _INLINE_SCRIPT.findall(target.read_text(encoding="utf-8"))
-        )
-    return FileResponse(target, headers={"Content-Security-Policy": policy.format(inline=inline)})
+    html = target.read_text(encoding="utf-8") if target.suffix == ".html" else ""
+    return FileResponse(target, headers={"Content-Security-Policy": _csp(policy, html)})
+
+
+def _robot_layout(manifest: RobotManifest | None) -> dict[str, Any] | None:
+    """This robot's Lichtblick layout (its cameras, its base frame), or ``None`` without one.
+
+    Built by the generator the deploy launch uses for Foxglove Studio, a colcon package
+    importable once the workspace overlay is sourced.
+    """
+    if manifest is None:
+        return None
+    try:
+        layout_mod = importlib.import_module("openral_foxglove_bringup.layout")
+    except ImportError:
+        _logger.warning("dashboard.viz_layout_unavailable", reason="source the workspace overlay")
+        return None
+    cameras = [p.source for p in manifest.panels if p.type == "camera" and p.source]
+    layout: dict[str, Any] = layout_mod.build_layout(cameras, follow_frame=manifest.base_frame)
+    return layout
+
+
+def _viz_index(root: Path, manifest: RobotManifest | None) -> Response:
+    """Lichtblick's index.html with this robot's layout in its default-layout slot.
+
+    The layout rides in the page, not a ``layoutUrl``: one request, and the CSP's hash
+    covers the inline script as served. ``<`` is escaped so no string can end the script.
+    """
+    html = (root / "index.html").read_text(encoding="utf-8")
+    layout = _robot_layout(manifest)
+    if layout is not None:
+        html = html.replace(_LAYOUT_PLACEHOLDER, json.dumps(layout).replace("<", "\\u003c"), 1)
+    return HTMLResponse(
+        html,
+        headers={"Content-Security-Policy": _csp(_VIZ_CSP, html), "Cache-Control": "no-store"},
+    )
 
 
 def _file_in(root: Path, rel: str, policy: str) -> Response:
@@ -997,17 +1041,8 @@ async def _gate_remote(
     path = request.url.path
     if path == "/v1" or path.startswith("/v1/"):
         return _error(404, "not found", cors)
-    tickets: VizTickets = request.app.state.viz_tickets
     verifier: TokenVerifier | None = request.app.state.verifier
     token = bearer(request.headers.get("authorization"))
-    # Lichtblick fetches its layout by URL, so a viz ticket stands in for the token.
-    if (
-        token is None
-        and path == "/api/viz/layout.json"
-        and tickets.expires_at(request.query_params.get("ticket")) is not None
-    ):
-        request.state.principal = Principal(mode="remote", role="viewer")
-        return _with_headers(await call_next(request), cors)
     if verifier is None:
         result: Principal | str = "this robot is not enrolled"
     elif token is None:
@@ -1293,30 +1328,6 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
         ticket = tickets.issue(request.state.principal)
         return JSONResponse({"ticket": ticket, "expires_in": VizTickets.TTL_S})
 
-    @app.get("/api/viz/layout.json")
-    async def get_viz_layout(  # pyright: ignore[reportUnusedFunction]
-        request: Request, ticket: str | None = None
-    ) -> JSONResponse:
-        # The Lichtblick layout for this robot's cameras and base frame, from the
-        # same generator the deploy launch writes for Foxglove Studio.
-        principal: Principal = request.state.principal
-        tickets: VizTickets = request.app.state.viz_tickets
-        if principal.mode == "lan" and tickets.expires_at(ticket) is None:
-            return _error(401, "a viz ticket is required off this machine")
-        manifest: RobotManifest | None = request.app.state.store.manifest()
-        cameras = [p.source for p in manifest.panels if p.source] if manifest else []
-        if manifest is None or not cameras:
-            return _error(404, "no robot manifest with cameras yet")
-        try:
-            # The colcon package, importable once the workspace overlay is sourced.
-            import importlib
-
-            layout_mod = importlib.import_module("openral_foxglove_bringup.layout")
-        except ImportError:
-            return _error(503, "openral_foxglove_bringup is not installed (source the workspace)")
-        layout: dict[str, Any] = layout_mod.build_layout(cameras, follow_frame=manifest.base_frame)
-        return JSONResponse(layout)
-
     @app.websocket("/ws")
     async def ws_proxy(  # pyright: ignore[reportUnusedFunction]
         websocket: WebSocket, ticket: str | None = None
@@ -1355,6 +1366,8 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
                 state.viz_dir = await asyncio.to_thread(ensure_viz_assets)
         if state.viz_dir is None:
             return _error(503, "the 3D view could not be downloaded (offline?)")
+        if path in ("", "index.html"):
+            return _viz_index(state.viz_dir, state.store.manifest())
         return _file_in(state.viz_dir, path, _VIZ_CSP)
 
     @app.get("/{path:path}")

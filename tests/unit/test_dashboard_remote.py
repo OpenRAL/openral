@@ -361,31 +361,44 @@ async def test_stream_ends_at_token_expiry(issuer: FakeIssuer, tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_viz_ticket_opens_the_layout_without_a_bearer(
-    issuer: FakeIssuer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.syspath_prepend(str(_REPO / "packages" / "openral_foxglove_bringup"))
-    app = create_app(_store_with_manifest(), verifier=_verifier(issuer, tmp_path))
+async def test_viz_ticket_is_256_bits_and_needs_a_token(issuer: FakeIssuer, tmp_path: Path) -> None:
+    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
     async with _remote(app) as client:
-        issued = (
-            await client.post("/api/viz/ticket", headers=_auth(issuer.mint(role="viewer")))
-        ).json()
-        layout = await client.get(
-            f"/api/viz/layout.json?ticket={issued['ticket']}",
-            headers={"Origin": "https://viz.openral.com"},
-        )
-        forged = await client.get("/api/viz/layout.json?ticket=forged")
-    assert issued["expires_in"] == 900
-    assert len(base64.urlsafe_b64decode(issued["ticket"] + "=")) == 32  # 256 bits
-    assert layout.status_code == 200, layout.text
+        issued = await client.post("/api/viz/ticket", headers=_auth(issuer.mint(role="viewer")))
+        anonymous = await client.post("/api/viz/ticket", headers={"Origin": _SITE})
+    assert issued.json()["expires_in"] == 900
+    assert len(base64.urlsafe_b64decode(issued.json()["ticket"] + "=")) == 32  # 256 bits
+    assert anonymous.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_viz_index_carries_the_robot_layout_under_its_csp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Lichtblick's default-layout slot, as its index.html ships it (no layoutUrl).
+    monkeypatch.syspath_prepend(str(_REPO / "packages" / "openral_foxglove_bringup"))
+    slot = "globalThis.L = [/*LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACEHOLDER*/][0];"
+    (tmp_path / "index.html").write_text(f"<html><script>{slot}</script></html>")
+    app = create_app(_store_with_manifest())
+    app.state.viz_dir = tmp_path
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:4318") as c:
+        resp = await c.get("/viz/")
+        gone = await c.get("/api/viz/layout.json")
+    script = resp.text.split("<script>")[1].split("</script>")[0]
+    layout = json.loads(script.removeprefix("globalThis.L = [").removesuffix("][0];"))
     image_topics = {
         cfg["imageMode"]["imageTopic"]
-        for name, cfg in layout.json()["configById"].items()
+        for name, cfg in layout["configById"].items()
         if name.startswith("Image!")
     }
     assert image_topics == {"/openral/cameras/top/image", "/openral/cameras/wrist/image"}
-    assert layout.json()["configById"]["3D!scene"]["followTf"] == "base"
-    assert forged.status_code == 401
+    assert layout["configById"]["3D!scene"]["followTf"] == "base"
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    csp = resp.headers["content-security-policy"]
+    assert f"'unsafe-eval' 'sha256-{digest}';" in csp  # the hash is of the page as served
+    assert resp.headers["cache-control"] == "no-store"
+    assert gone.status_code == 404
 
 
 def _ticket(client: TestClient, headers: dict[str, str] | None = None) -> str:
