@@ -27,8 +27,11 @@ a ``_joint``-suffix strip.
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Sequence
+import shutil
+import subprocess
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -306,3 +309,47 @@ def _with_provenance(xml: str, *, id: str, src: str) -> str:
         body = xml[decl_match.end() :]
         return '<?xml version="1.0" encoding="utf-8"?>\n' + header + body
     return header + xml
+
+
+_CLOUDFLARED_INSTALL = (
+    "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+)
+
+
+def link_robot(code: str, *, echo: Callable[[str], None]) -> Path:
+    """``openral robot link <code>``: enrol this robot with openral.com (ADR-0129 Interface B).
+
+    Writes everything in the link code except the tunnel token to the enrolment file
+    (``openral_core.enrolment_path()``, mode 0600), which ``openral dashboard`` reads
+    to open its remote listener; then installs the robot's Cloudflare Tunnel with
+    ``cloudflared service install <token>``, or says how to when cloudflared is
+    missing or the install fails (it needs root).
+
+    Returns:
+        The enrolment file written.
+
+    Raises:
+        ROSConfigError: ``code`` is not a valid link code.
+    """
+    from openral_core import enrolment_path, parse_robot_link_code
+
+    enrolment, tunnel = parse_robot_link_code(code)
+    path = enrolment_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)  # an existing file keeps its old mode through O_CREAT
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(enrolment.model_dump_json(indent=2) + "\n")
+    echo(f"Linked robot {enrolment.robot} ({enrolment.aud}); enrolment in {path}")
+
+    install = f"sudo cloudflared service install {tunnel}"
+    cloudflared = shutil.which("cloudflared")
+    if cloudflared is None:
+        echo(f"cloudflared is not installed. Install it ({_CLOUDFLARED_INSTALL}), then run:")
+        echo(f"  {install}")
+    elif subprocess.run([cloudflared, "service", "install", tunnel], check=False).returncode:
+        echo(f"cloudflared service install failed (it needs root). Run:\n  {install}")
+    else:
+        echo("Tunnel installed as a system service.")
+    echo("Restart `openral dashboard` (or the deploy) to open the remote listener.")
+    return path

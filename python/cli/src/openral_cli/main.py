@@ -3776,7 +3776,10 @@ app.command("check")(check_command)
 # xacrodoc/yourdfpy) so `openral --help` stays fast.
 robot_app = typer.Typer(
     name="robot",
-    help="Robot description assets — vendor a flat URDF from an upstream xacro.",
+    help=(
+        "Robot assets and identity — vendor a flat URDF from an upstream xacro; "
+        "link this robot to openral.com."
+    ),
     no_args_is_help=True,
 )
 app.add_typer(robot_app, name="robot")
@@ -3835,6 +3838,24 @@ def robot_vendor_urdf(
         robot_id, upstream=upstream, out_dir=out, rename=rename_pairs, raw_text=raw_text
     )
     typer.echo(f"Wrote {written}")
+
+
+@robot_app.command("link")
+def robot_link(
+    code: str = typer.Argument(
+        ..., help="The link code openral.com showed when the robot was added."
+    ),
+) -> None:
+    """Link this robot to openral.com: store its enrolment and install its tunnel."""
+    from openral_core.exceptions import ROSConfigError
+
+    from openral_cli.robot import link_robot
+
+    try:
+        link_robot(code, echo=typer.echo)
+    except ROSConfigError as exc:
+        typer.echo(f"openral robot link: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
 
 # `openral prompt "do X"` publishes a one-shot PromptStamped
