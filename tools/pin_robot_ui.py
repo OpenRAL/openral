@@ -17,7 +17,7 @@ UI_ASSETS = Path("python/observability/src/openral_observability/dashboard/ui_as
 
 _PIN = re.compile(
     r'(ROBOT_UI: PinnedAsset \| None = PinnedAsset\(\n)    url="[^"]*",\n'
-    r'    sha256="[0-9a-f]{64}",\n    size=\d+,\n(\)\n"""[^"]*?)``[^`]+``( until the next pin\.""")',
+    r'    sha256="[0-9a-f]{64}",\n    size=\d+,\n(\)\n"""[^"]*?)``robot-ui-[^`]+``([^"]*""")',
 )
 
 
@@ -35,8 +35,8 @@ def pin(text: str, version: str, url: str, sha256: str, size: int) -> str:
     """
     if not re.fullmatch(r"[0-9a-f]{64}", sha256) or size <= 0:
         raise ValueError("sha256 must be 64 hex characters and size positive")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", version) or not url.startswith("https://"):
-        raise ValueError("version must be a tag name and url an https URL")
+    if not re.fullmatch(r"robot-ui-[A-Za-z0-9._-]+", version) or not url.startswith("https://"):
+        raise ValueError("version must be a robot-ui-<id> tag and url an https URL")
     new, n = _PIN.subn(
         lambda m: (
             f'{m[1]}    url="{url}",\n    sha256="{sha256}",\n    size={size},\n'

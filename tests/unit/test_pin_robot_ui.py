@@ -23,6 +23,7 @@ def test_the_pin_is_rewritten_in_place_and_parses(tmp_path: Path) -> None:
     out = tool.pin(src, "robot-ui-abc1234", url, "a" * 64, 184_000)
     changed = [(a, b) for a, b in zip(src.splitlines(), out.splitlines(), strict=True) if a != b]
     assert len(changed) == 4  # url, sha256, size, and the docstring's version
+    assert "``robot-ui.yml``" in out and "``robot-ui-abc1234``" in out
     assert f'url="{url}"' in out and 'sha256="' + "a" * 64 + '"' in out and "size=184000," in out
     # Idempotent over its own output (the next bump finds the block again).
     assert tool.pin(out, "robot-ui-def5678", url, "b" * 64, 1).count("robot-ui-def5678") == 1
@@ -38,6 +39,7 @@ def test_the_pin_is_rewritten_in_place_and_parses(tmp_path: Path) -> None:
         ("robot-ui-x", "https://x", "nothex", 1),
         ("robot-ui-x", "http://x", "a" * 64, 1),
         ("bad tag\n", "https://x", "a" * 64, 1),
+        ("v0.5.0", "https://x", "a" * 64, 1),
         ("robot-ui-x", "https://x", "a" * 64, 0),
     ],
 )
