@@ -30,6 +30,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
@@ -51,7 +52,6 @@ from openral_core import (
     ReasonerModel,
     ReasonerToolCall,
     RobotCapabilities,
-    WaitTool,
     parse_reasoner_tool_choice,
 )
 from openral_core.exceptions import (
@@ -621,29 +621,67 @@ _NO_TOOL_CALL_NUDGE: str = (
     "You must respond with exactly one tool call now. "
     "If nothing should happen this tick, call `wait`."
 )
-# A prose reply that survives the nudge becomes a ``wait`` whose rationale is
-# that text, cut to this many characters (it is a one-line trace field).
-_NO_TOOL_CALL_RATIONALE_MAX_CHARS: int = 500
+# A prose reply that survives the nudge is quoted, cut to this many characters,
+# in the invalid-plan error fed back to the model.
+_NO_TOOL_CALL_QUOTE_MAX_CHARS: int = 300
+
+# How providers word a refusal of forced tool use. The bare parameter name is
+# not enough: a validation 400 about another field can echo the whole request
+# body (``'tool_choice': 'required'`` included), and a downgrade lasts for the
+# client's life.
+_FORCED_TOOL_CHOICE_REFUSALS: tuple[re.Pattern[str], ...] = (
+    # Anthropic, Claude 5: 'tool_choice: type "tool" and "any" are not supported
+    # for this model.'
+    re.compile(r"tool_choice\b.{0,80}\b(?:not supported|unsupported)"),
+    # DeepSeek gateways: "Thinking mode does not support this tool_choice".
+    re.compile(r"does not support (?:this |the )?tool_choice"),
+    # HF router.
+    re.compile(r"invalid_tool_choice"),
+    # Anthropic with thinking on: "Thinking may not be enabled when tool_choice
+    # forces tool use."
+    re.compile(r"tool_choice forces tool use"),
+)
 
 
 def _rejects_forced_tool_choice(exc: BaseException) -> bool:
-    """True for a provider 400 that refuses the requested ``tool_choice``.
+    """True for a provider 400 that refuses forced tool use itself.
 
-    Matches on the HTTP status and the parameter name, which every provider
-    seen so far puts in the message (Anthropic: ``tool_choice: type "tool" and
-    "any" are not supported for this model``; DeepSeek gateways: ``Thinking
-    mode does not support this tool_choice``; HF router: ``INVALID_TOOL_CHOICE``).
+    Matches the refusal wording each provider uses
+    (``_FORCED_TOOL_CHOICE_REFUSALS``), not the bare parameter name: an
+    unrelated 400 that echoes the request body, or one about a ``tool_choice``
+    sub-field such as ``disable_parallel_tool_use``, must not downgrade the
+    client for good.
 
     Example:
         >>> class _E(Exception):
         ...     status_code = 400
-        >>> _rejects_forced_tool_choice(_E('tool_choice: type "any" is not supported'))
+        >>> _rejects_forced_tool_choice(
+        ...     _E('tool_choice: type "tool" and "any" are not supported for this model.')
+        ... )
         True
-        >>> _rejects_forced_tool_choice(_E("max_tokens too large"))
+        >>> _rejects_forced_tool_choice(_E("max_tokens: input_value={'tool_choice': 'any'}"))
+        False
+        >>> _rejects_forced_tool_choice(
+        ...     _E("tool_choice.disable_parallel_tool_use: Extra inputs are not permitted")
+        ... )
         False
     """
-    return (
-        getattr(exc, "status_code", None) == _HTTP_BAD_REQUEST and "tool_choice" in str(exc).lower()
+    if getattr(exc, "status_code", None) != _HTTP_BAD_REQUEST:
+        return False
+    text = str(exc).lower()
+    if "disable_parallel_tool_use" in text:
+        return False
+    return any(pattern.search(text) for pattern in _FORCED_TOOL_CHOICE_REFUSALS)
+
+
+def _log_tool_choice_downgrade(model_id: str, exc: BaseException) -> None:
+    """Record that a client now runs ``tool_choice="auto"`` for the rest of its life."""
+    log.warning(
+        "reasoner.tool_choice_downgraded",
+        model=model_id,
+        tool_choice_from="required",
+        tool_choice_to="auto",
+        error=str(exc),
     )
 
 
@@ -665,20 +703,26 @@ def _rejects_max_tokens(exc: BaseException) -> bool:
     ) == _HTTP_BAD_REQUEST and "max_completion_tokens" in str(exc)
 
 
-def _wait_for_prose_reply(text: str, *, model_id: str) -> WaitTool:
-    """The no-op tick for a ``tool_choice="auto"`` reply with no tool call (#522).
+def _prose_reply_error(text: str, *, model_id: str) -> ROSReasonerInvalidPlan:
+    """The error for a ``tool_choice="auto"`` reply with no tool call after the nudge (#522).
 
-    The model chose not to act; recording that as an explicit ``wait`` (its
-    text as rationale) keeps the tick traceable instead of failing it.
+    An invalid plan, not a ``wait``: the node feeds it back into the next
+    prompt's ``## EXECUTION`` section, so a model that keeps answering in prose
+    is told to call a tool instead of stalling the mission behind no-op ticks
+    that the retry cap never counts.
     """
-    rationale = " ".join(text.split())[:_NO_TOOL_CALL_RATIONALE_MAX_CHARS]
-    log.warning(
-        "reasoner.no_tool_call",
-        model=model_id,
-        detail="model replied without a tool call after one nudge; recorded as wait",
-        text=rationale,
+    quote = " ".join(text.split())[:_NO_TOOL_CALL_QUOTE_MAX_CHARS]
+    log.warning("reasoner.no_tool_call", model=model_id, text=quote)
+    return ROSReasonerInvalidPlan(
+        f"model replied in prose without a tool call ({quote!r}); call exactly one tool, "
+        "or `wait` if nothing should happen this tick",
     )
-    return WaitTool(rationale=rationale or "model replied without a tool call")
+
+
+def _sum_prompt_tokens(*counts: int | None) -> int | None:
+    """Total prompt tokens over a tick's calls (``None`` when none were reported)."""
+    reported = [c for c in counts if c is not None]
+    return sum(reported) if reported else None
 
 
 def _prompt_tokens(response: object) -> int | None:
@@ -727,6 +771,7 @@ def _openai_choices(response: object) -> list[Any]:
     )
 
 
+# reason: Any — provider SDK boundary (openai Choice / tool-call objects).
 def _openai_tool_calls(choices: list[Any]) -> list[Any]:
     """The first choice's tool calls (empty when it answered in prose)."""
     if not choices:
@@ -734,6 +779,7 @@ def _openai_tool_calls(choices: list[Any]) -> list[Any]:
     return list(getattr(choices[0].message, "tool_calls", None) or [])
 
 
+# reason: Any — provider SDK boundary (openai Choice objects).
 def _openai_may_nudge(choices: list[Any]) -> bool:
     """Whether a tool-less reply is worth one nudge (not cut off or filtered)."""
     if not choices:
@@ -859,7 +905,9 @@ def resolve_max_skill_tools(client: ToolUseClient) -> int | None:
         (
             entry.max_skill_tools
             for entry in REASONER_MODELS.values()
-            if entry.served_model_id == client.model_id
+            # The `openai` endpoint strips OpenRouter's vendor prefix
+            # (`openai/gpt-5.5` -> `gpt-5.5`), so match either spelling.
+            if client.model_id in {entry.served_model_id, entry.served_model_id.split("/", 1)[-1]}
         ),
         None,
     )
@@ -1827,27 +1875,23 @@ class AnthropicToolUseClient:
 
         A model that refuses forced tool use (Claude 5: HTTP 400 ``tool_choice:
         type "tool" and "any" are not supported for this model``) is retried
-        once with ``auto``, and the client stays on ``auto`` from then on.
+        once with ``auto``; only when that retry succeeds does the client stay on
+        ``auto`` from then on.
         """
         try:
             return client.messages.create(tool_choice=self._wire_tool_choice(), **kwargs)
         except Exception as exc:  # reason: provider SDK boundary; re-raised unless tool_choice
             if self._tool_choice == "auto" or not _rejects_forced_tool_choice(exc):
                 raise
-            log.warning(
-                "reasoner.tool_choice_downgraded",
-                model=self.model_id,
-                tool_choice_from="required",
-                tool_choice_to="auto",
-                error=str(exc),
-            )
+            response = client.messages.create(tool_choice=self._wire_tool_choice("auto"), **kwargs)
+            _log_tool_choice_downgrade(self.model_id, exc)
             self._tool_choice = "auto"
-            return client.messages.create(tool_choice=self._wire_tool_choice(), **kwargs)
+            return response
 
-    def _wire_tool_choice(self) -> dict[str, object]:
+    def _wire_tool_choice(self, mode: str | None = None) -> dict[str, object]:
         """The Anthropic ``tool_choice`` block: ``any`` (forced) or ``auto``, one call."""
         return {
-            "type": "any" if self._tool_choice == "required" else "auto",
+            "type": "any" if (mode or self._tool_choice) == "required" else "auto",
             "disable_parallel_tool_use": True,
         }
 
@@ -1861,10 +1905,9 @@ class AnthropicToolUseClient:
         """Call Anthropic and decode the resulting tool payload.
 
         Under ``tool_choice="auto"`` a reply with no ``tool_use`` block is
-        nudged once; a second prose reply becomes a ``wait`` tick with that
-        text as rationale (#522). A refusal or a reply cut off at
-        ``max_tokens`` is a ``ROSPlanningError`` instead — neither is the
-        model choosing to wait.
+        nudged once; a second prose reply is a ``ROSReasonerInvalidPlan`` the
+        node feeds back to the model (#522). A refusal or a reply cut off at
+        ``max_tokens`` is a ``ROSPlanningError``.
         """
         client = self._client()
         tools = self._tools(palette)
@@ -1885,6 +1928,7 @@ class AnthropicToolUseClient:
                 tools=tools,
                 messages=[{"role": "user", "content": content}],
             )
+            prompt_tokens = _prompt_tokens(response)
             block = _anthropic_tool_use_block(response)
             if block is None and self._tool_choice == "auto" and _anthropic_may_nudge(response):
                 response = self._create(
@@ -1900,10 +1944,11 @@ class AnthropicToolUseClient:
                         }
                     ],
                 )
+                prompt_tokens = _sum_prompt_tokens(prompt_tokens, _prompt_tokens(response))
                 block = _anthropic_tool_use_block(response)
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"Anthropic call failed: {exc!s}") from exc
-        self.last_prompt_tokens = _prompt_tokens(response)
+        self.last_prompt_tokens = prompt_tokens
         if block is not None:
             return _decode_tool_payload(
                 tool_name=block.name,
@@ -1922,7 +1967,7 @@ class AnthropicToolUseClient:
                 f"raise {REASONER_MAX_TOKENS_ENV}"
             )
         if self._tool_choice == "auto":
-            return _wait_for_prose_reply(_anthropic_response_text(response), model_id=self.model_id)
+            raise _prose_reply_error(_anthropic_response_text(response), model_id=self.model_id)
         raise ROSReasonerInvalidPlan(
             "Anthropic response did not contain a tool_use block",
         )
@@ -1998,7 +2043,7 @@ class OpenAICompatibleToolUseClient:
             Some endpoints (the HF router) reject ``"required"`` and only honour
             ``"auto"``; pass ``"auto"`` for those and the client retries once
             with an explicit nudge if the model replies in prose instead, then
-            records a second prose reply as a ``wait`` tick (#522). A 400 that
+            raises a second prose reply as ``ROSReasonerInvalidPlan`` (#522). A 400 that
             names ``tool_choice`` downgrades ``"required"`` to ``"auto"`` for
             the rest of the client's life (``reasoner.tool_choice_downgraded``).
         max_tokens: Optional hard cap on completion tokens per call. ``None``
@@ -2079,9 +2124,9 @@ class OpenAICompatibleToolUseClient:
         """Call the OpenAI-compatible endpoint and decode the tool call.
 
         Under ``tool_choice="auto"`` a reply with no tool call is nudged once;
-        a second prose reply becomes a ``wait`` tick with that text as
-        rationale (#522). A reply cut off at the token cap or by a content
-        filter is a ``ROSPlanningError`` instead.
+        a second prose reply is a ``ROSReasonerInvalidPlan`` the node feeds back
+        to the model (#522). A reply cut off at the token cap or by a content
+        filter is a ``ROSPlanningError``.
         """
         client = self._client()
         tools = self._tools(palette)
@@ -2091,6 +2136,7 @@ class OpenAICompatibleToolUseClient:
         ]
         try:
             choices, response = self._complete(client, messages, tools)
+            prompt_tokens = _prompt_tokens(response)
             if (
                 not _openai_tool_calls(choices)
                 and self._tool_choice != "required"
@@ -2100,9 +2146,10 @@ class OpenAICompatibleToolUseClient:
                 # once before giving up so the tick is not wasted.
                 messages.append({"role": "user", "content": _NO_TOOL_CALL_NUDGE})
                 choices, response = self._complete(client, messages, tools)
+                prompt_tokens = _sum_prompt_tokens(prompt_tokens, _prompt_tokens(response))
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
-        self.last_prompt_tokens = _prompt_tokens(response)
+        self.last_prompt_tokens = prompt_tokens
         if not _openai_tool_calls(choices):
             finish_reason = getattr(choices[0], "finish_reason", None) if choices else None
             if finish_reason == "length":
@@ -2115,7 +2162,7 @@ class OpenAICompatibleToolUseClient:
                     f"OpenAI-compatible model {self.model_id!r} refused the tick (content_filter)"
                 )
             if self._tool_choice != "required" and choices:
-                return _wait_for_prose_reply(
+                raise _prose_reply_error(
                     getattr(choices[0].message, "content", None) or "", model_id=self.model_id
                 )
             raise ROSReasonerInvalidPlan(
@@ -2152,53 +2199,56 @@ class OpenAICompatibleToolUseClient:
         client: Any,  # noqa: ANN401  # reason: provider SDK boundary — openai.OpenAI
         messages: list[dict[str, str]],
         tools: list[dict[str, object]],
-    ) -> tuple[list[Any], Any]:
+    ) -> tuple[list[Any], Any]:  # reason: provider SDK boundary — openai Choice / ChatCompletion
         """One ``chat.completions.create``, adapting to what the endpoint refuses.
 
-        Up to two runtime adaptations, each logged and kept for later ticks: a
-        400 naming ``tool_choice`` downgrades ``"required"`` to ``"auto"``; a
-        400 asking for ``max_completion_tokens`` sends the cap under that name.
+        Up to two runtime adaptations: a forced-tool-use refusal retries with
+        ``"auto"``; a 400 asking for ``max_completion_tokens`` sends the cap
+        under that name. Each is logged and kept for later ticks only once a
+        call made with it succeeds.
 
         Returns:
             The response's choices and the response itself.
         """
+        tool_choice, max_tokens_param = self._tool_choice, self._max_tokens_param
+        refusals: list[BaseException] = []
         for _ in range(3):
             # Omit the cap entirely when unset so the endpoint keeps its own
             # default; only a configured cap is sent (bounds a metered
             # gateway's up-front token reservation — see __init__).
             cap: dict[str, int] = (
-                {} if self._max_tokens is None else {self._max_tokens_param: self._max_tokens}
+                {} if self._max_tokens is None else {max_tokens_param: self._max_tokens}
             )
             try:
                 response = client.chat.completions.create(
                     model=self.model_id,
                     messages=messages,
                     tools=tools,
-                    tool_choice=self._tool_choice,
+                    tool_choice=tool_choice,
                     **cap,
                 )
             except Exception as exc:  # reason: provider SDK boundary; re-raised unless adaptable
-                if self._tool_choice == "required" and _rejects_forced_tool_choice(exc):
-                    log.warning(
-                        "reasoner.tool_choice_downgraded",
-                        model=self.model_id,
-                        tool_choice_from="required",
-                        tool_choice_to="auto",
-                        error=str(exc),
-                    )
-                    self._tool_choice = "auto"
+                if tool_choice == "required" and _rejects_forced_tool_choice(exc):
+                    tool_choice = "auto"
+                    refusals.append(exc)
                     continue
-                if cap and self._max_tokens_param == "max_tokens" and _rejects_max_tokens(exc):
-                    log.warning(
-                        "reasoner.max_tokens_param_switched",
-                        model=self.model_id,
-                        param_from="max_tokens",
-                        param_to="max_completion_tokens",
-                        error=str(exc),
-                    )
-                    self._max_tokens_param = "max_completion_tokens"
+                if cap and max_tokens_param == "max_tokens" and _rejects_max_tokens(exc):
+                    max_tokens_param = "max_completion_tokens"
+                    refusals.append(exc)
                     continue
                 raise
+            if tool_choice != self._tool_choice:
+                _log_tool_choice_downgrade(self.model_id, refusals[0])
+                self._tool_choice = tool_choice
+            if max_tokens_param != self._max_tokens_param:
+                log.warning(
+                    "reasoner.max_tokens_param_switched",
+                    model=self.model_id,
+                    param_from=self._max_tokens_param,
+                    param_to=max_tokens_param,
+                    error=str(refusals[-1]),
+                )
+                self._max_tokens_param = max_tokens_param
             return _openai_choices(response), response
         raise ROSPlanningError(  # pragma: no cover — each adaptation fires at most once
             "OpenAI-compatible call: endpoint kept refusing after adapting tool_choice/max_tokens"

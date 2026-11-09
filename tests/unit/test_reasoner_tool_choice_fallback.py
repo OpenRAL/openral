@@ -9,13 +9,16 @@ HTTP server (``tests/unit/fakes/fake_llm_http.py`` — the network-boundary doub
 CLAUDE.md §1.11 allows) and check:
 
 1. The curated Claude 5 entries run ``tool_choice="auto"`` with room for thinking.
-2. A ``tool_choice`` 400 downgrades ``required`` to ``auto`` once, logged, and
-   the client stays on ``auto``.
-3. Under ``auto`` a prose reply is nudged once, then recorded as a ``wait``.
+2. A forced-tool-use refusal downgrades ``required`` to ``auto`` once, logged,
+   and the client stays on ``auto`` — but only when the ``auto`` retry
+   succeeds, and never for an unrelated 400 that merely mentions ``tool_choice``.
+3. Under ``auto`` a prose reply is nudged once, then raised as an invalid plan
+   the node feeds back to the model; prompt tokens cover both calls.
 4. A refusal or a reply cut off at the token cap is a ``ROSPlanningError``.
 5. OpenAI's ``max_completion_tokens`` demand is met at runtime, and the
    ``openai`` named endpoint sends it (and the bare model id) up front.
 6. ``OPENRAL_REASONER_TOOL_CHOICE`` applies to the anthropic dialect.
+7. The curated skill-tool cap survives the ``openai`` endpoint's bare model id.
 """
 
 from __future__ import annotations
@@ -148,6 +151,36 @@ def test_anthropic_unrelated_400_is_not_retried() -> None:
     assert client._tool_choice == "required"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Validation error about another field that echoes the request body.
+        "1 validation error: max_tokens: input_value={'tool_choice': 'required', 'tools': [...]}",
+        # A tool_choice sub-field the endpoint does not know.
+        "tool_choice.disable_parallel_tool_use: Extra inputs are not permitted",
+    ],
+)
+def test_unrelated_400_mentioning_tool_choice_does_not_downgrade(message: str) -> None:
+    with FakeLLMServer([anthropic_error(message)]) as server:
+        client = _anthropic(server)
+        with pytest.raises(ROSPlanningError):
+            client.select_tool(context_text="tick", palette=_palette())
+    assert len(server.requests) == 1
+    assert client._tool_choice == "required"
+
+
+def test_failed_auto_retry_keeps_required() -> None:
+    """The downgrade sticks only when a call made with ``auto`` succeeds."""
+    replies = [anthropic_error(_CLAUDE5_REFUSAL), anthropic_error("overloaded", status=400)]
+    with FakeLLMServer(replies) as server, capture_logs() as logs:
+        client = _anthropic(server)
+        with pytest.raises(ROSPlanningError, match="overloaded"):
+            client.select_tool(context_text="tick", palette=_palette())
+    assert [r["tool_choice"]["type"] for r in server.requests] == ["any", "auto"]
+    assert client._tool_choice == "required"
+    assert not [e for e in logs if e["event"] == "reasoner.tool_choice_downgraded"]
+
+
 def test_openai_forced_tool_choice_400_downgrades_to_auto() -> None:
     replies = [
         openai_error("Thinking mode does not support this tool_choice"),
@@ -171,10 +204,10 @@ def test_anthropic_prose_reply_is_nudged_then_succeeds() -> None:
         anthropic_tool_use("wait", {"rationale": "nothing to do"}),
     ]
     with FakeLLMServer(replies) as server:
-        call = _anthropic(server, tool_choice="auto").select_tool(
-            context_text="tick", palette=_palette()
-        )
+        client = _anthropic(server, tool_choice="auto")
+        call = client.select_tool(context_text="tick", palette=_palette())
     assert isinstance(call, WaitTool) and call.rationale == "nothing to do"
+    assert client.last_prompt_tokens == 22, "both billed calls are counted"
     nudge = server.requests[1]["messages"][0]["content"]
     assert nudge[0]["text"] == "tick"
     assert "exactly one tool call" in nudge[-1]["text"]
@@ -190,19 +223,21 @@ def test_anthropic_prose_reply_is_nudged_then_succeeds() -> None:
         ([openai_text("The arm is still moving."), openai_text("Still moving.\n\nOK")], "openai"),
     ],
 )
-def test_second_prose_reply_becomes_a_wait_tick(
+def test_second_prose_reply_is_an_invalid_plan(
     replies: list[tuple[int, dict[str, object]]], factory: str
 ) -> None:
+    """Not a ``wait``: a ``wait`` is retry-cap exempt and sends no hint back, so a
+    model stuck in prose would stall the mission silently."""
     with FakeLLMServer(replies) as server, capture_logs() as logs:
         client = (
             _anthropic(server, tool_choice="auto")
             if factory == "anthropic"
             else _openai(server, tool_choice="auto")
         )
-        call = client.select_tool(context_text="tick", palette=_palette())
-    assert isinstance(call, WaitTool)
-    assert call.rationale == "Still moving. OK"
+        with pytest.raises(ROSReasonerInvalidPlan, match=r"Still moving\. OK"):
+            client.select_tool(context_text="tick", palette=_palette())
     assert len(server.requests) == 2
+    assert client.last_prompt_tokens == 22
     assert [e for e in logs if e["event"] == "reasoner.no_tool_call"]
 
 
@@ -313,3 +348,17 @@ def test_uncurated_anthropic_honours_tool_choice_env(
     # An uncurated Claude may think before it calls a tool.
     assert client._max_tokens >= 8192
     assert not [e for e in logs if e["event"] == "reasoner.tool_choice_ignored"]
+
+
+# ── 7. skill-tool cap on a vendor's own endpoint ─────────────────────────────
+
+
+def test_skill_cap_lookup_matches_a_vendor_stripped_id() -> None:
+    """``gpt-5.5`` on the ``openai`` endpoint resolves the same curated entry."""
+    from openral_reasoner.tool_use import resolve_max_skill_tools
+
+    cosmos = REASONER_MODELS["cosmos3-edge"]
+    assert cosmos.max_skill_tools is not None
+    bare = cosmos.served_model_id.split("/", 1)[-1]
+    client = OpenAICompatibleToolUseClient(model_id=bare, base_url="http://127.0.0.1:1")
+    assert resolve_max_skill_tools(client) == cosmos.max_skill_tools

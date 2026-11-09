@@ -14868,10 +14868,10 @@ class ReasonerModel(BaseModel):
             contract; Anthropic ``{"type": "any"}``); ``"auto"`` for models or
             endpoints that refuse forced tool use (the Claude 5 generation 400s
             on ``any``/``tool``). Under ``"auto"`` the client nudges once when
-            the model answers in prose, then records the tick as a ``wait``
-            with the prose as rationale. Either way a provider 400 that names
-            ``tool_choice`` downgrades the client to ``"auto"`` at runtime,
-            logged as ``reasoner.tool_choice_downgraded``.
+            the model answers in prose, then feeds a second prose reply back
+            as an invalid plan. Either way a provider 400 refusing forced tool
+            use downgrades the client to ``"auto"`` at runtime once an ``auto``
+            retry succeeds, logged as ``reasoner.tool_choice_downgraded``.
         max_tokens_default: Optional completion-token cap applied when the
             operator sets none — bounds a metered gateway's up-front reservation
             for reasoning models (GPT-5.x), or a small local model's runaway
@@ -15934,10 +15934,10 @@ class WaitTool(_ReasonerToolBase):
 
     Dispatch: none. The node records the call (rationale included) on the
     reasoner span and returns — no ROS traffic, no actuation, no state change.
-    Under ``tool_choice="auto"`` (models that refuse forced tool use) a reply
-    with no tool call after one nudge is decoded to this variant, with the
-    model's text as ``rationale`` — the same no-op, logged as
-    ``reasoner.no_tool_call``.
+    Under ``tool_choice="auto"`` (models that refuse forced tool use) the
+    model has to pick this variant itself: a prose reply is not decoded to it,
+    because ``wait`` is exempt from the retry cap and a model stuck in prose
+    would stall the mission silently.
 
     Attributes:
         tool: Discriminator (always ``"wait"``).

@@ -234,11 +234,14 @@ handle this without configuration:
 - The curated Claude 5 entries run `tool_choice: auto` from the start, with a
   16000-token cap because they think before calling a tool and thinking counts
   against `max_tokens` (an uncurated `anthropic` model gets the same cap).
-- Any other model that 400s on `tool_choice` is retried once with `auto`, and
-  the client stays on `auto`; logged as `reasoner.tool_choice_downgraded`.
+- Any other model whose 400 refuses forced tool use is retried once with
+  `auto`; if that retry succeeds the client stays on `auto`, logged as
+  `reasoner.tool_choice_downgraded`. An unrelated 400 that only mentions
+  `tool_choice` does not downgrade it.
 - Under `auto`, a reply with no tool call gets one nudge ("respond with exactly
-  one tool call"). A second prose reply is recorded as a `wait` tick with the
-  text as its rationale (`reasoner.no_tool_call`) — a no-op, never an action.
+  one tool call"). A second prose reply is a tick error (`reasoner.no_tool_call`)
+  that the node feeds back into the next prompt, like any undecodable call — so a
+  model stuck in prose is told to call a tool rather than stalling the mission.
 - A refusal (`stop_reason: refusal` / `finish_reason: content_filter`) or a
   reply cut off at the token cap is a tick error, not a `wait`.
 - OpenAI's own API refuses `max_tokens` on its reasoning models. The `openai`
