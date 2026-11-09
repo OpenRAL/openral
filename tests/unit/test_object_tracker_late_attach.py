@@ -349,7 +349,13 @@ def test_the_place_region_is_the_one_grounded_destination_while_a_payload_is_hel
     assert region.pose == s.tracker.store.get(oid).box.pose  # type: ignore[union-attr]
     assert region.evidence_ref.startswith(f"tracked:{oid}|")
     bowl(0.6)
-    assert s.place_region() is None, "two bowls: which one is not the tracker's to guess"
+    assert s.place_region() is None, "two bowls, the payload over neither: not the tracker's guess"
+    # Review of afff4f9be: a spurious second DESTINATION left no region at all; the one the
+    # carried payload is over is where it is being placed.
+    under = bowl(0.0)
+    region = s.place_region()
+    assert region is not None and region.evidence_ref.startswith(f"tracked:{under}|")
+    s.tracker.store.drop(under)
     s.tracker.store.drop(oid)
     assert s.place_region() is not None
     s._release(joint, 12 * _S)

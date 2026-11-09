@@ -203,6 +203,21 @@ def _box(region: PlaceRegion) -> Box:
     return (t[:3, 3], t[:3, :3], np.asarray(region.half_extents, dtype=np.float64))
 
 
+def _over(region: PlaceRegion, xyz: Sequence[float]) -> bool:
+    """Whether ``xyz`` lies over or under ``region``: inside its box's footprint, any height.
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> p = Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="b")
+        >>> bowl = PlaceRegion(frame_id="b", pose=p, half_extents=(0.1, 0.1, 0.05))
+        >>> _over(bowl, (0.05, -0.05, 0.4)), _over(bowl, (0.2, 0.0, 0.0))
+        (True, False)
+    """
+    centre, rot, half = _box(region)
+    local = rot.T @ (np.asarray(xyz, dtype=np.float64) - centre)
+    return bool(np.all(np.abs(local[:2]) <= half[:2]))
+
+
 def declaration_key(target_id: str, stamp_ns: int) -> str:
     """The kernel's ``declaration_key``: ``"<target_id>@<stamp_ns>"``.
 
@@ -898,10 +913,12 @@ class TrackerSession:
         A declared, not measured, region: Safety-WG review, a hazard-log row and an ADR-0097
         amendment owed. This is the only place region in ``tracking``.
 
-        ``on`` only: otherwise the one CONFIRMED / OCCLUDED DESTINATION track labelled as the
+        ``on`` only: otherwise the CONFIRMED / OCCLUDED DESTINATION track labelled as the
         declaration's ``destination_query``, its containing box stamped with its last map
-        confirmation (the kernel ages it out on ``place_region_max_age_s``); ``None`` without
-        a destination query or exactly one such track.
+        confirmation (the kernel ages it out on ``place_region_max_age_s``). With several such
+        tracks, the one whose box holds the carried payload's centre in x/y; ``None`` without a
+        destination query, without such a track, or when that choice is not exactly one (a
+        spurious second DESTINATION left no region at all: Spark pro#51 banana, every run).
         """
         decl, grid = self.place_declaration, self.grid
         if decl is None or grid is None:
@@ -920,6 +937,9 @@ class TrackerSession:
             and t.label == label
             and t.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED)
         ]
+        if len(dest) > 1:
+            carried = [b.pose.xyz for b in self._bound_prompts().values()]
+            dest = [t for t in dest if any(_over(t.box, xyz) for xyz in carried)]
         if len(dest) != 1 or dest[0].box.frame_id != grid.frame_id:
             return None
         t = dest[0]
