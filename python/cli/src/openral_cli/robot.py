@@ -356,7 +356,11 @@ def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
     site = "{0.scheme}://{0.netloc}".format(urlsplit(enrolment.iss))
     request = urllib.request.Request(
         f"{site}/api/robot/settings",
-        headers={"Authorization": f"Bearer {secret_file.read_text(encoding='utf-8').strip()}"},
+        headers={
+            "Authorization": f"Bearer {secret_file.read_text(encoding='utf-8').strip()}",
+            # Cloudflare refuses urllib's default "Python-urllib/x.y" (error 1010).
+            "User-Agent": "openral-robot",
+        },
     )
     try:
         # The enrolled site's fixed https URL, not user input.

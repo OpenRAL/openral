@@ -192,16 +192,19 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
     for var in ("OPENRAL_REASONER_API_KEY", "OPENRAL_REASONER_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "local-wins")
-    seen: list[tuple[str, str]] = []
+    seen: list[tuple[str, str, str]] = []
 
     def site(req: Any, timeout: float) -> _Resp:  # the openral.com boundary
-        seen.append((req.full_url, req.headers["Authorization"]))
+        seen.append((req.full_url, req.headers["Authorization"], req.get_header("User-agent")))
         body = {"settings": {"OPENRAL_REASONER_API_KEY": "sk-1", "OPENRAL_REASONER_MODEL": "m"}}
         return _Resp(json.dumps(body).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", site)
     assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_API_KEY"]
-    assert seen == [("https://www.openral.com/api/robot/settings", "Bearer ors_r0b0tsecret")]
+    # Not urllib's default agent, which Cloudflare refuses.
+    assert seen == [
+        ("https://www.openral.com/api/robot/settings", "Bearer ors_r0b0tsecret", "openral-robot")
+    ]
     assert os.environ["OPENRAL_REASONER_API_KEY"] == "sk-1"
     assert os.environ["OPENRAL_REASONER_MODEL"] == "local-wins"
     cache = enrolment.with_name("settings.json")
