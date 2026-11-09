@@ -256,6 +256,40 @@ def _clip_at_plane(
     return np.asarray(np.unique(np.round(np.concatenate(out), 10), axis=0), dtype=np.float64)
 
 
+_POLYGON = 3  # the fewest points with a 2-D hull area
+
+
+def _hull_2d(p: NDArray[np.float64]) -> NDArray[np.float64]:
+    """The vertices of the 2-D convex hull of ``p`` (Andrew's monotone chain); ``p`` if < 3.
+
+    Example:
+        >>> sq = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0.5]], dtype=float)
+        >>> len(_hull_2d(sq))
+        4
+    """
+    p = np.unique(p, axis=0)  # sorted by x, then y
+    if len(p) < _POLYGON:
+        return p
+
+    def half(seq: NDArray[np.float64]) -> list[NDArray[np.float64]]:
+        out: list[NDArray[np.float64]] = []
+        for q in seq:
+            while (
+                len(out) >= _POLYGON - 1
+                and (
+                    (out[-1][0] - out[-2][0]) * (q[1] - out[-2][1])
+                    - (out[-1][1] - out[-2][1]) * (q[0] - out[-2][0])
+                )
+                <= 0
+            ):
+                out.pop()
+            out.append(q)
+        return out[:-1]
+
+    hull = half(p) + half(p[::-1])
+    return np.asarray(hull, dtype=np.float64) if len(hull) >= _POLYGON else p
+
+
 def _tightest_about_approach(
     pts: NDArray[np.float64], axes: NDArray[np.float64]
 ) -> NDArray[np.float64]:
@@ -266,9 +300,10 @@ def _tightest_about_approach(
     pairwise direction is tried. The pinch axes are among them, so it is never larger: a carton
     yawed in the hand re-boxed in the pinch axes grew up to sqrt(2) per axis (pro#51 restock
     b51r2 seed 110: 14 x 19 x 18 cm around an 11 cm carton, released, frozen, and the hand that
-    let go stopped on it).
+    let go stopped on it). Only the cut's 2-D hull matters (``_hull_2d``): the pairwise
+    search is cubic in its point count, and a 64-vertex hull cut has thousands of points.
     """
-    uw = pts @ axes[:, [0, 2]]
+    uw = _hull_2d(pts @ axes[:, [0, 2]])
     d = uw[:, None, :] - uw[None, :, :]
     phis = np.concatenate([[0.0], np.mod(np.arctan2(d[..., 0], d[..., 1]).ravel(), np.pi / 2)])
     cos, sin = np.cos(phis)[:, None], np.sin(phis)[:, None]

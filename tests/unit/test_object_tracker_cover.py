@@ -610,3 +610,21 @@ def test_a_target_confirmed_resting_in_a_destination_keeps_vouching_once_it_spli
     tr.store.replace(t.model_copy(update={"status": TrackStatus.SPLIT}))
     step(tr, _RIG, [_CAN], stamp_ns=100_000_000, wall_s=wall + 1, extra=body)
     assert tr.store.get(dst.object_id).status is TrackStatus.CONFIRMED
+
+
+def test_a_placement_is_forgotten_once_the_target_leaves_it() -> None:
+    """Review of afff4f9be: a placed record outlived a re-grasp, so a foreign body later set in
+    that spot never split the destination (fail-open)."""
+    tr, _ = _confirmed_tracker(_CAN, ObjectQuery(label="orange", count="all",
+                                                 role=ObjectRole.DESTINATION))  # fmt: skip
+    dst = tr.store.all()[0]
+    box = dst.box.model_copy(update={"half_extents": (1.5 * RES, 1.5 * RES, 1.5 * RES)})
+    fields = {k: getattr(dst, k) for k in type(dst).model_fields
+              if k not in ("object_id", "epoch", "status")}  # fmt: skip
+    fields.update(role=ObjectRole.TARGET, box=box)
+    t = tr.store.mint(**fields)
+    tr._note_placed(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    assert len(tr._resting_placed()) == 1, "still resting there: it vouches"
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.BOUND}))
+    assert tr._resting_placed() == [] and t.object_id not in tr._placed

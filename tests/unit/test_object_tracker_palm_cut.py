@@ -195,3 +195,31 @@ def test_a_hull_primitive_is_cut_from_its_hull_not_its_box(robot: str) -> None:
     # The inscribed tetrahedron shares the cube's bounding box, so only the hull tells them
     # apart: cut from the hull, the solid is strictly smaller than the cut cube.
     assert hull_vol(new) < 0.9 * hull_vol(box_cut), "cut from the hull, not from its box"
+
+
+def test_the_tightest_turn_is_hull_bound_not_cubic_in_the_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of afff4f9be: the pairwise search over the raw cut was O(N^3) (260 points took
+    436 MB); over its 2-D hull it finds the same smallest area."""
+    import time
+
+    from openral_world_state.object_tracker import binding
+
+    def area(pts: NDArray[np.float64], ax: NDArray[np.float64]) -> float:
+        uw = pts @ ax[:, [0, 2]]
+        return float(np.ptp(uw[:, 0]) * np.ptp(uw[:, 1]))
+
+    rng = np.random.default_rng(0)
+    axes = np.eye(3)
+    for _ in range(20):
+        small = rng.normal(size=(40, 3))
+        hulled = area(small, binding._tightest_about_approach(small, axes))
+        with monkeypatch.context() as m:
+            m.setattr(binding, "_hull_2d", lambda p: p)  # the old search: every raw point
+            raw = area(small, binding._tightest_about_approach(small, axes))
+        assert hulled == pytest.approx(raw)
+    big = rng.normal(size=(5000, 3))
+    t0 = time.perf_counter()
+    binding._tightest_about_approach(big, axes)
+    assert time.perf_counter() - t0 < 2.0

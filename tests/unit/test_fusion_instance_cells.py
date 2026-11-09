@@ -196,3 +196,28 @@ def test_a_slipped_target_is_found_on_the_table_though_its_released_box_is_in_th
     [found] = [o for o in tr.store.all() if o.status is TrackStatus.CONFIRMED]
     bottom = found.box.pose.xyz[2] - found.box.half_extents[2]
     assert bottom < t.support_z + 2 * grid.resolution, "it stands on the table, not in the air"
+
+
+def test_a_refind_on_only_the_upper_cells_keeps_the_release_support():
+    """Review of afff4f9be: a mask labelling only cells well above the release support lifted
+    support_z above the kept floor_z and ``store.mint`` raised, killing the tracker node."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    _released(tr, t, 10)
+    grid, cells = _labelled(0.02)
+    k0 = min(c[2] for c in cells)
+    top = frozenset(c for c in cells if c[2] >= k0 + 3)
+    assert tr.apply_instance_cells({t.object_id: top}, grid, 10**9, ()) == 1
+    [found] = [o for o in tr.store.all() if o.status is TrackStatus.CONFIRMED]
+    assert found.support_z <= t.support_z and found.floor_z >= found.support_z
+
+
+def test_a_vision_move_drops_the_hulls_posed_for_the_old_box():
+    """Review of afff4f9be: a moved box kept its old tight hulls; the bind tested the pinch
+    against where the object had been."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    assert t.tight, "the clear fit left hulls to drop"
+    grid, cells = _labelled(0.06)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    assert tr.store.get(t.object_id).tight == ()

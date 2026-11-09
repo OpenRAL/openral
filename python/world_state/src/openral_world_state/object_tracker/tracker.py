@@ -1938,7 +1938,7 @@ class ObjectTracker:
             o.box for o in self.store.all() if o.object_id != t.object_id and o.status in _SETTLED
         ]
         if t.role is ObjectRole.DESTINATION:
-            others += self._placed.values()  # what rests in it is no foreign body
+            others += self._resting_placed()  # what rests in it is no foreign body
         # Visibility-aware cover (2026-10-21 decision; Isaac baseline: a successful grasp keeps
         # the fingers on the banana for 255-466 steps): an expected cell the robot hides is no
         # evidence the object is gone. While the hand is at the target or destination, a second
@@ -2080,6 +2080,23 @@ class ObjectTracker:
                                  destination=d.object_id)  # fmt: skip
                     self._placed[t.object_id] = placed
                     return
+
+    def _resting_placed(self) -> list[PlaceRegion]:
+        """The ``_placed`` boxes whose target still rests in them; the others are forgotten.
+
+        A target picked up again (BOUND) or confirmed outside its placed box left it: the
+        region no longer explains a body there (a foreign object set in it must split the
+        destination). ponytail: a retired target's record stays (it was never seen leaving).
+        """
+        for oid, placed in list(self._placed.items()):
+            t = self.store.get(oid)
+            if t is None or t.status is TrackStatus.RELEASED:
+                continue
+            a, (x, y) = _aabb(placed), t.box.pose.xyz[:2]
+            if t.status is TrackStatus.BOUND or not (a[0] <= x <= a[3] and a[1] <= y <= a[4]):
+                log.info("object_tracker.unplaced", object_id=oid, status=t.status.value)
+                del self._placed[oid]
+        return list(self._placed.values())
 
     def _note_release(self, t: TrackedObject, stamp_ns: int) -> None:
         """Record a let-go track; it is retired with its release window.
@@ -2275,6 +2292,8 @@ class ObjectTracker:
                 t.model_copy(
                     update={
                         "box": box,
+                        # Hulls were posed for the old box: they go with it.
+                        "tight": t.tight if box == t.box else (),
                         "status": TrackStatus.CONFIRMED,
                         "last_confirmed_stamp_ns": stamp_ns,
                         "support_z": min(t.support_z, float(bottom)),
@@ -2319,7 +2338,9 @@ class ObjectTracker:
         }
         fields.update(
             box=box,
-            support_z=float(box.pose.xyz[2] - box.half_extents[2]),
+            # The release support and floor stand (floor_z >= support_z): a mask that labels
+            # only the upper part of the object must not lift the support above the floor.
+            support_z=min(track.support_z, float(box.pose.xyz[2] - box.half_extents[2])),
             last_confirmed_stamp_ns=stamp_ns,
             last_fit_stamp_ns=stamp_ns,
             visible_cells=v.visible or len(live),
@@ -2330,6 +2351,8 @@ class ObjectTracker:
         self._cells[new.object_id] = live
         self._map_cells[new.object_id] = len(live)
         self._let_go[oid] = None
+        self._placed.pop(oid, None)  # the old id is gone; the new one rests where it is now
+        self._note_placed(new)
         log.info(
             "object_tracker.vision_refound", object_id=new.object_id, was=oid, cells=len(live),
             ref=ref, was_xyz=[round(c, 3) for c in track.box.pose.xyz],
