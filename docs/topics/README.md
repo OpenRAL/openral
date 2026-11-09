@@ -78,20 +78,16 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `~/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
 | `~/urdf_joint_states` | `msg_type` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._open_urdf_joint_state_pub) | — |
 
-## Per-instance topics (15)
+## Per-instance topics (11)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
-| `/openral/cameras/{a.camera}/depth/camera_info` | `sensor_msgs/CameraInfo` | — | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure) |
-| `/openral/cameras/{a.camera}/depth/image` | `sensor_msgs/Image` | — | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure) |
-| `/openral/cameras/{a.camera}/image` | `sensor_msgs/Image` | — | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure) |
-| `/openral/cameras/{a.camera}/robot_mask` | `sensor_msgs/Image` | — | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure) |
 | `/openral/cameras/{sensor}/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | — |
-| `/openral/cameras/{sensor}/depth/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
-| `/openral/cameras/{sensor}/depth/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
-| `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
+| `/openral/cameras/{sensor}/depth/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
+| `/openral/cameras/{sensor}/depth/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
+| `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 | `/openral/cameras/{sensor}/points` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
-| `/openral/cameras/{sensor}/robot_mask` | `sensor_msgs/Image` | — | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
+| `/openral/cameras/{sensor}/robot_mask` | `sensor_msgs/Image` | — | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
 | `/openral/failure/{source}` | `openral_msgs/FailureTrigger` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/perception/{detector.kind}` | `openral_msgs/PromptStamped` | python/runner/src/openral_runner/backends/gstreamer/perception_tee.py (PerceptionEventPublisher.start) | — |
 | `/openral/perception/{kind}` | `openral_msgs/PromptStamped` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |

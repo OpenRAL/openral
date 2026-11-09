@@ -49,11 +49,14 @@ def test_the_prior_is_clear_same_label_extent_else_own_history_else_none() -> No
     assert tr._extent_prior(None, "orange") is None, "no clear evidence: nothing is blocked"
     tr = _tracker_with_clear_oranges()
     a, b = (2.0 * max(_box(n).half_extents[:2]) for n in ("box_trk2", "box_trk4"))
-    assert tr._extent_prior(None, "orange") == (pytest.approx((a + b) / 2), "same_label_tracks")
+    prior = tr._extent_prior(None, "orange")
+    assert prior is not None
+    assert prior[0] == pytest.approx((a + b) / 2) and prior[1] == "same_label_tracks"
     assert tr._extent_prior(None, "banana") is None, "a different label shares nothing"
     [first, _] = tr.store.all()
     tr._clear_extent[first.object_id] = 0.2  # its clear fits once showed more than its box now
-    assert tr._extent_prior(None, "orange")[0] == pytest.approx((0.2 + b) / 2)
+    prior = tr._extent_prior(None, "orange")
+    assert prior is not None and prior[0] == pytest.approx((0.2 + b) / 2)
     tr._clear_extent["trk:9"] = 0.07
     assert tr._extent_prior("trk:9", "orange") == (0.07, "own_clear_fit")
 

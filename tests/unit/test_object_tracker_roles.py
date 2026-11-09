@@ -1,11 +1,12 @@
 """pro#51: a target and a destination never take each other's box; the older wins."""
 
-from openral_core import ObjectRole, TrackStatus
+from openral_core import ObjectRole, TrackedObject, TrackStatus
+from openral_world_state.object_tracker.tracker import ObjectTracker
 
 from tests.unit.test_object_tracker_cover import _CAN, _confirmed_tracker
 
 
-def _pair():
+def _pair() -> tuple[ObjectTracker, TrackedObject, TrackedObject]:
     tr, _ = _confirmed_tracker(_CAN)
     tgt = tr.store.all()[0]
     assert tgt.role is ObjectRole.TARGET

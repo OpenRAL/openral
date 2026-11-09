@@ -3,14 +3,26 @@
 import math
 
 import numpy as np
-from openral_core import PlaceRegion, Pose6D, TrackStatus
-from openral_world_state.object_tracker.tracker import _RECENT_S, _VISION_NEED_FRACTION
+from openral_core import PlaceRegion, Pose6D, TrackedObject, TrackStatus
+from openral_core.perception_geometry import VoxelLattice
+from openral_world_state.object_tracker.cover import Cell
+from openral_world_state.object_tracker.tracker import (
+    _RECENT_S,
+    _VISION_NEED_FRACTION,
+    ObjectTracker,
+)
 
 from tests.unit._tracker_scenes import cylinder, grid_from_depth, render
 from tests.unit.test_object_tracker_cover import _CAN, _RIG, _confirmed_tracker
 
 
-def _labelled(dx: float, radius: float = 0.035):
+def _get(tr: ObjectTracker, oid: str) -> TrackedObject:
+    t = tr.store.get(oid)
+    assert t is not None, oid
+    return t
+
+
+def _labelled(dx: float, radius: float = 0.035) -> tuple[VoxelLattice, frozenset[Cell]]:
     """The grid with the can moved ``dx``, and its occupied cells above the table (the labels)."""
     x, y = _RIG.centre_xy
     depth, _ = render([cylinder((x + dx, y), radius, _RIG.support_z, _RIG.support_z + 0.1)], _RIG)
@@ -28,7 +40,7 @@ def test_the_box_follows_the_cells_vision_labels_its_own():
     t = tr.store.all()[0]
     grid, cells = _labelled(0.06)
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
-    moved = tr.store.get(t.object_id)
+    moved = _get(tr, t.object_id)
     assert moved.status is TrackStatus.CONFIRMED
     assert abs(moved.box.pose.xyz[0] - (t.box.pose.xyz[0] + 0.06)) < 0.02
 
@@ -38,7 +50,7 @@ def test_cells_far_larger_than_the_object_are_refused():
     t = tr.store.all()[0]
     grid, cells = _labelled(0.06, radius=0.12)  # a 24 cm "can": something else
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
-    assert tr.store.get(t.object_id).box.pose.xyz == t.box.pose.xyz
+    assert _get(tr, t.object_id).box.pose.xyz == t.box.pose.xyz
 
 
 def test_an_unmoved_object_keeps_its_fitted_box_and_is_only_re_dated():
@@ -46,7 +58,7 @@ def test_an_unmoved_object_keeps_its_fitted_box_and_is_only_re_dated():
     t = tr.store.all()[0]
     grid, cells = _labelled(0.01)  # within two cells: the same object, edge noise
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
-    kept = tr.store.get(t.object_id)
+    kept = _get(tr, t.object_id)
     assert kept.box.pose.xyz == t.box.pose.xyz and kept.last_confirmed_stamp_ns == 10**9
 
 
@@ -66,13 +78,13 @@ def test_a_released_target_the_mask_still_follows_is_minted_again():
 # -- regressions from the Spark pro#51 fusion runs (f1-f10), one per real failure ------------
 
 
-def _released(tr, t, ref: int, since_ns: int = 0):
+def _released(tr: ObjectTracker, t: TrackedObject, ref: int, since_ns: int = 0) -> None:
     """``t`` let go: what the released pass records (``_note_release``)."""
     tr.store.replace(t.model_copy(update={"status": TrackStatus.RELEASED}))
     tr._let_go[t.object_id] = (t, ref, since_ns)
 
 
-def _second(tr, t, dx: float, scale: float = 1.0):
+def _second(tr: ObjectTracker, t: TrackedObject, dx: float, scale: float = 1.0) -> TrackedObject:
     """A second confirmed track of ``t``'s label and role, ``dx`` along x, ``scale`` x as wide."""
     h = t.box.half_extents
     box = t.box.model_copy(
@@ -99,7 +111,7 @@ def test_a_lost_target_the_mask_still_follows_is_confirmed_where_it_is():
     tr.store.replace(t.model_copy(update={"status": TrackStatus.LOST}))
     grid, cells = _labelled(0.06)
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
-    back = tr.store.get(t.object_id)
+    back = _get(tr, t.object_id)
     assert back.status is TrackStatus.CONFIRMED
     assert abs(back.box.pose.xyz[0] - (t.box.pose.xyz[0] + 0.06)) < 0.02
 
@@ -140,7 +152,7 @@ def test_cells_inside_another_target_never_move_a_track_onto_it():
     _second(tr, t, 0.06)
     grid, cells = _labelled(0.06)
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
-    assert tr.store.get(t.object_id).box.pose.xyz == t.box.pose.xyz
+    assert _get(tr, t.object_id).box.pose.xyz == t.box.pose.xyz
 
 
 def test_an_implausible_track_never_blocks_a_real_one():
@@ -171,7 +183,7 @@ def test_the_hidden_side_grows_toward_the_hand_to_the_objects_size():
     )  # fmt: skip
     tr._map_cells[t.object_id] = len(near)
     assert tr.apply_instance_cells({t.object_id: near}, grid, 10**9, (hand,)) == 1
-    box = tr.store.get(t.object_id).box
+    box = _get(tr, t.object_id).box
     lo_x = box.pose.xyz[0] - box.half_extents[0]
     hi_x = box.pose.xyz[0] + box.half_extents[0]
     assert hi_x - lo_x >= size - 1e-9, "never narrower than the object"
@@ -220,7 +232,7 @@ def test_a_vision_move_drops_the_hulls_posed_for_the_old_box():
     assert t.tight, "the clear fit left hulls to drop"
     grid, cells = _labelled(0.06)
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
-    assert tr.store.get(t.object_id).tight == ()
+    assert _get(tr, t.object_id).tight == ()
 
 
 def test_cells_older_than_the_tracks_last_fit_never_move_it():
@@ -231,7 +243,7 @@ def test_cells_older_than_the_tracks_last_fit_never_move_it():
     grid, cells = _labelled(0.06)
     old = max(t.last_fit_stamp_ns, t.last_confirmed_stamp_ns) - 1
     assert tr.apply_instance_cells({t.object_id: cells}, grid, old, ()) == 0
-    assert tr.store.get(t.object_id) == t
+    assert _get(tr, t.object_id) == t
 
 
 def test_a_mask_older_than_the_release_never_re_finds_the_target():
@@ -256,7 +268,7 @@ def test_a_partly_hidden_unmoved_object_keeps_its_box():
     half = frozenset(c for c in cells if c[0] <= x_mid)
     tr._map_cells[t.object_id] = len(half)
     assert tr.apply_instance_cells({t.object_id: half}, grid, 10**9, ()) == 0
-    kept = tr.store.get(t.object_id)
+    kept = _get(tr, t.object_id)
     assert kept.box == t.box and kept.last_confirmed_stamp_ns == 10**9
 
 

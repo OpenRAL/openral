@@ -583,7 +583,9 @@ def test_a_destination_holds_what_was_placed_in_it_and_splits_on_anything_else()
         tr._note_release(t.model_copy(update={"status": TrackStatus.RELEASED}), 50_000_000)
         assert bool(tr._placed) is placed
         step(tr, _RIG, [_CAN], stamp_ns=100_000_000, wall_s=wall + 1, extra=body)
-        status = tr.store.get(dst.object_id).status
+        got = tr.store.get(dst.object_id)
+        assert got is not None
+        status = got.status
         assert status is (TrackStatus.CONFIRMED if placed else TrackStatus.SPLIT), placed
 
 
@@ -609,7 +611,8 @@ def test_a_target_confirmed_resting_in_a_destination_keeps_vouching_once_it_spli
     assert t.object_id in tr._placed
     tr.store.replace(t.model_copy(update={"status": TrackStatus.SPLIT}))
     step(tr, _RIG, [_CAN], stamp_ns=100_000_000, wall_s=wall + 1, extra=body)
-    assert tr.store.get(dst.object_id).status is TrackStatus.CONFIRMED
+    got = tr.store.get(dst.object_id)
+    assert got is not None and got.status is TrackStatus.CONFIRMED
 
 
 def test_a_placement_is_forgotten_once_the_target_leaves_it() -> None:

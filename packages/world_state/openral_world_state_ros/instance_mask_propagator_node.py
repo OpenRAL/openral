@@ -27,6 +27,9 @@ import time
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
+from openral_core import CameraTopicKind as Kind
+from openral_core import camera_topic
 from openral_core.tracking_thresholds import load_tracking_thresholds
 
 from openral_world_state_ros.object_tracker_node import image_array
@@ -51,7 +54,7 @@ _V = load_tracking_thresholds().vision  # memory_s, orphan_s, re-seed and drift 
 WEIGHTS = "facebook/sam2.1-hiera-small"
 
 
-def quat_xyzw_to_r(q: tuple[float, float, float, float]) -> np.ndarray:
+def quat_xyzw_to_r(q: tuple[float, float, float, float]) -> NDArray[Any]:
     """Rotation matrix of a unit quaternion (x, y, z, w).
 
     Example:
@@ -99,7 +102,7 @@ def new_tracker_session(prev: int, rev: int) -> bool:
     return prev >= 0 and (rev < prev or rev - prev > REVISION_RESEED_JUMP)
 
 
-def erode(m: np.ndarray, n: int) -> np.ndarray:
+def erode(m: NDArray[Any], n: int) -> NDArray[Any]:
     """M shrunk by n pixels (4-neighbour), so edge pixels never carry background depth.
 
     Example:
@@ -127,15 +130,15 @@ def stamp_ns(st: Any) -> int:
 
 
 def lift_cells(
-    mask: np.ndarray,
-    depth: np.ndarray,
+    mask: NDArray[Any],
+    depth: NDArray[Any],
     k: tuple[float, float, float, float],
-    r_gc: np.ndarray,
-    t_gc: np.ndarray,
-    origin: np.ndarray,
-    r_grid: np.ndarray,
+    r_gc: NDArray[Any],
+    t_gc: NDArray[Any],
+    origin: NDArray[Any],
+    r_grid: NDArray[Any],
     res: float,
-) -> np.ndarray:
+) -> NDArray[Any]:
     """Unique lattice cells (N x 3 int) the masked depth pixels fall in.
 
     Example:
@@ -220,7 +223,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
     ap = argparse.ArgumentParser()
     ap.add_argument("--camera", required=True)
     a, _ = ap.parse_known_args()
-    base = f"/openral/cameras/{a.camera}"
+    cam = a.camera
     dev, dt = ("cuda", torch.bfloat16) if torch.cuda.is_available() else ("cpu", torch.float32)
     sam: dict[str, Any] = {}
 
@@ -251,9 +254,9 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
 
         def on_configure(self, state: object) -> TransitionCallbackReturn:
             if not sam:
-                sam["v"] = Sam2VideoModel.from_pretrained(WEIGHTS).to(dev, dtype=dt)
+                sam["v"] = Sam2VideoModel.from_pretrained(WEIGHTS).to(dev, dtype=dt)  # type: ignore[arg-type]  # reason: transformers types .to as the model-wrapping decorator
                 sam["vp"] = Sam2VideoProcessor.from_pretrained(WEIGHTS)
-                sam["i"] = Sam2Model.from_pretrained(WEIGHTS).to(dev, dtype=dt)
+                sam["i"] = Sam2Model.from_pretrained(WEIGHTS).to(dev, dtype=dt)  # type: ignore[arg-type]  # reason: transformers types .to as the model-wrapping decorator
                 sam["ip"] = Sam2Processor.from_pretrained(WEIGHTS)
             reliable_1 = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
             self.tf_buf = tf2_ros.Buffer()
@@ -261,10 +264,12 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
             self.pub = self.create_publisher(InstanceCells, "/openral/instance_cells", reliable_1)
             sd = qos_profile_sensor_data
             self.subs = [
-                self.create_subscription(Image, f"{base}/image", on_rgb, sd),
-                self.create_subscription(Image, f"{base}/depth/image", on_depth, sd),
-                self.create_subscription(Image, f"{base}/robot_mask", on_robot, sd),
-                self.create_subscription(CameraInfo, f"{base}/depth/camera_info", on_info, sd),
+                self.create_subscription(Image, camera_topic(cam, Kind.IMAGE), on_rgb, sd),
+                self.create_subscription(Image, camera_topic(cam, Kind.DEPTH_IMAGE), on_depth, sd),
+                self.create_subscription(Image, camera_topic(cam, Kind.ROBOT_MASK), on_robot, sd),
+                self.create_subscription(
+                    CameraInfo, camera_topic(cam, Kind.DEPTH_CAMERA_INFO), on_info, sd
+                ),
                 self.create_subscription(
                     OccupancyVoxels, "/openral/world_voxels", on_grid, reliable_1
                 ),
@@ -345,7 +350,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
             st["revision"] = int(m.revision)
             st["tracked"] = {o.object_id: o for o in m.objects}
 
-    def seed_mask(img: np.ndarray, box: list[float], robot: np.ndarray) -> np.ndarray | None:
+    def seed_mask(img: NDArray[Any], box: list[float], robot: NDArray[Any]) -> NDArray[Any] | None:
         """SAM2 image mode on a box, a robot-free positive point and a robot negative point."""
         iproc, imodel = sam["ip"], sam["i"]
         x0, y0, x1, y1 = (round(v) for v in box)
@@ -372,8 +377,8 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
     def project_box(
         o: Any,  # reason: rclpy message
         k: tuple[float, float, float, float],
-        r_gc: np.ndarray,
-        t_gc: np.ndarray,
+        r_gc: NDArray[Any],
+        t_gc: NDArray[Any],
         hw: tuple[int, int],
     ) -> list[float] | None:
         b = o.box
@@ -433,7 +438,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         status = {i: (o.status, o.role) for i, o in tracked.items()}
         want, new, gone, stale = plan(ws["ids"], status, ws["seen"], td, ws["empty"], ws["drift"])
         if ws["session"] is None or new or gone or stale or ws["frames"] >= _V.reseed_frames:
-            seeds: dict[str, np.ndarray] = {}
+            seeds: dict[str, NDArray[Any]] = {}
             for i in [*ws["ids"], *new]:
                 if i in gone or i not in want:
                     continue
@@ -443,7 +448,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
                     # split one's box is stale, and SAM on it segments whatever is there now.
                     if status.get(i, ("", ""))[0] != SEEDABLE:
                         continue  # nothing fresh to follow: its mask is gone
-                    box = project_box(tracked[i], k, r_gc, t_gc, img.shape[:2])
+                    box = project_box(tracked[i], k, r_gc, t_gc, (img.shape[0], img.shape[1]))
                     cur = seed_mask(img, box, robot) if box is not None else None
                 if cur is not None:
                     seeds[i] = cur
