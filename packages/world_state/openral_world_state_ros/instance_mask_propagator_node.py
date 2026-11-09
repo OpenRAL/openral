@@ -254,9 +254,11 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
 
         def on_configure(self, state: object) -> TransitionCallbackReturn:
             if not sam:
-                sam["v"] = Sam2VideoModel.from_pretrained(WEIGHTS).to(dev, dtype=dt)  # type: ignore[arg-type]  # reason: transformers types .to as the model-wrapping decorator
+                v_model: Any = Sam2VideoModel.from_pretrained(WEIGHTS)  # .to typing varies
+                sam["v"] = v_model.to(dev, dtype=dt)
                 sam["vp"] = Sam2VideoProcessor.from_pretrained(WEIGHTS)
-                sam["i"] = Sam2Model.from_pretrained(WEIGHTS).to(dev, dtype=dt)  # type: ignore[arg-type]  # reason: transformers types .to as the model-wrapping decorator
+                i_model: Any = Sam2Model.from_pretrained(WEIGHTS)  # .to typing varies
+                sam["i"] = i_model.to(dev, dtype=dt)
                 sam["ip"] = Sam2Processor.from_pretrained(WEIGHTS)
             reliable_1 = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
             self.tf_buf = tf2_ros.Buffer()
