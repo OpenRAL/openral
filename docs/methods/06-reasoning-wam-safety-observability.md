@@ -7,46 +7,67 @@ Layer 6 (Observability) is fully shipped — traces + metrics + structlog→OTLP
 ### `python/reasoner/src/openral_reasoner/tool_use.py`
 _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` union is the sole planner output._
 
-- module constant `DEFAULT_SYSTEM_PROMPT: str` — Base S2 system prompt: one-tool-per-tick, safe skill selection, never bypass e-stop, exact field names, `wait` while a skill runs. Deployments may override. (L96)
-- module constants `ANTHROPIC_BASE_URL` / `OPENROUTER_BASE_URL` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` / `GEMINI_BASE_URL` / `XAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `HUGGINGFACE_BASE_URL: str` — Named-endpoint base URLs; canonical copy now lives in `openral_core.schemas`, re-exported here unchanged.
-- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L655)
-- module constant `SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"` (L450) — env var that overrides the base operating brief; honoured by `resolve_reasoner_system_prompt`.
-- `render_robot_context_prompt(capabilities: RobotCapabilities | None, *, base_prompt=DEFAULT_SYSTEM_PROMPT) -> str` (L339) — Appends a deterministic `## THIS ROBOT` body-awareness block (embodiment, locomotion, manipulation/sensing, payload, control modes) to the prompt; `None` returns `base_prompt` unchanged. No cell geometry is listed: place surfaces are measured, not surveyed.
-- `resolve_reasoner_system_prompt(capabilities: RobotCapabilities | None, *, env=None) -> str` (L453) — Composes the full reasoner system prompt (env override or default base brief + `## THIS ROBOT` block). `env` is injectable for tests; called from `ReasonerNode.on_configure`.
-- `class ToolUseClient(Protocol)` (L500) — LLM tool-use client contract: `model_id`, optional `last_prompt_tokens`. Raises `ROSReasonerInvalidPlan` on a bad/mismatched tool call, `ROSPlanningError` on transport failure.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L522) — Pick exactly one `ReasonerToolCall` for `context_text`.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L554) — Ask the model a free-text question about a single camera frame.
-- `class OpenAICompatibleToolUseClient` — OpenAI-compatible tool-use client. `tool_choice='auto'` covers endpoints that reject `'required'` (retries once on a prose reply); `max_tokens` optionally caps completion tokens, else the endpoint default applies.
-- module constant `REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"` (L588)
-- module constant `REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"` (L589)
-- module constant `REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"` (L590)
-- module constant `REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"` (L591)
-- module constant `REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"` (L592)
-- module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L593) — model-first env names (ADR-0088).
-- module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L602) — `auto`/`required` override for the uncurated bare-URL `openai` path only; validated on every path via `openral_core.parse_reasoner_tool_choice`, and ignored with a `reasoner.tool_choice_ignored` warning elsewhere.
-- module constant `REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"` (L595) — per-tick skill-tool cap override read by `resolve_max_skill_tools`; `0` = no cap.
-- `resolve_max_skill_tools(client) -> int | None` (L727) — The per-tick skill-tool cap for the model `client` talks to (#494): `OPENRAL_REASONER_MAX_SKILL_TOOLS` when set (`0` → `None`, negative / non-integer → `ROSConfigError`), else the `max_skill_tools` of the curated `ReasonerModel` whose `served_model_id` is `client.model_id`, else `None`. Keyed on the built (or injected) client so the two cannot disagree; `ReasonerNode.on_configure` resolves it right after building the client, before any resource opens.
-- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. (L658)
-- `class AnthropicToolUseClient` (L1604) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1693) — Call Anthropic and decode the resulting tool payload.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1733) — Ask the Anthropic model a free-text question about a camera frame.
+- module constant `DEFAULT_SYSTEM_PROMPT: str` — Base S2 system prompt: one-tool-per-tick, safe skill selection, never bypass e-stop, exact field names, `wait` while a skill runs. Deployments may override. (L100)
+- module constants `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` / `GEMINI_BASE_URL` / `XAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `HUGGINGFACE_BASE_URL: str` — Named-endpoint base URLs; canonical copy now lives in `openral_core.schemas`, re-exported here unchanged.
+- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L823)
+- module constant `SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"` (L454) — env var that overrides the base operating brief; honoured by `resolve_reasoner_system_prompt`.
+- `render_robot_context_prompt(capabilities: RobotCapabilities | None, *, base_prompt=DEFAULT_SYSTEM_PROMPT) -> str` (L343) — Appends a deterministic `## THIS ROBOT` body-awareness block (embodiment, locomotion, manipulation/sensing, payload, control modes) to the prompt; `None` returns `base_prompt` unchanged. No cell geometry is listed: place surfaces are measured, not surveyed.
+- `resolve_reasoner_system_prompt(capabilities: RobotCapabilities | None, *, env=None) -> str` (L457) — Composes the full reasoner system prompt (env override or default base brief + `## THIS ROBOT` block). `env` is injectable for tests; called from `ReasonerNode.on_configure`.
+- `class ToolUseClient(Protocol)` (L504) — LLM tool-use client contract: `model_id`, optional `last_prompt_tokens`. Raises `ROSReasonerInvalidPlan` on a bad/mismatched tool call, `ROSPlanningError` on transport failure.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L526) — Pick exactly one `ReasonerToolCall` for `context_text`.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L558) — Ask the model a free-text question about a single camera frame.
+- `class OpenAICompatibleToolUseClient` — OpenAI-compatible tool-use client. `tool_choice='auto'` covers endpoints that reject `'required'` (nudges once on a prose reply, then raises `ROSReasonerInvalidPlan`); `max_tokens` optionally caps completion tokens, else the endpoint default applies; `max_tokens_param` names the cap field, switched to `max_completion_tokens` at runtime when the endpoint asks for it.
+- module constant `REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"` (L592)
+- module constant `REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"` (L593)
+- module constant `REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"` (L594)
+- module constant `REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"` (L595)
+- module constant `REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"` (L596)
+- module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L597) — model-first env names (ADR-0088).
+- module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L608) — `auto`/`required` override for an uncurated model on a bare-URL `openai` endpoint or on the `anthropic` dialect (`required` → Anthropic `any`); validated on every path via `openral_core.parse_reasoner_tool_choice`, and ignored with a `reasoner.tool_choice_ignored` warning for curated models and named `openai` endpoints.
+- module constant `_ANTHROPIC_UNCURATED_MAX_TOKENS: int = 16000` — completion cap for an uncurated `anthropic` model with no `OPENRAL_REASONER_MAX_TOKENS` (thinking counts against it).
+- module constant `_NO_TOOL_CALL_NUDGE: str` — the one-shot follow-up sent when a `tool_choice='auto'` model answers in prose.
+- `_rejects_forced_tool_choice(exc) -> bool` — True for a provider HTTP 400 worded as a forced-tool-use refusal (Claude 5's `"any"` refusal, thinking-mode gateways, the HF router, thinking-with-forced-tool), not any 400 that merely mentions `tool_choice` or its `disable_parallel_tool_use` sub-field; triggers the runtime `required` → `auto` retry.
+- `_rejects_max_tokens(exc) -> bool` — True for an OpenAI 400 asking for `max_completion_tokens`.
+- `_prose_reply_error(text, *, model_id) -> ROSReasonerInvalidPlan` — The error for an `auto` reply with no tool call after the nudge (#522): quotes the text (whitespace-collapsed, ≤300 chars) so the node feeds it back into `## EXECUTION`; logged `reasoner.no_tool_call`. Not a `wait`, which is retry-cap exempt and sends no hint back.
+- `_log_tool_choice_downgrade(model_id, exc) -> None` — The one `reasoner.tool_choice_downgraded` log both clients emit after a successful `auto` retry.
+- `_sum_prompt_tokens(*counts) -> int | None` — Prompt tokens over a tick's calls (the nudge is a second billed call).
+- module constant `_FORCED_TOOL_CHOICE_REFUSALS: tuple[re.Pattern[str], ...]` — Provider wordings of a forced-tool-use refusal that `_rejects_forced_tool_choice` matches.
+- `_openai_tool_calls(choices) -> list` / `_openai_may_nudge(choices) -> bool` — First choice's tool calls; whether a tool-less reply is nudge-worthy (not `length` / `content_filter`).
+- `_anthropic_tool_use_block(response)` / `_anthropic_may_nudge(response) -> bool` — First `tool_use` block or `None`; whether a tool-less reply is nudge-worthy (not `refusal` / `max_tokens`).
+- module constant `REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"` (L599) — per-tick skill-tool cap override read by `resolve_max_skill_tools`; `0` = no cap.
+- `resolve_max_skill_tools(client) -> int | None` (L898) — The per-tick skill-tool cap for the model `client` talks to (#494): `OPENRAL_REASONER_MAX_SKILL_TOOLS` when set (`0` → `None`, negative / non-integer → `ROSConfigError`), else the `max_skill_tools` of the curated `ReasonerModel` whose `served_model_id` is `client.model_id`, else `None`. Keyed on the built (or injected) client so the two cannot disagree; `ReasonerNode.on_configure` resolves it right after building the client, before any resource opens.
+- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. (L826)
+- `class AnthropicToolUseClient` (L1825) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable. `tool_choice` `required` (sent as `any`) or `auto`; a forced-tool-use refusal downgrades to `auto` for the client's life once an `auto` retry succeeds (`reasoner.tool_choice_downgraded`).
+  - `_create(self, client, **kwargs)` — `messages.create` with the current `tool_choice`, retried once as `auto` on a forced-tool-use refusal; the downgrade is kept only if that retry succeeds.
+  - `_wire_tool_choice(self) -> dict` — `{"type": "any"|"auto", "disable_parallel_tool_use": True}`.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1953) — Call Anthropic and decode the resulting tool payload; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a refusal or `max_tokens` cut-off raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2030) — Ask the Anthropic model a free-text question about a camera frame.
 - `_anthropic_response_text(response) -> str` — Concatenate all text blocks so thinking-enabled responses do not lose an answer after a leading thinking block.
-- `class OpenAICompatibleToolUseClient` (L1780) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1865) — Call the OpenAI-compatible endpoint and decode the tool call.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1940) — Ask an OpenAI-compatible model a free-text question about a frame.
+- `class OpenAICompatibleToolUseClient` (L2077) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2172) — Call the OpenAI-compatible endpoint and decode the tool call; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a `length` / `content_filter` finish raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
+  - `_complete(self, client, messages, tools) -> tuple[list, Any]` — One `chat.completions.create`, adapting at runtime to a forced-tool-use refusal (→ `auto`) and a `max_completion_tokens` 400; each adaptation is logged and kept only after a call made with it succeeds.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2289) — Ask an OpenAI-compatible model a free-text question about a frame.
+- `class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient)` (L2351) — `ToolUseClient` over OpenAI's Responses API (`/v1/responses`), built for the `openai` endpoint: OpenAI's reasoning models take function tools only there. Same tick contract as the Chat Completions client (forced call, runtime `auto` downgrade, one nudge then `ROSReasonerInvalidPlan`, refusal / `max_output_tokens` cut-off → `ROSPlanningError`); `store=False`, `parallel_tool_calls=False`, reasoning left at the model default, `max_tokens` sent as `max_output_tokens`.
+  - `_respond(self, client, instructions, inputs, tools)` — One `responses.create`, retried once as `auto` on a forced-tool-use refusal.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2416) — Call the Responses API and decode the `function_call` output item.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2459) — Frame question as `input_text` + `input_image` over the Responses API.
+- `_openai_client_cls(preset, base_url) -> type[OpenAICompatibleToolUseClient]` — Responses client for OpenAI's own API (`preset.wire_api == "responses"`, or its URL spelled out), Chat Completions client for every other openai-dialect endpoint.
+- `_decode_function_call(name, raw_arguments, palette) -> ReasonerToolCall` — Shared JSON-arguments check (malformed / non-object → `ROSReasonerInvalidPlan`) then `_decode_tool_payload`, for both OpenAI wire APIs.
+- `_tool_palette_to_responses_tools(palette) -> list[dict]` — The palette as flat Responses-API function tools with `strict: False`.
+- `_responses_function_call(response)` / `_responses_text(response) -> str` / `_responses_refusal(response) -> str | None` / `_responses_may_nudge(response) -> bool` — Responses output readers: first `function_call` item; concatenated `output_text`; refusal text; whether a tool-less reply is nudge-worthy (complete, not refused, no error).
 - `_tool_palette_to_anthropic_tools(palette) -> list[dict]` — Render the closed palette, including `WaitTool`; per-skill names use collision-resistant `execute_rskill__<slug>_<sha1-8>`. `lifecycle_transition`'s `node` carries `enum: sorted(palette.node_ids)` (the decoder refuses anything else); with no peers its description says every call is refused.
 - `_tool_palette_to_openai_tools(palette) -> list[dict]` — Convert the same surface to OpenAI function shape without leaking the Anthropic-only `input_schema` key.
 - `_decode_tool_payload(*, tool_name, arguments, palette) -> ReasonerToolCall` — Validate provider output against the union + palette; per-skill names resolve through the same hashed mapping used to render them. A `lifecycle_transition` whose `node` is not in `palette.node_ids` raises `ROSReasonerInvalidPlan`.
-- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L1024)
-- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L1027)
-- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L1030)
-- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores. (L1047)
-- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1111)
-- `class _LLMSchemaGenerator(GenerateJsonSchema)` — Pydantic schema generator behind `_llm_schema`: drops the auto-generated `title` of every field/model/enum and model/enum docstring `description`s (an explicit `Field(title=...)` and dataclass/TypedDict schemas keep theirs). (L1076)
-- `_llm_schema_json(model: type[BaseModel]) -> str` — `functools.cache`d JSON string of the stripped schema, one per class; `_llm_schema` parses a fresh dict from it. (L1106)
-- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint. Each returns the list it rendered or read, never a re-read of the shared cache, so overlapping calls cannot swap palettes. (L1657)
-- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1483)
-- module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L336) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
+- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L1232)
+- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L1235)
+- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L1238)
+- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores. (L1255)
+- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1319)
+- `class _LLMSchemaGenerator(GenerateJsonSchema)` — Pydantic schema generator behind `_llm_schema`: drops the auto-generated `title` of every field/model/enum and model/enum docstring `description`s (an explicit `Field(title=...)` and dataclass/TypedDict schemas keep theirs). (L1284)
+- `_llm_schema_json(model: type[BaseModel]) -> str` — `functools.cache`d JSON string of the stripped schema, one per class; `_llm_schema` parses a fresh dict from it. (L1314)
+- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint. Each returns the list it rendered or read, never a re-read of the shared cache, so overlapping calls cannot swap palettes. (L1892)
+- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1691)
+- module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L340) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
 
 ### `python/reasoner/src/openral_reasoner/cosmos3.py`
 _NVIDIA Cosmos 3 reasoner backend (`OPENRAL_REASONER_MODEL=cosmos3-edge`), the physical-AI-native S2 planner. Runs the on-device 4B Edge tier behind an OpenAI-compatible endpoint, so the typed tool-use contract is unchanged. Companion boot helper: `tools/cosmos3_reasoner_sidecar.py`._
@@ -1189,10 +1210,10 @@ _The robot UI served at `/`: a pinned release of `python/observability/ui/`, fet
 - `class PinnedAsset(NamedTuple)` (L47) — `url`, `sha256`, `size` of one pinned download.
 - module constant `ROBOT_UI: PinnedAsset | None` (L55) — The pinned robot-UI release; `None` until the first one is cut.
 - module constant `UI_DIR_ENV = "OPENRAL_DASHBOARD_UI_DIR"` (L43)
-- `sha256_of(path: Path) -> str` (L70) — Hex sha256 of a file, read in chunks.
-- `ensure_bundle(name: str, asset: PinnedAsset) -> Path | None` (L105) — Download (size + sha256 verified), extract with the `data` tar filter minus `*.map`, and move into `$OPENRAL_CACHE_DIR/dashboard_assets/<name>/<sha256>/` only when complete; the directory holding `index.html`, or `None` (logged). Shared with `viz_assets`.
-- `ui_dir() -> Path | None` (L141) — The local build, else the fetched pin, else `None`; no download.
-- `ensure_ui_assets() -> Path | None` (L152) — Fetch the pin if not cached; called best-effort by `run_dashboard`.
+- `sha256_of(path: Path) -> str` (L71) — Hex sha256 of a file, read in chunks.
+- `ensure_bundle(name: str, asset: PinnedAsset) -> Path | None` (L106) — Download (size + sha256 verified), extract with the `data` tar filter minus `*.map`, and move into `$OPENRAL_CACHE_DIR/dashboard_assets/<name>/<sha256>/` only when complete; the directory holding `index.html`, or `None` (logged). Shared with `viz_assets`.
+- `ui_dir() -> Path | None` (L142) — The local build, else the fetched pin, else `None`; no download.
+- `ensure_ui_assets() -> Path | None` (L153) — Fetch the pin if not cached; called best-effort by `run_dashboard`.
 
 ### `python/observability/src/openral_observability/dashboard/tunnel.py`
 
@@ -1200,6 +1221,7 @@ _The robot's Cloudflare Tunnel (ADR-0129 §3): a user systemd service that survi
 
 - `TUNNEL_PORT: int` (L47) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
 - `CLOUDFLARED: dict[str, PinnedAsset]` (L51) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
+- `TUNNEL_TOKEN_RE: re.Pattern[str]` (L66) — A Cloudflare tunnel token (base64 of its JSON credentials); `write_tunnel_token` refuses anything else.
 - `tunnel_env_path() -> Path` (L88) — `tunnel.env` next to the enrolment file.
 - `write_tunnel_token(token: str) -> Path` (L93) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
 - `read_tunnel_token() -> str | None` (L111) — The stored token, or `None` when not linked.

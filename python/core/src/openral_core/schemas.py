@@ -14884,7 +14884,13 @@ class ReasonerModel(BaseModel):
             dialect's vendor default — e.g. the Anthropic API).
         auth_required: Whether the resolved endpoint needs an API key.
         tool_choice: ``"required"`` forces one tool call per tick (the reasoner
-            contract); ``"auto"`` for endpoints that reject ``"required"``.
+            contract; Anthropic ``{"type": "any"}``); ``"auto"`` for models or
+            endpoints that refuse forced tool use (the Claude 5 generation 400s
+            on ``any``/``tool``). Under ``"auto"`` the client nudges once when
+            the model answers in prose, then feeds a second prose reply back
+            as an invalid plan. Either way a provider 400 refusing forced tool
+            use downgrades the client to ``"auto"`` at runtime once an ``auto``
+            retry succeeds, logged as ``reasoner.tool_choice_downgraded``.
         max_tokens_default: Optional completion-token cap applied when the
             operator sets none — bounds a metered gateway's up-front reservation
             for reasoning models (GPT-5.x), or a small local model's runaway
@@ -14937,6 +14943,12 @@ class ReasonerModel(BaseModel):
 # GPT-5.x entries (a metered router, hence the max_tokens caps below).
 _OPENROUTER_ENDPOINT: str = "https://openrouter.ai/api/v1"
 
+# The Claude 5 generation runs adaptive thinking by default (Opus 5.5 cannot
+# turn it off), and thinking tokens count against ``max_tokens``: a 1024 cap can
+# be spent before the tool call is written. 16000 is a ceiling, not a
+# reservation — Anthropic bills the tokens actually generated.
+_CLAUDE5_MAX_TOKENS: int = 16000
+
 # The curated set. Adding a model = adding one entry here after it clears the
 # reasoner tool-calling bar; curation lives in this one reviewable place.
 REASONER_MODELS: dict[str, ReasonerModel] = {
@@ -14948,6 +14960,44 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         served_model_id="claude-opus-4-8",
         default_endpoint=None,  # Anthropic Messages API default
         auth_required=True,
+    ),
+    # Claude 5: forced tool use (``tool_choice`` ``any``/``tool``) is a 400 on
+    # these models (#522), so they run ``auto``: the client nudges a prose reply
+    # once, then raises a second one as an invalid plan.
+    "claude-opus-5-5": ReasonerModel(
+        id="claude-opus-5-5",
+        display_name="Claude Opus 5.5 (Anthropic)",
+        dialect="anthropic",
+        hosting="cloud",
+        served_model_id="claude-opus-5-5",
+        default_endpoint=None,
+        auth_required=True,
+        tool_choice="auto",
+        max_tokens_default=_CLAUDE5_MAX_TOKENS,
+    ),
+    "claude-sonnet-5-5": ReasonerModel(
+        id="claude-sonnet-5-5",
+        display_name="Claude Sonnet 5.5 (Anthropic)",
+        dialect="anthropic",
+        hosting="cloud",
+        served_model_id="claude-sonnet-5-5",
+        default_endpoint=None,
+        auth_required=True,
+        tool_choice="auto",
+        max_tokens_default=_CLAUDE5_MAX_TOKENS,
+    ),
+    "claude-haiku-5-5": ReasonerModel(
+        id="claude-haiku-5-5",
+        display_name="Claude Haiku 5.5 (Anthropic)",
+        dialect="anthropic",
+        hosting="cloud",
+        served_model_id="claude-haiku-5-5",
+        default_endpoint=None,
+        auth_required=True,
+        # Thinking is on by default here too, and the API refuses forced tool
+        # use while thinking is on.
+        tool_choice="auto",
+        max_tokens_default=_CLAUDE5_MAX_TOKENS,
     ),
     "gpt-5.5": ReasonerModel(
         id="gpt-5.5",
@@ -14998,6 +15048,13 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
 # instead of retyping a URL; the properties each one implies (dialect, auth,
 # cold-start timeout, tool_choice) live in ``REASONER_ENDPOINT_PRESETS``.
 OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+# OpenAI's own API. It takes bare model ids (``gpt-5.5``, not OpenRouter's
+# ``openai/gpt-5.5``), and its reasoning models accept function tools only on
+# the Responses API (``/v1/responses``): Chat Completions answers "Function
+# tools with reasoning_effort are not supported", and some (``gpt-6-astra``,
+# ``gpt-6.1-sol``) cannot turn reasoning off at all. The ``openai`` preset
+# therefore speaks the Responses API.
+OPENAI_BASE_URL: str = "https://api.openai.com/v1"
 # Anthropic's own API host — the value the SDK defaults to when no base_url is
 # passed. Spelled out so the ``anthropic`` endpoint preset can carry a real URL
 # instead of ``None`` (see ``ReasonerEndpointPreset.url``).
@@ -15042,6 +15099,29 @@ class ReasonerEndpointPreset(NamedTuple):
     #: first call; a warm cloud endpoint should stay on the tight default.
     timeout_s: float
     tool_choice: str
+    #: Vendor whose own API this is. A curated ``served_model_id`` spelled the
+    #: OpenRouter way (``"<vendor>/<model>"``) loses the prefix on that vendor's
+    #: endpoint, so ``gpt-5.5`` works on both ``openrouter`` and ``openai``.
+    vendor: str | None = None
+    #: Wire API on the ``openai`` dialect: ``"chat_completions"``
+    #: (``/chat/completions``, every OpenAI-compatible server) or
+    #: ``"responses"`` (``/responses``, OpenAI's own API, the only route by
+    #: which its reasoning models take function tools).
+    wire_api: str = "chat_completions"
+
+    def served_model_id(self, model_id: str) -> str:
+        """``model_id`` as this endpoint expects it.
+
+        Example:
+            >>> REASONER_ENDPOINT_PRESETS["openai"].served_model_id("openai/gpt-5.5")
+            'gpt-5.5'
+            >>> REASONER_ENDPOINT_PRESETS["openrouter"].served_model_id("openai/gpt-5.5")
+            'openai/gpt-5.5'
+        """
+        prefix = f"{self.vendor}/" if self.vendor else None
+        if prefix and model_id.startswith(prefix):
+            return model_id[len(prefix) :]
+        return model_id
 
 
 # ``OPENRAL_REASONER_ENDPOINT`` accepts one of these NAMES as well as a URL.
@@ -15052,7 +15132,18 @@ class ReasonerEndpointPreset(NamedTuple):
 # expressible model-first, without making the operator retype a URL and
 # hand-declare a dialect for endpoints the codebase already has constants for.
 REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
+    # ``required`` maps to Anthropic's ``any``; a Claude 5 model that refuses it
+    # is downgraded to ``auto`` by the client on the first 400 (#522).
     "anthropic": ReasonerEndpointPreset(ANTHROPIC_BASE_URL, "anthropic", True, 10.0, "required"),
+    "openai": ReasonerEndpointPreset(
+        OPENAI_BASE_URL,
+        "openai",
+        True,
+        10.0,
+        "required",
+        vendor="openai",
+        wire_api="responses",
+    ),
     "openrouter": ReasonerEndpointPreset(OPENROUTER_BASE_URL, "openai", True, 10.0, "required"),
     "gemini": ReasonerEndpointPreset(GEMINI_BASE_URL, "openai", True, 10.0, "required"),
     "xai": ReasonerEndpointPreset(XAI_BASE_URL, "openai", True, 10.0, "required"),
@@ -15067,7 +15158,8 @@ REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
 
 
 REASONER_TOOL_CHOICES: tuple[str, ...] = ("auto", "required")
-"""Values ``OPENRAL_REASONER_TOOL_CHOICE`` accepts (OpenAI ``tool_choice`` modes)."""
+"""Values ``OPENRAL_REASONER_TOOL_CHOICE`` accepts (OpenAI ``tool_choice`` modes;
+the Anthropic dialect sends ``required`` as ``{"type": "any"}``)."""
 
 
 def parse_reasoner_tool_choice(raw: str | None) -> str | None:
@@ -15856,8 +15948,9 @@ class DecomposeMissionTool(_ReasonerToolBase):
 class WaitTool(_ReasonerToolBase):
     """Tool variant — deliberate no-op: observe and wait for the next tick.
 
-    The reasoner's tool choice is forced (``tool_choice="any"`` /
-    ``"required"``), so without this variant the LLM MUST act every tick even
+    The reasoner's tool choice is forced where the model allows it
+    (``tool_choice="any"`` / ``"required"``), so without this variant the LLM
+    MUST act every tick even
     when the correct decision is "nothing to do yet" — e.g. a skill is mid-
     execution and progress is nominal, or the mission is finished and no new
     goal has arrived. Forcing an action in those states produces spurious
@@ -15866,6 +15959,10 @@ class WaitTool(_ReasonerToolBase):
 
     Dispatch: none. The node records the call (rationale included) on the
     reasoner span and returns — no ROS traffic, no actuation, no state change.
+    Under ``tool_choice="auto"`` (models that refuse forced tool use) the
+    model has to pick this variant itself: a prose reply is not decoded to it,
+    because ``wait`` is exempt from the retry cap and a model stuck in prose
+    would stall the mission silently.
 
     Attributes:
         tool: Discriminator (always ``"wait"``).
