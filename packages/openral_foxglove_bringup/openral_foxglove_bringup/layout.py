@@ -140,13 +140,18 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
         # do: Blender exports (OpenArm v2's) bake the Z-up conversion into the node
         # matrices yet declare Y_UP, and honouring it turns every link 90 deg in its own
         # frame — the arms then look broken (upper arm detached, segments "missing").
-        "scene": {"transforms": {"showLabel": False}, "ignoreColladaUpAxis": True},
+        # Framed for a tabletop arm (most robots here); a mobile base zooms out. Small
+        # axes: at full size a 40 cm arm's seven frames hid its meshes.
+        "scene": {
+            "transforms": {"showLabel": False, "axisScale": 0.25},
+            "ignoreColladaUpAxis": True,
+        },
         "cameraState": {
             "perspective": True,
-            "distance": 5,
+            "distance": 1.5,
             "phi": 60,
             "thetaOffset": 45,
-            "targetOffset": [0, 0, 0],
+            "targetOffset": [0, 0, 0.2],
             "fovy": 45,
             "near": 0.05,
             "far": 5000,

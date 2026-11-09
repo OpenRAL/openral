@@ -22,6 +22,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_core.exceptions import ROSConfigError
@@ -104,7 +105,7 @@ def test_the_deploy_launch_gives_the_bridge_the_overlay(overlay_cache: Path) -> 
     ]
     assert module._foxglove_asset_env(None) == {}
     text = LAUNCH.read_text(encoding="utf-8")
-    assert "additional_env=_foxglove_asset_env(robot_description_xml)" in text
+    assert "additional_env=_foxglove_asset_env(robot_description_xml, robot_mesh_packages)" in text
 
 
 def _load_launch(name: str) -> object:
@@ -135,7 +136,9 @@ def test_rd_meshes_reach_the_bridge_as_file_uris(robot: str) -> None:
     assert refs and all(r.startswith("file:///") for r in refs)
     assert all(Path(r[len("file://") :]).is_file() for r in refs)
     text = LAUNCH.read_text(encoding="utf-8")
-    assert "robot_description_xml = _portable_robot_description(fh.read())" in text
+    assert (
+        "_robot_mesh_package(\n                    _portable_robot_description(fh.read())," in text
+    )
 
 
 def test_the_launch_never_clones_an_uncached_rd_module(
@@ -157,3 +160,34 @@ def test_the_launch_never_clones_an_uncached_rd_module(
     fetched = [p for p in (tmp_path / "rd_cache").rglob("*") if ".git" not in p.parts]
     assert all(p.is_dir() for p in fetched), f"files were fetched: {fetched}"
     assert os.environ.get("GIT_ALLOW_PROTOCOL") is None, "the git override leaked"
+
+
+def test_relative_meshes_reach_the_bridge_as_a_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SO-101's URDF names meshes relative to itself; the bridge serves them by package://.
+
+    On the bench SO-101 Lichtblick drew TF axes and no arm: the bridge only serves
+    `package://`, and `assets/base_so101_v2.stl` is not a URI it can resolve.
+    """
+    ament = pytest.importorskip("ament_index_python.packages")
+    module: Any = _load_launch("deploy_e2e_launch_relative_meshes")  # loaded by path
+    urdf = REPO_ROOT / "robots" / "so101_follower" / "so101_follower.urdf"
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("AMENT_PREFIX_PATH", "/opt/ros/jazzy")
+
+    xml, local = module._robot_mesh_package(urdf.read_text(encoding="utf-8"), urdf.parent)
+    assert local == {"openral_robot_so101_follower": urdf.parent}
+    assert 'filename="assets/' not in xml
+    meshes = re.findall(r'filename="package://openral_robot_so101_follower/([^"]+)"', xml)
+    assert meshes
+
+    env = module._foxglove_asset_env(xml, local)
+    monkeypatch.setenv("AMENT_PREFIX_PATH", env["AMENT_PREFIX_PATH"])
+    share = Path(ament.get_package_share_directory("openral_robot_so101_follower"))
+    assert not [m for m in meshes if not (share / m).is_file()]
+    # A URDF with no relative meshes is left alone.
+    assert module._robot_mesh_package('<mesh filename="package://p/m.stl"/>', urdf.parent) == (
+        '<mesh filename="package://p/m.stl"/>',
+        {},
+    )

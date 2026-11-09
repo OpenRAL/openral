@@ -1992,7 +1992,9 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -
     return str(path)
 
 
-def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
+def _foxglove_asset_env(
+    robot_description_xml: str | None, local: dict[str, pathlib.Path] | None = None
+) -> dict[str, str]:
     """``foxglove_bridge``'s env, so a viewer can fetch the URDF's ``package://`` meshes.
 
     The bridge serves a 3D panel's ``fetchAsset`` through ``resource_retriever``,
@@ -2010,7 +2012,7 @@ def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
     from openral_hal.ros_package_overlay import public_package_overlay
 
     try:
-        overlay = public_package_overlay(robot_description_xml)
+        overlay = public_package_overlay(robot_description_xml, local)
     except (ROSConfigError, OSError) as exc:
         print(f"[deploy_e2e] foxglove: URDF meshes will not load: {exc!r}", flush=True)
         return {}
@@ -2022,6 +2024,27 @@ def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
             p for p in (str(overlay), os.environ.get("AMENT_PREFIX_PATH", "")) if p
         )
     }
+
+
+_RELATIVE_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:|/)([^"]+)(")')
+
+
+def _robot_mesh_package(
+    urdf_xml: str, urdf_dir: pathlib.Path
+) -> tuple[str, dict[str, pathlib.Path]]:
+    """``urdf_xml`` with relative mesh paths as ``package://openral_robot_<dir>/``; and the package.
+
+    A manifest's own URDF names its meshes relative to itself (``assets/base.stl``).
+    ``robot_state_publisher`` doesn't care, but a 3D viewer asks ``foxglove_bridge``
+    for each mesh by URI, and the bridge serves ``package://`` only (topics.py
+    ``ASSET_URI_ALLOWLIST``): with relative paths Lichtblick drew TF axes, no robot.
+    The package is registered in the bridge's ament overlay (``_foxglove_asset_env``).
+    """
+    if not _RELATIVE_MESH.search(urdf_xml):
+        return urdf_xml, {}
+    pkg = "openral_robot_" + re.sub(r"[^\w]", "_", urdf_dir.name)
+    xml = _RELATIVE_MESH.sub(lambda m: f"{m[1]}package://{pkg}/{m[2]}{m[3]}", urdf_xml)
+    return xml, {pkg: urdf_dir}
 
 
 def _portable_robot_description(urdf_xml: str) -> str:
@@ -4059,12 +4082,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             extra_nodes.extend(_build_driver_includes(scene_drivers, deploy_config))
 
     robot_description_xml: str | None = None
+    robot_mesh_packages: dict[str, pathlib.Path] = {}
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
         urdf_path = _resolve_urdf_path(urdf_asset.ref, pathlib.Path(robot_yaml).parent)
         if urdf_path is not None:
             with open(urdf_path, encoding="utf-8") as fh:
-                robot_description_xml = _portable_robot_description(fh.read())
+                robot_description_xml, robot_mesh_packages = _robot_mesh_package(
+                    _portable_robot_description(fh.read()), pathlib.Path(urdf_path).parent
+                )
             extra_nodes.append(
                 Node(
                     package="robot_state_publisher",
@@ -5098,7 +5124,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "use_sim_time": use_sim_time,
                 }
             ],
-            additional_env=_foxglove_asset_env(robot_description_xml),
+            additional_env=_foxglove_asset_env(robot_description_xml, robot_mesh_packages),
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
 
