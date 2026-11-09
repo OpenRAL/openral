@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from statistics import median
@@ -195,7 +195,6 @@ _V = load_tracking_thresholds().vision
 _VISION_MIN_CELLS = _V.min_cells
 _VISION_NEED_FRACTION = _V.need_fraction
 _VISION_MAX_EXTENT = _V.max_extent_factor
-_VISION_UNMOVED_CELLS = _V.unmoved_cells
 _RECENT_S = _T.recent_s
 _PLAUSIBLE_EXTENT = _T.plausible_extent_factor
 
@@ -664,6 +663,8 @@ class ObjectTracker:
         # Per TARGET track, where it rests on a destination (``_note_placed``): a body there
         # is what was placed, not a foreign object splitting the destination.
         self._placed: dict[str, PlaceRegion] = {}
+        # Per BOUND track: (epoch, the box a partial in-hand fit is held to; `_measure_bound`).
+        self._bound_anchor: dict[str, tuple[int, PlaceRegion]] = {}
         self._served: dict[str, int] = {}
         #: Per BOUND track, where its payload rides now (set by the session each frame): the
         #: region its in-hand refresh is prompted at.
@@ -823,6 +824,7 @@ class ObjectTracker:
             self._views, self._cells, self._centroid, self._disagree, self._disagree_ns,
             self._map_cells, self._served, self._clear_size, self._clear_extent, self._low_score,
             self._low_score_run, self._first_extent, self._growth_votes, self._growth_admitted,
+            self._bound_anchor,
         ):  # fmt: skip
             for oid in [k for k in per_track if k not in live]:
                 del per_track[oid]
@@ -1367,7 +1369,7 @@ class ObjectTracker:
         if (
             q.query.role is ObjectRole.TARGET
             and fit.box is not None
-            and self._implausible_box(q.query.label, fit.box)
+            and self._implausible_box(q.query.label, fit.box, agg=max)
         ):
             # A clear fit of two touching oranges minted one 19-32 cm "orange" whose box then
             # blocked the real ones (yw1 ep8); provisional fits already had this gate.
@@ -1418,12 +1420,22 @@ class ObjectTracker:
             # the fit still lies in the box (grown a cell, every point: a lift leaves it upward)
             # the object has not moved and the box holds both; past that it follows the object.
             # Safety-WG review owed.
-            away = ~_inside(fit.surface, _grown(old.box, grid.resolution))
+            # Tested against the box the object was last seen whole in (the anchor), never the
+            # kept box: enclosing each partial fit into the last kept box ratcheted it along a
+            # slow lift (under a cell per fit) without bound.
+            measured = fit.box
+            epoch, anchor = self._bound_anchor.get(oid, (old.epoch, old.box))
+            if epoch != old.epoch:
+                anchor = old.box
+            away = ~_inside(fit.surface, _grown(anchor, grid.resolution))
             outside = int(np.count_nonzero(away))
             if outside < max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(fit.surface)):
-                fit = replace(fit, box=_enclosing(old.box, fit.box))
+                fit = replace(fit, box=_enclosing(anchor, measured))
                 log.info("object_tracker.bound_partial_kept", object_id=oid, outside=outside,
                          points=len(fit.surface))  # fmt: skip
+            else:
+                anchor = measured  # it moved: the anchor follows it
+            self._bound_anchor[oid] = (old.epoch, anchor)
         if fit.box is not None:
             # The box follows the object as the camera sees it in the hand, never the
             # hand's kinematics (2026-10-22 decision; the bind-time box stayed on the table
@@ -2225,11 +2237,31 @@ class ObjectTracker:
             return hit or (self._smaller_copy(label, box) if mint else None)
         return None
 
-    def _implausible_box(self, label: str, box: PlaceRegion, object_id: str | None = None) -> bool:
-        """Whether ``box`` is wider than ``_PLAUSIBLE_EXTENT`` x the clear extent of its label."""
-        prior = self._extent_prior(object_id, label)
+    def _implausible_box(
+        self,
+        label: str,
+        box: PlaceRegion,
+        exclude: str | None = None,
+        agg: Callable[[list[float]], float] = median,
+    ) -> bool:
+        """Whether ``box`` is wider than ``_PLAUSIBLE_EXTENT`` x its label's PEERS' clear extent.
+
+        Peers: every other track of the label (``exclude`` is the box's own track, whose own
+        history would vouch for itself: a 32 cm "orange" judged plausible by its own 32 cm
+        fit). ``agg`` is ``median`` to judge a track that blocks others (one bad fit cannot
+        loosen it) and ``max`` to gate a mint (the largest instance seen admits a larger one of
+        the same label). ponytail: a label's first, unseen-size instance is never gated.
+        """
+        extents = [
+            self._clear_extent.get(o.object_id, 2.0 * max(o.box.half_extents[:2]))
+            for o in self.store.all()
+            if o.label == label
+            and o.object_id != exclude
+            and o.status is TrackStatus.CONFIRMED
+            and not o.provisional
+        ] or [v for k, v in self._label_clear_extent.get(label, {}).items() if k != exclude]
         extent = 2.0 * max(box.half_extents[0], box.half_extents[1])
-        return prior is not None and extent > _PLAUSIBLE_EXTENT * prior[0]
+        return bool(extents) and extent > _PLAUSIBLE_EXTENT * agg(extents)
 
     # -- vision + voxel fusion ---------------------------------------------------------------
 
@@ -2263,15 +2295,27 @@ class ObjectTracker:
                 TrackStatus.LOST,
             ):
                 continue
+            if stamp_ns < max(t.last_confirmed_stamp_ns, t.last_fit_stamp_ns):
+                continue  # the mask lags: a newer fit or confirmation already placed it
             ref = max(self._map_cells.get(oid, 0), self._map_cells_max.get(oid, 0), t.visible_cells)
             fit = self._vision_fit(oid, t, cells, ref, grid, stamp_ns, hands, than=oid)
             if isinstance(fit, str):
                 if not fit.startswith("few_cells"):
                     log.info("object_tracker.vision_box_no", object_id=oid, why=fit)
                 continue
-            box, live, v, centroid = fit
-            shift_from_box = float(np.hypot(*(centroid - np.asarray(t.box.pose.xyz[:2]))))
-            if t.status is TrackStatus.CONFIRMED and shift_from_box <= _VISION_UNMOVED_CELLS * res:
+            box, live, v = fit
+            # Unmoved while (nearly) every labelled cell lies in the box grown a cell (the rule
+            # `_measure_bound` applies to a fit) AND the map still fills the box (its cover
+            # rule): a partly hidden object's visible cells sit off its centre, and a centroid
+            # test replaced its box with the visible half's; a moved one's visible half can
+            # still lie in the old box, but the spot it left is seen empty.
+            ijk = np.asarray(sorted(live), dtype=np.float64)
+            centres = np.asarray(grid.origin) + ((ijk + 0.5) * res) @ grid.rotation().T
+            outside = int(np.count_nonzero(~_inside(centres, _grown(t.box, res))))
+            unmoved = outside < max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(live)) and len(
+                box_cells(grid, t.box, support_z=t.support_z)
+            ) >= cover_need(ref)
+            if t.status is TrackStatus.CONFIRMED and unmoved:
                 self._cells[oid] = live  # unmoved: keep the fit's box, re-date it on vision
                 self.store.replace(t.model_copy(update={"last_confirmed_stamp_ns": stamp_ns}))
                 continue
@@ -2323,6 +2367,8 @@ class ObjectTracker:
         if entry is None:
             return 0
         track, ref, since = entry
+        if stamp_ns < since:
+            return 0  # the mask lags the release: the object may still be in the jaw
         if stamp_ns - since > int(_RECENT_S * _NS):
             self._let_go[oid] = None
             return 0
@@ -2330,7 +2376,7 @@ class ObjectTracker:
         if isinstance(fit, str):
             log.info("object_tracker.vision_refind_no", object_id=oid, why=fit)
             return 0
-        box, live, v, _ = fit
+        box, live, v = fit
         fields = {
             k: getattr(track, k)
             for k in type(track).model_fields
@@ -2372,7 +2418,7 @@ class ObjectTracker:
         *,
         than: str | None = None,
         refind: bool = False,
-    ) -> tuple[PlaceRegion, frozenset[Cell], CoverVerdict, NDArray[np.float64]] | str:
+    ) -> tuple[PlaceRegion, frozenset[Cell], CoverVerdict] | str:
         """The box ``track``'s labelled ``cells`` give it, or why not (a short reason).
 
         In order: the cells still occupied and above the support layer (mask edges bleed onto
@@ -2447,7 +2493,7 @@ class ObjectTracker:
         )
         if v.kind == "map_disagrees":
             return f"verdict {v.why}"
-        return box, live, v, centres[:, :2].mean(axis=0)
+        return box, live, v
 
     def _refresh_evidence(self, object_id: str, cells: frozenset[Cell]) -> None:
         """An ignored refit still measured where the object's surface is now: confirm on it.

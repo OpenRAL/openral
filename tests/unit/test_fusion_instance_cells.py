@@ -221,3 +221,68 @@ def test_a_vision_move_drops_the_hulls_posed_for_the_old_box():
     grid, cells = _labelled(0.06)
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
     assert tr.store.get(t.object_id).tight == ()
+
+
+def test_cells_older_than_the_tracks_last_fit_never_move_it():
+    """Review of afff4f9be: a lagging SAM2 message overwrote a newer fit and moved
+    last_confirmed_stamp_ns backwards."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    grid, cells = _labelled(0.06)
+    old = max(t.last_fit_stamp_ns, t.last_confirmed_stamp_ns) - 1
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, old, ()) == 0
+    assert tr.store.get(t.object_id) == t
+
+
+def test_a_mask_older_than_the_release_never_re_finds_the_target():
+    """Review of afff4f9be: a mask from while the object was still in the jaw re-minted it
+    there and spent the one re-find."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    _released(tr, t, 10, since_ns=2 * 10**9)
+    grid, cells = _labelled(0.02)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
+    assert tr._let_go[t.object_id] is not None, "not spent"
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 3 * 10**9, ()) == 1
+
+
+def test_a_partly_hidden_unmoved_object_keeps_its_box():
+    """Review of afff4f9be: the visible half's centroid sat off-centre, so the confirmed box
+    was replaced by a box of the visible half."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    grid, cells = _labelled(0.0)
+    x_mid = np.median([c[0] for c in cells])
+    half = frozenset(c for c in cells if c[0] <= x_mid)
+    tr._map_cells[t.object_id] = len(half)
+    assert tr.apply_instance_cells({t.object_id: half}, grid, 10**9, ()) == 0
+    kept = tr.store.get(t.object_id)
+    assert kept.box == t.box and kept.last_confirmed_stamp_ns == 10**9
+
+
+def test_an_oversize_track_is_judged_by_its_peers_not_its_own_fit():
+    """Review of afff4f9be: a 32 cm "orange" with its own clear history vouched for itself."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    big = _second(tr, t, 0.06, scale=3.0)
+    tr._clear_extent[big.object_id] = 2.0 * max(big.box.half_extents[:2])
+    assert tr._implausible_box(big.label, big.box, big.object_id)
+
+
+def test_a_larger_instance_of_a_seen_size_is_minted_and_a_merged_pair_is_not():
+    """Review of afff4f9be: the mint gate held every target to 1.5x the label's MEDIAN, so
+    the largest of three cartons (6.5 / 8 / 11 cm) was never minted."""
+    from statistics import median
+
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    sizes = (0.065, 0.08)
+    for i, w in enumerate(sizes):
+        o = _second(tr, t, 0.2 * (i + 1))
+        tr._clear_extent[o.object_id] = w
+    tr._clear_extent[t.object_id] = 0.065
+    box = t.box.model_copy(update={"half_extents": (0.055, 0.055, t.box.half_extents[2])})
+    assert 1.5 * median([0.065, 0.065, 0.08]) < 0.11, "the old median gate refused it"
+    assert not tr._implausible_box(t.label, box, agg=max)
+    pair = t.box.model_copy(update={"half_extents": (0.16, 0.08, t.box.half_extents[2])})
+    assert tr._implausible_box(t.label, pair, agg=max)

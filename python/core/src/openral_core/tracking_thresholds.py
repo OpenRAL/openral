@@ -98,7 +98,6 @@ class _VisionThresholds(_Section):
     min_cells: int = Field(ge=1)
     need_fraction: float = Field(gt=0.0, le=1.0)
     max_extent_factor: float = Field(ge=1.0)
-    unmoved_cells: float = Field(ge=0.0)
     erode_px: int = Field(ge=0)
     memory_s: float = Field(gt=0.0)
     orphan_s: float = Field(ge=0.0)
