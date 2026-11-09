@@ -196,6 +196,7 @@ jobs:
           set -euo pipefail
           git config --global user.name "openral-bot"
           git config --global user.email "openral-bot@users.noreply.github.com"
+          gh auth setup-git  # git pushes with GH_TOKEN (the clone below has no credentials)
           gh repo clone OpenRAL/website website -- --branch dev --depth 1
           cd website
           git switch -c "bot/${TAG}"
