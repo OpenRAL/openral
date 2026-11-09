@@ -11,6 +11,9 @@ frame lifts each mask, minus robot pixels, through the aligned depth into the vo
 (``ObjectTracker.apply_instance_cells``). Experiment only: the deploy launch starts it beside
 the tracker with ``DeployRuntime.instance_cells`` (sim-only).
 
+A lifecycle node: ``configure`` loads SAM2 and subscribes, ``activate`` starts propagating,
+``deactivate`` / ``cleanup`` drop every mask, label and video session.
+
 Usage:
     ros2 run openral_world_state instance_mask_propagator_node --camera top_depth
 """
@@ -26,12 +29,23 @@ from typing import Any
 import numpy as np
 from openral_core.tracking_thresholds import load_tracking_thresholds
 
-# a released or lost target is still followed: vision continuity is what re-finds it
-# Followed while the tracker holds them. SPLIT too: its map is ambiguous, which is when vision
-# matters, and a split track goes LOST next, never re-seeded (its box is stale), so a mask
-# dropped at the split is gone for good (A/B ab1b_po seed 5: an orange pushed 10 cm split,
-# lost its mask, and the jaw stopped on it 47 s later).
-LIVE = {"confirmed", "occluded", "bound", "released", "lost", "split"}
+from openral_world_state_ros.object_tracker_node import image_array
+
+# A released or lost target is still followed: vision continuity is what re-finds it.
+# Followed while the tracker holds them. TENTATIVE too: a contact hold ages a pushed object
+# CONFIRMED -> TENTATIVE -> LOST, and dropping its mask there lost it for good. SPLIT too: its
+# map is ambiguous, which is when vision matters, and a split track goes LOST next, never
+# re-seeded (its box is stale), so a mask dropped at the split is gone for good (A/B ab1b_po
+# seed 5: an orange pushed 10 cm split, lost its mask, and the jaw stopped on it 47 s later).
+LIVE = {"tentative", "confirmed", "occluded", "bound", "released", "lost", "split"}
+#: Only a confirmed track's box is fresh enough to seed SAM from; any other keeps its mask.
+SEEDABLE = "confirmed"
+#: A tracked_objects revision jump past this is a re-activated tracker (its revision base is the
+#: wall-clock ns at activation; the store itself bumps a few per frame): a new episode.
+REVISION_RESEED_JUMP = 1_000_000_000
+#: A sensor stamp this far behind the newest kept one is a clock reset (a new sim episode).
+CLOCK_RESET_NS = 1_000_000_000
+
 ROLES = {"target", "destination"}
 _V = load_tracking_thresholds().vision  # memory_s, orphan_s, re-seed and drift rules
 WEIGHTS = "facebook/sam2.1-hiera-small"
@@ -54,15 +68,35 @@ def quat_xyzw_to_r(q: tuple[float, float, float, float]) -> np.ndarray:
     )
 
 
-def image_array(msg: Any) -> np.ndarray:
-    """A ``sensor_msgs/Image`` as an array: float depth, or RGB (BGR channels swapped)."""
-    if msg.encoding == "32FC1":
-        return np.frombuffer(bytes(msg.data), np.float32).reshape(msg.height, msg.width)
-    ch = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4, "mono8": 1}[msg.encoding]
-    a = np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.width, ch)
-    if msg.encoding.startswith("bgr"):
-        a = a[..., [2, 1, 0]]
-    return a[..., :3] if ch >= 3 else a[..., 0]
+def keep(d: dict[int, Any], t: int, v: Any, n: int = 30) -> bool:
+    """Keep ``v`` at stamp ``t``, the ``n`` newest; ``False`` (and ``d`` emptied) on a clock reset.
+
+    Example:
+        >>> d = {}
+        >>> keep(d, 5_000_000_000, "a"), keep(d, 6_000_000_000, "b"), sorted(d)
+        (True, True, [5000000000, 6000000000])
+        >>> keep(d, 0, "c"), sorted(d)
+        (False, [0])
+    """
+    reset = bool(d) and t < max(d) - CLOCK_RESET_NS
+    if reset:
+        d.clear()
+    d[t] = v
+    while len(d) > n:
+        del d[min(d)]
+    return not reset
+
+
+def new_tracker_session(prev: int, rev: int) -> bool:
+    """Whether revision ``rev`` after ``prev`` comes from a new tracker session (a new episode).
+
+    Example:
+        >>> new_tracker_session(-1, 10**18), new_tracker_session(10**18, 10**18 + 7)
+        (False, False)
+        >>> new_tracker_session(10**18, 10**18 + 5 * 10**9), new_tracker_session(10, 3)
+        (True, True)
+    """
+    return prev >= 0 and (rev < prev or rev - prev > REVISION_RESEED_JUMP)
 
 
 def erode(m: np.ndarray, n: int) -> np.ndarray:
@@ -123,14 +157,57 @@ def lift_cells(
     return np.unique(ijk, axis=0) if len(ijk) else np.zeros((0, 3), np.int64)
 
 
+def plan(
+    ids: list[str],
+    status: dict[str, tuple[str, str]],
+    seen: dict[str, int],
+    td: int,
+    empty: dict[str, int],
+    drift: dict[str, int],
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Which tracks to follow, seed, drop and re-seed now: ``(want, new, gone, stale)``.
+
+    ``ids``: followed now; ``status``: per tracked id, its (status, role); ``seen``: the last
+    stamp each was LIVE (updated here); ``empty`` / ``drift``: per followed id, its run of
+    empty / drifted masks. Only a ``SEEDABLE`` (confirmed) track is ever seeded or re-seeded
+    from its box; a drifted mask with no fresh box is dropped (a held one rides the hand).
+
+    Example:
+        >>> s = {"trk:1": ("tentative", "target"), "trk:2": ("confirmed", "target")}
+        >>> plan(["trk:1"], s, {}, 0, {}, {})  # a contact hold ages trk:1: still followed
+        (['trk:1', 'trk:2'], ['trk:2'], [], [])
+        >>> s = {"trk:1": ("lost", "target")}
+        >>> plan(["trk:1"], s, {}, 0, {"trk:1": 99}, {})  # empty: no re-seed on a stale box
+        (['trk:1'], [], [], [])
+        >>> plan(["trk:1"], s, {}, 0, {}, {"trk:1": 99})  # drifted with no fresh box: dropped
+        (['trk:1'], [], ['trk:1'], [])
+    """
+    for i, (st, _) in status.items():
+        if st in LIVE:
+            seen[i] = td
+    want = [i for i, (st, role) in status.items() if st in LIVE and role in ROLES]
+    want += [i for i in ids if i not in status and td - seen.get(i, td) <= _V.orphan_s * 1e9]
+    seedable = {i for i, (st, _) in status.items() if st == SEEDABLE}
+    new = [i for i in want if i not in ids and i in seedable]
+    drifted = {i for i in ids if drift.get(i, 0) >= _V.drift_frames}
+    held = {i for i, (st, _) in status.items() if st == "bound"}
+    gone = [i for i in ids if i not in want or (i in drifted and i not in seedable | held)]
+    stale = [
+        i
+        for i in ids
+        if i in seedable and (empty.get(i, 0) >= _V.empty_reseed_frames or i in drifted)
+    ]
+    return want, new, gone, stale
+
+
 def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share the worker state
-    """Run the propagator on ``--camera`` until shutdown."""
+    """Run the propagator lifecycle node on ``--camera`` until shutdown."""
     import rclpy
     import rclpy.executors
     import tf2_ros
     import torch
     from openral_msgs.msg import InstanceCells, OccupancyVoxels, TrackedObjectSet
-    from rclpy.node import Node
+    from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
     from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
     from sensor_msgs.msg import CameraInfo, Image
     from transformers import (
@@ -145,44 +222,112 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
     a, _ = ap.parse_known_args()
     base = f"/openral/cameras/{a.camera}"
     dev, dt = ("cuda", torch.bfloat16) if torch.cuda.is_available() else ("cpu", torch.float32)
-    vmodel = Sam2VideoModel.from_pretrained(WEIGHTS).to(dev, dtype=dt)
-    vproc = Sam2VideoProcessor.from_pretrained(WEIGHTS)
-    imodel = Sam2Model.from_pretrained(WEIGHTS).to(dev, dtype=dt)
-    iproc = Sam2Processor.from_pretrained(WEIGHTS)
+    sam: dict[str, Any] = {}
 
     rclpy.init()
-    node = Node("instance_mask_propagator")
-    log = node.get_logger()
-    reliable_1 = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
-    tf_buf = tf2_ros.Buffer()
-    tf2_ros.TransformListener(tf_buf, node)
-    pub = node.create_publisher(InstanceCells, "/openral/instance_cells", reliable_1)
     lock = threading.Lock()
-    st: dict[str, Any] = {"rgb": None, "depth": {}, "robot": {}, "k": None, "grid": None,
-                          "tracked": {}, "revision": -1}  # fmt: skip
+    st: dict[str, Any] = {}
+    ws: dict[str, Any] = {}
 
-    def keep(d: dict, t: int, v: Any, n: int = 30) -> None:
-        d[t] = v
-        while len(d) > n:
-            del d[min(d)]
+    def clear() -> None:
+        """Forget every frame, mask, label and video session (a new episode or a transition)."""
+        st.update(rgb=None, depth={}, robot={}, k=None, grid=None, tracked={}, revision=-1)
+        ws.clear()
+        ws.update(session=None, ids=[], masks={}, empty={}, labels={}, frames=0, seen={},
+                  seed_px={}, drift={})  # fmt: skip
 
-    def on_rgb(m: Any) -> None:
+    clear()
+
+    class Propagator(LifecycleNode):  # type: ignore[misc]  # reason: rclpy is untyped
+        """The propagator's lifecycle (module docstring)."""
+
+        def __init__(self) -> None:
+            super().__init__("instance_mask_propagator")
+            self.active = False
+            self.pub: Any = None
+            self.subs: list[Any] = []
+            self.tf_buf: Any = None
+            self.tf_listener: Any = None
+
+        def on_configure(self, state: object) -> TransitionCallbackReturn:
+            if not sam:
+                sam["v"] = Sam2VideoModel.from_pretrained(WEIGHTS).to(dev, dtype=dt)
+                sam["vp"] = Sam2VideoProcessor.from_pretrained(WEIGHTS)
+                sam["i"] = Sam2Model.from_pretrained(WEIGHTS).to(dev, dtype=dt)
+                sam["ip"] = Sam2Processor.from_pretrained(WEIGHTS)
+            reliable_1 = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+            self.tf_buf = tf2_ros.Buffer()
+            self.tf_listener = tf2_ros.TransformListener(self.tf_buf, self)
+            self.pub = self.create_publisher(InstanceCells, "/openral/instance_cells", reliable_1)
+            sd = qos_profile_sensor_data
+            self.subs = [
+                self.create_subscription(Image, f"{base}/image", on_rgb, sd),
+                self.create_subscription(Image, f"{base}/depth/image", on_depth, sd),
+                self.create_subscription(Image, f"{base}/robot_mask", on_robot, sd),
+                self.create_subscription(CameraInfo, f"{base}/depth/camera_info", on_info, sd),
+                self.create_subscription(
+                    OccupancyVoxels, "/openral/world_voxels", on_grid, reliable_1
+                ),
+                self.create_subscription(
+                    TrackedObjectSet, "/openral/tracked_objects", on_tracked, reliable_1
+                ),
+            ]
+            log.info(f"instance_masks.configured camera={a.camera} device={dev}")
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_activate(self, state: object) -> TransitionCallbackReturn:
+            with lock:
+                clear()
+                self.active = True
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_deactivate(self, state: object) -> TransitionCallbackReturn:
+            with lock:
+                self.active = False
+                clear()
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_cleanup(self, state: object) -> TransitionCallbackReturn:
+            with lock:
+                self.active = False
+                clear()
+            for sub in self.subs:
+                self.destroy_subscription(sub)
+            self.subs = []
+            if self.pub is not None:
+                self.destroy_publisher(self.pub)
+                self.pub = None
+            self.tf_listener = None
+            self.tf_buf = None
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_shutdown(self, state: object) -> TransitionCallbackReturn:
+            return self.on_cleanup(state)
+
+    node = Propagator()
+    log = node.get_logger()
+
+    def on_rgb(m: Any) -> None:  # reason: rclpy message
         with lock:
             st["rgb"] = m
 
-    def on_depth(m: Any) -> None:
+    def on_depth(m: Any) -> None:  # reason: rclpy message
+        arr = image_array(m)
         with lock:
-            keep(st["depth"], stamp_ns(m.header.stamp), (image_array(m), m.header.frame_id))
+            if not keep(st["depth"], stamp_ns(m.header.stamp), (arr, m.header.frame_id)):
+                st["robot"].clear()
+                st["reset"] = True  # the clock went back: a new episode
 
-    def on_robot(m: Any) -> None:
+    def on_robot(m: Any) -> None:  # reason: rclpy message
+        arr = image_array(m) > 0
         with lock:
-            keep(st["robot"], stamp_ns(m.header.stamp), image_array(m) > 0)
+            keep(st["robot"], stamp_ns(m.header.stamp), arr)
 
-    def on_info(m: Any) -> None:
+    def on_info(m: Any) -> None:  # reason: rclpy message
         with lock:
             st["k"] = (float(m.k[0]), float(m.k[4]), float(m.k[2]), float(m.k[5]))
 
-    def on_grid(m: Any) -> None:
+    def on_grid(m: Any) -> None:  # reason: rclpy message
         o = m.orientation
         g = {
             "frame": m.header.frame_id, "origin": np.array([m.origin.x, m.origin.y, m.origin.z]),
@@ -193,28 +338,16 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         with lock:
             st["grid"] = g
 
-    def on_tracked(m: Any) -> None:
+    def on_tracked(m: Any) -> None:  # reason: rclpy message
         with lock:
-            if int(m.revision) < st["revision"]:
-                st["reset"] = True  # a new episode's tracker: start over
+            if new_tracker_session(st["revision"], int(m.revision)):
+                st["reset"] = True  # a new episode's tracker: its ids restart at trk:1
             st["revision"] = int(m.revision)
             st["tracked"] = {o.object_id: o for o in m.objects}
 
-    node.create_subscription(Image, f"{base}/image", on_rgb, qos_profile_sensor_data)
-    node.create_subscription(Image, f"{base}/depth/image", on_depth, qos_profile_sensor_data)
-    node.create_subscription(Image, f"{base}/robot_mask", on_robot, qos_profile_sensor_data)
-    node.create_subscription(
-        CameraInfo, f"{base}/depth/camera_info", on_info, qos_profile_sensor_data
-    )
-    node.create_subscription(OccupancyVoxels, "/openral/world_voxels", on_grid, reliable_1)
-    node.create_subscription(TrackedObjectSet, "/openral/tracked_objects", on_tracked, reliable_1)
-
-    # worker state
-    ws: dict[str, Any] = {"session": None, "ids": [], "masks": {}, "empty": {}, "labels": {},
-                          "frames": 0, "last_t": None}  # fmt: skip
-
     def seed_mask(img: np.ndarray, box: list[float], robot: np.ndarray) -> np.ndarray | None:
         """SAM2 image mode on a box, a robot-free positive point and a robot negative point."""
+        iproc, imodel = sam["ip"], sam["i"]
         x0, y0, x1, y1 = (round(v) for v in box)
         sub = ~robot[y0 : y1 + 1, x0 : x1 + 1]
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -237,7 +370,11 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         return m if m.sum() >= 20 else None
 
     def project_box(
-        o: Any, k: tuple, r_gc: np.ndarray, t_gc: np.ndarray, hw: tuple[int, int]
+        o: Any,  # reason: rclpy message
+        k: tuple[float, float, float, float],
+        r_gc: np.ndarray,
+        t_gc: np.ndarray,
+        hw: tuple[int, int],
     ) -> list[float] | None:
         b = o.box
         q = b.pose.orientation
@@ -255,15 +392,20 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         y0, y1 = float(np.clip(v.min(), 0, h - 1)), float(np.clip(v.max(), 0, h - 1))
         return [x0, y0, x1, y1] if x1 - x0 >= 3 and y1 - y0 >= 3 else None
 
-    def step() -> bool:  # noqa: PLR0912, PLR0915
+    def step() -> bool:  # noqa: PLR0911, PLR0912, PLR0915
+        vproc, vmodel = sam["vp"], sam["v"]
         with lock:
+            if not node.active:
+                return False
+            if st.pop("reset", False):
+                depth_kept, robot_kept = st["depth"], st["robot"]
+                clear()
+                st["depth"], st["robot"] = depth_kept, robot_kept  # already the new episode's
+                log.info("instance_masks.episode_reset")
             m = st["rgb"]
             st["rgb"] = None
             if m is None or st["k"] is None or st["grid"] is None:
                 return False
-            if st.pop("reset", False):
-                ws.update(session=None, ids=[], masks={}, empty={}, labels={}, frames=0, seen={},
-                      seed_px={}, drift={})  # fmt: skip
             t = stamp_ns(m.header.stamp)
             if not st["depth"]:
                 return False
@@ -271,38 +413,25 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
             depth, optical = st["depth"][td]
             robot = st["robot"][min(st["robot"], key=lambda s: abs(s - t))] if st["robot"] else None
             k, g, tracked = st["k"], st["grid"], dict(st["tracked"])
-        if abs(td - t) > 150_000_000:
+            tf_buf = node.tf_buf
+        if abs(td - t) > 150_000_000 or tf_buf is None:
             return False
         img = image_array(m)
         if robot is None or robot.shape != depth.shape:
             robot = np.zeros(depth.shape, bool)
         try:
+            # The camera pose AT the depth stamp: never the latest (on a moving camera that
+            # lifts the mask through the wrong pose); no transform yet = skip the frame.
             tf = tf_buf.lookup_transform(g["frame"], optical, rclpy.time.Time(nanoseconds=td))
-        except Exception:
-            try:
-                tf = tf_buf.lookup_transform(g["frame"], optical, rclpy.time.Time())
-            except Exception:
-                return False
+        except (tf2_ros.LookupException, tf2_ros.ExtrapolationException,
+                tf2_ros.ConnectivityException) as e:  # fmt: skip
+            log.debug(f"instance_masks.no_tf {type(e).__name__}")
+            return False
         q, tr_ = tf.transform.rotation, tf.transform.translation
         r_gc, t_gc = quat_xyzw_to_r((q.x, q.y, q.z, q.w)), np.array([tr_.x, tr_.y, tr_.z])
 
-        seen = ws.setdefault("seen", {})
-        for i, o in tracked.items():
-            if o.status in LIVE:
-                seen[i] = td
-        want = [i for i, o in tracked.items() if o.status in LIVE and o.role in ROLES]
-        want += [
-            i for i in ws["ids"] if i not in tracked and td - seen.get(i, td) <= _V.orphan_s * 1e9
-        ]
-        new = [
-            i
-            for i in want
-            if i not in ws["ids"] and i in tracked and tracked[i].status == "confirmed"
-        ]
-        gone = [i for i in ws["ids"] if i not in want]
-        stale = [i for i in ws["ids"] if i in tracked and tracked[i].status != "bound" and (
-            (ws["empty"].get(i, 0) >= _V.empty_reseed_frames and tracked[i].status == "confirmed")
-            or ws.setdefault("drift", {}).get(i, 0) >= _V.drift_frames)]  # fmt: skip
+        status = {i: (o.status, o.role) for i, o in tracked.items()}
+        want, new, gone, stale = plan(ws["ids"], status, ws["seen"], td, ws["empty"], ws["drift"])
         if ws["session"] is None or new or gone or stale or ws["frames"] >= _V.reseed_frames:
             seeds: dict[str, np.ndarray] = {}
             for i in [*ws["ids"], *new]:
@@ -310,14 +439,16 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
                     continue
                 cur = ws["masks"].get(i)
                 if i in stale or i in new or cur is None or cur.sum() < 20:
-                    if i not in tracked:
-                        continue  # an orphan whose mask is gone: nothing left to follow
+                    # Only a confirmed track's box is where the object is: a released, lost or
+                    # split one's box is stale, and SAM on it segments whatever is there now.
+                    if status.get(i, ("", ""))[0] != SEEDABLE:
+                        continue  # nothing fresh to follow: its mask is gone
                     box = project_box(tracked[i], k, r_gc, t_gc, img.shape[:2])
                     cur = seed_mask(img, box, robot) if box is not None else None
                 if cur is not None:
                     seeds[i] = cur
-                    if i in stale or i in new or i not in ws.get("seed_px", {}):
-                        ws.setdefault("seed_px", {})[i] = int(cur.sum())
+                    if i in stale or i in new or i not in ws["seed_px"]:
+                        ws["seed_px"][i] = int(cur.sum())
             ws["ids"] = list(seeds)
             ws["drift"] = {}
             ws["empty"] = {}
@@ -350,9 +481,9 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
             mk = erode(raw, _V.erode_px) & ~robot  # silhouette pixels take the depth behind it
             ws["masks"][i] = mk
             ws["empty"][i] = ws["empty"].get(i, 0) + 1 if mk.sum() < 20 else 0
-            seed_px = ws.get("seed_px", {}).get(i, 0)
+            seed_px = ws["seed_px"].get(i, 0)
             drift = seed_px > 0 and mk.sum() > _V.drift_ratio * seed_px
-            ws.setdefault("drift", {})[i] = ws["drift"].get(i, 0) + 1 if drift else 0
+            ws["drift"][i] = ws["drift"].get(i, 0) + 1 if drift else 0
             cells = lift_cells(mk, depth, k, r_gc, t_gc, g["origin"], g["r"], g["res"])
             ok = (
                 (cells >= 0).all(axis=1)
@@ -383,7 +514,9 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         msg.object_ids = list(by)
         msg.cell_counts = [len(v) for v in by.values()]
         msg.cells = [int(x) for v in by.values() for c in v for x in c]
-        pub.publish(msg)
+        with lock:
+            if node.active and node.pub is not None:
+                node.pub.publish(msg)
         return True
 
     def worker() -> None:
@@ -391,7 +524,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         while rclpy.ok():
             try:
                 did = step()
-            except Exception as e:
+            except Exception as e:  # reason: a SAM failure drops the session, logged
                 log.error(f"instance_masks.step_failed {type(e).__name__}: {e}")
                 ws["session"] = None
                 did = False
@@ -406,7 +539,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
                 )
 
     threading.Thread(target=worker, daemon=True).start()
-    log.info(f"instance_masks.started camera={a.camera} device={dev}")
+    log.info(f"instance_masks.started camera={a.camera} (unconfigured)")
     with contextlib.suppress(KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         rclpy.spin(node)
 

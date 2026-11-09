@@ -4813,16 +4813,19 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # DESTINATION tracks lifted to voxel cells on /openral/instance_cells.
             # ponytail: one camera (the first tracked); fuse per camera if a scene needs two.
             extra_nodes.append(
-                Node(
+                LifecycleNode(
                     package="openral_world_state",
                     executable="instance_mask_propagator_node",
                     name="openral_instance_mask_propagator",
+                    namespace="",
                     arguments=["--camera", tracked_cameras[0]],
                     parameters=[{"use_sim_time": use_sim_time}],
                     additional_env=otel_env,
                     output="screen",
                 )
             )
+            # configure loads SAM2.1 (two models, a cold HF cache downloads them).
+            autostart.append(_poll_autostart("openral_instance_mask_propagator", 300.0))
 
     if enable_reward_monitor:
         # Reward monitor runs PARALLEL to the VLA (not a lifecycle/VRAM

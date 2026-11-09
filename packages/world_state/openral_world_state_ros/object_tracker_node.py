@@ -146,10 +146,11 @@ def decode_instance_cells(
 
 
 def image_array(msg: Any) -> NDArray[Any]:  # reason: duck-typed sensor_msgs/Image
-    """Decode a ``sensor_msgs/Image`` into ``(H, W)``: depth in metres, or ``mono8``.
+    """Decode a ``sensor_msgs/Image``: ``(H, W)`` metres or ``mono8``, or ``(H, W, 3)`` RGB.
 
     ``32FC1`` (metres) and ``16UC1`` (millimetres) become float64 metres (``0`` stays the
-    REP-118 "no return"); ``mono8`` stays ``uint8``. Row padding (``step``) is honoured.
+    REP-118 "no return"); ``mono8`` stays ``uint8``; ``rgb8`` / ``bgr8`` / ``rgba8`` /
+    ``bgra8`` become ``uint8`` RGB (alpha dropped). Row padding (``step``) is honoured.
 
     Raises:
         ROSConfigError: On another encoding or a payload shorter than ``step * height``.
@@ -161,19 +162,33 @@ def image_array(msg: Any) -> NDArray[Any]:  # reason: duck-typed sensor_msgs/Ima
         ... )
         >>> image_array(m).tolist()
         [[1.0, 0.0]]
+        >>> m = SimpleNamespace(encoding="bgra8", height=1, width=1, step=8, data=bytes(range(8)))
+        >>> image_array(m).tolist()
+        [[[2, 1, 0]]]
     """
-    kinds = {"32FC1": ("<f4", 1.0), "16UC1": ("<u2", 1e-3), "mono8": ("u1", None)}
+    kinds = {
+        "32FC1": ("<f4", 1, 1.0), "16UC1": ("<u2", 1, 1e-3), "mono8": ("u1", 1, None),
+        "rgb8": ("u1", 3, None), "bgr8": ("u1", 3, None),
+        "rgba8": ("u1", 4, None), "bgra8": ("u1", 4, None),
+    }  # fmt: skip
     kind = kinds.get(str(msg.encoding))
     if kind is None:
         raise ROSConfigError(f"image_array: unsupported encoding {msg.encoding!r}.")
-    dtype, scale = kind
+    dtype, ch, scale = kind
     h, w, step = int(msg.height), int(msg.width), int(msg.step)
     raw = np.frombuffer(bytes(msg.data), dtype=np.uint8)
     if raw.size < step * h:
         raise ROSConfigError(f"image_array: {raw.size} bytes for {h} rows of {step}.")
     item = np.dtype(dtype).itemsize
-    rows = raw[: step * h].reshape(h, step)[:, : w * item]
-    arr = np.ascontiguousarray(rows).view(dtype).reshape(h, w)
+    rows = raw[: step * h].reshape(h, step)[:, : w * item * ch]
+    arr = (
+        np.ascontiguousarray(rows).view(dtype).reshape(h, w, ch)
+        if ch > 1
+        else (np.ascontiguousarray(rows).view(dtype).reshape(h, w))
+    )
+    if ch > 1:
+        rgb = arr[..., [2, 1, 0]] if str(msg.encoding).startswith("bgr") else arr[..., :3]
+        return np.ascontiguousarray(rgb)
     return arr.copy() if scale is None else arr.astype(np.float64) * scale
 
 
@@ -295,9 +310,21 @@ def contrast_query(label: str, contrast: Sequence[str]) -> str:
         'orange, can, box'
         >>> contrast_query("soup can", ["can", "box"])
         'soup can, box'
+        >>> contrast_query("orange, citrus", ["can", "orange peel"])
+        'orange, citrus, can'
     """
-    own = set(label.lower().split())
+    own = {w for name in _names(label) for w in name.split()}
     return ", ".join([label, *(c for c in contrast if not own & set(c.lower().split()))])
+
+
+def _names(label: str) -> set[str]:
+    """The class names a comma-joined prompt asks for (label and synonyms), lower-cased.
+
+    Example:
+        >>> sorted(_names("Orange, citrus"))
+        ['citrus', 'orange']
+    """
+    return {n.strip().lower() for n in label.split(",") if n.strip()}
 
 
 def contrasted(metadata_json: str, label: str, low_score: float) -> str:
@@ -326,6 +353,8 @@ def contrasted(metadata_json: str, label: str, low_score: float) -> str:
         [0.2]
         >>> len(json.loads(contrasted(md(can, sure), "orange", 0.3))["detections"])
         1
+        >>> len(json.loads(contrasted(md(sure), "orange, citrus", 0.3))["detections"])
+        1
     """
     if not metadata_json:
         return metadata_json
@@ -337,11 +366,14 @@ def contrasted(metadata_json: str, label: str, low_score: float) -> str:
         union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy
         return ix * iy / union if union > 0 else 0.0
 
-    others = [d for d in md.detections if d.label != label]
+    # A detector labels each box with ONE class of the prompt ("orange" or "citrus" for
+    # "orange, citrus"): every one of them is the query's.
+    names = _names(label)
+    others = [d for d in md.detections if d.label.strip().lower() not in names]
     keep = [
         d
         for d in md.detections
-        if d.label == label
+        if d.label.strip().lower() in names
         and (
             d.confidence >= low_score
             or not any(

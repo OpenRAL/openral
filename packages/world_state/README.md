@@ -27,6 +27,7 @@ ros2 run openral_world_state world_state_node \
 | `scripts/world_state_node` | Console entry point for `ros2 run`. |
 | `openral_world_state_ros/object_tracker_node.py` | The #418 object-tracker lifecycle node (see "Object tracker" below). Wraps `openral_world_state.object_tracker.TrackerSession`. |
 | `scripts/object_tracker_node` | Its console entry point. |
+| `openral_world_state_ros/instance_mask_propagator_node.py` | EXPERIMENT (pro#51, sim-only, `DeployRuntime.instance_cells`): the instance mask propagator lifecycle node (see "Vision + voxel fusion" below). |
 | `CMakeLists.txt` | `ament_cmake_python` install for the Python package + script. |
 | `package.xml` | ROS package manifest (depends on `openral_msgs` for the `WorldStateStamped` IDL). |
 
@@ -265,6 +266,20 @@ Clocks: every lifetime runs on source stamps (depth, grid `source_stamp`, joint 
 grasp events); the segmenter rate and budget on wall time. Revisions are seeded from wall
 time at every activate, so a restarted tracker never regresses one (the kernel refuses a
 regressing `tracked_objects` revision until it is re-activated).
+
+### Vision + voxel fusion (EXPERIMENT, pro#51)
+
+`DeployRuntime.instance_cells: true` (sim only; refused with tracking `off`) starts
+`openral_instance_mask_propagator` beside the tracker. It follows each TARGET / DESTINATION
+track with a SAM2.1 video mask, seeded from a CONFIRMED track's projected box only (any other
+status keeps its mask or loses it; never re-seeded on a stale box), lifts the mask minus robot
+pixels through the aligned depth at that depth stamp's TF into `/openral/world_voxels`
+cells, and publishes them per track on `/openral/instance_cells` (`openral_msgs/InstanceCells`).
+`configure` loads SAM2, `activate` starts it, `deactivate` / `cleanup` drop every mask; a
+tracker re-activation or a clock reset starts a new episode. The tracker fits those tracks'
+boxes to the cells (`ObjectTracker.apply_instance_cells`) and re-finds a released target once
+within `recent_s`. Thresholds: the `vision` section of `tracking_thresholds.yaml`. Safety-WG
+review owed.
 
 Covered by `tests/unit/test_object_tracker_session.py` and the live
 `tests/integration/test_object_tracker_node_live.py` (real tracker + World State nodes:
