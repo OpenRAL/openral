@@ -32,6 +32,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
+import structlog
+from openral_core import RobotManifest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs
 from opentelemetry.proto.metrics.v1.metrics_pb2 import Metric, ResourceMetrics
@@ -40,6 +42,8 @@ from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, Span
 from openral_observability import semconv
 
 __all__ = ["TelemetryEvent", "TelemetryStore"]
+
+_logger = structlog.get_logger(__name__)
 
 _EVENT_RING_SIZE = 200
 # A SEPARATE, protected ring for error/fatal events. The main ring is a single
@@ -471,6 +475,10 @@ class TelemetryStore:
             "reasoner": {},
             "trace": {},  # latest_trace_id
         }
+        # The latest robot manifest (ADR-0129 Interface A), from its OTLP log record.
+        # ``_manifest_rev`` rides on every snapshot so the UI knows to refetch it.
+        self._manifest: RobotManifest | None = None
+        self._manifest_rev = 0
         self._subscribers: list[asyncio.Queue[dict[str, Any]]] = []
         # We notify subscribers via the loop that created them. The
         # receiver may run in a worker thread (uvicorn worker pool);
@@ -534,7 +542,7 @@ class TelemetryStore:
             self._publish(snapshot_payload)
         return recorded
 
-    def ingest_logs(self, payload: list[ResourceLogs]) -> int:
+    def ingest_logs(self, payload: list[ResourceLogs], *, trust_manifest: bool = True) -> int:
         """Decode + record a batch of ``ResourceLogs`` as event-log rows.
 
         Each OTLP ``LogRecord`` becomes one ``TelemetryEvent``: the
@@ -548,6 +556,10 @@ class TelemetryStore:
         event ring as spans/span-events; the UI defaults the Debug chip
         off so high-rate DEBUG (e.g. world_state ~30 Hz) stays opt-in and
         does not crowd the 60-event view.
+
+        A robot-manifest record is applied only with ``trust_manifest`` (loopback
+        ingest): the manifest decides which actions exist, so another host on the LAN
+        must not be able to rewrite it (ADR-0129).
 
         Returns the number of log records recorded.
         """
@@ -566,7 +578,13 @@ class TelemetryStore:
                 for scope_logs in resource_logs.scope_logs:
                     scope_name = scope_logs.scope.name or "log"
                     for record in scope_logs.log_records:
-                        self._record_log(record, scope_name, identity)
+                        if record.event_name == semconv.EVENT_ROBOT_MANIFEST:
+                            if trust_manifest:
+                                self._set_manifest(record)
+                            else:
+                                _logger.warning("dashboard.manifest_refused", reason="not loopback")
+                        else:
+                            self._record_log(record, scope_name, identity)
                         recorded += 1
             if recorded:
                 self._last_ingest_ts = time.time()
@@ -581,6 +599,19 @@ class TelemetryStore:
         """Return a plain-dict snapshot of the current state."""
         with self._lock:
             return self._snapshot_locked()
+
+    def manifest(self) -> RobotManifest | None:
+        """The latest robot manifest, or ``None`` until the runtime has sent one."""
+        with self._lock:
+            return self._manifest
+
+    def set_manifest(self, manifest: RobotManifest) -> None:
+        """Serve ``manifest`` (the launch's ``--manifest`` file) until a fresher record arrives."""
+        with self._lock:
+            self._manifest = manifest
+            self._manifest_rev += 1
+            payload = self._snapshot_locked()
+        self._publish(payload)
 
     def set_estopped(self, value: bool) -> None:
         """Force the e-stop latch flag from an authoritative operator action.
@@ -912,6 +943,16 @@ class TelemetryStore:
                 severity=_log_level(int(record.severity_number), record.severity_text),
             )
         )
+
+    def _set_manifest(self, record: LogRecord) -> None:
+        """Cache a robot-manifest log record's body; a malformed one keeps the last good one."""
+        try:
+            manifest = RobotManifest.model_validate_json(str(_attr_value(record.body)))
+        except ValueError as exc:
+            _logger.warning("dashboard.manifest_invalid", error=str(exc))
+            return
+        self._manifest = manifest
+        self._manifest_rev += 1
 
     def _index_span(
         self, span: Span, trace_id_hex: str, ts_unix: float, attrs: dict[str, Any]
@@ -1383,6 +1424,7 @@ class TelemetryStore:
             "events": [e.to_json() for e in self._merged_events()],
             "counters": dict(self._counters),
             "metrics": [s.to_json() for s in self._metrics.values()],
+            "manifest_rev": self._manifest_rev,
         }
 
     def _publish(self, payload: dict[str, Any]) -> None:

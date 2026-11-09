@@ -21,6 +21,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
+from opentelemetry._logs import LoggerProvider, LogRecord, SeverityNumber, get_logger
 
 from openral_observability import semconv
 from openral_observability.compliance import images_may_leave_host
@@ -30,9 +31,11 @@ from openral_observability.compliance import images_may_leave_host
 _RGB_CHANNELS = 3
 
 if TYPE_CHECKING:
+    from openral_core import RobotManifest
     from opentelemetry.trace import Span
 
 __all__ = [
+    "emit_robot_manifest",
     "encode_frame_thumbnail",
     "encode_rgb_thumbnail",
     "modality_for_encoding",
@@ -416,3 +419,21 @@ def encode_frame_thumbnail(frame: Any, *, flip_180: bool = False) -> bytes | Non
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=_THUMB_JPEG_QUALITY)
     return buf.getvalue()
+
+
+def emit_robot_manifest(
+    manifest: RobotManifest, *, logger_provider: LoggerProvider | None = None
+) -> None:
+    """Send the robot manifest as one OTLP log record (ADR-0129 Interface A).
+
+    ``event_name`` is ``semconv.EVENT_ROBOT_MANIFEST`` and the body is the manifest's
+    JSON, which the dashboard caches and serves as ``GET /api/manifest``. A no-op with
+    no OTLP endpoint configured, like every other emitter here.
+    """
+    get_logger("openral.robot", logger_provider=logger_provider).emit(
+        LogRecord(
+            event_name=semconv.EVENT_ROBOT_MANIFEST,
+            severity_number=SeverityNumber.INFO,
+            body=manifest.model_dump_json(by_alias=True),
+        )
+    )

@@ -85,6 +85,12 @@ in full so the posture stays visible although the records are private:
   refuse to load without Pro, with a typed error naming it. Pro plugs in as
   `openral.pro_modules: quantization`
   (`python/rskill/src/openral_rskill/quantization_gate.py`).
+- **The robot dashboard's sign-in check is open** (`ADR-0129`): the robot-side
+  token validation, roles, the remote (tunnel) listener and the action audit live
+  in `openral-observability`, because free users get one remote robot. Every Pro
+  limit — how many robots, teammates and roles, fleet mode, the compliance
+  history — is enforced by openral.com when it issues tunnels and tokens; there
+  is no Pro plugin on the robot.
 - Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
   own upstream license, independent of OpenRAL's code license. This is
   compliance for models OpenRAL doesn't own, not a statement about

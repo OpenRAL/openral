@@ -3,7 +3,7 @@
 The dashboard stays a passive OTLP receiver: this module lets it (1) advertise
 its OTLP endpoint on the LAN so a discovery-capable workload can find it
 without a hand-typed endpoint, and (2) browse for other advertised OpenRAL
-services and surface them in the "Add Robot" panel.
+services and list them at ``GET /api/robots``.
 
 ``zeroconf`` is an optional dependency (the ``mdns`` extra). When it is not
 importable, ``Discovery`` stays disabled and the dashboard runs exactly as

@@ -18,6 +18,9 @@ build/
 htmlcov/
 *.cover
 
+# Node (the robot UI, python/observability/ui; its build output is dist/, ignored above)
+node_modules/
+
 # uv
 .venv/
 .venv-*/  # isolated sidecar dev venvs (e.g. .venv-la for the LocateAnything sidecar)
@@ -93,14 +96,6 @@ docker/inference/deepstream/*.tbz2
 # path; harmless to keep ignored after the consolidation lands.
 docker/inference/deepstream_sdk_v*.tbz2
 .cache/
-
-# Dashboard voice-prompt (VAD) binary assets — fetched + sha256-verified at
-# first `openral dashboard` start by openral_observability.dashboard.vad_assets
-# into $OPENRAL_CACHE_DIR and hard-linked/copied here; see NOTICE.md in this
-# directory. The small JS glue files alongside these stay committed.
-python/observability/src/openral_observability/dashboard/static/vendor/vad/ort-wasm-simd-threaded.wasm
-python/observability/src/openral_observability/dashboard/static/vendor/vad/silero_vad_v5.onnx
-python/observability/src/openral_observability/dashboard/static/vendor/vad/silero_vad_legacy.onnx
 
 # rSkill ONNX weights — binary artefacts reproduced locally via tools/export_rtdetr_onnx.py
 # ; provenance (sha256 + export command) recorded in rskills/*/README.md.

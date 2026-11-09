@@ -511,7 +511,11 @@ safety code changed.
 | `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS` | 30 | `BatchSpanProcessor` flush — ~1.3× the thumbnail rate so the dashboard does not alias |
 | `OPENRAL_ROS2_TRACING` | off | LTTng tracepoints |
 | `OPENRAL_JAEGER_UI_URL` | unset | Enables the trace deep-link in the dashboard header |
-| `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off | Enables `POST /api/skill/execute` and `/api/param/set` |
+| `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off | `1` offers and runs the installed rSkills as dashboard actions (`skill:<id>`) |
+| `OPENRAL_DASHBOARD_REMOTE_CONTROL` | off | `1` lets signed-in operators reset, prompt and run skills over the robot's tunnel (E-STOP always may) |
+| `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` | openral.com's origins | Origins the tunnel listener answers (CORS + `/ws` upgrade) |
+| `OPENRAL_DASHBOARD_UI_DIR` | unset | Serve a local robot-UI build at `/` instead of the pinned release |
+| `OPENRAL_ROBOT_ENROLMENT` | `~/.config/openral/robot.json` | The enrolment `openral robot link` writes; opens the remote listener |
 | `OPENRAL_UNIT_SERIAL` | unit file's `serial` | `openral.unit.serial`; **required** for a hardware deploy |
 | `OPENRAL_ORG_ID` | unit file's `org_id` | `openral.org.id` |
 | `OPENRAL_SITE_ID` | unset | `openral.site.id` |
@@ -529,7 +533,7 @@ are always-on even on real hardware.
 
 | Sink | Transport | Notes |
 |---|---|---|
-| In-tree dashboard | OTLP/HTTP → `127.0.0.1:4318` | Default for `deploy sim`; SSE to the browser; MJPEG re-serve of thumbnails |
+| In-tree dashboard | OTLP/HTTP → `127.0.0.1:4318` | Default for `deploy sim`; SSE to the browser; camera thumbnails re-served as JPEG snapshots; caches the `openral.robot.manifest` log record |
 | otel-collector-contrib | OTLP → `:4317` | `docker-compose.dev.yml`; traces→Jaeger, metrics→Prometheus, logs→debug |
 | Jaeger | via collector | UI on `:16686` |
 | Prometheus | scrapes `otelcol:8889` | 5 s interval, 2 h retention |

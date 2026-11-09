@@ -7,46 +7,67 @@ Layer 6 (Observability) is fully shipped — traces + metrics + structlog→OTLP
 ### `python/reasoner/src/openral_reasoner/tool_use.py`
 _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` union is the sole planner output._
 
-- module constant `DEFAULT_SYSTEM_PROMPT: str` — Base S2 system prompt: one-tool-per-tick, safe skill selection, never bypass e-stop, exact field names, `wait` while a skill runs. Deployments may override. (L96)
-- module constants `ANTHROPIC_BASE_URL` / `OPENROUTER_BASE_URL` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` / `GEMINI_BASE_URL` / `XAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `HUGGINGFACE_BASE_URL: str` — Named-endpoint base URLs; canonical copy now lives in `openral_core.schemas`, re-exported here unchanged.
-- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L655)
-- module constant `SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"` (L450) — env var that overrides the base operating brief; honoured by `resolve_reasoner_system_prompt`.
-- `render_robot_context_prompt(capabilities: RobotCapabilities | None, *, base_prompt=DEFAULT_SYSTEM_PROMPT) -> str` (L339) — Appends a deterministic `## THIS ROBOT` body-awareness block (embodiment, locomotion, manipulation/sensing, payload, control modes) to the prompt; `None` returns `base_prompt` unchanged. No cell geometry is listed: place surfaces are measured, not surveyed.
-- `resolve_reasoner_system_prompt(capabilities: RobotCapabilities | None, *, env=None) -> str` (L453) — Composes the full reasoner system prompt (env override or default base brief + `## THIS ROBOT` block). `env` is injectable for tests; called from `ReasonerNode.on_configure`.
-- `class ToolUseClient(Protocol)` (L500) — LLM tool-use client contract: `model_id`, optional `last_prompt_tokens`. Raises `ROSReasonerInvalidPlan` on a bad/mismatched tool call, `ROSPlanningError` on transport failure.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L522) — Pick exactly one `ReasonerToolCall` for `context_text`.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L554) — Ask the model a free-text question about a single camera frame.
-- `class OpenAICompatibleToolUseClient` — OpenAI-compatible tool-use client. `tool_choice='auto'` covers endpoints that reject `'required'` (retries once on a prose reply); `max_tokens` optionally caps completion tokens, else the endpoint default applies.
-- module constant `REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"` (L588)
-- module constant `REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"` (L589)
-- module constant `REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"` (L590)
-- module constant `REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"` (L591)
-- module constant `REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"` (L592)
-- module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L593) — model-first env names (ADR-0088).
-- module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L602) — `auto`/`required` override for the uncurated bare-URL `openai` path only; validated on every path via `openral_core.parse_reasoner_tool_choice`, and ignored with a `reasoner.tool_choice_ignored` warning elsewhere.
-- module constant `REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"` (L595) — per-tick skill-tool cap override read by `resolve_max_skill_tools`; `0` = no cap.
-- `resolve_max_skill_tools(client) -> int | None` (L727) — The per-tick skill-tool cap for the model `client` talks to (#494): `OPENRAL_REASONER_MAX_SKILL_TOOLS` when set (`0` → `None`, negative / non-integer → `ROSConfigError`), else the `max_skill_tools` of the curated `ReasonerModel` whose `served_model_id` is `client.model_id`, else `None`. Keyed on the built (or injected) client so the two cannot disagree; `ReasonerNode.on_configure` resolves it right after building the client, before any resource opens.
-- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. (L658)
-- `class AnthropicToolUseClient` (L1604) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1693) — Call Anthropic and decode the resulting tool payload.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1733) — Ask the Anthropic model a free-text question about a camera frame.
+- module constant `DEFAULT_SYSTEM_PROMPT: str` — Base S2 system prompt: one-tool-per-tick, safe skill selection, never bypass e-stop, exact field names, `wait` while a skill runs. Deployments may override. (L100)
+- module constants `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` / `GEMINI_BASE_URL` / `XAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `HUGGINGFACE_BASE_URL: str` — Named-endpoint base URLs; canonical copy now lives in `openral_core.schemas`, re-exported here unchanged.
+- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L823)
+- module constant `SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"` (L454) — env var that overrides the base operating brief; honoured by `resolve_reasoner_system_prompt`.
+- `render_robot_context_prompt(capabilities: RobotCapabilities | None, *, base_prompt=DEFAULT_SYSTEM_PROMPT) -> str` (L343) — Appends a deterministic `## THIS ROBOT` body-awareness block (embodiment, locomotion, manipulation/sensing, payload, control modes) to the prompt; `None` returns `base_prompt` unchanged. No cell geometry is listed: place surfaces are measured, not surveyed.
+- `resolve_reasoner_system_prompt(capabilities: RobotCapabilities | None, *, env=None) -> str` (L457) — Composes the full reasoner system prompt (env override or default base brief + `## THIS ROBOT` block). `env` is injectable for tests; called from `ReasonerNode.on_configure`.
+- `class ToolUseClient(Protocol)` (L504) — LLM tool-use client contract: `model_id`, optional `last_prompt_tokens`. Raises `ROSReasonerInvalidPlan` on a bad/mismatched tool call, `ROSPlanningError` on transport failure.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L526) — Pick exactly one `ReasonerToolCall` for `context_text`.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L558) — Ask the model a free-text question about a single camera frame.
+- `class OpenAICompatibleToolUseClient` — OpenAI-compatible tool-use client. `tool_choice='auto'` covers endpoints that reject `'required'` (nudges once on a prose reply, then raises `ROSReasonerInvalidPlan`); `max_tokens` optionally caps completion tokens, else the endpoint default applies; `max_tokens_param` names the cap field, switched to `max_completion_tokens` at runtime when the endpoint asks for it.
+- module constant `REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"` (L592)
+- module constant `REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"` (L593)
+- module constant `REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"` (L594)
+- module constant `REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"` (L595)
+- module constant `REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"` (L596)
+- module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L597) — model-first env names (ADR-0088).
+- module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L608) — `auto`/`required` override for an uncurated model on a bare-URL `openai` endpoint or on the `anthropic` dialect (`required` → Anthropic `any`); validated on every path via `openral_core.parse_reasoner_tool_choice`, and ignored with a `reasoner.tool_choice_ignored` warning for curated models and named `openai` endpoints.
+- module constant `_ANTHROPIC_UNCURATED_MAX_TOKENS: int = 16000` — completion cap for an uncurated `anthropic` model with no `OPENRAL_REASONER_MAX_TOKENS` (thinking counts against it).
+- module constant `_NO_TOOL_CALL_NUDGE: str` — the one-shot follow-up sent when a `tool_choice='auto'` model answers in prose.
+- `_rejects_forced_tool_choice(exc) -> bool` — True for a provider HTTP 400 worded as a forced-tool-use refusal (Claude 5's `"any"` refusal, thinking-mode gateways, the HF router, thinking-with-forced-tool), not any 400 that merely mentions `tool_choice` or its `disable_parallel_tool_use` sub-field; triggers the runtime `required` → `auto` retry.
+- `_rejects_max_tokens(exc) -> bool` — True for an OpenAI 400 asking for `max_completion_tokens`.
+- `_prose_reply_error(text, *, model_id) -> ROSReasonerInvalidPlan` — The error for an `auto` reply with no tool call after the nudge (#522): quotes the text (whitespace-collapsed, ≤300 chars) so the node feeds it back into `## EXECUTION`; logged `reasoner.no_tool_call`. Not a `wait`, which is retry-cap exempt and sends no hint back.
+- `_log_tool_choice_downgrade(model_id, exc) -> None` — The one `reasoner.tool_choice_downgraded` log both clients emit after a successful `auto` retry.
+- `_sum_prompt_tokens(*counts) -> int | None` — Prompt tokens over a tick's calls (the nudge is a second billed call).
+- module constant `_FORCED_TOOL_CHOICE_REFUSALS: tuple[re.Pattern[str], ...]` — Provider wordings of a forced-tool-use refusal that `_rejects_forced_tool_choice` matches.
+- `_openai_tool_calls(choices) -> list` / `_openai_may_nudge(choices) -> bool` — First choice's tool calls; whether a tool-less reply is nudge-worthy (not `length` / `content_filter`).
+- `_anthropic_tool_use_block(response)` / `_anthropic_may_nudge(response) -> bool` — First `tool_use` block or `None`; whether a tool-less reply is nudge-worthy (not `refusal` / `max_tokens`).
+- module constant `REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"` (L599) — per-tick skill-tool cap override read by `resolve_max_skill_tools`; `0` = no cap.
+- `resolve_max_skill_tools(client) -> int | None` (L898) — The per-tick skill-tool cap for the model `client` talks to (#494): `OPENRAL_REASONER_MAX_SKILL_TOOLS` when set (`0` → `None`, negative / non-integer → `ROSConfigError`), else the `max_skill_tools` of the curated `ReasonerModel` whose `served_model_id` is `client.model_id`, else `None`. Keyed on the built (or injected) client so the two cannot disagree; `ReasonerNode.on_configure` resolves it right after building the client, before any resource opens.
+- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. (L826)
+- `class AnthropicToolUseClient` (L1825) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable. `tool_choice` `required` (sent as `any`) or `auto`; a forced-tool-use refusal downgrades to `auto` for the client's life once an `auto` retry succeeds (`reasoner.tool_choice_downgraded`).
+  - `_create(self, client, **kwargs)` — `messages.create` with the current `tool_choice`, retried once as `auto` on a forced-tool-use refusal; the downgrade is kept only if that retry succeeds.
+  - `_wire_tool_choice(self) -> dict` — `{"type": "any"|"auto", "disable_parallel_tool_use": True}`.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1953) — Call Anthropic and decode the resulting tool payload; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a refusal or `max_tokens` cut-off raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2030) — Ask the Anthropic model a free-text question about a camera frame.
 - `_anthropic_response_text(response) -> str` — Concatenate all text blocks so thinking-enabled responses do not lose an answer after a leading thinking block.
-- `class OpenAICompatibleToolUseClient` (L1780) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1865) — Call the OpenAI-compatible endpoint and decode the tool call.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1940) — Ask an OpenAI-compatible model a free-text question about a frame.
+- `class OpenAICompatibleToolUseClient` (L2077) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2172) — Call the OpenAI-compatible endpoint and decode the tool call; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a `length` / `content_filter` finish raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
+  - `_complete(self, client, messages, tools) -> tuple[list, Any]` — One `chat.completions.create`, adapting at runtime to a forced-tool-use refusal (→ `auto`) and a `max_completion_tokens` 400; each adaptation is logged and kept only after a call made with it succeeds.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2289) — Ask an OpenAI-compatible model a free-text question about a frame.
+- `class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient)` (L2351) — `ToolUseClient` over OpenAI's Responses API (`/v1/responses`), built for the `openai` endpoint: OpenAI's reasoning models take function tools only there. Same tick contract as the Chat Completions client (forced call, runtime `auto` downgrade, one nudge then `ROSReasonerInvalidPlan`, refusal / `max_output_tokens` cut-off → `ROSPlanningError`); `store=False`, `parallel_tool_calls=False`, reasoning left at the model default, `max_tokens` sent as `max_output_tokens`.
+  - `_respond(self, client, instructions, inputs, tools)` — One `responses.create`, retried once as `auto` on a forced-tool-use refusal.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2416) — Call the Responses API and decode the `function_call` output item.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2459) — Frame question as `input_text` + `input_image` over the Responses API.
+- `_openai_client_cls(preset, base_url) -> type[OpenAICompatibleToolUseClient]` — Responses client for OpenAI's own API (`preset.wire_api == "responses"`, or its URL spelled out), Chat Completions client for every other openai-dialect endpoint.
+- `_decode_function_call(name, raw_arguments, palette) -> ReasonerToolCall` — Shared JSON-arguments check (malformed / non-object → `ROSReasonerInvalidPlan`) then `_decode_tool_payload`, for both OpenAI wire APIs.
+- `_tool_palette_to_responses_tools(palette) -> list[dict]` — The palette as flat Responses-API function tools with `strict: False`.
+- `_responses_function_call(response)` / `_responses_text(response) -> str` / `_responses_refusal(response) -> str | None` / `_responses_may_nudge(response) -> bool` — Responses output readers: first `function_call` item; concatenated `output_text`; refusal text; whether a tool-less reply is nudge-worthy (complete, not refused, no error).
 - `_tool_palette_to_anthropic_tools(palette) -> list[dict]` — Render the closed palette, including `WaitTool`; per-skill names use collision-resistant `execute_rskill__<slug>_<sha1-8>`. `lifecycle_transition`'s `node` carries `enum: sorted(palette.node_ids)` (the decoder refuses anything else); with no peers its description says every call is refused.
 - `_tool_palette_to_openai_tools(palette) -> list[dict]` — Convert the same surface to OpenAI function shape without leaking the Anthropic-only `input_schema` key.
 - `_decode_tool_payload(*, tool_name, arguments, palette) -> ReasonerToolCall` — Validate provider output against the union + palette; per-skill names resolve through the same hashed mapping used to render them. A `lifecycle_transition` whose `node` is not in `palette.node_ids` raises `ROSReasonerInvalidPlan`.
-- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L1024)
-- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L1027)
-- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L1030)
-- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores. (L1047)
-- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1111)
-- `class _LLMSchemaGenerator(GenerateJsonSchema)` — Pydantic schema generator behind `_llm_schema`: drops the auto-generated `title` of every field/model/enum and model/enum docstring `description`s (an explicit `Field(title=...)` and dataclass/TypedDict schemas keep theirs). (L1076)
-- `_llm_schema_json(model: type[BaseModel]) -> str` — `functools.cache`d JSON string of the stripped schema, one per class; `_llm_schema` parses a fresh dict from it. (L1106)
-- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint. Each returns the list it rendered or read, never a re-read of the shared cache, so overlapping calls cannot swap palettes. (L1657)
-- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1483)
-- module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L336) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
+- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L1232)
+- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L1235)
+- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L1238)
+- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores. (L1255)
+- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1319)
+- `class _LLMSchemaGenerator(GenerateJsonSchema)` — Pydantic schema generator behind `_llm_schema`: drops the auto-generated `title` of every field/model/enum and model/enum docstring `description`s (an explicit `Field(title=...)` and dataclass/TypedDict schemas keep theirs). (L1284)
+- `_llm_schema_json(model: type[BaseModel]) -> str` — `functools.cache`d JSON string of the stripped schema, one per class; `_llm_schema` parses a fresh dict from it. (L1314)
+- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint. Each returns the list it rendered or read, never a re-read of the shared cache, so overlapping calls cannot swap palettes. (L1892)
+- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1691)
+- module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L340) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
 
 ### `python/reasoner/src/openral_reasoner/cosmos3.py`
 _NVIDIA Cosmos 3 reasoner backend (`OPENRAL_REASONER_MODEL=cosmos3-edge`), the physical-AI-native S2 planner. Runs the on-device 4B Edge tier behind an OpenAI-compatible endpoint, so the typed tool-use contract is unchanged. Companion boot helper: `tools/cosmos3_reasoner_sidecar.py`._
@@ -77,7 +98,7 @@ _Closed-set `ToolPalette` + builder. Three tool variants (reload_gst_pipeline / 
 - `locate_in_view_service(detector, *, default="") -> str` (L202) — Resolves the `locate_in_view` service for a (possibly empty) selector: empty → `default`; unresolved alias → the legacy single-detector service; else the namespaced service.
 - `resolve_locate_in_view_detector(detector, *, known_aliases) -> str` (L164) — Normalizes an LLM-supplied `detector` value to `""` when it names no configured on-demand locator, so an unrecognised alias degrades to the deployment default instead of a service that never existed.
 - `class ToolPalette(BaseModel)` (L285) — Frozen palette presented to the LLM each tick: primary `skills`, back-compat `execute_rskill_ids` (auto-derived), sensor/node ids, `continuous_detectors` (coverage), and availability flags gating the read-only tools — `spatial_memory_available` (`recall_object`/`resolve_place`), `detector_available` (`locate_in_view`, with `on_demand_detectors` as its options), `scene_query_available` (`query_scene`, independent of detection), `memory_available` (`memory_write`/`memory_search`). A cross-validator rejects `skills`/`execute_rskill_ids` passed with disagreeing ids.
-- `build_tool_palette(*, installed_skills, robot_capabilities, sensor_ids=(), node_ids=(), commercial_deployment=False, spatial_memory_available=False, detector_available=False, scene_query_available=False, task_progress_available=False, memory_available=False) -> ToolPalette` (L419) — Builds the palette: a skill qualifies when its `kind` is in `EXECUTE_RSKILL_KINDS` (the set the runner dispatches) and its capability/embodiment/license checks pass. A `continuous` detector becomes coverage only; `on_demand` becomes a `locate_in_view` option; `segmenter` is dropped and surfaced nowhere. Output is id-sorted for a deterministic tool schema.
+- `build_tool_palette(*, installed_skills, robot_capabilities, sensor_ids=(), node_ids=(), commercial_deployment=False, spatial_memory_available=False, detector_available=False, scene_query_available=False, task_progress_available=False, memory_available=False) -> ToolPalette` (L419) — Builds the palette: a skill qualifies when `openral_core.rskill_matches_robot` admits it (not the scaffold, `kind` in `EXECUTE_RSKILL_KINDS`, embodiment/capability/license checks) — the predicate the robot manifest's `skill:*` actions share (ADR-0129). A `continuous` detector becomes coverage only; `on_demand` becomes a `locate_in_view` option; `segmenter` is dropped and surfaced nowhere. Output is id-sorted for a deterministic tool schema.
 - `task_space_disagreement(manifest, description, hal_mode, legacy_ok) -> str | None` (L54) — Warn-only shadow gate: compares the canonical `task_space_compatible` verdict against the caller's `legacy_ok`, returning a warning string only on disagreement (`None` otherwise, including for non-actuating skills). Surfaces cross-layer mismatches without changing the drop/publish decision.
 
 ### `python/reasoner/src/openral_reasoner/skill_subset.py`
@@ -576,44 +597,44 @@ _Derive a cuRobo (cuMotion) robot-config from the lowered collision geometry. Pu
 ### `packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py`
 _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.ReasonerCore`._
 
-- module constants `_FAILURE_SOURCES`, `_PERCEPTION_KINDS` — closed sets: `hal/sensor/rskill/safety/wam/critic` and `motion/objects/ocr/scene_change`. (L288)
-- module constant `_PERCEPTION_KINDS: tuple[str, ...]` (L297) — `("motion", "objects", "ocr", "scene_change")`.
-- module constant `_QOS_WORLD_STATE` (L231) — `KEEP_LAST=1, RELIABLE, VOLATILE`, the `/openral/world_state_slow` subscription QoS.
-- module constant `_QOS_FAILURE` (L237) — `KEEP_LAST=50, RELIABLE, VOLATILE`, the six `/openral/failure/*` subscription QoS.
-- module constant `_QOS_PERCEPTION` (L243) — `KEEP_LAST=10, BEST_EFFORT, VOLATILE`, the four perception-topic subscription QoS.
-- module constant `_QOS_PROMPT` (L249) — `KEEP_LAST=10, RELIABLE, VOLATILE`, the `/openral/prompt` publisher/subscription QoS.
-- module constant `_QOS_MAP` (L267) — `KEEP_LAST=1, RELIABLE, TRANSIENT_LOCAL`, the latched `/map` subscription QoS.
-- module constant `_QOS_COMPLETION_CAMERA` (L278) — `KEEP_LAST=1, BEST_EFFORT, VOLATILE`, the VLM completion-camera subscription QoS.
-- module constants `_KIND_TIMEOUT`, `_KIND_CONTROLLER`, `_SEVERITY_WARN`, `_SEVERITY_FAIL` — IDL-mirror constants for `openral_msgs/FailureTrigger`, kept inline (not the `failure_bus` helper) so the reasoner emits without pulling the rate-limiter into the dispatch path. (L323)
-- module constant `_KIND_CONTROLLER: int = 5` (L324)
-- module constant `_SEVERITY_WARN: int = 1` (L326)
-- module constant `_SEVERITY_FAIL: int = 2` (L333)
-- module constant `_SKILL_FAILURE_KIND_NAMES: dict[int, str]` (L339) — `{_KIND_TIMEOUT: "timeout", _KIND_CONTROLLER: "controller"}`, kind-derived failure-state names for `_emit_skill_failure_event`.
-- module constants `_EXECUTE_SKILL_SERVER_PROBE_S`, `_LIFECYCLE_SERVER_PROBE_S` — 100 ms `wait_for_server` / `wait_for_service` probes so an absent server/peer can't block the executor thread. (L350)
-- module constant `_LIFECYCLE_SERVER_PROBE_S: float = 0.1` (L352)
-- module constant `_MISSION_VERIFY_WINDOW_S: float = 40.0` (L306) — fallback verify window when the active `RewardContract` sets no `frame_window_s`.
-- module constant `_DEFAULT_SUCCESS_THRESHOLD: float = 0.8` (L315) — fallback reward-gate `success_threshold` when no `RewardContract` is loaded.
-- module constant `_DEFAULT_CHECK_FLOOR: float = 0.5` (L316) — fallback reward-gate `check_floor` when no `RewardContract` is loaded.
-- module constant `_FAILURE_TIER_FOR_SOURCE: dict[str, str]` (L367) — trigger taxonomy mapping each `/openral/failure/<source>` to its tier: `safety → "A"`, `hal/sensor/rskill/wam/world_state → "B"`, `critic → "C"`. Used to stamp `reasoner.tier` on the OTel span; the preemption threshold itself is decided inline in `_on_failure`.
+- module constants `_FAILURE_SOURCES`, `_PERCEPTION_KINDS` — closed sets: `hal/sensor/rskill/safety/wam/critic` and `motion/objects/ocr/scene_change`. (L289)
+- module constant `_PERCEPTION_KINDS: tuple[str, ...]` (L298) — `("motion", "objects", "ocr", "scene_change")`.
+- module constant `_QOS_WORLD_STATE` (L232) — `KEEP_LAST=1, RELIABLE, VOLATILE`, the `/openral/world_state_slow` subscription QoS.
+- module constant `_QOS_FAILURE` (L238) — `KEEP_LAST=50, RELIABLE, VOLATILE`, the six `/openral/failure/*` subscription QoS.
+- module constant `_QOS_PERCEPTION` (L244) — `KEEP_LAST=10, BEST_EFFORT, VOLATILE`, the four perception-topic subscription QoS.
+- module constant `_QOS_PROMPT` (L250) — `KEEP_LAST=10, RELIABLE, VOLATILE`, the `/openral/prompt` publisher/subscription QoS.
+- module constant `_QOS_MAP` (L268) — `KEEP_LAST=1, RELIABLE, TRANSIENT_LOCAL`, the latched `/map` subscription QoS.
+- module constant `_QOS_COMPLETION_CAMERA` (L279) — `KEEP_LAST=1, BEST_EFFORT, VOLATILE`, the VLM completion-camera subscription QoS.
+- module constants `_KIND_TIMEOUT`, `_KIND_CONTROLLER`, `_SEVERITY_WARN`, `_SEVERITY_FAIL` — IDL-mirror constants for `openral_msgs/FailureTrigger`, kept inline (not the `failure_bus` helper) so the reasoner emits without pulling the rate-limiter into the dispatch path. (L324)
+- module constant `_KIND_CONTROLLER: int = 5` (L325)
+- module constant `_SEVERITY_WARN: int = 1` (L327)
+- module constant `_SEVERITY_FAIL: int = 2` (L334)
+- module constant `_SKILL_FAILURE_KIND_NAMES: dict[int, str]` (L340) — `{_KIND_TIMEOUT: "timeout", _KIND_CONTROLLER: "controller"}`, kind-derived failure-state names for `_emit_skill_failure_event`.
+- module constants `_EXECUTE_SKILL_SERVER_PROBE_S`, `_LIFECYCLE_SERVER_PROBE_S` — 100 ms `wait_for_server` / `wait_for_service` probes so an absent server/peer can't block the executor thread. (L351)
+- module constant `_LIFECYCLE_SERVER_PROBE_S: float = 0.1` (L353)
+- module constant `_MISSION_VERIFY_WINDOW_S: float = 40.0` (L307) — fallback verify window when the active `RewardContract` sets no `frame_window_s`.
+- module constant `_DEFAULT_SUCCESS_THRESHOLD: float = 0.8` (L316) — fallback reward-gate `success_threshold` when no `RewardContract` is loaded.
+- module constant `_DEFAULT_CHECK_FLOOR: float = 0.5` (L317) — fallback reward-gate `check_floor` when no `RewardContract` is loaded.
+- module constant `_FAILURE_TIER_FOR_SOURCE: dict[str, str]` (L368) — trigger taxonomy mapping each `/openral/failure/<source>` to its tier: `safety → "A"`, `hal/sensor/rskill/wam/world_state → "B"`, `critic → "C"`. Used to stamp `reasoner.tier` on the OTel span; the preemption threshold itself is decided inline in `_on_failure`.
 - (the `hal_mode == "sim"` gate imports the canonical `openral_core.SIM_EXECUTABLE_CONTROL_MODES` — trimmed to the six packer-implemented modes, see the Layer-0 core entry — rather than a module-local frozenset.)
-- `def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]` (L420) — Pure helper for the deploy-path palette gate. Reads `action_contract` by specificity, from `None` (no constraint) down through representation/slots/legacy `dim`.
-- `def _action_executable(manifest: RSkillManifest, description: RobotDescription, hal_mode: str) -> bool` (L445) — Pure helper: `True` when every `_required_control_modes(manifest)` is in the executable set for `hal_mode` (sim's fixed set, else the robot's declared modes). Empty required set → `True`.
-- `def _state_contract_verdict(manifest: RSkillManifest, n_joints: int, *, policy_state_published: bool) -> _StateContractVerdict` (L483) — Pure helper for the palette's state-contract gate, mirroring the skill runner's `obs["state"]` selection. A `reads_world_state_policy_state` skill needs a `/openral/policy_state` publisher whatever its layout (`"no_policy_state"` drops it; the runner reads and checks the vector every step even when an assembler then overwrites it) and its `dim` is never compared with the joint count. A wrapped layout always needs a registered assembler (`"assembler"`) unless policy state feeds it, else `"no_assembler"`. Otherwise a declared `dim` must equal `n_joints` (`"admit"` / `"dim_mismatch"`; unset `dim` = the joint vector). Issue #474.
-- type alias `_StateContractVerdict` (L478) — `Literal` of the six verdicts above; the node's branch per verdict is checked by mypy.
-- module constants `_POLICY_STATE_TOPIC = "/openral/policy_state"`, `_POLICY_STATE_WATCH_S: float = 1.0` (L357) — the topic the gate counts publishers on, and the re-check period while a policy-state skill waits for one.
-- `ReasonerNode._arm_policy_state_watch()` / `_watch_for_policy_state()` / `_cancel_policy_state_watch()` (L5147) — Armed by the palette seed while any capability-matched skill sets `use_world_state_policy_state` (the HAL advertises `/openral/policy_state` lazily, destroys it on deactivate, and autostarts independently of the reasoner). Every `_POLICY_STATE_WATCH_S` it compares the publisher's presence with what the last seed decided on (`_policy_state_published_at_seed`) and re-seeds via `_maybe_seed_palette_from_search_paths` when it appeared or disappeared, so a skill is admitted once the topic is live and dropped again when it goes. Cancelled on `on_cleanup` and whenever a seed matches no such skill.
-- `def _resets_search_episode(call) -> bool` (L536) — Pure helper for the find→re-prompt cascade bound. `True` when dispatching `call` ends the active-search episode; `False` for the three read-only search actions, so a search loop's own budget can never be reset by its own query and fail to terminate.
-- `def _camera_label(camera: str) -> str` (L715) — How a tool-result re-prompt (`locate_in_view`, `query_scene`) names the camera: `camera '<id>'`, or "the primary camera" for a blank id, never `'default'`, which a model copies back as a literal camera id no multi-camera deployment serves.
-- `def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str` (L699) — Blank → the active mission task's text; used for `ExecuteRskillTool.prompt` and for a blank `QueryTaskProgressTool.task` (which the reward monitor would otherwise resolve to its launch-time `task` parameter). `_on_query_task_progress_response` drops a reply that lands after the active task instance changed: same mission object, same task id and text, as `_on_mission_verify_response` and `_on_vlm_completion_verdict` now also require (a re-sent identical goal builds a new mission whose `t1` matches by id and text).
-- `class ReasonerNode(LifecycleNode)` (L737) — Lifecycle node wrapping `ReasonerCore`. Optional injected `spatial_memory` enables the recall/resolve tools; otherwise `spatial_memory_path`/`spatial_memory_ingest` params can load or build one. `memory_md_path` enables the memory tools. `hal_mode` selects the action-mode palette gate; `tick_hz` (default 0.2 Hz) is the heartbeat rate.
+- `def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]` (L421) — Pure helper for the deploy-path palette gate. Reads `action_contract` by specificity, from `None` (no constraint) down through representation/slots/legacy `dim`.
+- `def _action_executable(manifest: RSkillManifest, description: RobotDescription, hal_mode: str) -> bool` (L446) — Pure helper: `True` when every `_required_control_modes(manifest)` is in the executable set for `hal_mode` (sim's fixed set, else the robot's declared modes). Empty required set → `True`.
+- `def _state_contract_verdict(manifest: RSkillManifest, n_joints: int, *, policy_state_published: bool) -> _StateContractVerdict` (L484) — Pure helper for the palette's state-contract gate, mirroring the skill runner's `obs["state"]` selection. A `reads_world_state_policy_state` skill needs a `/openral/policy_state` publisher whatever its layout (`"no_policy_state"` drops it; the runner reads and checks the vector every step even when an assembler then overwrites it) and its `dim` is never compared with the joint count. A wrapped layout always needs a registered assembler (`"assembler"`) unless policy state feeds it, else `"no_assembler"`. Otherwise a declared `dim` must equal `n_joints` (`"admit"` / `"dim_mismatch"`; unset `dim` = the joint vector). Issue #474.
+- type alias `_StateContractVerdict` (L479) — `Literal` of the six verdicts above; the node's branch per verdict is checked by mypy.
+- module constants `_POLICY_STATE_TOPIC = "/openral/policy_state"`, `_POLICY_STATE_WATCH_S: float = 1.0` (L358) — the topic the gate counts publishers on, and the re-check period while a policy-state skill waits for one.
+- `ReasonerNode._arm_policy_state_watch()` / `_watch_for_policy_state()` / `_cancel_policy_state_watch()` (L5201) — Armed by the palette seed while any capability-matched skill sets `use_world_state_policy_state` (the HAL advertises `/openral/policy_state` lazily, destroys it on deactivate, and autostarts independently of the reasoner). Every `_POLICY_STATE_WATCH_S` it compares the publisher's presence with what the last seed decided on (`_policy_state_published_at_seed`) and re-seeds via `_maybe_seed_palette_from_search_paths` when it appeared or disappeared, so a skill is admitted once the topic is live and dropped again when it goes. Cancelled on `on_cleanup` and whenever a seed matches no such skill.
+- `def _resets_search_episode(call) -> bool` (L537) — Pure helper for the find→re-prompt cascade bound. `True` when dispatching `call` ends the active-search episode; `False` for the three read-only search actions, so a search loop's own budget can never be reset by its own query and fail to terminate.
+- `def _camera_label(camera: str) -> str` (L716) — How a tool-result re-prompt (`locate_in_view`, `query_scene`) names the camera: `camera '<id>'`, or "the primary camera" for a blank id, never `'default'`, which a model copies back as a literal camera id no multi-camera deployment serves.
+- `def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str` (L700) — Blank → the active mission task's text; used for `ExecuteRskillTool.prompt` and for a blank `QueryTaskProgressTool.task` (which the reward monitor would otherwise resolve to its launch-time `task` parameter). `_on_query_task_progress_response` drops a reply that lands after the active task instance changed: same mission object, same task id and text, as `_on_mission_verify_response` and `_on_vlm_completion_verdict` now also require (a re-sent identical goal builds a new mission whose `t1` matches by id and text).
+- `class ReasonerNode(LifecycleNode)` (L738) — Lifecycle node wrapping `ReasonerCore`. Optional injected `spatial_memory` enables the recall/resolve tools; otherwise `spatial_memory_path`/`spatial_memory_ingest` params can load or build one. `memory_md_path` enables the memory tools. `hal_mode` selects the action-mode palette gate; `tick_hz` (default 0.2 Hz) is the heartbeat rate. With `manifest_runtime_json` (the deploy's resolved `DeployRuntime`), `manifest_bridge_on` and `manifest_unit_serial` set by the launch, every palette seed (configure and `/openral/skill_registry_changed`) also builds the robot manifest (`openral_core.build_robot_manifest`, write-/remote-control flags from the env) and emits it to the dashboard (`producer.emit_robot_manifest`, ADR-0129).
   - **Grasp/place target grounding** (real pick-and-place design §2.2-2.3). Params `grasp_target_voxel_m` (0.0 = unset: no standalone default — on a manifest with a `role: gripper` joint an unset value fails `on_configure` with `ROSConfigError`, once, instead of a per-call `ROSReasonerInvalidPlan` the LLM would burn its replanning ladder on, so no cell-specific fallback pads it; a gripperless manifest needs none; `deploy_e2e` passes `_octomap_resolution(hal_mode)`, the resolution octomap_server gets) and `grasp_target_extrinsic_error_m` (`MAX_PLANAR_ERR_M`, 0.015) — their sum pads a grounded seed box. `_load_grounding_context()` loads the manifest at the start of `on_configure` (a load failure warns and a named target is then refused; a gripper manifest without the voxel raises `ROSConfigError` → configure FAILURE); no robot unit and no cell geometry are read. `_ground_targets(call) -> (grasp, place)` runs in `_dispatch_execute_rskill` before any latch: `openral_reasoner.grounding` over the latest `/openral/world_state_slow` `detected_objects` (bbox now on the wire) and the spatial-memory scene graph; a `ROSReasonerInvalidPlan` is logged, recorded as a `failed` execution with a disambiguation hint, and NO goal is sent. `_send_execute_rskill_goal` fills `grasp_declaration_valid`/`grasp_declaration` and `place_declaration_valid`/`place_declaration` for the matching dispatch generation; the runner stamps, attributes and strips any region as before. Param `object_tracking` (`"off"`; issue #418, the deploy's `DeployRuntime.object_tracking`): not `"off"` → both groundings run with `object_tracking=True` (the grasp query hinted with `openral_core.hand_joint` of the grounded contact links), and the goal's grasp declaration is encoded with `query_factory=openral_msgs/ObjectQuery`.
   - `_submit_client_warmup(client) -> None` — At `on_configure`, kicks a managed LLM sidecar's boot onto `_llm_pool` instead of leaving it to the first tick, off the executor thread so the lifecycle transition returns promptly. No-op for clients without `warm()`; a failure here only warns, since `select_tool`'s lazy path still owns whether the server is usable.
-  - `on_configure(self, state) -> TransitionCallbackReturn` (L1236) — Build `ToolUseClient` from env if not injected, attach subscribers to world-state/failure/perception/prompt/registry topics, create the prompt/failure publishers + `execute_rskill` action client. Reads `vram_lifecycle_peers` (GPU peers auto-deactivated around each `execute_rskill`) and `vram_refused_rskill_ids` (policies the deploy CLI's reward VRAM preflight refused at launch), loads the reward manifest, and probes GPU total VRAM for the pre-dispatch fit check.
-  - `on_activate(self, state) -> TransitionCallbackReturn` (L1663) — Arm the periodic tick timer at `tick_hz`.
-  - `on_deactivate(self, state) -> TransitionCallbackReturn` (L1672) — Cancel the tick timer (subscriptions remain attached).
-  - `on_cleanup(self, state) -> TransitionCallbackReturn` (L1694) — Tear down pending skill-goal deadline timers, destroy the action client and every cached per-topic emit_prompt publisher, drop cached lifecycle/service clients, clear the in-flight goal / cancel-reason / tick-trampoline state, and reap the LLM/VLM worker pools and inbox guard.
-  - `on_shutdown(self, state) -> TransitionCallbackReturn` (L1797) — Final shutdown.
-  - `destroy_node(self) -> None` (L1780) — Reaps the `reasoner-llm` / `reasoner-vlm` worker pools (no wait; an in-flight provider call is not interruptible) and detaches + destroys the executor-inbox guard condition before `LifecycleNode.destroy_node`, so a node destroyed without a `cleanup`/`shutdown` transition drops a late worker completion instead of triggering a destroyed guard (#381). Idempotent with `on_cleanup`.
+  - `on_configure(self, state) -> TransitionCallbackReturn` (L1243) — Build `ToolUseClient` from env if not injected, attach subscribers to world-state/failure/perception/prompt/registry topics, create the prompt/failure publishers + `execute_rskill` action client. Reads `vram_lifecycle_peers` (GPU peers auto-deactivated around each `execute_rskill`) and `vram_refused_rskill_ids` (policies the deploy CLI's reward VRAM preflight refused at launch), loads the reward manifest, and probes GPU total VRAM for the pre-dispatch fit check.
+  - `on_activate(self, state) -> TransitionCallbackReturn` (L1670) — Arm the periodic tick timer at `tick_hz`.
+  - `on_deactivate(self, state) -> TransitionCallbackReturn` (L1679) — Cancel the tick timer (subscriptions remain attached).
+  - `on_cleanup(self, state) -> TransitionCallbackReturn` (L1701) — Tear down pending skill-goal deadline timers, destroy the action client and every cached per-topic emit_prompt publisher, drop cached lifecycle/service clients, clear the in-flight goal / cancel-reason / tick-trampoline state, and reap the LLM/VLM worker pools and inbox guard.
+  - `on_shutdown(self, state) -> TransitionCallbackReturn` (L1804) — Final shutdown.
+  - `destroy_node(self) -> None` (L1787) — Reaps the `reasoner-llm` / `reasoner-vlm` worker pools (no wait; an in-flight provider call is not interruptible) and detaches + destroys the executor-inbox guard condition before `LifecycleNode.destroy_node`, so a node destroyed without a `cleanup`/`shutdown` transition drops a late worker completion instead of triggering a destroyed guard (#381). Idempotent with `on_cleanup`.
   - `_on_failure(source, msg)` — Append a `FailureEventRecord` to the renderer and preempt the next tick per the tier taxonomy: Tier A (safety) at `severity ≥ WARN`, Tier B/C at `severity ≥ FAIL`. When a `critic` FAIL is a reward wake and an `execute_rskill` goal is in flight, cancels that goal (latched reason `"reward"`) instead of ticking — the reward signal stops the VLA now, not at the `deadline_s` clock — and the canceled result re-enters mission verification.
   - `_on_object_query(record)` — A matching `world_state` `KIND_OBJECT_QUERY` failure records typed reason/workspace/observation evidence, cancels the active manipulation and waits for its terminal result, then forces recovery only below the persisted task dispatch cap. At the cap, the task remains blocked until a new operator goal. Delayed failures without the exact active action UUID are ignored. No prompt handoff or safety reset. `_on_execute_rskill_result` records the canceled attempt and only then allows the recovery tick; the runner's grounding and contact gates remain authoritative. `_FAILURE_SOURCES` includes `world_state`.
   - `_on_tick(*, force=False, tier="heartbeat")` — No-op while the node is not active (`_is_active`, set in `on_activate`, cleared first in `on_deactivate`/shutdown; prompts and failures arriving meanwhile are kept for the next activation). Single-flight trampoline over `_start_tick`: a tick requested mid-dispatch is coalesced (`force` wins) and replayed after, bounded by `_MAX_TICK_REPLAYS=4`. Runs the blocking LLM call on a single-worker pool so the rclpy executor is never starved, then marshals dispatch back onto the executor. A round-trip landing after deactivate/cleanup is dropped by a generation check.
@@ -639,27 +660,27 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_on_reactivate_result(peer, future)` — Best-effort log of a reactivation `change_state` outcome.
   - `_change_state_async(node, transition) -> future | None` — Shared helper: lazily cache a `ChangeState` client per peer node and call it asynchronously; `None` if the service isn't on the graph. Used by both lifecycle dispatch and VRAM eviction.
   - `_dispatch_lifecycle_transition(call)` — Refuses (error log, no call) a `call.node` outside `self._palette.node_ids`; else drives `<call.node>/change_state` via `_change_state_async`; on success attach `_on_lifecycle_response`, on an absent service log + skip.
-  - module constant `_FEEDBACK_LOG_PERIOD_S: float = 1.0` (L533) — WARNING-log throttle period for per-chunk action feedback.
+  - module constant `_FEEDBACK_LOG_PERIOD_S: float = 1.0` (L534) — WARNING-log throttle period for per-chunk action feedback.
   - `_on_execute_skill_feedback(rskill_id, feedback_msg)` — Forward action feedback to the operator log, throttled to one WARNING per `_FEEDBACK_LOG_PERIOD_S` (a VLA goal streams one feedback per chunk); suppressed lines go to DEBUG.
   - `_on_execute_skill_goal_response(call, generation, sent_at, future, traceparent)` — Ignore/cancel stale generations; on rejection emit a `FailureTrigger`; on acceptance arm the deadline timer and attach the result handler.
   - `_on_execute_skill_result(call, generation, goal_id, future, traceparent)` — Ignore stale generations, cancel the deadline timer; log success or emit a `FailureTrigger` with `ControllerEvidence` on abort/cancel/failure. The replanning ladder classifies on the typed `failure_kind`, not the prose: a config/capability-mismatch result drops that rSkill from the palette until rebuilt; a deadline-miss drives a "timed out" reflection; controller/runtime failures remain retryable.
-  - module constant `_LEGACY_FAILURE_REASON_PREFIXES: tuple[tuple[str, str], ...]` (L580) — deprecated-in-place prose→`FAILURE_*` prefix table, consulted only when a failed result carries `FAILURE_NONE` (a pre-`failure_kind` producer).
+  - module constant `_LEGACY_FAILURE_REASON_PREFIXES: tuple[tuple[str, str], ...]` (L581) — deprecated-in-place prose→`FAILURE_*` prefix table, consulted only when a failed result carries `FAILURE_NONE` (a pre-`failure_kind` producer).
   - `_rskill_failure_kind(result) -> int` — Typed failure kind for a terminal result; the runner-stamped uint8 is authoritative, falling back to the deprecated prose-prefix table only for a producer that predates the field.
   - `_failure_kind_name(value) -> str | None` — The `ExecuteRskill.Result` `FAILURE_*` constant name for a uint8 (reverse of `_failure_kind_value`), passed to `reflect_on_failure` with the result's `evidence_json`.
   - `_failure_kind_value(name) -> int` — Resolve an `ExecuteRskill.Result` `FAILURE_*` constant by name off the generated IDL rather than re-declaring the values, so the reasoner cannot drift from `packages/msgs`.
-  - module constant `_PERMANENT_FAILURE_KIND_NAMES: frozenset[str]` (L600) — `{"FAILURE_CONFIG_ERROR", "FAILURE_CAPABILITY_MISMATCH"}`.
-  - module constant `_TIMED_OUT_FAILURE_KIND_NAMES: frozenset[str]` (L606) — `{"FAILURE_DEADLINE_MISSED"}`.
+  - module constant `_PERMANENT_FAILURE_KIND_NAMES: frozenset[str]` (L601) — `{"FAILURE_CONFIG_ERROR", "FAILURE_CAPABILITY_MISMATCH"}`.
+  - module constant `_TIMED_OUT_FAILURE_KIND_NAMES: frozenset[str]` (L607) — `{"FAILURE_DEADLINE_MISSED"}`.
   - `_palette_after_rskill_failure(palette, rskill_id, failure_kind) -> ToolPalette` — Drop a skill after a typed, session-persistent availability failure, classified on `failure_kind` (never on prose); `FAILURE_NONE` is "unclassified", never "permanently broken".
   - `_on_execute_skill_deadline(*, call, generation, sent_at, goal_handle, traceparent)` — Ignore stale generations; latch a `"patience"` cancel reason (a patience-expired attempt still runs the reward verify gate), cancel the goal, and emit a `KIND_TIMEOUT` `FailureTrigger`.
   - **Ladder persistence.** `_persist_ladder_state()` snapshots `ReasonerLadderState` to the `ladder_state_path` param after every ledger mutation; `_maybe_restore_ladder_state()` reloads it at `on_configure`, so a restart resumes the ladder and preserves an object-query-blocked task until a new operator goal.
   - `_on_lifecycle_response(call, future)` — Log the `ChangeState` result; lifecycle failures surface in the target node's own logs (no `FailureTrigger` re-emission).
   - `_publish_skill_failure(*, kind, rskill_id, evidence, traceparent, trace_id=None)` — Build + publish a `FailureTrigger` on `/openral/failure/rskill`, then mirror it onto the OTLP span path via `_emit_skill_failure_event` so the OTLP-only dashboard can tally it.
   - `_emit_skill_failure_event(*, kind, rskill_id, evidence)` — Stamp an `openral.event.skill_failure` span event carrying the failure state, on the active tick span when recording or a transient span otherwise. Drives the dashboard "skill failures" counter.
-  - `renderer(self) -> ContextRenderer` (L6087) — Direct read access for tests asserting buffer state.
-  - `dispatched_calls(self) -> tuple[Any, ...]` (L6092) — Snapshot of tool calls the reasoner has dispatched (in order).
-  - `set_palette(self, palette) -> None` (L6096) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
-- `_QOS_REGISTRY_CHANGED` (L258) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
-- `main(args=None) -> int` (L6101) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
+  - `renderer(self) -> ContextRenderer` (L6141) — Direct read access for tests asserting buffer state.
+  - `dispatched_calls(self) -> tuple[Any, ...]` (L6146) — Snapshot of tool calls the reasoner has dispatched (in order).
+  - `set_palette(self, palette) -> None` (L6150) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
+- `_QOS_REGISTRY_CHANGED` (L259) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
+- `main(args=None) -> int` (L6155) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
 
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack are out of scope._
@@ -782,7 +803,7 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 - `const RECORD_ID: str = "openral.record.id"` (L88)
 - `const RECORD_SCHEMA_VERSION: str = "openral.schema.version"` (L89)
 - `const RECORD_RETENTION_CLASS: str = "openral.retention.class"` (L90)
-- `const METRIC_FAILURE_COUNT: str = "openral.failure.count"` (L331)
+- `const METRIC_FAILURE_COUNT: str = "openral.failure.count"` (L334)
 
 **openral.tick.* — runner cadence**
 - `const TICK_IDX: str = "openral.tick.idx"` (L94)
@@ -888,68 +909,69 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 
 **Span-event names**
 - `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L278)
-- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L279)
-- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L280)
-- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L281)
-- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L282)
-- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L285)
-- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L286)
-- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L293)
-- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L297)
-- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L298)
-- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L303)
+- `const EVENT_ROBOT_MANIFEST: str = "openral.robot.manifest"` (L281) — `event_name` of the OTLP log record carrying the robot manifest (ADR-0129), emitted by `producer.emit_robot_manifest`.
+- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L282)
+- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L283)
+- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L284)
+- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L285)
+- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L288)
+- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L289)
+- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L296)
+- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L300)
+- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L301)
+- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L306)
 
 **Metric instrument names**
-- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L307)
-- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L308)
-- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L309)
-- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L310)
-- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L311)
-- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L312)
-- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L313)
-- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L314)
-- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L315)
-- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L316)
-- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L317)
-- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L318)
-- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L319)
-- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L320)
-- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L324)
-- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L325)
-- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L326)
-- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L327)
-- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L328)
-- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L329)
-- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L330)
+- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L310)
+- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L311)
+- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L312)
+- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L313)
+- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L314)
+- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L315)
+- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L316)
+- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L317)
+- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L318)
+- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L319)
+- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L320)
+- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L321)
+- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L322)
+- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L323)
+- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L327)
+- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L328)
+- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L329)
+- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L330)
+- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L331)
+- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L332)
+- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L333)
 
 **Closed-set label vocabularies (for metric labels)**
-- `const LABEL_RSKILL_ID: str = "rskill.id"` (L338)
-- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L339)
-- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L340)
-- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L341)
-- `const LABEL_CONTROL_MODE: str = "control_mode"` (L342)
-- `const LABEL_ENGINE: str = "engine"` (L343)
-- `const LABEL_DEVICE: str = "device"` (L344)
-- `const LABEL_KIND: str = "kind"` (L345)
-- `const LABEL_MODALITY: str = "modality"` (L346)
-- `const LABEL_CHECK_NAME: str = "check_name"` (L347)
-- `const LABEL_SEVERITY: str = "severity"` (L348)
-- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L349)
-- `const LABEL_COMPONENT: str = "component"` (L350)
-- `const LABEL_REASON: str = "reason"` (L351)
-- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L357)
-- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L363)
-- `const THRESHOLD_DIR_UPPER: str = "upper"` (L364)
-- `const THRESHOLD_DIR_LOWER: str = "lower"` (L365)
+- `const LABEL_RSKILL_ID: str = "rskill.id"` (L341)
+- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L342)
+- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L343)
+- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L344)
+- `const LABEL_CONTROL_MODE: str = "control_mode"` (L345)
+- `const LABEL_ENGINE: str = "engine"` (L346)
+- `const LABEL_DEVICE: str = "device"` (L347)
+- `const LABEL_KIND: str = "kind"` (L348)
+- `const LABEL_MODALITY: str = "modality"` (L349)
+- `const LABEL_CHECK_NAME: str = "check_name"` (L350)
+- `const LABEL_SEVERITY: str = "severity"` (L351)
+- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L352)
+- `const LABEL_COMPONENT: str = "component"` (L353)
+- `const LABEL_REASON: str = "reason"` (L354)
+- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L360)
+- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L366)
+- `const THRESHOLD_DIR_UPPER: str = "upper"` (L367)
+- `const THRESHOLD_DIR_LOWER: str = "lower"` (L368)
 
 **Run-mode enum (closed set for openral.run.mode)**
-- `const RUN_MODE_SIM: str = "sim"` (L369)
-- `const RUN_MODE_HARDWARE: str = "hardware"` (L370)
-- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L371)
+- `const RUN_MODE_SIM: str = "sim"` (L372)
+- `const RUN_MODE_HARDWARE: str = "hardware"` (L373)
+- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L374)
 
 **Safety kernel enum (closed set for safety.kernel — see SAFETY_KERNEL)**
-- `const SAFETY_KERNEL_NULL: str = "null"` (L375)
-- `const SAFETY_KERNEL_CPP: str = "cpp"` (L376)
+- `const SAFETY_KERNEL_NULL: str = "null"` (L378)
+- `const SAFETY_KERNEL_CPP: str = "cpp"` (L379)
 
 
 ### `python/observability/src/openral_observability/metrics.py`
@@ -983,15 +1005,16 @@ _Cached OTel meter instruments — safe to call before `configure_observability`
 ### `python/observability/src/openral_observability/producer.py`
 _Producer-side helpers for recording rich span attributes on OpenRAL hot-path spans. Safe to call on no-op spans; lists are truncated to `_MAX_JOINTS` / `_MAX_EE_FRAMES` and floats rounded to 3 decimals._
 
-- `record_joint_state(span, *, names, positions, velocities=None, efforts=None, position_limits=None, velocity_limits=None, effort_limits=None, stamp_ns=None) -> None` — Attach per-joint attributes to a `hal.read_state` span. (L97)
-- `record_action(span, *, next_row, dim=None, horizon=None, applied=None, gripper_position=None, gripper_force_n=None) -> None` — Attach commanded-action attributes to a `hal.send_action` span. (L145)
-- `record_ee_poses(span, ee_poses) -> None` — Flatten a `name → Pose6D` mapping onto a `world_state.snapshot` span. (L176)
-- `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L202)
-- `emit_sensor_frame_span(frame, *, sensor_name, age_ms, flip_180=False, tracer_name=…) -> None` — The shared producer of a dashboard `sensors.read_latest` span for one camera frame: optional flip of a display-only copy (the policy's actual frame is never mutated), then span + attrs + thumbnail. Both frame emitters route through this one function so they can't drift apart. (L248) `encode_frame_thumbnail` — but the span is opened first and the function returns as soon as `span.is_recording()` is false (no OTLP endpoint / dashboard off): the flip copy and the JPEG only feed the span, and at 30 Hz per camera they held ~25 % of the deploy runtime's GIL on an AGX Orin for nothing. The flip is passed to `encode_frame_thumbnail`; the span never copies a full-resolution flipped frame.
-- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L308)
-- `encode_frame_thumbnail(frame, *, flip_180=False) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L341) Raw frames are subsampled to the 320x240 box before any copy, and the optional 180° flip and BGR swap run on that small view: 0.6 ms per 1920x1200 frame on a Jetson AGX Thor instead of 8.2 ms, which at three cameras x 30 Hz had left a competing Python thread 34 % of its speed. JPEG input decodes in reduced-scale draft mode. Display-only (the dashboard tile); Foxglove reads the full-resolution ROS image topics.
-- `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` to the dashboard's modality label (`rgb`/`mono`/`depth`/`raw`/`unknown`); shared by `DeployRunner` and the world-state node so both produce identical labels. (L58)
-- `_MODALITY_BY_ENCODING: dict[str, str]` (L46) — Canonical encoding → modality lookup table.
+- `emit_robot_manifest(manifest: RobotManifest, *, logger_provider: LoggerProvider | None = None) -> None` (L424) — Send the robot manifest as one OTLP log record (`event_name = EVENT_ROBOT_MANIFEST`, body its JSON with the `schema` alias), which the dashboard caches for `GET /api/manifest`. A no-op without an OTLP endpoint.
+- `record_joint_state(span, *, names, positions, velocities=None, efforts=None, position_limits=None, velocity_limits=None, effort_limits=None, stamp_ns=None) -> None` — Attach per-joint attributes to a `hal.read_state` span. (L100)
+- `record_action(span, *, next_row, dim=None, horizon=None, applied=None, gripper_position=None, gripper_force_n=None) -> None` — Attach commanded-action attributes to a `hal.send_action` span. (L148)
+- `record_ee_poses(span, ee_poses) -> None` — Flatten a `name → Pose6D` mapping onto a `world_state.snapshot` span. (L179)
+- `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L205)
+- `emit_sensor_frame_span(frame, *, sensor_name, age_ms, flip_180=False, tracer_name=…) -> None` — The shared producer of a dashboard `sensors.read_latest` span for one camera frame: optional flip of a display-only copy (the policy's actual frame is never mutated), then span + attrs + thumbnail. Both frame emitters route through this one function so they can't drift apart. (L251) `encode_frame_thumbnail` — but the span is opened first and the function returns as soon as `span.is_recording()` is false (no OTLP endpoint / dashboard off): the flip copy and the JPEG only feed the span, and at 30 Hz per camera they held ~25 % of the deploy runtime's GIL on an AGX Orin for nothing. The flip is passed to `encode_frame_thumbnail`; the span never copies a full-resolution flipped frame.
+- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L311)
+- `encode_frame_thumbnail(frame, *, flip_180=False) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L344) Raw frames are subsampled to the 320x240 box before any copy, and the optional 180° flip and BGR swap run on that small view: 0.6 ms per 1920x1200 frame on a Jetson AGX Thor instead of 8.2 ms, which at three cameras x 30 Hz had left a competing Python thread 34 % of its speed. JPEG input decodes in reduced-scale draft mode. Display-only (the dashboard tile); Foxglove reads the full-resolution ROS image topics.
+- `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` to the dashboard's modality label (`rgb`/`mono`/`depth`/`raw`/`unknown`); shared by `DeployRunner` and the world-state node so both produce identical labels. (L61)
+- `_MODALITY_BY_ENCODING: dict[str, str]` (L49) — Canonical encoding → modality lookup table.
 
 ### `python/observability/src/openral_observability/rclpy_spin.py`
 _Quiet teardown for rclpy executor spin threads._
@@ -1093,22 +1116,24 @@ _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `
 
 _**Event-log severity band** (distinct from the headline-card routing above). `_is_headline_span(name)` bands a span's Event Log row: ERROR status → `error`; a small allow-list of names/prefixes (`cli.command`, `rskill.execute`/`configure`/`activate`, `reasoner.tick`, `world.scene_objects`, `sim.run`, `detect.probe.*`) → `info`; everything else → `debug`. Deliberately an allow-list rather than a deny-list, so a new high-rate span stays quiet in the event log until promoted here instead of flooding it by default; every span is still indexed in full for `openral replay`._
 
-- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L237)
-  - `to_json(self) -> dict[str, Any]` (L263) — Return a plain-dict view suitable for JSON serialization.
-- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L389)
-  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L482)
-  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L516)
-  - `ingest_logs(self, payload) -> int` (L537) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
-  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L580)
-  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L758)
-  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L774)
-  - `set_estopped(self, value) -> None` (L585) — Force the e-stop latch flag from an authoritative operator action.
-  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L603)
-  - `list_traces(self) -> list[dict[str, Any]]` (L953) — Return one record per indexed trace_id, most-recent first.
-  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L971) — Return every indexed span for `trace_id` in chronological order, or `None`.
+- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L241)
+  - `to_json(self) -> dict[str, Any]` (L267) — Return a plain-dict view suitable for JSON serialization.
+- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L393)
+  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L490)
+  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L524)
+  - `ingest_logs(self, payload) -> int` (L545) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
+  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L598)
+  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L789)
+  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L805)
+  - `set_estopped(self, value) -> None` (L616) — Force the e-stop latch flag from an authoritative operator action.
+  - `set_manifest(self, manifest: RobotManifest) -> None` (L608) — Serve a manifest from a file (`run_dashboard(manifest_path=...)`, the deploy launch's `--manifest`) until a fresher `openral.robot.manifest` record arrives; bumps `manifest_rev` and pushes to SSE subscribers.
+  - `manifest(self) -> RobotManifest | None` (L603) — The latest robot manifest (ADR-0129), cached from its `openral.robot.manifest` log record by `ingest_logs` (a malformed one keeps the last good one; the record is not an event-log row). `snapshot()` carries `manifest_rev`, bumped on every new manifest so the UI knows to refetch `GET /api/manifest`.
+  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L634)
+  - `list_traces(self) -> list[dict[str, Any]]` (L994) — Return one record per indexed trace_id, most-recent first.
+  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L1012) — Return every indexed span for `trace_id` in chronological order, or `None`.
 
-- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L656) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
-- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L713) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
+- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L687) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
+- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L744) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
 
 ### `python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py`
 _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `safety_status_subscriber.py` — one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only and **advisory**: it decides what an operator sees, never what the robot does._
@@ -1156,17 +1181,62 @@ _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` e
   - `stop(self) -> None` (L151) — Unregister the advertised service, cancel the browser, and close Zeroconf.
 
 ### `python/observability/src/openral_observability/dashboard/app.py`
-- `create_app(store: TelemetryStore | None = None) -> FastAPI` — Build the dashboard ASGI app: the SSE/state routes, the OTLP/HTTP receivers, operator write endpoints (`/api/prompt`, `/api/estop_reset`), a live MJPEG camera stream, mDNS robot discovery, and the guarded write-controls (`/api/skill/execute`, `/api/param/set`, both OFF by default). A middleware refuses (403, audit-logged) any non-GET/HEAD/OPTIONS request whose `Origin` host:port differs from `Host` (CSRF; no `Origin` = non-browser client, allowed; `Origin: null` refused) — DNS rebinding is same-origin and stays open (#44). `/api/param/set` matches `_SAFETY_PARAM_DENYLIST` (now incl. `deadline`, `timeout`) against `"<node> <name>"`, so every param on a safety node is refused. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413; corrupt gzip 400); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413). (L902)
+_The robot dashboard's routes (ADR-0129). One app behind two listeners; `_gate` (an HTTP middleware) sets `request.state.principal` and enforces the listener rules before any route runs._
 
-### `python/observability/src/openral_observability/dashboard/vad_assets.py`
-- `class PinnedAsset(NamedTuple)` (L52) — `url: str`, `sha256: str`, `size: int` for one pinned binary asset.
-- module constant `PINNED_VAD_ASSETS: dict[str, PinnedAsset]` (L65) — The three voice-prompt binaries no longer committed to git, pinned to exact upstream URLs + sha256 recorded in `static/vendor/vad/NOTICE.md`.
-- `sha256_of(path: Path) -> str` — Hex sha256 digest of the file at `path`, read in chunks. (L94)
-- `ensure_vad_assets() -> bool` (L142) — Best-effort: for each pinned asset, reuse a sha256-verified cache hit or download + verify one, then serve it from `static/vendor/vad/`. Never raises; a failed asset logs a warning and does not stop the others. Called best-effort from `run_dashboard` on every start (never gates startup).
-- `vad_assets_available() -> bool` (L208) — Cheap presence-only check (no re-hash) of whether every pinned asset is currently served; backs `/api/config`'s `voice_prompt_enabled`.
+- `create_app(store: TelemetryStore | None = None, *, verifier: TokenVerifier | None = None, bridge_url: str = "ws://127.0.0.1:8765") -> FastAPI` (L1135) — Build the app: OTLP/HTTP receivers (`/v1/*`, local listener only — loopback or LAN), reads (`/api/config` → `mode`/`role`/`robot_id`/`write_controls`/`remote_control`/`jaeger_ui_url`, `/api/manifest` (404 until one arrives; skills dropped with write controls off, `remote` per the remote-control flag, only `estop` for a LAN client), `/api/state`, `/api/stream[?images=0]` (SSE; ends at the token's `exp` remotely), `/api/camera/{source}/snapshot.jpg`, `/api/traces`, `/api/spans/{id}`, `/api/robots`), `POST /api/actions/{id:path}` (E-STOP resolvable without a manifest and fired before the body is read, then announced in the background; others validated against `args_schema` with `jsonschema`, announced, then run: `estop_reset` → kernel service (409 on cooldown), `prompt` → `openral prompt`, `skill:<id>` → `ExecuteRskill` goal (202 + `goal_id`); refusals 403 per role / LAN / `OPENRAL_DASHBOARD_REMOTE_CONTROL` / `OPENRAL_DASHBOARD_WRITE_CONTROLS`), `POST /api/transcribe`, the 3D view (`POST /api/viz/ticket`, `WS /ws` proxy to `bridge_url` — ticket required remotely and off loopback, `Origin` checked on upgrade, closed at ticket expiry), `/viz/{path}` (Lichtblick, fetched on first use, under `_VIZ_CSP`; its index.html carries this robot's layout from `openral_foxglove_bringup.layout` in Lichtblick's default-layout slot) and `/{path}` (the robot UI from `app.state.ui_dir`, else `static/fallback.html`, under `_UI_CSP`; an HTML file's inline scripts are allowed by sha256). The local listener refuses a cross-origin write (CSRF) and any LAN write but `estop`, a viz ticket and OTLP ingest on `/v1/*`; `proxy_headers` is off in `run_dashboard`. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413).
+
+### `python/observability/src/openral_observability/dashboard/remote_auth.py`
+_Who is asking (ADR-0129 §6, Interface B): the local / LAN / remote principal and the robot-token check of the remote (tunnel) listener. Never logs Authorization headers or tickets._
+
+- module constant `ROLE_RANK: dict[str, int]` (L51) — `viewer` < `operator` < `admin`; admin acts as operator on the robot.
+- `class Principal` (L72) — Frozen dataclass: `mode` (`local` | `lan` | `remote`), `role`, `sub`, `jti`, `exp` (the last three remote only; `exp` ends streams).
+- `remote_listener(app) -> ASGIApp` (L90) — Wrap the app for the remote listener: tags each scope so `_gate` demands a token. Nothing a client sends sets the tag.
+- `is_remote(scope) -> bool` (L103) — Whether a request came in through `remote_listener`.
+- `load_enrolment(path: Path | None = None) -> RobotEnrolment | None` (L108) — The enrolment `openral robot link` wrote (`openral_core.enrolment_path()`), `None` when unlinked; `ValueError` for an invalid file.
+- `class JwksCache` (L123) — The issuer's ES256 keys, loaded from a disk cache, refetched (httpx) only for an unknown `kid` and at most once per `cooldown_s` (60 s), written back to disk.
+  - `key(self, kid: str) -> PyJWK | None` (L159) — The key `kid`, refetching once if unknown.
+- `class TokenVerifier` (L189) — Checks an openral.com robot token against this robot's enrolment and the issuer's `JwksCache`.
+  - `verify(self, token: str) -> Principal | str` (L197) — Interface B in order — header `alg` ES256 (never `none`/HMAC), `typ` absent or `at+jwt`, known `kid`; signature; `iss`; a single `aud` (`strict_aud`) equal to the enrolled origin; `exp`/`iat` with 60 s leeway and `exp − iat ≤ 300`; `sub`/`jti`/`org`/`role`/`robot` present; `robot`/`org` equal to the enrolment; a known role. A refusal is a reason string, never the token.
+- `class VizTickets` (L251) — Random 256-bit tickets for `/ws` (a JWT never goes in a URL), bound to the caller's `sub`/role, reusable until `TTL_S` (900 s).
+  - `issue(self, principal: Principal) -> str` (L267) — A new ticket for `principal`; prunes expired ones.
+  - `expires_at(self, ticket: str | None) -> float | None` (L278) — When `ticket` expires, or `None` if unknown or expired.
+- `jwks_cache_file() -> Path` (L284) — `$OPENRAL_CACHE_DIR/dashboard/jwks.json`.
+- `bearer(authorization: str | None) -> str | None` (L290) — The token of an `Authorization: Bearer` header.
+- `allowed_origins() -> frozenset[str]` (L296) — `$OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (comma-separated), default openral.com's www, dev and viz origins.
+
+### `python/observability/src/openral_observability/dashboard/ui_assets.py`
+_The robot UI served at `/`: a pinned release of `python/observability/ui/`, fetched once; `$OPENRAL_DASHBOARD_UI_DIR` serves a local build instead; neither → `static/fallback.html` (status + E-STOP)._
+
+- `class PinnedAsset(NamedTuple)` (L47) — `url`, `sha256`, `size` of one pinned download.
+- module constant `ROBOT_UI: PinnedAsset | None` (L55) — The pinned robot-UI release; `None` until the first one is cut.
+- module constant `UI_DIR_ENV = "OPENRAL_DASHBOARD_UI_DIR"` (L43)
+- `sha256_of(path: Path) -> str` (L70) — Hex sha256 of a file, read in chunks.
+- `ensure_bundle(name: str, asset: PinnedAsset) -> Path | None` (L105) — Download (size + sha256 verified), extract with the `data` tar filter minus `*.map`, and move into `$OPENRAL_CACHE_DIR/dashboard_assets/<name>/<sha256>/` only when complete; the directory holding `index.html`, or `None` (logged). Shared with `viz_assets`.
+- `ui_dir() -> Path | None` (L141) — The local build, else the fetched pin, else `None`; no download.
+- `ensure_ui_assets() -> Path | None` (L152) — Fetch the pin if not cached; called best-effort by `run_dashboard`.
+
+### `python/observability/src/openral_observability/dashboard/tunnel.py`
+
+_The robot's Cloudflare Tunnel (ADR-0129 §3): a user systemd service that survives reboots, or the dashboard's own child without user systemd; no install, no root. The token reaches cloudflared through `TUNNEL_TOKEN` / `EnvironmentFile`, never argv._
+
+- `TUNNEL_PORT: int` (L47) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
+- `CLOUDFLARED: dict[str, PinnedAsset]` (L51) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
+- `TUNNEL_TOKEN_RE: re.Pattern[str]` (L66) — A Cloudflare tunnel token (base64 of its JSON credentials); `write_tunnel_token` refuses anything else.
+- `tunnel_env_path() -> Path` (L88) — `tunnel.env` next to the enrolment file.
+- `write_tunnel_token(token: str) -> Path` (L93) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
+- `read_tunnel_token() -> str | None` (L111) — The stored token, or `None` when not linked.
+- `SERVICE: str` (L69) — `openral-tunnel.service`, the user unit `openral robot link` installs.
+- `install_service(exe: Path) -> str | None` (L154) — Write the user unit (`EnvironmentFile=tunnel.env`, `Restart=always`), `systemctl --user enable --now` it and `loginctl enable-linger` (boot without login); `None`, or why not.
+- `service_active() -> bool` (L177) — Whether the user service is running.
+- `ensure_cloudflared() -> Path | None` (L123) — The pinned binary, fetched once into the cache; else one on `PATH`; else `None`.
+- `start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None` (L182) — Run `cloudflared tunnel --no-autoupdate run` as a child unless the user service already runs it; `None` when not linked, the service holds it, or no binary.
+
+### `python/observability/src/openral_observability/dashboard/viz_assets.py`
+- module constant `LICHTBLICK: PinnedAsset` (L20) — Lichtblick v1.30.0 `lichtblick-web.tar.gz` (MPL-2.0), pinned by sha256 + size.
+- `ensure_viz_assets() -> Path | None` (L35) — The Lichtblick build (via `ensure_bundle`), with a `NOTICE.txt` naming its MPL-2.0 source; fetched on the first `/viz/` request.
 
 ### `python/observability/src/openral_observability/dashboard/server.py`
-- `run_dashboard(*, host="127.0.0.1", port=4318, inprocess_cmd=None, store=None, log_level="warning") -> None` — Start uvicorn on `host:port` and block until SIGINT/SIGTERM. Calls `vad_assets.ensure_vad_assets()` best-effort before binding. Prints a single URL banner to stderr before binding. When `inprocess_cmd` is set, spawns the argv as a child process pointed at this dashboard's OTLP endpoint. Default port `4318` (OTLP/HTTP standard) rather than `8000`, to avoid clashing with common dev servers. (L56)
+- `run_dashboard(*, host="127.0.0.1", port=4318, remote_port=None, bridge_port=8765, manifest_path=None, inprocess_cmd=None, store=None, log_level="warning") -> None` (L63) — Start the local listener on `host:port` and, when the robot is linked (`load_enrolment`), the remote listener on `127.0.0.1:remote_port` (default 4319; a `remote_port` without an enrolment is a `ValueError`) with a `TokenVerifier`; both with `proxy_headers` off and a 30 s WebSocket ping, run together until SIGINT/SIGTERM (one stopping stops both). Fetches the robot UI best-effort (`ensure_ui_assets`), starts the persistent `EstopPublisher`, the safety-status and perception-overlay subscribers and mDNS discovery, prints the URL banner and warnings for a non-loopback bind, write controls and remote control; when linked, also runs the robot's tunnel (`tunnel.start_tunnel`) and stops it on exit. `manifest_path` (a `RobotManifest` JSON file) is served until the runtime sends a fresher one; an unreadable file is logged and ignored. When `inprocess_cmd` is set, spawns it pointed at this dashboard's OTLP endpoint.
 - `spawn_dashboard` / `attached_dashboard` — Inverse of `--inprocess`; see `dashboard/attach.py` below (a separate module despite the name symmetry with this file).
 
 ### `python/observability/src/openral_observability/dashboard/attach.py`
@@ -1184,7 +1254,7 @@ _The `--inprocess` inverse: spawn `openral dashboard` as a child process and att
 ### `python/observability/src/openral_observability/dashboard/store.py` — F7 trace index additions
 _Bounded per-trace_id span index for query-time bag↔OTel join._
 
-- `class _IndexedSpan` (L275) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
+- `class _IndexedSpan` (L279) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
 - `TelemetryStore.list_traces() -> list[dict]` — One row per indexed trace_id (`trace_id`, `span_count`, `last_seen_unix`), most-recent first. Backs `GET /api/traces`.
 - `TelemetryStore.lookup_trace(trace_id: str) -> list[dict] | None` — Every indexed span for `trace_id`, sorted ascending by `start_unix_ns`. `None` when the trace is not (or no longer) in the bounded index. Backs `GET /api/spans/{trace_id}`.
 - `_TRACE_INDEX_MAX_TRACES = 64` / `_TRACE_INDEX_MAX_SPANS = 2048` — Memory caps. Older trace_ids evict FIFO on insertion.
@@ -1192,7 +1262,6 @@ _Bounded per-trace_id span index for query-time bag↔OTel join._
 ### `python/observability/src/openral_observability/dashboard/app.py` — F7 routes
 - `GET /api/traces` — JSON `{"traces": [...]}` from `TelemetryStore.list_traces`.
 - `GET /api/spans/{trace_id}` — JSON `{"trace_id", "spans": [...]}` from `TelemetryStore.lookup_trace`; 404 when the trace is not indexed.
-- `GET /api/config` — JSON `{"jaeger_ui_url": "..."}` from the `OPENRAL_JAEGER_UI_URL` env (default `""`). The UI uses this to enable/disable the footer "open in jaeger" link rather than guessing a `localhost:16686` link that may be dead.
 
 ### `python/observability/src/openral_observability/tracing_lttng.py`
 _Opt-in LTTng tracepoints around the realtime hot path. No-op when `OPENRAL_ROS2_TRACING` is unset; falls back to JSONL when `lttngust` is missing._

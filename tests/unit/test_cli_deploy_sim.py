@@ -2296,12 +2296,12 @@ def test_panda_mobile_declares_real_footprint_polygon() -> None:
 # ── Foxglove live-scene bridge ────────────────────────────────────────────────
 
 
-def test_deploy_sim_foxglove_disabled_by_default() -> None:
-    """Foxglove bridge is off by default (decision 3: default-off).
+def test_deploy_sim_foxglove_follows_the_dashboard_by_default() -> None:
+    """The Foxglove bridge is on whenever the dashboard is (ADR-0129), off headless.
 
-    When ``--foxglove`` is not passed, ``enable_foxglove:=false`` must appear
-    in the launch argv and the dataclass field must be False. Default-off keeps
-    the headless/CI boot path and the OTel plane untouched.
+    The dashboard's 3D view proxies the bridge at ``/ws``, so a deploy with the
+    dashboard gets it without ``--foxglove``; ``--no-dashboard`` keeps the
+    headless/CI boot path bridge-free.
     """
     invocation = resolve_launch_invocation(
         config=_OPENARM_CONFIG,
@@ -2310,11 +2310,21 @@ def test_deploy_sim_foxglove_disabled_by_default() -> None:
         reset_to_pose_service=None,
         hal_param_overrides=None,
     )
-    assert invocation.enable_foxglove is False
+    assert invocation.enable_foxglove is True
     assert invocation.foxglove_port == 8765
     joined = " ".join(invocation.argv_template)
-    assert "enable_foxglove:=false" in joined
+    assert "enable_foxglove:=true" in joined
     assert "foxglove_port:=8765" in joined
+    headless = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+    )
+    assert headless.enable_foxglove is False
+    assert "enable_foxglove:=false" in " ".join(headless.argv_template)
 
 
 def test_deploy_sim_foxglove_enabled_forwards_launch_args() -> None:
