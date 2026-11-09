@@ -38,9 +38,15 @@ _CODE = base64.urlsafe_b64encode(json.dumps(_LINK).encode()).decode().rstrip("="
 
 @pytest.fixture
 def enrolment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from openral_cli.robot import ACCOUNT_SETTINGS
     from openral_observability.dashboard import tunnel
 
     monkeypatch.setattr(tunnel, "CLOUDFLARED", {})  # never download in a unit test
+    # apply_account_settings writes os.environ itself: record each variable's original
+    # state first (setenv, then delenv), so teardown restores it and nothing leaks.
+    for var in ACCOUNT_SETTINGS:
+        monkeypatch.setenv(var, "")
+        monkeypatch.delenv(var)
     path = tmp_path / "config" / "robot.json"
     monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -242,8 +248,7 @@ def test_account_settings_never_set_the_robots_own_switches(
 
     _fake_cloudflared(tmp_path, monkeypatch)
     assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
-    for var in ("OPENRAL_REASONER_MODEL", "OPENRAL_DASHBOARD_REMOTE_CONTROL"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", raising=False)
     body = {"OPENRAL_DASHBOARD_REMOTE_CONTROL": "1", "OPENRAL_REASONER_MODEL": "m"}
     monkeypatch.setattr(
         robot,
@@ -252,7 +257,6 @@ def test_account_settings_never_set_the_robots_own_switches(
     )
     assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_MODEL"]
     assert "OPENRAL_DASHBOARD_REMOTE_CONTROL" not in os.environ
-    monkeypatch.delenv("OPENRAL_REASONER_MODEL")
 
 
 def test_a_refused_credential_drops_the_cache_and_a_new_link_drops_the_old_robot(
