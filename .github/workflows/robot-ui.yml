@@ -3,10 +3,21 @@ name: robot-ui
 # the robot at :4318/ and by www.openral.com at /robot-ui/.
 #
 #   • pull requests touching the UI: npm ci, npm test, npm run build.
-#   • a published release: the same, then attach
-#     openral-robot-ui-<tag>.tar.gz (the contents of dist/) and its .sha256 to
-#     that release. The robot's pinned UI and the website's robot-ui.lock.json
-#     both pin this file by sha256.
+#   • a push to master touching the UI: the same, then publish the build as the
+#     pre-release robot-ui-<sha7> and open the pin bumps that roll it out:
+#       - website: robot-ui.lock.json on dev, merged at once (dev.openral.com picks
+#         it up; promote-to-main carries the same pin to production);
+#       - openral: ui_assets.ROBOT_UI (tools/pin_robot_ui.py), auto-merged when its
+#         checks pass, so the next tagged release ships it.
+#     Both pins are sha256s committed in code: the UI runs with the local operator's
+#     full control, so it is never trusted on a release asset alone.
+#   • a published release: the same build, attached to that release.
+#
+# ROBOT_UI_BOT_TOKEN — a fine-grained token with Contents and Pull requests: write on
+# OpenRAL/openral and OpenRAL/website. Pull requests opened with the default
+# GITHUB_TOKEN start no workflows (no checks, so never mergeable), and it can't
+# write to the website. Without it the pre-release is still published and the
+# job says which pins to bump by hand.
 #
 # TOKEN — same caveat as release-pypi.yml: GitHub does not fire `release`
 # events for releases created with the default GITHUB_TOKEN. Without
@@ -19,6 +30,10 @@ on:
     paths:
       - "python/observability/ui/**"
       - ".github/workflows/robot-ui.yml"
+  push:
+    branches: [master]
+    paths:
+      - "python/observability/ui/**"
   release:
     types: [published]
   workflow_dispatch:
@@ -42,9 +57,19 @@ jobs:
     defaults:
       run:
         working-directory: python/observability/ui
-    env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
+      - id: tag
+        working-directory: ${{ github.workspace }}  # before checkout: the UI folder isn't there yet
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          # A push to master publishes robot-ui-<sha7>; a release attaches to its own tag.
+          tag="$RELEASE_TAG"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then tag="robot-ui-${GITHUB_SHA::7}"; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Build the tagged source, not whatever the dispatch ran from.
@@ -79,7 +104,7 @@ jobs:
   # Separate job so the write token never shares a runner with npm.
   attach:
     needs: build
-    if: github.event_name == 'release' || inputs.tag != ''
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -97,3 +122,93 @@ jobs:
           set -euo pipefail
           gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
           echo "::notice::Attached $(ls out | tr '\n' ' ')to $TAG."
+
+  # A push to master: publish the build as a pre-release on this commit.
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write   # gh release create
+    outputs:
+      url: ${{ steps.release.outputs.url }}
+      sha256: ${{ steps.release.outputs.sha256 }}
+      size: ${{ steps.release.outputs.size }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: robot-ui
+          path: out
+      - id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          name="openral-robot-ui-${TAG}.tar.gz"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" out/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Robot UI ${TAG}" \
+            --notes "The robot UI built from ${GITHUB_SHA} (python/observability/ui). Pinned by sha256 in ui_assets.ROBOT_UI and the website's robot-ui.lock.json."
+          {
+            echo "url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${name}"
+            echo "sha256=$(cut -d' ' -f1 "out/${name}.sha256")"
+            echo "size=$(stat -c%s "out/${name}")"
+          } >> "$GITHUB_OUTPUT"
+
+  # Roll it out: one pin-bump PR per repo (see ROBOT_UI_BOT_TOKEN above).
+  pin:
+    needs: [build, publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.ROBOT_UI_BOT_TOKEN }}
+      TAG: ${{ needs.build.outputs.tag }}
+      URL: ${{ needs.publish.outputs.url }}
+      SHA: ${{ needs.publish.outputs.sha256 }}
+      SIZE: ${{ needs.publish.outputs.size }}
+    steps:
+      - name: Skip without the bot token
+        id: gate
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::ROBOT_UI_BOT_TOKEN not set: pin ${TAG} by hand (sha256 ${SHA}, ${SIZE} bytes) in ui_assets.ROBOT_UI and the website's robot-ui.lock.json."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: master
+          token: ${{ secrets.ROBOT_UI_BOT_TOKEN }}
+      - name: website dev
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          git config --global user.name "openral-bot"
+          git config --global user.email "openral-bot@users.noreply.github.com"
+          gh repo clone OpenRAL/website website -- --branch dev --depth 1
+          cd website
+          git switch -c "bot/${TAG}"
+          printf '{ "version": "%s", "url": "%s", "sha256": "%s" }\n' "$TAG" "$URL" "$SHA" > robot-ui.lock.json
+          git commit -qam "chore(dashboard): pin the robot UI ${TAG}"
+          git push -q origin "bot/${TAG}"
+          pr=$(gh pr create --base dev --head "bot/${TAG}" \
+            --title "chore(dashboard): pin the robot UI ${TAG}" \
+            --body "The robot UI built from OpenRAL/openral@${GITHUB_SHA}, opened by robot-ui.yml.")
+          gh pr merge "$pr" --merge --delete-branch || gh pr merge "$pr" --merge --auto \
+            || echo "::warning::merge ${pr} by hand"
+      - name: openral master
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          git switch -c "bot/${TAG}"
+          python3 tools/pin_robot_ui.py "$TAG" "$URL" "$SHA" "$SIZE"
+          git commit -qas -m "chore(dashboard): pin the robot UI ${TAG}"
+          git push -q origin "bot/${TAG}"
+          pr=$(gh pr create --base master --head "bot/${TAG}" \
+            --title "chore(dashboard): pin the robot UI ${TAG}" \
+            --body "The robot UI built from ${GITHUB_SHA}, opened by robot-ui.yml. Merges itself when its checks pass.")
+          gh pr merge "$pr" --merge --auto --delete-branch \
+            || echo "::notice::auto-merge is off for this repo: merge ${pr} once green"
