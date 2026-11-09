@@ -213,7 +213,10 @@ jobs:
         run: |
           set -euo pipefail
           git switch -c "bot/${TAG}"
-          python3 tools/pin_robot_ui.py "$TAG" "$URL" "$SHA" "$SIZE"
+          # The pin tool as of the commit that built the UI (master may not have it yet).
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git show "${GITHUB_SHA}:tools/pin_robot_ui.py" > "$RUNNER_TEMP/pin_robot_ui.py"
+          python3 "$RUNNER_TEMP/pin_robot_ui.py" "$TAG" "$URL" "$SHA" "$SIZE"
           git commit -qas -m "chore(dashboard): pin the robot UI ${TAG}"
           git push -q origin "bot/${TAG}"
           pr=$(gh pr create --base master --head "bot/${TAG}" \
