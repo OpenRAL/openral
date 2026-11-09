@@ -489,12 +489,19 @@ def test_ws_proxy_ticket_is_optional_only_on_loopback(tmp_path: Path) -> None:
         app = create_app(TelemetryStore(), bridge_url=f"ws://127.0.0.1:{bridge.port}")
         foxglove = {"subprotocols": ["foxglove.websocket.v1"]}
         with TestClient(app, base_url="http://127.0.0.1:4318", client=("127.0.0.1", 5)) as local:
-            with local.websocket_connect("/ws", **foxglove) as ws:
+            here = {"host": "127.0.0.1:4318"}  # TestClient sends "testserver" on websockets
+            with local.websocket_connect("/ws", headers=here, **foxglove) as ws:
                 ws.send_text("hi")
                 assert ws.receive_text() == "hi"
             with (  # a page on another site
                 pytest.raises(WebSocketDisconnect),
-                local.websocket_connect("/ws", headers={"Origin": "http://evil.example"}),
+                local.websocket_connect("/ws", headers={**here, "Origin": "http://evil.example"}),
+            ):
+                pass
+            rebound = {"host": "evil.example:4318", "Origin": "http://evil.example:4318"}
+            with (  # DNS rebinding: same-origin with itself, but not this machine
+                pytest.raises(WebSocketDisconnect),
+                local.websocket_connect("/ws", headers=rebound),
             ):
                 pass
         with TestClient(app, base_url="http://10.0.0.2:4318", client=("10.0.0.7", 5)) as lan:
@@ -514,3 +521,30 @@ def test_a_remote_port_needs_a_linked_robot(
     monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(tmp_path / "missing.json"))
     with pytest.raises(ValueError, match="openral robot link"):
         run_dashboard(remote_port=4319)
+
+
+@pytest.mark.asyncio
+async def test_a_dns_rebound_page_is_not_the_local_operator() -> None:
+    """A page rebound to 127.0.0.1 sends a matching Origin and Host, but not this machine's."""
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5))
+    rebound = {"origin": "http://evil.example:4318"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://evil.example:4318") as c:
+        stop = await c.post("/api/actions/estop_reset", json={"args": {}}, headers=rebound)
+        read = await c.get("/api/config")
+    assert stop.status_code == 403 and "Host" in stop.json()["error"]
+    assert read.status_code == 403
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:4318") as c:
+        assert (await c.get("/api/config")).json()["mode"] == "local"
+
+
+def test_viz_tickets_are_capped_oldest_first() -> None:
+    """A loop of ticket requests can't grow the table without bound (or slow E-STOP)."""
+    from openral_observability.dashboard.remote_auth import Principal, VizTickets
+
+    tickets = VizTickets()
+    viewer = Principal(mode="lan", role="viewer")
+    issued = [tickets.issue(viewer) for _ in range(VizTickets.MAX + 5)]
+    assert tickets.expires_at(issued[0]) is None  # evicted
+    assert tickets.expires_at(issued[-1]) is not None
+    assert len(tickets._tickets) == VizTickets.MAX

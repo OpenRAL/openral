@@ -131,6 +131,8 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
         else None
     )
     app = create_app(store, verifier=verifier, bridge_url=f"ws://127.0.0.1:{bridge_port}")
+    if host.strip():  # browsing http://<bind address>:<port>/ from this machine is local
+        app.state.local_hosts.add(host.strip().strip("[]").lower())
     if manifest_path is not None:
         try:
             manifest = RobotManifest.model_validate_json(manifest_path.read_text("utf-8"))

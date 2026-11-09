@@ -53,7 +53,8 @@ def test_reasoner_emits_the_manifest_at_configure_and_on_registry_change(
     if not isinstance(provider, LoggerProvider):
         provider = LoggerProvider()
         set_logger_provider(provider)
-    provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+    processor = SimpleLogRecordProcessor(exporter)
+    provider.add_log_record_processor(processor)
     monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
     monkeypatch.delenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", raising=False)
 
@@ -113,3 +114,5 @@ def test_reasoner_emits_the_manifest_at_configure_and_on_registry_change(
         reasoner.destroy_node()
     finally:
         rclpy.shutdown()
+        # The provider is process-global: later tests must not keep writing to this one.
+        processor.shutdown()  # type: ignore[no-untyped-call]  # reason: unannotated SDK method

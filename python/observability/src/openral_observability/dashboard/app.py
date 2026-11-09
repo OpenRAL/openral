@@ -36,6 +36,7 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import time
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -126,6 +127,18 @@ def _is_loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+# DNS rebinding: a page on evil.example rebound to 127.0.0.1 is same-origin with itself
+# (its Origin matches its Host), so a loopback client is the local operator only when
+# Host names this machine (``app.state.local_hosts``; ``run_dashboard`` adds the bind address).
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", socket.gethostname().lower()})
+
+
+def _local_host(host_header: str, allowed: set[str]) -> bool:
+    """Whether a ``Host`` header names this machine (any port)."""
+    host = urlsplit(f"//{host_header}").hostname or ""
+    return host in allowed or host.endswith(".localhost")
 
 
 def _cross_origin(request: Request) -> bool:
@@ -992,6 +1005,9 @@ async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Respo
         return await _gate_remote(request, call_next)
     client = request.client.host if request.client else ""
     loopback = _is_loopback(client)
+    if loopback and not _local_host(request.headers.get("host", ""), request.app.state.local_hosts):
+        _logger.warning("dashboard.host_refused", host=request.headers.get("host"))
+        return _error(403, "unexpected Host header (DNS rebinding?)")
     request.state.principal = (
         Principal(mode="local", role="operator")
         if loopback
@@ -1139,6 +1155,7 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
     app.state.store = store
     app.state.verifier = verifier
     app.state.viz_tickets = VizTickets()
+    app.state.local_hosts = set(_LOCAL_HOSTS)
     app.state.bridge_url = bridge_url
     # The robot UI (ui_assets); run_dashboard refreshes it after fetching the pin.
     app.state.ui_dir = ui_dir()
@@ -1359,7 +1376,11 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
         tickets: VizTickets = websocket.app.state.viz_tickets
         expires_at = tickets.expires_at(ticket)
         client = websocket.client.host if websocket.client else ""
-        if expires_at is None and (remote or not _is_loopback(client)):
+        if expires_at is None and (
+            remote
+            or not _is_loopback(client)
+            or not _local_host(websocket.headers.get("host", ""), websocket.app.state.local_hosts)
+        ):
             await websocket.close(code=_WS_POLICY_VIOLATION)
             return
         await _proxy_bridge(websocket, websocket.app.state.bridge_url, expires_at)

@@ -333,6 +333,16 @@ def _settings_cache() -> Path:
     return enrolment_path().with_name("settings.json")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: the request carries the robot's credential."""
+
+    def redirect_request(self, *_: object, **__: object) -> urllib.request.Request | None:
+        return None
+
+
+_open = urllib.request.build_opener(_NoRedirect).open
+
+
 ACCOUNT_SETTINGS = frozenset(
     {
         "OPENRAL_REASONER_API_KEY",
@@ -378,8 +388,9 @@ def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
         },
     )
     try:
-        # The enrolled site's fixed https URL, not user input.
-        with urllib.request.urlopen(request, timeout=10) as resp:
+        # The enrolled site's fixed https URL, not user input; never a redirect, which
+        # would carry the robot's credential to another host.
+        with _open(request, timeout=10) as resp:
             settings = json.loads(resp.read())["settings"]
         _write_private(_settings_cache(), json.dumps(settings) + "\n")
     except urllib.error.HTTPError as exc:

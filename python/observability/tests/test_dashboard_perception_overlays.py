@@ -368,7 +368,7 @@ async def test_overlays_are_served_on_api_state() -> None:
     _set_detections(store)
     app = create_app(store)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/api/state")
     assert resp.status_code == 200
     overlays = resp.json()["topics"]["perception"]["overlays"]
@@ -386,7 +386,7 @@ async def test_app_starts_without_an_overlay_subscriber() -> None:
     app = create_app(TelemetryStore())
     assert app.state.perception_overlay is None
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/api/state")
     assert resp.status_code == 200
     assert resp.json()["topics"]["perception"] == {}

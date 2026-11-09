@@ -144,6 +144,10 @@ def test_a_linked_robot_takes_its_serial_and_org_from_the_enrolment(
     enrolment.write_text("{not json")
     with pytest.raises(ROSConfigError, match="not a robot enrolment"):
         resolve_unit_identity(franka, None, required=True)
+    # Only read when it fills a gap: with both set, a broken file blocks nothing.
+    monkeypatch.setenv("OPENRAL_UNIT_SERIAL", "SO101-0042")
+    monkeypatch.setenv("OPENRAL_ORG_ID", "acme")
+    assert resolve_unit_identity(franka, None, required=True).serial == "SO101-0042"
 
 
 def test_a_malformed_wire_trace_costs_the_link_not_the_record(

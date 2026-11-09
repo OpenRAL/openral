@@ -257,6 +257,8 @@ class VizTickets:
     """
 
     TTL_S = 900
+    MAX = 256
+    """Outstanding tickets kept; past it the oldest go (each viewer needs one at a time)."""
 
     def __init__(self) -> None:
         """No tickets yet."""
@@ -265,7 +267,10 @@ class VizTickets:
     def issue(self, principal: Principal) -> str:
         """A new ticket for ``principal``, valid ``TTL_S`` seconds."""
         now = time.time()
-        self._tickets = {t: v for t, v in self._tickets.items() if v.expires_at > now}
+        if len(self._tickets) >= self.MAX:
+            self._tickets = {t: v for t, v in self._tickets.items() if v.expires_at > now}
+            while len(self._tickets) >= self.MAX:  # dicts keep issue order: oldest first
+                del self._tickets[next(iter(self._tickets))]
         ticket = secrets.token_urlsafe(32)
         self._tickets[ticket] = _Ticket(principal.sub, principal.role, now + self.TTL_S)
         return ticket

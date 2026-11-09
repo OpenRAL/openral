@@ -82,7 +82,7 @@ async def test_post_traces_decodes_and_updates_state(
     store = TelemetryStore()
     app = create_app(store)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.post(
             "/v1/traces",
             content=_otlp_traces_payload(),
@@ -134,7 +134,7 @@ async def test_post_logs_ingests_debug_line_into_event_log(
     store = TelemetryStore()
     app = create_app(store)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.post(
             "/v1/logs",
             content=_otlp_logs_payload(),
@@ -155,7 +155,7 @@ async def test_post_logs_ingests_debug_line_into_event_log(
 async def test_post_logs_malformed_returns_400() -> None:
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.post(
             "/v1/logs",
             content=b"not-a-protobuf-at-all-\xff\xfe",
@@ -171,7 +171,7 @@ async def test_post_traces_accepts_gzip_encoding(
     store = TelemetryStore()
     app = create_app(store)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         body = gzip.compress(_otlp_traces_payload())
         resp = await client.post(
             "/v1/traces",
@@ -187,7 +187,7 @@ async def test_post_traces_accepts_gzip_encoding(
 async def test_post_traces_malformed_returns_400() -> None:
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.post(
             "/v1/traces",
             content=b"not-a-protobuf",
@@ -200,7 +200,7 @@ async def test_post_traces_malformed_returns_400() -> None:
 async def test_healthz() -> None:
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
@@ -212,7 +212,7 @@ async def test_api_config_reflects_env_url(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("OPENRAL_JAEGER_UI_URL", "https://jaeger.example/")
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/api/config")
         assert resp.status_code == 200
         assert resp.json()["jaeger_ui_url"] == "https://jaeger.example"
@@ -263,7 +263,7 @@ _JFK_WAV = Path(__file__).parent / "fixtures" / "jfk.wav"
 async def test_post_transcribe_rejects_empty_body() -> None:
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.post("/api/transcribe", content=b"")
         assert resp.status_code == 400
         assert "empty audio" in resp.json()["error"]
@@ -279,7 +279,7 @@ async def test_post_transcribe_returns_503_when_faster_whisper_missing(
     monkeypatch.setitem(sys.modules, "faster_whisper", None)
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.post("/api/transcribe", content=b"\x00\x01\x02\x03")
         assert resp.status_code == 503
         assert "speech-to-text unavailable" in resp.json()["error"]
@@ -296,7 +296,7 @@ async def test_post_transcribe_real_audio(monkeypatch: pytest.MonkeyPatch) -> No
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://test", timeout=120.0
+        transport=transport, base_url="http://localhost", timeout=120.0
     ) as client:
         resp = await client.post(
             "/api/transcribe",
@@ -349,7 +349,7 @@ def _otlp_camera_payload(av: Callable[[object], AnyValue]) -> Callable[[str, str
 async def test_api_robots_disabled_when_no_discovery() -> None:
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/api/robots")
     assert resp.status_code == 200
     assert resp.json() == {"enabled": False, "robots": []}
@@ -368,7 +368,7 @@ async def test_api_robots_lists_registry() -> None:
     app = create_app(TelemetryStore())
     app.state.discovery = disc
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/api/robots")
     body = resp.json()
     assert body["enabled"] is True
@@ -385,7 +385,7 @@ async def test_camera_snapshot_serves_the_latest_jpeg(
 
     jpeg = b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"
     transport = httpx.ASGITransport(app=create_app(TelemetryStore()))
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         await client.post(
             "/v1/traces", content=_otlp_camera_payload("wrist", base64.b64encode(jpeg).decode())
         )
@@ -421,7 +421,7 @@ async def test_root_serves_the_fallback_page_without_a_ui(monkeypatch: pytest.Mo
     app = create_app(TelemetryStore())
     app.state.ui_dir = None
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/")
         missing = await client.get("/assets/app.js")
     assert resp.status_code == 200
@@ -447,7 +447,7 @@ async def test_root_serves_a_local_ui_build(
     (tmp_path.parent / "secret.txt").write_text("outside the build")
     monkeypatch.setenv("OPENRAL_DASHBOARD_UI_DIR", str(tmp_path))
     transport = httpx.ASGITransport(app=create_app(TelemetryStore()))
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         index = await client.get("/")
         asset = await client.get("/assets/app.js")
         escape = await client.get("/assets/%2E%2E/%2E%2E/secret.txt")
@@ -466,7 +466,7 @@ async def test_viz_serves_lichtblick_under_its_own_csp(tmp_path: Path) -> None:
     app = create_app(TelemetryStore())
     app.state.viz_dir = tmp_path
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/viz/")
     csp = resp.headers["content-security-policy"]
     digest = base64.b64encode(hashlib.sha256(inline.encode()).digest()).decode()
@@ -484,7 +484,7 @@ async def test_gzip_body_over_decoded_budget_is_refused(monkeypatch: pytest.Monk
     assert len(bomb) < 1024
     store = TelemetryStore()
     transport = httpx.ASGITransport(app=create_app(store))
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.post(
             "/v1/traces",
             content=bomb,
@@ -505,7 +505,9 @@ async def test_post_transcribe_refuses_audio_over_duration_budget(
     monkeypatch.setattr(app_mod, "_STT_MAX_SECONDS", 2)
     monkeypatch.setenv("OPENRAL_STT_MODEL", "tiny.en")
     transport = httpx.ASGITransport(app=create_app(TelemetryStore()))
-    async with httpx.AsyncClient(transport=transport, base_url="http://t", timeout=120.0) as c:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", timeout=120.0
+    ) as c:
         resp = await c.post(
             "/api/transcribe", content=_JFK_WAV.read_bytes(), headers={"content-type": "audio/wav"}
         )

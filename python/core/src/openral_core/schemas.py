@@ -909,18 +909,17 @@ def resolve_unit_identity(
     # deploys only: a sim run on the robot's computer is not that unit's evidence.
     path = enrolment_path()
     enrolled = None
-    if required and path.is_file():
+    serial = os.environ.get(UNIT_SERIAL_ENV) or (unit.serial if unit else None)
+    org_id = os.environ.get(ORG_ID_ENV) or (unit.org_id if unit else None)
+    # Read only when it would fill a gap: a broken file never blocks a deploy that has both.
+    if required and not (serial and org_id) and path.is_file():
         try:
             enrolled = RobotEnrolment.model_validate_json(path.read_text(encoding="utf-8"))
-        except ValueError as exc:  # pydantic's ValidationError is a ValueError
+        except (OSError, ValueError) as exc:  # pydantic's ValidationError is a ValueError
             raise ROSConfigError(f"{path}: not a robot enrolment ({exc})") from exc
     identity = UnitIdentity(
-        serial=os.environ.get(UNIT_SERIAL_ENV)
-        or (unit.serial if unit else None)
-        or (enrolled.serial if enrolled else None),
-        org_id=os.environ.get(ORG_ID_ENV)
-        or (unit.org_id if unit else None)
-        or ((enrolled.org or None) if enrolled else None),
+        serial=serial or (enrolled.serial if enrolled else None),
+        org_id=org_id or ((enrolled.org or None) if enrolled else None),
         site_id=os.environ.get(SITE_ID_ENV) or None,
     )
     for field, value in identity._asdict().items():

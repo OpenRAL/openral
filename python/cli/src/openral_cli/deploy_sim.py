@@ -3219,6 +3219,8 @@ def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:
         pkgs.append("openral_slam_bringup")
     if invocation.enable_nav2:
         pkgs.append("openral_nav2_bringup")
+    if invocation.enable_foxglove:  # on with the dashboard: its 3D view proxies the bridge
+        pkgs.append("foxglove_bridge")
     return pkgs
 
 
@@ -3243,6 +3245,12 @@ def assert_ros2_packages_discoverable(
     missing = [pkg for pkg in packages if prefix_lookup(pkg) is None]
     if not missing:
         return
+    if missing == ["foxglove_bridge"]:  # a distro package, not the workspace overlay
+        raise ROSConfigError(
+            "ros2 cannot find 'foxglove_bridge', which the dashboard's 3D view needs. "
+            "Install it (sudo apt install ros-$ROS_DISTRO-foxglove-bridge), or pass "
+            "--no-foxglove to deploy without the 3D view."
+        )
     quoted = ", ".join(repr(p) for p in missing)
     raise ROSConfigError(
         f"ros2 cannot find ROS package(s): {quoted}. The OpenRAL workspace "

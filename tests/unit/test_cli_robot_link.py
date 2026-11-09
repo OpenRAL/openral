@@ -214,7 +214,7 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
         body = {"settings": {"OPENRAL_REASONER_API_KEY": "sk-1", "OPENRAL_REASONER_MODEL": "m"}}
         return _Resp(json.dumps(body).encode())
 
-    monkeypatch.setattr("urllib.request.urlopen", site)
+    monkeypatch.setattr(robot, "_open", site)
     assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_API_KEY"]
     # Not urllib's default agent, which Cloudflare refuses.
     assert seen == [
@@ -228,7 +228,7 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
     def offline(req: Any, timeout: float) -> _Resp:
         raise OSError("no route to host")
 
-    monkeypatch.setattr("urllib.request.urlopen", offline)
+    monkeypatch.setattr(robot, "_open", offline)
     monkeypatch.delenv("OPENRAL_REASONER_API_KEY")
     assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_API_KEY"]
     assert os.environ["OPENRAL_REASONER_API_KEY"] == "sk-1"
@@ -246,7 +246,8 @@ def test_account_settings_never_set_the_robots_own_switches(
         monkeypatch.delenv(var, raising=False)
     body = {"OPENRAL_DASHBOARD_REMOTE_CONTROL": "1", "OPENRAL_REASONER_MODEL": "m"}
     monkeypatch.setattr(
-        "urllib.request.urlopen",
+        robot,
+        "_open",
         lambda req, timeout: _Resp(json.dumps({"settings": body}).encode()),
     )
     assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_MODEL"]
@@ -271,7 +272,7 @@ def test_a_refused_credential_drops_the_cache_and_a_new_link_drops_the_old_robot
     def refused(req: Any, timeout: float) -> _Resp:
         raise urllib.error.HTTPError(req.full_url, 401, "Unknown robot credential", {}, None)  # type: ignore[arg-type]  # reason: no headers needed
 
-    monkeypatch.setattr("urllib.request.urlopen", refused)
+    monkeypatch.setattr(robot, "_open", refused)
     assert robot.apply_account_settings(echo=lambda _: None) == []
     assert not cache.exists() and "OPENRAL_REASONER_API_KEY" not in os.environ
 
@@ -281,3 +282,13 @@ def test_a_refused_credential_drops_the_cache_and_a_new_link_drops_the_old_robot
     code = base64.urlsafe_b64encode(json.dumps(older).encode()).decode()
     assert CliRunner().invoke(app, ["robot", "link", "--no-service", code]).exit_code == 0
     assert not cache.exists() and not enrolment.with_name("robot.secret").exists()
+
+
+def test_the_settings_request_never_follows_a_redirect() -> None:
+    """A redirect would carry the robot's credential to another host."""
+    import urllib.request
+
+    from openral_cli import robot
+
+    req = urllib.request.Request("https://www.openral.com/api/robot/settings")
+    assert robot._NoRedirect().redirect_request(req, None, 302, "Found", {}, "https://evil") is None

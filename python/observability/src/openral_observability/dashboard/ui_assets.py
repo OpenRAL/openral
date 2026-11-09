@@ -22,6 +22,7 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+from http.client import HTTPException
 from pathlib import Path
 from typing import NamedTuple
 
@@ -130,7 +131,8 @@ def ensure_bundle(name: str, asset: PinnedAsset) -> Path | None:
             if not (root / "index.html").is_file():
                 raise ValueError(f"{asset.url}: no index.html in the bundle")
             root.replace(dest)
-    except (OSError, ValueError, urllib.error.URLError, tarfile.TarError) as exc:
+    # http.client.HTTPException: a truncated download (IncompleteRead) is not an OSError.
+    except (OSError, ValueError, urllib.error.URLError, tarfile.TarError, HTTPException) as exc:
         _logger.warning("dashboard.bundle_unavailable", bundle=name, url=asset.url, error=str(exc))
         return None
     return dest

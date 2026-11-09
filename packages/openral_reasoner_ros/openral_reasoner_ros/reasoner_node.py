@@ -2690,17 +2690,21 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if not raw:
             return
         serial = self.get_parameter("manifest_unit_serial").get_parameter_value().string_value
-        manifest = build_robot_manifest(
-            description,
-            DeployRuntime.model_validate_json(raw),
-            installed,
-            bridge_on=self.get_parameter("manifest_bridge_on").get_parameter_value().bool_value,
-            write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
-            remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
-            commercial_deployment=self._commercial_deployment,
-            unit_serial=serial or os.environ.get(UNIT_SERIAL_ENV) or None,
-        )
-        emit_robot_manifest(manifest)
+        try:  # advisory telemetry: a bad manifest never takes the reasoner down
+            manifest = build_robot_manifest(
+                description,
+                DeployRuntime.model_validate_json(raw),
+                installed,
+                bridge_on=self.get_parameter("manifest_bridge_on").get_parameter_value().bool_value,
+                write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
+                remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
+                commercial_deployment=self._commercial_deployment,
+                unit_serial=serial or os.environ.get(UNIT_SERIAL_ENV) or None,
+            )
+            emit_robot_manifest(manifest)
+        except ValueError as exc:  # pydantic's ValidationError is a ValueError
+            self.get_logger().warning(f"robot manifest not emitted: {exc}")
+            return
         self.get_logger().info(
             f"robot manifest emitted: {len(manifest.panels)} panels, "
             f"{len(manifest.actions)} actions"
@@ -2795,7 +2799,6 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # system-prompt block. Playbooks are role:s2 (excluded from the ExecuteSkill
         # palette); they reach the LLM as authored decision-procedure *content*.
         self._playbooks_block = self._collect_playbooks_block(manifests, loaded_paths)
-        self._emit_robot_manifest(description, manifests)
 
         merged_node_ids = self._palette.node_ids
 
@@ -3057,6 +3060,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             }
         )
         self._palette = new_palette
+        # The dashboard offers the skills the palette admits, after every filter above
+        # (servers up, state contract, action mode, import deps), never more.
+        self._emit_robot_manifest(description, importable)
         self.get_logger().info(
             f"palette seeded from {len(manifest_paths)} manifest(s) "
             f"across {len(search_paths)} path(s): "
