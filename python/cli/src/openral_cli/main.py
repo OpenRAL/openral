@@ -3776,7 +3776,10 @@ app.command("check")(check_command)
 # xacrodoc/yourdfpy) so `openral --help` stays fast.
 robot_app = typer.Typer(
     name="robot",
-    help="Robot description assets — vendor a flat URDF from an upstream xacro.",
+    help=(
+        "Robot assets and identity — vendor a flat URDF from an upstream xacro; "
+        "link this robot to openral.com."
+    ),
     no_args_is_help=True,
 )
 app.add_typer(robot_app, name="robot")
@@ -3837,6 +3840,29 @@ def robot_vendor_urdf(
     typer.echo(f"Wrote {written}")
 
 
+@robot_app.command("link")
+def robot_link(
+    code: str = typer.Argument(
+        ..., help="The link code openral.com showed when the robot was added."
+    ),
+    service: bool = typer.Option(
+        True,
+        "--service/--no-service",
+        help="Install the tunnel as a user systemd service that survives reboots (no root).",
+    ),
+) -> None:
+    """Link this robot to openral.com: store its enrolment and install its tunnel."""
+    from openral_core.exceptions import ROSConfigError
+
+    from openral_cli.robot import link_robot
+
+    try:
+        link_robot(code, echo=typer.echo, service=service)
+    except ROSConfigError as exc:
+        typer.echo(f"openral robot link: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
 # `openral prompt "do X"` publishes a one-shot PromptStamped
 # onto /openral/prompt_in/cli; the prompt_router_node fans it out to
 # /openral/prompt for the reasoner. rclpy import is deferred inside
@@ -3862,19 +3888,22 @@ app.add_typer(compliance_app, name="compliance")
 @app.command(
     "dashboard",
     help=(
-        "Serve a live debugging dashboard (read-only) at the given port. "
-        "The same port also acts as an OTLP/HTTP receiver, so any "
-        "`openral sim run` / `openral deploy run` pointed at "
-        "OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:<port> + "
-        "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf streams in live. "
-        "Works without Jaeger/Tempo running."
+        "Serve the robot dashboard at the given port: the robot UI, its API and "
+        "an OTLP/HTTP receiver, so any `openral sim run` / `openral deploy run` "
+        "pointed at OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:<port> + "
+        "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf streams in live. A robot linked "
+        "with `openral robot link` also gets the remote listener its Cloudflare "
+        "Tunnel points at (openral.com sign-in)."
     ),
 )
 def dashboard(
     host: str = typer.Option(
         "127.0.0.1",
         "--host",
-        help="Bind address. Loopback by default; no auth.",
+        help=(
+            "Local listener bind address. Loopback by default (full control, no auth); "
+            "on another address, other hosts get read-only + E-STOP."
+        ),
     ),
     port: int = typer.Option(
         4318,
@@ -3884,6 +3913,28 @@ def dashboard(
             "receiver. Defaults to 4318 (the OTLP/HTTP standard port) "
             "rather than 8000 (issue #132) — `mkdocs serve` and most "
             "FastAPI demos already squat on 8000."
+        ),
+    ),
+    remote_port: int | None = typer.Option(
+        None,
+        "--remote-port",
+        help=(
+            "Remote listener port on 127.0.0.1, the robot's tunnel target: every request "
+            "needs an openral.com token. Default 4319 when the robot is linked "
+            "(`openral robot link`), off otherwise."
+        ),
+    ),
+    bridge_port: int = typer.Option(
+        8765,
+        "--bridge-port",
+        help="foxglove_bridge's loopback port, which the 3D view reaches through /ws.",
+    ),
+    manifest: Path | None = typer.Option(
+        None,
+        "--manifest",
+        help=(
+            "A robot manifest JSON file to serve until the runtime sends a fresher one "
+            "(the deploy launch passes it, so a deploy without the reasoner has a manifest)."
         ),
     ),
     log_level: str = typer.Option(
@@ -3909,12 +3960,19 @@ def dashboard(
     from openral_observability.dashboard import run_dashboard
 
     inprocess_cmd = shlex.split(inprocess) if inprocess else None
-    run_dashboard(
-        host=host,
-        port=port,
-        inprocess_cmd=inprocess_cmd,
-        log_level=log_level,
-    )
+    try:
+        run_dashboard(
+            host=host,
+            port=port,
+            remote_port=remote_port,
+            bridge_port=bridge_port,
+            manifest_path=manifest,
+            inprocess_cmd=inprocess_cmd,
+            log_level=log_level,
+        )
+    except ValueError as exc:
+        typer.echo(f"openral dashboard: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
 
 # ── openral deploy {run, list} ───────────────────────────────────────────────────
@@ -4001,10 +4059,10 @@ def deploy_run(
         "--dashboard-port",
         help="Dashboard OTLP port.",
     ),
-    foxglove: bool = typer.Option(
-        False,
+    foxglove: bool | None = typer.Option(
+        None,
         "--foxglove/--no-foxglove",
-        help="Spawn the read-only Foxglove scene view.",
+        help="Spawn the read-only Foxglove scene view (default: on with the dashboard).",
     ),
     foxglove_port: int = typer.Option(
         8765,

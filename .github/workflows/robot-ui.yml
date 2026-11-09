@@ -1,0 +1,99 @@
+name: robot-ui
+# The robot UI (python/observability/ui, ADR-0129): one React build served by
+# the robot at :4318/ and by www.openral.com at /robot-ui/.
+#
+#   • pull requests touching the UI: npm ci, npm test, npm run build.
+#   • a published release: the same, then attach
+#     openral-robot-ui-<tag>.tar.gz (the contents of dist/) and its .sha256 to
+#     that release. The robot's pinned UI and the website's robot-ui.lock.json
+#     both pin this file by sha256.
+#
+# TOKEN — same caveat as release-pypi.yml: GitHub does not fire `release`
+# events for releases created with the default GITHUB_TOKEN. Without
+# RELEASE_PLEASE_TOKEN in release-please.yml, dispatch this workflow by hand
+# with the release tag.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "python/observability/ui/**"
+      - ".github/workflows/robot-ui.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the UI to (e.g. v0.5.0). Empty = build only."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: python/observability/ui
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Build the tagged source, not whatever the dispatch ran from.
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: python/observability/ui/package-lock.json
+      # --ignore-scripts: nothing in the tree needs an install script on Linux
+      # (the only one is fsevents, macOS-only), and none gets to run here.
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run build
+      - name: package
+        if: env.TAG != ''
+        run: |
+          set -euo pipefail
+          name="openral-robot-ui-${TAG}.tar.gz"
+          mkdir -p ../../../out
+          # Reproducible: fixed order, owner and mtime, so the sha256 depends on content only.
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='1970-01-01 00:00Z' \
+            -C dist -cf - . | gzip -n > "../../../out/${name}"
+          (cd ../../../out && sha256sum "${name}" > "${name}.sha256" && cat "${name}.sha256")
+      - if: env.TAG != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: robot-ui
+          path: out/
+          if-no-files-found: error
+
+  # Separate job so the write token never shares a runner with npm.
+  attach:
+    needs: build
+    if: github.event_name == 'release' || inputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write   # gh release upload
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: robot-ui
+          path: out
+      - name: attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
+          echo "::notice::Attached $(ls out | tr '\n' ' ')to $TAG."

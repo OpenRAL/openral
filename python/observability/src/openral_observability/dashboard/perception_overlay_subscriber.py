@@ -1,8 +1,8 @@
 """Live ROS 2 subscriber feeding the dashboard's camera perception overlays.
 
 Camera tiles already show what the robot sees (OTel `sensors.read_latest`
-spans carry a JPEG thumbnail, re-served as MJPEG by
-`/api/camera/<src>/stream`); this module adds a `kind: detector` rSkill's
+spans carry a JPEG thumbnail, re-served by
+`/api/camera/<src>/snapshot.jpg`); this module adds a `kind: detector` rSkill's
 boxes and a `kind: segmenter` rSkill's masks, drawn over those tiles instead
 of shown only as event-log text.
 

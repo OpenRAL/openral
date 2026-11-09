@@ -25,6 +25,9 @@ dashboard = [
     "uvicorn[standard]>=0.27", # reason: ASGI server for openral dashboard
     "httpx>=0.27",             # reason: test transport for the embedded OTLP/HTTP receiver
     "faster-whisper>=1.0",     # reason: local CPU speech-to-text (CTranslate2) behind POST /api/transcribe for the dashboard mic / operator voice prompt. MIT. Shipped with the dashboard so the voice prompt works out of the box; the endpoint still degrades to HTTP 503 if it is ever stripped.
+    "PyJWT[crypto]>=2.10",     # reason: the remote listener verifies openral.com's ES256 robot tokens (ADR-0129 Interface B; strict_aud needs 2.10). MIT.
+    "jsonschema>=4.23",        # reason: POST /api/actions/{id} validates args against the manifest action's args_schema (an rSkill's goal_params_schema). MIT.
+    "websockets>=14",          # reason: the /ws proxy's client leg to foxglove_bridge on loopback (also what uvicorn[standard] serves WebSockets with). BSD-3-Clause.
 ]
 mdns = [
     "zeroconf>=0.131",  # reason: mDNS advertise/browse for `openral dashboard` discovery (issue #75b). LGPL-2.1, TSC-approved 2026-06-21; used unmodified as a declared optional dep (not vendored). No commercial restriction; no runtime gate.
@@ -36,9 +39,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openral_observability"]
-# No wheel/sdist "artifacts" override: hatchling's default VCS-based file
-# selection (git-tracked, not .gitignore'd) already excludes the three
-# voice-prompt binary assets under dashboard/static/vendor/vad/ now that they
-# are untracked + gitignored (see that directory's NOTICE.md and
-# openral_observability.dashboard.vad_assets) — wheels built from this
-# package no longer bundle them.
+# The robot UI and the Lichtblick 3D view are not bundled: the dashboard fetches
+# pinned, sha256-checked releases on first use (dashboard/ui_assets.py,
+# dashboard/viz_assets.py). Only static/fallback.html ships in the wheel.

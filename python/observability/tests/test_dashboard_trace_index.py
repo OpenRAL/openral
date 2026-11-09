@@ -119,7 +119,7 @@ async def test_get_traces_and_spans_endpoints() -> None:
     )
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         await client.post(
             "/v1/traces",
             content=payload,

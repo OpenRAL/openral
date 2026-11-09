@@ -34,6 +34,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import json
+import os
 import pathlib
 import sys
 import threading
@@ -846,6 +847,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # refresh path for HF-Hub-installed skills.
         self.declare_parameter("robot_yaml", "")
         self.declare_parameter("rskill_search_paths", [""])
+        # ADR-0129 — what the robot manifest needs beyond the robot and the registry: the
+        # deploy's resolved DeployRuntime toggles (JSON; "" = no manifest is emitted), whether
+        # foxglove_bridge runs (the 3D panel), and the unit's serial. The launch sets them.
+        self.declare_parameter("manifest_runtime_json", "")
+        self.declare_parameter("manifest_bridge_on", False)
+        self.declare_parameter("manifest_unit_serial", "")
         # Reasoner-managed background services — additional lifecycle peer node names to surface in
         # the LLM tool palette's `node_ids` slot so the Reasoner can
         # emit `LifecycleTransitionTool(node=..., transition=...)` against
@@ -2659,6 +2666,50 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().info(f"playbooks: injected {len(entries)} into the system prompt")
         return render_playbooks_block(entries)
 
+    def _emit_robot_manifest(
+        self, description: RobotDescription, installed: list[RSkillManifest]
+    ) -> None:
+        """Send the robot manifest to the dashboard (ADR-0129 Interface A).
+
+        Runs on every palette seed — at configure and on ``/openral/skill_registry_changed``
+        — so the dashboard's actions follow the installed rSkills. Skills ride on the same
+        ``rskill_matches_robot`` predicate as the palette; the write-controls and
+        remote-control flags are read from the env the dashboard also inherits. Skipped
+        when the launch set no ``manifest_runtime_json`` (no deploy runtime to describe).
+        """
+        from openral_core import (
+            REMOTE_CONTROL_ENV,
+            UNIT_SERIAL_ENV,
+            WRITE_CONTROLS_ENV,
+            DeployRuntime,
+            build_robot_manifest,
+        )
+        from openral_observability.producer import emit_robot_manifest
+
+        raw = self.get_parameter("manifest_runtime_json").get_parameter_value().string_value
+        if not raw:
+            return
+        serial = self.get_parameter("manifest_unit_serial").get_parameter_value().string_value
+        try:  # advisory telemetry: a bad manifest never takes the reasoner down
+            manifest = build_robot_manifest(
+                description,
+                DeployRuntime.model_validate_json(raw),
+                installed,
+                bridge_on=self.get_parameter("manifest_bridge_on").get_parameter_value().bool_value,
+                write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
+                remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
+                commercial_deployment=self._commercial_deployment,
+                unit_serial=serial or os.environ.get(UNIT_SERIAL_ENV) or None,
+            )
+            emit_robot_manifest(manifest)
+        except ValueError as exc:  # pydantic's ValidationError is a ValueError
+            self.get_logger().warning(f"robot manifest not emitted: {exc}")
+            return
+        self.get_logger().info(
+            f"robot manifest emitted: {len(manifest.panels)} panels, "
+            f"{len(manifest.actions)} actions"
+        )
+
     def _maybe_seed_palette_from_search_paths(self) -> None:  # noqa: PLR0912, PLR0915  # reason: linear palette-seed pipeline (load → capability filter → ros-server probe → state-contract probe → import-deps probe → build); splitting hides the filter order
         """Populate the palette from in-tree ``rskills/<id>/rskill.yaml`` files.
 
@@ -3009,6 +3060,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             }
         )
         self._palette = new_palette
+        # The dashboard offers the skills the palette admits, after every filter above
+        # (servers up, state contract, action mode, import deps), never more.
+        self._emit_robot_manifest(description, importable)
         self.get_logger().info(
             f"palette seeded from {len(manifest_paths)} manifest(s) "
             f"across {len(search_paths)} path(s): "
