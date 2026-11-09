@@ -14962,8 +14962,8 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         auth_required=True,
     ),
     # Claude 5: forced tool use (``tool_choice`` ``any``/``tool``) is a 400 on
-    # these models (#522), so they run ``auto`` and the client turns a prose
-    # reply into a logged ``wait`` tick.
+    # these models (#522), so they run ``auto``: the client nudges a prose reply
+    # once, then raises a second one as an invalid plan.
     "claude-opus-5-5": ReasonerModel(
         id="claude-opus-5-5",
         display_name="Claude Opus 5.5 (Anthropic)",

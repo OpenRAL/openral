@@ -1062,11 +1062,16 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
             f"{REASONER_API_KEY_ENV} is unset; required for model {entry.id!r} "
             f"on endpoint {base_url}."
         )
+    # OpenAI's own URL spelled out serves models the way the `openai` preset
+    # does, so it strips OpenRouter's vendor prefix too.
+    served_by = preset or (
+        _ENDPOINT_PRESETS["openai"] if (base_url or "").rstrip("/") == OPENAI_BASE_URL else None
+    )
     return _openai_client_cls(preset, base_url)(
         # `openai/gpt-5.5` on OpenRouter is `gpt-5.5` on OpenAI's own API.
         model_id=(
-            preset.served_model_id(entry.served_model_id)
-            if preset is not None
+            served_by.served_model_id(entry.served_model_id)
+            if served_by is not None
             else entry.served_model_id
         ),
         api_key=api_key,
@@ -1838,10 +1843,10 @@ class AnthropicToolUseClient:
         tool_choice: ``"required"`` (the default) sends ``{"type": "any"}`` —
             exactly one tool call per tick. ``"auto"`` for models that refuse
             forced tool use (the Claude 5 generation, #522): a prose reply is
-            nudged once, then recorded as a ``wait`` tick. A 400 that names
-            ``tool_choice`` downgrades ``"required"`` to ``"auto"`` for the
-            rest of the client's life, logged as
-            ``reasoner.tool_choice_downgraded``.
+            nudged once, then a second one raises ``ROSReasonerInvalidPlan``. A
+            forced-tool-use refusal downgrades ``"required"`` to ``"auto"`` for
+            the rest of the client's life once an ``"auto"`` retry succeeds,
+            logged as ``reasoner.tool_choice_downgraded``.
 
     Raises:
         ROSConfigError: When ``api_key`` is empty or ``tool_choice`` is not

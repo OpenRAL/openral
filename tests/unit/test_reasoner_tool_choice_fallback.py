@@ -322,6 +322,18 @@ def test_openai_named_endpoint_speaks_the_responses_api(
     assert client._tool_choice == "required"
 
 
+def test_curated_model_on_openais_bare_url_sends_the_bare_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI's URL spelled out serves ``gpt-5.5``, not OpenRouter's ``openai/gpt-5.5``."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", OPENAI_BASE_URL + "/")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAIResponsesToolUseClient)
+    assert client.model_id == "gpt-5.5"
+
+
 @pytest.mark.parametrize(
     ("endpoint", "dialect", "expected"),
     [
