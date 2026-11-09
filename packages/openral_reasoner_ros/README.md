@@ -172,6 +172,9 @@ auth requirement, hosting mode, and local-compute floor.
 | `OPENRAL_REASONER_MODEL` | Served model | Client | Hosting / endpoint | Auth |
 |---|---|---|---|---|
 | `claude-opus-4-8` | `claude-opus-4-8` | `AnthropicToolUseClient` | Anthropic cloud | required |
+| `claude-opus-5-5` | `claude-opus-5-5` | `AnthropicToolUseClient` (`tool_choice: auto`) | Anthropic cloud | required |
+| `claude-sonnet-5-5` | `claude-sonnet-5-5` | `AnthropicToolUseClient` (`tool_choice: auto`) | Anthropic cloud | required |
+| `claude-haiku-5-5` | `claude-haiku-5-5` | `AnthropicToolUseClient` (`tool_choice: auto`) | Anthropic cloud | required |
 | `gpt-5.5` | `openai/gpt-5.5` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `gpt-5.6` | `openai/gpt-5.6` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
@@ -212,12 +215,36 @@ The env contract is:
   refused like an off-palette id.
 - `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
   raw model id.
-- `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — the bare-URL `openai` path
-  sends `tool_choice: "required"`; set `auto` for a gateway whose thinking-mode
-  model rejects that with HTTP 400. Case-insensitive, and any other value fails
-  at client build (and in `openral doctor`). Named endpoints, curated models and
-  the `anthropic` dialect carry their own value, so there it is ignored with a
-  `reasoner.tool_choice_ignored` warning.
+- `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — for an uncurated model on a
+  bare-URL `openai` endpoint or on the `anthropic` dialect (where `required` is
+  sent as `{"type": "any"}`). Set `auto` for a model that rejects forced tool use
+  with HTTP 400 (a thinking-mode gateway; the Claude 5 generation). Case-
+  insensitive, and any other value fails at client build (and in `openral
+  doctor`). Curated models and named `openai` endpoints carry their own value,
+  so there it is ignored with a `reasoner.tool_choice_ignored` warning.
+
+#### Models that refuse forced tool use (#522)
+
+The reasoner asks for exactly one tool call per tick (`tool_choice` `required`,
+Anthropic `any`). Some models refuse that: the Claude 5 generation answers
+`400 tool_choice: type "tool" and "any" are not supported for this model`, and
+some OpenAI-compatible gateways refuse `required` in thinking mode. The clients
+handle this without configuration:
+
+- The curated Claude 5 entries run `tool_choice: auto` from the start, with a
+  16000-token cap because they think before calling a tool and thinking counts
+  against `max_tokens` (an uncurated `anthropic` model gets the same cap).
+- Any other model that 400s on `tool_choice` is retried once with `auto`, and
+  the client stays on `auto`; logged as `reasoner.tool_choice_downgraded`.
+- Under `auto`, a reply with no tool call gets one nudge ("respond with exactly
+  one tool call"). A second prose reply is recorded as a `wait` tick with the
+  text as its rationale (`reasoner.no_tool_call`) — a no-op, never an action.
+- A refusal (`stop_reason: refusal` / `finish_reason: content_filter`) or a
+  reply cut off at the token cap is a tick error, not a `wait`.
+- OpenAI's own API refuses `max_tokens` on its reasoning models. The `openai`
+  named endpoint sends `max_completion_tokens` and the bare model id (`gpt-5.5`,
+  not OpenRouter's `openai/gpt-5.5`); any other endpoint that asks for
+  `max_completion_tokens` gets it after one 400 (`reasoner.max_tokens_param_switched`).
 
 ```bash
 # Curated cloud model
@@ -263,8 +290,8 @@ old provider value maps onto a model plus an endpoint:
 
 | Legacy `PROVIDER=` | Model-first replacement |
 |---|---|
-| `anthropic` | curated `claude-opus-4-8`, or `ENDPOINT=anthropic` + a raw model id |
-| `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` |
+| `anthropic` | curated `claude-opus-4-8` / `claude-opus-5-5` / `claude-sonnet-5-5` / `claude-haiku-5-5`, or `ENDPOINT=anthropic` + a raw model id |
+| `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` (an OpenAI key: `ENDPOINT=openai`) |
 | `ollama` / `vllm` | `ENDPOINT=<name>` (no key) |
 | `cosmos` | curated `cosmos3-edge` (managed autostart included) |
 | `openai-compatible` | `ENDPOINT=<url>` + `DIALECT=openai` |
@@ -310,19 +337,26 @@ does default to `OPENRAL_REASONER_MODEL=gpt-5.5`, with
 collective-goal decomposition tests. The default needs
 `OPENRAL_REASONER_API_KEY` and fails loudly without it.
 
-### Cloud — GPT-5.5 / GPT-5.6 via OpenRouter
+### Cloud — GPT-5.5 / GPT-5.6 via OpenRouter or OpenAI
 
 ```bash
 export OPENRAL_REASONER_MODEL=gpt-5.5  # or gpt-5.6
 export OPENRAL_REASONER_API_KEY=sk-or-...
+# With an OpenAI key instead, point the same model at OpenAI's own API:
+# export OPENRAL_REASONER_ENDPOINT=openai
+# export OPENRAL_REASONER_API_KEY=sk-...
 ```
 
-### Cloud — Claude Opus 4.8
+### Cloud — Claude Opus 4.8 / Claude 5
 
 ```bash
-export OPENRAL_REASONER_MODEL=claude-opus-4-8
+export OPENRAL_REASONER_MODEL=claude-opus-4-8  # or claude-opus-5-5 / claude-sonnet-5-5 / claude-haiku-5-5
 export OPENRAL_REASONER_API_KEY=sk-ant-...
 ```
+
+The Claude 5 entries run `tool_choice: auto` (they refuse forced tool use) and
+think before they act, so a tick can take longer than on Opus 4.8; raise
+`OPENRAL_REASONER_TIMEOUT_S` if ticks time out at the 10 s default.
 
 ### Managed local — NVIDIA Cosmos 3 Edge
 

@@ -79,6 +79,7 @@ from openral_reasoner.spatial_query import (
 )
 from openral_reasoner.tool_use import (
     DEFAULT_SYSTEM_PROMPT,
+    OPENAI_BASE_URL,
     OPENROUTER_BASE_URL,
     SYSTEM_PROMPT_ENV_VAR,
     AnthropicToolUseClient,
@@ -97,6 +98,7 @@ __all__ = [
     "DEFAULT_COSMOS3_MODEL",
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_SYSTEM_PROMPT",
+    "OPENAI_BASE_URL",
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
     "AnthropicToolUseClient",

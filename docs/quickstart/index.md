@@ -143,7 +143,7 @@ default, by design. It matters only for the deploy graph (`openral deploy sim`
 / `openral deploy run`); the row is informational, so `doctor` still exits 0:
 
 ```bash
-export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or gpt-5.5 / gpt-5.6 / cosmos3-edge
+export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or claude-opus-5-5 / claude-sonnet-5-5 / claude-haiku-5-5 / gpt-5.5 / gpt-5.6 / cosmos3-edge
 export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs it
 ```
 
