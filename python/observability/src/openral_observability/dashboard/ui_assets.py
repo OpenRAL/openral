@@ -58,7 +58,8 @@ ROBOT_UI: PinnedAsset | None = PinnedAsset(
     size=184304,
 )
 """The robot UI release this dashboard serves (``robot-ui.yml``'s tarball), or ``None``
-to serve the built-in fallback page. Pre-release ``robot-ui-dev2`` until the next tag."""
+to serve the built-in fallback page. Bumped by ``robot-ui.yml`` (``tools/pin_robot_ui.py``)
+whenever the UI changes on master: ``robot-ui-dev2`` until the next pin."""
 
 
 def _cache_root() -> Path:
