@@ -197,9 +197,15 @@ def test_sim_runner_records_the_grade_of_every_world_frame() -> None:
     finally:
         runner.deactivate()
     (ep,) = runner.episode_results
-    assert len(ep.frames) == len(ep.frame_grades) == ep.steps == 4
+    # One frame before each step, plus the ending step's own frame.
+    assert len(ep.frames) == len(ep.frame_grades) == ep.steps + 1 == 5
     assert ep.frame_grades[0] is None  # rendered before the first step
-    assert ep.frame_grades[1:] == [("fail", 0.0)] * 3  # the cube never moved
+    assert ep.frame_grades[1:] == [("fail", 0.0)] * 4  # the cube never moved
+    # The marker ring turns with the grade on that last frame (red: a fail at the limit).
+    from openral_sim._website_video import grade_colour
+
+    red = np.all(ep.frames[-1] == np.array(grade_colour(0.0), np.uint8), axis=-1)
+    assert red.sum() > 10 and not np.all(ep.frames[0] == np.array(grade_colour(0.0)), axis=-1).any()
     assert ep.final_info["placement_grade"] == "fail" and ep.final_info["lifted"] is False
     assert grade_counts([ep]) == {"fail": 1}
     assert float(str(episode_records([ep])[0]["cube_marker_distance_m"])) > 0.1
