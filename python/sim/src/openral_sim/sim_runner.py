@@ -831,6 +831,13 @@ class SimRunner(InferenceRunnerBase):
                 # Step budget hit without env signal: treat as truncation.
                 truncated = True
                 self._needs_reset = True
+            if record and self._needs_reset:
+                # Frames are captured before each step, so the ending step's own state
+                # (e.g. a scene's grade-coloured target marker) needs one more render.
+                frame = self._env.render()
+                if frame is not None:
+                    self._buf.frames.append(frame)
+                    self._buf.frame_grades.append(self._buf.grade)
 
             # Fan out per-step state / images / action to the
             # recorder. We render here unconditionally when a recorder
