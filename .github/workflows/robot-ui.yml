@@ -7,8 +7,9 @@ name: robot-ui
 #     pre-release robot-ui-<sha7> and open the pin bumps that roll it out:
 #       - website: robot-ui.lock.json on dev, merged at once (dev.openral.com picks
 #         it up; promote-to-main carries the same pin to production);
-#       - openral: ui_assets.ROBOT_UI (tools/pin_robot_ui.py), auto-merged when its
-#         checks pass, so the next tagged release ships it.
+#       - openral: ui_assets.ROBOT_UI (tools/pin_robot_ui.py), left for a maintainer
+#         to review and merge (a public repo: nothing merges itself), so the next
+#         tagged release ships it.
 #     Both pins are sha256s committed in code: the UI runs with the local operator's
 #     full control, so it is never trusted on a release asset alone.
 #   • a published release: the same build, attached to that release.
@@ -209,6 +210,5 @@ jobs:
           git push -q origin "bot/${TAG}"
           pr=$(gh pr create --base master --head "bot/${TAG}" \
             --title "chore(dashboard): pin the robot UI ${TAG}" \
-            --body "The robot UI built from ${GITHUB_SHA}, opened by robot-ui.yml. Merges itself when its checks pass.")
-          gh pr merge "$pr" --merge --auto --delete-branch \
-            || echo "::notice::auto-merge is off for this repo: merge ${pr} once green"
+            --body "The robot UI built from ${GITHUB_SHA}, opened by robot-ui.yml. Review and merge once green.")
+          echo "::notice::${pr} pins ${TAG}: review and merge it."
