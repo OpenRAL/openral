@@ -1,22 +1,22 @@
-"""FastAPI app for the live dashboard.
+"""FastAPI app for the robot dashboard (ADR-0129).
 
-The same ASGI app serves three things on one port:
+One ASGI app, served by up to two listeners (``remote_auth``):
 
-* ``/``, ``/static/*`` — the single-page UI.
-* ``/api/state`` (JSON) and ``/api/stream`` (SSE) — read endpoints
-  consumed by the page's JavaScript.
-* ``/v1/traces``, ``/v1/metrics``, ``/v1/logs`` — OTLP/HTTP protobuf
-  receivers. Any OpenRAL workload pointed at this port via
-  ``OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:<port>`` +
-  ``OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`` will stream live into
-  the dashboard.
-* ``POST /api/prompt`` — operator-driven write endpoint that shells
-  out to ``openral prompt`` (the operator-prompt dispatch path) targeting
-  the prompt-router's ``dashboard`` source.
-* ``POST /api/estop_reset`` — operator recovery: clears a latched safety
-  e-stop by calling the kernel's ``/openral/estop_reset`` (std_srvs/Trigger)
-  service via ``ros2 service call``, so the robot can be re-tasked after an
-  e-stop. Returns 409 when the kernel rejects it (post-estop cooldown).
+* ``/`` — the robot UI (``ui_assets``), or the built-in ``static/fallback.html``
+  (status + E-STOP) when no UI is installed. ``/viz/`` — the pinned Lichtblick 3D
+  view (``viz_assets``).
+* ``GET /api/config``, ``/api/manifest``, ``/api/state``, ``/api/stream[?images=0]``
+  (SSE), ``/api/camera/{source}/snapshot.jpg``, ``/api/traces``,
+  ``/api/spans/{trace_id}`` — reads.
+* ``POST /api/actions/{id}`` — the manifest's actions: ``estop``, ``estop_reset``,
+  ``prompt``, ``skill:<rskill id>``. Role, LAN and remote-control rules are applied
+  here, every action is announced on ``/openral/operator_action`` for the compliance
+  recorder, and the safety kernel still disposes all motion.
+* ``POST /api/viz/ticket``, ``WS /ws`` — the 3D view's
+  ticketed proxy to ``foxglove_bridge`` on loopback.
+* ``POST /api/transcribe`` — operator speech to text, on the host.
+* ``/v1/traces``, ``/v1/metrics``, ``/v1/logs`` — the OTLP/HTTP receiver, on the local
+  listener only (loopback or LAN).
 """
 
 from __future__ import annotations
@@ -25,26 +25,38 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import http
+import importlib
 import io
+import ipaddress
 import itertools
 import json
 import mimetypes
 import os
 import re
 import shutil
+import socket
+import time
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import jsonschema
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from google.protobuf.message import DecodeError
-from openral_core import ACTOR_KEY_ENV, pseudonymous_actor_id
+from openral_core import (
+    ACTOR_KEY_ENV,
+    REMOTE_CONTROL_ENV,
+    WRITE_CONTROLS_ENV,
+    ManifestAction,
+    RobotManifest,
+    pseudonymous_actor_id,
+)
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
     ExportLogsServiceRequest,
     ExportLogsServiceResponse,
@@ -58,7 +70,17 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
 
+from openral_observability.dashboard.remote_auth import (
+    ROLE_RANK,
+    Principal,
+    TokenVerifier,
+    VizTickets,
+    allowed_origins,
+    bearer,
+    is_remote,
+)
 from openral_observability.dashboard.store import TelemetryStore
+from openral_observability.dashboard.ui_assets import ui_dir
 
 __all__ = ["create_app"]
 
@@ -68,43 +90,55 @@ _STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _write_controls_enabled() -> bool:
-    """Whether guarded write-controls are on (default OFF)."""
-    return os.environ.get("OPENRAL_DASHBOARD_WRITE_CONTROLS", "") == "1"
+    """Whether skills may run from the dashboard (``$OPENRAL_DASHBOARD_WRITE_CONTROLS=1``)."""
+    return os.environ.get(WRITE_CONTROLS_ENV, "") == "1"
 
 
-# Param-name substrings that may affect safety; the dashboard refuses to tune
-# these (CLAUDE.md §1.1 — never lower a velocity limit without a paper trail).
-#
-# Fail-closed intent: when in doubt, refuse.  Both the compact form (e.g.
-# "estop") AND the ROS 2 underscored/prefixed form (e.g. "e_stop") are listed
-# so that names like "e_stop_enable", "dead_man_timeout", "safe_mode", and
-# "safe_zone_radius" are all caught by substring matching.  "safe" subsumes
-# "safety" but both are kept for clarity; "e_stop" subsumes "estop" (which
-# never appears in practice) but both are kept for the same reason.
-_SAFETY_PARAM_DENYLIST = (
-    "velocity",
-    "accel",
-    "force",
-    "torque",
-    "limit",
-    "workspace",
-    "estop",
-    "e_stop",  # ROS 2 underscored form: e_stop_enable, e_stop_triggered, …
-    "deadman",
-    "dead_man",  # ROS 2 underscored form: dead_man_timeout, …
-    "safety",
-    "safe",  # catches safe_mode, safe_zone_radius, safe_dist, … (and safety)
-    "watchdog",
-    "deadline",  # deadman first_chunk_deadline_s / safe_action_deadline_s, …
-    "timeout",  # staleness / heartbeat timeouts gate brakes
-)
-_MJPEG_BOUNDARY = "frame"
+def _remote_control_enabled() -> bool:
+    """Whether reset, prompt and skills may run over the tunnel (default off; E-STOP always)."""
+    return os.environ.get(REMOTE_CONTROL_ENV, "") == "1"
+
 
 # Request-body budget, raw AND gzip-decoded (OTLP batches carry camera
 # thumbnails, so this is generous; it exists to stop a gzip bomb, not to tune).
 _MAX_BODY_BYTES = 64 * 1024 * 1024
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# The only writes a LAN client (non-loopback, local listener) may make: E-STOP, a ticket
+# to watch the 3D view, and OTLP ingest on /v1/* (a robot computer exporting to a
+# dashboard on the LAN, ADR-0017). The UI and the other actions are read-only from the
+# LAN (ADR-0129 §3); only the remote (tunnel) listener refuses /v1/*.
+_LAN_WRITES = frozenset({"/api/actions/estop", "/api/viz/ticket"})
+_DEFAULT_BRIDGE_URL = "ws://127.0.0.1:8765"
+_WS_POLICY_VIOLATION = 1008
+_WS_UNAVAILABLE = 1011
+
+# E-STOP never waits for a manifest: it is resolvable before the runtime has sent one.
+_ESTOP = ManifestAction(id="estop", kind="estop", label="E-STOP", min_role="viewer", remote=True)
+# Speech to text runs under the prompt action's rules (operator; remote control on).
+_TRANSCRIBE = ManifestAction(
+    id="transcribe", kind="prompt", label="Transcribe", min_role="operator", remote=False
+)
+
+
+def _is_loopback(host: str) -> bool:
+    """Whether ``host`` (a client address) is this machine."""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+# DNS rebinding: a page on evil.example rebound to 127.0.0.1 is same-origin with itself
+# (its Origin matches its Host), so a loopback client is the local operator only when
+# Host names this machine (``app.state.local_hosts``; ``run_dashboard`` adds the bind address).
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", socket.gethostname().lower()})
+
+
+def _local_host(host_header: str, allowed: set[str]) -> bool:
+    """Whether a ``Host`` header names this machine (any port)."""
+    host = urlsplit(f"//{host_header}").hostname or ""
+    return host in allowed or host.endswith(".localhost")
 
 
 def _cross_origin(request: Request) -> bool:
@@ -114,7 +148,8 @@ def _cross_origin(request: Request) -> bool:
     not), so an ``Origin`` whose host:port differs from ``Host`` is a page on
     another site driving the operator's browser (CSRF). No ``Origin`` means a
     non-browser client (curl, ``openral``, an OTLP exporter) and is allowed;
-    ``Origin: null`` (sandboxed iframe, file://) is refused.
+    ``Origin: null`` (sandboxed iframe, file://) is refused. Local listener only:
+    the remote listener checks ``Origin`` against its allowlist instead.
     """
     origin = request.headers.get("origin")
     if origin is None:
@@ -122,10 +157,17 @@ def _cross_origin(request: Request) -> bool:
     return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
 
 
-# Background drain tasks created by _skill_execute_response are stored here so
-# the event loop does not GC them before they finish.  Each task removes itself
-# from this set in its own done-callback.
-_BACKGROUND_DRAIN_TASKS: set[asyncio.Task[None]] = set()
+# Background tasks (skill-result drains, post-E-STOP announcements) are kept
+# here so the event loop does not GC them before they finish. Each task removes
+# itself from this set in its own done-callback.
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _in_background(coro: Awaitable[None]) -> None:
+    task: asyncio.Task[None] = asyncio.ensure_future(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
 
 # Regex to extract the goal ID from `ros2 action send_goal` stdout.
 _GOAL_ACCEPTED_RE = re.compile(r"Goal accepted with ID:\s*(\S+)")
@@ -133,6 +175,12 @@ _GOAL_REJECTED_PHRASE = "Goal was rejected"
 
 # Default acceptance timeout in seconds (overridden by env).
 _DEFAULT_SKILL_ACCEPT_TIMEOUT_S = 12.0
+
+# Lichtblick's web build (served at /viz/) loads ES modules and WebAssembly:
+# browsers reject an ESM import served as text/plain, and streaming wasm
+# compilation wants application/wasm.
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/wasm", ".wasm")
 
 
 async def _read_goal_decision(
@@ -171,7 +219,7 @@ async def _drain_skill_goal_stdout(
     """Drain remaining ``stdout`` after goal acceptance and audit-log the outcome.
 
     Runs as a background ``asyncio.Task`` — must catch all exceptions and log
-    them (never crash the event loop). Called by ``_skill_execute_response``
+    them (never crash the event loop). Started by ``_skill_execute_response``
     after the action server accepts the goal, so the eventual outcome is
     still audit-logged.
     """
@@ -207,19 +255,11 @@ async def _drain_skill_goal_stdout(
         )
 
 
-# The vendored voice-prompt assets (static/vendor/vad/) include ESM (.mjs) and
-# WebAssembly (.wasm) served by StaticFiles. Browsers reject an ESM dynamic
-# import served as text/plain, and streaming wasm compilation wants
-# application/wasm — register both so onnxruntime-web loads offline cleanly.
-mimetypes.add_type("text/javascript", ".mjs")
-mimetypes.add_type("application/wasm", ".wasm")
-
 # ── Operator voice prompt (POST /api/transcribe) ──────────────────────────────
-# The dashboard's mic button records until the operator stops speaking
-# (browser-side Silero VAD) and POSTs the captured audio here. We transcribe it
-# with a local CPU Whisper model (faster-whisper / CTranslate2) and hand the
-# text back so the page drops it into the operator-prompt box and sends it. The
-# audio never leaves the host. faster-whisper ships with the dashboard extra so
+# A client POSTs captured operator speech here (voice prompts in the robot UI are
+# a follow-up, ADR-0129 §2). We transcribe it with a local CPU Whisper model
+# (faster-whisper / CTranslate2) and hand the text back for the prompt action.
+# The audio never leaves the host. faster-whisper ships with the dashboard extra so
 # this works out of the box; the endpoint still degrades to a 503 (rather than
 # crashing the dashboard) on the off chance the dependency is ever stripped.
 _STT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB guard — a 30 s 16 kHz mono WAV is ~1 MB.
@@ -349,15 +389,11 @@ async def _prompt_response(text: str) -> JSONResponse:
     Shells out so the wire shape (PromptStamped on
     ``/openral/prompt_in/dashboard``, fanned out by ``prompt_router_node`` at
     priority 100) matches the CLI exactly. The console script is ``openral``,
-    the single entry point. Body lives here to keep ``create_app`` under the
-    statement cap.
+    the single entry point.
     """
     openral = shutil.which("openral")
     if openral is None:
-        return JSONResponse(
-            {"error": "`openral` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
+        return _error(503, "`openral` not on PATH; source the workspace install first")
     proc = await asyncio.create_subprocess_exec(
         openral,
         "prompt",
@@ -372,53 +408,23 @@ async def _prompt_response(text: str) -> JSONResponse:
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        return JSONResponse({"error": "openral prompt timed out after 10 s"}, status_code=504)
+        return _error(504, "openral prompt timed out after 10 s")
     stdout = stdout_b.decode("utf-8", errors="replace").strip()
     stderr = stderr_b.decode("utf-8", errors="replace").strip()
     if proc.returncode != 0:
         return JSONResponse(
-            {"error": "openral prompt failed", "returncode": proc.returncode, "stderr": stderr},
+            {
+                "ok": False,
+                "error": "openral prompt failed",
+                "returncode": proc.returncode,
+                "stderr": stderr,
+            },
             status_code=502,
         )
-    return JSONResponse({"status": "ok", "stdout": stdout, "stderr": stderr})
+    return JSONResponse({"ok": True, "stdout": stdout, "stderr": stderr})
 
 
-async def _announce_operator_action(action: str, operator_ip: str, detail: str = "") -> None:
-    """Announce a dashboard action on ``/openral/operator_action`` (issue #468), best effort.
-
-    The compliance recorder records the effect either way (a reset is the latch clearing);
-    this says it came through the dashboard and, when the deployer set ``$OPENRAL_ACTOR_KEY``,
-    from which client (the IP, pseudonymised; never sent in clear).
-    """
-    ros2 = shutil.which("ros2")
-    if ros2 is None:
-        return
-    key = os.environ.get(ACTOR_KEY_ENV, "")
-    actor_id = pseudonymous_actor_id(operator_ip, key) if key and operator_ip else ""
-    payload = json.dumps(
-        {"action": action, "channel_label": "dashboard", "actor_id": actor_id, "detail": detail}
-    )
-    proc = await asyncio.create_subprocess_exec(
-        ros2,
-        "topic",
-        "pub",
-        "--once",
-        "--wait-matching-subscriptions",
-        "1",
-        "/openral/operator_action",
-        "openral_msgs/msg/OperatorAction",
-        payload,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=3.0)
-    except TimeoutError:  # no recorder up: the action still happens, unattributed
-        proc.kill()
-        await proc.wait()
-
-
-async def _estop_reset_response(estop: Any = None, operator_ip: str = "") -> JSONResponse:
+async def _estop_reset_response(estop: Any = None) -> JSONResponse:
     """Clear a latched safety e-stop via the kernel's ``/openral/estop_reset``.
 
     The C++ safety kernel latches on a violation and drops every candidate chunk
@@ -429,15 +435,11 @@ async def _estop_reset_response(estop: Any = None, operator_ip: str = "") -> JSO
     ``success=false`` (HTTP 409) so the operator can retry. On success we also
     broadcast ``/openral/estop_cleared`` so the HAL + runner un-latch too —
     instantly via ``estop`` (the persistent publisher) when present, else the
-    shell-out fallback. Re-prompt via ``/api/prompt`` once this succeeds.
+    shell-out fallback. Re-prompt once this succeeds.
     """
     ros2 = shutil.which("ros2")
     if ros2 is None:
-        return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
-    await _announce_operator_action("estop_reset", operator_ip)
+        return _error(503, "`ros2` not on PATH; source the workspace install first")
     proc = await asyncio.create_subprocess_exec(
         ros2,
         "service",
@@ -453,15 +455,13 @@ async def _estop_reset_response(estop: Any = None, operator_ip: str = "") -> JSO
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        return JSONResponse(
-            {"error": "estop_reset timed out after 15 s — is the safety kernel running?"},
-            status_code=504,
-        )
+        return _error(504, "estop_reset timed out after 15 s — is the safety kernel running?")
     stdout = stdout_b.decode("utf-8", errors="replace").strip()
     stderr = stderr_b.decode("utf-8", errors="replace").strip()
     if proc.returncode != 0:
         return JSONResponse(
             {
+                "ok": False,
                 "error": "ros2 service call /openral/estop_reset failed",
                 "returncode": proc.returncode,
                 "stderr": stderr,
@@ -482,7 +482,12 @@ async def _estop_reset_response(estop: Any = None, operator_ip: str = "") -> JSO
         else:
             await _publish_estop_cleared()
     return JSONResponse(
-        {"status": "ok" if accepted else "rejected", "accepted": accepted, "stdout": stdout},
+        {
+            "ok": accepted,
+            "accepted": accepted,
+            "stdout": stdout,
+            **({} if accepted else {"error": "the kernel refused the reset (cooldown?)"}),
+        },
         status_code=200 if accepted else 409,
     )
 
@@ -529,10 +534,7 @@ async def _estop_trigger_response() -> JSONResponse:
     """
     ros2 = shutil.which("ros2")
     if ros2 is None:
-        return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
+        return _error(503, "`ros2` not on PATH; source the workspace install first")
     proc = await asyncio.create_subprocess_exec(
         ros2,
         "topic",
@@ -558,86 +560,21 @@ async def _estop_trigger_response() -> JSONResponse:
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        return JSONResponse(
-            {"error": "estop publish timed out after 10 s — is the graph running?"},
-            status_code=504,
-        )
+        return _error(504, "estop publish timed out after 10 s — is the graph running?")
     if proc.returncode != 0:
         return JSONResponse(
             {
+                "ok": False,
                 "error": "ros2 topic pub /openral/estop failed",
                 "returncode": proc.returncode,
                 "stderr": stderr_b.decode("utf-8", errors="replace").strip(),
             },
             status_code=502,
         )
-    return JSONResponse({"status": "ok", "accepted": True}, status_code=200)
+    return JSONResponse({"ok": True, "accepted": True}, status_code=200)
 
 
-def _config_response() -> JSONResponse:
-    """Dashboard-level config (Jaeger UI url, write-controls flag, …) sourced from env.
-
-    The UI fetches this once on load to decide whether to enable the "open in
-    jaeger" link, reveal the guarded write-controls panel, and enable the mic
-    button's voice prompt. Returning ``""`` (default) disables the Jaeger link
-    with a tooltip rather than linking unconditionally to a Jaeger that may
-    not be running locally.
-    """
-    from openral_observability.dashboard.vad_assets import vad_assets_available
-
-    jaeger_url = os.environ.get("OPENRAL_JAEGER_UI_URL", "").rstrip("/")
-    return JSONResponse(
-        {
-            "jaeger_ui_url": jaeger_url,
-            "write_controls_enabled": _write_controls_enabled(),
-            "voice_prompt_enabled": vad_assets_available(),
-        }
-    )
-
-
-async def _skill_execute_from_request(request: Request) -> JSONResponse:
-    """Validate the ``POST /api/skill/execute`` payload and dispatch the action.
-
-    Handles the flag check, JSON decode, field validation, and dispatch in one
-    place so the route closure stays under the statement cap (PLR0915).
-    Every attempt — permitted or denied — is audit-logged.
-    """
-    operator_ip = request.client.host if request.client else "unknown"
-    if not _write_controls_enabled():
-        _logger.warning(
-            "dashboard_write_attempt",
-            operation="skill_execute",
-            outcome="denied_flag_off",
-            operator_ip=operator_ip,
-        )
-        return JSONResponse(
-            {
-                "error": (
-                    "write-controls disabled; set OPENRAL_DASHBOARD_WRITE_CONTROLS=1 "
-                    "(pending safety-WG review)"
-                )
-            },
-            status_code=403,
-        )
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        return JSONResponse({"error": f"invalid json: {exc}"}, status_code=400)
-    skill_id = payload.get("skill_id") if isinstance(payload, dict) else None
-    if not isinstance(skill_id, str) or not skill_id.strip():
-        return JSONResponse({"error": "field 'skill_id' required"}, status_code=400)
-    return await _skill_execute_response(
-        skill_id.strip(),
-        str(payload.get("revision", "") or ""),
-        str(payload.get("prompt", "") or ""),
-        str(payload.get("goal_params_json", "") or ""),
-        operator_ip,
-    )
-
-
-async def _skill_execute_response(
-    skill_id: str, revision: str, prompt: str, goal_params_json: str, operator_ip: str
-) -> JSONResponse:
+async def _skill_execute_response(skill_id: str, goal_params_json: str, actor: str) -> JSONResponse:
     """Dispatch an ExecuteRskill action goal (guarded write-control; safety kernel disposes).
 
     Async accept-then-track: the endpoint returns as soon as the action server
@@ -653,19 +590,15 @@ async def _skill_execute_response(
     - Returns **HTTP 503** if ``ros2`` is not on PATH.
 
     On 202 a background ``asyncio.Task`` drains the remaining stdout, awaits
-    process exit, and audit-logs the eventual outcome. The task reference is
-    kept in ``_BACKGROUND_DRAIN_TASKS`` so the event loop cannot GC it before
-    completion.
+    process exit, and audit-logs the eventual outcome.
 
     Every call is audit-logged at WARNING level before the subprocess is
-    spawned. ``prompt`` and ``goal_params_json`` are never logged.
+    spawned; ``actor`` is the token ``sub`` or the client IP. ``goal_params_json``
+    is never logged.
     """
     ros2 = shutil.which("ros2")
     if ros2 is None:
-        return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
+        return _error(503, "`ros2` not on PATH; source the workspace install first")
 
     accept_timeout = float(
         os.environ.get(
@@ -676,8 +609,8 @@ async def _skill_execute_response(
     goal = json.dumps(
         {
             "rskill_id": skill_id,
-            "revision": revision,
-            "prompt": prompt,
+            "revision": "",
+            "prompt": "",
             "prompt_metadata_json": "",
             "goal_params_json": goal_params_json,
             "deadline_s": 0.0,
@@ -688,8 +621,7 @@ async def _skill_execute_response(
         operation="skill_execute",
         outcome="sent",
         skill_id=skill_id,
-        revision=revision,
-        operator_ip=operator_ip,
+        actor=actor,
     )
 
     proc = await asyncio.create_subprocess_exec(
@@ -715,14 +647,10 @@ async def _skill_execute_response(
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        return JSONResponse(
-            {
-                "error": (
-                    f"action server did not accept the goal within {accept_timeout:.0f} s "
-                    "(OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S)"
-                )
-            },
-            status_code=504,
+        return _error(
+            504,
+            f"action server did not accept the goal within {accept_timeout:.0f} s "
+            "(OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S)",
         )
 
     # ── Phase 2a: goal rejected ───────────────────────────────────────────────
@@ -733,12 +661,9 @@ async def _skill_execute_response(
             operation="skill_execute",
             outcome="rejected",
             skill_id=skill_id,
-            operator_ip=operator_ip,
+            actor=actor,
         )
-        return JSONResponse(
-            {"status": "rejected", "detail": "action server rejected the goal"},
-            status_code=409,
-        )
+        return _error(409, "action server rejected the goal")
 
     # ── Phase 2b: proc exited before any accepted/rejected line ──────────────
     if goal_id is None:
@@ -746,7 +671,11 @@ async def _skill_execute_response(
         await proc.wait()
         out = "\n".join(captured_lines)
         return JSONResponse(
-            {"error": "ros2 action send_goal exited before goal was accepted", "output": out},
+            {
+                "ok": False,
+                "error": "ros2 action send_goal exited before goal was accepted",
+                "output": out,
+            },
             status_code=502,
         )
 
@@ -759,392 +688,21 @@ async def _skill_execute_response(
         outcome="accepted",
         skill_id=skill_id,
         goal_id=accepted_goal_id,
-        operator_ip=operator_ip,
+        actor=actor,
     )
 
-    task = asyncio.create_task(
+    _in_background(
         _drain_skill_goal_stdout(stdout, proc, captured_lines, accepted_goal_id, skill_id)
     )
-    _BACKGROUND_DRAIN_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_DRAIN_TASKS.discard)
 
     return JSONResponse(
         {
-            "status": "accepted",
+            "ok": True,
             "goal_id": accepted_goal_id,
             "detail": "skill dispatched; track progress via dashboard telemetry",
         },
         status_code=202,
     )
-
-
-async def _param_set_from_request(request: Request) -> JSONResponse:
-    """Validate the ``POST /api/param/set`` payload and dispatch the operation.
-
-    Handles the flag check, JSON decode, field validation, denylist check, and
-    dispatch in one place so the route closure stays under the statement cap
-    (PLR0915). Every attempt — permitted or denied — is audit-logged.
-    """
-    operator_ip = request.client.host if request.client else "unknown"
-    if not _write_controls_enabled():
-        _logger.warning(
-            "dashboard_write_attempt",
-            operation="param_set",
-            outcome="denied_flag_off",
-            operator_ip=operator_ip,
-        )
-        return JSONResponse(
-            {
-                "error": (
-                    "write-controls disabled; set OPENRAL_DASHBOARD_WRITE_CONTROLS=1 "
-                    "(pending safety-WG review)"
-                )
-            },
-            status_code=403,
-        )
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        return JSONResponse({"error": f"invalid json: {exc}"}, status_code=400)
-    if not isinstance(payload, dict):
-        return JSONResponse({"error": "object body required"}, status_code=400)
-    node = payload.get("node")
-    name = payload.get("name")
-    value = payload.get("value")
-    if not all(isinstance(v, str) and v.strip() for v in (node, name, value)):
-        return JSONResponse(
-            {"error": "fields 'node', 'name', 'value' required (non-empty strings)"},
-            status_code=400,
-        )
-    return await _param_set_response(
-        node,  # type: ignore[arg-type]  # reason: narrowed by the all(isinstance) guard above
-        name,  # type: ignore[arg-type]
-        value,  # type: ignore[arg-type]
-        operator_ip,
-    )
-
-
-async def _param_set_response(node: str, name: str, value: str, operator_ip: str) -> JSONResponse:
-    """Set a NON-safety ROS param via ``ros2 param set`` (guarded write-control).
-
-    Checks ``node`` and ``name`` case-insensitively against
-    ``_SAFETY_PARAM_DENYLIST`` before any shell-out — every param on a safety
-    node (``openral_deadman_watchdog``, ``openral_safety_kernel``,
-    ``openral_hardware_estop``, …) is refused, whatever its name. A match is
-    refused with 403 and a paper-trail audit log (CLAUDE.md §1.1). Permitted
-    calls are also audit-logged before the subprocess is spawned so there is no
-    fire-and-forget gap.
-    """
-    low = f"{node} {name}".lower()
-    refused = next((tok for tok in _SAFETY_PARAM_DENYLIST if tok in low), None)
-    if refused is not None:
-        _logger.warning(
-            "dashboard_write_attempt",
-            operation="param_set",
-            outcome="denied_denylist",
-            operator_ip=operator_ip,
-            node=node,
-            name=name,
-            matched=refused,
-        )
-        return JSONResponse(
-            {
-                "error": (
-                    f"refused: param {node}:{name} looks safety-relevant (matched {refused!r}); "
-                    "change it via a reviewed config/manifest, not the dashboard "
-                    "(CLAUDE.md §1.1)"
-                )
-            },
-            status_code=403,
-        )
-    ros2 = shutil.which("ros2")
-    if ros2 is None:
-        return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
-    _logger.warning(
-        "dashboard_write_attempt",
-        operation="param_set",
-        outcome="sent",
-        operator_ip=operator_ip,
-        node=node,
-        name=name,
-        value=value,
-    )
-    await _announce_operator_action("param_set", operator_ip, f"{node}:{name}")
-    proc = await asyncio.create_subprocess_exec(
-        ros2,
-        "param",
-        "set",
-        node,
-        name,
-        value,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return JSONResponse({"error": "param set timed out after 10 s"}, status_code=504)
-    out = out_b.decode("utf-8", errors="replace").strip()
-    err = err_b.decode("utf-8", errors="replace").strip()
-    if proc.returncode != 0:
-        return JSONResponse(
-            {"error": "ros2 param set failed", "returncode": proc.returncode, "stderr": err},
-            status_code=502,
-        )
-    return JSONResponse({"status": "ok", "stdout": out})
-
-
-def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915  # reason: flat FastAPI route-registration table; each endpoint is one statement
-    """Build the FastAPI app bound to ``store`` (a fresh one if ``None``).
-
-    The returned app is a normal ASGI application; mount it under any
-    server (uvicorn, hypercorn, ...) or test transport. The store is
-    accessible at ``app.state.store`` so tests can introspect it.
-    """
-    store = store if store is not None else TelemetryStore()
-    app = FastAPI(title="OpenRAL Dashboard", docs_url=None, redoc_url=None)
-    app.state.store = store
-    # Set by run_dashboard when mDNS discovery is wired; None in tests / when
-    # the 'mdns' extra is absent. The /api/robots endpoint tolerates both.
-    app.state.discovery = None
-    # Persistent e-stop publisher (set by run_dashboard). None here so tests /
-    # standalone use fall back to the shell-out path in the estop endpoints.
-    app.state.estop = None
-    # Latched /openral/safety_status subscriber (set by run_dashboard, ADR-0096).
-    # None without ROS; the Safety Status card then renders "waiting" rather
-    # than claiming the robot is clear.
-    app.state.safety_status = None
-    # /openral/perception/objects overlay subscriber (set by run_dashboard).
-    # None without ROS; the camera tiles then simply carry no overlays.
-    app.state.perception_overlay = None
-
-    @app.middleware("http")
-    async def refuse_cross_origin_writes(  # pyright: ignore[reportUnusedFunction]
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        # CSRF guard for every state-changing route (e-stop reset, prompt, skill
-        # execute, param set, OTLP ingest). ponytail: Origin check only — a DNS-
-        # rebinding page is same-origin by construction; that needs an operator
-        # token (auth scheme = design decision, issue #44).
-        if request.method not in _SAFE_METHODS and _cross_origin(request):
-            _logger.warning(
-                "dashboard_write_attempt",
-                operation=request.url.path,
-                outcome="denied_cross_origin",
-                origin=request.headers.get("origin"),
-                operator_ip=request.client.host if request.client else "unknown",
-            )
-            return JSONResponse({"error": "cross-origin request refused"}, status_code=403)
-        return await call_next(request)
-
-    @app.post(
-        "/v1/traces",
-        response_class=Response,
-        responses={200: {"content": {"application/x-protobuf": {}}}},
-    )
-    async def post_traces(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
-        body = await _read_body(request)
-        try:
-            req = ExportTraceServiceRequest.FromString(body)
-        except DecodeError as exc:
-            return _bad_request(f"trace decode failed: {exc}")
-        request.app.state.store.ingest_spans(list(req.resource_spans))
-        return _protobuf_response(ExportTraceServiceResponse())
-
-    @app.post(
-        "/v1/metrics",
-        response_class=Response,
-        responses={200: {"content": {"application/x-protobuf": {}}}},
-    )
-    async def post_metrics(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
-        body = await _read_body(request)
-        try:
-            req = ExportMetricsServiceRequest.FromString(body)
-        except DecodeError as exc:
-            return _bad_request(f"metric decode failed: {exc}")
-        request.app.state.store.ingest_metrics(list(req.resource_metrics))
-        return _protobuf_response(ExportMetricsServiceResponse())
-
-    @app.post(
-        "/v1/logs",
-        response_class=Response,
-        responses={200: {"content": {"application/x-protobuf": {}}}},
-    )
-    async def post_logs(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
-        # issue #318 — route the structlog→OTel bridge into the event log.
-        # Every OpenRAL log line (incl. DEBUG) ships here; the store maps
-        # OTLP severity_number → debug/info/warn/error/fatal and appends a
-        # TelemetryEvent per record. The UI defaults the Debug chip off.
-        body = await _read_body(request)
-        try:
-            req = ExportLogsServiceRequest.FromString(body)
-        except DecodeError as exc:
-            return _bad_request(f"log decode failed: {exc}")
-        request.app.state.store.ingest_logs(list(req.resource_logs))
-        return _protobuf_response(ExportLogsServiceResponse())
-
-    @app.get("/api/traces")
-    async def get_traces(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # List of indexed trace_ids so `openral replay` can pick a trace
-        # when the user omits `--trace`. Bounded; see
-        # _TRACE_INDEX_MAX_TRACES in store.py.
-        return JSONResponse({"traces": request.app.state.store.list_traces()})
-
-    @app.get("/api/spans/{trace_id}")
-    async def get_spans(  # pyright: ignore[reportUnusedFunction]
-        trace_id: str, request: Request
-    ) -> JSONResponse:
-        # Full span list for one trace. 404 when the trace has not been
-        # ingested (or evicted from the bounded index).
-        spans = request.app.state.store.lookup_trace(trace_id)
-        if spans is None:
-            return JSONResponse({"error": "trace not indexed"}, status_code=404)
-        return JSONResponse({"trace_id": trace_id, "spans": spans})
-
-    @app.get("/api/state")
-    async def get_state(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        return JSONResponse(request.app.state.store.snapshot())
-
-    @app.get("/api/stream")
-    async def get_stream(request: Request) -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
-        return StreamingResponse(
-            _sse_stream(request),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get("/api/camera/{source}/stream")
-    async def get_camera_stream(  # pyright: ignore[reportUnusedFunction]
-        source: str, request: Request
-    ) -> Response:
-        # Re-serve the per-camera OTLP thumbnail as a continuous MJPEG stream
-        # (issue #75a). 404 only when the source is entirely unknown — a known
-        # camera with no frame yet still opens and waits.
-        cameras = (
-            request.app.state.store.snapshot()
-            .get("topics", {})
-            .get("perception", {})
-            .get("cameras", {})
-        )
-        if source not in cameras:
-            return JSONResponse({"error": f"unknown camera source {source!r}"}, status_code=404)
-        return StreamingResponse(
-            _mjpeg_stream(request, source),
-            media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    @app.get("/api/robots")
-    async def get_robots(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # issue #75b — mDNS-discovered OpenRAL services for the "Add Robot"
-        # panel. Read-only. Returns the disabled shape when discovery is off.
-        discovery = getattr(request.app.state, "discovery", None)
-        if discovery is None:
-            return JSONResponse({"enabled": False, "robots": []})
-        return JSONResponse(
-            {
-                "enabled": discovery.enabled,
-                "robots": [r.model_dump() for r in discovery.robots()],
-            }
-        )
-
-    @app.get("/api/config")
-    async def get_config() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # Dashboard-level config (Jaeger UI url, …) sourced from env.
-        # Body in _config_response to keep create_app under the statement cap.
-        return _config_response()
-
-    @app.post("/api/prompt")
-    async def post_prompt(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # Operator prompt entry point from the dashboard. Shells out to
-        # `openral prompt` so the wire shape (PromptStamped on
-        # /openral/prompt_in/dashboard, fanned out by prompt_router_node
-        # at priority 100) matches the CLI exactly. The console script is
-        # named `openral`, not `ral`.
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            return JSONResponse({"error": f"invalid json: {exc}"}, status_code=400)
-        text = payload.get("text") if isinstance(payload, dict) else None
-        if not isinstance(text, str) or not text.strip():
-            return JSONResponse(
-                {"error": "field 'text' required (non-empty string)"}, status_code=400
-            )
-        return await _prompt_response(text)
-
-    @app.post("/api/transcribe")
-    async def post_transcribe(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # Operator voice prompt — the mic button records until silence (browser
-        # VAD) and POSTs the raw audio blob (audio/wav). We transcribe it on the
-        # host with a local Whisper model and return the text; the page fills
-        # the prompt box and reuses the normal /api/prompt send path. Body lives
-        # in a module helper to keep create_app() under the statement cap.
-        audio = await _read_body(request)
-        return await _transcribe_response(audio)
-
-    @app.post("/api/estop")
-    async def post_estop(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # Operator "stop the robot NOW". The persistent publisher (discovered at
-        # launch) fires INSTANTLY; only when it's unavailable (standalone / no
-        # ROS) do we fall back to the slow, discovery-racing shell-out.
-        # Mark the latch authoritatively: the e-stop aborts the skill, so the
-        # kernel stops emitting safety.check spans and the telemetry-driven flag
-        # would never flip — the Reset control would never appear (observed live).
-        request.app.state.store.set_estopped(True)
-        est = getattr(request.app.state, "estop", None)
-        if est is not None and est.available:
-            est.trigger()
-            return JSONResponse({"status": "ok", "accepted": True}, status_code=200)
-        return await _estop_trigger_response()
-
-    @app.post("/api/estop_reset")
-    async def post_estop_reset(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # Operator recovery from a latched safety e-stop. Body lives in a
-        # module-level helper to keep create_app() under the statement cap.
-        resp = await _estop_reset_response(
-            getattr(request.app.state, "estop", None),
-            request.client.host if request.client else "",
-        )
-        # Clear the latch flag only when the kernel actually accepted the reset
-        # (200); a cooldown rejection (409) leaves the robot latched, so the
-        # Reset control must stay.
-        if resp.status_code == http.HTTPStatus.OK:
-            request.app.state.store.set_estopped(False)
-        return resp
-
-    @app.post("/api/skill/execute")
-    async def post_skill_execute(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # issue #75c — guarded skill switch. Default OFF.
-        # Full logic lives in _skill_execute_from_request to keep create_app
-        # under the statement cap (PLR0915).
-        return await _skill_execute_from_request(request)
-
-    @app.post("/api/param/set")
-    async def post_param_set(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # issue #75c — guarded param tune. Default OFF; safety params
-        # refused via denylist. Full logic in _param_set_from_request to keep
-        # create_app under the statement cap (PLR0915).
-        return await _param_set_from_request(request)
-
-    @app.get("/healthz")
-    async def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
-        return {"status": "ok"}
-
-    @app.get("/")
-    async def index() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_STATIC_DIR / "index.html")
-
-    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
-
-    return app
 
 
 async def _read_body(request: Request) -> bytes:
@@ -1193,11 +751,7 @@ def _protobuf_response(message: Any) -> Response:
 
 
 def _bad_request(detail: str) -> Response:
-    return Response(
-        content=json.dumps({"error": detail}),
-        media_type="application/json",
-        status_code=400,
-    )
+    return _error(400, detail)
 
 
 def _camera_thumb(store: TelemetryStore, source: str) -> str | None:
@@ -1210,81 +764,692 @@ def _camera_thumb(store: TelemetryStore, source: str) -> str | None:
     return thumb if isinstance(thumb, str) and thumb else None
 
 
-def _mjpeg_part(thumb_b64: str) -> bytes:
-    """Frame one base64 JPEG as a multipart/x-mixed-replace part.
+async def _announce_operator_action(
+    action: str, principal: Principal, client_ip: str, detail: str = ""
+) -> None:
+    """Announce a dashboard action on ``/openral/operator_action`` (issue #468), best effort.
 
-    Raises:
-        binascii.Error: ``thumb_b64`` is not valid base64.
+    The compliance recorder records the effect either way (a reset is the latch
+    clearing); this says it came through the dashboard and from whom. The identity is
+    the openral.com user (the token's ``sub``, its ``jti`` in ``detail``) on the remote
+    listener, else the client IP; either way only its HMAC under ``$OPENRAL_ACTOR_KEY``
+    is sent, never the identity in clear. The channel is ``remote`` for the tunnel.
     """
-    jpeg = base64.b64decode(thumb_b64, validate=True)
-    head = (
-        f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
-    ).encode("ascii")
-    return head + jpeg + b"\r\n"
-
-
-async def _mjpeg_stream(request: Request, source: str) -> AsyncIterator[bytes]:
-    """Push the store's latest thumbnail for ``source`` as it changes.
-
-    Subscribes to the store (same primitive as the SSE stream), emits the
-    current frame immediately, then a new multipart part on each *changed*
-    thumbnail. MJPEG has no keepalive frame, so on idle we just re-check
-    client disconnect. Always unsubscribes on exit.
-    """
-    store: TelemetryStore = request.app.state.store
-    queue = store.subscribe()
-    last: str | None = None
+    ros2 = shutil.which("ros2")
+    if ros2 is None:
+        return
+    key = os.environ.get(ACTOR_KEY_ENV, "")
+    identity = principal.sub or client_ip
+    actor_id = pseudonymous_actor_id(identity, key) if key and identity else ""
+    if principal.jti:
+        detail = f"{detail} jti={principal.jti}".strip()
+    payload = json.dumps(
+        {
+            "action": action,
+            "channel_label": "remote" if principal.mode == "remote" else "dashboard",
+            "actor_id": actor_id,
+            "detail": detail,
+        }
+    )
+    proc = await asyncio.create_subprocess_exec(
+        ros2,
+        "topic",
+        "pub",
+        "--once",
+        "--wait-matching-subscriptions",
+        "1",
+        "/openral/operator_action",
+        "openral_msgs/msg/OperatorAction",
+        payload,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
     try:
-        thumb = _camera_thumb(store, source)
-        if thumb is not None:
-            try:
-                part = _mjpeg_part(thumb)
-            except binascii.Error:
-                _logger.warning("dashboard.mjpeg_decode_failed", source=source)
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
+    except TimeoutError:  # no recorder up: the action still happens, unattributed
+        proc.kill()
+        await proc.wait()
+
+
+def _error(status: int, message: str, headers: dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": message}, status_code=status, headers=headers)
+
+
+def _served_manifest(manifest: RobotManifest, principal: Principal) -> dict[str, Any]:
+    """The manifest as this dashboard enforces it right now.
+
+    The emitter read the write-controls / remote-control flags from its own env; this
+    dashboard's flags are the ones that decide, so skills drop out with write controls
+    off, ``remote`` follows the remote-control flag, and a LAN client sees only E-STOP.
+    """
+    remote_control = _remote_control_enabled()
+    actions = [
+        a.model_copy(update={"remote": a.kind == "estop" or remote_control})
+        for a in manifest.actions
+        if (a.kind != "skill" or _write_controls_enabled())
+        and (principal.mode != "lan" or a.kind == "estop")
+    ]
+    served = manifest.model_copy(update={"actions": actions})
+    return served.model_dump(mode="json", by_alias=True)
+
+
+def _action_refusal(action: ManifestAction, principal: Principal) -> str | None:
+    """Why ``principal`` may not run ``action`` (ADR-0129 §6), or ``None``."""
+    if action.kind == "estop":
+        return None  # every role, every listener: a stop is never refused
+    if principal.mode == "lan":
+        return "a LAN client may only press E-STOP"
+    if ROLE_RANK[principal.role] < ROLE_RANK[action.min_role]:
+        return f"role {principal.role!r} may not run {action.id!r} (needs {action.min_role})"
+    if principal.mode == "remote" and not _remote_control_enabled():
+        return f"remote control is off on this robot (set {REMOTE_CONTROL_ENV}=1 to allow it)"
+    if action.kind == "skill" and not _write_controls_enabled():
+        return f"write controls are off on this robot (set {WRITE_CONTROLS_ENV}=1)"
+    return None
+
+
+async def _run_action(  # noqa: PLR0911  # reason: one return per action kind / failure
+    request: Request, action: ManifestAction
+) -> JSONResponse:
+    """Dispatch an authorised action; E-STOP first, before anything that could fail."""
+    app_state = request.app.state
+    principal: Principal = request.state.principal
+    client_ip = request.client.host if request.client else ""
+    if action.kind == "estop":
+        # The dashboard issued the stop, so it knows the latch is set; the kernel stops
+        # emitting the safety.check spans that would otherwise flip the flag.
+        app_state.store.set_estopped(True)
+        est = app_state.estop
+        if est is not None and est.available:
+            est.trigger()
+            resp = JSONResponse({"ok": True, "accepted": True})
+        else:
+            resp = await _estop_trigger_response()
+        # Announced after the stop, never before: attribution must not delay it.
+        _in_background(_announce_operator_action("estop", principal, client_ip))
+        return resp
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        return _error(400, f"invalid json: {exc}")
+    args = body.get("args", {}) if isinstance(body, dict) else None
+    if not isinstance(args, dict):
+        return _error(400, 'body must be {"args": {...}}')
+    if action.args_schema is not None:
+        try:
+            jsonschema.validate(args, action.args_schema)
+        except jsonschema.ValidationError as exc:
+            return _error(400, f"invalid args: {exc.message}")
+    if action.kind == "estop_reset":
+        await _announce_operator_action("estop_reset", principal, client_ip)
+        resp = await _estop_reset_response(app_state.estop)
+        # Clear the latch flag only when the kernel accepted the reset; a cooldown
+        # rejection (409) leaves the robot latched.
+        if resp.status_code == http.HTTPStatus.OK:
+            app_state.store.set_estopped(False)
+        return resp
+    if action.kind == "prompt":
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _error(400, "invalid args: 'text' must be a non-empty string")
+        await _announce_operator_action("prompt", principal, client_ip)
+        return await _prompt_response(text)
+    rskill_id = action.id.removeprefix("skill:")
+    await _announce_operator_action("skill_execute", principal, client_ip, rskill_id)
+    actor = principal.sub or client_ip
+    return await _skill_execute_response(rskill_id, json.dumps(args) if args else "", actor)
+
+
+def _without_images(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """``snapshot`` minus the camera thumbnails (``?images=0``; cameras are polled as JPEGs).
+
+    Copies the touched levels: the same snapshot object goes to every subscriber.
+    """
+    topics = snapshot.get("topics", {})
+    cameras = topics.get("perception", {}).get("cameras")
+    if not cameras:
+        return snapshot
+    stripped = {
+        n: {k: v for k, v in c.items() if k != "thumbnail_jpeg_b64"} for n, c in cameras.items()
+    }
+    perception = {**topics["perception"], "cameras": stripped}
+    return {**snapshot, "topics": {**topics, "perception": perception}}
+
+
+# The robot UI and the fallback page: their own scripts only, styles may be inline (React
+# sets element styles), images from blob: snapshots, the API and the /ws bridge on this
+# origin, the 3D view framed from /viz/; framed only here and by openral.com.
+_UI_CSP = (
+    "default-src 'self'; script-src 'self'{inline}; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; "
+    "font-src 'self'; object-src 'none'; base-uri 'self'; "
+    "frame-ancestors 'self' https://www.openral.com https://dev.openral.com"
+)
+# Lichtblick: WebAssembly ('wasm-unsafe-eval'), eval ('unsafe-eval': v1.30 refuses to start
+# without `new Function` — canRenderApp.ts — and protobufjs decodes by generated code), blob:
+# workers, and the one inline script of its index.html, allowed by hash; framed by the UI.
+_VIZ_CSP = (
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'{inline}; "
+    "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
+    "img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; "
+    "base-uri 'self'; form-action 'none'; frame-ancestors 'self'"
+)
+_INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>")
+
+
+# Lichtblick's index.html default-layout slot (its Docker entrypoint fills the same one).
+_LAYOUT_PLACEHOLDER = "/*LICHTBLICK_SUITE_DEFAULT_LAYOUT_PLACEHOLDER*/"
+
+
+def _csp(policy: str, html: str = "") -> str:
+    """``policy`` with ``html``'s inline scripts allowed by sha256."""
+    inline = "".join(
+        f" 'sha256-{base64.b64encode(hashlib.sha256(m.encode()).digest()).decode()}'"
+        for m in _INLINE_SCRIPT.findall(html)
+    )
+    return policy.format(inline=inline)
+
+
+def _with_csp(target: Path, policy: str) -> FileResponse:
+    """Serve ``target`` under ``policy``, allowing an HTML file's own inline scripts by hash."""
+    html = target.read_text(encoding="utf-8") if target.suffix == ".html" else ""
+    return FileResponse(target, headers={"Content-Security-Policy": _csp(policy, html)})
+
+
+def _robot_layout(manifest: RobotManifest | None) -> dict[str, Any] | None:
+    """This robot's Lichtblick layout (its cameras, its base frame), or ``None`` without one.
+
+    Built by the generator the deploy launch uses for Foxglove Studio, a colcon package
+    importable once the workspace overlay is sourced.
+    """
+    if manifest is None:
+        return None
+    try:
+        layout_mod = importlib.import_module("openral_foxglove_bringup.layout")
+    except ImportError:
+        _logger.warning("dashboard.viz_layout_unavailable", reason="source the workspace overlay")
+        return None
+    cameras = [p.source for p in manifest.panels if p.type == "camera" and p.source]
+    layout: dict[str, Any] = layout_mod.build_layout(cameras, follow_frame=manifest.base_frame)
+    return layout
+
+
+def _viz_index(root: Path, manifest: RobotManifest | None) -> Response:
+    """Lichtblick's index.html with this robot's layout in its default-layout slot.
+
+    The layout rides in the page, not a ``layoutUrl``: one request, and the CSP's hash
+    covers the inline script as served. ``<`` is escaped so no string can end the script.
+    """
+    html = (root / "index.html").read_text(encoding="utf-8")
+    layout = _robot_layout(manifest)
+    if layout is not None:
+        html = html.replace(_LAYOUT_PLACEHOLDER, json.dumps(layout).replace("<", "\\u003c"), 1)
+    return HTMLResponse(
+        html,
+        headers={"Content-Security-Policy": _csp(_VIZ_CSP, html), "Cache-Control": "no-store"},
+    )
+
+
+def _file_in(root: Path, rel: str, policy: str) -> Response:
+    """``root/rel`` under CSP ``policy``, refusing anything outside ``root``."""
+    base = root.resolve()
+    target = (base / (rel or "index.html")).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        return _error(404, "not found")
+    return _with_csp(target, policy)
+
+
+async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    """Who is asking, and may they: runs before every HTTP route (WebSockets check in ``/ws``)."""
+    if is_remote(request.scope):
+        return await _gate_remote(request, call_next)
+    client = request.client.host if request.client else ""
+    loopback = _is_loopback(client)
+    if loopback and not _local_host(request.headers.get("host", ""), request.app.state.local_hosts):
+        _logger.warning("dashboard.host_refused", host=request.headers.get("host"))
+        return _error(403, "unexpected Host header (DNS rebinding?)")
+    request.state.principal = (
+        Principal(mode="local", role="operator")
+        if loopback
+        else Principal(mode="lan", role="viewer")
+    )
+    if request.method not in _SAFE_METHODS:
+        # CSRF: a page on another site driving a local operator's browser. ponytail:
+        # Origin check only — a DNS-rebinding page is same-origin by construction.
+        refusal = (
+            "cross-origin request refused"
+            if _cross_origin(request)
+            else None
+            if loopback or request.url.path in _LAN_WRITES or request.url.path.startswith("/v1/")
+            else "read-only from the LAN: only E-STOP"
+        )
+        if refusal is not None:
+            _logger.warning(
+                "dashboard_write_attempt",
+                operation=request.url.path,
+                outcome="denied",
+                reason=refusal,
+                origin=request.headers.get("origin"),
+                operator_ip=client,
+            )
+            return _error(403, refusal)
+    return await call_next(request)
+
+
+async def _gate_remote(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """The tunnel listener: CORS allowlist, OPTIONS before auth, ``/v1`` refused, Bearer JWT."""
+    origin = request.headers.get("origin")
+    cors = (
+        {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
+        if origin is not None and origin in allowed_origins()
+        else {}
+    )
+    if origin is not None and not cors:
+        return _error(403, "origin not allowed")
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=204,
+            headers={
+                **cors,
+                "Access-Control-Allow-Methods": "GET, POST",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Max-Age": "600",
+            },
+        )
+    path = request.url.path
+    if path == "/v1" or path.startswith("/v1/"):
+        return _error(404, "not found", cors)
+    verifier: TokenVerifier | None = request.app.state.verifier
+    token = bearer(request.headers.get("authorization"))
+    if verifier is None:
+        result: Principal | str = "this robot is not enrolled"
+    elif token is None:
+        result = "Authorization: Bearer <token> required"
+    else:
+        result = await verifier.verify(token)
+    if isinstance(result, str):
+        _logger.warning("dashboard.remote_auth_refused", path=path, reason=result)
+        return _error(401, result, {**cors, "WWW-Authenticate": 'Bearer error="invalid_token"'})
+    request.state.principal = result
+    return _with_headers(await call_next(request), cors)
+
+
+def _with_headers(resp: Response, headers: dict[str, str]) -> Response:
+    resp.headers.update(headers)
+    return resp
+
+
+async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None) -> None:
+    """Pump frames between the browser and ``foxglove_bridge`` until a side or the ticket ends."""
+    import websockets
+    from websockets.typing import Subprotocol
+
+    offered = [Subprotocol(p) for p in websocket.scope.get("subprotocols", [])]
+    try:
+        upstream = await websockets.connect(
+            url, subprotocols=offered or None, ping_interval=30, max_size=None
+        )
+    except (OSError, websockets.InvalidHandshake, TimeoutError) as exc:
+        _logger.warning("dashboard.bridge_unavailable", url=url, error=str(exc))
+        await websocket.accept()
+        await websocket.close(code=_WS_UNAVAILABLE, reason="foxglove_bridge is not running")
+        return
+
+    async def downstream() -> None:
+        async for message in upstream:
+            if isinstance(message, bytes):
+                await websocket.send_bytes(message)
             else:
-                last = thumb
-                yield part
+                await websocket.send_text(message)
+
+    async def upstream_pump() -> None:
         while True:
-            if await request.is_disconnected():
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
                 return
-            try:
-                await asyncio.wait_for(queue.get(), timeout=15.0)
-            except TimeoutError:
-                continue
-            thumb = _camera_thumb(store, source)
-            if thumb is not None and thumb != last:
-                try:
-                    part = _mjpeg_part(thumb)
-                except binascii.Error:
-                    _logger.warning("dashboard.mjpeg_decode_failed", source=source)
-                    continue
-                last = thumb
-                yield part
-    finally:
-        store.unsubscribe(queue)
+            data = message.get("bytes") if message.get("bytes") is not None else message.get("text")
+            if data is not None:
+                await upstream.send(data)
+
+    async with upstream:
+        await websocket.accept(subprotocol=upstream.subprotocol)
+        tasks = {asyncio.create_task(downstream()), asyncio.create_task(upstream_pump())}
+        timeout = None if expires_at is None else max(0.0, expires_at - time.time())
+        done, pending = await asyncio.wait(
+            tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        # Await the cancelled pump so it never outlives the socket (or the event loop).
+        await asyncio.gather(*pending, return_exceptions=True)
+        expired = not done
+        with contextlib.suppress(RuntimeError, OSError):
+            await websocket.close(
+                code=_WS_POLICY_VIOLATION if expired else 1000,
+                reason="viz ticket expired" if expired else "",
+            )
 
 
-async def _sse_stream(request: Request) -> AsyncIterator[bytes]:
+def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration table; each endpoint is one statement
+    store: TelemetryStore | None = None,
+    *,
+    verifier: TokenVerifier | None = None,
+    bridge_url: str = _DEFAULT_BRIDGE_URL,
+) -> FastAPI:
+    """Build the FastAPI app bound to ``store`` (a fresh one if ``None``).
+
+    The returned app is a normal ASGI application; mount it under any server
+    (uvicorn, hypercorn, ...) or test transport. Wrap it in
+    ``remote_auth.remote_listener`` for the tunnel listener, which then needs
+    ``verifier`` (built from the robot's enrolment) to admit anyone.
+
+    Args:
+        store: The telemetry store (``app.state.store``).
+        verifier: Checks openral.com tokens on the remote listener; ``None`` refuses all.
+        bridge_url: ``foxglove_bridge``'s WebSocket, which ``/ws`` proxies.
+    """
+    store = store if store is not None else TelemetryStore()
+    app = FastAPI(title="OpenRAL Dashboard", docs_url=None, redoc_url=None)
+    app.state.store = store
+    app.state.verifier = verifier
+    app.state.viz_tickets = VizTickets()
+    app.state.local_hosts = set(_LOCAL_HOSTS)
+    app.state.bridge_url = bridge_url
+    # The robot UI (ui_assets); run_dashboard refreshes it after fetching the pin.
+    app.state.ui_dir = ui_dir()
+    app.state.viz_dir = None
+    app.state.viz_lock = asyncio.Lock()
+    # Set by run_dashboard when mDNS discovery is wired; None in tests / when
+    # the 'mdns' extra is absent. The /api/robots endpoint tolerates both.
+    app.state.discovery = None
+    # Persistent e-stop publisher (set by run_dashboard). None here so tests /
+    # standalone use fall back to the shell-out path.
+    app.state.estop = None
+    # Latched /openral/safety_status subscriber (set by run_dashboard, ADR-0096).
+    # None without ROS; the Safety Status panel then renders "waiting" rather
+    # than claiming the robot is clear.
+    app.state.safety_status = None
+    # /openral/perception/objects overlay subscriber (set by run_dashboard).
+    # None without ROS; the camera tiles then simply carry no overlays.
+    app.state.perception_overlay = None
+
+    app.middleware("http")(_gate)
+
+    @app.post(
+        "/v1/traces",
+        response_class=Response,
+        responses={200: {"content": {"application/x-protobuf": {}}}},
+    )
+    async def post_traces(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        body = await _read_body(request)
+        try:
+            req = ExportTraceServiceRequest.FromString(body)
+        except DecodeError as exc:
+            return _bad_request(f"trace decode failed: {exc}")
+        request.app.state.store.ingest_spans(list(req.resource_spans))
+        return _protobuf_response(ExportTraceServiceResponse())
+
+    @app.post(
+        "/v1/metrics",
+        response_class=Response,
+        responses={200: {"content": {"application/x-protobuf": {}}}},
+    )
+    async def post_metrics(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        body = await _read_body(request)
+        try:
+            req = ExportMetricsServiceRequest.FromString(body)
+        except DecodeError as exc:
+            return _bad_request(f"metric decode failed: {exc}")
+        request.app.state.store.ingest_metrics(list(req.resource_metrics))
+        return _protobuf_response(ExportMetricsServiceResponse())
+
+    @app.post(
+        "/v1/logs",
+        response_class=Response,
+        responses={200: {"content": {"application/x-protobuf": {}}}},
+    )
+    async def post_logs(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        # issue #318 — the structlog→OTel bridge feeds the event log; the robot
+        # manifest (ADR-0129) arrives here too, as an `openral.robot.manifest` record.
+        body = await _read_body(request)
+        try:
+            req = ExportLogsServiceRequest.FromString(body)
+        except DecodeError as exc:
+            return _bad_request(f"log decode failed: {exc}")
+        client = request.client.host if request.client else ""
+        request.app.state.store.ingest_logs(
+            list(req.resource_logs), trust_manifest=_is_loopback(client)
+        )
+        return _protobuf_response(ExportLogsServiceResponse())
+
+    @app.get("/api/traces")
+    async def get_traces(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # Indexed trace_ids so `openral replay` can pick a trace when `--trace` is
+        # omitted. Bounded; see _TRACE_INDEX_MAX_TRACES in store.py.
+        return JSONResponse({"traces": request.app.state.store.list_traces()})
+
+    @app.get("/api/spans/{trace_id}")
+    async def get_spans(  # pyright: ignore[reportUnusedFunction]
+        trace_id: str, request: Request
+    ) -> JSONResponse:
+        # 404 when the trace has not been ingested (or was evicted from the index).
+        spans = request.app.state.store.lookup_trace(trace_id)
+        if spans is None:
+            return JSONResponse({"error": "trace not indexed"}, status_code=404)
+        return JSONResponse({"trace_id": trace_id, "spans": spans})
+
+    @app.get("/api/state")
+    async def get_state(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        return JSONResponse(request.app.state.store.snapshot())
+
+    @app.get("/api/stream")
+    async def get_stream(  # pyright: ignore[reportUnusedFunction]
+        request: Request, images: bool = True
+    ) -> StreamingResponse:
+        return StreamingResponse(
+            _sse_stream(request, images=images),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/camera/{source}/snapshot.jpg")
+    async def get_camera_snapshot(  # pyright: ignore[reportUnusedFunction]
+        source: str, request: Request
+    ) -> Response:
+        # The latest frame of one camera as a JPEG. Polled, never streamed: video
+        # over a free Cloudflare Tunnel hostname is against its terms (ADR-0129 §3).
+        thumb = _camera_thumb(request.app.state.store, source)
+        if thumb is None:
+            return _error(404, f"no frame from camera {source!r}")
+        try:
+            jpeg = base64.b64decode(thumb, validate=True)
+        except binascii.Error:
+            _logger.warning("dashboard.snapshot_decode_failed", source=source)
+            return _error(404, f"no decodable frame from camera {source!r}")
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/robots")
+    async def get_robots(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # issue #75b — mDNS-discovered OpenRAL services on the LAN. Read-only.
+        discovery = getattr(request.app.state, "discovery", None)
+        if discovery is None:
+            return JSONResponse({"enabled": False, "robots": []})
+        return JSONResponse(
+            {
+                "enabled": discovery.enabled,
+                "robots": [r.model_dump() for r in discovery.robots()],
+            }
+        )
+
+    @app.get("/api/config")
+    async def get_config(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # Who the caller is and what this robot allows (ADR-0129 Interface A).
+        principal: Principal = request.state.principal
+        verifier_: TokenVerifier | None = request.app.state.verifier
+        manifest: RobotManifest | None = request.app.state.store.manifest()
+        robot_id = (
+            verifier_.enrolment.robot
+            if verifier_ is not None
+            else manifest.robot_id
+            if manifest is not None
+            else None
+        )
+        return JSONResponse(
+            {
+                "mode": principal.mode,
+                "role": principal.role,
+                "robot_id": robot_id,
+                "write_controls": _write_controls_enabled(),
+                "remote_control": _remote_control_enabled(),
+                "jaeger_ui_url": os.environ.get("OPENRAL_JAEGER_UI_URL", "").rstrip("/"),
+            }
+        )
+
+    @app.get("/api/manifest")
+    async def get_manifest(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        manifest: RobotManifest | None = request.app.state.store.manifest()
+        if manifest is None:
+            return _error(404, "the runtime has not sent a robot manifest yet")
+        return JSONResponse(_served_manifest(manifest, request.state.principal))
+
+    @app.post("/api/actions/{action_id:path}")
+    async def post_action(  # pyright: ignore[reportUnusedFunction]
+        action_id: str, request: Request
+    ) -> JSONResponse:
+        principal: Principal = request.state.principal
+        manifest: RobotManifest | None = request.app.state.store.manifest()
+        action = (
+            _ESTOP
+            if action_id == "estop"
+            else next((a for a in manifest.actions if a.id == action_id), None)
+            if manifest is not None
+            else None
+        )
+        if action is None:
+            return _error(404, f"no action {action_id!r} on this robot")
+        refusal = _action_refusal(action, principal)
+        if refusal is not None:
+            _logger.warning(
+                "dashboard_write_attempt",
+                operation=action_id,
+                outcome="denied",
+                reason=refusal,
+                mode=principal.mode,
+                role=principal.role,
+            )
+            return _error(403, refusal)
+        return await _run_action(request, action)
+
+    @app.post("/api/transcribe")
+    async def post_transcribe(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # Operator speech to text on the host (local Whisper); the audio never leaves it.
+        # A step towards a prompt, so a prompt's rules: Whisper is not for viewers to run.
+        refusal = _action_refusal(_TRANSCRIBE, request.state.principal)
+        if refusal is not None:
+            return _error(403, refusal)
+        audio = await _read_body(request)
+        return await _transcribe_response(audio)
+
+    @app.post("/api/viz/ticket")
+    async def post_viz_ticket(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        tickets: VizTickets = request.app.state.viz_tickets
+        ticket = tickets.issue(request.state.principal)
+        return JSONResponse({"ticket": ticket, "expires_in": VizTickets.TTL_S})
+
+    @app.websocket("/ws")
+    async def ws_proxy(  # pyright: ignore[reportUnusedFunction]
+        websocket: WebSocket, ticket: str | None = None
+    ) -> None:
+        # The 3D view's link to foxglove_bridge (loopback, read-only). The remote
+        # listener and LAN clients need a viz ticket; loopback may omit it.
+        remote = is_remote(websocket.scope)
+        origin = websocket.headers.get("origin")
+        if origin is not None and (
+            origin not in allowed_origins()
+            if remote
+            else urlsplit(origin).netloc.lower() != websocket.headers.get("host", "").lower()
+        ):
+            await websocket.close(code=_WS_POLICY_VIOLATION)
+            return
+        tickets: VizTickets = websocket.app.state.viz_tickets
+        expires_at = tickets.expires_at(ticket)
+        client = websocket.client.host if websocket.client else ""
+        if expires_at is None and (
+            remote
+            or not _is_loopback(client)
+            or not _local_host(websocket.headers.get("host", ""), websocket.app.state.local_hosts)
+        ):
+            await websocket.close(code=_WS_POLICY_VIOLATION)
+            return
+        await _proxy_bridge(websocket, websocket.app.state.bridge_url, expires_at)
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+        return {"status": "ok"}
+
+    @app.get("/viz/{path:path}")
+    async def get_viz(path: str, request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        # Lichtblick, fetched on first use (viz_assets); 503 when offline.
+        state = request.app.state
+        async with state.viz_lock:
+            if state.viz_dir is None:
+                from openral_observability.dashboard.viz_assets import ensure_viz_assets
+
+                state.viz_dir = await asyncio.to_thread(ensure_viz_assets)
+        if state.viz_dir is None:
+            return _error(503, "the 3D view could not be downloaded (offline?)")
+        # Files are read off the event loop: it also serves E-STOP.
+        if path in ("", "index.html"):
+            return await asyncio.to_thread(_viz_index, state.viz_dir, state.store.manifest())
+        return await asyncio.to_thread(_file_in, state.viz_dir, path, _VIZ_CSP)
+
+    @app.get("/{path:path}")
+    async def get_ui(path: str, request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        # The robot UI; the built-in status + E-STOP page when none is installed.
+        root: Path | None = request.app.state.ui_dir
+        if root is None:
+            if path in ("", "index.html"):
+                return await asyncio.to_thread(_with_csp, _STATIC_DIR / "fallback.html", _UI_CSP)
+            return _error(404, "not found")
+        return await asyncio.to_thread(_file_in, root, path, _UI_CSP)
+
+    return app
+
+
+async def _sse_stream(request: Request, *, images: bool = True) -> AsyncIterator[bytes]:
     """Server-Sent Events generator for ``/api/stream``.
 
-    Emits an initial snapshot so a fresh client sees the current state
-    without waiting for the next ingest, then forwards every delta from
-    the store's subscription queue. A heartbeat keepalive every 15 s
-    prevents idle connection timeouts from intermediaries.
+    Emits an initial snapshot so a fresh client sees the current state without
+    waiting for the next ingest, then every delta from the store's subscription
+    queue, with a ``: keepalive`` comment every 15 s. ``images=False`` drops the
+    camera thumbnails. On the remote listener the stream ends at the token's
+    ``exp``: the client reconnects with a fresh token.
     """
     store: TelemetryStore = request.app.state.store
+    deadline: float | None = request.state.principal.exp
+
+    def frame(payload: dict[str, Any]) -> bytes:
+        return _sse_frame(payload if images else _without_images(payload))
+
     queue = store.subscribe()
     try:
-        yield _sse_frame(store.snapshot())
+        yield frame(store.snapshot())
         while True:
             if await request.is_disconnected():
                 return
+            wait_s = 15.0
+            if deadline is not None:
+                wait_s = min(wait_s, deadline - time.time())
+                if wait_s <= 0:
+                    return
             try:
-                payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                payload = await asyncio.wait_for(queue.get(), timeout=wait_s)
             except TimeoutError:
                 yield b": keepalive\n\n"
                 continue
-            yield _sse_frame(payload)
+            yield frame(payload)
     finally:
         store.unsubscribe(queue)
 

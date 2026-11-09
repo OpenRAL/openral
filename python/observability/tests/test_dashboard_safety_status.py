@@ -11,7 +11,7 @@ Split the way ``test_dashboard_estop_counter.py`` splits: the rclpy half
 (``SafetyStatusSubscriber``) needs a ROS workspace CI's cheap env does not
 have, so it is import-gated; the store + snapshot contract the frontend reads
 is covered unconditionally. The UI contract is pinned by asserting the exact
-snapshot keys ``dashboard.js``'s ``renderSafetyStatus`` reads, which is how the
+snapshot keys the robot UI's safety-status panel reads, which is how the
 rest of this suite pins card behaviour (no test parses the JS).
 
 No mocks (CLAUDE.md §1.11): the store is the production class, and the
@@ -26,7 +26,7 @@ import pytest
 from openral_observability.dashboard import TelemetryStore
 from openral_observability.dashboard.safety_status_subscriber import drop_reason_label
 
-# The keys dashboard.js's renderSafetyStatus() reads off
+# The keys the robot UI's safety-status panel reads off
 # ``snapshot()["topics"]["safety_status"]``. Renaming one without touching the
 # JS silently blanks the card, which is a safety surface going quiet.
 _UI_KEYS = {

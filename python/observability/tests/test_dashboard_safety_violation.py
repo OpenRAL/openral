@@ -365,7 +365,7 @@ def test_skill_failure_survives_flood_even_when_warn(
 # The latch was set on "violation" and cleared only on "ok" — a value no
 # emitter has ever produced. The C++ kernel sends `info` on a pass, `warn`
 # while latched and `violation` on a drop; the Python passthrough matches it.
-# So `estopped` stuck true until an explicit POST /api/estop_reset, and the
+# So `estopped` stuck true until an explicit estop_reset action, and the
 # store's own comment claiming it "self-corrects after a reset" was false.
 
 

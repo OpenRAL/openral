@@ -423,6 +423,29 @@ def test_a_late_announcement_still_attributes_and_param_set_is_recorded(
         g.close()
 
 
+def test_dashboard_actions_are_override_interventions(ros_context: None) -> None:
+    """An announced E-STOP, prompt or skill run (ADR-0129) is an attributed `override`."""
+    from openral_core import pseudonymous_actor_id
+
+    _EXPORTER.clear()
+    g = _Graph("compliance_recorder_dashboard_actions")
+    try:
+        g.bring_up()
+        actor = pseudonymous_actor_id("user-7f3a", "deployer-key")
+        _announce(g, "estop", channel="remote", actor_id=actor, detail="jti=abc")
+        _announce(g, "prompt", channel="dashboard")
+        _announce(g, "skill_execute", channel="remote", actor_id=actor, detail="OpenRAL/rskill-x")
+        assert _spin_until(g.executor, lambda: len(_interventions()) == 3)
+        by_ref = {r.diff_ref: r for r in _interventions()}
+        assert set(by_ref) == {"estop:jti=abc", "prompt", "skill_execute:OpenRAL/rskill-x"}
+        assert {r.intervention_kind for r in by_ref.values()} == {"override"}
+        estop = by_ref["estop:jti=abc"]
+        assert (estop.channel, estop.legitimate, estop.actor.actor_id) == ("remote", True, actor)
+        assert by_ref["prompt"].legitimate is None
+    finally:
+        g.close()
+
+
 def test_a_log_it_cannot_write_stops_the_machine_once(
     ros_context: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

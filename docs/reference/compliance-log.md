@@ -80,11 +80,19 @@ just before they act; the record then carries the channel and the operator as
 `HMAC-SHA256(identity, $OPENRAL_ACTOR_KEY)` — the deployer keeps the key, so only the deployer
 can link the id back to a person. A reset nobody announced (a raw `ros2 service call`, say) is
 still recorded, with `channel: unknown` and `legitimate: null`: the Machinery Regulation asks
-for evidence of illegitimate interventions too. Dashboard parameter changes are recorded as
-`param_set` interventions. An intervention is `legitimate: true` only when the operator is
-identified (a pseudonymous id under the deployer's key); an anonymous announcement records
-the channel with `legitimate: null`. An announcement is a claim by the channel, not an
-authentication (logins are #36).
+for evidence of illegitimate interventions too.
+
+The dashboard announces **every** action it runs (ADR-0129): besides a reset, an operator
+E-STOP (announced just *after* the stop, so attribution never delays it), a prompt and an
+rSkill run are recorded as `override` interventions whose `diff_ref` names the action
+(`estop`, `prompt`, `skill_execute:<rskill id>`). Who acted comes from sign-in: through the
+robot's tunnel the identity is the openral.com user (the sign-in token's `sub`, with the
+token's `jti` in `diff_ref`) and the channel is `remote`; on the robot itself or its LAN it is
+the client address and the channel is `dashboard`. Either way the record holds only the
+HMAC. An intervention is `legitimate: true` only when the operator is identified (a
+pseudonymous id under the deployer's key); without the key, the record names the channel
+with `legitimate: null`. Announced `param_set` changes are still recorded as `param_set`
+interventions; the dashboard no longer makes free-form parameter writes.
 
 **A machine that cannot keep its safety evidence does not move.** If a record cannot be
 written to the log (full disk, read-only filesystem), the recorder publishes `/openral/estop`

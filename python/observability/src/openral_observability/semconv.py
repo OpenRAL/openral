@@ -276,6 +276,9 @@ SPAN_PHYSICS_STEP: Final[str] = "physics.step"
 # chokepoint every robot HAL runs on. Feeds the dashboard's Command-band
 # `e-stops` counter, which read 0 for every e-stop until it was wired.
 EVENT_ESTOP_REQUESTED: Final[str] = "openral.event.estop_requested"
+# The OTLP log record carrying the robot manifest (ADR-0129 Interface A; JSON body).
+# Emitted by `producer.emit_robot_manifest`; the dashboard caches the latest one.
+EVENT_ROBOT_MANIFEST: Final[str] = "openral.robot.manifest"
 EVENT_SENSOR_STALE: Final[str] = "openral.event.sensor_stale"
 EVENT_STALENESS_LATCHED: Final[str] = "openral.event.staleness_latched"
 EVENT_ERROR_LATCHED: Final[str] = "openral.event.error_latched"
@@ -390,6 +393,7 @@ __all__ = [
     "EVENT_EPISODE_CLOSED",
     "EVENT_ERROR_LATCHED",
     "EVENT_ESTOP_REQUESTED",
+    "EVENT_ROBOT_MANIFEST",
     "EVENT_SAFETY_VIOLATION",
     "EVENT_SENSOR_STALE",
     "EVENT_SKILL_FAILURE",

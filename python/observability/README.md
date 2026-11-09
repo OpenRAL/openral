@@ -14,28 +14,96 @@ seven-layer model in the project docs.
 > All OpenRAL workspace packages move in lockstep with the workspace SemVer
 > version; the bump is computed from Conventional Commits by release-please.
 
-## Voice prompt (local speech-to-text)
+## The robot dashboard
 
-The live dashboard's operator-prompt box has a mic button. Click it and the
-browser listens until you stop speaking — voice-activity detection runs
-client-side via [`@ricky0123/vad-web`](https://github.com/ricky0123/vad)
-(Silero VAD). The captured audio is POSTed to `POST /api/transcribe`, which
-runs a **local** [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-model on the host, fills the prompt box with the transcript, and sends it via
-the normal `/api/prompt` path. Your audio never leaves the machine.
+`openral dashboard` serves the robot UI, its API and an OTLP/HTTP receiver on one
+port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
 
-`faster-whisper` ships with the `dashboard` extra (which `openral-cli` already
-pulls in). The small browser glue files for VAD are vendored under
-`static/vendor/vad/`; the large pinned Silero ONNX and onnxruntime WASM assets
-are fetched and checksum-verified into `$OPENRAL_CACHE_DIR/dashboard_assets/vad/`
-on dashboard startup, then copied into the served static directory. If those
-assets are unavailable, `/api/config` reports `voice_prompt_enabled=false` and
-the mic button stays disabled instead of failing at click time. The transcription
-endpoint still degrades to HTTP 503 if `faster-whisper` is ever stripped from the
-environment. Whisper model weights are fetched from the Hugging Face Hub on the
-first transcription and then cached (pre-pull both caches to stay air-gapped).
+- **The UI** at `/` is the pinned release of `python/observability/ui/`
+  (`dashboard/ui_assets.py`: url + sha256 + size, fetched once into
+  `$OPENRAL_CACHE_DIR/dashboard_assets/`), or a local build named by
+  `OPENRAL_DASHBOARD_UI_DIR`. Without either, `static/fallback.html` shows the
+  robot's status and an E-STOP button. Both are served under a strict
+  `Content-Security-Policy` (own scripts only, an HTML file's inline scripts by
+  sha256; framed only by this origin and openral.com); `/viz/` gets Lichtblick's own
+  (`'unsafe-eval'`, `'wasm-unsafe-eval'`, blob: workers).
+- **The manifest.** The deploy launch writes one and passes `--manifest <file>`, so a
+  deploy without the reasoner has one too; the reasoner, when it runs, emits an
+  `openral.robot.manifest` OTLP log record (`producer.emit_robot_manifest`, body =
+  `openral_core.RobotManifest` JSON) at configure and on
+  `/openral/skill_registry_changed`. The store keeps the latest of either
+  (`TelemetryStore.manifest()`, `manifest_rev` on every snapshot) and
+  `GET /api/manifest` serves it.
+- **Actions** run through `POST /api/actions/{id}` with `{"args": {...}}`, checked
+  against the action's `args_schema` (`jsonschema`): `estop` (the persistent
+  `EstopPublisher`, else a `ros2 topic pub` shell-out), `estop_reset` (the kernel's
+  `/openral/estop_reset`; `409` during its cooldown), `prompt` (`openral prompt` on
+  `/openral/prompt_in/dashboard`) and `skill:<rskill id>` (an `ExecuteRskill` goal;
+  `202` + `goal_id` once accepted, `OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S`, default
+  12 s). E-STOP never needs a manifest. Every action is announced on
+  `/openral/operator_action` for the compliance recorder — after the stop for an
+  E-STOP, before acting otherwise. The safety kernel still disposes all motion.
+- **Cameras** are polled: `GET /api/camera/{source}/snapshot.jpg` re-serves the
+  latest `sensors.read_latest` thumbnail; `GET /api/stream?images=0` is the SSE
+  stream without those thumbnails.
 
-Tuning knobs (read at first transcription; defaults run on any CPU):
+### Listeners and roles
+
+| Listener | Client | Mode / role | Allowed |
+|---|---|---|---|
+| `--host`:`--port` (default `127.0.0.1:4318`) | loopback | `local` / operator | everything the manifest offers |
+| same, bound to a LAN address | any other host | `lan` / viewer | GETs, `estop`, `POST /api/viz/ticket`, OTLP ingest on `/v1/*` (a robot computer exporting to a LAN dashboard, ADR-0017) |
+| `127.0.0.1:--remote-port` (default 4319 once linked) | the Cloudflare Tunnel | `remote` / the token's role | see below |
+
+`proxy_headers` is off on both, so a forwarded-for header never makes a LAN client
+loopback. The local listener refuses a state-changing request whose `Origin` names
+another host:port than `Host` (CSRF; DNS rebinding is not stopped by this).
+
+The **remote listener** opens when the robot is linked (`openral robot link <code>`
+writes `~/.config/openral/robot.json`, `OPENRAL_ROBOT_ENROLMENT` overrides the path, and
+`tunnel.env` beside it). The robot's Cloudflare Tunnel (`dashboard/tunnel.py`, a pinned
+`cloudflared`) runs as the user service `openral-tunnel.service`, which survives reboots,
+or, without user systemd, as the dashboard's own child process.
+`dashboard/remote_auth.py` checks every request's `Authorization: Bearer <JWT>` in
+ADR-0129 Interface B order: header `alg` ES256 and `typ` absent or `at+jwt`, `kid` in
+the issuer's JWKS (cached on disk, refetched only for an unknown `kid`, at most once a
+minute), the signature, `iss`, a single `aud` equal to this robot's origin, `exp`/`iat`
+with 60 s leeway and `exp − iat ≤ 300`, the `sub`/`jti`/`org`/`role`/`robot` claims,
+and `robot`/`org` equal to the enrolment. `OPTIONS` is answered before auth for the
+origins in `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (default
+`https://www.openral.com,https://dev.openral.com,https://viz.openral.com`; never
+`Allow-Credentials`), `/v1/*` answers 404, and `/api/stream` ends at the token's `exp`.
+Authorization headers and viz tickets are never logged.
+
+Roles: **viewer** may press E-STOP; **operator** and **admin** may also reset, prompt
+and run skills — remotely only with `OPENRAL_DASHBOARD_REMOTE_CONTROL=1` (default off).
+Skills need `OPENRAL_DASHBOARD_WRITE_CONTROLS=1` everywhere (default off; only the exact
+value `1` counts). `GET /api/manifest` serves the actions as this dashboard enforces
+them: no skills with write controls off, `remote` per the remote-control flag, only
+`estop` for a LAN client. The dashboard prints a `WARNING:` banner for either flag.
+**Pending safety-WG review**: the remote-control flag and its default, LAN read-only
+plus E-STOP, and the removal of free-form parameter writes (ADR-0129 §6).
+
+### The 3D view
+
+`/viz/` serves a pinned Lichtblick web build (`dashboard/viz_assets.py`, MPL-2.0, its
+source noted in `NOTICE.txt` beside it), fetched on first use without its source maps.
+It reaches `foxglove_bridge` (loopback, read-only) through `WS /ws`, a proxy that pings
+every 30 s and checks `Origin` on upgrade. Remote and LAN clients need a ticket from
+`POST /api/viz/ticket` (256-bit, bound to the caller, reusable for 15 minutes). The
+`/viz/` index.html carries this robot's layout (`openral_foxglove_bringup.layout`) in
+Lichtblick's default-layout slot, so it opens on the robot's cameras and base frame; its
+CSP allows `'unsafe-eval'` (Lichtblick v1.30 will not start without `new Function`) and
+the inline script by hash. The bridge port is `--bridge-port` (default 8765).
+
+### Speech to text
+
+`POST /api/transcribe` runs a **local**
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) model on the captured audio
+and returns the text; the audio never leaves the machine. Voice prompts in the robot UI
+are a follow-up. `faster-whisper` ships with the `dashboard` extra (which `openral-cli`
+already pulls in); the endpoint degrades to HTTP 503 if it is ever stripped. Whisper
+weights are fetched from the Hugging Face Hub on first use and cached.
 
 | Env var | Default | Notes |
 | --- | --- | --- |
@@ -43,14 +111,9 @@ Tuning knobs (read at first transcription; defaults run on any CPU):
 | `OPENRAL_STT_DEVICE` | `cpu` | `cuda` to use a local GPU |
 | `OPENRAL_STT_COMPUTE` | `int8` | CTranslate2 compute type (`int8`, `float16`, …) |
 
-The vendored browser assets and their versions/licenses are documented in
-[`static/vendor/vad/NOTICE.md`](src/openral_observability/dashboard/static/vendor/vad/NOTICE.md),
-which also records the `npm pack` command to refresh them.
-
 ## Safety · current state (latched `/openral/safety_status`)
 
-ADR-0096. Every other card on the dashboard is fed by OTel over the embedded
-OTLP receiver. This one is not: `SafetyStatusSubscriber` opens a real rclpy
+ADR-0096. Every other panel is fed by OTel over the embedded OTLP receiver. This one is not: `SafetyStatusSubscriber` opens a real rclpy
 subscription to the **latched** `/openral/safety_status`
 (`openral_msgs/SafetyStatus`, RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) that
 the C++ safety kernel and `SafetyPassthroughNode` both publish, and writes
@@ -71,27 +134,11 @@ inert and the card reads *waiting*; it never renders "clear" from an absence
 of data. Read-only: it holds no publisher, no service client, and no
 authority over the robot.
 
-## Live camera video (MJPEG stream)
-
-Each dashboard camera card shows live video, served at:
-
-```
-GET /api/camera/{source}/stream
-```
-
-It re-serves the per-camera OTLP thumbnail JPEG (the `sensors.read_latest`
-span attribute `thumbnail_jpeg_b64`) as a `multipart/x-mixed-replace` MJPEG
-stream, so no extra camera pipeline is needed. The frame rate is bounded by how often the
-workload exports spans (configured via `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS`,
-default 30 ms ≈ 33 Hz). The endpoint returns 404 only when the source name is
-entirely unknown to the store; a known camera that has not yet emitted a frame
-opens the stream and waits.
-
 ## Perception overlays on the camera tiles
 
 The camera tiles show what the robot *sees*; the overlays show what it *made of
 it*. `kind: detector` boxes and `kind: segmenter` masks are drawn on a canvas
-layered over each tile's MJPEG frame, so a mis-grasp no longer has to be
+layered over each camera snapshot, so a mis-grasp no longer has to be
 diagnosed by reading a label list beside a picture.
 
 **Detector boxes** stream today. `PerceptionOverlaySubscriber` opens a real
@@ -143,12 +190,11 @@ Rendering:
   is more than 2 s newer than it. The producing rSkill is named in the tile's
   bottom-right corner, so "whose boxes are these" is never a guess.
 
-Instance colours are the one chroma the dashboard allows outside the
-safety palette, and they live in `dashboard.js` (`OVERLAY_COLORS`) because they
-are painted into a canvas, never onto UI chrome. Slots are assigned in fixed
-order by a stable hash of the label, so a label keeps its colour across frames
-instead of repainting when the detection count changes — and every mark is also
-directly labelled, so identity is never colour-alone.
+Instance colours are the one chroma the UI allows outside the safety palette,
+painted into a canvas, never onto UI chrome. Slots are assigned in fixed order by
+a stable hash of the label, so a label keeps its colour across frames instead of
+repainting when the detection count changes — and every mark is also directly
+labelled, so identity is never colour-alone.
 
 Without rclpy or the `openral_msgs` overlay the subscriber stays inert and the
 tiles render without overlays. Read-only and advisory: it decides only what an
@@ -178,8 +224,7 @@ that:
   (`127.0.0.1`) bind is meaningless to advertise and a wildcard (`0.0.0.0`)
   one ambiguous, so both are browse-only.
 
-Discovered services are surfaced in the "Add Robot" panel via a read-only
-endpoint:
+Discovered services are listed by a read-only endpoint:
 
 ```
 GET /api/robots
@@ -189,57 +234,3 @@ GET /api/robots
 When the `mdns` extra is absent or `zeroconf` fails to start, the endpoint
 returns `{"enabled": false, "robots": []}`; discovery is additive, never
 load-bearing.
-
-## Write-controls (`OPENRAL_DASHBOARD_WRITE_CONTROLS`)
-
-> **Default: OFF.** These endpoints are pending safety-WG review and a
-> hazard-log update. Do not enable in production until the safety WG
-> has signed off.
-
-Two guarded write endpoints are available when the flag is set:
-
-```
-POST /api/skill/execute   # dispatch an ExecuteRskill action goal (returns 202 on acceptance)
-POST /api/param/set       # tune a non-safety ROS 2 parameter via ros2 param set
-```
-
-`POST /api/skill/execute` returns **HTTP 202** with a `goal_id` (for
-telemetry correlation) as soon as the action server accepts the goal; it does
-**not** block on completion. Progress arrives via the dashboard SSE stream and
-OTLP telemetry. Acceptance timeout: `OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S`
-(default `12` s).
-
-Enable them with:
-
-```bash
-OPENRAL_DASHBOARD_WRITE_CONTROLS=1 openral dashboard
-```
-
-The dashboard prints a loud `WARNING:` banner to stderr on startup when the
-flag is on. The flag is also surfaced in `GET /api/config`:
-
-```json
-{"jaeger_ui_url": "...", "write_controls_enabled": true}
-```
-
-**Safety posture:**
-
-- Both endpoints return `403` when the flag is off (default).
-- `POST /api/param/set` also refuses any param whose node name or param name
-  matches a substring in a hard-coded safety denylist (`velocity`, `accel`,
-  `force`, `torque`, `limit`, `workspace`, `estop`, `e_stop`, `deadman`,
-  `dead_man`, `safety`, `safe`, `watchdog`, `deadline`, `timeout`) — so every
-  param on a safety node (`openral_deadman_watchdog`, `openral_safety_kernel`,
-  …) is refused whatever its name. These must be changed via a reviewed config
-  or manifest, never the dashboard (CLAUDE.md §1.1).
-- Every state-changing request (any method but GET/HEAD/OPTIONS — e-stop reset,
-  prompt, skill execute, param set, OTLP ingest) carrying an `Origin` header
-  whose host:port differs from `Host` is refused with `403` and audit-logged
-  (CSRF guard). Requests without `Origin` (curl, the `openral` CLI, OTLP
-  exporters) pass; `Origin: null` is refused. This does not stop DNS
-  rebinding — keep the dashboard on loopback until operator auth lands (#44).
-- Every attempt (permitted or denied) is audit-logged at WARNING level before
-  any subprocess is spawned, providing a paper trail.
-- The safety kernel (`cpp/openral_safety_kernel`) remains the sole authority on
-  whether a skill action proceeds — the dashboard shells out to
-  `ros2 action send_goal /openral/execute_rskill`; the kernel disposes.

@@ -1,0 +1,38 @@
+/* Copied verbatim from the OpenRAL website: src/styles/tokens.css (OpenRAL/website,
+   DESIGN.md). Keep the two in sync; change the website first. */
+/* ============================================================
+   OpenRAL — refined dark, monochrome
+   ============================================================ */
+:root {
+  /* surfaces */
+  --bg: #0e0f13;
+  --bg-2: #121419;
+  --surface: #16181e;
+  --surface-2: #1c1f26;
+  --hair: #23262e;
+  --hair-2: #2c313b;
+
+  /* text */
+  --text: #e8e9ed;
+  --text-2: #a9aeb8;
+  --muted: #8c93a0;
+
+  /* monochrome — emphasis via bright white + translucency, no colored accent */
+  --accent: #ffffff;
+  --accent-tint: rgba(255, 255, 255, 0.82);
+  --accent-soft: rgba(255, 255, 255, 0.1);
+  --accent-line: rgba(255, 255, 255, 0.22);
+
+  /* status — white for success; muted red for form errors; green for live/open-source signal */
+  --green: #ffffff;
+  --live: #4fb58b;
+  --red: #d98a8e;
+
+  /* type */
+  --display: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --maxw: 1200px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
