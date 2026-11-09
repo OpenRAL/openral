@@ -114,6 +114,10 @@ _WS_UNAVAILABLE = 1011
 
 # E-STOP never waits for a manifest: it is resolvable before the runtime has sent one.
 _ESTOP = ManifestAction(id="estop", kind="estop", label="E-STOP", min_role="viewer", remote=True)
+# Speech to text runs under the prompt action's rules (operator; remote control on).
+_TRANSCRIBE = ManifestAction(
+    id="transcribe", kind="prompt", label="Transcribe", min_role="operator", remote=False
+)
 
 
 def _is_loopback(host: str) -> bool:
@@ -1324,6 +1328,10 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
     @app.post("/api/transcribe")
     async def post_transcribe(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         # Operator speech to text on the host (local Whisper); the audio never leaves it.
+        # A step towards a prompt, so a prompt's rules: Whisper is not for viewers to run.
+        refusal = _action_refusal(_TRANSCRIBE, request.state.principal)
+        if refusal is not None:
+            return _error(403, refusal)
         audio = await _read_body(request)
         return await _transcribe_response(audio)
 
@@ -1371,9 +1379,10 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
                 state.viz_dir = await asyncio.to_thread(ensure_viz_assets)
         if state.viz_dir is None:
             return _error(503, "the 3D view could not be downloaded (offline?)")
+        # Files are read off the event loop: it also serves E-STOP.
         if path in ("", "index.html"):
-            return _viz_index(state.viz_dir, state.store.manifest())
-        return _file_in(state.viz_dir, path, _VIZ_CSP)
+            return await asyncio.to_thread(_viz_index, state.viz_dir, state.store.manifest())
+        return await asyncio.to_thread(_file_in, state.viz_dir, path, _VIZ_CSP)
 
     @app.get("/{path:path}")
     async def get_ui(path: str, request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
@@ -1381,9 +1390,9 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
         root: Path | None = request.app.state.ui_dir
         if root is None:
             if path in ("", "index.html"):
-                return _with_csp(_STATIC_DIR / "fallback.html", _UI_CSP)
+                return await asyncio.to_thread(_with_csp, _STATIC_DIR / "fallback.html", _UI_CSP)
             return _error(404, "not found")
-        return _file_in(root, path, _UI_CSP)
+        return await asyncio.to_thread(_file_in, root, path, _UI_CSP)
 
     return app
 

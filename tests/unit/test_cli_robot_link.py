@@ -100,7 +100,9 @@ def test_link_writes_the_enrolment_and_keeps_the_token_apart(
     assert f"EnvironmentFile={env_file}" in text and _TUNNEL not in text
     assert "tunnel --no-autoupdate run" in text and "Restart=always" in text
     calls = [line.split()[1:] for line in (tmp_path / "systemd_calls.txt").read_text().splitlines()]
-    assert ["--user", "enable", "--now", "openral-tunnel.service"] in calls
+    assert ["--user", "enable", "openral-tunnel.service"] in calls
+    # restart, so a robot linked again (a new tunnel) drops the old token at once
+    assert ["--user", "restart", "openral-tunnel.service"] in calls
     assert ["enable-linger"] in calls
     assert "after every reboot" in result.output
 
@@ -154,6 +156,19 @@ def test_a_bad_code_writes_nothing(enrolment: Path) -> None:
     result = CliRunner().invoke(app, ["robot", "link", "not-a-code"])
     assert result.exit_code == 2
     assert not enrolment.exists()
+
+
+def test_a_tunnel_token_cannot_add_lines_to_the_service_env(enrolment: Path) -> None:
+    """The token lands in a systemd EnvironmentFile: a newline would add LD_PRELOAD."""
+    from openral_observability.dashboard.tunnel import write_tunnel_token
+
+    evil = {**_LINK, "tunnel": f"{_TUNNEL}\nLD_PRELOAD=/tmp/evil.so"}
+    code = base64.urlsafe_b64encode(json.dumps(evil).encode()).decode()
+    result = CliRunner().invoke(app, ["robot", "link", code])
+    assert result.exit_code == 2 and "malformed tunnel token" in result.output
+    assert not enrolment.with_name("tunnel.env").exists()
+    with pytest.raises(ValueError, match="not base64"):
+        write_tunnel_token("a\nLD_PRELOAD=x")
 
 
 def test_the_dashboard_leaves_the_tunnel_to_a_running_service(
@@ -217,3 +232,52 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
     monkeypatch.delenv("OPENRAL_REASONER_API_KEY")
     assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_API_KEY"]
     assert os.environ["OPENRAL_REASONER_API_KEY"] == "sk-1"
+
+
+def test_account_settings_never_set_the_robots_own_switches(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Remote and write controls stay on the robot (Safety-WG), whatever the site sends."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    for var in ("OPENRAL_REASONER_MODEL", "OPENRAL_DASHBOARD_REMOTE_CONTROL"):
+        monkeypatch.delenv(var, raising=False)
+    body = {"OPENRAL_DASHBOARD_REMOTE_CONTROL": "1", "OPENRAL_REASONER_MODEL": "m"}
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout: _Resp(json.dumps({"settings": body}).encode()),
+    )
+    assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_MODEL"]
+    assert "OPENRAL_DASHBOARD_REMOTE_CONTROL" not in os.environ
+    monkeypatch.delenv("OPENRAL_REASONER_MODEL")
+
+
+def test_a_refused_credential_drops_the_cache_and_a_new_link_drops_the_old_robot(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A removed or re-keyed robot keeps no copy of its org's key; neither does a re-link."""
+    import urllib.error
+
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    cache = enrolment.with_name("settings.json")
+    cache.write_text('{"OPENRAL_REASONER_API_KEY": "sk-1"}')
+    monkeypatch.delenv("OPENRAL_REASONER_API_KEY", raising=False)
+
+    def refused(req: Any, timeout: float) -> _Resp:
+        raise urllib.error.HTTPError(req.full_url, 401, "Unknown robot credential", {}, None)  # type: ignore[arg-type]  # reason: no headers needed
+
+    monkeypatch.setattr("urllib.request.urlopen", refused)
+    assert robot.apply_account_settings(echo=lambda _: None) == []
+    assert not cache.exists() and "OPENRAL_REASONER_API_KEY" not in os.environ
+
+    # Linking another robot, from a code without a secret, keeps nothing of the first.
+    cache.write_text('{"OPENRAL_REASONER_API_KEY": "sk-1"}')
+    older = {k: v for k, v in _LINK.items() if k != "secret"}
+    code = base64.urlsafe_b64encode(json.dumps(older).encode()).decode()
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", code]).exit_code == 0
+    assert not cache.exists() and not enrolment.with_name("robot.secret").exists()

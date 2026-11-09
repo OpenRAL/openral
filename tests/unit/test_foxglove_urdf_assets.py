@@ -177,17 +177,45 @@ def test_relative_meshes_reach_the_bridge_as_a_package(
     monkeypatch.setenv("AMENT_PREFIX_PATH", "/opt/ros/jazzy")
 
     xml, local = module._robot_mesh_package(urdf.read_text(encoding="utf-8"), urdf.parent)
-    assert local == {"openral_robot_so101_follower": urdf.parent}
+    [pkg] = local
+    assert pkg.startswith("openral_robot_so101_follower_")
     assert 'filename="assets/' not in xml
-    meshes = re.findall(r'filename="package://openral_robot_so101_follower/([^"]+)"', xml)
+    meshes = re.findall(rf'filename="package://{pkg}/([^"]+)"', xml)
     assert meshes
 
     env = module._foxglove_asset_env(xml, local)
     monkeypatch.setenv("AMENT_PREFIX_PATH", env["AMENT_PREFIX_PATH"])
-    share = Path(ament.get_package_share_directory("openral_robot_so101_follower"))
+    share = Path(ament.get_package_share_directory(pkg))
     assert not [m for m in meshes if not (share / m).is_file()]
     # A URDF with no relative meshes is left alone.
     assert module._robot_mesh_package('<mesh filename="package://p/m.stl"/>', urdf.parent) == (
         '<mesh filename="package://p/m.stl"/>',
         {},
     )
+
+
+def test_only_referenced_meshes_are_served_and_parent_paths_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The usual urdf/ + meshes/ layout (`../meshes/...`) renders, and nothing else in the
+    folder is fetchable: every remote viewer can read what the package holds."""
+    module: Any = _load_launch("deploy_e2e_launch_parent_meshes")  # loaded by path
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    robot = tmp_path / "robot"
+    (robot / "urdf").mkdir(parents=True)
+    (robot / "meshes").mkdir()
+    (robot / "meshes" / "link.stl").write_bytes(b"solid x\nendsolid x\n")
+    (robot / "meshes" / "private.png").write_bytes(b"not for viewers")
+    xml = '<robot name="r"><mesh filename="../meshes/link.stl"/></robot>'
+
+    out, local = module._robot_mesh_package(xml, robot / "urdf")
+    [(pkg, root)] = local.items()
+    assert out == f'<robot name="r"><mesh filename="package://{pkg}/link.stl"/></robot>'
+    assert ".." not in out
+    assert sorted(p.name for p in root.rglob("*")) == ["link.stl"]
+    # Another robot in a same-named folder gets its own package.
+    other = tmp_path / "elsewhere" / "urdf"
+    other.mkdir(parents=True)
+    (other / "a.stl").write_bytes(b"")
+    _, local2 = module._robot_mesh_package('<mesh filename="a.stl"/>', other)
+    assert set(local2) != set(local)

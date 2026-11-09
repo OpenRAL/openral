@@ -888,8 +888,8 @@ def resolve_unit_identity(
 
     Each value is its env var if set (``$OPENRAL_UNIT_SERIAL`` / ``$OPENRAL_ORG_ID`` /
     ``$OPENRAL_SITE_ID``), else the selected ``RobotUnit``'s field (unit chosen as in
-    ``resolve_sensor_overlays``), else, for serial and org, the openral.com enrolment
-    (``openral robot link``). A real deploy (``required``) without a serial is refused:
+    ``resolve_sensor_overlays``), else, for serial and org on a real deploy, the openral.com
+    enrolment (``openral robot link``). A real deploy (``required``) without a serial is refused:
     records that cannot name the machine they came from are not evidence of anything.
 
     Raises:
@@ -905,13 +905,15 @@ def resolve_unit_identity(
 
     unit_name = os.environ.get(ROBOT_UNIT_ENV) or scene_unit
     unit = load_robot_unit(robot_yaml, unit_name) if unit_name else None
-    # A robot linked to openral.com carries its serial (and org) in its enrolment.
+    # A robot linked to openral.com carries its serial (and org) in its enrolment. Real
+    # deploys only: a sim run on the robot's computer is not that unit's evidence.
     path = enrolment_path()
-    enrolled = (
-        RobotEnrolment.model_validate_json(path.read_text(encoding="utf-8"))
-        if path.is_file()
-        else None
-    )
+    enrolled = None
+    if required and path.is_file():
+        try:
+            enrolled = RobotEnrolment.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError as exc:  # pydantic's ValidationError is a ValueError
+            raise ROSConfigError(f"{path}: not a robot enrolment ({exc})") from exc
     identity = UnitIdentity(
         serial=os.environ.get(UNIT_SERIAL_ENV)
         or (unit.serial if unit else None)

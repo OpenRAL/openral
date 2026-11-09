@@ -23,6 +23,7 @@ Lifecycle nodes auto-transition UNCONFIGURED → INACTIVE → ACTIVE.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -2032,19 +2033,47 @@ _RELATIVE_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:|/)([^"]+)(")')
 def _robot_mesh_package(
     urdf_xml: str, urdf_dir: pathlib.Path
 ) -> tuple[str, dict[str, pathlib.Path]]:
-    """``urdf_xml`` with relative mesh paths as ``package://openral_robot_<dir>/``; and the package.
+    """``urdf_xml`` with its relative mesh paths as ``package://`` URIs; and that package.
 
-    A manifest's own URDF names its meshes relative to itself (``assets/base.stl``).
-    ``robot_state_publisher`` doesn't care, but a 3D viewer asks ``foxglove_bridge``
-    for each mesh by URI, and the bridge serves ``package://`` only (topics.py
-    ``ASSET_URI_ALLOWLIST``): with relative paths Lichtblick drew TF axes, no robot.
-    The package is registered in the bridge's ament overlay (``_foxglove_asset_env``).
+    A manifest's own URDF names its meshes relative to itself (``assets/base.stl``,
+    ``../meshes/link.stl``). ``robot_state_publisher`` doesn't care, but a 3D viewer asks
+    ``foxglove_bridge`` for each mesh by URI, and the bridge serves ``package://`` only,
+    never with ``..`` (topics.py ``ASSET_URI_ALLOWLIST``): with relative paths Lichtblick
+    drew TF axes, no robot. The package holds links to the referenced files only, under
+    ``$OPENRAL_CACHE_DIR/robot_meshes``: every remote viewer can fetch whatever it holds,
+    so never the URDF's whole folder. Named after the folder plus a hash of its path, so
+    two robots in same-named folders don't share one. The bridge's ament overlay
+    registers it (``_foxglove_asset_env``). Any failure leaves the URDF as it was.
     """
-    if not _RELATIVE_MESH.search(urdf_xml):
+    refs = {m[2] for m in _RELATIVE_MESH.finditer(urdf_xml)}
+    files = {r: (urdf_dir / r).resolve() for r in refs}
+    files = {r: f for r, f in files.items() if f.is_file()}
+    if not files:
         return urdf_xml, {}
-    pkg = "openral_robot_" + re.sub(r"[^\w]", "_", urdf_dir.name)
-    xml = _RELATIVE_MESH.sub(lambda m: f"{m[1]}package://{pkg}/{m[2]}{m[3]}", urdf_xml)
-    return xml, {pkg: urdf_dir}
+    digest = hashlib.sha256(str(urdf_dir.resolve()).encode()).hexdigest()[:8]
+    name = re.sub(r"[^\w]", "_", urdf_dir.name)
+    pkg = f"openral_robot_{name}_{digest}"
+    base = pathlib.Path(
+        os.environ.get("OPENRAL_CACHE_DIR") or pathlib.Path.home() / ".cache/openral"
+    )
+    root = base / "robot_meshes" / pkg
+    common = pathlib.Path(os.path.commonpath([f.parent for f in files.values()]))
+    uris: dict[str, str] = {}
+    try:
+        for ref, target in files.items():
+            rel = target.relative_to(common)
+            link = root / rel
+            link.parent.mkdir(parents=True, exist_ok=True)
+            # Swap the link in atomically: concurrent launches of one robot share it.
+            tmp = link.with_name(f".{link.name}.{uuid.uuid4().hex}")
+            tmp.symlink_to(target)
+            tmp.replace(link)
+            uris[ref] = f"package://{pkg}/{rel.as_posix()}"
+    except OSError as exc:
+        print(f"[deploy_e2e] foxglove: URDF meshes will not load: {exc!r}", flush=True)
+        return urdf_xml, {}
+    xml = _RELATIVE_MESH.sub(lambda m: f"{m[1]}{uris.get(m[2], m[2])}{m[3]}", urdf_xml)
+    return xml, {pkg: root}
 
 
 def _portable_robot_description(urdf_xml: str) -> str:

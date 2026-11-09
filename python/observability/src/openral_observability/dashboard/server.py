@@ -30,7 +30,8 @@ _LOG = logging.getLogger(__name__)
 
 # Hosts that keep the (unauthenticated) local listener reachable only from this
 # machine. On any other bind, other hosts get the read-only LAN view plus E-STOP.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
+# Not "": uvicorn binds an empty host to every interface.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _DEFAULT_REMOTE_PORT = 4319
 
 

@@ -30,6 +30,7 @@ import base64
 import binascii
 import json
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal  # Any: JSON Schema dicts are untyped by nature
@@ -401,6 +402,9 @@ def parse_robot_link_code(code: str) -> tuple[RobotEnrolment, str, str | None]:
     tunnel = raw.pop("tunnel", None)
     if not isinstance(tunnel, str) or not tunnel:
         raise ROSConfigError("the robot link code carries no tunnel token")
+    # It lands in a systemd EnvironmentFile: a newline there would add variables.
+    if not re.fullmatch(r"[A-Za-z0-9+/=_-]+", tunnel):
+        raise ROSConfigError("the robot link code carries a malformed tunnel token")
     secret = raw.pop("secret", None)
     if secret is not None and not (isinstance(secret, str) and secret.startswith("ors_")):
         raise ROSConfigError("the robot link code carries a malformed robot secret")

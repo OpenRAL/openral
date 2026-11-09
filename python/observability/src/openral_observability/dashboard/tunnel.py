@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,6 +32,7 @@ __all__ = [
     "CLOUDFLARED",
     "SERVICE",
     "TUNNEL_PORT",
+    "TUNNEL_TOKEN_RE",
     "ensure_cloudflared",
     "install_service",
     "read_tunnel_token",
@@ -61,6 +63,9 @@ CLOUDFLARED: dict[str, PinnedAsset] = {
 """cloudflared 2026.10.7 (2026-10-30) per ``platform.machine()``; digests from the release."""
 
 
+TUNNEL_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_-]+")
+"""A Cloudflare tunnel token: base64 of its JSON credentials."""
+
 SERVICE = "openral-tunnel.service"
 """The user systemd unit ``openral robot link`` installs."""
 
@@ -86,7 +91,14 @@ def tunnel_env_path() -> Path:
 
 
 def write_tunnel_token(token: str) -> Path:
-    """Store the tunnel token (mode 0600, never through a symlink); returns the file."""
+    """Store the tunnel token (mode 0600, never through a symlink); returns the file.
+
+    Raises:
+        ValueError: ``token`` is not base64: anything else (a newline) would add lines to
+            the service's EnvironmentFile, e.g. ``LD_PRELOAD``.
+    """
+    if not TUNNEL_TOKEN_RE.fullmatch(token):
+        raise ValueError("the tunnel token is not base64")
     path = tunnel_env_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
@@ -150,8 +162,12 @@ def install_service(exe: Path) -> str | None:
     unit.write_text(_UNIT.format(env=tunnel_env_path(), exe=exe), encoding="utf-8")
     if not _run("systemctl", "--user", "daemon-reload"):
         return "no user systemd here"
-    if not _run("systemctl", "--user", "enable", "--now", SERVICE):
-        return f"systemctl --user enable --now {SERVICE} failed"
+    # restart, not just `enable --now`: a running unit (an earlier link) keeps its old token.
+    if not (
+        _run("systemctl", "--user", "enable", SERVICE)
+        and _run("systemctl", "--user", "restart", SERVICE)
+    ):
+        return f"systemctl --user enable/restart {SERVICE} failed"
     # Start at boot, before anyone logs in. Allowed for yourself on stock polkit.
     if not _run("loginctl", "enable-linger"):
         return "the tunnel runs, but only while you are logged in (loginctl enable-linger failed)"

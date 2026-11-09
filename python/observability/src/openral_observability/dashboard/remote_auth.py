@@ -55,6 +55,7 @@ _REMOTE_SCOPE_KEY = "openral.remote"
 _LEEWAY_S = 60
 _MAX_LIFETIME_S = 300
 _JWKS_COOLDOWN_S = 60.0
+_JWKS_MAX_AGE_S = 3600.0
 _REQUIRED_CLAIMS = ("sub", "jti", "org", "role", "robot")
 
 _ASGIApp = Callable[
@@ -120,10 +121,12 @@ def load_enrolment(path: Path | None = None) -> RobotEnrolment | None:
 
 
 class JwksCache:
-    """The issuer's signing keys, cached on disk; refetched only for an unknown ``kid``.
+    """The issuer's signing keys, cached on disk; refetched for an unknown ``kid``, and hourly.
 
     At most one refetch per ``cooldown_s`` (Interface B: once a minute), so a stream of
     tokens with made-up ``kid`` values cannot turn the robot into a request amplifier.
+    The hourly refetch (the first token after a start included) drops a key the issuer
+    retired; while the issuer is unreachable the keys held keep verifying.
     """
 
     def __init__(self, url: str, cache_file: Path, *, cooldown_s: float = _JWKS_COOLDOWN_S) -> None:
@@ -137,6 +140,9 @@ class JwksCache:
         if cache_file.is_file():
             try:
                 self._keys = self._parse(cache_file.read_text(encoding="utf-8"))
+                # A restart keeps the cache's age: under an hour old, no fetch.
+                age = max(0.0, time.time() - cache_file.stat().st_mtime)
+                self._last_fetch = time.monotonic() - age
             except (ValueError, jwt.PyJWTError) as exc:
                 _logger.warning(
                     "dashboard.jwks_cache_unreadable", path=str(cache_file), error=str(exc)
@@ -147,16 +153,19 @@ class JwksCache:
         keys = jwt.PyJWKSet.from_json(text).keys
         return {k.key_id: k for k in keys if k.key_id is not None and k.algorithm_name == "ES256"}
 
+    def _stale(self) -> bool:
+        return time.monotonic() - self._last_fetch >= _JWKS_MAX_AGE_S
+
     async def key(self, kid: str) -> jwt.PyJWK | None:
-        """The ES256 key ``kid``, refetching the JWKS once if it is unknown."""
-        if kid in self._keys:
+        """The ES256 key ``kid``, refetching the JWKS if it is unknown or an hour old."""
+        if kid in self._keys and not self._stale():
             return self._keys[kid]
         async with self._lock:
-            if kid in self._keys:
-                return self._keys[kid]
             now = time.monotonic()
-            if now - self._last_fetch < self._cooldown_s:
-                return None
+            if not self._stale() and (
+                kid in self._keys or now - self._last_fetch < self._cooldown_s
+            ):
+                return self._keys.get(kid)
             self._last_fetch = now
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -165,13 +174,16 @@ class JwksCache:
                 self._keys = self._parse(resp.text)
             except (httpx.HTTPError, ValueError, jwt.PyJWTError) as exc:
                 _logger.warning("dashboard.jwks_fetch_failed", url=self._url, error=str(exc))
-                return None
+                return self._keys.get(kid)
             try:
-                self._cache_file.parent.mkdir(parents=True, exist_ok=True)
-                self._cache_file.write_text(resp.text, encoding="utf-8")
+                await asyncio.to_thread(self._write_cache, resp.text)
             except OSError as exc:
                 _logger.warning("dashboard.jwks_cache_write_failed", error=str(exc))
             return self._keys.get(kid)
+
+    def _write_cache(self, text: str) -> None:
+        self._cache_file.parent.mkdir(parents=True, exist_ok=True)
+        self._cache_file.write_text(text, encoding="utf-8")
 
 
 class TokenVerifier:

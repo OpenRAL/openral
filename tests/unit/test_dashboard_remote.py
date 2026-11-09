@@ -232,6 +232,24 @@ async def test_a_rotated_key_is_picked_up_after_the_cooldown(
     assert issuer.fetches == 2
 
 
+@pytest.mark.asyncio
+async def test_a_retired_key_stops_verifying_after_the_hourly_refetch(
+    issuer: FakeIssuer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A key the issuer drops (rotation after a leak) is not trusted forever."""
+    from openral_observability.dashboard import remote_auth
+
+    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
+    old = issuer.mint()
+    async with _remote(app) as client:
+        assert (await client.get("/api/config", headers=_auth(old))).status_code == 200
+        issuer.kid = "kid-2"  # the issuer now publishes only its new key
+        monkeypatch.setattr(remote_auth, "_JWKS_MAX_AGE_S", 0.0)  # an hour later
+        resp = await client.get("/api/config", headers=_auth(old))
+    assert resp.status_code == 401
+    assert issuer.fetches == 2
+
+
 # ── CORS and the refused surface ──────────────────────────────────────────────
 
 
@@ -311,6 +329,24 @@ async def test_viewer_may_only_estop(
     assert [(a["action"], a["channel_label"]) for a in announced] == [("estop", "remote")]
     assert announced[0]["actor_id"] == pseudonymous_actor_id("user-7f3a", "deployer-key")
     assert announced[0]["detail"] == "jti=tok-91"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_follows_the_prompt_rules_remotely(
+    issuer: FakeIssuer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whisper on the robot's computer: an operator's, over the tunnel with remote control."""
+    monkeypatch.delenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", raising=False)
+    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
+    async with _remote(app) as client:
+        viewer = await client.post(
+            "/api/transcribe", content=b"x", headers=_auth(issuer.mint(role="viewer"))
+        )
+        operator = await client.post(
+            "/api/transcribe", content=b"x", headers=_auth(issuer.mint(role="operator"))
+        )
+    assert viewer.status_code == 403 and "may not run" in viewer.json()["error"]
+    assert operator.status_code == 403 and "remote control is off" in operator.json()["error"]
 
 
 @pytest.mark.asyncio

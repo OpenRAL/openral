@@ -12,11 +12,11 @@ from openral_observability.dashboard.server import _exposure_warning
 
 
 class TestExposureWarning:
-    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "", "LOCALHOST"])
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "LOCALHOST"])
     def test_loopback_hosts_do_not_warn(self, host: str) -> None:
         assert _exposure_warning(host) is None
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "10.0.0.5", "192.168.1.20"])
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "", "10.0.0.5", "192.168.1.20"])
     def test_non_loopback_hosts_warn(self, host: str) -> None:
         msg = _exposure_warning(host)
         assert msg is not None

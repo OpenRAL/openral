@@ -136,8 +136,14 @@ def test_a_linked_robot_takes_its_serial_and_org_from_the_enrolment(
     franka = _REPO / "robots" / "franka_panda" / "robot.yaml"
     identity = resolve_unit_identity(franka, None, required=True)
     assert (identity.serial, identity.org_id) == ("SO101-0007", "acme")
+    # A sim run on the robot's computer is not that unit's evidence.
+    assert resolve_unit_identity(franka, None, required=False).serial is None
     monkeypatch.setenv("OPENRAL_UNIT_SERIAL", "SO101-0042")
     assert resolve_unit_identity(franka, None, required=True).serial == "SO101-0042"
+    monkeypatch.delenv("OPENRAL_UNIT_SERIAL")
+    enrolment.write_text("{not json")
+    with pytest.raises(ROSConfigError, match="not a robot enrolment"):
+        resolve_unit_identity(franka, None, required=True)
 
 
 def test_a_malformed_wire_trace_costs_the_link_not_the_record(

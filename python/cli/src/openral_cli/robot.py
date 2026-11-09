@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -332,13 +333,27 @@ def _settings_cache() -> Path:
     return enrolment_path().with_name("settings.json")
 
 
+ACCOUNT_SETTINGS = frozenset(
+    {
+        "OPENRAL_REASONER_API_KEY",
+        "OPENRAL_REASONER_MODEL",
+        "OPENRAL_REASONER_ENDPOINT",
+        "OPENRAL_REASONER_DIALECT",
+    }
+)
+"""What openral.com may set on a robot. Never the dashboard's write- or remote-control
+switches: those stay on the robot (ADR-0129, Safety-WG), whatever the site sends."""
+
+
 def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
     """Put this robot's openral.com account settings into ``os.environ`` (ADR-0129).
 
     A linked robot (``openral robot link``) fetches its org's (or owner's) settings,
     e.g. ``OPENRAL_REASONER_API_KEY``, with its own credential from
     ``<site>/api/robot/settings``, and caches them (0600) for offline starts. A variable
-    already in the environment wins. Returns the names it set; never raises.
+    already in the environment wins; only ``ACCOUNT_SETTINGS`` are applied. A refused
+    credential (the robot was removed, or given a new link code) deletes the cache.
+    Returns the names it set; never raises.
     """
     from urllib.parse import urlsplit
 
@@ -367,20 +382,37 @@ def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
         with urllib.request.urlopen(request, timeout=10) as resp:
             settings = json.loads(resp.read())["settings"]
         _write_private(_settings_cache(), json.dumps(settings) + "\n")
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (401, 403):
+            return _cached_settings(site, exc, echo)
+        # Revoked: no cached copy outlives the credential.
+        _settings_cache().unlink(missing_ok=True)
+        echo(f"account settings: {site} refused this robot's credential; run a new link code")
+        return []
     except (OSError, ValueError, KeyError) as exc:
-        cache = _settings_cache()
-        if not cache.is_file():
-            echo(f"account settings: {site} unreachable ({exc}); none cached")
-            return []
-        echo(f"account settings: {site} unreachable ({exc}); using the cached ones")
-        settings = json.loads(cache.read_text(encoding="utf-8"))
+        return _cached_settings(site, exc, echo)
+    return _apply(settings, site, echo)
+
+
+def _cached_settings(site: str, exc: Exception, echo: Callable[[str], None]) -> list[str]:
+    """The cached settings while ``site`` is unreachable (``exc``), else none."""
+    try:
+        cached = json.loads(_settings_cache().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        echo(f"account settings: {site} unreachable ({exc}); none cached")
+        return []
+    echo(f"account settings: {site} unreachable ({exc}); using the cached ones")
+    return _apply(cached if isinstance(cached, dict) else {}, site, echo)
+
+
+def _apply(settings: dict[str, object], site: str, echo: Callable[[str], None]) -> list[str]:
     applied = [
         k
         for k, v in settings.items()
-        if k.startswith("OPENRAL_") and isinstance(v, str) and k not in os.environ
+        if k in ACCOUNT_SETTINGS and isinstance(v, str) and k not in os.environ
     ]
     for name in applied:
-        os.environ[name] = settings[name]
+        os.environ[name] = str(settings[name])
     if applied:
         echo(f"account settings from {site}: {', '.join(sorted(applied))}")
     return applied
@@ -415,6 +447,10 @@ def link_robot(code: str, *, echo: Callable[[str], None], service: bool = True) 
     path = enrolment_path()
     _write_private(path, enrolment.model_dump_json(indent=2) + "\n")
     write_tunnel_token(tunnel)
+    # Nothing of a previously linked robot survives: its credential would fetch its
+    # org's settings, and its cache would serve them.
+    _settings_cache().unlink(missing_ok=True)
+    _secret_path().unlink(missing_ok=True)
     if secret is not None:
         _write_private(_secret_path(), secret + "\n")
     echo(f"Linked robot {enrolment.robot} ({enrolment.aud}); enrolment in {path}")
