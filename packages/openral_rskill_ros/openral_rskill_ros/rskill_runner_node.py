@@ -2695,7 +2695,11 @@ if _ROS2_AVAILABLE:
             mode = self.get_parameter("object_tracking").get_parameter_value().string_value
             # A zone is the place allowance of `tracking` only: under `on` it would shadow the
             # tracked destination (`TrackerSession.place_region` resolves a zone first).
-            if raw and mode == "tracking":
+            # pro#51 k9 (Safety-WG review owed): the prompt-named declared zone is the
+            # place allowance under `on` too. The tracked destination needed exactly one live
+            # DESTINATION track and a spurious second one left no place region at all (Spark
+            # banana: place_region=False in every run); the zone is declared and stable.
+            if raw and mode in ("tracking", "on"):
                 zones = TypeAdapter(list[PlaceZone]).validate_json(raw)
                 zone = place_zone_for_prompt(prompt, zones)
                 if zone is not None:

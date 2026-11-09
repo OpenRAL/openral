@@ -4740,6 +4740,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         extra_nodes.append(segmenter)
         autostart.append(_poll_autostart("openral_segmenter", 120.0))
 
+    instance_cells = LaunchConfiguration("instance_cells").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if instance_cells and object_tracking == "off":
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "instance_cells=true needs the object tracker (object_tracking tracking | on); "
+            "it is sim-only like the tracker (pro#51, Safety-WG review owed)."
+        )
     if object_tracking != "off":
         # Issue #418: the Layer-2 object tracker (packages/world_state/README.md).
         tracker = LifecycleNode(
@@ -4787,6 +4799,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                         else ""
                     ),
                     "joint_states_topic": runtime_joint_states_topic or "/joint_states",
+                    "instance_cells": instance_cells,
                     "use_sim_time": use_sim_time,
                 }
             ],
@@ -4795,6 +4808,21 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         )
         extra_nodes.append(tracker)
         autostart.append(_poll_autostart("openral_object_tracker", 60.0))
+        if instance_cells:
+            # EXPERIMENT (pro#51, sim-only): SAM2.1 video masks of the tracker's TARGET /
+            # DESTINATION tracks lifted to voxel cells on /openral/instance_cells.
+            # ponytail: one camera (the first tracked); fuse per camera if a scene needs two.
+            extra_nodes.append(
+                Node(
+                    package="openral_world_state",
+                    executable="instance_mask_propagator_node",
+                    name="openral_instance_mask_propagator",
+                    arguments=["--camera", tracked_cameras[0]],
+                    parameters=[{"use_sim_time": use_sim_time}],
+                    additional_env=otel_env,
+                    output="screen",
+                )
+            )
 
     if enable_reward_monitor:
         # Reward monitor runs PARALLEL to the VLA (not a lifecycle/VRAM
@@ -5143,6 +5171,16 @@ def generate_launch_description() -> LaunchDescription:
                 "Serialized openral_core.GraspDeclaration (real pick-and-place "
                 "design §2.1) the skill_runner scopes to each goal it "
                 "dispatches. Empty = no declaration, no grasp exemption."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "instance_cells",
+            default_value="false",
+            description=(
+                "DeployRuntime.instance_cells (EXPERIMENT, pro#51): run the instance mask "
+                "propagator beside the object tracker, which fits its target / destination "
+                "boxes to the SAM2 video masks' voxel cells. Needs object_tracking not off; "
+                "sim-only, Safety-WG review owed."
             ),
         ),
         DeclareLaunchArgument(

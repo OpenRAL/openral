@@ -73,6 +73,7 @@ from openral_core import (
     USDObjectCatalog,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.tracking_thresholds import load_tracking_thresholds
 from openral_world_state.object_tracker.catalog import CatalogDeclarations
 from openral_world_state.object_tracker.commands import SourceClock, jaw_commands
 from openral_world_state.object_tracker.grounding import QueryEscalation, StandingQuery
@@ -115,6 +116,33 @@ _STAMP_MISSING = {
     "locate_in_view": "locate_source_stamp_missing",
     "segment_in_view": "segment_request_stamp_missing",
 }
+
+
+_CONTRAST_LABELS = load_tracking_thresholds().tracker.locate_contrast_labels
+
+
+def decode_instance_cells(
+    object_ids: Sequence[str], counts: Sequence[int], cells: Sequence[int]
+) -> dict[str, frozenset[tuple[int, int, int]]] | None:
+    """Per-track cells of an ``openral_msgs/InstanceCells``, or ``None`` if its counts are off.
+
+    Example:
+        >>> d = decode_instance_cells(["trk:1", "trk:2"], [1, 2], [0, 0, 0, 1, 2, 3, 4, 5, 6])
+        >>> {k: sorted(v) for k, v in d.items()}
+        {'trk:1': [(0, 0, 0)], 'trk:2': [(1, 2, 3), (4, 5, 6)]}
+        >>> decode_instance_cells(["trk:1"], [2], [0, 0, 0]) is None
+        True
+    """
+    if len(counts) != len(object_ids) or 3 * sum(counts) != len(cells):
+        return None
+    it = iter(int(v) for v in cells)
+    flat = list(zip(it, it, it, strict=True))
+    out: dict[str, frozenset[tuple[int, int, int]]] = {}
+    start = 0
+    for oid, n in zip(object_ids, counts, strict=True):
+        out[str(oid)] = frozenset(flat[start : start + n])
+        start += n
+    return out
 
 
 def image_array(msg: Any) -> NDArray[Any]:  # reason: duck-typed sensor_msgs/Image
@@ -257,6 +285,71 @@ def detector_scores(metadata_json: str) -> tuple[float, ...]:
         return ()
     md = ObjectsMetadata.model_validate(json.loads(metadata_json))
     return tuple(float(d.confidence) for d in md.detections)
+
+
+def contrast_query(label: str, contrast: Sequence[str]) -> str:
+    """``label`` and the contrast labels that share no word with it, for ``LocateInView``.
+
+    Example:
+        >>> contrast_query("orange", ["can", "box"])
+        'orange, can, box'
+        >>> contrast_query("soup can", ["can", "box"])
+        'soup can, box'
+    """
+    own = set(label.lower().split())
+    return ", ".join([label, *(c for c in contrast if not own & set(c.lower().split()))])
+
+
+def contrasted(metadata_json: str, label: str, low_score: float) -> str:
+    """``label``'s detections only; one under ``low_score`` another label covers better is gone.
+
+    A low-confidence identity must at least beat generic alternatives asked beside it
+    (``contrast_query``); a confident one is kept as it is.
+
+    Example:
+        >>> def md(*d):
+        ...     return ObjectsMetadata(
+        ...         sensor_id="top",
+        ...         model_id="m",
+        ...         frame_width=64,
+        ...         frame_height=48,
+        ...         detections=list(d),
+        ...     ).model_dump_json()
+        >>> can = {"label": "can", "confidence": 0.4, "bbox_xyxy": (10, 10, 30, 30)}
+        >>> weak = {"label": "orange", "confidence": 0.2, "bbox_xyxy": (11, 10, 30, 31)}
+        >>> sure = {"label": "orange", "confidence": 0.35, "bbox_xyxy": (11, 10, 30, 31)}
+        >>> far = {"label": "orange", "confidence": 0.2, "bbox_xyxy": (40, 30, 50, 40)}
+        >>> [
+        ...     d["confidence"]
+        ...     for d in json.loads(contrasted(md(can, weak, far), "orange", 0.3))["detections"]
+        ... ]
+        [0.2]
+        >>> len(json.loads(contrasted(md(can, sure), "orange", 0.3))["detections"])
+        1
+    """
+    if not metadata_json:
+        return metadata_json
+    md = ObjectsMetadata.model_validate(json.loads(metadata_json))
+
+    def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy
+        return ix * iy / union if union > 0 else 0.0
+
+    others = [d for d in md.detections if d.label != label]
+    keep = [
+        d
+        for d in md.detections
+        if d.label == label
+        and (
+            d.confidence >= low_score
+            or not any(
+                o.confidence > d.confidence and iou(o.bbox_xyxy, d.bbox_xyxy) > 0.5 for o in others
+            )
+        )
+    ]
+    return md.model_copy(update={"detections": keep}).model_dump_json()
 
 
 def detector_boxes(
@@ -521,7 +614,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         TrackerSession,
         TrackingMode,
     )
-    from openral_world_state.object_tracker.tracker import TrackerParams
+    from openral_world_state.object_tracker.tracker import LOW_PROMPT_SCORE, TrackerParams
     from pydantic import TypeAdapter
     from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -585,6 +678,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("object_surface_model_json", "")
             self.declare_parameter("locate_service", "")
             self.declare_parameter("joint_states_topic", "/joint_states")
+            # EXPERIMENT (pro#51, sim-only): fit TARGET / DESTINATION boxes to the instance
+            # mask propagator's cells (DeployRuntime.instance_cells).
+            self.declare_parameter("instance_cells", False)
             # Addendum G active-search budget (source seconds): an unresolved query
             # escalates after search_start_s, is EXHAUSTED after search_max_s.
             self.declare_parameter("search_start_s", TrackerParams().search_start_s)
@@ -778,6 +874,35 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     latched_1,
                 ),
             ]
+
+            if self.get_parameter("instance_cells").value:  # EXPERIMENT (pro#51, sim-only)
+                from openral_msgs.msg import InstanceCells as InstanceCellsMsg
+
+                self._subs.append(
+                    self.create_subscription(
+                        InstanceCellsMsg,
+                        "/openral/instance_cells",
+                        self._on_instance_cells,
+                        reliable_1,
+                    )
+                )
+
+        def _on_instance_cells(self, msg: Any) -> None:
+            """EXPERIMENT: the mask propagator's per-track vision-labelled voxel cells."""
+            if self.session is None:
+                return
+            cells = decode_instance_cells(msg.object_ids, msg.cell_counts, msg.cells)
+            if cells is None:
+                self.get_logger().warning("object_tracker.instance_cells_malformed")
+                return
+            stamp = msg.header.stamp
+            self.session.on_instance_cells(
+                stamp.sec * 10**9 + stamp.nanosec,
+                msg.header.frame_id,
+                (msg.origin.x, msg.origin.y, msg.origin.z),
+                msg.resolution,
+                cells,
+            )
 
         def _create_outputs(self) -> None:
             self._pub_tracked = self.create_publisher(
@@ -1182,8 +1307,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     req, frame, optical_frame, stamp_msg, "locate_service_unavailable"
                 )
                 return
+            label = req.prompt or req.label
             lreq = LocateInView.Request(
-                query=req.prompt or req.label, camera=req.camera, detector=""
+                query=contrast_query(label, _CONTRAST_LABELS), camera=req.camera, detector=""
             )
             lreq.source_stamp_ns = frame.stamp_ns
             lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())
@@ -1216,16 +1342,13 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     failure_reason = _locate_source_stamp_failure_reason(
                         frame.stamp_ns, int(getattr(res, "source_stamp_ns", 0) or 0)
                     )
-                boxes = (
-                    detector_boxes(str(res.metadata_json), frame.intrinsics)
+                own = (
+                    contrasted(str(res.metadata_json), label, LOW_PROMPT_SCORE)
                     if res is not None and res.found and not failure_reason
-                    else ()
+                    else ""
                 )
-                scores = (
-                    detector_scores(str(res.metadata_json))
-                    if res is not None and res.found and not failure_reason
-                    else ()
-                )
+                boxes = detector_boxes(own, frame.intrinsics) if own else ()
+                scores = detector_scores(own) if own else ()
                 result = TrackerResult(
                     req.request_id,
                     None,

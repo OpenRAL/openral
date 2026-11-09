@@ -50,6 +50,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # mask overlay has a producer. Off by default on the segmenter node; nothing
   # in the safety or attachment path reads it.
   msg/SegmentMasks.msg
+  # EXPERIMENT (vision + voxel fusion, sim-only): instance-mask-labelled voxel cells.
+  msg/InstanceCells.msg
   # rosbag2 ↔ LeRobotDataset bridge.
   msg/Tick.msg
   msg/Episode.msg

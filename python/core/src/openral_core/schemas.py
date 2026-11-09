@@ -12587,6 +12587,14 @@ class DeployRuntime(BaseModel):
     step 3). The former ``shadow`` and ``bind`` load as deprecated aliases of ``tracking``
     with a ``FutureWarning``; ``shadow``'s observe-only posture is gone. Set explicitly per
     scene."""
+    instance_cells: bool = False
+    """EXPERIMENT (vision + voxel fusion, pro#51; sim-only, Safety-WG review owed): run the
+    instance mask propagator beside the object tracker. It follows the tracker's TARGET and
+    DESTINATION tracks with SAM2.1 video masks on the first tracked camera and lifts them into
+    voxel cells; the tracker fits those tracks' boxes to the cells, so an object keeps its
+    identity through contact, a slip or a drop (``ObjectTracker.apply_instance_cells``). Needs
+    ``object_tracking`` not ``off`` (the launch refuses it otherwise). Backward-compatible
+    addition."""
     grounding_wait_s: float | None = Field(default=None, gt=0.0)
     """How long (source time) a goal waits for every query to reach CONFIRMED before the
     tracker logs ``grounding_incomplete``. Required whenever ``object_tracking`` is not

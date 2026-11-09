@@ -75,7 +75,7 @@ from openral_world_state.object_tracker.binding import (
     _fresh_ns,  # reason: same package; the freshness rule a late bind must share
     _pinch_holds,  # reason: same package; the candidate rule a late bind must share
 )
-from openral_world_state.object_tracker.cover import hand_touches
+from openral_world_state.object_tracker.cover import Cell, hand_touches
 from openral_world_state.object_tracker.fit import ContainingFit
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
@@ -96,6 +96,9 @@ __all__ = [
     "TrackingMode",
     "declaration_key",
 ]
+
+#: Instance cells apply only on the tracker's own lattice (origin / resolution to 1 um).
+_LATTICE_TOL_M = 1e-6
 
 log = structlog.get_logger(__name__)
 
@@ -276,6 +279,11 @@ class TrackerSession:
         self.released_clear_ns = int(released_clear_timeout_s * _NS)
         # Released TRACKED_OBJECT bindings still on the wire: object_id -> (record, stamp).
         self._released: dict[str, tuple[AttachedCollisionObject, int]] = {}
+        # EXPERIMENT exp/vision-voxel-fusion: the propagator's latest per-track labelled cells
+        # (stamp, frame, lattice origin, resolution, cells), applied before the next feed.
+        self._instance_cells: (
+            tuple[int, str, tuple[float, float, float], float, dict[str, frozenset[Cell]]] | None
+        ) = None
         self._known_at_release: dict[str, frozenset[str]] = {}  # the track ids then
         self._off_hand: dict[str, int] = {}  # consecutive in-hand fits off every hand box
         self.binders: dict[str, GraspBinder] = {}
@@ -442,6 +450,37 @@ class TrackerSession:
         """
         self._set_goal("deploy", "deploy", 0, True, queries)
 
+    def on_instance_cells(
+        self,
+        stamp_ns: int,
+        frame_id: str,
+        origin: tuple[float, float, float],
+        resolution: float,
+        cells: dict[str, frozenset[Cell]],
+    ) -> None:
+        """EXPERIMENT: per-track vision-labelled cells, applied on the next frame (our lattice)."""
+        self._instance_cells = (stamp_ns, frame_id, origin, resolution, cells)
+
+    def _apply_instance_cells(self, hands: Sequence[PlaceRegion]) -> None:
+        pending = self._instance_cells
+        if pending is None or self.grid is None:
+            return
+        self._instance_cells = None
+        stamp_ns, frame_id, origin, res, cells = pending
+        g = self.grid
+        same_lattice = (
+            frame_id == g.frame_id
+            and math.isclose(res, g.resolution, abs_tol=_LATTICE_TOL_M)
+            and all(
+                math.isclose(a, b, abs_tol=_LATTICE_TOL_M)
+                for a, b in zip(origin, g.origin, strict=True)
+            )
+        )
+        if not same_lattice:
+            log.info("object_tracker.instance_cells_lattice_mismatch", frame=frame_id)
+            return
+        self.tracker.apply_instance_cells(cells, g, stamp_ns, hands)
+
     def on_grid(self, grid: VoxelLattice, source_stamp_ns: int) -> None:
         """Keep the newest grid in the tracks' frame; another frame is logged and ignored."""
         if grid.frame_id != self.frame_id:
@@ -587,6 +626,11 @@ class TrackerSession:
             late.positions or positions,
             stamp_ns,
             excluded_track_ids=late.excluded_track_ids,
+            oversize_track_ids=frozenset(
+                t.object_id
+                for t in self.tracker.store.all()
+                if self.tracker.oversize_provisional(t)
+            ),
         )
         self._monitors[gripper_joint] = JawReleaseMonitor.for_hand(
             binder.hand, hold=hold, release_dwell_s=self.release_dwell_s
@@ -747,6 +791,7 @@ class TrackerSession:
         self.tracker.bound_prompts = self._bound_prompts()
         self.tracker.held_ids = self._held_ids()
         hands = self.hand_spaces()
+        self._apply_instance_cells(hands)  # EXPERIMENT exp/vision-voxel-fusion
         out = self.tracker.feed(
             frame,
             grid=self.grid,

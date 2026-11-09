@@ -17957,6 +17957,11 @@
               "title": "Object Tracking",
               "type": "string"
             },
+            "instance_cells": {
+              "default": false,
+              "title": "Instance Cells",
+              "type": "boolean"
+            },
             "grounding_wait_s": {
               "anyOf": [
                 {
@@ -20671,6 +20676,11 @@
               ],
               "title": "Object Tracking",
               "type": "string"
+            },
+            "instance_cells": {
+              "default": false,
+              "title": "Instance Cells",
+              "type": "boolean"
             },
             "grounding_wait_s": {
               "anyOf": [
@@ -23525,6 +23535,11 @@
               ],
               "title": "Object Tracking",
               "type": "string"
+            },
+            "instance_cells": {
+              "default": false,
+              "title": "Instance Cells",
+              "type": "boolean"
             },
             "grounding_wait_s": {
               "anyOf": [

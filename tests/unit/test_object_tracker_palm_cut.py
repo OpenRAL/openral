@@ -7,8 +7,9 @@ the real hands' pinch axes and palm planes:
 
 * containment kept: every sampled point of the original solid on the hand side lies in the new
   box, in the new DOP and (when it ships vertices) in the new hull;
-* never looser: the new box lies inside the old pinch-axes bounding box, and the new vertices
-  lie inside the original solid and on the hand side.
+* never looser: the new box is no larger than the old pinch-axes bounding box (it may turn
+  about the approach axis), and the new vertices lie inside the original solid and on the hand
+  side.
 """
 
 from __future__ import annotations
@@ -96,10 +97,10 @@ def _check_cut(
     assert new.geometry_source == "measured" and new.tight_geometry is not None
     tn = t_ao @ _t(new.pose_in_object)
     nhalf = np.asarray(bounding_half_extents(new.shape))
-    # never looser: the new box inside the old pinch-axes bounding box
+    # never larger: turned about the approach axis to the smallest box (pro#51 b51r2), so its
+    # corners may leave the old pinch-axes box, but its volume never exceeds it
     lo, hi = _old_box(prim, t_ao, pinch)
-    ncorn = ((_UNIT * nhalf) @ tn[:3, :3].T + tn[:3, 3]) @ pinch.axes
-    assert np.all(ncorn >= lo - EPS) and np.all(ncorn <= hi + EPS)
+    assert np.prod(2.0 * nhalf) <= np.prod(hi - lo) * (1 + 1e-9) + EPS
     # containment kept: sampled hand-side points of the original solid are in the new geometry
     rng = np.random.default_rng(seed)
     pts_local = rng.uniform(-1.0, 1.0, size=(400, 3)) * np.asarray(half)

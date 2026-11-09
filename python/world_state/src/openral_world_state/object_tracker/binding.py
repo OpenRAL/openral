@@ -256,6 +256,32 @@ def _clip_at_plane(
     return np.asarray(np.unique(np.round(np.concatenate(out), 10), axis=0), dtype=np.float64)
 
 
+def _tightest_about_approach(
+    pts: NDArray[np.float64], axes: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """``axes`` (columns ``c, a, b``) turned about ``a`` to the smallest box around ``pts``.
+
+    The box keeps ``a`` (its back face stays on the palm plane); across ``a`` it is the
+    minimum-area rectangle of the points, which has a side along some pair of them, so every
+    pairwise direction is tried. The pinch axes are among them, so it is never larger: a carton
+    yawed in the hand re-boxed in the pinch axes grew up to sqrt(2) per axis (pro#51 restock
+    b51r2 seed 110: 14 x 19 x 18 cm around an 11 cm carton, released, frozen, and the hand that
+    let go stopped on it).
+    """
+    uw = pts @ axes[:, [0, 2]]
+    d = uw[:, None, :] - uw[None, :, :]
+    phis = np.concatenate([[0.0], np.mod(np.arctan2(d[..., 0], d[..., 1]).ravel(), np.pi / 2)])
+    cos, sin = np.cos(phis)[:, None], np.sin(phis)[:, None]
+    x = uw[:, 0] * cos - uw[:, 1] * sin
+    y = uw[:, 0] * sin + uw[:, 1] * cos
+    area = np.ptp(x, axis=1) * np.ptp(y, axis=1)
+    phi = float(phis[int(np.argmin(area))])  # the first minimum: the pinch axes on a tie
+    c, a, b = axes[:, 0], axes[:, 1], axes[:, 2]
+    return np.column_stack(
+        [math.cos(phi) * c - math.sin(phi) * b, a, math.sin(phi) * c + math.cos(phi) * b]
+    )
+
+
 def _palm_clipped(
     prims: Sequence[AttachedCollisionPrimitive],
     t_ao: NDArray[np.float64],
@@ -268,12 +294,13 @@ def _palm_clipped(
     reaching past it (a containing box of a 17 cm banana re-centred on the pinch volume reached
     the Franka's wrist: DROID r2dr_on1, a payload-vs-panda_link7 false stop) is cut by the plane:
     a primitive wholly behind it is dropped, one wholly in front is kept as it is (hull and all),
-    and one the plane crosses becomes a box in the pinch axes (the broad-phase bound and every
-    other check's geometry) around the EXACT cut of its solid, refined by that cut's 26-DOP and
+    and one the plane crosses becomes a box with its back face on the plane (the broad-phase bound
+    and every other check's geometry) around the EXACT cut of its solid, turned about the approach
+    axis to the smallest such box (``_tightest_about_approach``), refined by that cut's 26-DOP and
     vertices as the kernel's payload-vs-voxel ``tight_geometry`` (OT-16 amendment, 2026-10-18:
     same containment, tighter representation). The solid is the primitive's hull when it has one,
-    else its box. The new box lies inside the old pinch-axes box (the bounding box of the whole
-    primitive with the back face on the plane) and holds solid ∩ {along >= palm}; a hull of more
+    else its box. The new box is never larger than the pinch-axes box around the cut and holds
+    solid ∩ {along >= palm}; a hull of more
     than ``MAX_TIGHT_HULL_VERTICES`` points keeps the DOP only (a containing superset).
     """
     out: list[AttachedCollisionPrimitive] = []
@@ -299,13 +326,14 @@ def _palm_clipped(
         cut = _clip_at_plane(solid, solid @ a, pinch.palm_m)
         if not len(cut):
             continue
-        local = cut @ pinch.axes
+        axes = _tightest_about_approach(cut, pinch.axes)
+        local = cut @ axes
         lo, hi = local.min(axis=0), local.max(axis=0)
         lo[1] = pinch.palm_m
         centre = (lo + hi) / 2.0
         new_half = np.maximum((hi - lo) / 2.0, 1e-6)
-        t_link = _frame(pinch.axes @ centre, pinch.axes)
-        in_box = (cut - pinch.axes @ centre) @ pinch.axes
+        t_link = _frame(axes @ centre, axes)
+        in_box = (cut - axes @ centre) @ axes
         proj = in_box @ dop.T
         dlo, dhi = proj.min(axis=0), proj.max(axis=0)
         dlo[:3], dhi[:3] = -new_half, new_half  # the box's own slabs: the cut lies inside them
@@ -450,8 +478,15 @@ class GraspBinder:
         stamp_ns: int,
         *,
         excluded_track_ids: frozenset[str] = frozenset(),
+        oversize_track_ids: frozenset[str] = frozenset(),
     ) -> Binding:
-        """Bind fresh free geometry meeting ``J_h``."""
+        """Bind fresh free geometry meeting ``J_h``.
+
+        ``oversize_track_ids``: PROVISIONAL tracks far past their label's clear size
+        (``ObjectTracker.oversize_provisional``) are no evidence of the held object: never a
+        candidate, so they never join the payload (pro#51 restock: a regrasp's 30-46 cm
+        provisional box, grown by moved refits, stopped the arm at the shelf).
+        """
         jh = self.pinch_in_frame(positions)
         centre = jh[0]
         cands = []
@@ -465,6 +500,9 @@ class GraspBinder:
                 fit_age_ns = stamp_ns - _fresh_ns(track)
                 if track.object_id in excluded_track_ids:
                     stale.append((track.object_id, fit_age_ns, "late_hold_stale_fit"))
+                    continue
+                if track.object_id in oversize_track_ids:
+                    stale.append((track.object_id, fit_age_ns, "provisional_oversize"))
                     continue
                 if fit_age_ns < 0:
                     stale.append((track.object_id, fit_age_ns, "future_fit"))

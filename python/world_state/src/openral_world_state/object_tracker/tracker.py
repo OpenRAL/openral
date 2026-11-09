@@ -18,6 +18,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, auto
+from statistics import median
 from typing import NamedTuple
 
 import numpy as np
@@ -52,6 +53,7 @@ from openral_world_state.object_lift import aabb_iou_3d
 from openral_world_state.object_tracker.catalog import CatalogDeclarations
 from openral_world_state.object_tracker.cover import (
     Cell,
+    CoverVerdict,
     _inside,
     box_cells,
     cells_behind_robot,
@@ -184,6 +186,200 @@ def duplicate_of(box: PlaceRegion, tracks: Sequence[TrackedObject]) -> tuple[str
 def _grown(box: PlaceRegion, margin_m: float) -> PlaceRegion:
     """``box`` with every half-extent grown by ``margin_m``."""
     return box.model_copy(update={"half_extents": tuple(h + margin_m for h in box.half_extents)})
+
+
+# -- vision + voxel fusion (exp/vision-voxel-fusion; Safety-WG review owed) ------------------
+# Identity comes from the instance mask propagator's SAM2 video masks, geometry from the voxel
+# map. The numbers live in tracking_thresholds.yaml (``vision``), each with its episode.
+_V = load_tracking_thresholds().vision
+_VISION_MIN_CELLS = _V.min_cells
+_VISION_NEED_FRACTION = _V.need_fraction
+_VISION_MAX_EXTENT = _V.max_extent_factor
+_VISION_UNMOVED_CELLS = _V.unmoved_cells
+_RECENT_S = _T.recent_s
+_PLAUSIBLE_EXTENT = _T.plausible_extent_factor
+
+
+def _hidden_cells(
+    grid: VoxelLattice, cells: frozenset[Cell], frame: CameraFrame | None
+) -> frozenset[Cell]:
+    """The expected ``cells`` the robot hides from ``frame`` (none without its robot mask)."""
+    if frame is None or frame.robot_mask is None or frame.t_base_from_cam is None:
+        return frozenset()
+    return cells_behind_robot(
+        grid, cells, frame.depth_m, frame.robot_mask, frame.intrinsics, frame.t_base_from_cam
+    )
+
+
+def covers_destination(box: PlaceRegion, dest: PlaceRegion) -> bool:
+    """Whether a TARGET box is the destination's own body, not something lying on or in it.
+
+    They overlap by half the larger footprint (comparable sizes: a tiny partial "plate" fitted
+    on an orange is not what the orange covers, yf2 ep3) and it stands 80 % of the destination's
+    height. The plate minted as an "orange" and the bowl as a "banana" (yf1 ep4, yfb1 ep0/ep1)
+    did both; an orange on the plate (8 % of its footprint) or a banana in the bowl (60 % of the
+    bowl's height) does not.
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> def b(hx, hz, z=0.0):
+        ...     p = Pose6D(xyz=(0.0, 0.0, z), quat_xyzw=(0, 0, 0, 1), frame_id="b")
+        ...     return PlaceRegion(frame_id="b", pose=p, half_extents=(hx, hx, hz))
+        >>> plate = b(0.105, 0.025)
+        >>> covers_destination(b(0.108, 0.031), plate), covers_destination(b(0.03, 0.025), plate)
+        (True, False)
+        >>> bowl = b(0.085, 0.035)
+        >>> covers_destination(b(0.08, 0.02, -0.01), bowl)  # a banana lying in it
+        False
+        >>> yawed = b(0.093, 0.06, 0.01).model_copy(
+        ...     update={
+        ...         "pose": Pose6D(
+        ...             xyz=(-0.004, -0.011, 0.007), quat_xyzw=(0, 0, 0.552, 0.834), frame_id="b"
+        ...         )
+        ...     }
+        ... )
+        >>> covers_destination(yawed, b(0.085, 0.053))  # the n2_dr ep0 bowl-sized "banana"
+        True
+    """
+    a, d = _aabb(box), _aabb(dest)
+    ix = max(0.0, min(a[3], d[3]) - max(a[0], d[0]))
+    iy = max(0.0, min(a[4], d[4]) - max(a[1], d[1]))
+    # The boxes' own footprints, not their axis-aligned extents: a box yawed 67 deg has an extent
+    # 1.7x its area, and a bowl-sized "banana" over the bowl read 0.48 < 0.5 (n2_dr ep0, the
+    # negative test). The intersection stays the extents' (never smaller: fail-closed).
+    foot = 4.0 * max(
+        box.half_extents[0] * box.half_extents[1], dest.half_extents[0] * dest.half_extents[1]
+    )
+    return foot > 0 and ix * iy >= 0.5 * foot and (a[5] - a[2]) >= 0.8 * (d[5] - d[2])
+
+
+def _box_between(
+    like: PlaceRegion, lo: NDArray[np.float64], hi: NDArray[np.float64]
+) -> PlaceRegion:
+    """An axis-aligned box from ``lo`` to ``hi`` in ``like``'s frame."""
+    return like.model_copy(
+        update={
+            "pose": like.pose.model_copy(
+                update={
+                    "xyz": tuple(float(v) for v in 0.5 * (lo + hi)),
+                    "quat_xyzw": (0.0, 0.0, 0.0, 1.0),
+                }
+            ),
+            "half_extents": tuple(float(v) for v in 0.5 * (hi - lo)),
+        }
+    )
+
+
+def _grow_to_size(
+    lo: NDArray[np.float64],
+    hi: NDArray[np.float64],
+    size: float | None,
+    hands: Sequence[PlaceRegion],
+) -> None:
+    """Widen each horizontal axis of ``lo``/``hi`` (in place) to at least ``size``.
+
+    Vision labels only what the camera sees, so a box of labelled cells shrinks to the visible
+    part while the hand hides the rest: a 4.6 cm box on a 6.5 cm orange, and the gripper stopped
+    on its hidden side 2.3 cm outside (yw3 ep7; the banana's hidden tip, ywb2 ep3). The missing
+    width goes toward the nearest hand box, where the occluded part is; with no hand, to both
+    sides. ``size`` is the object's measured clear size (its smaller extent).
+
+    Example:
+        >>> lo, hi = np.array([0.0, 0.0, 0.0]), np.array([0.04, 0.06, 0.05])
+        >>> _grow_to_size(lo, hi, 0.06, [])
+        >>> [round(float(v), 3) for v in (lo[0], hi[0], lo[1], hi[1])]
+        [-0.01, 0.05, 0.0, 0.06]
+    """
+    if size is None or size <= 0:
+        return
+    centre = 0.5 * (lo + hi)
+    hand = None
+    if hands:
+        hc = [np.asarray(h.pose.xyz, dtype=np.float64) for h in hands]
+        hand = min(hc, key=lambda c: float(np.hypot(*(c[:2] - centre[:2]))))
+    for k in (0, 1):
+        short = size - (hi[k] - lo[k])
+        if short <= 0:
+            continue
+        if hand is None:
+            lo[k] -= 0.5 * short
+            hi[k] += 0.5 * short
+        elif hand[k] >= centre[k]:
+            hi[k] += short
+        else:
+            lo[k] -= short
+
+
+def _placed_box(box: PlaceRegion, dest: PlaceRegion) -> PlaceRegion | None:
+    """Where a target let go over ``dest`` comes to rest, or ``None`` if it was not over it.
+
+    Its box at release, twice as wide (it rolls) and reaching down to ``dest``'s bottom (it
+    falls). Spark orange k9: the plate split each time an orange landed on it; accepting any
+    second body in the plate's box instead also accepted a foreign object nobody placed.
+    ponytail: one roll radius; an object rolling further splits the destination (fail-closed).
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> def b(x, z, h):
+        ...     p = Pose6D(xyz=(x, 0.0, z), quat_xyzw=(0, 0, 0, 1), frame_id="b")
+        ...     return PlaceRegion(frame_id="b", pose=p, half_extents=(h, h, h))
+        >>> plate = b(0.0, 0.0, 0.1)
+        >>> p = _placed_box(b(0.02, 0.2, 0.03), plate)
+        >>> [round(v, 3) for v in (*p.pose.xyz, *p.half_extents)]
+        [0.02, 0.0, 0.065, 0.06, 0.06, 0.165]
+        >>> _placed_box(b(0.3, 0.2, 0.03), plate) is None
+        True
+    """
+    a, d = _aabb(box), _aabb(dest)
+    cx, cy = 0.5 * (a[0] + a[3]), 0.5 * (a[1] + a[4])
+    if not (d[0] <= cx <= d[3] and d[1] <= cy <= d[4]):
+        return None
+    hx, hy = 0.5 * (a[3] - a[0]), 0.5 * (a[4] - a[1])
+    lo = np.array([a[0] - hx, a[1] - hy, d[2]])
+    hi = np.array([a[3] + hx, a[4] + hy, max(a[5], d[5])])
+    return _box_between(dest, lo, hi)
+
+
+def _vision_need(ref: int) -> int:
+    """Labelled cells a vision box needs: ``_VISION_NEED_FRACTION`` of ``ref``, at least 4.
+
+    Example:
+        >>> _vision_need(59), _vision_need(0)
+        (18, 4)
+    """
+    return max(_VISION_MIN_CELLS, math.ceil(_VISION_NEED_FRACTION * ref))
+
+
+def _enclosing(a: PlaceRegion, b: PlaceRegion) -> PlaceRegion:
+    """The smallest box in ``a``'s orientation that holds both ``a`` and ``b`` (same frame).
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> def box(x, hx):
+        ...     p = Pose6D(xyz=(x, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="b")
+        ...     return PlaceRegion(frame_id="b", pose=p, half_extents=(hx, 0.1, 0.1))
+        >>> u = _enclosing(box(0.0, 0.1), box(0.3, 0.1))
+        >>> [round(v, 3) for v in u.pose.xyz], [round(h, 3) for h in u.half_extents]
+        ([0.15, 0.0, 0.0], [0.25, 0.1, 0.1])
+    """
+    ta = homogeneous_from_quat_xyz(a.pose.xyz, a.pose.quat_xyzw)
+    tb = homogeneous_from_quat_xyz(b.pose.xyz, b.pose.quat_xyzw)
+    signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], float)
+    corners = np.vstack(
+        [
+            ta[:3, 3] + (signs * np.asarray(a.half_extents)) @ ta[:3, :3].T,
+            tb[:3, 3] + (signs * np.asarray(b.half_extents)) @ tb[:3, :3].T,
+        ]
+    )
+    local = (corners - ta[:3, 3]) @ ta[:3, :3]
+    lo, hi = local.min(axis=0), local.max(axis=0)
+    centre = ta[:3, 3] + ta[:3, :3] @ ((lo + hi) / 2)
+    return a.model_copy(
+        update={
+            "pose": a.pose.model_copy(update={"xyz": tuple(float(v) for v in centre)}),
+            "half_extents": tuple(float(h) for h in (hi - lo) / 2),
+        }
+    )
 
 
 _NS = 1_000_000_000
@@ -435,6 +631,10 @@ class ObjectTracker:
         self._clear_size: dict[str, float] = {}
         # Per track: the largest longer-horizontal extent of its clear fits (the oversize guard).
         self._clear_extent: dict[str, float] = {}
+        # Per label, per track: its largest longer-horizontal clear extent. Kept when the track
+        # retires (pro#51: a lone dropped object's own track is retired at release, and its
+        # regrasp mint had no clear size left to be held to).
+        self._label_clear_extent: dict[str, dict[str, float]] = {}
         # Per track: the longer horizontal extent of its first clear fit, else of its first fit,
         # and whether that fit was clear (the growth gate); its height and its full extents.
         # (extent, clear, height, full extents x/y/z)
@@ -455,6 +655,15 @@ class ObjectTracker:
         # What each track fills in the map (``box_cells``) at its last plain pass: a contact
         # re-anchor's reference while the hand hides or pushes the object.
         self._map_cells: dict[str, int] = {}
+        # Per track, the most cells a plain pass ever showed: a vision box's reference (a
+        # hidden pass shows 2-7 of an orange's ~20).
+        self._map_cells_max: dict[str, int] = {}
+        # Per released TARGET: the track as let go, its reference cells and the release stamp,
+        # or ``None`` once re-found or expired (``_vision_refind``).
+        self._let_go: dict[str, tuple[TrackedObject, int, int] | None] = {}
+        # Per TARGET track, where it rests on a destination (``_note_placed``): a body there
+        # is what was placed, not a foreign object splitting the destination.
+        self._placed: dict[str, PlaceRegion] = {}
         self._served: dict[str, int] = {}
         #: Per BOUND track, where its payload rides now (set by the session each frame): the
         #: region its in-hand refresh is prompted at.
@@ -1022,9 +1231,15 @@ class ObjectTracker:
             fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
         floor = support_z + grid.resolution
         if oid is None:
+            # The refit size rule holds for a mint too: a fit through the robot far past every
+            # clear same-label track swallowed something else, and as a new track nothing ever
+            # shrank it (pro#51 restock seed 115: a dropped 8 cm carton minted PROVISIONAL at
+            # 22 x 27 x 31 cm and its payload union stopped the arm at the bind). No track leaves
+            # the cells plain obstacles; a later clear fit mints it.
             track = (
                 None
                 if self._duplicate_mint(req, fit, frame)
+                or self._provisional_oversize(None, req.label, fit)
                 else self._mint_track(
                     req, fit, cells, frame, grid, support_z=support_z, floor=floor
                 )
@@ -1035,7 +1250,7 @@ class ObjectTracker:
             old = self.store.get(oid)
             assert old is not None
             if old.status is TrackStatus.BOUND:
-                return self._measure_bound(old, fit, frame)
+                return self._measure_bound(old, fit, frame, grid)
             moved = self._moved(old, fit, grid)
             if self._refuse_refit(old, fit, cells, centroid, support_z, grid, hands, frame, moved):
                 return None
@@ -1149,6 +1364,24 @@ class ObjectTracker:
         if q is None:
             log.info("object_tracker.refit_unassociated", label=req.label)
             return None
+        if (
+            q.query.role is ObjectRole.TARGET
+            and fit.box is not None
+            and self._implausible_box(q.query.label, fit.box)
+        ):
+            # A clear fit of two touching oranges minted one 19-32 cm "orange" whose box then
+            # blocked the real ones (yw1 ep8); provisional fits already had this gate.
+            self._refuse(f"{req.label}@{req.camera}", "oversize_mint", req=req, frame=frame,
+                         extent_m=round(2.0 * max(fit.box.half_extents[:2]), 3))  # fmt: skip
+            return None
+        if fit.box is not None and (
+            hit := self._role_conflict(
+                q.query.role, q.query.label, fit.box, frame.stamp_ns, mint=True
+            )
+        ):
+            self._refuse(f"{req.label}@{req.camera}", "role_conflict", req=req, frame=frame,
+                         conflict=hit)  # fmt: skip
+            return None
         track = self.store.mint(
             label=q.query.label,
             role=q.query.role,
@@ -1170,12 +1403,27 @@ class ObjectTracker:
         return track
 
     def _measure_bound(
-        self, old: TrackedObject, fit: ContainingFit, frame: CameraFrame
+        self, old: TrackedObject, fit: ContainingFit, frame: CameraFrame, grid: VoxelLattice
     ) -> tuple[str, ContainingFit]:
         """A BOUND track's refit: observed, and its box follows the object in the hand."""
         oid = old.object_id
         self._observe_catalog(old, fit, frame)
         self._observe_surface(old, fit, frame)
+        if fit.box is not None:
+            # The unmoved-refit rule holds in the hand too: a mask of the part beside the
+            # fingers shrank the box and left the rest of the object outside it (Spark pro#51
+            # banana, 2026-11-05: 6 of 27 stops, a 12 x 6 cm bound box on an 18 cm banana, the
+            # finger met its far end 0.4 s after the bind). The map cannot tell: the bridge
+            # clears the bound box's cells at the bind and the camera re-adds them later. While
+            # the fit still lies in the box (grown a cell, every point: a lift leaves it upward)
+            # the object has not moved and the box holds both; past that it follows the object.
+            # Safety-WG review owed.
+            away = ~_inside(fit.surface, _grown(old.box, grid.resolution))
+            outside = int(np.count_nonzero(away))
+            if outside < max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(fit.surface)):
+                fit = replace(fit, box=_enclosing(old.box, fit.box))
+                log.info("object_tracker.bound_partial_kept", object_id=oid, outside=outside,
+                         points=len(fit.surface))  # fmt: skip
         if fit.box is not None:
             # The box follows the object as the camera sees it in the hand, never the
             # hand's kinematics (2026-10-22 decision; the bind-time box stayed on the table
@@ -1246,6 +1494,11 @@ class ObjectTracker:
         provisional one re-dates it in the store). Each gate logs.
         """
         oid = old.object_id
+        if fit.box is not None and (
+            hit := self._role_conflict(old.role, old.label, fit.box, frame.stamp_ns, than=oid)
+        ):
+            log.info("object_tracker.refit_role_conflict", object_id=oid, conflict=hit)
+            return True
         grown = self._overgrown(oid, fit, moved)
         if grown and not self._admit_growth(
             old, fit, cells, centroid, support_z, grid, hands, frame
@@ -1576,6 +1829,9 @@ class ObjectTracker:
                 self._clear_extent.get(track.object_id, 0.0),
                 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
             )
+            self._label_clear_extent.setdefault(track.label, {})[track.object_id] = (
+                self._clear_extent[track.object_id]
+            )
         self._cells[track.object_id] = cells
         self._centroid[track.object_id] = (centroid[0], centroid[1], centroid[2])
         self._disagree.pop(track.object_id, None)
@@ -1673,11 +1929,7 @@ class ObjectTracker:
         frame: CameraFrame | None = None,
     ) -> None:
         if t.status is TrackStatus.RELEASED:
-            # Let go, not followed: no fit, no confirmation, retired with its release window
-            # (the session's `_expire_released`; a released box left where the object let go
-            # explained none of where it fell or rolled).
-            self._cells.pop(t.object_id, None)
-            self._map_cells.pop(t.object_id, None)
+            self._note_release(t, stamp_ns)
             return
         cells = self._cells.get(t.object_id)
         if cells is None or t.status in (TrackStatus.BOUND, TrackStatus.LOST):
@@ -1685,6 +1937,8 @@ class ObjectTracker:
         others = [
             o.box for o in self.store.all() if o.object_id != t.object_id and o.status in _SETTLED
         ]
+        if t.role is ObjectRole.DESTINATION:
+            others += self._placed.values()  # what rests in it is no foreign body
         # Visibility-aware cover (2026-10-21 decision; Isaac baseline: a successful grasp keeps
         # the fingers on the banana for 255-466 steps): an expected cell the robot hides is no
         # evidence the object is gone. While the hand is at the target or destination, a second
@@ -1692,20 +1946,7 @@ class ObjectTracker:
         # 6-cell piece, 5 cm from the fingers; the bowl pushed 99 mm), so it
         # does not block a confirmation the visible cover still has to earn. Safety-WG review
         # owed.
-        hidden = (
-            cells_behind_robot(
-                grid,
-                cells,
-                frame.depth_m,
-                frame.robot_mask,
-                frame.intrinsics,
-                frame.t_base_from_cam,
-            )
-            if frame is not None
-            and frame.robot_mask is not None
-            and frame.t_base_from_cam is not None
-            else frozenset()
-        )
+        hidden = _hidden_cells(grid, cells, frame)
         contact = (
             t.role in _CONTACT_ROLES
             and t.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED)
@@ -1726,32 +1967,12 @@ class ObjectTracker:
             self._map_cells[t.object_id] = len(
                 box_cells(grid, t.box, support_z=t.support_z, exclude=exclude)
             )
+            self._map_cells_max[t.object_id] = max(  # pro#51: hidden passes show 2-7 of ~20
+                self._map_cells_max.get(t.object_id, 0), self._map_cells[t.object_id]
+            )
         ref = self._map_cells.get(t.object_id, v.visible if v.kind == "map_disagrees" else 0)
         if contact and v.kind in ("map_disagrees", "hidden") and ref:
-            # The hand pushes the object inside its box (a banana pushed 66 mm held 12 of its
-            # 26 expected cells) or hides it (3-7 cells in view while the map held 33-52 in the
-            # box), and the hold ages it out mid-grasp. The
-            # object is where the map holds it in the box: re-anchored on those cells when
-            # they number half to `_REANCHOR_MAX_RATIO` times what it filled at its last plain
-            # pass (2026-10-21 decisions; the kernel's own in-box cover test; a push out of
-            # the box still fails, more is the box holding something else). Safety-WG review
-            # and hazard row owed.
-            body = box_cells(grid, t.box, support_z=t.support_z, exclude=exclude)
-            if cover_need(ref) <= len(body) <= _REANCHOR_MAX_RATIO * ref:
-                moved = cover_verdict(
-                    grid,
-                    body,
-                    t.box,
-                    support_z=t.support_z,
-                    own=hands,
-                    others=others,
-                    static=self._static_keys(grid),
-                )
-                if moved.kind != "map_disagrees":
-                    log.info("object_tracker.contact_reanchor", object_id=t.object_id,
-                             was=v.why, cells=len(body), ref=ref)  # fmt: skip
-                    self._cells[t.object_id] = body
-                    v = moved
+            v = self._contact_reanchor(t, v, grid, ref, hands, others, exclude)
         if contact and v.kind in ("map_split", "map_split_own"):
             v = replace(v, kind="", why=f"split under contact: {v.why}")
         status = t.status
@@ -1784,6 +2005,8 @@ class ObjectTracker:
                 if not self._may_confirm(t, grid, cells, owners, v.occupied, stamp_ns):
                     return
                 update["status"] = TrackStatus.CONFIRMED
+            if t.role is ObjectRole.TARGET:
+                self._note_placed(t)
         elif v.kind == "map_split":
             update = {"status": TrackStatus.SPLIT}
         elif v.kind == "map_disagrees":
@@ -1800,6 +2023,408 @@ class ObjectTracker:
             log.debug("object_tracker.cover", object_id=t.object_id, kind=v.kind, why=v.why)
         if update:
             self.store.replace(t.model_copy(update=update))
+
+    def _contact_reanchor(
+        self,
+        t: TrackedObject,
+        v: CoverVerdict,
+        grid: VoxelLattice,
+        ref: int,
+        hands: Sequence[PlaceRegion],
+        others: Sequence[PlaceRegion],
+        exclude: Sequence[PlaceRegion],
+    ) -> CoverVerdict:
+        """``v``, or the verdict on the map's cells in the box when the hand moved the object.
+
+        The hand pushes the object inside its box (a banana pushed 66 mm held 12 of its 26
+        expected cells) or hides it (3-7 cells in view while the map held 33-52 in the box), and
+        the hold ages it out mid-grasp. The object is where the map holds it in the box:
+        re-anchored on those cells when they number half to ``_REANCHOR_MAX_RATIO`` times
+        ``ref`` (what it filled at its last plain pass; 2026-10-21 decisions; the kernel's own
+        in-box cover test; a push out of the box still fails, more is the box holding something
+        else). Safety-WG review and hazard row owed.
+        """
+        body = box_cells(grid, t.box, support_z=t.support_z, exclude=exclude)
+        if cover_need(ref) <= len(body) <= _REANCHOR_MAX_RATIO * ref:
+            moved = cover_verdict(
+                grid,
+                body,
+                t.box,
+                support_z=t.support_z,
+                own=hands,
+                others=others,
+                static=self._static_keys(grid),
+            )
+            if moved.kind != "map_disagrees":
+                log.info("object_tracker.contact_reanchor", object_id=t.object_id,
+                         was=v.why, cells=len(body), ref=ref)  # fmt: skip
+                self._cells[t.object_id] = body
+                return moved
+        return v
+
+    def _note_placed(self, t: TrackedObject) -> None:
+        """Record where TARGET ``t`` rests on a settled destination (``_placed_box``), if it does.
+
+        At its release over one, and at every confirmation of a target lying on one: an orange
+        that dropped or rolled onto the plate, re-found there, is as placed as one let go over it
+        (A/B ab1b_po seed 8: with release-only records the plate and the orange on it each split
+        on the other, and the plate was re-minted five times). A foreign object never gets here
+        without first being confirmed under a target's identity.
+        """
+        for d in self.store.all():
+            if d.role is ObjectRole.DESTINATION and d.status in _SETTLED:
+                placed = _placed_box(t.box, d.box)
+                if placed is not None:
+                    if t.object_id not in self._placed:
+                        log.info("object_tracker.placed", object_id=t.object_id,
+                                 destination=d.object_id)  # fmt: skip
+                    self._placed[t.object_id] = placed
+                    return
+
+    def _note_release(self, t: TrackedObject, stamp_ns: int) -> None:
+        """Record a let-go track; it is retired with its release window.
+
+        No fit, no confirmation (the session's ``_expire_released`` retires it). A TARGET keeps
+        its identity for ``_RECENT_S``: its video mask can re-find it where it fell
+        (``_vision_refind``); once per release.
+        """
+        if t.role is ObjectRole.TARGET and t.object_id not in self._let_go:
+            ref = max(
+                self._map_cells.get(t.object_id, 0),
+                self._map_cells_max.get(t.object_id, 0),
+                t.visible_cells,  # a grasp before any plain map pass has only the fit's
+            )
+            self._let_go[t.object_id] = (t, ref, stamp_ns) if ref > 0 else None
+            self._note_placed(t)
+        self._cells.pop(t.object_id, None)
+        self._map_cells.pop(t.object_id, None)
+
+    # -- role and size plausibility (one place for the mint, refit and vision gates) ---------
+
+    @staticmethod
+    def _older(o: TrackedObject, than: str | None) -> bool:
+        """Whether track ``o`` was minted before ``than`` (``None``: a mint, every track is).
+
+        Two comparable boxes, one TARGET and one DESTINATION, cannot say which is the impostor;
+        the first identity, confirmed on a clear view, wins (yfb2 ep1/ep3: a bowl-sized "banana"
+        and the real bowl each blocked the other).
+        """
+        if than is None:
+            return True
+        try:
+            return int(o.object_id.split(":")[1]) < int(than.split(":")[1])
+        except (IndexError, ValueError):
+            return True
+
+    def _inside_target(self, box: PlaceRegion | None, than: str | None = None) -> str | None:
+        """The live, older TARGET a DESTINATION box would really be, or ``None``.
+
+        Either the target's own size (covers it) or a fit much smaller than the target lying
+        mostly on it: a partial mask on it (yf2 ep3: a 4 x 2 cm "plate" on an orange). A
+        destination is never inside a target.
+        """
+        if box is None:
+            return None
+        a = _aabb(box)
+        foot = (a[3] - a[0]) * (a[4] - a[1])
+        for o in self.store.all():
+            if o.role is not ObjectRole.TARGET or o.status not in _SETTLED:
+                continue
+            if not self._older(o, than):
+                continue
+            if covers_destination(box, o.box):
+                return o.object_id
+            d = _aabb(o.box)
+            ix = max(0.0, min(a[3], d[3]) - max(a[0], d[0]))
+            iy = max(0.0, min(a[4], d[4]) - max(a[1], d[1]))
+            target_foot = (d[3] - d[0]) * (d[4] - d[1])
+            if foot > 0 and ix * iy >= 0.6 * foot and foot <= 0.5 * target_foot:
+                return o.object_id
+        return None
+
+    def _smaller_copy(self, label: str, box: PlaceRegion | None) -> str | None:
+        """A live DESTINATION of ``label`` that a new destination fit is a much smaller copy of.
+
+        A scene's destination is already tracked; a partial mask of something else under its
+        label (yf3 ep4: a 5 x 21 cm "plate" strip beside the real plate) minted a second one.
+        Under half the live one's footprint is refused; a destination re-minted after its track
+        was lost (a pushed bowl) is not.
+        """
+        if box is None:
+            return None
+        a = _aabb(box)
+        foot = (a[3] - a[0]) * (a[4] - a[1])
+        for o in self.store.all():
+            if (
+                o.role is ObjectRole.DESTINATION
+                and o.label == label
+                and o.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED)
+            ):
+                d = _aabb(o.box)
+                if foot < 0.5 * (d[3] - d[0]) * (d[4] - d[1]):
+                    return o.object_id
+        return None
+
+    def _covered_destination(
+        self, box: PlaceRegion | None, stamp_ns: int, than: str | None = None
+    ) -> str | None:
+        """The older DESTINATION (live, or lost within ``_RECENT_S``) a TARGET box would be."""
+        if box is None:
+            return None
+        for o in self.store.all():
+            if o.role is not ObjectRole.DESTINATION or o.status is TrackStatus.RELEASED:
+                continue
+            if not self._older(o, than):
+                continue
+            if o.status is TrackStatus.LOST and (
+                stamp_ns - o.last_confirmed_stamp_ns > int(_RECENT_S * _NS)
+            ):
+                continue
+            if covers_destination(box, o.box):
+                return o.object_id
+        return None
+
+    def _role_conflict(
+        self,
+        role: ObjectRole,
+        label: str,
+        box: PlaceRegion | None,
+        stamp_ns: int,
+        *,
+        than: str | None = None,
+        mint: bool = False,
+    ) -> str | None:
+        """The track a ``role`` box would be an impostor of, or ``None``.
+
+        The one role rule behind every mint, refit and vision box: a TARGET never takes a
+        destination's box, a DESTINATION never takes a target's, and a new destination is never
+        a much smaller copy of a live one (``mint`` only). Only tracks older than ``than`` count:
+        the first identity wins.
+        """
+        if role is ObjectRole.TARGET:
+            return self._covered_destination(box, stamp_ns, than)
+        if role is ObjectRole.DESTINATION:
+            hit = self._inside_target(box, than)
+            return hit or (self._smaller_copy(label, box) if mint else None)
+        return None
+
+    def _implausible_box(self, label: str, box: PlaceRegion, object_id: str | None = None) -> bool:
+        """Whether ``box`` is wider than ``_PLAUSIBLE_EXTENT`` x the clear extent of its label."""
+        prior = self._extent_prior(object_id, label)
+        extent = 2.0 * max(box.half_extents[0], box.half_extents[1])
+        return prior is not None and extent > _PLAUSIBLE_EXTENT * prior[0]
+
+    # -- vision + voxel fusion ---------------------------------------------------------------
+
+    def apply_instance_cells(
+        self,
+        cells_by_id: dict[str, frozenset[Cell]],
+        grid: VoxelLattice,
+        stamp_ns: int,
+        hands: Sequence[PlaceRegion],
+    ) -> int:
+        """Fit each track's box to the voxels its video mask labels; return how many moved.
+
+        EXPERIMENT (exp/vision-voxel-fusion; Safety-WG review owed). ``cells_by_id`` comes from
+        the instance mask propagator: per track, the occupied cells its SAM2 video mask (robot
+        pixels removed) lifted into through depth, each kept while the cell stays occupied.
+        Vision says which object a cell is; the map says where. A confirmed, occluded or lost
+        TARGET / DESTINATION gets the box ``_vision_fit`` accepts and is re-confirmed; one whose
+        cells have not moved is only re-dated. A released target is re-minted
+        (``_vision_refind``).
+        """
+        res = grid.resolution
+        moved = 0
+        for oid, cells in cells_by_id.items():
+            t = self.store.get(oid)
+            if t is None or t.status is TrackStatus.RELEASED:
+                moved += self._vision_refind(oid, cells, grid, stamp_ns, hands)
+                continue
+            if t.role not in _CONTACT_ROLES or t.status not in (
+                TrackStatus.CONFIRMED,
+                TrackStatus.OCCLUDED,
+                TrackStatus.LOST,
+            ):
+                continue
+            ref = max(self._map_cells.get(oid, 0), self._map_cells_max.get(oid, 0), t.visible_cells)
+            fit = self._vision_fit(oid, t, cells, ref, grid, stamp_ns, hands, than=oid)
+            if isinstance(fit, str):
+                if not fit.startswith("few_cells"):
+                    log.info("object_tracker.vision_box_no", object_id=oid, why=fit)
+                continue
+            box, live, v, centroid = fit
+            shift_from_box = float(np.hypot(*(centroid - np.asarray(t.box.pose.xyz[:2]))))
+            if t.status is TrackStatus.CONFIRMED and shift_from_box <= _VISION_UNMOVED_CELLS * res:
+                self._cells[oid] = live  # unmoved: keep the fit's box, re-date it on vision
+                self.store.replace(t.model_copy(update={"last_confirmed_stamp_ns": stamp_ns}))
+                continue
+            shift = float(np.hypot(*(np.asarray(box.pose.xyz[:2]) - t.box.pose.xyz[:2])))
+            if shift > res or t.status is not TrackStatus.CONFIRMED:
+                log.info(
+                    "object_tracker.vision_box", object_id=oid, cells=len(live), ref=ref,
+                    status=t.status.value, shift_m=round(shift, 3),
+                    was_xyz=[round(c, 3) for c in t.box.pose.xyz],
+                    xyz=[round(c, 3) for c in box.pose.xyz],
+                )  # fmt: skip
+                moved += 1
+            self._cells[oid] = live
+            self._disagree.pop(oid, None)
+            self._disagree_ns.pop(oid, None)
+            bottom = box.pose.xyz[2] - box.half_extents[2]
+            self.store.replace(
+                t.model_copy(
+                    update={
+                        "box": box,
+                        "status": TrackStatus.CONFIRMED,
+                        "last_confirmed_stamp_ns": stamp_ns,
+                        "support_z": min(t.support_z, float(bottom)),
+                        "occupied_cells": v.occupied or len(live),
+                        "visible_cells": v.visible or len(live),
+                    }
+                )
+            )
+        return moved
+
+    def _vision_refind(
+        self,
+        oid: str,
+        cells: frozenset[Cell],
+        grid: VoxelLattice,
+        stamp_ns: int,
+        hands: Sequence[PlaceRegion],
+    ) -> int:
+        """Mint a released target again on the cells its video mask still follows; 1 if minted.
+
+        The mask keeps an object's identity through a slip or a drop, where the map alone
+        cannot (yw1 / yv1 ep0: an orange slipped from the jaw and stayed within 3 cm, so its
+        cells were not new occupancy; the track retired and the jaw's next touch stopped).
+        Within ``_RECENT_S`` of the release, once (``_let_go``), through ``_vision_fit``.
+        """
+        entry = self._let_go.get(oid)
+        if entry is None:
+            return 0
+        track, ref, since = entry
+        if stamp_ns - since > int(_RECENT_S * _NS):
+            self._let_go[oid] = None
+            return 0
+        fit = self._vision_fit(oid, track, cells, ref, grid, stamp_ns, hands, refind=True)
+        if isinstance(fit, str):
+            log.info("object_tracker.vision_refind_no", object_id=oid, why=fit)
+            return 0
+        box, live, v, _ = fit
+        fields = {
+            k: getattr(track, k)
+            for k in type(track).model_fields
+            if k not in ("object_id", "epoch", "status")
+        }
+        fields.update(
+            box=box,
+            support_z=float(box.pose.xyz[2] - box.half_extents[2]),
+            last_confirmed_stamp_ns=stamp_ns,
+            last_fit_stamp_ns=stamp_ns,
+            visible_cells=v.visible or len(live),
+            occupied_cells=v.occupied or len(live),
+        )
+        new = self.store.mint(**fields)
+        self.store.replace(new.model_copy(update={"status": TrackStatus.CONFIRMED}))
+        self._cells[new.object_id] = live
+        self._map_cells[new.object_id] = len(live)
+        self._let_go[oid] = None
+        log.info(
+            "object_tracker.vision_refound", object_id=new.object_id, was=oid, cells=len(live),
+            ref=ref, was_xyz=[round(c, 3) for c in track.box.pose.xyz],
+            xyz=[round(c, 3) for c in box.pose.xyz],
+        )  # fmt: skip
+        return 1
+
+    def _vision_fit(
+        self,
+        oid: str,
+        track: TrackedObject,
+        cells: frozenset[Cell],
+        ref: int,
+        grid: VoxelLattice,
+        stamp_ns: int,
+        hands: Sequence[PlaceRegion],
+        *,
+        than: str | None = None,
+        refind: bool = False,
+    ) -> tuple[PlaceRegion, frozenset[Cell], CoverVerdict, NDArray[np.float64]] | str:
+        """The box ``track``'s labelled ``cells`` give it, or why not (a short reason).
+
+        In order: the cells still occupied and above the support layer (mask edges bleed onto
+        it); at least ``_vision_need(ref)``; their box, stood on the support when they sit near
+        it and widened to the object's clear size toward the hand hiding the rest; no wider than
+        ``_VISION_MAX_EXTENT`` x its clear extent; mostly in no other plausible track of the same
+        role; no role conflict (judged on the cells' own extent: a banana's cells in the bowl
+        stand 60 % of its height, the box grown to the table stood the bowl's full height,
+        ywb1 ep5); and the cover verdict. Returns the box, the cells, the verdict and the cells'
+        x/y centroid.
+        """
+        sx, sy, sz = grid.size
+        occ, res, z0 = grid.occupancy, grid.resolution, grid.origin[2]
+        occupied = [
+            c
+            for c in cells
+            if 0 <= c[0] < sx
+            and 0 <= c[1] < sy
+            and 0 <= c[2] < sz
+            and occ[c[0] + sx * (c[1] + sy * c[2])]
+        ]
+        support = track.support_z
+        if refind and occupied:
+            # A released track keeps its in-hand box and support (7.5 cm up: A/B ab1b_po seeds
+            # 2/3, every re-find of a slipped orange kept 0 of its 7-33 labelled cells). It
+            # rests on whatever is under its lowest labelled layer now.
+            support = z0 + min(c[2] for c in occupied) * res
+        live = frozenset(c for c in occupied if z0 + (c[2] + 0.5) * res > support + 0.5 * res)
+        if len(live) < _vision_need(ref):
+            return f"few_cells {len(live)}<{_vision_need(ref)} labelled={len(cells)} ref={ref}"
+        ijk = np.asarray(sorted(live), dtype=np.float64)
+        centres = np.asarray(grid.origin) + ((ijk + 0.5) * res) @ grid.rotation().T
+        lo = centres.min(axis=0) - 0.5 * res
+        hi = centres.max(axis=0) + 0.5 * res
+        cells_box = _box_between(track.box, lo.copy(), hi.copy())
+        if lo[2] - support < 2.0 * max(track.box.half_extents[2], res):
+            lo[2] = min(lo[2], support)  # masks see the top: it stands on its support
+        _grow_to_size(lo, hi, self._clear_size.get(oid), hands)
+        prior = self._extent_prior(oid, track.label)
+        limit = (
+            _VISION_MAX_EXTENT * prior[0]
+            if prior
+            else 3.0 * max(track.box.half_extents[0], track.box.half_extents[1])
+        )
+        extent = float(max(hi[0] - lo[0], hi[1] - lo[1]))
+        if extent > limit + res:
+            return f"oversize {extent:.3f}>{limit:.3f}"
+        same = [
+            o.box
+            for o in self.store.all()
+            if o.object_id != oid
+            and o.status in _SETTLED
+            and o.role is track.role
+            and not self._implausible_box(o.label, o.box, o.object_id)
+        ]
+        if same:
+            inside = np.any([_inside(centres, b) for b in same], axis=0)
+            if int(np.count_nonzero(inside)) * 2 > len(live):
+                return "other_track"
+        if self._role_conflict(track.role, track.label, cells_box, stamp_ns, than=than):
+            return "role_conflict"
+        box = _box_between(track.box, lo, hi)
+        others = [o.box for o in self.store.all() if o.object_id != oid and o.status in _SETTLED]
+        v = cover_verdict(
+            grid,
+            live,
+            box,
+            support_z=float(lo[2]) if refind else track.support_z,
+            own=hands,
+            others=others,
+            static=self._static_keys(grid),
+        )
+        if v.kind == "map_disagrees":
+            return f"verdict {v.why}"
+        return box, live, v, centres[:, :2].mean(axis=0)
 
     def _refresh_evidence(self, object_id: str, cells: frozenset[Cell]) -> None:
         """An ignored refit still measured where the object's surface is now: confirm on it.
@@ -1859,11 +2484,12 @@ class ObjectTracker:
             self._static_cache = (key, keys)
         return self._static_cache[1]
 
-    def _provisional_oversize(self, object_id: str, label: str, fit: ContainingFit) -> bool:
-        """Refuse (``True``) a PROVISIONAL refit several times the object's known clear size.
+    def _provisional_oversize(self, object_id: str | None, label: str, fit: ContainingFit) -> bool:
+        """Refuse (``True``) a PROVISIONAL fit several times the object's known clear size.
 
-        A refit through the robot that is far past what a clear fit of this object or label ever
-        showed swallowed something else: the previous box stays (an exemption only shrinks).
+        A fit through the robot that is far past what a clear fit of this object or label ever
+        showed swallowed something else: a refit keeps the previous box (an exemption only
+        shrinks), a mint (``object_id`` ``None``) mints nothing.
         """
         if not fit.provisional or fit.box is None:
             return False
@@ -1877,11 +2503,27 @@ class ObjectTracker:
                  limit_m=round(factor * prior[0], 3), source=prior[1])  # fmt: skip
         return True
 
+    def oversize_provisional(self, track: TrackedObject) -> bool:
+        """A PROVISIONAL track whose box is past the oversize factor of its clear prior.
+
+        The size rule ``_provisional_oversize`` holds a fit to, applied to the track as it
+        stands (moved refits are exempt from it and grow the box), for the bind to drop it.
+        """
+        if not track.provisional:
+            return False
+        prior = self._extent_prior(track.object_id, track.label)
+        extent = 2.0 * max(track.box.half_extents[0], track.box.half_extents[1])
+        factor = self.params.provisional_oversize_factor
+        return prior is not None and provisional_oversize(extent, prior[0], factor)
+
     def _extent_prior(self, object_id: str | None, label: str) -> tuple[float, str] | None:
         """The longest horizontal extent a CLEAR fit of this object or label has shown, or ``None``.
 
-        Only clear (non-provisional) evidence: the track's own clear history, else the clear
-        CONFIRMED same-label tracks. Never a per-label constant; ``None`` blocks nothing.
+        Only clear (non-provisional) evidence: the track's own clear history, else the median
+        over the clear CONFIRMED same-label tracks, else the median over every (since retired)
+        track of the label. The median, not the largest: one bad clear fit (two touching oranges
+        fitted as one 19-32 cm "orange", yw1 ep8) would otherwise loosen every same-label size
+        gate for the rest of the session. Never a per-label constant; ``None`` blocks nothing.
         """
         if object_id is not None and object_id in self._clear_extent:
             return self._clear_extent[object_id], "own_clear_fit"
@@ -1896,7 +2538,11 @@ class ObjectTracker:
             and o.status is TrackStatus.CONFIRMED
             and not o.provisional
         ]
-        return (max(extents), "same_label_tracks") if extents else None
+        if extents:
+            return median(extents), "same_label_tracks"
+        if hist := self._label_clear_extent.get(label):
+            return median(hist.values()), "label_history"
+        return None
 
     def _measured_size(self, object_id: str | None, label: str) -> tuple[float, str] | None:
         """How big a provisional track's object is, and where that came from, or ``None``.
@@ -2155,11 +2801,18 @@ class ObjectTracker:
     def _searching(self, q: StandingQuery) -> bool:
         """Whether ``q`` still competes at query priority.
 
-        Unresolved, or a ``count: "all"`` query inside its first ``search_start_s`` of
-        source time: one instance resolves it, but the others are still to be grounded,
-        and at refresh priority an unresolved neighbour query (a plate) would starve it.
+        Unresolved, holding an unspent release prior, or a ``count: "all"`` query inside its
+        first ``search_start_s`` of source time: one instance resolves it, but the others are
+        still to be grounded, and at refresh priority an unresolved neighbour query (a plate)
+        would starve it.
         """
         if q.status is not ObjectQueryStatus.RESOLVED:
+            return True
+        if q.prior is not None:
+            # A released match not found afresh yet: another match (a stale provisional
+            # duplicate) keeps the query RESOLVED, and at refresh priority the hand's own
+            # refresh (the bowl it just placed over, served first) starved it (pro#51 replay,
+            # 2026-11-05: the dropped banana was never re-fitted; the regrasp stopped on it).
             return True
         window = int(self.params.search_start_s * _NS)
         return q.query.count == "all" and self._now_ns - q.since_ns < window
