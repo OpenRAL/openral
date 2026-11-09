@@ -203,3 +203,4 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 *Curated by hand since 2026-05-08. Regenerate the inventory files with `tools/refresh_methods_linenos.py`; this file is prose and is edited directly.*
 - **`openral_world_state_ros.object_tracker_node.image_array` vs `openral_hal.depth_cloud.depth_grid_from_image`** (and `intrinsics_from_info` vs `openral_hal.depth_cloud.intrinsics_from_camera_info`) — the same `32FC1`/`16UC1` decode and `CameraInfo` → `IntrinsicsPinhole`, kept local because the Layer-2 tracker must not import the Layer-0 HAL. Promote both to `openral_core` when a third caller appears.
+- **`openral_world_state.object_tracker.binding._hull_2d` vs `openral_nav2_bringup._footprint_geometry.convex_hull_2d`** — the same monotone-chain 2-D hull; the Layer-2 tracker must not import a nav2 bringup package. Promote to `openral_core` when a third caller appears.
