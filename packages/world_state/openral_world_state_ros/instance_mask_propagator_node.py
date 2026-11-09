@@ -393,9 +393,8 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         return [x0, y0, x1, y1] if x1 - x0 >= 3 and y1 - y0 >= 3 else None
 
     def step() -> bool:  # noqa: PLR0911, PLR0912, PLR0915
-        vproc, vmodel = sam["vp"], sam["v"]
         with lock:
-            if not node.active:
+            if not node.active:  # configure (SAM loading) has not finished, or deactivated
                 return False
             if st.pop("reset", False):
                 depth_kept, robot_kept = st["depth"], st["robot"]
@@ -416,6 +415,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
             tf_buf = node.tf_buf
         if abs(td - t) > 150_000_000 or tf_buf is None:
             return False
+        vproc, vmodel = sam["vp"], sam["v"]  # loaded: the node is active
         img = image_array(m)
         if robot is None or robot.shape != depth.shape:
             robot = np.zeros(depth.shape, bool)
