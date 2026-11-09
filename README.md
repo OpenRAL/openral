@@ -394,7 +394,8 @@ See [CLAUDE.md §3](CLAUDE.md) for the full model-by-model license matrix and ad
 The reasoner is the slow half of the dual-system architecture: an event-driven LLM supervisor (0.2 Hz heartbeat, preempted by failures and operator prompts) that reads a structured situation report (world state, recent failures, perception events, pending prompts) and emits **exactly one typed `ReasonerToolCall` per tick**. It has no actuation authority: every motion still crosses the S1 skill runner and the C++ safety kernel.
 
 - **Model-first** — `OPENRAL_REASONER_MODEL` picks a tested robotics
-  tool-calling model (`claude-opus-4-8`, `gpt-5.5`, `gpt-5.6`, `cosmos3-edge`).
+  tool-calling model (`claude-opus-4-8`, `claude-opus-5-5`, `claude-sonnet-5-5`,
+  `claude-haiku-5-5`, `gpt-5.5`, `gpt-5.6`, `cosmos3-edge`).
   Endpoint and auth come from the curated registry and stay overrideable; an
   uncurated model needs an explicit endpoint + dialect and logs a warning. No
   cloud lock-in, no hidden library default.

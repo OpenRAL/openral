@@ -44,7 +44,7 @@ block at all) and `build_hal` raises `ROSCapabilityMismatch` under
 The S2 reasoner has **no hidden default model** by design. Set a curated one:
 
 ```bash
-export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or gpt-5.5 / gpt-5.6 / cosmos3-edge
+export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or claude-opus-5-5 / claude-sonnet-5-5 / claude-haiku-5-5 / gpt-5.5 / gpt-5.6 / cosmos3-edge
 export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs it
 ```
 
