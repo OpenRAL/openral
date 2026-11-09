@@ -80,8 +80,9 @@ jobs:
           echo "TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Build the tagged source, not whatever the dispatch ran from.
-          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+          # The exact source the tag names: this commit for robot-ui-<sha7> (a ref could
+          # have moved on since the push), else the release's tag.
+          ref: ${{ (github.event_name == 'push' || inputs.publish) && github.sha || github.event.release.tag_name || inputs.tag || github.ref }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 22
@@ -169,6 +170,10 @@ jobs:
   pin:
     needs: [build, publish]
     if: github.event_name == 'push' || inputs.publish
+    # One at a time, newest last: an older build never overwrites a newer pin.
+    concurrency:
+      group: robot-ui-pin
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -199,27 +204,38 @@ jobs:
           gh auth setup-git  # git pushes with GH_TOKEN (the clone below has no credentials)
           gh repo clone OpenRAL/website website -- --branch dev --depth 1
           cd website
-          git switch -c "bot/${TAG}"
           printf '{ "version": "%s", "url": "%s", "sha256": "%s" }\n' "$TAG" "$URL" "$SHA" > robot-ui.lock.json
-          git commit -qam "chore(dashboard): pin the robot UI ${TAG}"
-          git push -q origin "bot/${TAG}"
-          pr=$(gh pr create --base dev --head "bot/${TAG}" \
-            --title "chore(dashboard): pin the robot UI ${TAG}" \
-            --body "The robot UI built from OpenRAL/openral@${GITHUB_SHA}, opened by robot-ui.yml.")
-          gh pr merge "$pr" --merge --delete-branch || gh pr merge "$pr" --merge --auto \
-            || echo "::warning::merge ${pr} by hand"
+          if git diff --quiet; then
+            echo "::notice::website dev already pins ${TAG}"
+          else
+            # Safe to re-run: the bot owns bot/<tag>, and an open PR for it is reused.
+            git switch -c "bot/${TAG}"
+            git commit -qam "chore(dashboard): pin the robot UI ${TAG}"
+            git push -q --force origin "bot/${TAG}"
+            pr=$(gh pr list --head "bot/${TAG}" --state open --json url -q '.[0].url')
+            [ -n "$pr" ] || pr=$(gh pr create --base dev --head "bot/${TAG}" \
+              --title "chore(dashboard): pin the robot UI ${TAG}" \
+              --body "The robot UI built from OpenRAL/openral@${GITHUB_SHA}, opened by robot-ui.yml.")
+            gh pr merge "$pr" --merge --delete-branch || gh pr merge "$pr" --merge --auto \
+              || echo "::warning::merge ${pr} by hand"
+          fi
       - name: openral master
         if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          git switch -c "bot/${TAG}"
           # The pin tool as of the commit that built the UI (master may not have it yet).
           git fetch -q --depth 1 origin "$GITHUB_SHA"
           git show "${GITHUB_SHA}:tools/pin_robot_ui.py" > "$RUNNER_TEMP/pin_robot_ui.py"
           python3 "$RUNNER_TEMP/pin_robot_ui.py" "$TAG" "$URL" "$SHA" "$SIZE"
+          if git diff --quiet; then
+            echo "::notice::master already pins ${TAG}"
+            exit 0
+          fi
+          git switch -c "bot/${TAG}"
           git commit -qas -m "chore(dashboard): pin the robot UI ${TAG}"
-          git push -q origin "bot/${TAG}"
-          pr=$(gh pr create --base master --head "bot/${TAG}" \
+          git push -q --force origin "bot/${TAG}"
+          pr=$(gh pr list --head "bot/${TAG}" --state open --json url -q '.[0].url')
+          [ -n "$pr" ] || pr=$(gh pr create --base master --head "bot/${TAG}" \
             --title "chore(dashboard): pin the robot UI ${TAG}" \
             --body "The robot UI built from ${GITHUB_SHA}, opened by robot-ui.yml. Review and merge once green.")
           echo "::notice::${pr} pins ${TAG}: review and merge it."
