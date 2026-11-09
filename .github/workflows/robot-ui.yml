@@ -43,6 +43,10 @@ on:
         description: "Release tag to attach the UI to (e.g. v0.5.0). Empty = build only."
         required: false
         default: ""
+      publish:
+        description: "Publish robot-ui-<sha7> and open the pin bumps, as a push to master does."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -65,10 +69,13 @@ jobs:
         working-directory: ${{ github.workspace }}  # before checkout: the UI folder isn't there yet
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           # A push to master publishes robot-ui-<sha7>; a release attaches to its own tag.
           tag="$RELEASE_TAG"
-          if [ "$GITHUB_EVENT_NAME" = push ]; then tag="robot-ui-${GITHUB_SHA::7}"; fi
+          if [ "$GITHUB_EVENT_NAME" = push ] || [ "$PUBLISH" = true ]; then
+            tag="robot-ui-${GITHUB_SHA::7}"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -105,7 +112,7 @@ jobs:
   # Separate job so the write token never shares a runner with npm.
   attach:
     needs: build
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && !inputs.publish)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -127,7 +134,7 @@ jobs:
   # A push to master: publish the build as a pre-release on this commit.
   publish:
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -161,7 +168,7 @@ jobs:
   # Roll it out: one pin-bump PR per repo (see ROBOT_UI_BOT_TOKEN above).
   pin:
     needs: [build, publish]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
