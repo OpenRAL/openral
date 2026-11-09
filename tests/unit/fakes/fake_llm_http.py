@@ -1,4 +1,4 @@
-"""Scripted HTTP stand-in for the Anthropic Messages and OpenAI Chat Completions APIs.
+"""Scripted HTTP stand-in for the Anthropic Messages and OpenAI Chat Completions / Responses APIs.
 
 A network-boundary double (CLAUDE.md §1.11): the real ``anthropic`` / ``openai``
 SDKs and the real ``AnthropicToolUseClient`` / ``OpenAICompatibleToolUseClient``
@@ -26,6 +26,10 @@ __all__ = [
     "openai_error",
     "openai_text",
     "openai_tool_call",
+    "responses_function_call",
+    "responses_incomplete",
+    "responses_refusal",
+    "responses_text",
 ]
 
 Reply = tuple[int, dict[str, Any]]
@@ -128,30 +132,105 @@ def openai_error(message: str, *, status: int = 400, param: str | None = None) -
     }
 
 
+def _response(output: list[dict[str, Any]], **extra: Any) -> Reply:
+    """A 200 Responses-API body around ``output`` items."""
+    body: dict[str, Any] = {
+        "id": "resp_fake",
+        "object": "response",
+        "created_at": 0,
+        "model": "fake",
+        "status": "completed",
+        "error": None,
+        "incomplete_details": None,
+        "output": output,
+        "parallel_tool_calls": False,
+        "tool_choice": "required",
+        "tools": [],
+        "usage": {
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0},
+        },
+    }
+    body.update(extra)
+    return 200, body
+
+
+def _message(content: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "id": "msg_fake",
+        "role": "assistant",
+        "status": "completed",
+        "content": content,
+    }
+
+
+def responses_function_call(name: str, arguments: dict[str, Any]) -> Reply:
+    """A 200 Responses reply carrying one ``function_call`` (after a reasoning item)."""
+    return _response(
+        [
+            {"type": "reasoning", "id": "rs_fake", "summary": []},
+            {
+                "type": "function_call",
+                "id": "fc_fake",
+                "call_id": "call_fake",
+                "name": name,
+                "arguments": json.dumps(arguments),
+                "status": "completed",
+            },
+        ]
+    )
+
+
+def responses_text(text: str) -> Reply:
+    """A 200 Responses reply with prose only (no function call)."""
+    return _response([_message([{"type": "output_text", "text": text, "annotations": []}])])
+
+
+def responses_refusal(text: str) -> Reply:
+    """A 200 Responses reply whose message is a refusal."""
+    return _response([_message([{"type": "refusal", "refusal": text}])])
+
+
+def responses_incomplete(reason: str) -> Reply:
+    """A 200 Responses reply cut off (``max_output_tokens`` / ``content_filter``)."""
+    return _response(
+        [{"type": "reasoning", "id": "rs_fake", "summary": []}],
+        status="incomplete",
+        incomplete_details={"reason": reason},
+    )
+
+
 class FakeLLMServer:
     """Loopback HTTP server replaying scripted LLM replies.
 
     Use as a context manager. ``base_url`` serves both SDKs: Anthropic posts to
-    ``/v1/messages`` from ``base_url``; OpenAI posts to ``/chat/completions``
-    under ``openai_base_url`` (``base_url + "/v1"``).
+    ``/v1/messages`` from ``base_url``; OpenAI posts to ``/chat/completions`` or
+    ``/responses`` under ``openai_base_url`` (``base_url + "/v1"``).
 
     Args:
         replies: ``(status, json_body)`` pairs, consumed one per request.
 
     Attributes:
         requests: Every request body received, in order.
+        paths: The request path of every request, in order.
     """
 
     def __init__(self, replies: list[Reply]) -> None:
         """Bind an ephemeral loopback port; serving starts on ``__enter__``."""
         self._replies: deque[Reply] = deque(replies)
         self.requests: list[dict[str, Any]] = []
+        self.paths: list[str] = []
         server = self
 
         class _Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
                 length = int(self.headers.get("content-length", "0"))
                 server.requests.append(json.loads(self.rfile.read(length) or b"{}"))
+                server.paths.append(self.path)
                 if server._replies:
                     status, body = server._replies.popleft()
                 else:

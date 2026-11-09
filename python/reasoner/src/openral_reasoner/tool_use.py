@@ -80,6 +80,7 @@ __all__ = [
     "XAI_BASE_URL",
     "AnthropicToolUseClient",
     "OpenAICompatibleToolUseClient",
+    "OpenAIResponsesToolUseClient",
     "ToolUseClient",
     "build_tool_use_client_from_env",
     "render_robot_context_prompt",
@@ -772,6 +773,34 @@ def _openai_choices(response: object) -> list[Any]:
 
 
 # reason: Any — provider SDK boundary (openai Choice / tool-call objects).
+def _decode_function_call(
+    name: str, raw_arguments: str | None, palette: ToolPalette
+) -> ReasonerToolCall:
+    """Decode an OpenAI function call (Chat Completions or Responses) into a tool call.
+
+    A weak / cheap model can emit ``arguments`` that aren't a single clean JSON
+    object (trailing tokens, two concatenated objects, a bare list). Surface it
+    as ``ROSReasonerInvalidPlan`` — core.tick catches ``ROSPlanningError`` and
+    the reasoner_node feeds the hint back into the next prompt's
+    ``## EXECUTION`` section — instead of letting a raw ``JSONDecodeError`` (or
+    a downstream ``dict()`` ``TypeError``) crash the node.
+    """
+    raw = raw_arguments or "{}"
+    try:
+        arguments = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ROSReasonerInvalidPlan(
+            f"tool {name!r} returned malformed JSON arguments "
+            f"({exc!s}); emit a single valid JSON object: {raw!r}",
+        ) from exc
+    if not isinstance(arguments, dict):
+        raise ROSReasonerInvalidPlan(
+            f"tool {name!r} returned JSON arguments of type "
+            f"{type(arguments).__name__}; emit a single JSON object: {raw!r}",
+        )
+    return _decode_tool_payload(tool_name=name, arguments=arguments, palette=palette)
+
+
 def _openai_tool_calls(choices: list[Any]) -> list[Any]:
     """The first choice's tool calls (empty when it answered in prose)."""
     if not choices:
@@ -1033,7 +1062,7 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
             f"{REASONER_API_KEY_ENV} is unset; required for model {entry.id!r} "
             f"on endpoint {base_url}."
         )
-    return OpenAICompatibleToolUseClient(
+    return _openai_client_cls(preset, base_url)(
         # `openai/gpt-5.5` on OpenRouter is `gpt-5.5` on OpenAI's own API.
         model_id=(
             preset.served_model_id(entry.served_model_id)
@@ -1045,7 +1074,6 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
         timeout_s=timeout_s,
         tool_choice=preset.tool_choice if preset is not None else entry.tool_choice,
         max_tokens=max_tokens,
-        max_tokens_param=preset.max_tokens_param if preset is not None else "max_tokens",
     )
 
 
@@ -1160,15 +1188,37 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
         )
     if preset is not None and tool_choice is not None:
         _warn_tool_choice_ignored(tool_choice, f"named endpoint {raw_endpoint!r}")
-    return OpenAICompatibleToolUseClient(
+    return _openai_client_cls(preset, endpoint)(
         model_id=model_key,
         api_key=api_key,
         base_url=endpoint,
         timeout_s=timeout_s,
         tool_choice=(preset.tool_choice if preset is not None else (tool_choice or "required")),
         max_tokens=max_tokens,
-        max_tokens_param=preset.max_tokens_param if preset is not None else "max_tokens",
     )
+
+
+def _openai_client_cls(
+    preset: ReasonerEndpointPreset | None, base_url: str | None
+) -> type[OpenAICompatibleToolUseClient]:
+    """The openai-dialect client class for an endpoint: Responses or Chat Completions.
+
+    OpenAI's own API (the ``openai`` preset, or its URL spelled out) takes
+    function tools from its reasoning models only on the Responses API; every
+    other OpenAI-compatible server speaks Chat Completions.
+
+    Example:
+        >>> _openai_client_cls(None, "https://api.openai.com/v1/").__name__
+        'OpenAIResponsesToolUseClient'
+        >>> _openai_client_cls(REASONER_ENDPOINT_PRESETS["openrouter"], None).__name__
+        'OpenAICompatibleToolUseClient'
+    """
+    responses = (
+        preset.wire_api == "responses"
+        if preset is not None
+        else (base_url or "").rstrip("/") == OPENAI_BASE_URL
+    )
+    return OpenAIResponsesToolUseClient if responses else OpenAICompatibleToolUseClient
 
 
 # ── Concrete provider clients ─────────────────────────────────────────────────
@@ -2169,30 +2219,7 @@ class OpenAICompatibleToolUseClient:
                 "OpenAI-compatible response did not contain a tool_calls block",
             )
         call = choices[0].message.tool_calls[0]
-        raw_arguments = call.function.arguments or "{}"
-        # A weak / cheap model can emit tool-call ``arguments`` that aren't a
-        # single clean JSON object (trailing tokens, two concatenated objects,
-        # a bare list). Surface it as ROSReasonerInvalidPlan — core.tick catches
-        # ROSPlanningError and the reasoner_node feeds the hint back into the
-        # next prompt's ``## EXECUTION`` section — instead of letting a raw
-        # JSONDecodeError (or a downstream dict() TypeError) crash the node.
-        try:
-            arguments = json.loads(raw_arguments)
-        except json.JSONDecodeError as exc:
-            raise ROSReasonerInvalidPlan(
-                f"tool {call.function.name!r} returned malformed JSON arguments "
-                f"({exc!s}); emit a single valid JSON object: {raw_arguments!r}",
-            ) from exc
-        if not isinstance(arguments, dict):
-            raise ROSReasonerInvalidPlan(
-                f"tool {call.function.name!r} returned JSON arguments of type "
-                f"{type(arguments).__name__}; emit a single JSON object: {raw_arguments!r}",
-            )
-        return _decode_tool_payload(
-            tool_name=call.function.name,
-            arguments=arguments,
-            palette=palette,
-        )
+        return _decode_function_call(call.function.name, call.function.arguments, palette)
 
     def _complete(
         self,
@@ -2300,3 +2327,192 @@ class OpenAICompatibleToolUseClient:
         if not text:
             text = getattr(message, "reasoning", "") or ""
         return text.strip()
+
+
+def _tool_palette_to_responses_tools(palette: ToolPalette) -> list[dict[str, object]]:
+    """The palette as Responses-API function tools (flat, not nested under ``function``).
+
+    ``strict`` is off: strict mode needs every property required and
+    ``additionalProperties: false``, which the optional fields of the reasoner
+    tools do not meet; arguments are validated by ``_decode_tool_payload``.
+    """
+    tools: list[dict[str, object]] = []
+    for spec in _tool_palette_to_openai_tools(palette):
+        fn = cast("dict[str, object]", spec["function"])
+        tools.append({"type": "function", **fn, "strict": False})
+    return tools
+
+
+class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient):
+    """``ToolUseClient`` over OpenAI's Responses API (``/v1/responses``).
+
+    OpenAI's reasoning models (``gpt-5.6-*``, ``gpt-6*``) refuse function tools
+    on Chat Completions while reasoning is on ("Function tools with
+    reasoning_effort are not supported ... use /v1/responses"), and some
+    (``gpt-6-astra``, ``gpt-6.1-sol``) cannot turn reasoning off, so the
+    ``openai`` endpoint speaks this API instead. Reasoning stays at the model's
+    default. Requests set ``store=False``: OpenAI keeps no copy of the tick.
+
+    The tick contract matches ``OpenAICompatibleToolUseClient``: one forced
+    tool call (``tool_choice="required"``), a runtime downgrade to ``"auto"``
+    on a forced-tool-use refusal, one nudge then ``ROSReasonerInvalidPlan`` for
+    a prose reply under ``"auto"``, and ``ROSPlanningError`` for a refusal or a
+    reply cut off at ``max_output_tokens``. ``max_tokens`` is sent as
+    ``max_output_tokens``.
+
+    Example:
+        >>> c = OpenAIResponsesToolUseClient(model_id="gpt-6-sol", api_key="sk-test")
+        >>> c.model_id
+        'gpt-6-sol'
+    """
+
+    def _tools(self, palette: ToolPalette) -> list[dict[str, object]]:
+        """Responses-API tool schemas for ``palette``, rendered once per palette object."""
+        rendered = self._rendered
+        if rendered is None or rendered[0] is not palette:
+            rendered = (palette, _tool_palette_to_responses_tools(palette))
+            self._rendered = rendered
+        return rendered[1]
+
+    def _respond(
+        self,
+        client: Any,  # noqa: ANN401  # reason: provider SDK boundary — openai.OpenAI
+        instructions: str,
+        inputs: list[dict[str, str]],
+        tools: list[dict[str, object]],
+    ) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — openai Response
+        """One ``responses.create``, retried once as ``"auto"`` on a forced-tool-use refusal."""
+        cap: dict[str, int] = (
+            {} if self._max_tokens is None else {"max_output_tokens": self._max_tokens}
+        )
+
+        def create(tool_choice: str) -> Any:  # noqa: ANN401  # reason: provider SDK boundary
+            return client.responses.create(
+                model=self.model_id,
+                instructions=instructions,
+                input=inputs,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=False,
+                store=False,
+                **cap,
+            )
+
+        try:
+            return create(self._tool_choice)
+        except Exception as exc:  # reason: provider SDK boundary; re-raised unless tool_choice
+            if self._tool_choice != "required" or not _rejects_forced_tool_choice(exc):
+                raise
+            response = create("auto")
+            _log_tool_choice_downgrade(self.model_id, exc)
+            self._tool_choice = "auto"
+            return response
+
+    def select_tool(
+        self,
+        *,
+        context_text: str,
+        palette: ToolPalette,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    ) -> ReasonerToolCall:
+        """Call the Responses API and decode the function call."""
+        client = self._client()
+        tools = self._tools(palette)
+        inputs: list[dict[str, str]] = [{"role": "user", "content": context_text}]
+        try:
+            response = self._respond(client, system_prompt, inputs, tools)
+            prompt_tokens = _prompt_tokens(response)
+            call = _responses_function_call(response)
+            if call is None and self._tool_choice != "required" and _responses_may_nudge(response):
+                inputs.append({"role": "user", "content": _NO_TOOL_CALL_NUDGE})
+                response = self._respond(client, system_prompt, inputs, tools)
+                prompt_tokens = _sum_prompt_tokens(prompt_tokens, _prompt_tokens(response))
+                call = _responses_function_call(response)
+        except Exception as exc:  # reason: provider SDK boundary
+            raise ROSPlanningError(f"OpenAI Responses call failed: {exc!s}") from exc
+        self.last_prompt_tokens = prompt_tokens
+        if call is not None:
+            return _decode_function_call(call.name, call.arguments, palette)
+        error = getattr(response, "error", None)
+        if error is not None:
+            raise ROSPlanningError(f"OpenAI Responses call failed: {error}")
+        incomplete = getattr(getattr(response, "incomplete_details", None), "reason", None)
+        if incomplete == "max_output_tokens":
+            raise ROSPlanningError(
+                f"OpenAI reply hit the token cap ({self._max_tokens}) before a tool call; "
+                f"raise {REASONER_MAX_TOKENS_ENV}"
+            )
+        refusal = _responses_refusal(response)
+        if refusal is not None or incomplete == "content_filter":
+            raise ROSPlanningError(
+                f"OpenAI model {self.model_id!r} refused the tick ({refusal or incomplete})"
+            )
+        if self._tool_choice != "required":
+            raise _prose_reply_error(_responses_text(response), model_id=self.model_id)
+        raise ROSReasonerInvalidPlan("OpenAI Responses reply did not contain a function call")
+
+    def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
+        """Ask the model a free-text question about a frame, over the Responses API.
+
+        Raises:
+            ROSConfigError: When the ``openai`` SDK is not installed.
+            ROSPlanningError: On transport / provider failure.
+        """
+        client = self._client()
+        b64 = base64.b64encode(image_jpeg).decode()
+        try:
+            response = client.responses.create(
+                model=self.model_id,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": question},
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                        ],
+                    }
+                ],
+                store=False,
+            )
+        except Exception as exc:  # reason: provider SDK boundary
+            raise ROSPlanningError(f"OpenAI Responses describe_image failed: {exc!s}") from exc
+        return _responses_text(response)
+
+
+# reason: Any — provider SDK boundary (openai Response / output items).
+def _responses_function_call(response: Any) -> Any:  # noqa: ANN401
+    """The first ``function_call`` output item, or ``None``."""
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) == "function_call":
+            return item
+    return None
+
+
+def _responses_text(response: Any) -> str:  # noqa: ANN401  # reason: provider SDK boundary
+    """Concatenated ``output_text`` parts of every ``message`` output item, stripped."""
+    parts = [
+        getattr(part, "text", "") or ""
+        for item in getattr(response, "output", None) or []
+        if getattr(item, "type", None) == "message"
+        for part in getattr(item, "content", None) or []
+        if getattr(part, "type", None) == "output_text"
+    ]
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _responses_refusal(response: Any) -> str | None:  # noqa: ANN401  # reason: provider SDK boundary
+    """The model's refusal text, when a ``message`` item carries one."""
+    for item in getattr(response, "output", None) or []:
+        for part in getattr(item, "content", None) or []:
+            if getattr(part, "type", None) == "refusal":
+                return str(getattr(part, "refusal", "") or "refusal")
+    return None
+
+
+def _responses_may_nudge(response: Any) -> bool:  # noqa: ANN401  # reason: provider SDK boundary
+    """Whether a tool-less reply is worth one nudge (complete, not refused, no error)."""
+    return (
+        getattr(response, "error", None) is None
+        and getattr(response, "incomplete_details", None) is None
+        and _responses_refusal(response) is None
+    )

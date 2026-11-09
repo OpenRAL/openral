@@ -244,10 +244,19 @@ handle this without configuration:
   model stuck in prose is told to call a tool rather than stalling the mission.
 - A refusal (`stop_reason: refusal` / `finish_reason: content_filter`) or a
   reply cut off at the token cap is a tick error, not a `wait`.
-- OpenAI's own API refuses `max_tokens` on its reasoning models. The `openai`
-  named endpoint sends `max_completion_tokens` and the bare model id (`gpt-5.5`,
-  not OpenRouter's `openai/gpt-5.5`); any other endpoint that asks for
-  `max_completion_tokens` gets it after one 400 (`reasoner.max_tokens_param_switched`).
+- OpenAI's reasoning models (`gpt-5.6-*`, `gpt-6*`) refuse function tools on
+  Chat Completions while reasoning is on, and some (`gpt-6-astra`,
+  `gpt-6.1-sol`) cannot turn reasoning off. So the `openai` named endpoint (or
+  OpenAI's URL spelled out) uses the **Responses API**
+  (`OpenAIResponsesToolUseClient`): reasoning stays at the model's default,
+  requests set `store: false`, and the bare model id is sent (`gpt-5.5`, not
+  OpenRouter's `openai/gpt-5.5`). Every other OpenAI-compatible endpoint stays on
+  Chat Completions; one that asks for `max_completion_tokens` gets it after one
+  400 (`reasoner.max_tokens_param_switched`).
+- Checked live on 2026-11-09 (idle robot → starts the pick skill; skill
+  running → `wait`): `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`,
+  and on `ENDPOINT=openai` `gpt-5.5`, `gpt-5.6`, `gpt-5.6-luna`/`-sol`/`-terra`,
+  `gpt-6-luna`/`-sol`/`-astra`, `gpt-6.1-sol`/`-terra` — all correct, 1–5 s a tick.
 
 ```bash
 # Curated cloud model
@@ -345,7 +354,8 @@ collective-goal decomposition tests. The default needs
 ```bash
 export OPENRAL_REASONER_MODEL=gpt-5.5  # or gpt-5.6
 export OPENRAL_REASONER_API_KEY=sk-or-...
-# With an OpenAI key instead, point the same model at OpenAI's own API:
+# With an OpenAI key instead, point the same model at OpenAI's own API
+# (Responses API; uncurated ids such as gpt-6-sol work the same way):
 # export OPENRAL_REASONER_ENDPOINT=openai
 # export OPENRAL_REASONER_API_KEY=sk-...
 ```

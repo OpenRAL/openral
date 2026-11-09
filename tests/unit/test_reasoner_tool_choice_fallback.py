@@ -15,10 +15,13 @@ CLAUDE.md §1.11 allows) and check:
 3. Under ``auto`` a prose reply is nudged once, then raised as an invalid plan
    the node feeds back to the model; prompt tokens cover both calls.
 4. A refusal or a reply cut off at the token cap is a ``ROSPlanningError``.
-5. OpenAI's ``max_completion_tokens`` demand is met at runtime, and the
-   ``openai`` named endpoint sends it (and the bare model id) up front.
+5. An OpenAI-compatible endpoint's ``max_completion_tokens`` demand is met at
+   runtime; the ``openai`` named endpoint speaks the Responses API with the
+   bare model id.
 6. ``OPENRAL_REASONER_TOOL_CHOICE`` applies to the anthropic dialect.
 7. The curated skill-tool cap survives the ``openai`` endpoint's bare model id.
+8. The Responses-API client (OpenAI's reasoning models take function tools only
+   there): request shape, decode, downgrade, nudge, refusal and truncation.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from openral_reasoner.tool_use import (
     OPENAI_BASE_URL,
     AnthropicToolUseClient,
     OpenAICompatibleToolUseClient,
+    OpenAIResponsesToolUseClient,
     _skill_id_to_tool_name,
     build_tool_use_client_from_env,
 )
@@ -44,6 +48,10 @@ from tests.unit.fakes.fake_llm_http import (
     openai_error,
     openai_text,
     openai_tool_call,
+    responses_function_call,
+    responses_incomplete,
+    responses_refusal,
+    responses_text,
 )
 
 pytest.importorskip("anthropic")
@@ -299,7 +307,7 @@ def test_openai_max_tokens_400_switches_to_max_completion_tokens() -> None:
     assert [e for e in logs if e["event"] == "reasoner.max_tokens_param_switched"]
 
 
-def test_openai_named_endpoint_sends_bare_id_and_max_completion_tokens(
+def test_openai_named_endpoint_speaks_the_responses_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OPENRAL_REASONER_MAX_TOKENS", raising=False)
@@ -308,11 +316,32 @@ def test_openai_named_endpoint_sends_bare_id_and_max_completion_tokens(
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "openai")
     monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
     client = build_tool_use_client_from_env()
-    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert isinstance(client, OpenAIResponsesToolUseClient)
     assert client.model_id == "gpt-5.5"  # not OpenRouter's "openai/gpt-5.5"
     assert client._base_url == OPENAI_BASE_URL
-    assert client._max_tokens_param == "max_completion_tokens"
     assert client._tool_choice == "required"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "dialect", "expected"),
+    [
+        # OpenAI's own URL spelled out takes the same route as the preset.
+        (OPENAI_BASE_URL + "/", "openai", OpenAIResponsesToolUseClient),
+        ("openrouter", None, OpenAICompatibleToolUseClient),
+        ("http://10.0.0.5:8000/v1", "openai", OpenAICompatibleToolUseClient),
+    ],
+)
+def test_only_openais_own_api_uses_responses(
+    monkeypatch: pytest.MonkeyPatch, endpoint: str, dialect: str | None, expected: type
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-6-sol")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", endpoint)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
+    if dialect is None:
+        monkeypatch.delenv("OPENRAL_REASONER_DIALECT", raising=False)
+    else:
+        monkeypatch.setenv("OPENRAL_REASONER_DIALECT", dialect)
+    assert type(build_tool_use_client_from_env()) is expected
 
 
 def test_openai_named_endpoint_needs_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -362,3 +391,99 @@ def test_skill_cap_lookup_matches_a_vendor_stripped_id() -> None:
     bare = cosmos.served_model_id.split("/", 1)[-1]
     client = OpenAICompatibleToolUseClient(model_id=bare, base_url="http://127.0.0.1:1")
     assert resolve_max_skill_tools(client) == cosmos.max_skill_tools
+
+
+# ── 8. Responses API ─────────────────────────────────────────────────────────
+
+
+def _responses(server: FakeLLMServer, **kwargs: object) -> OpenAIResponsesToolUseClient:
+    return OpenAIResponsesToolUseClient(
+        model_id="gpt-6-sol",
+        api_key="sk-test",
+        base_url=server.openai_base_url,
+        **kwargs,  # type: ignore[arg-type]  # reason: test forwards optional ctor kwargs
+    )
+
+
+def test_responses_request_shape_and_decode() -> None:
+    replies = [responses_function_call(_skill_id_to_tool_name(_SKILL_ID), {"prompt": "pick"})]
+    with FakeLLMServer(replies) as server:
+        client = _responses(server, max_tokens=4096)
+        call = client.select_tool(context_text="tick", palette=_palette(), system_prompt="SYS")
+    assert isinstance(call, ExecuteRskillTool) and call.rskill_id == _SKILL_ID
+    assert server.paths == ["/v1/responses"]
+    (body,) = server.requests
+    assert body["instructions"] == "SYS"
+    assert body["input"] == [{"role": "user", "content": "tick"}]
+    assert body["tool_choice"] == "required"
+    assert body["store"] is False, "OpenAI must not keep a copy of the tick"
+    assert body["parallel_tool_calls"] is False
+    assert body["max_output_tokens"] == 4096
+    assert "reasoning" not in body, "reasoning stays at the model's default"
+    for tool in body["tools"]:
+        assert tool["type"] == "function" and tool["strict"] is False
+        assert set(tool) == {"type", "name", "description", "parameters", "strict"}
+    assert client.last_prompt_tokens == 11
+
+
+def test_responses_malformed_arguments_are_an_invalid_plan() -> None:
+    reply = responses_function_call("wait", {})
+    body = reply[1]
+    body["output"][1]["arguments"] = '{"rationale": "x"} trailing'
+    with FakeLLMServer([reply]) as server, pytest.raises(ROSReasonerInvalidPlan, match="malformed"):
+        _responses(server).select_tool(context_text="tick", palette=_palette())
+
+
+def test_responses_forced_tool_choice_400_downgrades_to_auto() -> None:
+    replies = [
+        openai_error("Thinking mode does not support this tool_choice"),
+        responses_function_call("wait", {"rationale": "ok"}),
+    ]
+    with FakeLLMServer(replies) as server, capture_logs() as logs:
+        client = _responses(server)
+        assert isinstance(client.select_tool(context_text="tick", palette=_palette()), WaitTool)
+    assert [r["tool_choice"] for r in server.requests] == ["required", "auto"]
+    assert client._tool_choice == "auto"
+    assert [e for e in logs if e["event"] == "reasoner.tool_choice_downgraded"]
+
+
+def test_responses_prose_reply_is_nudged_then_an_invalid_plan() -> None:
+    replies = [responses_text("Watching the arm."), responses_text("Still watching.")]
+    with FakeLLMServer(replies) as server:
+        client = _responses(server, tool_choice="auto")
+        with pytest.raises(ROSReasonerInvalidPlan, match="Still watching"):
+            client.select_tool(context_text="tick", palette=_palette())
+    nudge = server.requests[1]["input"]
+    assert nudge[0] == {"role": "user", "content": "tick"}
+    assert "exactly one tool call" in nudge[-1]["content"]
+    assert client.last_prompt_tokens == 22
+
+
+@pytest.mark.parametrize(
+    ("reply", "match"),
+    [
+        (responses_incomplete("max_output_tokens"), "OPENRAL_REASONER_MAX_TOKENS"),
+        (responses_incomplete("content_filter"), "refused"),
+        (responses_refusal("I can't help with that."), "refused"),
+    ],
+)
+def test_responses_refusal_or_truncation_is_not_nudged(
+    reply: tuple[int, dict[str, object]], match: str
+) -> None:
+    with FakeLLMServer([reply]) as server, pytest.raises(ROSPlanningError, match=match):
+        _responses(server, tool_choice="auto", max_tokens=64).select_tool(
+            context_text="tick", palette=_palette()
+        )
+    assert len(server.requests) == 1
+
+
+def test_responses_describe_image() -> None:
+    with FakeLLMServer([responses_text("Two cats on a couch.")]) as server:
+        answer = _responses(server).describe_image(image_jpeg=b"\xff\xd8jpeg", question="What?")
+    assert answer == "Two cats on a couch."
+    (body,) = server.requests
+    assert body["store"] is False
+    parts = body["input"][0]["content"]
+    assert parts[0] == {"type": "input_text", "text": "What?"}
+    assert parts[1]["type"] == "input_image"
+    assert parts[1]["image_url"].startswith("data:image/jpeg;base64,")

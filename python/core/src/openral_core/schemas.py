@@ -15030,8 +15030,11 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
 # cold-start timeout, tool_choice) live in ``REASONER_ENDPOINT_PRESETS``.
 OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 # OpenAI's own API. It takes bare model ids (``gpt-5.5``, not OpenRouter's
-# ``openai/gpt-5.5``) and refuses ``max_tokens`` on its reasoning models in
-# favour of ``max_completion_tokens``; the ``openai`` preset carries both.
+# ``openai/gpt-5.5``), and its reasoning models accept function tools only on
+# the Responses API (``/v1/responses``): Chat Completions answers "Function
+# tools with reasoning_effort are not supported", and some (``gpt-6-astra``,
+# ``gpt-6.1-sol``) cannot turn reasoning off at all. The ``openai`` preset
+# therefore speaks the Responses API.
 OPENAI_BASE_URL: str = "https://api.openai.com/v1"
 # Anthropic's own API host — the value the SDK defaults to when no base_url is
 # passed. Spelled out so the ``anthropic`` endpoint preset can carry a real URL
@@ -15081,8 +15084,11 @@ class ReasonerEndpointPreset(NamedTuple):
     #: OpenRouter way (``"<vendor>/<model>"``) loses the prefix on that vendor's
     #: endpoint, so ``gpt-5.5`` works on both ``openrouter`` and ``openai``.
     vendor: str | None = None
-    #: Name of the completion-cap parameter the endpoint takes.
-    max_tokens_param: str = "max_tokens"
+    #: Wire API on the ``openai`` dialect: ``"chat_completions"``
+    #: (``/chat/completions``, every OpenAI-compatible server) or
+    #: ``"responses"`` (``/responses``, OpenAI's own API, the only route by
+    #: which its reasoning models take function tools).
+    wire_api: str = "chat_completions"
 
     def served_model_id(self, model_id: str) -> str:
         """``model_id`` as this endpoint expects it.
@@ -15117,7 +15123,7 @@ REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
         10.0,
         "required",
         vendor="openai",
-        max_tokens_param="max_completion_tokens",
+        wire_api="responses",
     ),
     "openrouter": ReasonerEndpointPreset(OPENROUTER_BASE_URL, "openai", True, 10.0, "required"),
     "gemini": ReasonerEndpointPreset(GEMINI_BASE_URL, "openai", True, 10.0, "required"),
