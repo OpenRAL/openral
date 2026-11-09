@@ -1221,6 +1221,7 @@ _The robot's Cloudflare Tunnel (ADR-0129 §3): a user systemd service that survi
 
 - `TUNNEL_PORT: int` (L47) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
 - `CLOUDFLARED: dict[str, PinnedAsset]` (L51) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
+- `TUNNEL_TOKEN_RE: re.Pattern[str]` (L66) — A Cloudflare tunnel token (base64 of its JSON credentials); `write_tunnel_token` refuses anything else.
 - `tunnel_env_path() -> Path` (L88) — `tunnel.env` next to the enrolment file.
 - `write_tunnel_token(token: str) -> Path` (L93) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
 - `read_tunnel_token() -> str | None` (L111) — The stored token, or `None` when not linked.
