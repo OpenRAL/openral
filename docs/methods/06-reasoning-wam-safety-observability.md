@@ -1162,26 +1162,26 @@ _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` e
 ### `python/observability/src/openral_observability/dashboard/app.py`
 _The robot dashboard's routes (ADR-0129). One app behind two listeners; `_gate` (an HTTP middleware) sets `request.state.principal` and enforces the listener rules before any route runs._
 
-- `create_app(store: TelemetryStore | None = None, *, verifier: TokenVerifier | None = None, bridge_url: str = "ws://127.0.0.1:8765") -> FastAPI` (L1115) — Build the app: OTLP/HTTP receivers (`/v1/*`, local listener only — loopback or LAN), reads (`/api/config` → `mode`/`role`/`robot_id`/`write_controls`/`remote_control`/`jaeger_ui_url`, `/api/manifest` (404 until one arrives; skills dropped with write controls off, `remote` per the remote-control flag, only `estop` for a LAN client), `/api/state`, `/api/stream[?images=0]` (SSE; ends at the token's `exp` remotely), `/api/camera/{source}/snapshot.jpg`, `/api/traces`, `/api/spans/{id}`, `/api/robots`), `POST /api/actions/{id:path}` (E-STOP resolvable without a manifest and fired before the body is read, then announced in the background; others validated against `args_schema` with `jsonschema`, announced, then run: `estop_reset` → kernel service (409 on cooldown), `prompt` → `openral prompt`, `skill:<id>` → `ExecuteRskill` goal (202 + `goal_id`); refusals 403 per role / LAN / `OPENRAL_DASHBOARD_REMOTE_CONTROL` / `OPENRAL_DASHBOARD_WRITE_CONTROLS`), `POST /api/transcribe`, the 3D view (`POST /api/viz/ticket`, `WS /ws` proxy to `bridge_url` — ticket required remotely and off loopback, `Origin` checked on upgrade, closed at ticket expiry), `/viz/{path}` (Lichtblick, fetched on first use, under `_VIZ_CSP`; its index.html carries this robot's layout from `openral_foxglove_bringup.layout` in Lichtblick's default-layout slot) and `/{path}` (the robot UI from `app.state.ui_dir`, else `static/fallback.html`, under `_UI_CSP`; an HTML file's inline scripts are allowed by sha256). The local listener refuses a cross-origin write (CSRF) and any LAN write but `estop`, a viz ticket and OTLP ingest on `/v1/*`; `proxy_headers` is off in `run_dashboard`. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413).
+- `create_app(store: TelemetryStore | None = None, *, verifier: TokenVerifier | None = None, bridge_url: str = "ws://127.0.0.1:8765") -> FastAPI` (L1119) — Build the app: OTLP/HTTP receivers (`/v1/*`, local listener only — loopback or LAN), reads (`/api/config` → `mode`/`role`/`robot_id`/`write_controls`/`remote_control`/`jaeger_ui_url`, `/api/manifest` (404 until one arrives; skills dropped with write controls off, `remote` per the remote-control flag, only `estop` for a LAN client), `/api/state`, `/api/stream[?images=0]` (SSE; ends at the token's `exp` remotely), `/api/camera/{source}/snapshot.jpg`, `/api/traces`, `/api/spans/{id}`, `/api/robots`), `POST /api/actions/{id:path}` (E-STOP resolvable without a manifest and fired before the body is read, then announced in the background; others validated against `args_schema` with `jsonschema`, announced, then run: `estop_reset` → kernel service (409 on cooldown), `prompt` → `openral prompt`, `skill:<id>` → `ExecuteRskill` goal (202 + `goal_id`); refusals 403 per role / LAN / `OPENRAL_DASHBOARD_REMOTE_CONTROL` / `OPENRAL_DASHBOARD_WRITE_CONTROLS`), `POST /api/transcribe`, the 3D view (`POST /api/viz/ticket`, `WS /ws` proxy to `bridge_url` — ticket required remotely and off loopback, `Origin` checked on upgrade, closed at ticket expiry), `/viz/{path}` (Lichtblick, fetched on first use, under `_VIZ_CSP`; its index.html carries this robot's layout from `openral_foxglove_bringup.layout` in Lichtblick's default-layout slot) and `/{path}` (the robot UI from `app.state.ui_dir`, else `static/fallback.html`, under `_UI_CSP`; an HTML file's inline scripts are allowed by sha256). The local listener refuses a cross-origin write (CSRF) and any LAN write but `estop`, a viz ticket and OTLP ingest on `/v1/*`; `proxy_headers` is off in `run_dashboard`. Request bodies are capped at `_MAX_BODY_BYTES` (64 MiB) raw and gzip-decoded (413); STT decodes at most `_STT_MAX_SECONDS` (120 s) of audio (413).
 
 ### `python/observability/src/openral_observability/dashboard/remote_auth.py`
 _Who is asking (ADR-0129 §6, Interface B): the local / LAN / remote principal and the robot-token check of the remote (tunnel) listener. Never logs Authorization headers or tickets._
 
 - module constant `ROLE_RANK: dict[str, int]` (L51) — `viewer` < `operator` < `admin`; admin acts as operator on the robot.
-- `class Principal` (L71) — Frozen dataclass: `mode` (`local` | `lan` | `remote`), `role`, `sub`, `jti`, `exp` (the last three remote only; `exp` ends streams).
-- `remote_listener(app) -> ASGIApp` (L89) — Wrap the app for the remote listener: tags each scope so `_gate` demands a token. Nothing a client sends sets the tag.
-- `is_remote(scope) -> bool` (L102) — Whether a request came in through `remote_listener`.
-- `load_enrolment(path: Path | None = None) -> RobotEnrolment | None` (L107) — The enrolment `openral robot link` wrote (`openral_core.enrolment_path()`), `None` when unlinked; `ValueError` for an invalid file.
-- `class JwksCache` (L122) — The issuer's ES256 keys, loaded from a disk cache, refetched (httpx) only for an unknown `kid` and at most once per `cooldown_s` (60 s), written back to disk.
-  - `key(self, kid: str) -> PyJWK | None` (L150) — The key `kid`, refetching once if unknown.
-- `class TokenVerifier` (L177) — Checks an openral.com robot token against this robot's enrolment and the issuer's `JwksCache`.
-  - `verify(self, token: str) -> Principal | str` (L185) — Interface B in order — header `alg` ES256 (never `none`/HMAC), `typ` absent or `at+jwt`, known `kid`; signature; `iss`; a single `aud` (`strict_aud`) equal to the enrolled origin; `exp`/`iat` with 60 s leeway and `exp − iat ≤ 300`; `sub`/`jti`/`org`/`role`/`robot` present; `robot`/`org` equal to the enrolment; a known role. A refusal is a reason string, never the token.
-- `class VizTickets` (L239) — Random 256-bit tickets for `/ws` (a JWT never goes in a URL), bound to the caller's `sub`/role, reusable until `TTL_S` (900 s).
-  - `issue(self, principal: Principal) -> str` (L253) — A new ticket for `principal`; prunes expired ones.
-  - `expires_at(self, ticket: str | None) -> float | None` (L261) — When `ticket` expires, or `None` if unknown or expired.
-- `jwks_cache_file() -> Path` (L267) — `$OPENRAL_CACHE_DIR/dashboard/jwks.json`.
-- `bearer(authorization: str | None) -> str | None` (L273) — The token of an `Authorization: Bearer` header.
-- `allowed_origins() -> frozenset[str]` (L279) — `$OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (comma-separated), default openral.com's www, dev and viz origins.
+- `class Principal` (L72) — Frozen dataclass: `mode` (`local` | `lan` | `remote`), `role`, `sub`, `jti`, `exp` (the last three remote only; `exp` ends streams).
+- `remote_listener(app) -> ASGIApp` (L90) — Wrap the app for the remote listener: tags each scope so `_gate` demands a token. Nothing a client sends sets the tag.
+- `is_remote(scope) -> bool` (L103) — Whether a request came in through `remote_listener`.
+- `load_enrolment(path: Path | None = None) -> RobotEnrolment | None` (L108) — The enrolment `openral robot link` wrote (`openral_core.enrolment_path()`), `None` when unlinked; `ValueError` for an invalid file.
+- `class JwksCache` (L123) — The issuer's ES256 keys, loaded from a disk cache, refetched (httpx) only for an unknown `kid` and at most once per `cooldown_s` (60 s), written back to disk.
+  - `key(self, kid: str) -> PyJWK | None` (L159) — The key `kid`, refetching once if unknown.
+- `class TokenVerifier` (L189) — Checks an openral.com robot token against this robot's enrolment and the issuer's `JwksCache`.
+  - `verify(self, token: str) -> Principal | str` (L197) — Interface B in order — header `alg` ES256 (never `none`/HMAC), `typ` absent or `at+jwt`, known `kid`; signature; `iss`; a single `aud` (`strict_aud`) equal to the enrolled origin; `exp`/`iat` with 60 s leeway and `exp − iat ≤ 300`; `sub`/`jti`/`org`/`role`/`robot` present; `robot`/`org` equal to the enrolment; a known role. A refusal is a reason string, never the token.
+- `class VizTickets` (L251) — Random 256-bit tickets for `/ws` (a JWT never goes in a URL), bound to the caller's `sub`/role, reusable until `TTL_S` (900 s).
+  - `issue(self, principal: Principal) -> str` (L265) — A new ticket for `principal`; prunes expired ones.
+  - `expires_at(self, ticket: str | None) -> float | None` (L273) — When `ticket` expires, or `None` if unknown or expired.
+- `jwks_cache_file() -> Path` (L279) — `$OPENRAL_CACHE_DIR/dashboard/jwks.json`.
+- `bearer(authorization: str | None) -> str | None` (L285) — The token of an `Authorization: Bearer` header.
+- `allowed_origins() -> frozenset[str]` (L291) — `$OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (comma-separated), default openral.com's www, dev and viz origins.
 
 ### `python/observability/src/openral_observability/dashboard/ui_assets.py`
 _The robot UI served at `/`: a pinned release of `python/observability/ui/`, fetched once; `$OPENRAL_DASHBOARD_UI_DIR` serves a local build instead; neither → `static/fallback.html` (status + E-STOP)._
@@ -1198,23 +1198,23 @@ _The robot UI served at `/`: a pinned release of `python/observability/ui/`, fet
 
 _The robot's Cloudflare Tunnel (ADR-0129 §3): a user systemd service that survives reboots, or the dashboard's own child without user systemd; no install, no root. The token reaches cloudflared through `TUNNEL_TOKEN` / `EnvironmentFile`, never argv._
 
-- `TUNNEL_PORT: int` (L45) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
-- `CLOUDFLARED: dict[str, PinnedAsset]` (L49) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
-- `tunnel_env_path() -> Path` (L83) — `tunnel.env` next to the enrolment file.
-- `write_tunnel_token(token: str) -> Path` (L88) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
-- `read_tunnel_token() -> str | None` (L99) — The stored token, or `None` when not linked.
-- `SERVICE: str` (L64) — `openral-tunnel.service`, the user unit `openral robot link` installs.
-- `install_service(exe: Path) -> str | None` (L142) — Write the user unit (`EnvironmentFile=tunnel.env`, `Restart=always`), `systemctl --user enable --now` it and `loginctl enable-linger` (boot without login); `None`, or why not.
-- `service_active() -> bool` (L161) — Whether the user service is running.
-- `ensure_cloudflared() -> Path | None` (L111) — The pinned binary, fetched once into the cache; else one on `PATH`; else `None`.
-- `start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None` (L166) — Run `cloudflared tunnel --no-autoupdate run` as a child unless the user service already runs it; `None` when not linked, the service holds it, or no binary.
+- `TUNNEL_PORT: int` (L47) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
+- `CLOUDFLARED: dict[str, PinnedAsset]` (L51) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
+- `tunnel_env_path() -> Path` (L88) — `tunnel.env` next to the enrolment file.
+- `write_tunnel_token(token: str) -> Path` (L93) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
+- `read_tunnel_token() -> str | None` (L111) — The stored token, or `None` when not linked.
+- `SERVICE: str` (L69) — `openral-tunnel.service`, the user unit `openral robot link` installs.
+- `install_service(exe: Path) -> str | None` (L154) — Write the user unit (`EnvironmentFile=tunnel.env`, `Restart=always`), `systemctl --user enable --now` it and `loginctl enable-linger` (boot without login); `None`, or why not.
+- `service_active() -> bool` (L177) — Whether the user service is running.
+- `ensure_cloudflared() -> Path | None` (L123) — The pinned binary, fetched once into the cache; else one on `PATH`; else `None`.
+- `start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None` (L182) — Run `cloudflared tunnel --no-autoupdate run` as a child unless the user service already runs it; `None` when not linked, the service holds it, or no binary.
 
 ### `python/observability/src/openral_observability/dashboard/viz_assets.py`
 - module constant `LICHTBLICK: PinnedAsset` (L20) — Lichtblick v1.30.0 `lichtblick-web.tar.gz` (MPL-2.0), pinned by sha256 + size.
 - `ensure_viz_assets() -> Path | None` (L35) — The Lichtblick build (via `ensure_bundle`), with a `NOTICE.txt` naming its MPL-2.0 source; fetched on the first `/viz/` request.
 
 ### `python/observability/src/openral_observability/dashboard/server.py`
-- `run_dashboard(*, host="127.0.0.1", port=4318, remote_port=None, bridge_port=8765, manifest_path=None, inprocess_cmd=None, store=None, log_level="warning") -> None` (L62) — Start the local listener on `host:port` and, when the robot is linked (`load_enrolment`), the remote listener on `127.0.0.1:remote_port` (default 4319; a `remote_port` without an enrolment is a `ValueError`) with a `TokenVerifier`; both with `proxy_headers` off and a 30 s WebSocket ping, run together until SIGINT/SIGTERM (one stopping stops both). Fetches the robot UI best-effort (`ensure_ui_assets`), starts the persistent `EstopPublisher`, the safety-status and perception-overlay subscribers and mDNS discovery, prints the URL banner and warnings for a non-loopback bind, write controls and remote control; when linked, also runs the robot's tunnel (`tunnel.start_tunnel`) and stops it on exit. `manifest_path` (a `RobotManifest` JSON file) is served until the runtime sends a fresher one; an unreadable file is logged and ignored. When `inprocess_cmd` is set, spawns it pointed at this dashboard's OTLP endpoint.
+- `run_dashboard(*, host="127.0.0.1", port=4318, remote_port=None, bridge_port=8765, manifest_path=None, inprocess_cmd=None, store=None, log_level="warning") -> None` (L63) — Start the local listener on `host:port` and, when the robot is linked (`load_enrolment`), the remote listener on `127.0.0.1:remote_port` (default 4319; a `remote_port` without an enrolment is a `ValueError`) with a `TokenVerifier`; both with `proxy_headers` off and a 30 s WebSocket ping, run together until SIGINT/SIGTERM (one stopping stops both). Fetches the robot UI best-effort (`ensure_ui_assets`), starts the persistent `EstopPublisher`, the safety-status and perception-overlay subscribers and mDNS discovery, prints the URL banner and warnings for a non-loopback bind, write controls and remote control; when linked, also runs the robot's tunnel (`tunnel.start_tunnel`) and stops it on exit. `manifest_path` (a `RobotManifest` JSON file) is served until the runtime sends a fresher one; an unreadable file is logged and ignored. When `inprocess_cmd` is set, spawns it pointed at this dashboard's OTLP endpoint.
 - `spawn_dashboard` / `attached_dashboard` — Inverse of `--inprocess`; see `dashboard/attach.py` below (a separate module despite the name symmetry with this file).
 
 ### `python/observability/src/openral_observability/dashboard/attach.py`
