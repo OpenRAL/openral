@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { localVizUrl, remoteVizUrl } from "./viz.js";
+import { localBridgeUrl, localVizUrl, remoteBridgeUrl, remoteVizUrl } from "./viz.js";
 
 test("local viz: same-origin /viz/ with a ws(s) bridge and no layoutUrl", () => {
   const u = new URL(localVizUrl(new URL("http://robot.lan:4318/")));
@@ -19,4 +19,13 @@ test("remote viz: viz.openral.com, ticket encoded inside the bridge URL", () => 
   assert.equal(ws.href.split("?")[0], "wss://r-7.openral.com/ws");
   assert.equal(ws.searchParams.get("ticket"), t);
   assert.equal([...u.searchParams.keys()].join(), "ds,ds.url", "no layoutUrl, no stray params from the ticket");
+});
+
+test("bridge URLs: same-origin /ws locally, the tunnel's wss /ws with a ticket remotely", () => {
+  assert.equal(localBridgeUrl(new URL("http://robot.lan:4318/")), "ws://robot.lan:4318/ws");
+  assert.equal(localBridgeUrl(new URL("https://x.test/robot-ui/")), "wss://x.test/ws");
+  const ws = new URL(remoteBridgeUrl("https://r-7.openral.com", "a+b/c=&d"));
+  assert.equal(ws.origin.replace("wss:", "https:") + ws.pathname, "https://r-7.openral.com/ws");
+  assert.equal(ws.protocol, "wss:");
+  assert.equal(ws.searchParams.get("ticket"), "a+b/c=&d");
 });

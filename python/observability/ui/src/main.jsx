@@ -2,11 +2,12 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles/tokens.css";
 import "./styles/app.css";
+import "./styles/console.css";
 import { createApi, createTokenClient, findRobot, websiteMinter } from "./lib/auth.js";
 import { connectSSE } from "./lib/sse.js";
 import { fmtAge, robotNow, setRobotNow } from "./lib/render.js";
 import { ActionBar } from "./ActionBar.jsx";
-import { Boundary, PANELS } from "./panels.jsx";
+import { Console, usePrefs, useTheme } from "./Console.jsx";
 
 // Mode comes from the location: `?robot=<id>` means we are www.openral.com's
 // /robot-ui/ (remote, through the robot's tunnel); otherwise the robot itself
@@ -141,6 +142,19 @@ function Header({ children }) {
   );
 }
 
+// Always in the header: the safety kernel's latched state, from the stream.
+function SafetyPill({ topics }) {
+  const st = topics?.safety_status;
+  const latched = !!(st?.latched || topics?.safety?.estopped);
+  const known = st?.ts_unix != null || topics?.safety?.ts_unix != null;
+  const label = !known ? "safety: waiting" : latched ? "E-STOP latched" : "safety nominal";
+  return (
+    <span className={`pill safety ${!known ? "" : latched ? "bad" : "ok"}`} role="status">
+      {label}
+    </span>
+  );
+}
+
 const MODE_LABEL = { local: "local", lan: "LAN", remote: "remote" };
 
 function Robot({ api, robot }) {
@@ -163,9 +177,10 @@ function Robot({ api, robot }) {
   useEffect(() => {
     document.title = `${name} · OpenRAL`;
   }, [name]);
-  const panels = (Array.isArray(manifest?.panels) ? manifest.panels : []).filter(
-    (p) => p && typeof p.id === "string" && Object.hasOwn(PANELS, p.type),
-  );
+  const robotId = text(manifest?.robot_id, robot?.id, c?.robot_id) || "robot";
+  const [prefs, update] = usePrefs(robotId);
+  const theme = useTheme(prefs.theme);
+  const [layoutOpen, setLayoutOpen] = useState(false);
   const t = snap?.topics || {};
   const bar = {
     api,
@@ -181,15 +196,21 @@ function Robot({ api, robot }) {
           <span className="badge">
             {MODE_LABEL[cfg.mode] || cfg.mode} · {cfg.role}
           </span>
+          <SafetyPill topics={t} />
           <span className="spacer" />
           <Conn conn={conn} snap={snap} />
+          <button
+            type="button"
+            className="chip layout-btn"
+            aria-pressed={layoutOpen}
+            onClick={() => setLayoutOpen((o) => !o)}
+          >
+            Layout
+          </button>
         </Header>
         <ActionBar part="estop" {...bar} />
       </header>
       <main>
-        <Boundary title="Actions" reset={manifest}>
-          <ActionBar part="rest" {...bar} />
-        </Boundary>
         {!cfg.reachable && (
           <p className="banner err" role="alert">
             Can't reach the robot's dashboard API. Retrying in the background.
@@ -215,16 +236,21 @@ function Robot({ api, robot }) {
             )}
           </div>
         )}
-        <div className="grid">
-          {panels.map((p) => {
-            const P = PANELS[p.type];
-            return (
-              <Boundary key={p.id} title={p.title} reset={snap}>
-                <P panel={p} snap={snap} api={api} cfg={cfg} manifest={manifest} />
-              </Boundary>
-            );
-          })}
-        </div>
+        {manifest && (
+          <Console
+            api={api}
+            cfg={cfg}
+            manifest={manifest}
+            snap={snap}
+            bar={bar}
+            robotId={robotId}
+            prefs={prefs}
+            update={update}
+            theme={theme}
+            layoutOpen={layoutOpen}
+            setLayoutOpen={setLayoutOpen}
+          />
+        )}
       </main>
     </>
   );

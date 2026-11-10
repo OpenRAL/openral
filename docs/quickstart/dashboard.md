@@ -45,10 +45,13 @@ built-in fallback page: the robot's status and an **E-STOP** button.
 What the UI shows comes from the **robot manifest**, which the deploy runtime emits at
 start and again whenever the installed rSkills change (`/openral/skill_registry_changed`):
 
-- **Panels** — robot identity, one camera per image sensor, joints, then map (SLAM),
+- **Panels** — robot identity, one camera per image sensor (with its `position` in the
+  camera row: `left`, `center` or `right`, from `openral_core.camera_position`), joints, then map (SLAM),
   point cloud (octomap), reasoner, reward monitor (when that leg runs), the running
   rSkill, safety status and ledger, system health, metrics, events, world state, and the
-  3D view when the bridge runs.
+  3D view when the bridge runs. The UI lays them out as an operator console: cameras
+  over the 3D scene, and the rest as tabs in a right pane (Reasoner, Events, World,
+  Safety, Skill, Robot, System) that each operator can show, hide and reorder.
 - **Actions** — `estop`, `estop_reset` (with a "work cell clear?" confirmation),
   `prompt` (when the reasoner runs), and one `skill:<rskill id>` per installed rSkill
   the robot can run — the same set the reasoner may dispatch — whose form is the
@@ -138,12 +141,20 @@ To unlink, remove the robot on openral.com (its tunnel is deleted there), then
 
 ## The 3D view
 
-The dashboard serves a pinned [Lichtblick](https://github.com/Lichtblick-Suite/lichtblick)
+The robot UI draws the 3D scene itself (three.js): the robot from its URDF, TF, the
+occupancy grid (`/map`), a point cloud, collision boxes and payload markers
+(`/openral/viz/*`) and the world-state objects, each a layer the operator can switch
+off. It reads the same `/ws` bridge proxy as Lichtblick and subscribes only to the
+layers that are on. The proxy relays snapshot topics (images, point clouds, maps, joint
+states) latest-wins, so a slow tunnel drops stale frames instead of falling behind.
+
+The dashboard also serves a pinned [Lichtblick](https://github.com/Lichtblick-Suite/lichtblick)
 web build (MPL-2.0, the open Foxglove Studio fork) at `/viz/`, downloaded on first use.
 It connects to `foxglove_bridge` through the dashboard's `/ws` proxy — the bridge itself
 stays on loopback and read-only. Remote and LAN viewers need a ticket from
 `POST /api/viz/ticket` (valid 15 minutes, reusable for reconnects). `/viz/` opens with a
-layout for this robot's cameras and base frame already in place.
+layout for this robot's cameras and base frame already in place. The robot UI links to it
+from the System pane for raw topic inspection.
 
 ## Endpoints
 
