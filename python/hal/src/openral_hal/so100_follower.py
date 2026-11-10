@@ -776,7 +776,7 @@ class SO100FollowerHAL(HALBase):
             msg = f"disconnect failed: {type(exc).__name__}: {exc}"
             # With torque proven off on every servo the stop held; the port
             # close is bookkeeping. Without that proof it is part of the failure.
-            (notes if not problems else problems).append(msg)
+            (problems if problems else notes).append(msg)
 
         report = DownstreamStopReport(
             stopped=not problems,
@@ -786,7 +786,9 @@ class SO100FollowerHAL(HALBase):
             detail="; ".join(problems or notes) or "torque off on every servo (read back)",
         )
         log.critical(
-            "hal.estop.downstream_stopped" if report.stopped else "hal.estop.downstream_unacknowledged",
+            "hal.estop.downstream_stopped"
+            if report.stopped
+            else "hal.estop.downstream_unacknowledged",
             robot=self.description.name,
             **report.fields(),
         )

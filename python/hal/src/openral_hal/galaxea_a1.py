@@ -877,7 +877,9 @@ class GalaxeaA1HAL(HALBase):
             )
         self._last_stop_report = report
         log.critical(
-            "hal.estop.downstream_stopped" if report.stopped else "hal.estop.downstream_unacknowledged",
+            "hal.estop.downstream_stopped"
+            if report.stopped
+            else "hal.estop.downstream_unacknowledged",
             robot=self.description.name,
             **report.fields(),
         )
