@@ -1,0 +1,65 @@
+name: reasoner-models
+# openral.com's Account → Settings offers the curated reasoner models (REASONER_MODELS in
+# openral_core) as a drop-down, from the website's server/reasoner-models.json. When the
+# list changes on master, this regenerates that file (tools/export_reasoner_models.py)
+# and merges it into the website's dev branch, the same way robot-ui.yml rolls out the
+# UI pin; promote-to-main carries it to production. Needs ROBOT_UI_BOT_TOKEN (see
+# robot-ui.yml); without it the job says what changed.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "python/core/src/openral_core/schemas.py"
+      - "tools/export_reasoner_models.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reasoner-models
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.ROBOT_UI_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - name: export
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 --with ./python/core \
+            python tools/export_reasoner_models.py > "$RUNNER_TEMP/reasoner-models.json"
+          cat "$RUNNER_TEMP/reasoner-models.json"
+      - name: website dev
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::ROBOT_UI_BOT_TOKEN not set: copy the list above to the website's server/reasoner-models.json by hand."
+            exit 0
+          fi
+          git config --global user.name "openral-bot"
+          git config --global user.email "openral-bot@users.noreply.github.com"
+          gh auth setup-git
+          gh repo clone OpenRAL/website website -- --branch dev --depth 1
+          cd website
+          cp "$RUNNER_TEMP/reasoner-models.json" server/reasoner-models.json
+          if git diff --quiet; then
+            echo "::notice::the website already offers these models"
+            exit 0
+          fi
+          branch="bot/reasoner-models-${GITHUB_SHA::7}"
+          git switch -c "$branch"
+          git commit -qam "chore(accounts): offer openral's curated reasoner models (${GITHUB_SHA::7})"
+          git push -q --force origin "$branch"
+          pr=$(gh pr list --head "$branch" --state open --json url -q '.[0].url')
+          [ -n "$pr" ] || pr=$(gh pr create --base dev --head "$branch" \
+            --title "chore(accounts): offer openral's curated reasoner models" \
+            --body "REASONER_MODELS as of OpenRAL/openral@${GITHUB_SHA}, opened by reasoner-models.yml.")
+          gh pr merge "$pr" --merge --delete-branch || gh pr merge "$pr" --merge --auto \
+            || { echo "::error::could not merge ${pr}: merge it by hand"; exit 1; }
