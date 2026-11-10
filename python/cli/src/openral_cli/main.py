@@ -3029,7 +3029,8 @@ def benchmark_run(
     # Beside, not in, eval/: every eval/*.json must validate as an RSkillEvalResult.
     episodes_path = out_path.parent / "episodes" / f"{out_path.stem}.json"
     episodes_path.parent.mkdir(parents=True, exist_ok=True)
-    episodes_path.write_text(_json.dumps(episode_records(episodes), indent=2))
+    # Strict JSON: a non-finite scene metric fails here, not in a downstream parser.
+    episodes_path.write_text(_json.dumps(episode_records(episodes), indent=2, allow_nan=False))
     console.print(f"[cyan]episodes[/cyan] {episodes_path}")
     avg = result.results.get("avg_success_rate", 0.0)
     console.print(

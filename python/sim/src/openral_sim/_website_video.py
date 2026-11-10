@@ -73,8 +73,24 @@ def grade_colour(score: float) -> tuple[int, int, int]:
 
 
 def _final_colour(r: EpisodeResult) -> tuple[int, int, int]:
-    """Episode outcome: the success colour, else ``grade_colour`` of the episode's reward."""
-    return _GREEN if r.success else grade_colour(r.total_reward)
+    """Episode outcome: the success colour, else ``grade_colour`` of the final placement score.
+
+    A graded scene's ``placement_score`` decides (a partial can end with no reward, e.g. at
+    the step limit); an ungraded episode falls back to its total reward.
+
+    Example:
+        >>> from openral_sim.rollout import EpisodeResult
+        >>> _final_colour(EpisodeResult(final_info={"placement_score": 0.5}))
+        (240, 210, 30)
+        >>> _final_colour(EpisodeResult(total_reward=0.0))
+        (220, 40, 40)
+    """
+    if r.success:
+        return _GREEN
+    score = r.final_info.get("placement_score")
+    if isinstance(score, int | float) and not isinstance(score, bool):
+        return grade_colour(float(score))
+    return grade_colour(r.total_reward)
 
 
 def _frame_colour(r: EpisodeResult, i: int) -> tuple[int, int, int]:

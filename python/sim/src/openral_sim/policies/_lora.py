@@ -96,7 +96,8 @@ def read_lora_config(adapter_dir: str | Path) -> LoraConfigSummary:
     """Parse and vet ``<adapter_dir>/adapter_config.json``; plain LoRA only.
 
     Raises:
-        ROSConfigError: Missing file, not ``peft_type: LORA``, a bad rank /
+        ROSConfigError: Missing file, malformed JSON or not an object, a
+            ``target_modules`` regex that does not compile, not ``peft_type: LORA``, a bad rank /
             alpha, or any of DoRA, rsLoRA, rank/alpha patterns, trained bias,
             ``fan_in_fan_out``, ``layers_to_transform``, QA-LoRA,
             ``modules_to_save``.
@@ -104,7 +105,12 @@ def read_lora_config(adapter_dir: str | Path) -> LoraConfigSummary:
     path = Path(adapter_dir) / "adapter_config.json"
     if not path.is_file():
         raise ROSConfigError(f"lora: no adapter_config.json in {adapter_dir}")
-    cfg = json.loads(path.read_text())
+    try:
+        cfg = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ROSConfigError(f"lora: {path} is not valid JSON: {exc}") from exc
+    if not isinstance(cfg, dict):
+        raise ROSConfigError(f"lora: {path} must hold a JSON object")
     if cfg.get("peft_type") != "LORA":
         raise ROSConfigError(f"lora: peft_type {cfg.get('peft_type')!r} is not LORA")
     for key, default in _REFUSED.items():
@@ -122,6 +128,11 @@ def read_lora_config(adapter_dir: str | Path) -> LoraConfigSummary:
         raise ROSConfigError(f"lora: bad rank/alpha r={r!r} lora_alpha={alpha!r}")
     if not (isinstance(targets, str) or (isinstance(targets, list) and targets)):
         raise ROSConfigError(f"lora: target_modules must be a regex or a list, got {targets!r}")
+    if isinstance(targets, str):
+        try:
+            re.compile(targets)
+        except re.error as exc:
+            raise ROSConfigError(f"lora: target_modules is not a valid regex: {exc}") from exc
     return LoraConfigSummary(
         r=r,
         alpha=float(alpha),

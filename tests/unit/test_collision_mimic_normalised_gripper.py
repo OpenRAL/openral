@@ -20,7 +20,7 @@ mujoco = pytest.importorskip("mujoco", reason="needs mujoco (sim group) for the 
 pytest.importorskip("trimesh")
 
 from openral_core import RobotDescription  # noqa: E402
-from openral_core.assets import AssetRefError, resolve_asset  # noqa: E402
+from openral_core.assets import AssetFetchError, resolve_asset  # noqa: E402
 from openral_core.exceptions import ROSConfigError  # noqa: E402
 from openral_safety.urdf_lowering import (  # noqa: E402
     _declared_mimic_followers,
@@ -37,7 +37,7 @@ def metal() -> tuple[RobotDescription, object]:
     robot = RobotDescription.from_yaml(str(_MANIFEST))
     try:
         mjcf = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=_MANIFEST.parent)  # type: ignore[arg-type]  # reason: the Metal declares assets.mjcf
-    except AssetRefError as exc:
+    except AssetFetchError as exc:
         pytest.skip(f"Metal MJCF unavailable on this host: {exc}")
     return robot, mujoco.MjModel.from_xml_path(str(mjcf))
 

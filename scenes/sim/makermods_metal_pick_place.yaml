@@ -18,7 +18,7 @@
 # runs on it unconverted (SCENES.register(..., converts_policy_units=True)).
 #
 #   openral sim run --config scenes/sim/makermods_metal_pick_place.yaml \
-#       --rskill rskills/<metal-pick-place-skill>
+#       --rskill rskills/pi05-metal-pick-place
 
 robot_id: makermods_metal
 
