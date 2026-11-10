@@ -29,8 +29,11 @@ def test_every_offered_model_is_curated_and_needs_a_key_the_website_has() -> Non
     for m in models:
         entry = REASONER_MODELS[m["id"]]
         assert (m["needs"] is None) == (not entry.auth_required)
-        assert "(" not in m["label"] or "Anthropic" not in m["label"]  # provider dropped
+        # The provider rides in the key it needs, never in the label.
+        assert not any(p in m["label"] for p in ("(Anthropic)", "(via OpenRouter)", "(OpenAI)"))
     # Every model a robot runs with an Anthropic or OpenAI key, or none, is offered.
+    labels = {m["id"]: m["label"] for m in models}
+    assert (labels["claude-opus-4-8"], labels["gpt-5.5"]) == ("Claude Opus 4.8", "GPT-5.5")
     by_id = {m["id"]: m["needs"] for m in models}
     assert by_id["claude-sonnet-5-5"] == "ANTHROPIC_API_KEY"
     assert by_id["gpt-5.5"] == "OPENAI_API_KEY"
