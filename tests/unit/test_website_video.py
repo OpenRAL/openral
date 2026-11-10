@@ -89,6 +89,16 @@ def test_world_border_is_grey_while_running_then_the_grade_colour(tmp_path: Path
     fail = EpisodeResult(success=False, steps=3, frames=[grey] * 3)
     frames = _read_all(save_world_mp4(fail, tmp_path / "f.mp4", fps=4, size=128))
     assert _near(frames[1], (128, 128, 128)) and _near(frames[-1], (220, 40, 40))
+    # a partial that earned no reward (graded at the step limit) still ends yellow
+    late = EpisodeResult(
+        success=False,
+        steps=3,
+        total_reward=0.0,
+        frames=[grey] * 3,
+        final_info={"placement_grade": "partial", "placement_score": 0.5},
+    )
+    frames = _read_all(save_world_mp4(late, tmp_path / "l.mp4", fps=4, size=128))
+    assert _near(frames[-1], (240, 210, 30))
 
 
 def test_save_world_mp4_empty_frames_raises(tmp_path: Path) -> None:

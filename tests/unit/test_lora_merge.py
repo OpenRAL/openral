@@ -243,6 +243,23 @@ def test_refuses_tied_weight_and_changes_nothing(tmp_path: Path) -> None:
         assert torch.equal(p, before[name]), name
 
 
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("{not json", "not valid JSON"),
+        ("[1, 2]", "must hold a JSON object"),
+        (
+            '{"peft_type": "LORA", "r": 2, "lora_alpha": 4, "target_modules": "(q_proj"}',
+            "valid regex",
+        ),
+    ],
+)
+def test_read_config_refuses_malformed_input(tmp_path: Path, text: str, match: str) -> None:
+    (tmp_path / "adapter_config.json").write_text(text)
+    with pytest.raises(ROSConfigError, match=match):
+        read_lora_config(tmp_path)
+
+
 def test_read_config_missing(tmp_path: Path) -> None:
     with pytest.raises(ROSConfigError, match=r"no adapter_config\.json"):
         read_lora_config(tmp_path)
