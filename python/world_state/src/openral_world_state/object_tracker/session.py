@@ -494,6 +494,13 @@ class TrackerSession:
         if not same_lattice:
             log.info("object_tracker.instance_cells_lattice_mismatch", frame=frame_id)
             return
+        if not np.allclose(g.rotation(), np.eye(3), atol=_LATTICE_TOL_M):
+            # ``InstanceCells`` carries no orientation, and ``_vision_fit`` takes the lattice's
+            # z for the frame's: on a rotated lattice (OccupancyVoxels may be one) the cells
+            # would land on the wrong voxels and layers. Fail closed: no vision box (review of
+            # #521). Carrying the orientation in the message lifts this.
+            log.info("object_tracker.instance_cells_lattice_rotated", frame=frame_id)
+            return
         self.tracker.apply_instance_cells(cells, g, stamp_ns, hands)
 
     def on_grid(self, grid: VoxelLattice, source_stamp_ns: int) -> None:

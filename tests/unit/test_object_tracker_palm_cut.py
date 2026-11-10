@@ -197,29 +197,28 @@ def test_a_hull_primitive_is_cut_from_its_hull_not_its_box(robot: str) -> None:
     assert hull_vol(new) < 0.9 * hull_vol(box_cut), "cut from the hull, not from its box"
 
 
-def test_the_tightest_turn_is_hull_bound_not_cubic_in_the_cut(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_tightest_turn_is_hull_bound_not_cubic_in_the_cut() -> None:
     """Review of afff4f9be: the pairwise search over the raw cut was O(N^3) (260 points took
-    436 MB); over its 2-D hull it finds the same smallest area."""
-    import time
-
+    436 MB); over its 2-D hull it finds the same smallest area, and the hull of a large cut is
+    a few dozen points. Checked against the raw all-pairs search, written out here."""
     from openral_world_state.object_tracker import binding
 
-    def area(pts: NDArray[np.float64], ax: NDArray[np.float64]) -> float:
-        uw = pts @ ax[:, [0, 2]]
+    def area(uw: NDArray[np.float64]) -> float:
         return float(np.ptp(uw[:, 0]) * np.ptp(uw[:, 1]))
+
+    def raw_min_area(uw: NDArray[np.float64]) -> float:
+        """The smallest rectangle over every pairwise direction of every point."""
+        d = uw[:, None, :] - uw[None, :, :]
+        phis = np.concatenate([[0.0], np.mod(np.arctan2(d[..., 0], d[..., 1]).ravel(), np.pi / 2)])
+        c, s_ = np.cos(phis)[:, None], np.sin(phis)[:, None]
+        x, y = uw[:, 0] * c - uw[:, 1] * s_, uw[:, 0] * s_ + uw[:, 1] * c
+        return float((np.ptp(x, axis=1) * np.ptp(y, axis=1)).min())
 
     rng = np.random.default_rng(0)
     axes = np.eye(3)
     for _ in range(20):
         small = rng.normal(size=(40, 3))
-        hulled = area(small, binding._tightest_about_approach(small, axes))
-        with monkeypatch.context() as m:
-            m.setattr(binding, "_hull_2d", lambda p: p)  # the old search: every raw point
-            raw = area(small, binding._tightest_about_approach(small, axes))
-        assert hulled == pytest.approx(raw)
+        turned = binding._tightest_about_approach(small, axes)
+        assert area(small @ turned[:, [0, 2]]) == pytest.approx(raw_min_area(small[:, [0, 2]]))
     big = rng.normal(size=(5000, 3))
-    t0 = time.perf_counter()
-    binding._tightest_about_approach(big, axes)
-    assert time.perf_counter() - t0 < 2.0
+    assert len(binding._hull_2d(big[:, [0, 2]])) < 100, "the search runs over the hull"

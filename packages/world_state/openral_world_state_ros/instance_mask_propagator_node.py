@@ -234,13 +234,34 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
     st: dict[str, Any] = {}
     ws: dict[str, Any] = {}
 
-    def clear() -> None:
-        """Forget every frame, mask, label and video session (a new episode or a transition)."""
+    def clear_inputs() -> None:
+        """Forget every received frame, grid and track set (callers hold ``lock``)."""
         st.update(rgb=None, depth={}, robot={}, k=None, grid=None, tracked={}, revision=-1)
+
+    def clear() -> None:
+        """Forget every frame, mask, label and video session.
+
+        Worker thread only: ``ws`` is the worker's, mutated outside ``lock`` while SAM runs.
+        """
+        clear_inputs()
         ws.clear()
         ws.update(session=None, ids=[], masks={}, empty={}, labels={}, frames=0, seen={},
                   seed_px={}, drift={})  # fmt: skip
 
+    def transition_reset() -> None:
+        """A lifecycle transition's reset (executor thread, under ``lock``).
+
+        It never touches ``ws``: the worker may be mid-step on it (review of #521: a
+        deactivate / activate during SAM inference cleared it, and the step wrote the old
+        episode's session and masks back, then published them under the new episode's ids).
+        The worker clears ``ws`` itself (``reset``), and a step begun before the transition
+        publishes nothing (``gen``).
+        """
+        clear_inputs()
+        st["reset"] = True
+        st["gen"] += 1
+
+    st["gen"] = 0
     clear()
 
     class Propagator(LifecycleNode):  # type: ignore[misc]  # reason: rclpy is untyped
@@ -286,20 +307,20 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
 
         def on_activate(self, state: object) -> TransitionCallbackReturn:
             with lock:
-                clear()
+                transition_reset()
                 self.active = True
             return TransitionCallbackReturn.SUCCESS
 
         def on_deactivate(self, state: object) -> TransitionCallbackReturn:
             with lock:
                 self.active = False
-                clear()
+                transition_reset()
             return TransitionCallbackReturn.SUCCESS
 
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
             with lock:
                 self.active = False
-                clear()
+                transition_reset()
             for sub in self.subs:
                 self.destroy_subscription(sub)
             self.subs = []
@@ -431,6 +452,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
             robot = st["robot"][min(st["robot"], key=lambda s: abs(s - t))] if st["robot"] else None
             k, g, tracked = st["k"], st["grid"], dict(st["tracked"])
             tf_buf = node.tf_buf
+            gen = st["gen"]
         if abs(td - t) > 150_000_000 or tf_buf is None:
             return False
         vproc, vmodel = sam["vp"], sam["v"]  # loaded: the node is active
@@ -533,7 +555,7 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
         msg.cell_counts = [len(v) for v in by.values()]
         msg.cells = [int(x) for v in by.values() for c in v for x in c]
         with lock:
-            if node.active and node.pub is not None:
+            if node.active and node.pub is not None and st["gen"] == gen:
                 node.pub.publish(msg)
         return True
 

@@ -276,10 +276,13 @@ track with a SAM2.1 video mask, seeded from a CONFIRMED track's projected box on
 status keeps its mask or loses it; never re-seeded on a stale box), lifts the mask minus robot
 pixels through the aligned depth at that depth stamp's TF into `/openral/world_voxels`
 cells, and publishes them per track on `/openral/instance_cells` (`openral_msgs/InstanceCells`).
-`configure` loads SAM2, `activate` starts it, `deactivate` / `cleanup` drop every mask; a
-tracker re-activation or a clock reset starts a new episode. The tracker fits those tracks'
-boxes to the cells (`ObjectTracker.apply_instance_cells`) and re-finds a released target once
-within `recent_s`. Thresholds: the `vision` section of `tracking_thresholds.yaml`. Safety-WG
+`configure` loads SAM2, `activate` starts it, `deactivate` / `cleanup` drop every mask (the
+worker drops its video session itself, and a step begun before the transition publishes
+nothing); a tracker re-activation or a clock reset starts a new episode. A grid the shared
+`lattice_from_msg` refuses (an unset orientation, a wrong-length occupancy) lifts no cells. The
+tracker fits those tracks' boxes to the cells (`ObjectTracker.apply_instance_cells`, only on an
+axis-aligned lattice: `InstanceCells` carries no orientation) and re-finds a released target
+once within `recent_s`. Thresholds: the `vision` section of `tracking_thresholds.yaml`. Safety-WG
 review owed.
 
 Covered by `tests/unit/test_object_tracker_session.py` and the live

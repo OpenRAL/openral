@@ -2121,11 +2121,20 @@ class ObjectTracker:
 
         A target picked up again (BOUND) or confirmed outside its placed box left it: the
         region no longer explains a body there (a foreign object set in it must split the
-        destination). ponytail: a retired target's record stays (it was never seen leaving).
+        destination). A retired target's record stays (it was never seen leaving) until a held
+        payload is over it: the object was picked up again under a new id (review of #521: the
+        record outlived that re-grasp and excused a foreign body set there for the session).
         """
+        held = [o.box.pose.xyz for o in self.store.all() if o.status is TrackStatus.BOUND]
         for oid, placed in list(self._placed.items()):
             t = self.store.get(oid)
-            if t is None or t.status is TrackStatus.RELEASED:
+            if t is None:
+                a = _aabb(placed)
+                if any(a[0] <= x <= a[3] and a[1] <= y <= a[4] for x, y, _ in held):
+                    log.info("object_tracker.unplaced", object_id=oid, status="retired_regrasped")
+                    del self._placed[oid]
+                continue
+            if t.status is TrackStatus.RELEASED:
                 continue
             a, (x, y) = _aabb(placed), t.box.pose.xyz[:2]
             if t.status is TrackStatus.BOUND or not (a[0] <= x <= a[3] and a[1] <= y <= a[4]):

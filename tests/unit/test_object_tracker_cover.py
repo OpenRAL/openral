@@ -631,3 +631,22 @@ def test_a_placement_is_forgotten_once_the_target_leaves_it() -> None:
     assert len(tr._resting_placed()) == 1, "still resting there: it vouches"
     tr.store.replace(t.model_copy(update={"status": TrackStatus.BOUND}))
     assert tr._resting_placed() == [] and t.object_id not in tr._placed
+
+
+def test_a_retired_targets_placement_is_forgotten_once_a_held_payload_is_over_it() -> None:
+    """Review of #521: a placed target's track retired ~3 s after release and kept its record
+    forever; picked up again under a new id, the spot stayed explained for the session."""
+    tr, _ = _confirmed_tracker(_CAN, ObjectQuery(label="orange", count="all",
+                                                 role=ObjectRole.DESTINATION))  # fmt: skip
+    dst = tr.store.all()[0]
+    box = dst.box.model_copy(update={"half_extents": (1.5 * RES, 1.5 * RES, 1.5 * RES)})
+    fields = {k: getattr(dst, k) for k in type(dst).model_fields
+              if k not in ("object_id", "epoch", "status")}  # fmt: skip
+    fields.update(role=ObjectRole.TARGET, box=box)
+    t = tr.store.mint(**fields)
+    tr._note_placed(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    tr.store.drop(t.object_id)  # retired by the session
+    assert len(tr._resting_placed()) == 1, "never seen leaving: it still vouches"
+    again = tr.store.mint(**fields)  # the same object, re-found under a new id, then grasped
+    tr.store.replace(again.model_copy(update={"status": TrackStatus.BOUND}))
+    assert tr._resting_placed() == [] and t.object_id not in tr._placed
