@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from structlog.testing import capture_logs
 
 if TYPE_CHECKING:
     import torch
@@ -278,7 +279,14 @@ def test_resolve_base_weights(tmp_path: Path) -> None:
         "lerobot/pi05_base",
         "22c30e5",
     )
-    assert resolve_base_weights("hf://lerobot/pi05_base") == ("lerobot/pi05_base", None)
+    with capture_logs() as logs:
+        assert resolve_base_weights("hf://lerobot/pi05_base") == ("lerobot/pi05_base", None)
+    assert logs[0]["event"] == "rskill.unpinned_weights"
+    assert logs[0]["field"] == "base_weights_uri"
     assert resolve_base_weights(f"local://{tmp_path}") == (str(tmp_path.resolve()), None)
-    with pytest.raises(ROSConfigError, match="missing"):
+    with pytest.raises(ROSConfigError, match="not a directory"):
         resolve_base_weights(f"local://{tmp_path}/nope")
+    file = tmp_path / "checkpoint.bin"
+    file.touch()
+    with pytest.raises(ROSConfigError, match="not a directory"):
+        resolve_base_weights(f"local://{file}")

@@ -29,6 +29,8 @@ from typing import Any
 import structlog
 from openral_core.exceptions import ROSConfigError
 
+_log = structlog.get_logger(__name__)
+
 __all__ = [
     "LoraConfigSummary",
     "fetch_adapter_dir",
@@ -253,11 +255,13 @@ def resolve_base_weights(uri: str) -> tuple[str, str | None]:
     """
     if uri.startswith("hf://"):
         repo_id, _, revision = uri[len("hf://") :].partition("@")
+        if not revision:
+            _log.warning("rskill.unpinned_weights", repo=repo_id, field="base_weights_uri")
         return repo_id, (revision or None)
     if uri.startswith("local://"):
         path = Path(uri[len("local://") :]).resolve()
-        if not path.exists():
-            raise ROSConfigError(f"lora: base_weights_uri {uri!r} resolves to missing {path}")
+        if not path.is_dir():
+            raise ROSConfigError(f"lora: base_weights_uri {uri!r} is not a directory: {path}")
         return str(path), None
     raise ROSConfigError(f"lora: base_weights_uri {uri!r} is neither hf:// nor local://")
 

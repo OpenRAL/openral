@@ -305,6 +305,13 @@ class _EpisodeBuffer:
     # (link, other_prim) -> episode contact record (``fold_robot_contacts``).
     contacts: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 
+    def cap_video_frames(self) -> None:
+        """Keep frame grades aligned while bounding all video capture paths."""
+        while len(self.frames) >= _VIDEO_FRAME_CAP:
+            self.frames = self.frames[1::2]
+            self.frame_grades = self.frame_grades[1::2]
+            self.frame_stride *= 2
+
     @property
     def has_data(self) -> bool:
         """True if at least one step has been accumulated."""
@@ -715,10 +722,7 @@ class SimRunner(InferenceRunnerBase):
                 if frame is not None:
                     self._buf.frames.append(frame)
                     self._buf.frame_grades.append(self._buf.grade)
-                    if len(self._buf.frames) >= _VIDEO_FRAME_CAP:
-                        self._buf.frames = self._buf.frames[::2]
-                        self._buf.frame_grades = self._buf.frame_grades[::2]
-                        self._buf.frame_stride *= 2
+                    self._buf.cap_video_frames()
             self._buf.frame_tick += 1
             state = self._obs.get("state") if isinstance(self._obs, dict) else None
             if state is not None:
@@ -790,6 +794,7 @@ class SimRunner(InferenceRunnerBase):
                 )
                 pad = len(self._buf.frames) - len(self._buf.frame_grades)
                 self._buf.frame_grades.extend([self._buf.grade] * pad)
+                self._buf.cap_video_frames()
             self._obs = _rekey_obs_images(step_result.observation, self._image_rekey)
             self._buf.total_reward += step_result.reward
             self._buf.max_step_reward = max(self._buf.max_step_reward, step_result.reward)
@@ -838,6 +843,7 @@ class SimRunner(InferenceRunnerBase):
                 if frame is not None:
                     self._buf.frames.append(frame)
                     self._buf.frame_grades.append(self._buf.grade)
+                    self._buf.cap_video_frames()
 
             # Fan out per-step state / images / action to the
             # recorder. We render here unconditionally when a recorder

@@ -19,6 +19,7 @@ Pins:
 
 from __future__ import annotations
 
+import numpy as np
 from openral_core import (
     DeadlineOverrunPolicy,
     PhysicsBackend,
@@ -29,7 +30,26 @@ from openral_core import (
 )
 from openral_runner import InferenceRunner
 from openral_sim import SimRunner
-from openral_sim.sim_runner import _count_policy_input_cameras, _resolve_step_instruction
+from openral_sim.sim_runner import (
+    _append_adapter_video_frames,
+    _count_policy_input_cameras,
+    _EpisodeBuffer,
+    _resolve_step_instruction,
+)
+
+
+def test_adapter_video_frames_stay_capped_with_aligned_grades() -> None:
+    buf = _EpisodeBuffer()
+    frame = np.zeros((1, 1, 3), dtype=np.uint8)
+    for step in range(3):
+        _append_adapter_video_frames(buf.frames, [frame] * 4096)
+        buf.frame_grades.extend([("partial", float(step))] * 4096)
+        buf.cap_video_frames()
+    assert len(buf.frames) < 8192
+    assert len(buf.frames) == len(buf.frame_grades)
+    assert buf.frame_stride == 4
+    assert buf.frame_grades[0] == ("partial", 0.0)
+    assert buf.frame_grades[-1] == ("partial", 2.0)
 
 
 def _mock_env(
