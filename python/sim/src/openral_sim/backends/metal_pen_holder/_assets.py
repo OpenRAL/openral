@@ -371,6 +371,8 @@ def compose_metal_pen_holder(
     spec.visual.headlight.ambient = list(opts.headlight_ambient)
     spec.visual.headlight.diffuse = list(opts.headlight_diffuse)
     spec.visual.quality.shadowsize = 4096
+    spec.visual.global_.offwidth = max(width, spec.visual.global_.offwidth)
+    spec.visual.global_.offheight = max(height, spec.visual.global_.offheight)
 
     arm_mat = spec.add_material()
     arm_mat.name = "anodised_black"

@@ -124,8 +124,7 @@ def test_the_two_mimic_jaws_are_exempt_from_each_other_and_their_mount_only(
     for: the closed jaws meet by design (as the OpenArm's two fingers do), and that pair alone
     joins the mount rows — every other finger pair stays CHECKED."""
     robot, _ = metal
-    if not robot.collision_geometry:
-        pytest.skip("the manifest carries no collision_geometry yet")
+    assert robot.collision_geometry
     lowered = lower_robot_from_mjcf(
         robot, n_samples=50, manifest_dir=_MANIFEST.parent, acm_only=True
     )

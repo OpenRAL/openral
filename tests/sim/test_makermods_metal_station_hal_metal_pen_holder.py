@@ -94,6 +94,17 @@ def test_cameras_render_and_the_top_view_is_the_plate_behind_the_robot() -> None
         env.close()
 
 
+def test_large_requested_render_size_grows_the_offscreen_buffer() -> None:
+    from openral_sim.backends.metal_pen_holder._assets import compose_metal_pen_holder
+
+    desc = RobotDescription.from_yaml(
+        str(_ROOT / "robots" / "makermods_metal_station" / "robot.yaml")
+    )
+    model = compose_metal_pen_holder(desc, width=1280, height=960)
+    assert model.vis.global_.offwidth >= 1280
+    assert model.vis.global_.offheight >= 960
+
+
 @pytest.mark.parametrize("episode", [0, 7, 30])
 def test_replayed_episode_drops_the_pen_into_the_cup(episode: int) -> None:
     hx, hy, hyaw, px, py, pyaw = (float(v) for v in _EPISODES[f"layout_{episode}"])
