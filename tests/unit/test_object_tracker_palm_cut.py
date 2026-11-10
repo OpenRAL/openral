@@ -7,8 +7,9 @@ the real hands' pinch axes and palm planes:
 
 * containment kept: every sampled point of the original solid on the hand side lies in the new
   box, in the new DOP and (when it ships vertices) in the new hull;
-* never looser: the new box lies inside the old pinch-axes bounding box, and the new vertices
-  lie inside the original solid and on the hand side.
+* never looser: the new box is no larger than the old pinch-axes bounding box (it may turn
+  about the approach axis), and the new vertices lie inside the original solid and on the hand
+  side.
 """
 
 from __future__ import annotations
@@ -96,10 +97,10 @@ def _check_cut(
     assert new.geometry_source == "measured" and new.tight_geometry is not None
     tn = t_ao @ _t(new.pose_in_object)
     nhalf = np.asarray(bounding_half_extents(new.shape))
-    # never looser: the new box inside the old pinch-axes bounding box
+    # never larger: turned about the approach axis to the smallest box (pro#51 b51r2), so its
+    # corners may leave the old pinch-axes box, but its volume never exceeds it
     lo, hi = _old_box(prim, t_ao, pinch)
-    ncorn = ((_UNIT * nhalf) @ tn[:3, :3].T + tn[:3, 3]) @ pinch.axes
-    assert np.all(ncorn >= lo - EPS) and np.all(ncorn <= hi + EPS)
+    assert np.prod(2.0 * nhalf) <= np.prod(hi - lo) * (1 + 1e-9) + EPS
     # containment kept: sampled hand-side points of the original solid are in the new geometry
     rng = np.random.default_rng(seed)
     pts_local = rng.uniform(-1.0, 1.0, size=(400, 3)) * np.asarray(half)
@@ -194,3 +195,30 @@ def test_a_hull_primitive_is_cut_from_its_hull_not_its_box(robot: str) -> None:
     # The inscribed tetrahedron shares the cube's bounding box, so only the hull tells them
     # apart: cut from the hull, the solid is strictly smaller than the cut cube.
     assert hull_vol(new) < 0.9 * hull_vol(box_cut), "cut from the hull, not from its box"
+
+
+def test_the_tightest_turn_is_hull_bound_not_cubic_in_the_cut() -> None:
+    """Review of afff4f9be: the pairwise search over the raw cut was O(N^3) (260 points took
+    436 MB); over its 2-D hull it finds the same smallest area, and the hull of a large cut is
+    a few dozen points. Checked against the raw all-pairs search, written out here."""
+    from openral_world_state.object_tracker import binding
+
+    def area(uw: NDArray[np.float64]) -> float:
+        return float(np.ptp(uw[:, 0]) * np.ptp(uw[:, 1]))
+
+    def raw_min_area(uw: NDArray[np.float64]) -> float:
+        """The smallest rectangle over every pairwise direction of every point."""
+        d = uw[:, None, :] - uw[None, :, :]
+        phis = np.concatenate([[0.0], np.mod(np.arctan2(d[..., 0], d[..., 1]).ravel(), np.pi / 2)])
+        c, s_ = np.cos(phis)[:, None], np.sin(phis)[:, None]
+        x, y = uw[:, 0] * c - uw[:, 1] * s_, uw[:, 0] * s_ + uw[:, 1] * c
+        return float((np.ptp(x, axis=1) * np.ptp(y, axis=1)).min())
+
+    rng = np.random.default_rng(0)
+    axes = np.eye(3)
+    for _ in range(20):
+        small = rng.normal(size=(40, 3))
+        turned = binding._tightest_about_approach(small, axes)
+        assert area(small @ turned[:, [0, 2]]) == pytest.approx(raw_min_area(small[:, [0, 2]]))
+    big = rng.normal(size=(5000, 3))
+    assert len(binding._hull_2d(big[:, [0, 2]])) < 100, "the search runs over the hull"

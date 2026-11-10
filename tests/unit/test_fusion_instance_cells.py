@@ -1,0 +1,361 @@
+"""EXPERIMENT exp/vision-voxel-fusion: a track's box fits the voxels vision labels its own."""
+
+import math
+
+import numpy as np
+from openral_core import PlaceRegion, Pose6D, TrackedObject, TrackStatus
+from openral_core.perception_geometry import VoxelLattice
+from openral_world_state.object_tracker.cover import Cell
+from openral_world_state.object_tracker.tracker import (
+    _RECENT_S,
+    _VISION_NEED_FRACTION,
+    ObjectTracker,
+)
+
+from tests.unit._tracker_scenes import cylinder, grid_from_depth, render
+from tests.unit.test_object_tracker_cover import _CAN, _RIG, _confirmed_tracker
+
+
+def _get(tr: ObjectTracker, oid: str) -> TrackedObject:
+    t = tr.store.get(oid)
+    assert t is not None, oid
+    return t
+
+
+def _labelled(dx: float, radius: float = 0.035) -> tuple[VoxelLattice, frozenset[Cell]]:
+    """The grid with the can moved ``dx``, and its occupied cells above the table (the labels)."""
+    x, y = _RIG.centre_xy
+    depth, _ = render([cylinder((x + dx, y), radius, _RIG.support_z, _RIG.support_z + 0.1)], _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    c = grid.occupied_centers()
+    near = (np.hypot(c[:, 0] - (x + dx), c[:, 1] - y) <= radius + grid.resolution) & (
+        c[:, 2] > _RIG.support_z + grid.resolution
+    )
+    local = (c[near] - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution
+    return grid, frozenset(tuple(v) for v in np.floor(local).astype(np.int64).tolist())
+
+
+def test_the_box_follows_the_cells_vision_labels_its_own():
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    grid, cells = _labelled(0.06)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    moved = _get(tr, t.object_id)
+    assert moved.status is TrackStatus.CONFIRMED
+    assert abs(moved.box.pose.xyz[0] - (t.box.pose.xyz[0] + 0.06)) < 0.02
+    assert moved.last_fit_stamp_ns == 10**9, "a vision box is a fit for the grasp binder"
+
+
+def test_cells_far_larger_than_the_object_are_refused():
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    grid, cells = _labelled(0.06, radius=0.12)  # a 24 cm "can": something else
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
+    assert _get(tr, t.object_id).box.pose.xyz == t.box.pose.xyz
+
+
+def test_an_unmoved_object_keeps_its_fitted_box_and_is_only_re_dated():
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    grid, cells = _labelled(0.01)  # within two cells: the same object, edge noise
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
+    kept = _get(tr, t.object_id)
+    assert kept.box.pose.xyz == t.box.pose.xyz and kept.last_confirmed_stamp_ns == 10**9
+    # Review of #521: the grasp binder reads the fit time (``_fresh_ns``); a re-date that left
+    # it behind made a followed target bind as a stale fit.
+    assert kept.last_fit_stamp_ns == 10**9
+
+
+def test_a_released_target_the_mask_still_follows_is_minted_again():
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    tr._map_cells_max[t.object_id] = tr._map_cells.get(t.object_id, 20)
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.RELEASED}))
+    tr._let_go[t.object_id] = (t, 10, 0)  # what the released pass records
+    grid, cells = _labelled(0.02)  # it slipped 2 cm: not new occupancy, but vision knows it
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    live = [o for o in tr.store.all() if o.status is TrackStatus.CONFIRMED]
+    assert len(live) == 1 and live[0].object_id != t.object_id
+    assert abs(live[0].box.pose.xyz[0] - (t.box.pose.xyz[0] + 0.02)) < 0.02
+
+
+# -- regressions from the Spark pro#51 fusion runs (f1-f10), one per real failure ------------
+
+
+def _released(tr: ObjectTracker, t: TrackedObject, ref: int, since_ns: int = 0) -> None:
+    """``t`` let go: what the released pass records (``_note_release``)."""
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.RELEASED}))
+    tr._let_go[t.object_id] = (t, ref, since_ns)
+
+
+def _second(tr: ObjectTracker, t: TrackedObject, dx: float, scale: float = 1.0) -> TrackedObject:
+    """A second confirmed track of ``t``'s label and role, ``dx`` along x, ``scale`` x as wide."""
+    h = t.box.half_extents
+    box = t.box.model_copy(
+        update={
+            "pose": t.box.pose.model_copy(
+                update={"xyz": (t.box.pose.xyz[0] + dx, *t.box.pose.xyz[1:])}
+            ),
+            "half_extents": (scale * h[0], scale * h[1], h[2]),
+        }
+    )
+    fields = {
+        k: getattr(t, k) for k in type(t).model_fields if k not in ("object_id", "epoch", "status")
+    }
+    fields["box"] = box
+    o = tr.store.mint(**fields)
+    tr.store.replace(o.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    return o
+
+
+def test_a_lost_target_the_mask_still_follows_is_confirmed_where_it_is():
+    """f5 (yw2 ep4): the map lost an orange the jaw pushed; its mask still followed it."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.LOST}))
+    grid, cells = _labelled(0.06)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    back = _get(tr, t.object_id)
+    assert back.status is TrackStatus.CONFIRMED
+    assert abs(back.box.pose.xyz[0] - (t.box.pose.xyz[0] + 0.06)) < 0.02
+
+
+def test_a_dropped_object_showing_a_third_of_its_cells_is_found_and_a_fifth_is_not():
+    """f7 (ywb1 ep4): a dropped banana showed 18-23 of its 59 cells, under the map's 50 %."""
+    grid, cells = _labelled(0.04)
+    n = len(cells)
+    for ref, found in ((math.floor(n / 0.35), 1), (math.ceil(n / 0.2), 0)):
+        tr, _ = _confirmed_tracker(_CAN)
+        t = tr.store.all()[0]
+        _released(tr, t, ref)
+        assert (n >= math.ceil(_VISION_NEED_FRACTION * ref)) is bool(found)
+        assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == found, ref
+
+
+def test_a_released_target_is_found_once_and_only_within_the_window():
+    """f3/f4: one re-find per release (a second would mint a twin), never past ``recent_s``."""
+    grid, cells = _labelled(0.02)
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    _released(tr, t, 10)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    assert tr._let_go[t.object_id] is None, "used: the twin is refused by the registry itself"
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 2 * 10**9, ()) == 0
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    _released(tr, t, 10)
+    late = int((_RECENT_S + 1.0) * 1e9)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, late, ()) == 0
+    assert tr._let_go[t.object_id] is None
+
+
+def test_cells_inside_another_target_never_move_a_track_onto_it():
+    """f1 (yf1 ep8): a track's mask bled onto the neighbour orange; the box must not follow."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    _second(tr, t, 0.06)
+    grid, cells = _labelled(0.06)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
+    assert _get(tr, t.object_id).box.pose.xyz == t.box.pose.xyz
+
+
+def test_an_implausible_track_never_blocks_a_real_one():
+    """f6 (yw1 ep8): a 32 cm "orange" over two real ones held their cells as its own."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    big = _second(tr, t, 0.06, scale=3.0)
+    assert tr._implausible_box(big.label, big.box, big.object_id)
+    grid, cells = _labelled(0.06)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+
+
+def test_the_hidden_side_grows_toward_the_hand_to_the_objects_size():
+    """f10 (yw3 ep7, ywb2 ep3): vision sees only what the hand leaves visible; a box of those
+    cells stopped the gripper on the orange's hidden side 2.3 cm outside it."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    size = tr._clear_size[t.object_id]
+    grid, cells = _labelled(0.06)
+    x_mid = np.median([c[0] for c in cells])
+    near = frozenset(c for c in cells if c[0] <= x_mid)  # the far half is behind the hand
+    hand_x = t.box.pose.xyz[0] + 0.06 + 0.06
+    hand = PlaceRegion(
+        frame_id=t.box.frame_id,
+        half_extents=(0.02, 0.02, 0.02),
+        pose=Pose6D(xyz=(hand_x, *t.box.pose.xyz[1:]), quat_xyzw=(0, 0, 0, 1),
+                    frame_id=t.box.frame_id),
+    )  # fmt: skip
+    tr._map_cells[t.object_id] = len(near)
+    assert tr.apply_instance_cells({t.object_id: near}, grid, 10**9, (hand,)) == 1
+    box = _get(tr, t.object_id).box
+    lo_x = box.pose.xyz[0] - box.half_extents[0]
+    hi_x = box.pose.xyz[0] + box.half_extents[0]
+    assert hi_x - lo_x >= size - 1e-9, "never narrower than the object"
+    seen_hi = grid.origin[0] + (max(c[0] for c in near) + 1) * grid.resolution
+    assert hi_x > seen_hi + 0.5 * grid.resolution, "grown toward the hand, where it is hidden"
+
+
+def test_a_slipped_target_is_found_on_the_table_though_its_released_box_is_in_the_hand():
+    """A/B ab1b_po seeds 2/3: a released track keeps its in-hand box and support (7.5 cm up),
+    and every re-find of the orange lying on the table kept 0 of its labelled cells."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    up = 0.06
+    in_hand = t.model_copy(update={
+        "support_z": t.support_z + up,
+        "box": t.box.model_copy(update={"pose": t.box.pose.model_copy(
+            update={"xyz": (t.box.pose.xyz[0], t.box.pose.xyz[1], t.box.pose.xyz[2] + up)})}),
+    })  # fmt: skip
+    _released(tr, in_hand, 10)
+    grid, cells = _labelled(0.02)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    [found] = [o for o in tr.store.all() if o.status is TrackStatus.CONFIRMED]
+    bottom = found.box.pose.xyz[2] - found.box.half_extents[2]
+    assert bottom < t.support_z + 2 * grid.resolution, "it stands on the table, not in the air"
+
+
+def test_a_refind_on_only_the_upper_cells_keeps_the_release_support():
+    """Review of afff4f9be: a mask labelling only cells well above the release support lifted
+    support_z above the kept floor_z and ``store.mint`` raised, killing the tracker node."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    _released(tr, t, 10)
+    grid, cells = _labelled(0.02)
+    k0 = min(c[2] for c in cells)
+    top = frozenset(c for c in cells if c[2] >= k0 + 3)
+    assert tr.apply_instance_cells({t.object_id: top}, grid, 10**9, ()) == 1
+    [found] = [o for o in tr.store.all() if o.status is TrackStatus.CONFIRMED]
+    assert found.support_z <= t.support_z and found.floor_z >= found.support_z
+
+
+def test_a_vision_move_drops_the_hulls_posed_for_the_old_box():
+    """Review of afff4f9be: a moved box kept its old tight hulls; the bind tested the pinch
+    against where the object had been."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    assert t.tight, "the clear fit left hulls to drop"
+    grid, cells = _labelled(0.06)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    assert _get(tr, t.object_id).tight == ()
+
+
+def test_cells_older_than_the_tracks_last_fit_never_move_it():
+    """Review of afff4f9be: a lagging SAM2 message overwrote a newer fit and moved
+    last_confirmed_stamp_ns backwards."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    grid, cells = _labelled(0.06)
+    old = max(t.last_fit_stamp_ns, t.last_confirmed_stamp_ns) - 1
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, old, ()) == 0
+    assert _get(tr, t.object_id) == t
+
+
+def test_a_mask_older_than_the_release_never_re_finds_the_target():
+    """Review of afff4f9be: a mask from while the object was still in the jaw re-minted it
+    there and spent the one re-find."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    _released(tr, t, 10, since_ns=2 * 10**9)
+    grid, cells = _labelled(0.02)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
+    assert tr._let_go[t.object_id] is not None, "not spent"
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 3 * 10**9, ()) == 1
+
+
+def test_a_partly_hidden_unmoved_object_keeps_its_box():
+    """Review of afff4f9be: the visible half's centroid sat off-centre, so the confirmed box
+    was replaced by a box of the visible half."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    grid, cells = _labelled(0.0)
+    x_mid = np.median([c[0] for c in cells])
+    half = frozenset(c for c in cells if c[0] <= x_mid)
+    tr._map_cells[t.object_id] = len(half)
+    assert tr.apply_instance_cells({t.object_id: half}, grid, 10**9, ()) == 0
+    kept = _get(tr, t.object_id)
+    assert kept.box == t.box and kept.last_confirmed_stamp_ns == 10**9
+
+
+def test_an_oversize_track_is_judged_by_its_peers_not_its_own_fit():
+    """Review of afff4f9be: a 32 cm "orange" with its own clear history vouched for itself."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    big = _second(tr, t, 0.06, scale=3.0)
+    tr._clear_extent[big.object_id] = 2.0 * max(big.box.half_extents[:2])
+    assert tr._implausible_box(big.label, big.box, big.object_id)
+
+
+def test_a_larger_instance_of_a_seen_size_is_minted_and_a_merged_pair_is_not():
+    """Review of afff4f9be: the mint gate held every target to 1.5x the label's MEDIAN, so
+    the largest of three cartons (6.5 / 8 / 11 cm) was never minted."""
+    from statistics import median
+
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    sizes = (0.065, 0.08)
+    for i, w in enumerate(sizes):
+        o = _second(tr, t, 0.2 * (i + 1))
+        tr._clear_extent[o.object_id] = w
+    tr._clear_extent[t.object_id] = 0.065
+    box = t.box.model_copy(update={"half_extents": (0.055, 0.055, t.box.half_extents[2])})
+    assert 1.5 * median([0.065, 0.065, 0.08]) < 0.11, "the old median gate refused it"
+    assert not tr._implausible_box(t.label, box, agg=max)
+    pair = t.box.model_copy(update={"half_extents": (0.16, 0.08, t.box.half_extents[2])})
+    assert tr._implausible_box(t.label, pair, agg=max)
+
+
+def test_a_re_found_target_drops_the_hulls_posed_for_its_released_box():
+    """Review of #521: the re-minted track copied the released track's tight hulls; the bind
+    tests the pinch against the hulls first, where the object had been."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    assert t.tight, "the clear fit left hulls to drop"
+    _released(tr, t, 10)
+    grid, cells = _labelled(0.02)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    (found,) = [o for o in tr.store.all() if o.status is TrackStatus.CONFIRMED]
+    assert found.tight == () and found.last_fit_stamp_ns == 10**9
+
+
+def test_cells_the_map_sees_as_two_bodies_never_move_or_confirm_a_track():
+    """Review of #521: only ``map_disagrees`` was refused, so a mask over the can and a body
+    above it (two separate bodies in the box, ``map_split``) replaced the can's box. The refit
+    rule (``_refuse_refit``) already refuses a split."""
+    from tests.unit._tracker_scenes import box
+
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    x, y = _RIG.centre_xy
+    z0 = _RIG.support_z
+    solids = [
+        cylinder((x, y), 0.035, z0, z0 + 0.1),
+        box((x + 0.03, y, z0 + 0.15), (0.02,) * 3, 0.0),
+    ]
+    depth, _ = render(solids, _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    c = grid.occupied_centers()
+    near = (np.hypot(c[:, 0] - x, c[:, 1] - y) <= 0.06) & (c[:, 2] > z0 + grid.resolution)
+    local = (c[near] - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution
+    cells = frozenset(tuple(v) for v in np.floor(local).astype(np.int64).tolist())
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
+    assert _get(tr, t.object_id) == t
+
+
+def test_a_re_find_after_the_track_retired_still_knows_the_objects_clear_size():
+    """Review of #521: ``feed`` dropped the clear size once the released track left the store
+    (~3 s), inside the ``_RECENT_S`` re-find window; it now outlives the track while a re-find
+    is still possible, and goes once the window is spent."""
+    from openral_world_state.object_tracker import CameraFrame
+
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    size = tr._clear_size[t.object_id]
+    _released(tr, t, 10)
+    tr.store.drop(t.object_id)  # the session retired it
+    depth, _ = render([], _RIG)
+    frame = CameraFrame(_RIG.name, 5, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    tr.feed(frame, grid=None, grid_stamp_ns=5, wall_s=100.0)
+    assert tr._clear_size.get(t.object_id) == size
+    tr._let_go[t.object_id] = None  # used or expired
+    tr.feed(frame, grid=None, grid_stamp_ns=6, wall_s=101.0)
+    assert t.object_id not in tr._clear_size

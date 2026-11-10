@@ -2029,6 +2029,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 f"grounding_required:={str(rt.grounding_required).lower()}",
             ]
         )
+    # EXPERIMENT (pro#51): forwarded whatever the tracking mode, so the launch refuses it with
+    # tracking off instead of the flag being dropped silently.
+    if rt is not None and rt.instance_cells:
+        argv_template.append("instance_cells:=true")
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,
     # else repo-relative, resolved absolute; a declared file that is missing is a config error
     # (never run without walls the scene declared).

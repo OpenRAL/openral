@@ -215,7 +215,8 @@ def test_a_split_under_contact_confirms_and_splits_once_the_hand_leaves() -> Non
     (they bisect it; a thin banana's own pieces part on the lowest layer). While a hand is at
     the TARGET a split inside its box does not block a confirmation the visible cover earns;
     with the hand gone the same body splits it again (fail-closed). The DESTINATION (a bowl
-    the hand places into, R63) is held the same way; a CONTEXT neighbour never is."""
+    the hand places into, R63) is held the same way; a CONTEXT neighbour never is. A body the
+    robot set down in a destination is the next test."""
     for role in ObjectRole:
         query = ObjectQuery(label="orange", count="all", role=role)
         tr, wall = _confirmed_tracker(_CAN, query)
@@ -557,3 +558,95 @@ def test_per_track_state_leaves_with_the_track() -> None:
     step(tr, _RIG, [], stamp_ns=100_000_000, wall_s=wall + 1)
     for per_track in (tr._views, tr._cells, tr._centroid, tr._disagree, tr._served):
         assert oid not in per_track
+
+
+def test_a_destination_holds_what_was_placed_in_it_and_splits_on_anything_else() -> None:
+    """pro#51 k9: the plate split each time an orange landed on it. A body where the robot let
+    a target go over the destination is the placed object; the same body anywhere else in the
+    destination is a foreign object nobody placed, and splits it (fail-closed)."""
+    origin = grid_from_depth(render([], _RIG)[0], _RIG).origin
+    for placed in (True, False):
+        tr, wall = _confirmed_tracker(_CAN, ObjectQuery(label="orange", count="all",
+                                                        role=ObjectRole.DESTINATION))  # fmt: skip
+        dst = tr.store.all()[0]
+        body = _foreign_body(tr)
+        centre = np.asarray(origin) + (np.asarray(body, dtype=float).mean(axis=0) + 0.5) * RES
+        dx = 0.0 if placed else 1.0  # a release a metre away is over no destination
+        rel = dst.box.model_copy(update={
+            "pose": dst.box.pose.model_copy(update={"xyz": (centre[0] + dx, centre[1], centre[2])}),
+            "half_extents": (1.5 * RES, 1.5 * RES, 1.5 * RES),
+        })  # fmt: skip
+        fields = {k: getattr(dst, k) for k in type(dst).model_fields
+                  if k not in ("object_id", "epoch", "status")}  # fmt: skip
+        fields.update(role=ObjectRole.TARGET, box=rel)
+        t = tr.store.mint(**fields)
+        tr._note_release(t.model_copy(update={"status": TrackStatus.RELEASED}), 50_000_000)
+        assert bool(tr._placed) is placed
+        step(tr, _RIG, [_CAN], stamp_ns=100_000_000, wall_s=wall + 1, extra=body)
+        got = tr.store.get(dst.object_id)
+        assert got is not None
+        status = got.status
+        assert status is (TrackStatus.CONFIRMED if placed else TrackStatus.SPLIT), placed
+
+
+def test_a_target_confirmed_resting_in_a_destination_keeps_vouching_once_it_splits() -> None:
+    """A/B ab1b_po seed 8: an orange that dropped onto the plate (no release over it) and the
+    plate each split on the other. A target confirmed resting there is a placement too, and
+    its spot stays explained for the destination when the target's own track splits."""
+    origin = grid_from_depth(render([], _RIG)[0], _RIG).origin
+    tr, wall = _confirmed_tracker(_CAN, ObjectQuery(label="orange", count="all",
+                                                    role=ObjectRole.DESTINATION))  # fmt: skip
+    dst = tr.store.all()[0]
+    body = _foreign_body(tr)
+    centre = np.asarray(origin) + (np.asarray(body, dtype=float).mean(axis=0) + 0.5) * RES
+    box = dst.box.model_copy(update={
+        "pose": dst.box.pose.model_copy(update={"xyz": tuple(float(v) for v in centre)}),
+        "half_extents": (1.5 * RES, 1.5 * RES, 1.5 * RES),
+    })  # fmt: skip
+    fields = {k: getattr(dst, k) for k in type(dst).model_fields
+              if k not in ("object_id", "epoch", "status")}  # fmt: skip
+    fields.update(role=ObjectRole.TARGET, box=box)
+    t = tr.store.mint(**fields)
+    tr._note_placed(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    assert t.object_id in tr._placed
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.SPLIT}))
+    step(tr, _RIG, [_CAN], stamp_ns=100_000_000, wall_s=wall + 1, extra=body)
+    got = tr.store.get(dst.object_id)
+    assert got is not None and got.status is TrackStatus.CONFIRMED
+
+
+def test_a_placement_is_forgotten_once_the_target_leaves_it() -> None:
+    """Review of afff4f9be: a placed record outlived a re-grasp, so a foreign body later set in
+    that spot never split the destination (fail-open)."""
+    tr, _ = _confirmed_tracker(_CAN, ObjectQuery(label="orange", count="all",
+                                                 role=ObjectRole.DESTINATION))  # fmt: skip
+    dst = tr.store.all()[0]
+    box = dst.box.model_copy(update={"half_extents": (1.5 * RES, 1.5 * RES, 1.5 * RES)})
+    fields = {k: getattr(dst, k) for k in type(dst).model_fields
+              if k not in ("object_id", "epoch", "status")}  # fmt: skip
+    fields.update(role=ObjectRole.TARGET, box=box)
+    t = tr.store.mint(**fields)
+    tr._note_placed(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    assert len(tr._resting_placed()) == 1, "still resting there: it vouches"
+    tr.store.replace(t.model_copy(update={"status": TrackStatus.BOUND}))
+    assert tr._resting_placed() == [] and t.object_id not in tr._placed
+
+
+def test_a_retired_targets_placement_is_forgotten_once_a_held_payload_is_over_it() -> None:
+    """Review of #521: a placed target's track retired ~3 s after release and kept its record
+    forever; picked up again under a new id, the spot stayed explained for the session."""
+    tr, _ = _confirmed_tracker(_CAN, ObjectQuery(label="orange", count="all",
+                                                 role=ObjectRole.DESTINATION))  # fmt: skip
+    dst = tr.store.all()[0]
+    box = dst.box.model_copy(update={"half_extents": (1.5 * RES, 1.5 * RES, 1.5 * RES)})
+    fields = {k: getattr(dst, k) for k in type(dst).model_fields
+              if k not in ("object_id", "epoch", "status")}  # fmt: skip
+    fields.update(role=ObjectRole.TARGET, box=box)
+    t = tr.store.mint(**fields)
+    tr._note_placed(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    tr.store.drop(t.object_id)  # retired by the session
+    assert len(tr._resting_placed()) == 1, "never seen leaving: it still vouches"
+    again = tr.store.mint(**fields)  # the same object, re-found under a new id, then grasped
+    tr.store.replace(again.model_copy(update={"status": TrackStatus.BOUND}))
+    assert tr._resting_placed() == [] and t.object_id not in tr._placed

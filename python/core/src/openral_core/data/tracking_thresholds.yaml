@@ -59,6 +59,25 @@ tracker:  # tracker.py TrackerParams and module constants
   beside_px: 8                     # px (Chebyshev): a mask component this near a robot pixel is 'beside' the robot
   beside_min_px: 10                # px: smallest mask component kept after the beside-robot test
   support_flatness_res_fraction: 0.25  # fraction of a cell: spread of support heights still read as flat
+  plausible_extent_factor: 1.5     # calibration point (pro#51 yw1 ep8): a box wider than this x its label PEERS' clear extent (max: the largest instance seen) is never minted as a target; one wider than this x their median never blocks another track
+  recent_s: 10.0                   # s (source): a lost destination or a released target keeps its identity this long
+  # Asked of the locator beside every query label; a detection under low_prompt_score that one of
+  # these covers with a higher score is no detection of the label (pro#51 negative test n0: a soup
+  # can on the plate located as "orange" at 0.16-0.22 became a confirmed orange track, its cells
+  # "explained"; with these, 0 of 56 can boxes kept, real oranges 79 vs 75). Never a label's own word.
+  locate_contrast_labels: [can, bottle, box, cup, jar, tin]
+
+vision:  # EXPERIMENT exp/vision-voxel-fusion (sim-only, Safety-WG review owed): SAM2 video masks lifted to voxel cells
+  min_cells: 4              # cells: fewest labelled cells that say where an object is (pro#51 yf1 ep8: 2 cells moved a box 3.9 cm)
+  need_fraction: 0.3        # calibration point (ywb1 ep4): share of a track's best plain-pass cells a vision box needs
+  max_extent_factor: 1.3    # a vision box wider than this x the object's clear extent holds something else too
+  erode_px: 2               # px: mask erosion before lifting through depth (edge bleed onto the support)
+  memory_s: 10.0            # s (source): a cell label older than this is dropped though the cell stays occupied
+  orphan_s: 10.0            # s (source): a track gone from the tracked set is still followed this long
+  reseed_frames: 200        # frames: the video session is re-seeded from its current masks this often
+  empty_reseed_frames: 8    # frames a confirmed track's mask stays empty before it is re-seeded from its box
+  drift_ratio: 3.0          # calibration point (pro#51 f9): a mask this many x its seed area has bled onto other things
+  drift_frames: 3           # consecutive drifted frames before the mask is re-seeded from its track's box
 
 cover:  # cover.py and the tracker's own-cover checks
   min_split_cells: 3     # cells: a second body this big inside a box SPLITs the track (drops its exemption)
