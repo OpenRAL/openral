@@ -741,7 +741,9 @@ class SO100FollowerHAL(HALBase):
         problems: list[str] = []
         notes: list[str] = []
         bus = getattr(robot, "bus", None)
-        if not (callable(getattr(bus, "write", None)) and callable(getattr(bus, "read", None))):
+        if bus is None or not (
+            callable(getattr(bus, "write", None)) and callable(getattr(bus, "read", None))
+        ):
             problems.append("robot exposes no motor bus: torque off cannot be written or read back")
         else:
             notes.extend(self._release_bus_port(bus))

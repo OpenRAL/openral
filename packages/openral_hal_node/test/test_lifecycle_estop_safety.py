@@ -230,7 +230,7 @@ class _RecordingLogger:
         return lambda msg, *_a, **_k: self.records.append((level, str(msg)))
 
 
-def _so101_hal_on_fake_bus(**bus_kwargs: object) -> object:
+def _so101_hal_on_fake_bus(dark: frozenset[str] = frozenset()) -> object:
     """A connected real ``SO100FollowerHAL`` whose servos sit behind the fake Feetech bus."""
     import sys
     from pathlib import Path
@@ -245,7 +245,7 @@ def _so101_hal_on_fake_bus(**bus_kwargs: object) -> object:
     from tests.unit.fakes.fake_feetech_bus import FakeFeetechBus
 
     twin = SO100DigitalTwin(SO100DigitalTwinConfig())
-    twin.bus = FakeFeetechBus(**bus_kwargs)  # type: ignore[arg-type]
+    twin.bus = FakeFeetechBus(dark=dark)
     hal = SO100FollowerHAL(robot=twin)
     hal._robot = twin  # bypass the connect-time ping so a dark servo reaches the e-stop
     hal._connected = True
@@ -253,11 +253,11 @@ def _so101_hal_on_fake_bus(**bus_kwargs: object) -> object:
 
 
 @pytest.mark.parametrize(
-    ("bus_kwargs", "level", "text"),
+    ("dark", "level", "text"),
     [
-        ({}, "error", "hardware estop completed"),
+        (frozenset(), "error", "hardware estop completed"),
         (
-            {"dark": frozenset({"elbow_flex"})},
+            frozenset({"elbow_flex"}),
             "fatal",
             "hardware estop NOT acknowledged downstream",
         ),
@@ -265,15 +265,15 @@ def _so101_hal_on_fake_bus(**bus_kwargs: object) -> object:
     ids=["acknowledged", "failed_write"],
 )
 def test_so101_estop_logs_error_when_acknowledged_and_fatal_when_a_write_fails(
-    bus_kwargs: dict[str, object], level: str, text: str
+    dark: frozenset[str], level: str, text: str
 ) -> None:
     """Issue #526: an acknowledged SO-101 stop is ERROR "completed", a failed one FATAL."""
     rclpy.init()
     try:
         node = ManifestHALLifecycleNode("openral_hal_so101_follower")
         logger = _RecordingLogger()
-        node.get_logger = lambda: logger  # type: ignore[method-assign]
-        node._hal = cast(HAL, _so101_hal_on_fake_bus(**bus_kwargs))
+        node.get_logger = lambda: logger
+        node._hal = cast(HAL, _so101_hal_on_fake_bus(dark))
         try:
             node._on_estop(object())
             assert node._estopped
