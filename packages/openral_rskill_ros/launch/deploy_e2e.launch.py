@@ -1563,6 +1563,16 @@ def _workspace_explained_cells(
     return object_tracking == "on" and workspace_contact_enabled and requested
 
 
+def _locate_contrast_labels(locator_specs: list[dict[str, str]]) -> bool:
+    """Whether the tracker asks its locator for contrast labels beside the query.
+
+    Only a ``zeroshot_hf`` (OmDet) locator names each box with one class of the prompt.
+    LocateAnything names an unlabelled box with the whole query, which the tracker's label
+    filter then drops. The tracker uses the first locator (its ``locate_service``).
+    """
+    return bool(locator_specs) and locator_specs[0].get("engine") == "zeroshot_hf"
+
+
 def _tracked_clear_enabled(object_tracking: str) -> bool:
     """Whether a track may drive a map clear (bridge and self-filter ``tracked_clear_enabled``).
 
@@ -4927,6 +4937,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                         else ""
                     ),
                     "joint_states_topic": runtime_joint_states_topic or "/joint_states",
+                    "locate_contrast_labels": _locate_contrast_labels(locator_specs),
                     "instance_cells": instance_cells,
                     "use_sim_time": use_sim_time,
                 }

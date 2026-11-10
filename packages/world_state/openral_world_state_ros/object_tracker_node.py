@@ -317,6 +317,22 @@ def contrast_query(label: str, contrast: Sequence[str]) -> str:
     return ", ".join([label, *(c for c in contrast if not own & set(c.lower().split()))])
 
 
+def locate_query(label: str, *, contrast: bool) -> str:
+    """The ``LocateInView`` query for ``label``: with the contrast labels only if ``contrast``.
+
+    Contrast labels need a detector that names each box with one class of the prompt
+    (OmDet, ``zeroshot_hf``). LocateAnything names an unlabelled box with the whole query
+    (``locateanything_detector.py``), so with contrast on ``contrasted`` dropped every one.
+
+    Example:
+        >>> locate_query("stock object", contrast=False)
+        'stock object'
+        >>> locate_query("orange", contrast=True).startswith("orange, ")
+        True
+    """
+    return contrast_query(label, _CONTRAST_LABELS) if contrast else label
+
+
 def _names(label: str) -> set[str]:
     """The class names a comma-joined prompt asks for (label and synonyms), lower-cased.
 
@@ -681,7 +697,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
     class ObjectTrackerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         """The object-tracker lifecycle node (module docstring)."""
 
-        def __init__(self) -> None:
+        def __init__(self) -> None:  # noqa: PLR0915 # reason: one declare per node parameter
             super().__init__("openral_object_tracker")
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("mode", "tracking")
@@ -709,6 +725,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("declared_object_catalog_json", "")
             self.declare_parameter("object_surface_model_json", "")
             self.declare_parameter("locate_service", "")
+            self.declare_parameter("locate_contrast_labels", False)
             self.declare_parameter("joint_states_topic", "/joint_states")
             # EXPERIMENT (pro#51, sim-only): fit TARGET / DESTINATION boxes to the instance
             # mask propagator's cells (DeployRuntime.instance_cells).
@@ -1340,8 +1357,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 )
                 return
             label = req.prompt or req.label
+            contrast = bool(self.get_parameter("locate_contrast_labels").value)
             lreq = LocateInView.Request(
-                query=contrast_query(label, _CONTRAST_LABELS), camera=req.camera, detector=""
+                query=locate_query(label, contrast=contrast), camera=req.camera, detector=""
             )
             lreq.source_stamp_ns = frame.stamp_ns
             lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())

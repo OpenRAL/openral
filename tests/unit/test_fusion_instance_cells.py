@@ -43,6 +43,7 @@ def test_the_box_follows_the_cells_vision_labels_its_own():
     moved = _get(tr, t.object_id)
     assert moved.status is TrackStatus.CONFIRMED
     assert abs(moved.box.pose.xyz[0] - (t.box.pose.xyz[0] + 0.06)) < 0.02
+    assert moved.last_fit_stamp_ns == 10**9, "a vision box is a fit for the grasp binder"
 
 
 def test_cells_far_larger_than_the_object_are_refused():
@@ -60,6 +61,9 @@ def test_an_unmoved_object_keeps_its_fitted_box_and_is_only_re_dated():
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
     kept = _get(tr, t.object_id)
     assert kept.box.pose.xyz == t.box.pose.xyz and kept.last_confirmed_stamp_ns == 10**9
+    # Review of #521: the grasp binder reads the fit time (``_fresh_ns``); a re-date that left
+    # it behind made a followed target bind as a stale fit.
+    assert kept.last_fit_stamp_ns == 10**9
 
 
 def test_a_released_target_the_mask_still_follows_is_minted_again():
@@ -298,3 +302,40 @@ def test_a_larger_instance_of_a_seen_size_is_minted_and_a_merged_pair_is_not():
     assert not tr._implausible_box(t.label, box, agg=max)
     pair = t.box.model_copy(update={"half_extents": (0.16, 0.08, t.box.half_extents[2])})
     assert tr._implausible_box(t.label, pair, agg=max)
+
+
+def test_a_re_found_target_drops_the_hulls_posed_for_its_released_box():
+    """Review of #521: the re-minted track copied the released track's tight hulls; the bind
+    tests the pinch against the hulls first, where the object had been."""
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    assert t.tight, "the clear fit left hulls to drop"
+    _released(tr, t, 10)
+    grid, cells = _labelled(0.02)
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 1
+    (found,) = [o for o in tr.store.all() if o.status is TrackStatus.CONFIRMED]
+    assert found.tight == () and found.last_fit_stamp_ns == 10**9
+
+
+def test_cells_the_map_sees_as_two_bodies_never_move_or_confirm_a_track():
+    """Review of #521: only ``map_disagrees`` was refused, so a mask over the can and a body
+    above it (two separate bodies in the box, ``map_split``) replaced the can's box. The refit
+    rule (``_refuse_refit``) already refuses a split."""
+    from tests.unit._tracker_scenes import box
+
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    x, y = _RIG.centre_xy
+    z0 = _RIG.support_z
+    solids = [
+        cylinder((x, y), 0.035, z0, z0 + 0.1),
+        box((x + 0.03, y, z0 + 0.15), (0.02,) * 3, 0.0),
+    ]
+    depth, _ = render(solids, _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    c = grid.occupied_centers()
+    near = (np.hypot(c[:, 0] - x, c[:, 1] - y) <= 0.06) & (c[:, 2] > z0 + grid.resolution)
+    local = (c[near] - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution
+    cells = frozenset(tuple(v) for v in np.floor(local).astype(np.int64).tolist())
+    assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
+    assert _get(tr, t.object_id) == t

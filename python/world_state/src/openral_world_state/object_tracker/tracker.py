@@ -2333,7 +2333,13 @@ class ObjectTracker:
             ) >= cover_need(ref)
             if t.status is TrackStatus.CONFIRMED and unmoved:
                 self._cells[oid] = live  # unmoved: keep the fit's box, re-date it on vision
-                self.store.replace(t.model_copy(update={"last_confirmed_stamp_ns": stamp_ns}))
+                # Camera-measured inside its box: a fresh fit for the grasp binder too, as
+                # ``_redate_if_inside`` re-dates a refused refit (``_fresh_ns`` reads the fit).
+                self.store.replace(
+                    t.model_copy(
+                        update={"last_fit_stamp_ns": stamp_ns, "last_confirmed_stamp_ns": stamp_ns}
+                    )
+                )
                 continue
             shift = float(np.hypot(*(np.asarray(box.pose.xyz[:2]) - t.box.pose.xyz[:2])))
             if shift > res or t.status is not TrackStatus.CONFIRMED:
@@ -2355,6 +2361,7 @@ class ObjectTracker:
                         # Hulls were posed for the old box: they go with it.
                         "tight": t.tight if box == t.box else (),
                         "status": TrackStatus.CONFIRMED,
+                        "last_fit_stamp_ns": stamp_ns,
                         "last_confirmed_stamp_ns": stamp_ns,
                         "support_z": min(t.support_z, float(bottom)),
                         "occupied_cells": v.occupied or len(live),
@@ -2400,6 +2407,7 @@ class ObjectTracker:
         }
         fields.update(
             box=box,
+            tight=(),  # the released track's hulls were posed for its old box
             # The release support and floor stand (floor_z >= support_z): a mask that labels
             # only the upper part of the object must not lift the support above the floor.
             support_z=min(track.support_z, float(box.pose.xyz[2] - box.half_extents[2])),
@@ -2507,8 +2515,11 @@ class ObjectTracker:
             others=others,
             static=self._static_keys(grid),
         )
-        if v.kind == "map_disagrees":
-            return f"verdict {v.why}"
+        # The refit rule (``_refuse_refit``): a box the map sees as two bodies never confirms
+        # (it took in a neighbour); a second body in the hand's own space or a box the camera
+        # cannot see stays as before.
+        if v.kind in ("map_disagrees", "map_split"):
+            return f"verdict {v.kind}: {v.why}"
         return box, live, v
 
     def _refresh_evidence(self, object_id: str, cells: frozenset[Cell]) -> None:
