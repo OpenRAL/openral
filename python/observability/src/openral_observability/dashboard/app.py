@@ -41,7 +41,7 @@ import time
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import jsonschema
@@ -70,6 +70,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
 
+from openral_observability.dashboard.bridge_relay import BridgeRelay
 from openral_observability.dashboard.remote_auth import (
     ROLE_RANK,
     Principal,
@@ -81,6 +82,9 @@ from openral_observability.dashboard.remote_auth import (
 )
 from openral_observability.dashboard.store import TelemetryStore
 from openral_observability.dashboard.ui_assets import ui_dir
+
+if TYPE_CHECKING:
+    from websockets.asyncio.client import ClientConnection
 
 __all__ = ["create_app"]
 
@@ -1081,6 +1085,44 @@ def _with_headers(resp: Response, headers: dict[str, str]) -> Response:
     return resp
 
 
+async def _relay_to_browser(
+    upstream: ClientConnection, websocket: WebSocket, relay: BridgeRelay
+) -> None:
+    """Read the bridge into ``relay`` and send what it releases while the browser keeps up.
+
+    Reading never waits on the browser, so while a send is in flight newer snapshot
+    frames replace older unsent ones instead of queuing behind them.
+    """
+    ready = asyncio.Event()
+
+    async def read_bridge() -> None:
+        async for message in upstream:
+            relay.from_bridge(message)
+            ready.set()
+
+    reader = asyncio.create_task(read_bridge())
+    try:
+        while True:
+            waiter = asyncio.create_task(ready.wait())
+            try:
+                await asyncio.wait({reader, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+            ready.clear()
+            for frame in relay.drain():
+                if isinstance(frame, bytes):
+                    await websocket.send_bytes(frame)
+                else:
+                    await websocket.send_text(frame)
+            if reader.done() and not relay.pending():
+                reader.result()  # re-raise a bridge error
+                return
+    finally:
+        reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)
+
+
 async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None) -> None:
     """Pump frames between the browser and ``foxglove_bridge`` until a side or the ticket ends."""
     import websockets
@@ -1097,12 +1139,12 @@ async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None
         await websocket.close(code=_WS_UNAVAILABLE, reason="foxglove_bridge is not running")
         return
 
+    # Latest-wins for snapshot topics: a slow browser link (the tunnel) gets the
+    # newest image / cloud / map instead of a growing backlog (bridge_relay).
+    relay = BridgeRelay()
+
     async def downstream() -> None:
-        async for message in upstream:
-            if isinstance(message, bytes):
-                await websocket.send_bytes(message)
-            else:
-                await websocket.send_text(message)
+        await _relay_to_browser(upstream, websocket, relay)
 
     async def upstream_pump() -> None:
         while True:
@@ -1111,6 +1153,7 @@ async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None
                 return
             data = message.get("bytes") if message.get("bytes") is not None else message.get("text")
             if data is not None:
+                relay.from_browser(data)
                 await upstream.send(data)
 
     async with upstream:
