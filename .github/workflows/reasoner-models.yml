@@ -62,4 +62,4 @@ jobs:
             --title "chore(accounts): offer openral's curated reasoner models" \
             --body "REASONER_MODELS as of OpenRAL/openral@${GITHUB_SHA}, opened by reasoner-models.yml.")
           gh pr merge "$pr" --merge --delete-branch || gh pr merge "$pr" --merge --auto \
-            || echo "::warning::merge ${pr} by hand"
+            || { echo "::error::could not merge ${pr}: merge it by hand"; exit 1; }

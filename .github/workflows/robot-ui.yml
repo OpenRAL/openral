@@ -217,7 +217,7 @@ jobs:
               --title "chore(dashboard): pin the robot UI ${TAG}" \
               --body "The robot UI built from OpenRAL/openral@${GITHUB_SHA}, opened by robot-ui.yml.")
             gh pr merge "$pr" --merge --delete-branch || gh pr merge "$pr" --merge --auto \
-              || echo "::warning::merge ${pr} by hand"
+              || { echo "::error::could not merge ${pr}: merge it by hand"; exit 1; }
           fi
       - name: openral master
         if: steps.gate.outputs.skip != 'true'
