@@ -66,6 +66,7 @@ from openral_core.schemas import (
 from openral_hal._base import HALBase, resolve_staleness_limit_s
 from openral_hal._sensor_wiring import with_sensors
 from openral_hal.protocol import EStopRecovery
+from openral_hal.ros_control import DownstreamStopReport
 
 if TYPE_CHECKING:
     # Import only for type checking — lerobot is optional at runtime.
@@ -99,6 +100,20 @@ _RESET_STEP_HZ = 30.0
 # Below this max joint delta (rad) the arm counts as already at the target
 # and the ramp is skipped entirely.
 _RESET_DEADBAND_RAD = 1e-3
+
+# ── E-stop ────────────────────────────────────────────────────────────────────
+# The SO-100/SO-101 e-stop is an IEC 60204-1 **category 0** stop: torque off on
+# every servo, so the arm goes limp and drops under gravity. It is the
+# behaviour this HAL has always had (it came from lerobot's
+# ``disable_torque_on_disconnect=True`` default); it is now set explicitly at
+# ``connect()`` and named in every ``DownstreamStopReport`` so a change of stop
+# category is a visible decision, not a library default (issue #526).
+_ESTOP_VENDOR_STOP = "torque_off (IEC 60204-1 category 0)"
+# lerobot's own ``MotorsBus.disconnect`` uses 5 retries for its torque-off
+# writes; the e-stop matches it. Each try is one bounded serial transaction.
+_ESTOP_TORQUE_RETRIES = 5
+# Torque_Enable register value meaning "torque off" (Feetech STS/SCS).
+_TORQUE_DISABLED = 0
 
 # ── Canonical RobotDescription for the SO-100 follower arm ────────────────────
 
@@ -401,6 +416,16 @@ class SO100FollowerHAL(HALBase):
         self._connected: bool = False
         self._last_obs_time: float = 0.0
         self._last_obs: dict[str, float] = {}
+        self._last_stop_report: DownstreamStopReport | None = None
+
+    @property
+    def last_stop_report(self) -> DownstreamStopReport | None:
+        """Report of the most recent ``estop()``; ``None`` before the first / after ``connect()``.
+
+        The ``DownstreamStopReporting`` surface the lifecycle node reads to log
+        ERROR "hardware estop completed" (acknowledged) or FATAL (not).
+        """
+        return self._last_stop_report
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -447,6 +472,9 @@ class SO100FollowerHAL(HALBase):
                 # committed calibration (see __init__).
                 calibration_dir=Path(self._calibration_dir) if self._calibration_dir else None,
                 max_relative_target=self._max_relative_target,
+                # Explicit, not lerobot's default: torque off on disconnect is
+                # the category-0 stop this HAL's e-stop relies on (#526).
+                disable_torque_on_disconnect=True,
                 use_degrees=True,  # adapter converts degrees ↔ radians
             )
             try:
@@ -481,6 +509,7 @@ class SO100FollowerHAL(HALBase):
             raise
         self._connected = True
         self._last_obs_time = time.monotonic()
+        self._last_stop_report = None
         log.info("hal.connect", robot="so100_follower", port=self._port)
 
     def _preflight_servo_ping(self, robot: _LeRobotRobot) -> None:
@@ -660,18 +689,127 @@ class SO100FollowerHAL(HALBase):
             time.sleep(1.0 / _RESET_STEP_HZ)
 
     def estop(self) -> None:
-        """Trigger an emergency stop: disconnect motors then raise.
+        """Trigger an emergency stop: drop the connection, cut torque on every servo, raise.
+
+        A category-0 stop (``_ESTOP_VENDOR_STOP``). The connection flag drops
+        **first**, so no further ``send_action`` from this HAL reaches the bus.
+        Then ``Torque_Enable=0`` is written to every servo and read back; each
+        servo is attempted even if an earlier one failed, so the report names
+        every motor that did and did not acknowledge. Finally the lerobot
+        session is closed (``disconnect()``, which with
+        ``disable_torque_on_disconnect=True`` writes torque off once more).
+
+        The outcome is recorded in ``last_stop_report``: ``stopped`` only when
+        every servo acknowledged the write **and** reads back torque off. A
+        failure is never swallowed — it lands in the report and the lifecycle
+        node logs FATAL ``downstream_stop=unacknowledged``. A HAL that is not
+        connected, or a robot with no motor bus to verify, reports
+        ``stopped=False``: a local latch is never reported as a downstream stop.
 
         Raises:
             ROSEStopRequested: Always.
         """
-        log.critical("hal.estop", robot="so100_follower", port=self._port)
-        if self._robot is not None and self._connected:
-            with contextlib.suppress(Exception):
-                self._robot.disconnect()
-        self._robot = None
+        log.critical("hal.estop", robot=self.description.name, port=self._port)
+        robot = self._robot if self._connected else None
         self._connected = False
-        raise ROSEStopRequested(f"Emergency stop triggered on SO-100 at port '{self._port}'.")
+        self._robot = None
+        report = self._cut_torque(robot)
+        self._last_stop_report = report
+        verdict = "acknowledged" if report.stopped else "NOT acknowledged"
+        raise ROSEStopRequested(
+            f"Emergency stop triggered on SO-100/SO-101 ('{self.description.name}') at port "
+            f"'{self._port}' (downstream stop {verdict}: {report.detail})."
+        )
+
+    def _cut_torque(self, robot: _LeRobotRobot | None) -> DownstreamStopReport:
+        """Write and read back ``Torque_Enable=0`` per servo, close the session, report."""
+        motors = tuple(_SO100_JOINT_NAMES)
+        if robot is None:
+            log.critical(
+                "hal.estop.unproven",
+                robot=self.description.name,
+                reason="HAL not connected; no motor bus to stop",
+            )
+            return DownstreamStopReport(
+                stopped=False,
+                controllers=motors,
+                vendor_stop=_ESTOP_VENDOR_STOP,
+                detail="HAL not connected: no motor bus to stop; only the local latch holds",
+            )
+
+        states: dict[str, str] = {}
+        problems: list[str] = []
+        notes: list[str] = []
+        bus = getattr(robot, "bus", None)
+        if not (callable(getattr(bus, "write", None)) and callable(getattr(bus, "read", None))):
+            problems.append("robot exposes no motor bus: torque off cannot be written or read back")
+        else:
+            notes.extend(self._release_bus_port(bus))
+            for motor in motors:
+                try:
+                    # ``MotorsBus.write`` waits for the servo's status packet, so a
+                    # return is the servo acknowledging the write; the read-back
+                    # proves the register holds it.
+                    bus.write(
+                        "Torque_Enable",
+                        motor,
+                        _TORQUE_DISABLED,
+                        normalize=False,
+                        num_retry=_ESTOP_TORQUE_RETRIES,
+                    )
+                    value = bus.read(
+                        "Torque_Enable", motor, normalize=False, num_retry=_ESTOP_TORQUE_RETRIES
+                    )
+                except Exception as exc:  # reason: one dark servo must not skip the others
+                    states[motor] = "torque_unknown"
+                    problems.append(f"{motor}: {type(exc).__name__}: {exc}")
+                    continue
+                if int(value) == _TORQUE_DISABLED:
+                    states[motor] = "torque_off"
+                else:
+                    states[motor] = "torque_on"
+                    problems.append(f"{motor}: Torque_Enable reads back {value}")
+
+        try:
+            robot.disconnect()
+        except Exception as exc:  # reason: a close failure must land in the report, not escape
+            msg = f"disconnect failed: {type(exc).__name__}: {exc}"
+            # With torque proven off on every servo the stop held; the port
+            # close is bookkeeping. Without that proof it is part of the failure.
+            (notes if not problems else problems).append(msg)
+
+        report = DownstreamStopReport(
+            stopped=not problems,
+            controllers=motors,
+            controller_states=states,
+            vendor_stop=_ESTOP_VENDOR_STOP,
+            detail="; ".join(problems or notes) or "torque off on every servo (read back)",
+        )
+        log.critical(
+            "hal.estop.downstream_stopped" if report.stopped else "hal.estop.downstream_unacknowledged",
+            robot=self.description.name,
+            **report.fields(),
+        )
+        return report
+
+    @staticmethod
+    def _release_bus_port(bus: object) -> list[str]:
+        """Free the serial port for the stop writes, as lerobot's own ``disconnect`` does.
+
+        A control-loop transaction cut short by the stop can leave the port
+        flagged busy; ``MotorsBus.disconnect(disable_torque=True)`` clears it
+        the same way before its torque-off writes. Returns notes for the report
+        (empty when there is nothing to release or it succeeded).
+        """
+        port = getattr(bus, "port_handler", None)
+        if port is None:
+            return []
+        try:
+            port.clearPort()
+            port.is_using = False
+        except Exception as exc:  # reason: the writes below are the proof, not this
+            return [f"port release failed: {type(exc).__name__}: {exc}"]
+        return []
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 

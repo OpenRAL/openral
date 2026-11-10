@@ -213,6 +213,9 @@ LingBot server afterwards with
 `scripts/apps/lingbot/a1_lingbot_runtime.sh server-stop`.
 
 The A1 opts into hardware-downstream e-stop: `/openral/estop` stops the
-sidecar-owned tracker and driver immediately. The generic
+sidecar-owned tracker and driver immediately. The lifecycle node logs ERROR
+`hardware estop completed` once the sidecar confirms that tracker, driver and
+roscore exited, and FATAL `downstream_stop=unacknowledged` (with the error) when
+it does not confirm in time or the link drops. The generic
 `/openral/estop_cleared` broadcast cannot re-arm this HAL; restart the lifecycle
 and sidecar, re-read motor health, and repeat initial alignment instead.

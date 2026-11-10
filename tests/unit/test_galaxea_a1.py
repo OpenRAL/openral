@@ -929,6 +929,101 @@ def test_estop_stops_transport_and_always_raises() -> None:
         hal.read_state()
 
 
+def test_confirmed_sidecar_stop_is_reported_acknowledged() -> None:
+    """Issue #526: a confirmed sidecar stop must read ``acknowledged``, not ``unproven``."""
+    from openral_hal.ros_control import DownstreamStopReporting
+
+    hal = GalaxeaA1HAL(transport=FakeA1Transport())
+    assert isinstance(hal, DownstreamStopReporting)
+    assert hal.last_stop_report is None
+    hal.connect()
+    with pytest.raises(ROSEStopRequested, match="downstream stop acknowledged"):
+        hal.estop()
+    report = hal.last_stop_report
+    assert report is not None and report.stopped
+    fields = report.fields()
+    assert fields["downstream_stop"] == "acknowledged"
+    assert fields["downstream_vendor_stop"] == "ros1_sidecar_estop"
+    assert fields["downstream_controller_states"] == (
+        "joint_tracker=exited,serial_driver=exited,roscore=exited"
+    )
+    hal.connect()
+    assert hal.last_stop_report is None
+
+
+class _RefusingA1Transport(FakeA1Transport):
+    def estop(self, timeout_s: float) -> None:
+        super().estop(timeout_s)
+        raise ROSRuntimeError("Galaxea A1 sidecar did not confirm that its ROS 1 stack stopped.")
+
+
+def test_unconfirmed_sidecar_stop_is_unacknowledged_and_still_raises_estop() -> None:
+    """A sidecar failure lands in the report; ``estop()`` still raises ``ROSEStopRequested``."""
+    transport = _RefusingA1Transport()
+    hal = GalaxeaA1HAL(transport=transport)
+    hal.connect()
+    with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+        hal.estop()
+    assert transport.estopped
+    report = hal.last_stop_report
+    assert report is not None and not report.stopped
+    assert report.fields()["downstream_stop"] == "unacknowledged"
+    assert "ROSRuntimeError: Galaxea A1 sidecar did not confirm" in report.detail
+    with pytest.raises(ROSRuntimeError):
+        hal.read_state()
+
+
+def _serve_one_a1_session(listener: socket.socket, *, confirm_estop: bool) -> None:
+    """Loopback sidecar: handshake, one state frame, then answer (or drop) the estop."""
+    with listener:
+        conn, _ = listener.accept()
+        with conn, conn.makefile("rb") as stream:
+            stream.readline()  # hello
+            conn.sendall(
+                json.dumps({"op": "hello", "protocol": 1, "robot": "galaxea_a1"}).encode() + b"\n"
+            )
+            state = {
+                "op": "state",
+                "name": [f"arm_joint{i}" for i in range(1, 7)],
+                "position": [0.0, 1.0, -1.0, 0.0, 0.0, 0.0],
+                "velocity": [0.0] * 6,
+                "effort": [0.0] * 6,
+                "stamp_ns": time.time_ns(),
+                "status_codes": [0] * 7,
+                "gripper_norm": 0.5,
+                "relay_state": "LOCKED",
+            }
+            conn.sendall(json.dumps(state).encode() + b"\n")
+            packet = json.loads(stream.readline())
+            assert packet["op"] == "estop"
+            if confirm_estop:
+                conn.sendall(json.dumps({"op": "estopped"}).encode() + b"\n")
+            # else: close without confirming, like a sidecar that crashed mid-stop
+
+
+@pytest.mark.parametrize("confirm_estop", [True, False], ids=["confirmed", "dropped"])
+def test_real_socket_estop_reports_the_sidecar_confirmation(confirm_estop: bool) -> None:
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    server = threading.Thread(
+        target=_serve_one_a1_session, args=(listener,), kwargs={"confirm_estop": confirm_estop}
+    )
+    server.start()
+    hal = GalaxeaA1HAL(host="127.0.0.1", port=port, connect_timeout_s=2.0)
+    hal.connect()
+    started = time.monotonic()
+    with pytest.raises(ROSEStopRequested):
+        hal.estop()
+    server.join(timeout=2.0)
+    assert not server.is_alive()
+    assert time.monotonic() - started < 4.0  # a dropped link fails fast, not at the timeout
+    report = hal.last_stop_report
+    assert report is not None
+    assert report.stopped is confirm_estop
+
+
 def test_a_manifest_with_different_arm_limits_is_refused() -> None:
     """The adapter checks commands against its own limits; a tighter manifest must not pass."""
     from openral_core import RobotDescription

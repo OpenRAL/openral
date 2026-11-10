@@ -149,8 +149,9 @@ class TriggerReport:
 class DownstreamStopReport:
     """What a HAL knows about its last downstream stop.
 
-    Produced by ``RosControlHAL.estop`` (and the Interbotix-backed
-    ``AlohaHAL.estop``) and read by the lifecycle node, which logs FATAL and
+    Produced by ``RosControlHAL.estop``, the Interbotix-backed
+    ``AlohaHAL.estop``, the serial-bus ``SO100FollowerHAL.estop`` and the
+    sidecar-backed ``GalaxeaA1HAL.estop``, and read by the lifecycle node, which logs FATAL and
     publishes ``downstream_stop=unacknowledged`` on ``/diagnostics`` when
     ``stopped`` is ``False``. ``stopped`` is only ``True`` when every step —
     controller deactivation **and** the vendor stop, where one exists — was

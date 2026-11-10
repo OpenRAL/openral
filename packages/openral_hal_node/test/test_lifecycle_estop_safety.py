@@ -218,3 +218,72 @@ def test_resettable_lifecycle_estop_clears_only_after_hal_reset() -> None:
             node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+class _RecordingLogger:
+    """Captures the node's log calls by severity (the node's own rcutils logger is the sink)."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str]] = []
+
+    def __getattr__(self, level: str) -> object:
+        return lambda msg, *_a, **_k: self.records.append((level, str(msg)))
+
+
+def _so101_hal_on_fake_bus(**bus_kwargs: object) -> object:
+    """A connected real ``SO100FollowerHAL`` whose servos sit behind the fake Feetech bus."""
+    import sys
+    from pathlib import Path
+
+    # colcon runs this from the package; the serial-boundary fake lives in the repo's tests tree.
+    repo_root = str(Path(__file__).resolve().parents[3])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from openral_hal.so100_follower import SO100FollowerHAL
+    from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
+
+    from tests.unit.fakes.fake_feetech_bus import FakeFeetechBus
+
+    twin = SO100DigitalTwin(SO100DigitalTwinConfig())
+    twin.bus = FakeFeetechBus(**bus_kwargs)  # type: ignore[arg-type]
+    hal = SO100FollowerHAL(robot=twin)
+    hal._robot = twin  # bypass the connect-time ping so a dark servo reaches the e-stop
+    hal._connected = True
+    return hal
+
+
+@pytest.mark.parametrize(
+    ("bus_kwargs", "level", "text"),
+    [
+        ({}, "error", "hardware estop completed"),
+        (
+            {"dark": frozenset({"elbow_flex"})},
+            "fatal",
+            "hardware estop NOT acknowledged downstream",
+        ),
+    ],
+    ids=["acknowledged", "failed_write"],
+)
+def test_so101_estop_logs_error_when_acknowledged_and_fatal_when_a_write_fails(
+    bus_kwargs: dict[str, object], level: str, text: str
+) -> None:
+    """Issue #526: an acknowledged SO-101 stop is ERROR "completed", a failed one FATAL."""
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_so101_follower")
+        logger = _RecordingLogger()
+        node.get_logger = lambda: logger  # type: ignore[method-assign]
+        node._hal = cast(HAL, _so101_hal_on_fake_bus(**bus_kwargs))
+        try:
+            node._on_estop(object())
+            assert node._estopped
+            hits = [msg for lvl, msg in logger.records if text in msg]
+            assert hits, logger.records
+            assert any(lvl == level for lvl, msg in logger.records if text in msg)
+            fields = node._downstream_stop_fields()
+            expected = "acknowledged" if level == "error" else "unacknowledged"
+            assert fields["downstream_stop"] == expected
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
