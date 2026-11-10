@@ -274,47 +274,56 @@ _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driv
 ### `python/hal/src/openral_hal/so100_follower.py`
 _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 
-- module const `_SO100_JOINT_NAMES: list[str]` (L81) — canonical joint order, matching lerobot's bus motor dict order.
-- module const `_RESET_MAX_RAD_S = 0.5` (L96) — `reset_to_pose` ramp speed cap.
-- module const `_RESET_MIN_S = 1.0` (L97) — `reset_to_pose` ramp minimum duration.
-- module const `_RESET_STEP_HZ = 30.0` (L98) — `reset_to_pose` ramp waypoint rate.
-- module const `_RESET_DEADBAND_RAD` (L101) — below this max joint delta the arm counts as already at the target and the ramp is skipped.
-- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100/SO-101 follower. Takes `description=` (the loaded manifest, so an SO-101 deploy reports `so101_follower`); `None` falls back to `SO100_DESCRIPTION`. Declares `estop_recovery = RESTART_REQUIRED`: its vendor E-stop disconnects the motor bus, so command execution requires a fresh lifecycle start and alignment. (L312)
-  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=None, robot=None, description=None)` (L362) — `staleness_limit_s=None` reads the manifest's window.
-  - `connect() -> None` — Open USB serial connection. (L407)
-  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L523)
-  - `read_state() -> JointState` — Joint state in radians. (L536)
-  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L564)
-  - `reset_to_pose(pose: list[float]) -> None` — Explicit maintenance/test ramp from current → target (speed-capped `_RESET_MAX_RAD_S`, never shorter than `_RESET_MIN_S` and never sped up for a large move, `_RESET_STEP_HZ` waypoints). Refuses (`ROSConfigError`, before any bus write) a non-finite value or one outside the loaded manifest's `position_limits` — never clips. The lifecycle node exposes it at `/openral/<robot>/reset_to_pose`; skill startup uses the runner's safety-kernel path. (L587)
-  - `estop() -> None` — Disconnect motors then raise. (L662)
+- module const `_SO100_JOINT_NAMES: list[str]` (L82) — canonical joint order, matching lerobot's bus motor dict order.
+- module const `_RESET_MAX_RAD_S = 0.5` (L97) — `reset_to_pose` ramp speed cap.
+- module const `_RESET_MIN_S = 1.0` (L98) — `reset_to_pose` ramp minimum duration.
+- module const `_RESET_STEP_HZ = 30.0` (L99) — `reset_to_pose` ramp waypoint rate.
+- module const `_RESET_DEADBAND_RAD` (L102) — below this max joint delta the arm counts as already at the target and the ramp is skipped.
+- module const `_ESTOP_VENDOR_STOP` (L111) — `"torque_off (IEC 60204-1 category 0)"`: the stop category, named in every `DownstreamStopReport` so a change of category is a visible decision (issue #526).
+- module const `_ESTOP_TORQUE_RETRIES = 5` (L114) — retries per servo for the e-stop's `Torque_Enable` write and read-back (matches lerobot's own `MotorsBus.disconnect`).
+- module const `_TORQUE_DISABLED = 0` (L116) — Feetech `Torque_Enable` value for torque off.
+- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100/SO-101 follower. Takes `description=` (the loaded manifest, so an SO-101 deploy reports `so101_follower`); `None` falls back to `SO100_DESCRIPTION`. Declares `estop_recovery = RESTART_REQUIRED`: its vendor E-stop cuts torque and disconnects the motor bus, so command execution requires a fresh lifecycle start and alignment. Implements `DownstreamStopReporting`. (L327)
+  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=None, robot=None, description=None)` (L377) — `staleness_limit_s=None` reads the manifest's window.
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` — The `DownstreamStopReporting` surface the lifecycle node reads (ERROR "completed" vs FATAL); `None` before the first e-stop and after `connect()`. (L422)
+  - `connect() -> None` — Open USB serial connection; builds lerobot's config with `disable_torque_on_disconnect=True` set explicitly (the category-0 stop, not a library default) and clears `last_stop_report`. (L432)
+  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L552)
+  - `read_state() -> JointState` — Joint state in radians. (L565)
+  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L593)
+  - `reset_to_pose(pose: list[float]) -> None` — Explicit maintenance/test ramp from current → target (speed-capped `_RESET_MAX_RAD_S`, never shorter than `_RESET_MIN_S` and never sped up for a large move, `_RESET_STEP_HZ` waypoints). Refuses (`ROSConfigError`, before any bus write) a non-finite value or one outside the loaded manifest's `position_limits` — never clips. The lifecycle node exposes it at `/openral/<robot>/reset_to_pose`; skill startup uses the runner's safety-kernel path. (L616)
+  - `estop() -> None` — Drop the connection flag first, then `_cut_torque()`, record the `DownstreamStopReport`, raise `ROSEStopRequested` whose message says whether the stop was acknowledged. A failure is never suppressed. (L691)
+  - `_cut_torque(robot) -> DownstreamStopReport` [private] — Writes `Torque_Enable=0` to every servo (lerobot's `MotorsBus.write` waits for the status packet) and reads it back, attempting every servo even after a failure (`controller_states` per servo `torque_off` / `torque_on` / `torque_unknown`), then `robot.disconnect()`. `stopped` only when every servo read back torque off; not connected, or a robot with no motor bus to verify, is `stopped=False`. A close failure after proven torque off is noted in `detail`; otherwise it is part of the failure. (L724)
+  - `_release_bus_port(bus) -> list[str]` [private, @staticmethod] — `port_handler.clearPort()` + `is_using = False` before the stop writes, as lerobot's own `MotorsBus.disconnect(disable_torque=True)` does; returns notes for the report. (L800)
   - `_require_connected(operation: str)`, `_obs_to_positions(obs)` [@staticmethod], `_action_to_lerobot(action)`
-  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L284)
-- `_deg_to_rad(deg) -> float` (L279)
-- `_rad_to_deg(rad) -> float` (L304)
-- const `SO100_DESCRIPTION = RobotDescription(...)` (L105)
-- `so100_with_sensors(catalog_ids=None) -> RobotDescription` — Copy of `SO100_DESCRIPTION` with catalog sensors attached; `None` defaults to the LeRobot reference loadout (`["logitech/c920"]`). (L248)
+  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L299)
+- `_deg_to_rad(deg) -> float` (L294)
+- `_rad_to_deg(rad) -> float` (L319)
+- const `SO100_DESCRIPTION = RobotDescription(...)` (L120)
+- `so100_with_sensors(catalog_ids=None) -> RobotDescription` — Copy of `SO100_DESCRIPTION` with catalog sensors attached; `None` defaults to the LeRobot reference loadout (`["logitech/c920"]`). (L263)
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
 _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's
 official ROS 1 Noetic SDK runs out of process behind a literal IPv4-loopback
 JSON-lines sidecar. No vendor source, binary, or message package is distributed._
 
-- `class GalaxeaA1HAL(HALBase)` (L577) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack and always raises `ROSEStopRequested`.
-  - `connect() -> None` (L699) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
-  - `disconnect() -> None` (L733) — Close the sidecar transport idempotently.
-  - `read_state() -> JointState` (L738) — Return the latest non-stale six-joint feedback snapshot.
-  - `send_action(action: Action) -> None` (L750) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
-  - `health() -> HALHealthReport` (L805) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
-  - `estop() -> None` (L827) — Stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL) and always raise `ROSEStopRequested`.
-- module const `_JOINT_NAMES` (L63) — six `arm_jointN` names.
-- module const `_JOINT_LIMITS` (L64) — per-joint `(min, max)` position limits, official A1 URDF.
-- module const `_JOINT_ORIGINS_XYZ` (L72) — per-joint URDF origin translation, transcribed from the official A1 URDF.
-- module const `_JOINT_ORIGINS_RPY` (L80) — per-joint URDF origin rotation, transcribed from the official A1 URDF.
-- module const `_PROTOCOL_VERSION = 1` (L88) — sidecar wire-protocol version sent in the `hello` handshake.
-- module const `_GRIPPER_STATUS_INDEX` (L89) — index of the gripper's status code within the sidecar's status array.
-- module const `_MAX_TCP_PORT = 65536` (L90) — upper bound accepted for the sidecar's loopback TCP port.
-- module const `_MAX_STATUS_MASK = 0xFFFFFFFF` (L91) — bit-mask upper bound for a motor status/error mask.
-- const `GALAXEA_A1_DESCRIPTION` (L94) — Real-only `RobotDescription`, mirrored by
+- `class GalaxeaA1HAL(HALBase)` (L582) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack, records a `DownstreamStopReport` (`DownstreamStopReporting`), and always raises `ROSEStopRequested`.
+  - `connect() -> None` (L714) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
+  - `disconnect() -> None` (L749) — Close the sidecar transport idempotently.
+  - `read_state() -> JointState` (L754) — Return the latest non-stale six-joint feedback snapshot.
+  - `send_action(action: Action) -> None` (L766) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
+  - `health() -> HALHealthReport` (L821) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L706) — Report of the last `estop()`; `None` before the first and after `connect()`.
+  - `estop() -> None` (L843) — Drop the connection flag first, then stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL). The sidecar's `estopped` confirmation is the acknowledgement (`stopped=True`, `joint_tracker`/`serial_driver`/`roscore` = `exited`); a refusal, timeout or link drop is recorded as `stopped=False` with the error as `detail` — never escaping as anything but `ROSEStopRequested`, which it always raises.
+- module const `_JOINT_NAMES` (L64) — six `arm_jointN` names.
+- module const `_JOINT_LIMITS` (L65) — per-joint `(min, max)` position limits, official A1 URDF.
+- module const `_JOINT_ORIGINS_XYZ` (L73) — per-joint URDF origin translation, transcribed from the official A1 URDF.
+- module const `_JOINT_ORIGINS_RPY` (L81) — per-joint URDF origin rotation, transcribed from the official A1 URDF.
+- module const `_PROTOCOL_VERSION = 1` (L89) — sidecar wire-protocol version sent in the `hello` handshake.
+- module const `_ESTOP_SIDECAR_PROCESSES` (L94) — `("joint_tracker", "serial_driver", "roscore")`, what the sidecar's e-stop stops; named in the `DownstreamStopReport`.
+- module const `_ESTOP_VENDOR_STOP` (L95) — `"ros1_sidecar_estop"`, the report's `vendor_stop` label.
+- module const `_GRIPPER_STATUS_INDEX` (L90) — index of the gripper's status code within the sidecar's status array.
+- module const `_MAX_TCP_PORT = 65536` (L91) — upper bound accepted for the sidecar's loopback TCP port.
+- module const `_MAX_STATUS_MASK = 0xFFFFFFFF` (L96) — bit-mask upper bound for a motor status/error mask.
+- const `GALAXEA_A1_DESCRIPTION` (L99) — Real-only `RobotDescription`, mirrored by
   `robots/galaxea_a1/robot.yaml`: official A1 URDF joint names/limits, sidecar
   deadlines, motor masks, 0..104 mm normalized gripper mapping, and calibrated
   D455 front / D405 wrist RGB observation contracts. Collision primitives are
@@ -647,46 +656,46 @@ _RosControlHAL — `ros2_control`-backed HAL adapter, plus the typed downstream 
 - `class ControllerKind(StrEnum)` — Which ros2_control controller sits behind one command topic, and therefore which message type commands it: `JOINT_TRAJECTORY` (`trajectory_msgs/JointTrajectory` — every ros2_control robot in this repo, OpenArm's 1-DoF grippers included) and `FORWARD_COMMAND` (`std_msgs/Float64MultiArray`, the `forward_command_controller` family; no in-repo robot yet), `JOINT_COMMAND_TRAJECTORY` (`isaac_ros_deploy_interfaces/JointCommandTrajectory`, NVIDIA's `ForwardJointCommandController` — the Unitree upper body) and `TWIST` (`geometry_msgs/Twist` from the command dict's `twist`, NVIDIA `InferenceController`'s velocity source). Declared rather than assumed because publishing the wrong type is **silent** — DDS never delivers it, so the arm does not move and nothing logs an error. Re-exported from `openral_hal`. (L73)
 - `class ControllerSwitchReport` — Frozen dataclass: acknowledged outcome of one `controller_manager` switch. `ok` is the service's verdict **and** the post-switch confirmation (every controller listed in the requested state); `states` is what `list_controllers` reported per name; `detail` names what did not move. (L124)
 - `class TriggerReport` — Frozen dataclass: `success` + `message` of one `std_srvs/Trigger`-shaped vendor call. (L141)
-- `class DownstreamStopReport` — Frozen dataclass: what a HAL knows about its last downstream stop — `stopped` (only when controller deactivation **and** the vendor stop were acknowledged; a local latch never counts), `controllers`, `controller_states`, `vendor_stop` (service/topic label or `""`), `detail`. `fields()` flattens it for `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`, …). Read by the lifecycle node, which logs FATAL on an unacknowledged stop. (L149)
-  - `fields() -> dict[str, str]` — Flattens the report for `/diagnostics` and the log line: `downstream_stop=acknowledged|unacknowledged`, `downstream_controllers`, `downstream_controller_states`, `downstream_vendor_stop`, `downstream_stop_detail`. (L167)
-- `class ControllerStopSeam(Protocol)` — What a transport must expose for a ros2_control HAL to stop its controllers: `deactivate_controllers(names, *, timeout_s)`, `activate_controllers(names, *, timeout_s)` (both → `ControllerSwitchReport`), `call_trigger(service, *, timeout_s) -> TriggerReport`, `publish_empty(topic)`. Production: `RosControlTransport`; unit lane: `SimTransport`. (L181)
-  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The stop: switch every named controller to `inactive` and confirm. (L194)
-  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The `RESETTABLE` re-arm: switch to `active` and confirm. (L200)
-  - `call_trigger(service, *, timeout_s) -> TriggerReport` — One declared `std_srvs/Trigger` vendor service. (L206)
-  - `publish_empty(topic) -> None` — One `std_msgs/Empty` on a declared vendor-stop topic. (L210)
-- `class ControllerSwapSeam(Protocol)` — **runtime-checkable**: a stop seam that can `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` in ONE `switch_controller` request. Needed by a robot whose hardware releases unclaimed joints (Unitree hg: motor mode 0 = zero torque), where plain deactivation would drop a standing humanoid. Implemented by `RosControlTransport` and `SimTransport`; `UnitreeHgRealHAL.attach_controller_stop` refuses a seam without it. (L216)
-  - `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` — Hand-over in one switch, confirmed by listing. (L231)
-- `class ControllerStoppable(Protocol)` — The stop-side counterpart of `RosControlDrivable`: `controller_names()`, `vendor_stop_services()`, `vendor_stop_topics()`, `attach_controller_stop(seam)`. The lifecycle node **refuses to configure** a `RosControlDrivable` real HAL that is not also this; `RosControlHAL` answers all four. Pinned per manifest by `tests/unit/test_real_hal_estop_fleet_conformance.py`. (L243)
-  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` must deactivate. (L255)
-  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services the vendor stop calls. (L259)
-  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on. (L263)
-  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` at wire-up. (L267)
-- `class DownstreamStopReporting(Protocol)` — `last_stop_report -> DownstreamStopReport | None` property; what the lifecycle heartbeat and FATAL log read. (L273)
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L277)
-- `class RosControlHAL` — `ros2_control`-backed HAL adapter. Implements `LifecycleEStopHAL` with `estop_recovery = RESTART_REQUIRED` by default (the conservative policy; OpenArm opts into `RESETTABLE`). (L304)
-  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0)` (L367) — `staleness_limit_s=None` reads `description.safety.joint_state_staleness_limit_s` via `resolve_staleness_limit_s` (no constructor default; refused when undeclared). Reads the control rate from `description.action_spec.control_freq_hz` (the field the runner ticks at and the recorder stamps as fps; every committed ros2_control manifest declares 30 Hz); **refuses to construct** with `ROSConfigError` naming the field when it is missing or not positive, so `build_hal(mode="real")` and the lifecycle node's configure stop there (issue #303).
-  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` — Bind a live transport after construction; `build_hal` runs before any ROS node exists, so a real deployment cannot pass one to `__init__`. `stamp_fn` is the transport's per-message arrival clock and is what makes the staleness check a freshness check rather than a time-since-connect check. Rejects a non-callable `stamp_fn` at wire-up. (L418)
-  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` (same rationale as `attach_transport`); rejects a non-seam at wire-up with `ROSConfigError`. (L457)
-  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` deactivates; `[controller_name]` by default, overridden by the bimanual OpenArm alongside `command_bindings`. (L480)
-  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services and `std_msgs/Empty` topics the vendor stop uses; declared up front so the transport creates the clients/publishers at wire-up and refuses an undeclared name loudly. Empty in the base. (L489)
-  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on, declared for the same reason. Empty in the base; Sawyer overrides. (L498)
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L503)
-  - `command_bindings() -> dict[str, ControllerKind]` — Every controller topic this HAL publishes to, each with the wire format its controller speaks; one entry becomes one typed transport publisher. Insertion order is the `send_action` fan-out order. **This is the override point for a new robot** — overridden by the bimanual OpenArm (4 topics, all `JOINT_TRAJECTORY`). (L507)
-  - `command_topics() -> list[str]` — Derived from `command_bindings()` so the topic list and the declared formats cannot drift; override `command_bindings`, not this. (L521)
-  - `ros2_control_joint_names() -> list[str]` — Joint names in ros2_control's namespace, action order; what `/joint_states` is keyed by. Overridden where URDF names differ from manifest names (OpenArm). (L529)
-  - **(property)** `joint_state_topic -> str` — The aggregated `sensor_msgs/JointState` topic this HAL reads. (L539)
-  - **(property)** `controller_name -> str` — Name of the primary `ros2_control` controller this HAL commands (the one `command_topic` defaults from). Hoisted here from the Franka / Sawyer wrappers so every subclass answers it. (L544)
-  - `connect() -> None` (L550)
+- `class DownstreamStopReport` — Frozen dataclass: what a HAL knows about its last downstream stop — `stopped` (only when controller deactivation **and** the vendor stop were acknowledged; a local latch never counts), `controllers`, `controller_states`, `vendor_stop` (service/topic label or `""`), `detail`. `fields()` flattens it for `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`, …). Produced by `RosControlHAL`, `AlohaHAL`, `SO100FollowerHAL` (per-servo torque off) and `GalaxeaA1HAL` (sidecar processes); the fleet conformance test requires every `hal.real` adapter to report. Read by the lifecycle node, which logs FATAL on an unacknowledged stop. (L149)
+  - `fields() -> dict[str, str]` — Flattens the report for `/diagnostics` and the log line: `downstream_stop=acknowledged|unacknowledged`, `downstream_controllers`, `downstream_controller_states`, `downstream_vendor_stop`, `downstream_stop_detail`. (L168)
+- `class ControllerStopSeam(Protocol)` — What a transport must expose for a ros2_control HAL to stop its controllers: `deactivate_controllers(names, *, timeout_s)`, `activate_controllers(names, *, timeout_s)` (both → `ControllerSwitchReport`), `call_trigger(service, *, timeout_s) -> TriggerReport`, `publish_empty(topic)`. Production: `RosControlTransport`; unit lane: `SimTransport`. (L182)
+  - `deactivate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The stop: switch every named controller to `inactive` and confirm. (L195)
+  - `activate_controllers(names, *, timeout_s) -> ControllerSwitchReport` — The `RESETTABLE` re-arm: switch to `active` and confirm. (L201)
+  - `call_trigger(service, *, timeout_s) -> TriggerReport` — One declared `std_srvs/Trigger` vendor service. (L207)
+  - `publish_empty(topic) -> None` — One `std_msgs/Empty` on a declared vendor-stop topic. (L211)
+- `class ControllerSwapSeam(Protocol)` — **runtime-checkable**: a stop seam that can `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` in ONE `switch_controller` request. Needed by a robot whose hardware releases unclaimed joints (Unitree hg: motor mode 0 = zero torque), where plain deactivation would drop a standing humanoid. Implemented by `RosControlTransport` and `SimTransport`; `UnitreeHgRealHAL.attach_controller_stop` refuses a seam without it. (L217)
+  - `swap_controllers(*, deactivate, activate, timeout_s) -> ControllerSwitchReport` — Hand-over in one switch, confirmed by listing. (L232)
+- `class ControllerStoppable(Protocol)` — The stop-side counterpart of `RosControlDrivable`: `controller_names()`, `vendor_stop_services()`, `vendor_stop_topics()`, `attach_controller_stop(seam)`. The lifecycle node **refuses to configure** a `RosControlDrivable` real HAL that is not also this; `RosControlHAL` answers all four. Pinned per manifest by `tests/unit/test_real_hal_estop_fleet_conformance.py`. (L244)
+  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` must deactivate. (L256)
+  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services the vendor stop calls. (L260)
+  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on. (L264)
+  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` at wire-up. (L268)
+- `class DownstreamStopReporting(Protocol)` — `last_stop_report -> DownstreamStopReport | None` property; what the lifecycle heartbeat and FATAL log read. (L274)
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L278)
+- `class RosControlHAL` — `ros2_control`-backed HAL adapter. Implements `LifecycleEStopHAL` with `estop_recovery = RESTART_REQUIRED` by default (the conservative policy; OpenArm opts into `RESETTABLE`). (L305)
+  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0)` (L368) — `staleness_limit_s=None` reads `description.safety.joint_state_staleness_limit_s` via `resolve_staleness_limit_s` (no constructor default; refused when undeclared). Reads the control rate from `description.action_spec.control_freq_hz` (the field the runner ticks at and the recorder stamps as fps; every committed ros2_control manifest declares 30 Hz); **refuses to construct** with `ROSConfigError` naming the field when it is missing or not positive, so `build_hal(mode="real")` and the lifecycle node's configure stop there (issue #303).
+  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` — Bind a live transport after construction; `build_hal` runs before any ROS node exists, so a real deployment cannot pass one to `__init__`. `stamp_fn` is the transport's per-message arrival clock and is what makes the staleness check a freshness check rather than a time-since-connect check. Rejects a non-callable `stamp_fn` at wire-up. (L419)
+  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` (same rationale as `attach_transport`); rejects a non-seam at wire-up with `ROSConfigError`. (L458)
+  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` deactivates; `[controller_name]` by default, overridden by the bimanual OpenArm alongside `command_bindings`. (L481)
+  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services and `std_msgs/Empty` topics the vendor stop uses; declared up front so the transport creates the clients/publishers at wire-up and refuses an undeclared name loudly. Empty in the base. (L490)
+  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on, declared for the same reason. Empty in the base; Sawyer overrides. (L499)
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L504)
+  - `command_bindings() -> dict[str, ControllerKind]` — Every controller topic this HAL publishes to, each with the wire format its controller speaks; one entry becomes one typed transport publisher. Insertion order is the `send_action` fan-out order. **This is the override point for a new robot** — overridden by the bimanual OpenArm (4 topics, all `JOINT_TRAJECTORY`). (L508)
+  - `command_topics() -> list[str]` — Derived from `command_bindings()` so the topic list and the declared formats cannot drift; override `command_bindings`, not this. (L522)
+  - `ros2_control_joint_names() -> list[str]` — Joint names in ros2_control's namespace, action order; what `/joint_states` is keyed by. Overridden where URDF names differ from manifest names (OpenArm). (L530)
+  - **(property)** `joint_state_topic -> str` — The aggregated `sensor_msgs/JointState` topic this HAL reads. (L540)
+  - **(property)** `controller_name -> str` — Name of the primary `ros2_control` controller this HAL commands (the one `command_topic` defaults from). Hoisted here from the Franka / Sawyer wrappers so every subclass answers it. (L545)
+  - `connect() -> None` (L551)
   - `disconnect() -> None` — inherited from `HALBase` (flag-and-log default; no extra teardown needed).
-  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L570)
-  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping, and `time_from_start_s` from `time_from_start_s(action)`. (L616)
-  - `time_from_start_s(action) -> float` — Trajectory deadline `horizon / action_spec.control_freq_hz`: a chunk is reached just as its replacement is due; the transport spreads the chunk's rows evenly up to it. Issue #303: at 30 Hz that default re-planned a steep segment every 33 ms and amplified each step between targets. (L650)
-  - `estop() -> None` — Drop the connection flag **first** (nothing more leaves this HAL), then `_stop_downstream()`, then raise `ROSEStopRequested` whose message says whether the downstream stop was acknowledged. The outcome lives in `last_stop_report`, not the exception type, so the HAL Protocol's "always `ROSEStopRequested`" holds. With no seam attached the report is `stopped=False` / "no controller stop seam attached" — never a claimed stop. (L673)
-  - `_stop_downstream() -> DownstreamStopReport` [private] — Deactivates `controller_names()` through the seam (STRICT switch + listing confirmation), then runs `_vendor_stop`; both are attempted even if the first fails, so the report names everything that did and did not acknowledge. (L706)
-  - `_stop_switch(seam, names) -> ControllerSwitchReport` [hook] — The switch `estop` performs; plain `deactivate_controllers` by default, overridden by `UnitreeHgRealHAL` to swap in `freeze_controller`. Exceptions it raises are folded into the report by `_stop_downstream`. (L764)
-  - `_vendor_stop(seam) -> str` [hook] — Vendor-specific stop beyond controller deactivation; returns its label for the report or raises a `ROSError`. Base: none (for a plain ros2_control robot deactivation *is* the stop; for `franka_hardware` it is what calls `libfranka`'s `stopRobot()`). Overridden by UR (dashboard `stop` Trigger) and Sawyer (super-stop Empty). (L777)
-  - `_vendor_reset(seam) -> None` [hook] — Vendor re-arm before controllers are re-activated; no-op by default. (L789)
-  - `reset_estop() -> None` — Only for `RESETTABLE` adapters: `_vendor_reset`, then `activate_controllers` through the seam, and only once the manager confirms every controller `active` is the HAL marked connected again. Raises `ROSRuntimeError` for a `RESTART_REQUIRED` policy ("in-process reset is forbidden"), a missing seam, or an unacknowledged re-activation — so the lifecycle latch can never clear ahead of the vendor reset. (L793)
+  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L571)
+  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping, and `time_from_start_s` from `time_from_start_s(action)`. (L617)
+  - `time_from_start_s(action) -> float` — Trajectory deadline `horizon / action_spec.control_freq_hz`: a chunk is reached just as its replacement is due; the transport spreads the chunk's rows evenly up to it. Issue #303: at 30 Hz that default re-planned a steep segment every 33 ms and amplified each step between targets. (L651)
+  - `estop() -> None` — Drop the connection flag **first** (nothing more leaves this HAL), then `_stop_downstream()`, then raise `ROSEStopRequested` whose message says whether the downstream stop was acknowledged. The outcome lives in `last_stop_report`, not the exception type, so the HAL Protocol's "always `ROSEStopRequested`" holds. With no seam attached the report is `stopped=False` / "no controller stop seam attached" — never a claimed stop. (L674)
+  - `_stop_downstream() -> DownstreamStopReport` [private] — Deactivates `controller_names()` through the seam (STRICT switch + listing confirmation), then runs `_vendor_stop`; both are attempted even if the first fails, so the report names everything that did and did not acknowledge. (L707)
+  - `_stop_switch(seam, names) -> ControllerSwitchReport` [hook] — The switch `estop` performs; plain `deactivate_controllers` by default, overridden by `UnitreeHgRealHAL` to swap in `freeze_controller`. Exceptions it raises are folded into the report by `_stop_downstream`. (L765)
+  - `_vendor_stop(seam) -> str` [hook] — Vendor-specific stop beyond controller deactivation; returns its label for the report or raises a `ROSError`. Base: none (for a plain ros2_control robot deactivation *is* the stop; for `franka_hardware` it is what calls `libfranka`'s `stopRobot()`). Overridden by UR (dashboard `stop` Trigger) and Sawyer (super-stop Empty). (L778)
+  - `_vendor_reset(seam) -> None` [hook] — Vendor re-arm before controllers are re-activated; no-op by default. (L790)
+  - `reset_estop() -> None` — Only for `RESETTABLE` adapters: `_vendor_reset`, then `activate_controllers` through the seam, and only once the manager confirms every controller `active` is the HAL marked connected again. Raises `ROSRuntimeError` for a `RESTART_REQUIRED` policy ("in-process reset is forbidden"), a missing seam, or an unacknowledged re-activation — so the lifecycle latch can never clear ahead of the vendor reset. (L794)
   - private: `_require_connected`, `_validate_action`
 
 ### `python/hal/src/openral_hal/ros_control_transport.py`

@@ -336,18 +336,22 @@ def test_the_committed_calibration_is_the_one_the_servos_are_running(
 def test_estop_disconnects_the_live_motor_bus(
     live_hal: SO100FollowerHAL,
 ) -> None:  # pragma: no cover
-    """The vendor E-stop must disconnect the real serial session.
+    """The vendor E-stop must cut torque on every real servo and disconnect the session.
 
     This does not measure torque-off latency; it proves the connected SO-101
-    follows the lifecycle E-stop contract and leaves no reusable HAL session.
-    The fixture teardown calls ``disconnect()`` again, exercising its required
-    idempotence.
+    follows the lifecycle E-stop contract — every servo acknowledged
+    ``Torque_Enable=0`` and reads it back (issue #526) — and leaves no reusable
+    HAL session. The fixture teardown calls ``disconnect()`` again, exercising
+    its required idempotence.
     """
     from openral_core.exceptions import ROSEStopRequested
 
     assert live_hal._connected
     with pytest.raises(ROSEStopRequested):
         live_hal.estop()
+    report = live_hal.last_stop_report
+    assert report is not None and report.stopped, report
+    assert set(report.controller_states.values()) == {"torque_off"}
     assert not live_hal._connected
     assert live_hal._robot is None
     live_hal.disconnect()
