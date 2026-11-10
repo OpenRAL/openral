@@ -822,11 +822,18 @@ class ObjectTracker:
         # (aged out, displaced by a mint, retired by the session's release).
         for per_track in (
             self._views, self._cells, self._centroid, self._disagree, self._disagree_ns,
-            self._map_cells, self._served, self._clear_size, self._clear_extent, self._low_score,
+            self._map_cells, self._served, self._low_score,
             self._low_score_run, self._first_extent, self._growth_votes, self._growth_admitted,
             self._bound_anchor,
         ):  # fmt: skip
             for oid in [k for k in per_track if k not in live]:
+                del per_track[oid]
+        # A released target's clear size outlives its track while its re-find window is open:
+        # ``_vision_refind`` grows the hidden side to it (review of #521: the track retired ~3 s
+        # after release, the window is ``_RECENT_S``, and a re-find boxed the visible half only).
+        refindable = live | {k for k, v in self._let_go.items() if v is not None}
+        for per_track in (self._clear_size, self._clear_extent):
+            for oid in [k for k in per_track if k not in refindable]:
                 del per_track[oid]
         if self.surface_models is not None:
             self.surface_models.retain(live)

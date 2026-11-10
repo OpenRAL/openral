@@ -30,6 +30,8 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core import CameraTopicKind as Kind
 from openral_core import camera_topic
+from openral_core.exceptions import ROSConfigError
+from openral_core.perception_geometry import lattice_from_msg
 from openral_core.tracking_thresholds import load_tracking_thresholds
 
 from openral_world_state_ros.object_tracker_node import image_array
@@ -335,12 +337,21 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
             st["k"] = (float(m.k[0]), float(m.k[4]), float(m.k[2]), float(m.k[5]))
 
     def on_grid(m: Any) -> None:  # reason: rclpy message
-        o = m.orientation
+        # The shared decoder refuses what the OccupancyVoxels contract calls a fail-open
+        # misread: an all-zero / non-unit orientation, an occupancy array of the wrong length
+        # (review of #521: an unset quaternion was read as identity). A refused grid lifts no
+        # cells until a valid one arrives.
+        try:
+            lat = lattice_from_msg(m)
+        except ROSConfigError as e:
+            log.warning(f"instance_masks.grid_refused {e}")
+            with lock:
+                st["grid"] = None
+            return
         g = {
-            "frame": m.header.frame_id, "origin": np.array([m.origin.x, m.origin.y, m.origin.z]),
-            "r": quat_xyzw_to_r((o.x, o.y, o.z, o.w)), "res": float(m.resolution),
-            "size": (int(m.size_x), int(m.size_y), int(m.size_z)),
-            "occ": np.frombuffer(bytes(m.occupancy), np.uint8).astype(bool),
+            "frame": lat.frame_id, "origin": np.asarray(lat.origin, dtype=np.float64),
+            "r": lat.rotation(), "res": float(lat.resolution), "size": tuple(lat.size),
+            "occ": np.asarray(lat.occupancy).astype(bool),
         }  # fmt: skip
         with lock:
             st["grid"] = g

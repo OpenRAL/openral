@@ -317,6 +317,25 @@ def contrast_query(label: str, contrast: Sequence[str]) -> str:
     return ", ".join([label, *(c for c in contrast if not own & set(c.lower().split()))])
 
 
+def own_detections(metadata_json: str, label: str, *, contrast: bool) -> str:
+    """The locate reply's detections the tracker keeps for ``label``.
+
+    With contrast labels (``contrast``) the reply names a class per box, so only ``label``'s
+    are kept (``contrasted``). Without them every box is the query's: LocateAnything names a
+    box by its ``<ref>`` text ("the orange") or, with none, by the whole query ("orange,
+    citrus"), neither of them a name in ``label`` (review of #521).
+
+    Example:
+        >>> own_detections("", "orange", contrast=False)
+        ''
+    """
+    if not contrast:
+        return metadata_json
+    from openral_world_state.object_tracker.tracker import LOW_PROMPT_SCORE
+
+    return contrasted(metadata_json, label, LOW_PROMPT_SCORE)
+
+
 def locate_query(label: str, *, contrast: bool) -> str:
     """The ``LocateInView`` query for ``label``: with the contrast labels only if ``contrast``.
 
@@ -662,7 +681,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         TrackerSession,
         TrackingMode,
     )
-    from openral_world_state.object_tracker.tracker import LOW_PROMPT_SCORE, TrackerParams
+    from openral_world_state.object_tracker.tracker import TrackerParams
     from pydantic import TypeAdapter
     from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -1393,7 +1412,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                         frame.stamp_ns, int(getattr(res, "source_stamp_ns", 0) or 0)
                     )
                 own = (
-                    contrasted(str(res.metadata_json), label, LOW_PROMPT_SCORE)
+                    own_detections(str(res.metadata_json), label, contrast=contrast)
                     if res is not None and res.found and not failure_reason
                     else ""
                 )

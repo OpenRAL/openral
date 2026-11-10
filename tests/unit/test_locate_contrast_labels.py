@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 from openral_runner.backends.gstreamer.locateanything_detector import build_objects_metadata
-from openral_world_state.object_tracker.tracker import LOW_PROMPT_SCORE
 
 _node = pytest.importorskip(
     "openral_world_state_ros.object_tracker_node",
@@ -27,19 +26,27 @@ _LAUNCH = (
 _ANSWER = "<box><100><200><300><400></box>"  # LocateAnything with no <ref>: no class label
 
 
-def _kept(contrast: bool) -> int:
-    query = _node.locate_query("stock object", contrast=contrast)
+def _kept(answer: str, label: str, *, contrast: bool) -> int:
+    query = _node.locate_query(label, contrast=contrast)
     md = build_objects_metadata(
-        _ANSWER, width=640, height=360, model_id="m", sensor_id="head", fallback_label=query
+        answer, width=640, height=360, model_id="m", sensor_id="head", fallback_label=query
     )
     assert md is not None
-    own = _node.contrasted(md.model_dump_json(), "stock object", LOW_PROMPT_SCORE)
+    own = _node.own_detections(md.model_dump_json(), label, contrast=contrast)
     return len(json.loads(own)["detections"])
 
 
 def test_an_unlabelled_locateanything_box_survives_only_without_contrast_labels() -> None:
-    assert _kept(contrast=True) == 0, "the bug: the whole query is no name of the label"
-    assert _kept(contrast=False) == 1
+    assert _kept(_ANSWER, "stock object", contrast=True) == 0, "the bug: no name of the label"
+    assert _kept(_ANSWER, "stock object", contrast=False) == 1
+
+
+def test_without_contrast_labels_every_locateanything_box_is_kept() -> None:
+    """Review of #521: the label filter ran without contrast labels too, so a synonym prompt's
+    fallback label ("orange, citrus") or a ``<ref>`` phrase ("the orange") was dropped."""
+    assert _kept(_ANSWER, "orange, citrus", contrast=False) == 1
+    ref = "<ref>the orange</ref><box><100><200><300><400></box>"
+    assert _kept(ref, "orange", contrast=False) == 1
 
 
 def test_the_launch_asks_for_contrast_labels_only_from_an_omdet_locator() -> None:

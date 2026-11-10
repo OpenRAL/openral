@@ -339,3 +339,23 @@ def test_cells_the_map_sees_as_two_bodies_never_move_or_confirm_a_track():
     cells = frozenset(tuple(v) for v in np.floor(local).astype(np.int64).tolist())
     assert tr.apply_instance_cells({t.object_id: cells}, grid, 10**9, ()) == 0
     assert _get(tr, t.object_id) == t
+
+
+def test_a_re_find_after_the_track_retired_still_knows_the_objects_clear_size():
+    """Review of #521: ``feed`` dropped the clear size once the released track left the store
+    (~3 s), inside the ``_RECENT_S`` re-find window; it now outlives the track while a re-find
+    is still possible, and goes once the window is spent."""
+    from openral_world_state.object_tracker import CameraFrame
+
+    tr, _ = _confirmed_tracker(_CAN)
+    t = tr.store.all()[0]
+    size = tr._clear_size[t.object_id]
+    _released(tr, t, 10)
+    tr.store.drop(t.object_id)  # the session retired it
+    depth, _ = render([], _RIG)
+    frame = CameraFrame(_RIG.name, 5, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    tr.feed(frame, grid=None, grid_stamp_ns=5, wall_s=100.0)
+    assert tr._clear_size.get(t.object_id) == size
+    tr._let_go[t.object_id] = None  # used or expired
+    tr.feed(frame, grid=None, grid_stamp_ns=6, wall_s=101.0)
+    assert t.object_id not in tr._clear_size
