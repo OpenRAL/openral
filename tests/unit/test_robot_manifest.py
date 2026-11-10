@@ -65,6 +65,12 @@ def test_fixed_arm_manifest() -> None:
     assert not {"map", "pointcloud", "reward", "viz3d"} & set(panels)  # off on this deploy
     cam = manifest.panels[1]
     assert (cam.type, cam.source) == ("camera", "top")
+    # Overhead camera in the middle, the gripper-mounted one on the left.
+    assert [(p.source, p.position) for p in manifest.panels[1:3]] == [
+        ("top", "center"),
+        ("wrist", "left"),
+    ]
+    assert all(p.position is None for p in manifest.panels if p.type != "camera")
     actions = {a.id: a for a in manifest.actions}
     assert manifest.actions[0].id == "estop"
     assert (actions["estop"].min_role, actions["estop"].remote) == ("viewer", True)
@@ -100,6 +106,14 @@ def test_mobile_manipulator_manifest() -> None:
         "front_depth",
     }
     assert {"map", "pointcloud", "reward", "viz3d"} <= set(panels)
+    # Named sides win; a hand camera moves with the arm; base-fixed ones are centered.
+    assert {p.source: p.position for p in manifest.panels if p.type == "camera"} == {
+        "head": "center",
+        "shoulder_left": "left",
+        "shoulder_right": "right",
+        "wrist": "left",
+        "front_depth": "center",
+    }
     nav = next(a for a in manifest.actions if a.id == f"skill:{_NAV2}")
     nav_manifest = RSkillManifest.from_yaml(
         str(_REPO / "rskills/rskill-nav2-navigate-to-pose/rskill.yaml")
