@@ -92,6 +92,35 @@ def keep(d: dict[int, Any], t: int, v: Any, n: int = 30) -> bool:
     return not reset
 
 
+#: How far a robot mask's stamp may sit from its depth frame's. The self-filter stamps each mask
+#: with the depth frame it was cut from, so a match is the same stamp up to transport jitter.
+ROBOT_MASK_MATCH_NS = 20_000_000
+
+
+def robot_mask_for(masks: dict[int, Any], depth_ns: int) -> tuple[Any, bool]:
+    """The robot mask cut from the depth frame at ``depth_ns``: ``(mask, usable)``.
+
+    No mask received (no publisher in this configuration): ``(None, True)``, the frame is used
+    without one. Masks arriving but none at this stamp (published late, or dropped):
+    ``(None, False)``, skip the frame: the nearest mask may be any age, and the arm's pixels
+    where it moved since would be lifted as the object (review of #521).
+
+    Example:
+        >>> robot_mask_for({}, 5)
+        (None, True)
+        >>> robot_mask_for({1_000_000_000: "m"}, 1_005_000_000)
+        ('m', True)
+        >>> robot_mask_for({1_000_000_000: "m"}, 1_100_000_000)
+        (None, False)
+    """
+    if not masks:
+        return None, True
+    best = min(masks, key=lambda s: abs(s - depth_ns))
+    if abs(best - depth_ns) <= ROBOT_MASK_MATCH_NS:
+        return masks[best], True
+    return None, False
+
+
 def new_tracker_session(prev: int, rev: int) -> bool:
     """Whether revision ``rev`` after ``prev`` comes from a new tracker session (a new episode).
 
@@ -449,11 +478,11 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
                 return False
             td = min(st["depth"], key=lambda s: abs(s - t))
             depth, optical = st["depth"][td]
-            robot = st["robot"][min(st["robot"], key=lambda s: abs(s - t))] if st["robot"] else None
+            robot, usable = robot_mask_for(st["robot"], td)
             k, g, tracked = st["k"], st["grid"], dict(st["tracked"])
             tf_buf = node.tf_buf
             gen = st["gen"]
-        if abs(td - t) > 150_000_000 or tf_buf is None:
+        if abs(td - t) > 150_000_000 or tf_buf is None or not usable:
             return False
         vproc, vmodel = sam["vp"], sam["v"]  # loaded: the node is active
         img = image_array(m)

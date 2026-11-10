@@ -49,13 +49,15 @@ _EXPERIMENT (pro#51, sim-only; `DeployRuntime.instance_cells`). `openral_instanc
 - const `REVISION_RESEED_JUMP` (L50) — A tracked-objects revision jump past 1e9 is a re-activated tracker (it reseeds its revision from wall ns): a new episode.
 - const `CLOCK_RESET_NS` (L52) — A sensor stamp 1 s behind the newest kept is a clock reset, a new episode: every mask, label and session is dropped.
 - `quat_xyzw_to_r(q) -> ndarray` (L59) — Rotation matrix of a unit quaternion.
-- `erode(m, n) -> ndarray` (L107) — 4-neighbour erosion by `n` pixels.
-- `stamp_ns(st) -> int` (L129) — A `builtin_interfaces/Time` in ns.
+- `erode(m, n) -> ndarray` (L136) — 4-neighbour erosion by `n` pixels.
+- `stamp_ns(st) -> int` (L158) — A `builtin_interfaces/Time` in ns.
 - `keep(d, t, v, n=30) -> bool` (L76) — Keep the `n` newest stamped frames; `False` (emptied) on a clock reset.
-- `new_tracker_session(prev, rev) -> bool` (L95) — Whether a tracked-objects revision comes from a new tracker session.
-- `plan(ids, status, seen, td, empty, drift) -> (want, new, gone, stale)` (L165) — Which tracks to follow, seed, drop and re-seed: only a confirmed track is seeded from its box; a drifted mask with no fresh box is dropped (a held one is kept).
-- `lift_cells(mask, depth, k, r_gc, t_gc, origin, r_grid, res) -> ndarray` (L134) — Unique lattice cells the masked depth pixels fall in.
-- `main() -> None` (L208) — Entry point.
+- `ROBOT_MASK_MATCH_NS` (L97) — How far a robot mask's stamp may sit from its depth frame's (20 ms): the self-filter stamps each mask with its depth frame.
+- `robot_mask_for(masks, depth_ns) -> tuple[mask | None, bool]` (L100) — The robot mask cut from the depth frame at `depth_ns`: none received → used without one (no publisher); masks arriving but none at this stamp → the frame is skipped (the nearest mask may be any age; review of #521).
+- `new_tracker_session(prev, rev) -> bool` (L124) — Whether a tracked-objects revision comes from a new tracker session.
+- `plan(ids, status, seen, td, empty, drift) -> (want, new, gone, stale)` (L194) — Which tracks to follow, seed, drop and re-seed: only a confirmed track is seeded from its box; a drifted mask with no fresh box is dropped (a held one is kept).
+- `lift_cells(mask, depth, k, r_gc, t_gc, origin, r_grid, res) -> ndarray` (L163) — Unique lattice cells the masked depth pixels fall in.
+- `main() -> None` (L237) — Entry point.
 
 ### `packages/openral_nav2_bringup/openral_nav2_bringup/`
 
