@@ -18,8 +18,10 @@ the lifecycle e-stop contract (issue #295):
 
 Adapters that own their own bus or sidecar (SO-100/SO-101 over serial, Galaxea A1 over its
 ROS 1 sidecar) prove their stop in their own gates (`tests/unit/test_so100_follower_hal.py`
-against the digital twin, `tests/hil/test_so101_serial_live.py`, `tests/hil/test_galaxea_a1*.py`);
-here they are held to (1) and (2) only, which is the part a new adapter can forget.
+against a serial-boundary fake bus, `tests/unit/test_galaxea_a1.py` against a loopback sidecar,
+`tests/hil/test_so101_serial_live.py`, `tests/hil/test_galaxea_a1*.py`); here they are held to
+(1), (2) and (5), which is the part a new adapter can forget. Without (5) every e-stop on that
+robot logs FATAL `downstream_stop=unproven`, and a real failure looks the same (issue #526).
 
 A new real HAL that omits any of this fails here before it ever reaches a robot.
 """
@@ -136,6 +138,18 @@ def test_every_interbotix_real_hal_can_cut_torque_on_every_arm(manifest: Path) -
         pytest.skip(f"{type(hal).__name__} is not an Interbotix adapter.")
     assert isinstance(hal, DownstreamStopReporting)
     assert hal.arm_namespaces(), f"{type(hal).__name__} names no arm to torque off."
+
+
+@pytest.mark.parametrize("manifest", _REAL, ids=[p.parent.name for p in _REAL])
+def test_every_real_hal_reports_its_downstream_stop(manifest: Path) -> None:
+    """Every real HAL can say whether its last stop was acknowledged downstream."""
+    hal = _build(manifest)
+    assert isinstance(hal, DownstreamStopReporting), (
+        f"{type(hal).__name__} ({manifest.parent.name}) does not implement "
+        "DownstreamStopReporting: the lifecycle node would log every e-stop as FATAL "
+        "`downstream_stop=unproven`, and a failed stop would look the same."
+    )
+    assert hal.last_stop_report is None, "a freshly built HAL has not stopped yet"
 
 
 def test_a_real_hal_without_the_contract_is_rejected() -> None:

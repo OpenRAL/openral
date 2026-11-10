@@ -270,6 +270,8 @@ def test_galaxea_a1_observe_optional_hold_and_estop() -> None:
         with pytest.raises(ROSEStopRequested):
             hal.estop()
         connected = False
+        stop_report = hal.last_stop_report
+        assert stop_report is not None and stop_report.stopped, stop_report
     finally:
         if connected:
             hal.disconnect()

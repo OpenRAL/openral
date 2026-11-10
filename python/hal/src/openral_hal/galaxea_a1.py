@@ -55,6 +55,7 @@ from openral_core.schemas import (
 
 from openral_hal._base import HALBase
 from openral_hal.protocol import EStopRecovery, HALHealthReport
+from openral_hal.ros_control import DownstreamStopReport
 
 __all__ = ["GALAXEA_A1_DESCRIPTION", "GalaxeaA1HAL"]
 
@@ -88,6 +89,10 @@ _JOINT_ORIGINS_RPY = (
 _PROTOCOL_VERSION = 1
 _GRIPPER_STATUS_INDEX = len(_JOINT_NAMES)
 _MAX_TCP_PORT = 65536
+# What the sidecar's ``estop`` stops, in the order it owns them; named in the
+# ``DownstreamStopReport`` so ``/diagnostics`` says what the stop covered.
+_ESTOP_SIDECAR_PROCESSES: tuple[str, ...] = ("joint_tracker", "serial_driver", "roscore")
+_ESTOP_VENDOR_STOP = "ros1_sidecar_estop"
 _MAX_STATUS_MASK = 0xFFFFFFFF
 
 
@@ -695,6 +700,16 @@ class GalaxeaA1HAL(HALBase):
         self._connected = False
         self._first_joint_command = True
         self._accepted_action_count = 0
+        self._last_stop_report: DownstreamStopReport | None = None
+
+    @property
+    def last_stop_report(self) -> DownstreamStopReport | None:
+        """Report of the most recent ``estop()``; ``None`` before the first / after ``connect()``.
+
+        The ``DownstreamStopReporting`` surface the lifecycle node reads to log
+        ERROR "hardware estop completed" (sidecar confirmed) or FATAL (not).
+        """
+        return self._last_stop_report
 
     def connect(self) -> None:
         """Connect to the sidecar and require one complete fresh snapshot."""
@@ -728,6 +743,7 @@ class GalaxeaA1HAL(HALBase):
         self._connected = True
         self._first_joint_command = True
         self._accepted_action_count = 0
+        self._last_stop_report = None
         log.info("hal.connect", robot=self.description.name, sidecar=f"{self._host}:{self._port}")
 
     def disconnect(self) -> None:
@@ -825,16 +841,52 @@ class GalaxeaA1HAL(HALBase):
         )
 
     def estop(self) -> None:
-        """Stop the sidecar-owned ROS 1 stack and always raise."""
+        """Stop the sidecar-owned ROS 1 stack, record whether it confirmed, and always raise.
+
+        The connection flag drops **first**, so no further command leaves this
+        HAL while the stop is in flight. The sidecar confirms (``estopped``)
+        only after tracker, driver and roscore have exited; that confirmation
+        is the downstream acknowledgement. A refusal, timeout or transport
+        fault is recorded in ``last_stop_report`` as ``stopped=False`` with the
+        error as ``detail`` — never swallowed, and never allowed to replace the
+        ``ROSEStopRequested`` the HAL Protocol promises.
+
+        Raises:
+            ROSEStopRequested: Always.
+        """
         log.critical("hal.estop", robot=self.description.name)
+        self._connected = False
         try:
-            # The sidecar acknowledges only after tracker, driver, and roscore
-            # have exited. Its bounded shutdown allows up to four seconds
+            # The sidecar's bounded shutdown allows up to four seconds
             # (3 s SIGINT grace + 1 s SIGKILL wait).
             self._transport.estop(timeout_s=4.0)
-        finally:
-            self._connected = False
-        raise ROSEStopRequested("Emergency stop triggered on Galaxea A1; ROS 1 sidecar stopped.")
+        except Exception as exc:  # reason: a stop failure must land in the report, not escape
+            report = DownstreamStopReport(
+                stopped=False,
+                controllers=_ESTOP_SIDECAR_PROCESSES,
+                vendor_stop=_ESTOP_VENDOR_STOP,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+        else:
+            report = DownstreamStopReport(
+                stopped=True,
+                controllers=_ESTOP_SIDECAR_PROCESSES,
+                controller_states=dict.fromkeys(_ESTOP_SIDECAR_PROCESSES, "exited"),
+                vendor_stop=_ESTOP_VENDOR_STOP,
+                detail="sidecar confirmed its ROS 1 stack stopped",
+            )
+        self._last_stop_report = report
+        log.critical(
+            "hal.estop.downstream_stopped"
+            if report.stopped
+            else "hal.estop.downstream_unacknowledged",
+            robot=self.description.name,
+            **report.fields(),
+        )
+        verdict = "acknowledged" if report.stopped else "NOT acknowledged"
+        raise ROSEStopRequested(
+            f"Emergency stop triggered on Galaxea A1 (downstream stop {verdict}: {report.detail})."
+        )
 
     def _fresh_snapshot(self, *, require_status: bool = False) -> _Snapshot:
         state = self._transport.snapshot()

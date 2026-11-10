@@ -172,6 +172,7 @@ pre-flight servo ping, and reads state back, asserting the joint names, shape,
 units and envelope against this manifest and that the committed calibration is
 the one loaded into the motors. It sends no position command (no
 `send_action`, no `reset_to_pose`), then validates that the terminal E-stop
+reads torque off back from every servo (`downstream_stop=acknowledged`) and
 disconnects the motor bus; run it attended with the physical power switch
 within reach. It skips with a reason when the arm is unplugged or its 12 V
 supply is off (the USB-serial adapter enumerates on 5 V alone, so the port
@@ -183,6 +184,14 @@ Motion on this arm — `openral deploy run` — is an attended operation. The
 deploy graph launches the action-stream deadman watchdog and the dashboard /
 human E-stop forwarder. The hardware-pendant node stays unconfigured unless a
 supported device is supplied, so keep the physical power switch within reach.
+
+The HAL's E-stop is an IEC 60204-1 **category 0** stop: it writes
+`Torque_Enable=0` to every servo and reads it back, so the arm goes limp and
+drops under gravity — clear the space under it. The result is in the lifecycle
+node's log and `/diagnostics`: ERROR `hardware estop completed` when every servo
+confirmed torque off, FATAL `downstream_stop=unacknowledged` naming the servo
+that did not (a dark servo, a lost serial link). Recovery needs a lifecycle
+restart (`RESTART_REQUIRED`).
 
 ## Pair with
 
