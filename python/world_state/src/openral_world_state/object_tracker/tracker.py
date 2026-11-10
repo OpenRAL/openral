@@ -1506,6 +1506,22 @@ class ObjectTracker:
         provisional one re-dates it in the store). Each gate logs.
         """
         oid = old.object_id
+        if (
+            old.role is ObjectRole.CONTEXT
+            and fit.box is not None
+            and (
+                dup := duplicate_of(
+                    fit.box,
+                    [o for o in self.store.all() if o.role is not ObjectRole.CONTEXT],
+                )
+            )
+        ):
+            # A context refit never revives a track on a named one's object (the refit side of
+            # ``_duplicate_mint``): once a target's fit retired the carton track, each "carton"
+            # refit brought it back TENTATIVE and the target's next fit retired it again.
+            log.info("object_tracker.context_refit_duplicate", object_id=oid, track=dup[0],
+                     iou=round(dup[1], 2))  # fmt: skip
+            return True
         if fit.box is not None and (
             hit := self._role_conflict(old.role, old.label, fit.box, frame.stamp_ns, than=oid)
         ):
@@ -2784,10 +2800,20 @@ class ObjectTracker:
                 and q.query.role is not ObjectRole.CONTEXT
             ):
                 skip = self._prompted.setdefault(q.key, set())
+                # A CONTEXT track never hides its object from a named query: it only marks
+                # something to avoid, and the named query's fit retires it
+                # (``_retire_context_duplicates``). Restock, arms out of view (pro#51,
+                # q5090 2026-11-10): the "carton" query boxed the target first, every
+                # "stock object" prompt skipped its cells and masked the tote wall behind it,
+                # and the grasp found the carton's box 4.6-5.7 s stale.
                 hit = instance_prompt(
                     grid,
                     seed,
-                    [t.box for t in tracks if t.status is not TrackStatus.LOST],
+                    [
+                        t.box
+                        for t in tracks
+                        if t.status is not TrackStatus.LOST and t.role is not ObjectRole.CONTEXT
+                    ],
                     near_xy=(seed.pose.xyz[0], seed.pose.xyz[1]),
                     skip=skip,
                 )

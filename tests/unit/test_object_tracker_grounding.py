@@ -678,3 +678,63 @@ def test_a_seeded_context_query_is_located_in_its_seed_not_point_prompted() -> N
     [req] = out.requests
     assert req.service == "locate_in_view" and req.seed_cell is None
     assert req.roi_norm_xyxy is not None, "cropped to the seed"
+
+
+def test_a_target_query_prompts_through_a_context_track_and_retires_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A context track never hides the target from its named query (pro#51 restock, arms out
+    of view, q5090 2026-11-10): the "carton" query boxed the target first, every "stock
+    object" prompt skipped its cells, masked the tote wall behind it, and the grasp found the
+    carton's box stale. The target query's prompt lands on the carton; its fit retires the
+    context track."""
+    from openral_core import PlaceRegion, Pose6D, TrackStatus
+
+    from tests.unit._tracker_scenes import box
+
+    x, y = _RIG.centre_xy
+    z0 = _RIG.support_z
+    carton = box((x, y, z0 + 0.04), (0.04, 0.025, 0.04), 0.0)
+    wall = box((x + 0.075, y, z0 + 0.06), (0.006, 0.06, 0.06), 0.0)  # inside the target's seed
+    tr = ObjectTracker(_RIG.frame)
+    ctx = ObjectQuery(label="carton", count="all", role=ObjectRole.CONTEXT)
+    tr.open_query("g", "c0", ctx, "obj:carton@0", stamp_ns=0)
+    wall_s = 0.0
+    for n in range(1, 4):
+        _, wall_s = step(tr, _RIG, [carton], stamp_ns=n, wall_s=wall_s + 1.0)
+    (context,) = [o for o in tr.store.all() if o.status is not TrackStatus.LOST]
+    assert context.role is ObjectRole.CONTEXT
+    seed = PlaceRegion(
+        frame_id=_RIG.frame,
+        pose=Pose6D(xyz=(x, y, z0 + 0.04), quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+        half_extents=(0.086, 0.069, 0.085),
+    )
+    target = ObjectQuery(label="stock object", count="one", role=ObjectRole.TARGET, seed=seed)
+    tr.open_query("g", "q0", target, "obj:stock_object@0", stamp_ns=0)
+    logs = _recorded(monkeypatch)
+    depth, labels = render([carton, wall], _RIG)
+    frame = CameraFrame(_RIG.name, 10, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * 0.015)
+    req = None
+    for _ in range(8):  # the first request may be the context track's refresh: answer it
+        wall_s += 1.0
+        out = tr.feed(frame, grid=grid, grid_stamp_ns=10, wall_s=wall_s)
+        req = next((r for r in out.requests if r.label == "stock object"), None)
+        if req is not None:
+            break
+        tr.feed(frame, grid=grid, grid_stamp_ns=10, wall_s=wall_s,
+                results=[answer(r, labels) for r in out.requests[:1]])  # fmt: skip
+    assert req is not None
+    assert req.service == "segment_in_view" and req.point_uv is not None
+    assert labels[int(req.point_uv[1]), int(req.point_uv[0])] == 1, "prompted on the carton"
+    tr.feed(frame, grid=grid, grid_stamp_ns=10, wall_s=wall_s, results=[answer(req, labels)])
+    for n in range(11, 15):
+        _, wall_s = step(tr, _RIG, [carton, wall], stamp_ns=n, wall_s=wall_s + 1.0,
+                         shift_z=0.5 * 0.015)  # fmt: skip
+    tracks = {o.object_id: o for o in tr.store.all()}
+    (named,) = [o for o in tracks.values() if o.label == "stock object"]
+    assert named.status is TrackStatus.CONFIRMED, tracks
+    assert abs(named.box.pose.xyz[0] - x) < 0.02 and abs(named.box.pose.xyz[1] - y) < 0.02
+    assert tracks[context.object_id].status is TrackStatus.LOST
+    retired = [e for e in logs if e["event"] == "object_tracker.context_duplicate_retired"]
+    assert len(retired) == 1, "retired once: a context refit never revives it"
