@@ -595,6 +595,63 @@ def test_bringup_row_names_the_node_that_held_the_graph_up() -> None:
     assert "6203.4ms" in title
 
 
+def test_bringup_spans_keep_each_nodes_last_transition() -> None:
+    """`topics.lifecycle` holds the newest transition per node for the prompt bar.
+
+    The console disables its prompt bar when the reasoner's last transition failed
+    (e.g. on_configure without an API key), instead of accepting a prompt that
+    nothing will read.
+    """
+
+    def bringup(node: str, transition: str, result: str) -> Span:
+        return _make_span(
+            "deploy.bringup",
+            attrs={
+                "openral.bringup.node": node,
+                "openral.bringup.transition": transition,
+                "openral.bringup.result": result,
+            },
+        )
+
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                bringup("openral_reasoner", "on_configure", "SUCCESS"),
+                bringup("openral_reasoner", "on_activate", "FAILURE"),
+                bringup("openral_hal_openarm", "on_configure", "SUCCESS"),
+            ]
+        )
+    )
+    lifecycle = store.snapshot()["topics"]["lifecycle"]
+    assert lifecycle["openral_reasoner"]["transition"] == "on_activate"
+    assert lifecycle["openral_reasoner"]["result"] == "FAILURE"
+    assert lifecycle["openral_hal_openarm"]["result"] == "SUCCESS"
+
+
+def test_an_older_bringup_span_arriving_late_never_replaces_a_newer_one() -> None:
+    """Spans can arrive out of order; the newest transition by time is the one kept."""
+
+    def bringup(result: str, end_ns: int) -> Span:
+        span = _make_span(
+            "deploy.bringup",
+            attrs={
+                "openral.bringup.node": "openral_reasoner",
+                "openral.bringup.transition": "on_activate",
+                "openral.bringup.result": result,
+            },
+        )
+        span.start_time_unix_nano = end_ns - 1_000_000
+        span.end_time_unix_nano = end_ns
+        return span
+
+    now = time.time_ns()
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([bringup("FAILURE", now)]))
+    store.ingest_spans(_wrap([bringup("SUCCESS", now - 5_000_000_000)]))
+    assert store.snapshot()["topics"]["lifecycle"]["openral_reasoner"]["result"] == "FAILURE"
+
+
 def test_detect_probe_spans_stay_info() -> None:
     """`detect.probe.*` is a handful of one-shot rows, not a stream."""
     store = TelemetryStore()

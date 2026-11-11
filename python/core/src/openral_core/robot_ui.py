@@ -54,6 +54,7 @@ from openral_core.schemas import (
     RobotDescription,
     RSkillManifest,
     SensorModality,
+    SensorSpec,
 )
 
 __all__ = [
@@ -62,11 +63,13 @@ __all__ = [
     "TRUSTED_ISSUERS",
     "TRUSTED_ISSUERS_ENV",
     "WRITE_CONTROLS_ENV",
+    "CameraPosition",
     "ManifestAction",
     "ManifestPanel",
     "RobotEnrolment",
     "RobotManifest",
     "build_robot_manifest",
+    "camera_position",
     "enrolment_path",
     "parse_robot_link_code",
     "rskill_matches_robot",
@@ -121,6 +124,42 @@ _PROMPT_SCHEMA: dict[str, Any] = {
 }
 
 
+CameraPosition = Literal["left", "center", "right"]
+
+_SIDE_TOKEN = re.compile(r"(?:^|[^a-z])(left|right)(?:[^a-z]|$)")
+_HAND_TOKEN = re.compile(r"(?:^|[^a-z])(wrist|hand|gripper|eef)(?:[^a-z]|$)")
+
+
+def camera_position(sensor: SensorSpec) -> CameraPosition:
+    """Where a camera sits in the console's camera row (left to right).
+
+    Decided by what the sensor's ``name``, ``frame_id`` and ``parent_frame`` say:
+
+    1. ``left`` / ``right`` when one names a side (``left_wrist``, ``cam_right``).
+    2. ``left`` when one says wrist, hand, gripper or eef (a single arm's hand camera).
+    3. ``center`` otherwise: overhead, head, torso, base and world cameras.
+
+    Args:
+        sensor: The camera's sensor spec.
+
+    Returns:
+        ``"left"``, ``"center"`` or ``"right"``.
+
+    Example:
+        >>> robot = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> {s.name: camera_position(s) for s in robot.sensors if s.name in ("top", "wrist")}
+        {'top': 'center', 'wrist': 'left'}
+    """
+    texts = [t.lower() for t in (sensor.name, sensor.frame_id, sensor.parent_frame) if t]
+    for text in texts:
+        m = _SIDE_TOKEN.search(text)
+        if m:
+            return "left" if m.group(1) == "left" else "right"
+    if any(_HAND_TOKEN.search(text) for text in texts):
+        return "left"
+    return "center"
+
+
 class ManifestPanel(BaseModel):
     """One panel the robot UI draws.
 
@@ -129,6 +168,8 @@ class ManifestPanel(BaseModel):
         type: Which renderer; the UI ignores a type it does not know.
         title: Heading shown on the panel.
         source: The sensor name, for ``camera`` panels.
+        position: Where a ``camera`` panel sits in the console's camera row
+            (``left``, ``center`` or ``right``; see ``camera_position``), else ``None``.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -137,6 +178,7 @@ class ManifestPanel(BaseModel):
     type: PanelType
     title: str
     source: str | None = None
+    position: CameraPosition | None = None
 
 
 class ManifestAction(BaseModel):
@@ -256,7 +298,13 @@ def build_robot_manifest(
     """
     panels = [ManifestPanel(id="identity", type="identity", title="Robot")]
     panels += [
-        ManifestPanel(id=f"cam:{s.name}", type="camera", title=s.name, source=s.name)
+        ManifestPanel(
+            id=f"cam:{s.name}",
+            type="camera",
+            title=s.name,
+            source=s.name,
+            position=camera_position(s),
+        )
         for s in robot.sensors
         if s.modality in _IMAGE_MODALITIES
     ]

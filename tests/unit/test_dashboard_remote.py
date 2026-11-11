@@ -143,6 +143,7 @@ async def test_a_valid_token_is_a_remote_principal(issuer: FakeIssuer, tmp_path:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert (body["mode"], body["role"], body["robot_id"]) == ("remote", "viewer", ROBOT)
+    assert body["org"] == ORG  # the enrolment's org: the console's left pane names it
     assert resp.headers["access-control-allow-origin"] == _SITE
     assert "access-control-allow-credentials" not in resp.headers
 
@@ -312,14 +313,21 @@ async def test_viewer_may_only_estop(
     monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", "1")
     monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
     app = create_app(_store_with_manifest(), verifier=_verifier(issuer, tmp_path))
-    viewer = _auth(issuer.mint(role="viewer"))
+    token = issuer.mint(role="viewer")
+    viewer = _auth(token)
+
+    def fresh() -> dict[str, str]:  # one write per token
+        return _auth(issuer.mint(role="viewer"))
+
     async with _remote(app) as client:
         estop = await client.post("/api/actions/estop", headers=viewer)
-        reset = await client.post("/api/actions/estop_reset", json={"args": {}}, headers=viewer)
+        reset = await client.post("/api/actions/estop_reset", json={"args": {}}, headers=fresh())
         prompt = await client.post(
-            "/api/actions/prompt", json={"args": {"text": "go"}}, headers=viewer
+            "/api/actions/prompt", json={"args": {"text": "go"}}, headers=fresh()
         )
-        skill = await client.post(f"/api/actions/skill:{_SKILL}", json={"args": {}}, headers=viewer)
+        skill = await client.post(
+            f"/api/actions/skill:{_SKILL}", json={"args": {}}, headers=fresh()
+        )
         from openral_observability.dashboard.app import _BACKGROUND_TASKS
 
         await asyncio.gather(*_BACKGROUND_TASKS)
@@ -328,7 +336,8 @@ async def test_viewer_may_only_estop(
     announced = _announced(ros2_log)
     assert [(a["action"], a["channel_label"]) for a in announced] == [("estop", "remote")]
     assert announced[0]["actor_id"] == pseudonymous_actor_id("user-7f3a", "deployer-key")
-    assert announced[0]["detail"] == "jti=tok-91"
+    jti = jwt.decode(token, options={"verify_signature": False})["jti"]
+    assert announced[0]["detail"] == f"jti={jti}"
 
 
 @pytest.mark.asyncio
@@ -362,7 +371,11 @@ async def test_operator_needs_the_remote_control_flag(
         refused = await client.post("/api/actions/estop_reset", json={"args": {}}, headers=operator)
         manifest = (await client.get("/api/manifest", headers=operator)).json()
         monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", "1")
-        reset = await client.post("/api/actions/estop_reset", json={"args": {}}, headers=operator)
+        reset = await client.post(
+            "/api/actions/estop_reset",
+            json={"args": {}},
+            headers=_auth(issuer.mint(role="operator")),
+        )
         skill = await client.post(
             f"/api/actions/skill:{_SKILL}",
             json={"args": {}},
@@ -402,9 +415,22 @@ async def test_viz_ticket_is_256_bits_and_needs_a_token(issuer: FakeIssuer, tmp_
     async with _remote(app) as client:
         issued = await client.post("/api/viz/ticket", headers=_auth(issuer.mint(role="viewer")))
         anonymous = await client.post("/api/viz/ticket", headers={"Origin": _SITE})
-    assert issued.json()["expires_in"] == 900
+    assert 290 <= issued.json()["expires_in"] <= 300  # capped at the minting token's exp
     assert len(base64.urlsafe_b64decode(issued.json()["ticket"] + "=")) == 32  # 256 bits
     assert anonymous.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_token_inside_its_exp_leeway_mints_no_dead_ticket(
+    issuer: FakeIssuer, tmp_path: Path
+) -> None:
+    """Verified within the 60 s leeway, its ticket would be born expired: 401, re-mint."""
+    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
+    late = issuer.mint(role="viewer", exp=int(time.time()) - 10)
+    async with _remote(app) as client:
+        resp = await client.post("/api/viz/ticket", headers=_auth(late))
+    assert resp.status_code == 401, resp.text
+    assert resp.headers["www-authenticate"].startswith("Bearer")
 
 
 @pytest.mark.asyncio
@@ -571,6 +597,117 @@ def test_viz_tickets_are_capped_oldest_first() -> None:
     tickets = VizTickets()
     viewer = Principal(mode="lan", role="viewer")
     issued = [tickets.issue(viewer) for _ in range(VizTickets.MAX + 5)]
-    assert tickets.expires_at(issued[0]) is None  # evicted
-    assert tickets.expires_at(issued[-1]) is not None
-    assert len(tickets._tickets) == VizTickets.MAX
+    assert tickets.expires_at(issued[0], remote=False) is None  # evicted
+    assert tickets.expires_at(issued[-1], remote=False) is not None
+    assert len(tickets._pools["lan"]) == VizTickets.MAX
+
+
+def test_viz_tickets_are_bound_to_their_listener_and_token() -> None:
+    """A ticket never outlives its token, works only where minted, and LAN floods evict
+    only LAN tickets."""
+    from openral_observability.dashboard.remote_auth import Principal, VizTickets
+
+    tickets = VizTickets()
+    exp = time.time() + 30
+    remote = tickets.issue(Principal(mode="remote", role="viewer", sub="u", jti="j", exp=exp))
+    local = tickets.issue(Principal(mode="local", role="operator"))
+    assert tickets.expires_at(remote, remote=True) == exp  # not now + TTL_S
+    assert tickets.expires_at(remote, remote=False) is None
+    assert tickets.expires_at(local, remote=True) is None
+    assert tickets.expires_at(local, remote=False) is not None
+    for _ in range(VizTickets.MAX + 5):
+        tickets.issue(Principal(mode="lan", role="viewer"))
+    assert tickets.expires_at(remote, remote=True) == exp
+    assert tickets.expires_at(local, remote=False) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_token_makes_one_write_but_many_reads(
+    issuer: FakeIssuer, tmp_path: Path, ros2_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replayed token cannot prompt, reset or mint a ticket twice; reads and E-STOP may."""
+    monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", "1")
+    app = create_app(_store_with_manifest(), verifier=_verifier(issuer, tmp_path))
+    token = _auth(issuer.mint(role="operator"))
+    async with _remote(app) as client:
+        first = await client.post("/api/actions/estop_reset", json={"args": {}}, headers=token)
+        replay = await client.post("/api/actions/estop_reset", json={"args": {}}, headers=token)
+        ticket = await client.post("/api/viz/ticket", headers=token)
+        reads = [(await client.get("/api/config", headers=token)).status_code for _ in range(3)]
+        stops = [
+            (await client.post("/api/actions/estop", headers=token)).status_code for _ in range(2)
+        ]
+        from openral_observability.dashboard.app import _BACKGROUND_TASKS
+
+        await asyncio.gather(*_BACKGROUND_TASKS)
+    assert first.status_code == 200, first.text
+    assert replay.status_code == 401 and "already used" in replay.json()["error"]
+    assert replay.headers["www-authenticate"].startswith("Bearer")  # the console re-mints
+    assert ticket.status_code == 401
+    assert reads == [200, 200, 200]
+    assert stops == [200, 200]
+
+
+@pytest.mark.parametrize(
+    "forwarded",
+    [
+        {"cf-ray": "8f1c2d3e4f5a6b7c-AMS"},
+        {"cf-connecting-ip": "203.0.113.9"},
+        {"cf-warp-tag-id": "6c8e0d3a"},
+        {"cdn-loop": "cloudflare; loops=1"},
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_forwarded_request_on_the_local_listener_is_refused(
+    forwarded: dict[str, str],
+) -> None:
+    """A tunnel misrouted to :4318 with a rewritten Host would otherwise be the operator."""
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:4318") as c:
+        read = await c.get("/api/config", headers=forwarded)
+        write = await c.post("/api/actions/estop_reset", json={"args": {}}, headers=forwarded)
+        plain = await c.get("/api/config")
+        stop = await c.post("/api/actions/estop", json={"args": {}}, headers=forwarded)
+        console_stop = await c.post(
+            "/api/actions/estop", json={"args": {}}, headers={**forwarded, "Origin": _SITE}
+        )
+        foreign = await c.post(
+            "/api/actions/estop",
+            json={"args": {}},
+            headers={**forwarded, "Origin": "https://evil.example"},
+        )
+    assert (read.status_code, write.status_code) == (403, 403)
+    assert plain.json()["mode"] == "local"
+    assert stop.status_code != 403, stop.text  # a stop is never refused by the gate
+    assert console_stop.status_code != 403, console_stop.text  # nor with the console's Origin
+    assert foreign.status_code == 403  # another site's page still cannot drive it
+
+
+def test_a_forwarded_websocket_on_the_local_listener_is_refused() -> None:
+    with FakeBridge().running() as bridge:
+        app = create_app(TelemetryStore(), bridge_url=f"ws://127.0.0.1:{bridge.port}")
+        with TestClient(app, base_url="http://127.0.0.1:4318", client=("127.0.0.1", 5)) as local:
+            headers = {"host": "127.0.0.1:4318", "cf-ray": "8f1c2d3e4f5a6b7c-AMS"}
+            with (
+                pytest.raises(WebSocketDisconnect),
+                local.websocket_connect("/ws", headers=headers),
+            ):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_the_tunnel_never_reaches_the_robots_own_settings(
+    issuer: FakeIssuer, tmp_path: Path
+) -> None:
+    """openral.com keeps its own settings; the robot's (its API keys) stay at the robot."""
+    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
+    async with _remote(app) as client:
+        token = issuer.mint(role="operator")
+        assert (await client.get("/api/settings", headers=_auth(token))).status_code == 403
+        put = await client.put(
+            "/api/settings",
+            json={"name": "ANTHROPIC_API_KEY", "value": "sk-ant-x"},
+            headers={**_auth(token), "Origin": _SITE},
+        )
+        assert put.status_code == 403

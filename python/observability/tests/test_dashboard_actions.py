@@ -173,7 +173,8 @@ async def test_lan_client_sees_read_only_plus_estop(monkeypatch: pytest.MonkeyPa
         config = (await lan.get("/api/config")).json()
         actions = (await lan.get("/api/manifest")).json()["actions"]
         prompt = await lan.post("/api/actions/prompt", json={"args": {"text": "go"}})
-        # A robot computer exporting to a dashboard on the LAN (ADR-0017) still can.
+        # A robot computer exporting to a dashboard on the LAN (ADR-0017), once opted in.
+        monkeypatch.setenv("OPENRAL_DASHBOARD_LAN_INGEST", "1")
         otlp = await lan.post("/v1/logs", content=_manifest_logs(_manifest()))
     assert (local_config["mode"], local_config["role"]) == ("local", "operator")
     assert local_config["robot_id"] == "so101_follower"
@@ -256,14 +257,19 @@ async def test_prompt_validates_args_then_publishes(
         ]
         bad = [await client.post("/api/actions/prompt", json=body) for body in bodies]
         resp = await client.post("/api/actions/prompt", json={"args": {"text": "pick the eraser"}})
+        assert json.loads(argv_log.read_text()) == [
+            "prompt",
+            "--topic",
+            "/openral/prompt_in/dashboard",
+            "--",
+            "pick the eraser",
+        ]
+        # Text that looks like an option stays text: it can never set --new-goal or --topic.
+        dashed = await client.post("/api/actions/prompt", json={"args": {"text": "--new-goal"}})
     assert [r.status_code for r in bad] == [400, 400, 400, 400]
     assert resp.status_code == 200, resp.text
-    assert json.loads(argv_log.read_text()) == [
-        "prompt",
-        "pick the eraser",
-        "--topic",
-        "/openral/prompt_in/dashboard",
-    ]
+    assert dashed.status_code == 200, dashed.text
+    assert json.loads(argv_log.read_text())[-2:] == ["--", "--new-goal"]
 
 
 @pytest.mark.asyncio
@@ -376,9 +382,10 @@ async def test_a_launch_manifest_is_served_until_the_runtime_sends_a_fresher_one
 
 
 @pytest.mark.asyncio
-async def test_a_lan_host_cannot_rewrite_the_manifest() -> None:
-    # The manifest decides which actions exist; LAN OTLP ingest still records telemetry
+async def test_a_lan_host_cannot_rewrite_the_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The manifest decides which actions exist; opted-in LAN OTLP ingest records telemetry
     # (ADR-0017) but its manifest records are dropped. Loopback's are applied.
+    monkeypatch.setenv("OPENRAL_DASHBOARD_LAN_INGEST", "1")
     store = TelemetryStore()
     async with _client(store, client=("192.168.1.50", 50000)) as lan:
         resp = await lan.post("/v1/logs", content=_manifest_logs(_manifest()))
@@ -387,3 +394,46 @@ async def test_a_lan_host_cannot_rewrite_the_manifest() -> None:
     async with _client(store) as local:
         await _with_manifest(local)
     assert store.manifest() == _manifest()
+
+
+@pytest.mark.asyncio
+async def test_lan_otlp_ingest_is_off_unless_opted_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A LAN host cannot fill the event log or fake telemetry by default; loopback always can."""
+    from openral_observability.dashboard.app import LAN_INGEST_ENV
+
+    monkeypatch.delenv(LAN_INGEST_ENV, raising=False)
+    body = ExportLogsServiceRequest().SerializeToString()
+    async with _client(client=("192.168.1.50", 50000)) as lan:
+        refused = [
+            (await lan.post(f"/v1/{k}", content=body)).status_code for k in ("logs", "traces")
+        ]
+        monkeypatch.setenv(LAN_INGEST_ENV, "1")
+        opted_in = await lan.post("/v1/logs", content=body)
+    monkeypatch.delenv(LAN_INGEST_ENV)
+    async with _client() as local:
+        loopback = await local.post("/v1/logs", content=body)
+    assert refused == [403, 403]
+    assert (opted_in.status_code, loopback.status_code) == (200, 200)
+
+
+def test_a_manifest_cannot_lower_an_action_under_operator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``min_role`` comes from runtime data: it may raise the bar, never let a viewer drive."""
+    from openral_core import ManifestAction
+    from openral_observability.dashboard.app import _action_refusal
+    from openral_observability.dashboard.remote_auth import Principal
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", "1")
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    viewer = Principal(mode="remote", role="viewer", sub="u", jti="j", exp=0.0)
+    operator = Principal(mode="remote", role="operator", sub="u", jti="j", exp=0.0)
+    for kind, action_id in (
+        ("estop_reset", "estop_reset"),
+        ("prompt", "prompt"),
+        ("skill", f"skill:{_SKILL}"),
+    ):
+        lowered = ManifestAction(id=action_id, kind=kind, label="x", min_role="viewer", remote=True)
+        refusal = _action_refusal(lowered, viewer)
+        assert refusal is not None and "needs operator" in refusal
+        assert _action_refusal(lowered, operator) is None
+    stop = ManifestAction(id="estop", kind="estop", label="E-STOP", min_role="viewer", remote=True)
+    assert _action_refusal(stop, viewer) is None

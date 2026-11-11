@@ -52,12 +52,16 @@ port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
 | Listener | Client | Mode / role | Allowed |
 |---|---|---|---|
 | `--host`:`--port` (default `127.0.0.1:4318`) | loopback | `local` / operator | everything the manifest offers |
-| same, bound to a LAN address | any other host | `lan` / viewer | GETs, `estop`, `POST /api/viz/ticket`, OTLP ingest on `/v1/*` (a robot computer exporting to a LAN dashboard, ADR-0017) |
+| same, bound to a LAN address | any other host | `lan` / viewer | GETs, `estop`, `POST /api/viz/ticket`; OTLP ingest on `/v1/*` (a robot computer exporting to a LAN dashboard, ADR-0017) only with `OPENRAL_DASHBOARD_LAN_INGEST=1` (default off) |
 | `127.0.0.1:--remote-port` (default 4319 once linked) | the Cloudflare Tunnel | `remote` / the token's role | see below |
 
 `proxy_headers` is off on both, so a forwarded-for header never makes a LAN client
 loopback. The local listener refuses a state-changing request whose `Origin` names
-another host:port than `Host` (CSRF; DNS rebinding is not stopped by this).
+another host:port than `Host` (CSRF), a loopback request whose `Host` is not this
+machine (DNS rebinding), and any request or `/ws` upgrade carrying Cloudflare's
+forwarding headers (`cf-ray`, `cf-connecting-ip`, `cf-warp-tag-id`, `cdn-loop: cloudflare`):
+a tunnel pointed at the local port by mistake gets 403, never the local operator. The
+deploy's own exporters always send to `127.0.0.1`.
 
 The **remote listener** opens when the robot is linked (`openral robot link <code>`
 writes `~/.config/openral/robot.json`, `OPENRAL_ROBOT_ENROLMENT` overrides the path, and
@@ -73,10 +77,15 @@ and `robot`/`org` equal to the enrolment. `OPTIONS` is answered before auth for 
 origins in `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (default
 `https://www.openral.com,https://dev.openral.com,https://viz.openral.com`; never
 `Allow-Credentials`), `/v1/*` answers 404, and `/api/stream` ends at the token's `exp`.
+A token may make any number of reads but **one write**: its `jti` is held (in memory,
+until `exp` + leeway) and a second `POST`/`PUT` with it — a replay — is a 401, which
+makes the console mint a fresh token; E-STOP is never refused for it. The console sends
+every write but E-STOP with a fresh token (`ui/src/lib/auth.js`).
 Authorization headers and viz tickets are never logged.
 
 Roles: **viewer** may press E-STOP; **operator** and **admin** may also reset, prompt
-and run skills — remotely only with `OPENRAL_DASHBOARD_REMOTE_CONTROL=1` (default off).
+and run skills (a manifest's `min_role` may raise an action above operator, never lower
+it: only E-STOP is a viewer's) — remotely only with `OPENRAL_DASHBOARD_REMOTE_CONTROL=1` (default off).
 Skills need `OPENRAL_DASHBOARD_WRITE_CONTROLS=1` everywhere (default off; only the exact
 value `1` counts). `GET /api/manifest` serves the actions as this dashboard enforces
 them: no skills with write controls off, `remote` per the remote-control flag, only
@@ -86,15 +95,29 @@ plus E-STOP, and the removal of free-form parameter writes (ADR-0129 §6).
 
 ### The 3D view
 
-`/viz/` serves a pinned Lichtblick web build (`dashboard/viz_assets.py`, MPL-2.0, its
+The robot UI draws the 3D scene itself (three.js, `ui/src/Scene3D.jsx`) from
+`foxglove_bridge` through `WS /ws`: the URDF (meshes through the bridge's `assets`
+capability), link poses from `/tf`, the occupancy grid, a point cloud, collision and
+payload markers and the world-state objects. It subscribes only to the layers that are
+on. `/ws` runs every bridge→browser frame through `dashboard/bridge_relay.py`: for heavy
+snapshot topics (images, point clouds, occupancy grids, laser scans) only the newest
+unsent message per subscription is kept while the browser is slow; everything else is
+relayed in order, and once 8 MiB of ordered frames wait unsent the proxy stops reading
+the bridge, so the bridge's own `send_buffer_limit` sheds load. The number of coalesced
+frames is logged when the connection ends (`dashboard.bridge_relay_coalesced`).
+
+For raw topic inspection `/viz/` also serves a pinned Lichtblick web build (`dashboard/viz_assets.py`, MPL-2.0, its
 source noted in `NOTICE.txt` beside it), fetched on first use without its source maps.
-It reaches `foxglove_bridge` (loopback, read-only) through `WS /ws`, a proxy that pings
+Both reach `foxglove_bridge` (loopback, read-only) through `WS /ws`, a proxy that pings
 every 30 s and checks `Origin` on upgrade. Remote and LAN clients need a ticket from
-`POST /api/viz/ticket` (256-bit, bound to the caller, reusable for 15 minutes). The
+`POST /api/viz/ticket` (256-bit, bound to the caller and to the listener that minted
+it, reusable for 15 minutes but never past the minting token's `exp`; LAN, loopback and
+remote tickets are separate pools, so a LAN host cannot evict a remote viewer's). The
 `/viz/` index.html carries this robot's layout (`openral_foxglove_bringup.layout`) in
 Lichtblick's default-layout slot, so it opens on the robot's cameras and base frame; its
 CSP allows `'unsafe-eval'` (Lichtblick v1.30 will not start without `new Function`) and
-the inline script by hash. The bridge port is `--bridge-port` (default 8765).
+the inline script by hash, and `connect-src 'self'` only (as the UI's), so a crafted
+`?ds.url=wss://elsewhere` link cannot point the viewer at a foreign bridge. The bridge port is `--bridge-port` (default 8765).
 
 ### Speech to text
 

@@ -65,6 +65,12 @@ def test_fixed_arm_manifest() -> None:
     assert not {"map", "pointcloud", "reward", "viz3d"} & set(panels)  # off on this deploy
     cam = manifest.panels[1]
     assert (cam.type, cam.source) == ("camera", "top")
+    # Overhead camera in the middle, the gripper-mounted one on the left.
+    assert [(p.source, p.position) for p in manifest.panels[1:3]] == [
+        ("top", "center"),
+        ("wrist", "left"),
+    ]
+    assert all(p.position is None for p in manifest.panels if p.type != "camera")
     actions = {a.id: a for a in manifest.actions}
     assert manifest.actions[0].id == "estop"
     assert (actions["estop"].min_role, actions["estop"].remote) == ("viewer", True)
@@ -100,12 +106,43 @@ def test_mobile_manipulator_manifest() -> None:
         "front_depth",
     }
     assert {"map", "pointcloud", "reward", "viz3d"} <= set(panels)
+    # Named sides win; a hand camera goes left; base-fixed ones are centered.
+    assert {p.source: p.position for p in manifest.panels if p.type == "camera"} == {
+        "head": "center",
+        "shoulder_left": "left",
+        "shoulder_right": "right",
+        "wrist": "left",
+        "front_depth": "center",
+    }
     nav = next(a for a in manifest.actions if a.id == f"skill:{_NAV2}")
     nav_manifest = RSkillManifest.from_yaml(
         str(_REPO / "rskills/rskill-nav2-navigate-to-pose/rskill.yaml")
     )
     assert nav.args_schema == nav_manifest.goal_params_schema
     assert all(a.remote for a in manifest.actions)  # remote control on
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "expected"),
+    [
+        # A head camera on a torso link is centered, not a wrist camera (it moves with the robot).
+        ("g1", {"head": "center"}),
+        ("openarm", {"head_zed": "center", "wrist_left": "left", "wrist_right": "right"}),
+        ("r1pro", {"head": "center", "left_wrist": "left", "right_wrist": "right"}),
+        ("droid_franka_robotiq", {"exterior": "center", "wrist": "left"}),
+    ],
+)
+def test_camera_positions_on_real_robots(robot_id: str, expected: dict[str, str]) -> None:
+    manifest = build_robot_manifest(
+        _robot(robot_id),
+        DeployRuntime(),
+        _installed(),
+        bridge_on=False,
+        write_controls=False,
+        remote_control=False,
+    )
+    got = {p.source: p.position for p in manifest.panels if p.type == "camera"}
+    assert {k: got[k] for k in expected} == expected
 
 
 def test_skills_stay_out_without_write_controls_and_prompt_without_a_reasoner() -> None:
@@ -167,6 +204,7 @@ _panel_st = st.builds(
     type=st.sampled_from(["identity", "camera", "joints", "viz3d", "events"]),
     title=st.text(max_size=20),
     source=st.none() | _id,
+    position=st.none() | st.sampled_from(["left", "center", "right"]),
 )
 _action_st = st.builds(
     ManifestAction,

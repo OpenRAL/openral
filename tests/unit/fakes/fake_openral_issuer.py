@@ -16,6 +16,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -89,7 +90,10 @@ class FakeIssuer:
     def mint(
         self, *, header: dict[str, Any] | None = None, lifetime_s: int = 300, **claims: Any
     ) -> str:
-        """A robot token for ``k3x9`` of org ``acme``; keyword args override claims."""
+        """A robot token for ``k3x9`` of org ``acme``; keyword args override claims.
+
+        Each token gets its own ``jti``, as openral.com's do.
+        """
         now = int(time.time())
         payload: dict[str, Any] = {
             "iss": ISSUER,
@@ -99,7 +103,7 @@ class FakeIssuer:
             "org": ORG,
             "role": "operator",
             "robot": ROBOT,
-            "jti": "tok-91",
+            "jti": f"tok-{uuid.uuid4().hex[:12]}",
             "iat": now,
             "exp": now + lifetime_s,
         }

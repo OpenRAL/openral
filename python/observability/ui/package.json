@@ -15,11 +15,17 @@
     "test": "node --test \"src/lib/*.test.js\""
   },
   "dependencies": {
+    "@foxglove/rosmsg": "^5.0.5",
+    "@foxglove/rosmsg2-serialization": "^3.1.2",
+    "@foxglove/ws-protocol": "^0.8.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "three": "^0.180.0",
+    "urdf-loader": "^0.13.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.3",
-    "vite": "^8.3.5"
+    "vite": "^8.3.5",
+    "ws": "^8.18.0"
   }
 }

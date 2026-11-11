@@ -355,6 +355,56 @@ ACCOUNT_SETTINGS = frozenset(
 switches: those stay on the robot (ADR-0129, Safety-WG), whatever the site sends."""
 
 
+def apply_console_settings(
+    *, echo: Callable[[str], None], console: dict[str, str] | None = None
+) -> list[str]:
+    """Put the reasoner settings set in this robot's console into ``os.environ``.
+
+    The console's settings pane saves the provider keys and the model on the robot
+    (``openral_observability.dashboard.robot_settings``); a deploy maps them to the
+    reasoner's variables (``reasoner_env``). The set applies whole or not at all: when
+    the environment already sets any reasoner variable it wins outright, so the robot's
+    key is never paired with an inherited model, endpoint or dialect it was not chosen
+    for. :func:`apply_reasoner_settings` skips the account's settings altogether when
+    the console chooses a reasoner, so the robot's key is never paired with an
+    account's endpoint either. ``console`` is the ``reasoner_env`` snapshot a caller
+    already read (so one read decides and applies); ``None`` reads the file. Returns
+    the names it set; never raises.
+    """
+    from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
+
+    if console is None:
+        console = reasoner_env(load_settings())
+    inherited = sorted(k for k in ACCOUNT_SETTINGS if k in os.environ)
+    if console and inherited:
+        echo(f"console settings: not applied, the environment sets {', '.join(inherited)}")
+        return []
+    applied = dict(console)
+    os.environ.update(applied)
+    if applied:
+        echo(f"console settings: {', '.join(sorted(applied))}")
+    return sorted(applied)
+
+
+def apply_reasoner_settings(*, echo: Callable[[str], None]) -> list[str]:
+    """The reasoner settings a deploy starts with: the robot console's, else the account's.
+
+    When the console's settings choose the reasoner (a model, and its key) the account's
+    reasoner settings are not applied at all: an account's endpoint or dialect would
+    otherwise carry the robot's own key to a URL the site picked. A variable already in
+    the environment wins over both. Returns the names it set; never raises.
+    """
+    from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
+
+    # Decide by whether the console chooses a reasoner, not by whether it set anything:
+    # with its variables already exported (an inherited environment), it sets nothing,
+    # and the account's endpoint must still never pair with the robot's key.
+    console = reasoner_env(load_settings())  # one snapshot decides and is applied
+    if console:
+        return apply_console_settings(echo=echo, console=console)
+    return apply_account_settings(echo=echo)
+
+
 def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
     """Put this robot's openral.com account settings into ``os.environ`` (ADR-0129).
 

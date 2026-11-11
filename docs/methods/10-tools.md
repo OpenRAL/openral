@@ -961,9 +961,9 @@ _Force/contact layer (#373) feasibility tools on the MuJoCo OpenArm v2 right arm
 - `main(argv=None) -> int` (L341) — CLI: `probe [--force-n N]` or `load-cell [--xy X Y]`.
 
 ### `tools/export_reasoner_models.py`
-_Writes the curated `REASONER_MODELS` as openral.com's model drop-down (ADR-0129); `.github/workflows/reasoner-models.yml` runs it on master._
+_Exports `openral_core.reasoner_model_options()` (the curated `REASONER_MODELS` with the key each needs) for openral.com's Account → Settings model drop-down. `.github/workflows/reasoner-models.yml` writes it to the website's `server/reasoner-models.json`. `python tools/export_reasoner_models.py > reasoner-models.json`._
 
-- `export() -> list[dict[str, Any]]` (L22) — `[{id, label, needs}]` in registry order; `needs` is the API-key variable the website asks for (`None` for an on-robot model); providers the website has no key for are left out.
+- `export() -> list[dict[str, Any]]` (L21) — `[{id, label, needs}]` in registry order; `needs` is the API-key variable the website asks for (`None` for an on-robot model); providers the website has no key for are left out.
 
 ### `tools/pin_robot_ui.py`
 _Pins the dashboard's robot UI to one `robot-ui.yml` build by sha256 (ADR-0129); the workflow's `pin` job runs it from a master checkout (never the built commit's tree) and opens the pin bump as a PR._

@@ -185,6 +185,23 @@ def test_the_kernel_gets_world_voxel_enabled_at_the_real_margin() -> None:
     assert octo_params["frame_id"] == "openarm_base"
 
 
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_viewers_get_thinned_copies_of_the_zed_and_the_self_filtered_clouds() -> None:
+    """The pinned driver cloud and the self filter's colour cloud reach the viewer
+    converter, which re-publishes each thinned; neither is a manifest depth sensor."""
+    from launch_ros.utilities import evaluate_parameters
+
+    args = _launch_args("real")
+    del args["deploy_config"]  # drivers: needs zed_wrapper on the ament path (rig only)
+    args["enable_foxglove"] = "true"
+    ctx, entities = _compose(args)
+    (params,) = evaluate_parameters(
+        ctx, _node(entities, "openral_foxglove_bringup", "bucket2_markers")._Node__parameters
+    )
+    assert _ZED_CLOUD in params["camera_cloud_topics"]
+    assert "/openral/world_cloud/self_filtered_rgb" in params["camera_cloud_topics"]
+
+
 _AUTONOMOUS = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_autonomous.yaml"
 
 

@@ -22,6 +22,7 @@ graph — every node healthy, every panel empty:
 
 from __future__ import annotations
 
+import importlib
 import pathlib
 
 import pytest
@@ -208,3 +209,52 @@ def test_both_3d_panels_follow_the_same_frame() -> None:
     assert set(robot_relative.values()) == {"openarm_base"}, (
         f"every robot-relative panel must follow the requested frame: {panels}"
     )
+
+
+# ── the bridge's asset allowlist: no way out of a package ────────────────────
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "package://openarm_description/assets/robot/openarm_v2.0/meshes/body_link0.dae",
+        "package://so101_description/meshes/base.stl",
+    ],
+)
+def test_the_asset_allowlist_admits_package_meshes(
+    uri: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import re
+
+    monkeypatch.syspath_prepend(str(_ROOT / "packages" / "openral_foxglove_bringup"))
+    # By name: the colcon package is not on the tests/ mypy path.
+    allowlist = importlib.import_module("openral_foxglove_bringup.topics").ASSET_URI_ALLOWLIST
+
+    assert any(re.match(p, uri) for p in allowlist)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "package://pkg/../../etc/passwd.stl",
+        "package://pkg/%2e%2e/%2e%2e/etc/shadow.stl",
+        "package://pkg/%2E%2E/secret.png",
+        "package://pkg/.%2e/secret.png",
+        "package://pkg/%252e%252e/secret.png",
+        "package://pkg/meshes%2f..%2fsecret.stl",
+        "package://pkg/․․/secret.stl",
+        "package://pkg/meshes\\..\\secret.stl",
+        "package:///etc/passwd.stl",
+        "file:///etc/passwd.stl",
+    ],
+)
+def test_the_asset_allowlist_refuses_every_traversal_spelling(
+    uri: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import re
+
+    monkeypatch.syspath_prepend(str(_ROOT / "packages" / "openral_foxglove_bringup"))
+    # By name: the colcon package is not on the tests/ mypy path.
+    allowlist = importlib.import_module("openral_foxglove_bringup.topics").ASSET_URI_ALLOWLIST
+
+    assert not any(re.match(p, uri) for p in allowlist)

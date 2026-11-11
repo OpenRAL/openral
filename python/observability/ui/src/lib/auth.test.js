@@ -47,6 +47,29 @@ test("api: Bearer on every call, one forced re-mint and retry on 401", async () 
   ]);
 });
 
+test("api: every write but E-STOP gets a fresh token; reads reuse the cached one", async () => {
+  let n = 0;
+  const auth = createTokenClient({ mint: async () => ({ access_token: `t${++n}`, expires_in: 300 }) });
+  const seen = [];
+  const api = createApi({
+    base: "https://r-1.openral.com",
+    auth,
+    fetch: async (url, init) => (seen.push([init.method || "GET", url.slice(23), init.headers.get("Authorization")]), { status: 200 }),
+  });
+  await api.call("/api/state");
+  await api.call("/api/actions/prompt", { method: "POST" });
+  await api.call("/api/viz/ticket", { method: "POST" });
+  await api.call("/api/actions/estop", { method: "POST" });
+  await api.call("/api/state");
+  assert.deepEqual(seen, [
+    ["GET", "/api/state", "Bearer t1"],
+    ["POST", "/api/actions/prompt", "Bearer t2"],
+    ["POST", "/api/viz/ticket", "Bearer t3"],
+    ["POST", "/api/actions/estop", "Bearer t3"],
+    ["GET", "/api/state", "Bearer t3"],
+  ]);
+});
+
 test("api: local mode sends no Authorization and does not retry", async () => {
   const seen = [];
   const api = createApi({ fetch: async (url, init) => (seen.push([url, init.headers.has("Authorization")]), { status: 401 }) });
@@ -63,4 +86,67 @@ test("findRobot only accepts https origins (http for loopback dev)", () => {
   }
   assert.equal(findRobot(list("https://r-a.openral.com"), "b"), null);
   assert.equal(findRobot(null, "a"), null);
+});
+
+test("concurrent writes each get their own token", async () => {
+  let n = 0;
+  const auth = createTokenClient({
+    mint: async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return { access_token: `t${++n}`, expires_in: 300 };
+    },
+  });
+  const seen = [];
+  const api = createApi({
+    base: "https://r-1.openral.com",
+    auth,
+    fetch: async (url, init) => (seen.push(init.headers.get("Authorization")), { status: 200 }),
+  });
+  await Promise.all([1, 2, 3].map(() => api.call("/api/actions/prompt", { method: "POST" })));
+  assert.equal(new Set(seen).size, 3);
+});
+
+test("E-STOP sends a still-valid token at once and renews on the side; an expired one is never sent", async () => {
+  let t = 0;
+  let n = 0;
+  let release;
+  const auth = createTokenClient({
+    now: () => t,
+    mint: async () => {
+      if (n >= 1) await new Promise((r) => (release = r)); // the website stalls
+      return { access_token: `t${++n}`, expires_in: 300 };
+    },
+  });
+  const seen = [];
+  const api = createApi({
+    base: "https://r-1.openral.com",
+    auth,
+    fetch: async (url, init) => (seen.push(init.headers.get("Authorization")), { status: 200 }),
+  });
+  await api.call("/api/state"); // t1, renew due at 240 s, expires at 300 s
+  t = 250_000;
+  await api.call("/api/actions/estop", { method: "POST" }); // does not wait on the stalled mint
+  assert.deepEqual(seen, ["Bearer t1", "Bearer t1"]);
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  t = 600_000; // t2 (minted at 250 s) expired too
+  const stop = api.call("/api/actions/estop", { method: "POST" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(seen.length, 2); // waits for a fresh token instead of sending an expired one
+  release();
+  await stop;
+  assert.equal(seen[2], "Bearer t3");
+});
+
+test("a short-lived token is renewed before valid() gives it up", async () => {
+  let t = 0;
+  let n = 0;
+  const c = createTokenClient({ now: () => t, mint: async () => ({ access_token: `t${++n}`, expires_in: 15 }) });
+  await c.get();
+  t = 7_000; // renewal at 7.5 s, expiry margin at 11.25 s
+  assert.deepEqual([c.valid(), await c.get()], ["t1", "t1"]);
+  t = 7_500;
+  assert.equal(await c.get(), "t2");
+  t = 7_500 + 11_250;
+  assert.equal(c.valid(), null);
 });

@@ -15115,6 +15115,43 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
 }
 
 
+#: The account-setting key each provider's models need (openral.com's Account →
+#: Settings and the robot console's settings pane hold these two).
+ANTHROPIC_KEY_SETTING = "ANTHROPIC_API_KEY"
+OPENAI_KEY_SETTING = "OPENAI_API_KEY"
+
+
+def reasoner_model_options() -> list[dict[str, str | None]]:
+    """The curated models a settings form offers: ``[{id, label, needs}]``, registry order.
+
+    ``needs`` is the key setting a model reads: ``ANTHROPIC_API_KEY`` for an
+    Anthropic-dialect model, ``OPENAI_API_KEY`` for an OpenAI model (sent to OpenAI's own
+    API), ``None`` for one that runs on the robot. A cloud model of a provider neither key
+    serves (Gemini, xAI, ...) is left out.
+
+    Example:
+        >>> opts = {o["id"]: o for o in reasoner_model_options()}
+        >>> claude, gpt, cosmos = (opts[k] for k in ("claude-opus-4-8", "gpt-5.5", "cosmos3-edge"))
+        >>> claude.get("needs"), gpt.get("label"), cosmos.get("needs") is None
+        ('ANTHROPIC_API_KEY', 'GPT-5.5', True)
+    """
+    out: list[dict[str, str | None]] = []
+    for model in REASONER_MODELS.values():
+        needs: str | None
+        if not model.auth_required:
+            needs = None
+        elif model.dialect == "anthropic":
+            needs = ANTHROPIC_KEY_SETTING
+        elif model.served_model_id.startswith("openai/"):
+            needs = OPENAI_KEY_SETTING
+        else:
+            continue
+        # The provider rides in the key it needs: "(Anthropic)", "(via OpenRouter)" would mislead.
+        label = re.sub(r"\s*\((?:Anthropic|via OpenRouter|OpenAI)\)$", "", model.display_name)
+        out.append({"id": model.id, "label": label, "needs": needs})
+    return out
+
+
 # Base URLs for the named endpoints ``OPENRAL_REASONER_ENDPOINT`` accepts.
 # Exported so a deployment can reference the same constant the factory does
 # instead of retyping a URL; the properties each one implies (dialect, auth,
