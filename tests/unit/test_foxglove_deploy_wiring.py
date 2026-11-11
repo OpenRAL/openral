@@ -22,6 +22,7 @@ graph — every node healthy, every panel empty:
 
 from __future__ import annotations
 
+import importlib
 import pathlib
 
 import pytest
@@ -226,9 +227,10 @@ def test_the_asset_allowlist_admits_package_meshes(
     import re
 
     monkeypatch.syspath_prepend(str(_ROOT / "packages" / "openral_foxglove_bringup"))
-    from openral_foxglove_bringup.topics import ASSET_URI_ALLOWLIST
+    # By name: the colcon package is not on the tests/ mypy path.
+    allowlist = importlib.import_module("openral_foxglove_bringup.topics").ASSET_URI_ALLOWLIST
 
-    assert any(re.match(p, uri) for p in ASSET_URI_ALLOWLIST)
+    assert any(re.match(p, uri) for p in allowlist)
 
 
 @pytest.mark.parametrize(
@@ -252,6 +254,7 @@ def test_the_asset_allowlist_refuses_every_traversal_spelling(
     import re
 
     monkeypatch.syspath_prepend(str(_ROOT / "packages" / "openral_foxglove_bringup"))
-    from openral_foxglove_bringup.topics import ASSET_URI_ALLOWLIST
+    # By name: the colcon package is not on the tests/ mypy path.
+    allowlist = importlib.import_module("openral_foxglove_bringup.topics").ASSET_URI_ALLOWLIST
 
-    assert not any(re.match(p, uri) for p in ASSET_URI_ALLOWLIST)
+    assert not any(re.match(p, uri) for p in allowlist)
