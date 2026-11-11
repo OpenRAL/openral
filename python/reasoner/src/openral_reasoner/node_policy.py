@@ -53,9 +53,12 @@ def should_rebuild_mission(
     reasoner question ("the red one") must not silently discard the
     in-flight task queue — it reaches the LLM through the PROMPTS section
     instead. Exception: ``active_succeeded_unverified`` (the active task's
-    last dispatch succeeded and no reward monitor can judge it) — the task is
-    as done as the reasoner can know, so the operator's next prompt is a new
-    goal, not an aside the finished task resumes after.
+    last dispatch succeeded and no reward monitor can judge it) with no task
+    queued after it — the mission is as done as the reasoner can know, so the
+    operator's next prompt is a new goal, not an aside the finished task resumes
+    after. Queued tasks are never dropped this way, and the node clears the flag
+    once the reasoner prompts the operator, so a reply to its question stays a
+    reply.
 
     Example:
         >>> should_rebuild_mission("cli", "", None)
@@ -68,8 +71,8 @@ def should_rebuild_mission(
         False
         >>> should_rebuild_mission("cli", '{"new_goal": true}', m)
         True
-        >>> should_rebuild_mission("cli", "", m, active_succeeded_unverified=True)
-        True
+        >>> should_rebuild_mission("cli", "", m, active_succeeded_unverified=True)  # queued
+        False
         >>> _ = m.abandon_active("x")
         >>> _ = m.abandon_active("x")
         >>> should_rebuild_mission("cli", "", m)  # mission finished: next goal
@@ -81,7 +84,7 @@ def should_rebuild_mission(
         return False
     if mission is None or mission.is_empty() or mission.is_complete() or not mission.has_started():
         return True
-    if active_succeeded_unverified:
+    if active_succeeded_unverified and not any(t.status == "pending" for t in mission.tasks):
         return True
     if not metadata_json:
         return False

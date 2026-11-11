@@ -1216,6 +1216,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # monitor to judge it: an operator prompt then starts a new goal instead of
         # being an aside the finished task resumes after. Cleared by the next dispatch.
         self._unverified_success: tuple[int, str] | None = None
+        # The dispatched skill's completes_task_on_success, captured at dispatch so a
+        # palette refresh while the goal runs cannot change how its result settles.
+        self._active_dispatch_completes_task: bool | None = None
         self._object_query_recovery_pending: bool = False
         self._active_object_query_invocation_id: str | None = None
         self._execute_rskill_client: Any = None  # rclpy.action.ActionClient
@@ -3512,6 +3515,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         span that produced it.
         """
         assert self._prompt_pub is not None
+        # Once the reasoner speaks to the operator, the next operator prompt is a reply
+        # (e.g. to a clarification question), not a new goal replacing the mission.
+        self._unverified_success = None
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "openral_reasoner"
@@ -4235,6 +4241,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         succeeded: bool = False,
         dispatch_task_id: str | None = None,
         dispatch_mission_generation: int | None = None,
+        dispatch_completes_task: bool | None = None,
     ) -> None:
         """Verify the active mission task against the reward signal after a skill returns.
 
@@ -4276,10 +4283,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"{active.task_id} (generation {self._mission_generation})",
             )
             return
-        entry = self._palette.skill(call.rskill_id)
+        if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
+            entry = self._palette.skill(call.rskill_id)
+            dispatch_completes_task = entry is not None and entry.completes_task_on_success
         step = task_step_without_verifier(
             succeeded=succeeded,
-            completes_task_on_success=entry is not None and entry.completes_task_on_success,
+            completes_task_on_success=dispatch_completes_task,
             reward_available=self._task_progress_available,
             attempts=active.attempts,
         )
@@ -5205,6 +5214,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._active_dispatch_task_id = active.task_id if active is not None else None
         self._active_dispatch_attempts = active.attempts if active is not None else None
         self._active_dispatch_mission_generation = self._mission_generation
+        dispatched_entry = self._palette.skill(call.rskill_id)
+        self._active_dispatch_completes_task = (
+            dispatched_entry is not None and dispatched_entry.completes_task_on_success
+        )
         self._dispatch_generation += 1
         generation = self._dispatch_generation
         self._active_dispatch_generation = generation
@@ -5822,7 +5835,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"object_query cancel_goal_async failed after accept: {type(exc).__name__}: {exc}",
             )
 
-    def _on_execute_rskill_result(
+    def _on_execute_rskill_result(  # noqa: PLR0915  # reason: one terminal-result handler — snapshot the dispatch, then route success / cancel / failure
         self,
         call: ExecuteRskillTool,
         generation: int,
@@ -5850,6 +5863,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         dispatch_task_id = self._active_dispatch_task_id
         dispatch_attempts = self._active_dispatch_attempts
         dispatch_mission_generation = self._active_dispatch_mission_generation
+        dispatch_completes_task = self._active_dispatch_completes_task
+        self._active_dispatch_completes_task = None
         self._active_dispatch_task_id = None
         self._active_dispatch_attempts = None
         self._active_dispatch_mission_generation = None
@@ -5933,6 +5948,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 succeeded=True,
                 dispatch_task_id=dispatch_task_id,
                 dispatch_mission_generation=dispatch_mission_generation,
+                dispatch_completes_task=dispatch_completes_task,
             )
             return
         # VLM-adjudicated completion §2 — a reasoner-driven cancel (status 5, reason "reward" from

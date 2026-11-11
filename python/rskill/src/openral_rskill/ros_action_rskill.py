@@ -801,7 +801,14 @@ class ROSActionRskill(rSkillBase):
             # Result-only: nothing to extract, but say what happened (the goal sent and
             # the server's result scalars) so the reasoner sees more than "ok".
             status = "STATUS_SUCCEEDED" if self._interface_kind == "action" else "RESPONDED"
-            self._outcome_summary = _summarize_wrapped_outcome(status, result, self._goal_dict)
+            summary = _summarize_wrapped_outcome(status, result, self._goal_dict)
+            # A service that answers ``success: false`` (std_srvs/Trigger, SetBool) did not
+            # do it: a failure, never a completed (or task-completing) goal.
+            if self._interface_kind != "action" and getattr(result, "success", None) is False:
+                raise ROSRuntimeError(
+                    f"ROSActionRskill({self.name!r}): wrapped service reported failure: {summary}"
+                )
+            self._outcome_summary = summary
             return
 
         try:

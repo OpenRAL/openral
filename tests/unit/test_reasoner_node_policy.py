@@ -111,11 +111,19 @@ def test_prompt_after_an_unverified_success_starts_a_new_goal() -> None:
     """ "drive back to start" after a Nav2 drive that succeeded with no verifier is a
     new goal, not an aside the first task resumes after; a reply after a FAILED
     attempt still keeps the queue."""
-    mission = _in_progress_mission()
+    mission = MissionState(["drive to x=4,y=0 in map"])
+    mission.record_attempt(rskill_id="openral/rskill-x")
     assert should_rebuild_mission("dashboard", "", mission, active_succeeded_unverified=True)
     assert not should_rebuild_mission("dashboard", "", mission, active_succeeded_unverified=False)
     # Cascade prompts never rebuild, whatever the task's state.
     assert not should_rebuild_mission("mission", "", mission, active_succeeded_unverified=True)
+
+
+def test_an_unverified_success_never_drops_queued_tasks() -> None:
+    """t1 succeeded unverified, t2 is queued: a prompt is an aside, not a new mission."""
+    mission = _in_progress_mission()  # "pick the bowl" active, "place the butter" queued
+    assert not should_rebuild_mission("dashboard", "", mission, active_succeeded_unverified=True)
+    assert should_rebuild_mission("dashboard", '{"new_goal": true}', mission)
 
 
 def test_a_task_completed_on_action_success_is_rebuilt_by_the_next_prompt() -> None:

@@ -81,13 +81,17 @@ The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
 the mission and never reset the search budgets or retry-cap streak.
 One more case rebuilds mid-flight: the active task's last dispatch *succeeded*
 and no reward monitor can verify it (`mission: task … succeeded with no
-verifier` in the log) — the operator's next prompt is then a new goal, not an
-aside after which the finished task resumes.
+verifier` in the log) and no task is queued after it — the operator's next
+prompt is then a new goal, not an aside after which the finished task resumes.
+Queued tasks are never dropped this way, and once the reasoner prompts the
+operator (`emit_prompt`, e.g. a clarification question) the next operator prompt
+is a reply again.
 
 **Task completion without a verifier.** A task normally completes only on a
 reward / VLM verdict. A wrapped ROS action rSkill whose manifest sets
 `ros_integration.completes_task_on_success: true` (the in-tree Nav2
-`navigate_to_pose` skill) completes the active task when its goal succeeds —
+`navigate_to_pose` skill; the setting is read when the goal is dispatched)
+completes the active task when its goal succeeds —
 Nav2 SUCCEEDED means "within the goal tolerance", so the reasoner must not
 re-drive a 0.2 m residual. With no reward monitor, the per-task attempt cap
 (`DEFAULT_MAX_ATTEMPTS`, 3) still applies: the task is abandoned through the

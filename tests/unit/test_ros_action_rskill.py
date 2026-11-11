@@ -385,6 +385,40 @@ def _make_skill_with_fake_action(
     return skill
 
 
+@dataclass
+class _FakeServiceClient:
+    """Minimal stand-in for ``rclpy`` ``Client``: answers every call with ``response``."""
+
+    response: Any
+
+    def call_async(self, request: Any) -> Any:
+        del request
+        return _DoneFuture(self.response)
+
+
+@pytest.mark.parametrize(("success", "fails"), [(False, True), (True, False)])
+def test_a_result_only_service_answering_success_false_is_a_failure(
+    success: bool, fails: bool
+) -> None:
+    """std_srvs/Trigger-shaped ``success: false`` must never read as a completed goal."""
+    from types import SimpleNamespace
+
+    from openral_core.exceptions import ROSRuntimeError
+
+    skill = _make_skill(_result_only_manifest(), description=None)
+    skill._interface_kind = "service"
+    skill._interface_type = type("_FakeSrv", (), {"Request": dict})
+    skill._client = _FakeServiceClient(SimpleNamespace(success=success, message="busy"))
+    skill._goal_dict = {}
+    skill._result_deadline_s = 1.0
+    if fails:
+        with pytest.raises(ROSRuntimeError, match="wrapped service reported failure"):
+            skill._dispatch_and_cache_result()
+    else:
+        skill._dispatch_and_cache_result()
+        assert "success=True" in skill._outcome_summary
+
+
 def test_result_only_mode_raises_on_action_aborted() -> None:
     """Nav2 ABORTED must surface as a runtime failure.
 
