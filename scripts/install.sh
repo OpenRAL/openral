@@ -6,7 +6,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/OpenRAL/openral/master/scripts/install.sh | bash
 #
 # Tier-0 only (no sudo, no apt, no GPU, no ROS 2): detects OS/arch, installs
-# `uv` (astral.sh installer) and CPython 3.12 (both user-local), then
+# `uv` (a pinned release, sha256-verified) and CPython 3.12 (both user-local), then
 # `uv tool install --python 3.12 openral-cli` into ~/.local/bin/, prints PATH
 # guidance and the opt-in-groups menu. Does NOT install ROS 2, MuJoCo/LIBERO/
 # RoboCasa, or NVIDIA drivers/CUDA (use `openral install <group>` instead);
@@ -26,6 +26,10 @@
 #                            driver, or set cu128/cu130/etc.; empty skips the
 #                            flag (uv's default). `openral doctor` probes GPU
 #                            via NVML regardless of this setting.
+#   OPENRAL_UV_VERSION       uv release installed when uv is missing (default
+#                            below). The archive is checked against the
+#                            .sha256 that release publishes; nothing is piped
+#                            into a shell.
 #   OPENRAL_INSTALL_DEBUG    1 → set -x.
 
 set -euo pipefail
@@ -60,16 +64,36 @@ info "detected platform: ${PLATFORM} $(uname -m)"
 
 # ── 1. Install uv if missing ───────────────────────────────────────────────────
 
+OPENRAL_UV_VERSION="${OPENRAL_UV_VERSION:-0.12.5}"
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
 if ! command -v uv >/dev/null 2>&1; then
-    info "uv not found — installing from https://astral.sh/uv/install.sh"
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # uv installer drops the binary into one of these per its own logic.
-    for candidate in "${HOME}/.local/bin" "${HOME}/.cargo/bin"; do
-        if [[ -x "${candidate}/uv" ]]; then
-            export PATH="${candidate}:${PATH}"
-            break
-        fi
-    done
+    case "$(uname -m)" in
+        x86_64|amd64)  uv_arch="x86_64"  ;;
+        aarch64|arm64) uv_arch="aarch64" ;;
+        *) fatal "no prebuilt uv for $(uname -m): install uv by hand (https://docs.astral.sh/uv/)" ;;
+    esac
+    if [[ "${PLATFORM}" == "darwin" ]]; then uv_target="${uv_arch}-apple-darwin"
+    else uv_target="${uv_arch}-unknown-linux-gnu"; fi
+    uv_asset="uv-${uv_target}.tar.gz"
+    uv_url="https://github.com/astral-sh/uv/releases/download/${OPENRAL_UV_VERSION}/${uv_asset}"
+    info "uv not found — installing uv ${OPENRAL_UV_VERSION} from ${uv_url} (sha256-verified)"
+    uv_tmp="$(mktemp -d)"
+    trap 'rm -rf "${uv_tmp}"' EXIT
+    curl --proto '=https' --tlsv1.2 -fsSL -o "${uv_tmp}/${uv_asset}" "${uv_url}"
+    curl --proto '=https' --tlsv1.2 -fsSL -o "${uv_tmp}/${uv_asset}.sha256" "${uv_url}.sha256"
+    uv_expected="$(cut -d' ' -f1 "${uv_tmp}/${uv_asset}.sha256")"
+    uv_actual="$(sha256_of "${uv_tmp}/${uv_asset}")"
+    [[ -n "${uv_expected}" && "${uv_actual}" == "${uv_expected}" ]] \
+        || fatal "uv archive checksum mismatch (got ${uv_actual}, release says ${uv_expected})"
+    tar -xzf "${uv_tmp}/${uv_asset}" -C "${uv_tmp}"
+    mkdir -p "${HOME}/.local/bin"
+    install -m 0755 "${uv_tmp}/uv-${uv_target}/uv" "${uv_tmp}/uv-${uv_target}/uvx" "${HOME}/.local/bin/"
+    export PATH="${HOME}/.local/bin:${PATH}"
     command -v uv >/dev/null 2>&1 || fatal "uv installation finished but \`uv\` is still not on \$PATH."
 fi
 info "uv: $(command -v uv) ($(uv --version))"

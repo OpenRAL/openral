@@ -427,6 +427,8 @@ model id, endpoint, and dialect are explicit; the factory and `openral doctor`
 warn that robotics tool-calling reliability is unverified.
 
 ```bash
+# Linux: runs ollama's release-tag install.sh only when its sha256 matches
+# OLLAMA_INSTALL_SH_SHA256 (scripts/bootstrap_ollama.sh); refuses otherwise.
 just bootstrap-ollama
 export OPENRAL_REASONER_MODEL=qwen3:8b
 export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
