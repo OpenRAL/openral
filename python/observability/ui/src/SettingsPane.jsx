@@ -7,12 +7,8 @@ import { modelProblem, shownValue } from "./lib/settings.js";
 // writes the org's); on the robot they are the robot's own (the robot's /api/settings,
 // written only by the operator at the robot). Either way a secret only ever comes back
 // as "set …abcd", and robots use the values from their next deploy start.
-const TITLES = { org: "Organization", me: "Your own robot", robot: "This robot" };
-const NOTES = {
-  org: "Your organization's robots read these when a deploy starts; a value set on the robot itself wins.",
-  me: "The robot on your own account reads these when a deploy starts; a value set on the robot itself wins.",
-  robot: "This robot uses these from its next deploy start. They win over its openral.com account's settings; an environment variable set on the robot wins over both.",
-};
+// On the website the pane holds two scopes and names them; on the robot only one.
+const TITLES = { org: "Organization", me: "Your own robot" };
 
 function Scope({ which, url = `/api/settings?scope=${which}` }) {
   const [data, setData] = useState(null);
@@ -47,12 +43,8 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
   if (!data || data.scope !== which) return null; // no org: only your own
   const problem = modelProblem(data);
   return (
-    <section className="set-scope" aria-label={TITLES[which]}>
-      <h3>{TITLES[which]}</h3>
-      <p className="set-note">
-        {NOTES[which]}
-        {data.canWrite ? "" : which === "org" ? " Only an org admin can change them." : " Only the operator at the robot can change them."}
-      </p>
+    <section className="set-scope" aria-label={TITLES[which] || "Reasoner"}>
+      {TITLES[which] && <h3>{TITLES[which]}</h3>}
       {Object.entries(data.settings).map(([name, s]) => {
         const v = data.values[name];
         if (Array.isArray(s.options)) {
