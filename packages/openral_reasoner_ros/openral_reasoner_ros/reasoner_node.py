@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 import rclpy
 from openral_core import (
+    EMIT_PROMPT_TOPICS,
     POLICY_KINDS,
     ROS_WRAPPER_KINDS,
     SIM_EXECUTABLE_CONTROL_MODES,
@@ -3455,13 +3456,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def _emit_prompt_publisher(self, target_topic: str) -> Any:
         """The ``PromptStamped`` publisher for ``target_topic`` (cached per topic).
 
-        ``/openral/prompt`` reuses the standing cascade publisher; any other
-        topic the LLM targets gets its own publisher created on first use and
-        cached — the schema and system prompt document emit_prompt as
-        "publish onto another topic", and silently rerouting every call to
-        ``/openral/prompt`` (the pre-fix behaviour) dropped cross-topic
-        cascades on the floor while the log claimed delivery.
+        Raises ``ValueError`` for a topic outside ``EMIT_PROMPT_TOPICS``: the
+        schema already refuses one, and this re-check holds even for a call
+        built without validation (``model_construct``) — the target is LLM
+        output, and a publisher is never created on a name it picked freely.
+        ``/openral/prompt`` reuses the standing cascade publisher; the other
+        allowlisted topic gets its own publisher created on first use and
+        cached (silently rerouting every call to ``/openral/prompt``, the
+        pre-fix behaviour, dropped cross-topic cascades while the log claimed
+        delivery).
         """
+        if target_topic not in EMIT_PROMPT_TOPICS:
+            raise ValueError(f"not an emit_prompt topic (allowed: {EMIT_PROMPT_TOPICS})")
         if target_topic == "/openral/prompt":
             return self._prompt_pub
         pub = self._emit_prompt_pubs.get(target_topic)

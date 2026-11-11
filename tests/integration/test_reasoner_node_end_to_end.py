@@ -1443,7 +1443,7 @@ def test_deactivated_reasoner_does_not_tick_on_a_prompt() -> None:
     try:
         client = FakeToolUseClient(
             responses=[
-                EmitPromptTool(target_topic="/openral/prompt_in/test", text="should not fire")
+                EmitPromptTool(target_topic="/openral/prompt_in/auto", text="should not fire")
             ],
         )
         reasoner = ReasonerNode(
@@ -2360,6 +2360,44 @@ def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_emit_prompt_never_publishes_outside_the_allowlist() -> None:
+    """The node re-checks EMIT_PROMPT_TOPICS: an unvalidated call opens no publisher."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import EmitPromptTool
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    rclpy.init()
+    try:
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[]),
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+            tick_hz=2.0,
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+        # model_construct skips validation, as a hand-built or replayed call could.
+        call = EmitPromptTool.model_construct(
+            tool="emit_prompt",
+            target_topic="/cmd_vel",  # type: ignore[arg-type]  # reason: off-allowlist on purpose
+            text="go",
+            metadata_json="",
+            rationale="",
+        )
+        reasoner._dispatch_emit_prompt(call, traceparent=None)
+        with pytest.raises(ValueError, match="not an emit_prompt topic"):
+            reasoner._emit_prompt_publisher("/openral/prompt_in/cli")
+        assert reasoner.get_publishers_info_by_topic("/cmd_vel") == []
+        assert "/cmd_vel" not in reasoner._emit_prompt_pubs
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_emit_prompt_honours_target_topic() -> None:
     """EmitPromptTool.target_topic routes to that topic, not always /openral/prompt.
 
@@ -2382,7 +2420,7 @@ def test_emit_prompt_honours_target_topic() -> None:
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
-    target_topic = "/openral/prompt_out/cascade_test"
+    target_topic = "/openral/prompt_in/auto"
     rclpy.init()
     on_target: list[PromptStamped] = []
     on_default: list[PromptStamped] = []
