@@ -2,7 +2,7 @@
 // vanilla dashboard. Everything the robot sends is rendered as text through
 // React — never as HTML.
 import { Component, useEffect, useRef, useState } from "react";
-import { renewDelayS } from "./lib/auth.js";
+import { SAFETY_LIVENESS_S } from "./lib/safety.js";
 import {
   b64Blob,
   coverMap,
@@ -29,10 +29,9 @@ import {
   stripMetricPrefix,
   worldToPixel,
 } from "./lib/render.js";
-import { localVizUrl, remoteVizUrl } from "./lib/viz.js";
 
 const STALE_S = 10;
-const WIDE = new Set(["viz3d", "metrics", "events", "reasoner", "map"]);
+const WIDE = new Set(["metrics", "events", "reasoner", "map"]);
 const DOT_LABEL = { wait: "waiting for data", live: "receiving data", paused: "data paused", error: "error" };
 const finite = (v) => typeof v === "number" && Number.isFinite(v);
 const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0));
@@ -715,7 +714,6 @@ function Reward({ panel, snap }) {
 // ADR-0096: the latched /openral/safety_status. Nothing here is inferred: no
 // status means "unknown", never "clear". Publishers re-stamp at 1 Hz, so an
 // age past 3 s means the latched value can't be trusted (HZ-0096-1).
-const SAFETY_LIVENESS_S = 3;
 
 function SafetyStatus({ panel, snap }) {
   const st = snap?.topics?.safety_status;
@@ -1132,71 +1130,6 @@ function WorldState({ panel, snap }) {
   );
 }
 
-// ── 3D (Lichtblick) ───────────────────────────────────────────────────────
-// Loads on demand. Remote: a robot-issued viz ticket (never the JWT) goes in
-// the iframe URL, and is re-issued — and the view reloaded — before it expires.
-function Viz3D({ panel, api }) {
-  const [on, setOn] = useState(false);
-  const [src, setSrc] = useState(null);
-  const [err, setErr] = useState(null);
-  useEffect(() => {
-    if (!on) return;
-    if (!api.remote) return setSrc(localVizUrl(window.location));
-    let stop = false;
-    let t;
-    const issue = async () => {
-      try {
-        const r = await api.call("/api/viz/ticket", { method: "POST" });
-        if (!r.ok) throw new Error(`the robot refused a 3D ticket (HTTP ${r.status})`);
-        const j = await r.json();
-        if (typeof j?.ticket !== "string" || !j.ticket) throw new Error("the robot sent no 3D ticket");
-        if (stop) return;
-        setSrc(remoteVizUrl(api.base, j.ticket));
-        setErr(null);
-        t = setTimeout(issue, renewDelayS(j.expires_in) * 1000);
-      } catch (e) {
-        if (stop) return;
-        setErr(e.message);
-        t = setTimeout(issue, 30000);
-      }
-    };
-    issue();
-    return () => {
-      stop = true;
-      clearTimeout(t);
-    };
-  }, [on, api]);
-  const close = (
-    <button type="button" className="chip" onClick={() => (setOn(false), setSrc(null))}>
-      close
-    </button>
-  );
-  return (
-    <Card panel={panel} ts={false} extra={on && close}>
-      {!on ? (
-        <div className="viz-off">
-          <p className="muted">The live 3D scene from the robot's Foxglove bridge, in Lichtblick. It loads on demand.</p>
-          <button type="button" className="btn" onClick={() => setOn(true)}>
-            Open 3D view
-          </button>
-        </div>
-      ) : err ? (
-        <Empty>{err}. Retrying in 30 s.</Empty>
-      ) : src ? (
-        <iframe
-          className="viz"
-          title={`${String(panel.title || "3D")} scene`}
-          src={src}
-          allow="fullscreen"
-          sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-modals"
-        />
-      ) : (
-        <Empty>Requesting a 3D ticket…</Empty>
-      )}
-    </Card>
-  );
-}
-
 export const PANELS = {
   identity: Identity,
   camera: Camera,
@@ -1212,5 +1145,4 @@ export const PANELS = {
   metrics: Metrics,
   events: Events,
   world_state: WorldState,
-  viz3d: Viz3D,
 };

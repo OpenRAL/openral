@@ -64,18 +64,21 @@ default tab, 3D layers, cameras, light/dark/system theme) are saved per robot in
 - `src/Console.jsx`: the camera strip, the right pane and its tabs, the reasoner trace, the Layout sheet.
 - `src/Scene3D.jsx`: the 3D scene in three.js (lazy-loaded): URDF with `package://` meshes through the
   bridge's `assets` capability (plain links when unreachable), TF, occupancy grid, point cloud,
-  collision and payload markers, world-state objects. Draws only when something changed.
+  collision and payload markers, world-state objects. Links are posed from `/tf`
+  (joint states only when no link has a TF frame). Draws only when something changed. It sits in its
+  own error boundary: no WebGL or a failed load leaves the header and E-STOP in place.
 - `src/ActionBar.jsx`: manifest actions filtered by role and remote policy, with a minimal JSON-schema form.
 - `src/panels.jsx`: one renderer per panel type. Unknown types are ignored.
 - `src/lib/`: pure modules with no DOM or React, each with a `*.test.js`:
   - `sse.js`: the SSE parser and reconnect loop;
   - `auth.js`: the token cache and API client;
   - `actions.js`: action filtering, the schema form, and the action call (the website's fleet view can reuse it);
-  - `viz.js`: the bridge WebSocket URLs (same-origin `/ws`, or the tunnel with a viz ticket) and the Lichtblick URLs;
+  - `viz.js`: the bridge WebSocket URLs (same-origin `/ws`, with a viz ticket from the LAN; the tunnel's with a ticket) and the local Lichtblick URL;
+  - `safety.js`: the header safety pill's verdict (never green on a stale or missing status);
   - `layout.js`: camera order, the right pane's tabs, the saved layout settings, the theme;
   - `scene.js`: TF math and ROS message → drawable data (occupancy grid, point cloud, markers, objects), and which topics each layer needs;
   - `decode.js`: CDR decoding from the bridge's advertised `ros2msg` schemas;
-  - `bridge.js`: the Foxglove WebSocket client: subscribes only to the layers that are on, keeps the newest message of snapshot topics (no browser backlog);
+  - `bridge.js`: the Foxglove WebSocket client: subscribes only to the layers that are on, keeps the newest message of snapshot topics (no browser backlog), downloads meshes three at a time;
   - `trace.js`: the reasoner trace kept from successive `reasoner.tick` snapshots;
   - `render.js`: formats and the map, overlay and sparkline math.
 

@@ -104,15 +104,18 @@ export function occupancyToRGBA(grid, colors) {
   const data = grid?.data;
   if (w <= 0 || h <= 0 || !data || data.length < w * h) return null;
   const out = new Uint8ClampedArray(w * h * 4);
-  for (let i = 0; i < w * h; i++) {
+  const { unknown, free, occupied } = colors;
+  for (let i = 0, o = 0; i < w * h; i++, o += 4) {
     const v = data[i];
-    let c;
-    if (v < 0) c = colors.unknown;
-    else {
-      const k = Math.min(100, v) / 100;
-      c = colors.free.map((f, j) => f + (colors.occupied[j] - f) * k);
+    if (v < 0) {
+      out[o] = unknown[0];
+      out[o + 1] = unknown[1];
+      out[o + 2] = unknown[2];
+      out[o + 3] = unknown[3];
+      continue;
     }
-    out.set(c, i * 4);
+    const k = Math.min(100, v) / 100;
+    for (let j = 0; j < 4; j++) out[o + j] = free[j] + (occupied[j] - free[j]) * k;
   }
   return {
     width: w,
@@ -177,12 +180,15 @@ export function cloudToPoints(msg, budget = 60000) {
 
 // ── visualization_msgs/MarkerArray → primitives ───────────────────────────────
 
-const KIND = { 0: "arrow", 1: "cube", 2: "sphere", 3: "cylinder", 4: "line", 5: "lines", 6: "cubes", 7: "spheres", 8: "points", 9: "text", 10: "mesh" };
+// visualization_msgs/Marker.type → what the scene draws. TRIANGLE_LIST (11) is how
+// declared mesh fixtures arrive (points in threes, already in metres × scale).
+const KIND = { 0: "arrow", 1: "cube", 2: "sphere", 3: "cylinder", 4: "line", 5: "lines", 6: "cubes", 7: "spheres", 8: "points", 9: "text", 10: "mesh", 11: "triangles" };
 const DELETE = 2;
 const DELETE_ALL = 3;
 
-// Applies one MarkerArray to `store` (a Map keyed "ns/id") and returns it.
-// Marker lifetimes are not tracked: a producer re-publishes or deletes.
+// Applies one MarkerArray to `store` (a Map keyed "ns/id") and returns it. Keep one
+// store per topic: DELETEALL clears the whole store, and each producer opens its
+// array with one. Marker lifetimes are not tracked: a producer re-publishes or deletes.
 export function applyMarkers(store, msg) {
   for (const m of Array.isArray(msg?.markers) ? msg.markers : []) {
     const key = `${m?.ns ?? ""}/${m?.id ?? 0}`;
@@ -214,7 +220,7 @@ export function applyMarkers(store, msg) {
 
 // ── world-state objects (dashboard snapshot) → labelled points ────────────────
 
-export function sceneObjects(so, nowNs) {
+export function sceneObjects(so, nowNanos) {
   const list = Array.isArray(so?.objects) ? so.objects : [];
   return list
     .filter((o) => o && [o.x, o.y, o.z].every((v) => typeof v === "number" && Number.isFinite(v)))
@@ -224,7 +230,7 @@ export function sceneObjects(so, nowNs) {
       frame: strip(o.frame_id),
       t: [o.x, o.y, o.z],
       confidence: typeof o.confidence === "number" ? o.confidence : null,
-      ageS: nowNs && o.last_seen_ns ? Math.max(0, (nowNs - o.last_seen_ns) / 1e9) : null,
+      ageS: nowNanos && o.last_seen_ns ? Math.max(0, (nowNanos - o.last_seen_ns) / 1e9) : null,
       container: !!o.is_container,
     }));
 }

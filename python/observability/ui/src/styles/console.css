@@ -12,6 +12,8 @@
   --ok: #4fb58b;
   --ok-soft: rgba(79, 181, 139, 0.14);
   --bad-soft: rgba(217, 138, 142, 0.16);
+  --warn: #f2b880;
+  --warn-soft: rgba(242, 184, 128, 0.16);
   --on-accent: #0b0c10;
   color-scheme: dark;
 }
@@ -41,6 +43,8 @@
   --ok: #1d6b48;
   --ok-soft: #e3f2ea;
   --bad-soft: #fbe7e4;
+  --warn: #8a4e0f;
+  --warn-soft: #fbf0e3;
   --on-accent: #ffffff;
   color-scheme: light;
 }
@@ -63,6 +67,15 @@
   color: var(--ok);
   background: var(--ok-soft);
   border-color: transparent;
+}
+.pill.safety.warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: var(--warn);
+  font-weight: 700;
+}
+.pill.safety.unknown {
+  border-style: dashed;
 }
 .pill.safety.bad {
   color: var(--red);

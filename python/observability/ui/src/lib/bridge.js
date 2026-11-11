@@ -11,26 +11,36 @@ const INCREMENTAL = new Set([
   "std_msgs/msg/String",
 ]);
 
+// Mesh downloads share the socket with live data: a few at a time, each with its
+// own deadline counted from when it is sent, not from when it was queued.
+const ASSET_PARALLEL = 3;
+const ASSET_TIMEOUT_MS = 30000;
+
 export class Bridge {
   // onEvent(topic, msg): incremental messages, decoded, in arrival order.
   // onTopics(topics[]): the advertised topic list changed.
-  // onStatus("open" | "closed", detail?), never from inside the constructor.
-  constructor({ url, onEvent, onTopics, onStatus }) {
+  // onStatus("open" | "closed", detail?), never from inside the constructor;
+  // "closed" exactly once per connection.
+  // WebSocketImpl: the WebSocket constructor (tests pass their own).
+  constructor({ url, onEvent, onTopics, onStatus, WebSocketImpl = globalThis.WebSocket }) {
     this.handlers = { onEvent, onTopics, onStatus };
     this.channels = new Map(); // topic -> channel
     this.decoders = new Map(); // channel id -> decode fn | null
     this.subs = new Map(); // topic -> subscription id
     this.subTopic = new Map(); // subscription id -> topic
     this.latest = new Map(); // topic -> { data, at }
-    this.assets = new Map(); // request id -> { resolve, reject }
+    this.assets = new Map(); // request id -> { resolve, reject, timer }
+    this.assetQueue = []; // waiting to be sent: { uri, resolve, reject }
     this.nextAsset = 1;
     this.wanted = new Set();
-    this.received = 0;
-    const ws = new WebSocket(url, [FoxgloveClient.SUPPORTED_SUBPROTOCOL]);
+    this.isClosed = false;
+    const ws = new WebSocketImpl(url, [FoxgloveClient.SUPPORTED_SUBPROTOCOL]);
     this.client = new FoxgloveClient({ ws });
     this.client.on("open", () => onStatus?.("open"));
     this.client.on("close", (e) => this.#closed(e?.reason || `closed (${e?.code ?? "?"})`));
-    this.client.on("error", () => onStatus?.("closed", "connection error"));
+    // "error" also fires for one frame the client cannot parse on a healthy socket,
+    // and a real failure is followed by "close": only "close" ends the connection.
+    this.client.on("error", () => {});
     this.client.on("advertise", (chs) => {
       for (const ch of chs) this.channels.set(ch.topic, ch);
       this.#sync();
@@ -51,8 +61,10 @@ export class Bridge {
       const p = this.assets.get(r.requestId);
       if (!p) return;
       this.assets.delete(r.requestId);
+      clearTimeout(p.timer);
       if (r.status === 0) p.resolve(r.data);
       else p.reject(new Error(r.error || "asset refused"));
+      this.#pumpAssets();
     });
   }
 
@@ -80,26 +92,33 @@ export class Bridge {
     return [...this.channels.keys()];
   }
 
-  // A mesh or texture by URI (package://…), through the bridge's `assets` capability.
-  fetchAsset(uri, timeoutMs = 15000) {
-    const id = this.nextAsset++;
+  // A mesh by URI (package://…), through the bridge's `assets` capability.
+  fetchAsset(uri) {
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => {
+      if (this.isClosed) return reject(new Error("bridge closed"));
+      this.assetQueue.push({ uri, resolve, reject });
+      this.#pumpAssets();
+    });
+  }
+
+  #pumpAssets() {
+    while (this.assets.size < ASSET_PARALLEL && this.assetQueue.length) {
+      const { uri, resolve, reject } = this.assetQueue.shift();
+      const id = this.nextAsset++;
+      const timer = setTimeout(() => {
         this.assets.delete(id);
         reject(new Error(`asset timed out: ${uri}`));
-      }, timeoutMs);
-      this.assets.set(id, {
-        resolve: (v) => (clearTimeout(t), resolve(v)),
-        reject: (e) => (clearTimeout(t), reject(e)),
-      });
+        this.#pumpAssets();
+      }, ASSET_TIMEOUT_MS);
+      this.assets.set(id, { resolve, reject, timer });
       try {
         this.client.fetchAsset(uri, id);
       } catch (e) {
         this.assets.delete(id);
-        clearTimeout(t);
+        clearTimeout(timer);
         reject(e);
       }
-    });
+    }
   }
 
   close() {
@@ -108,8 +127,14 @@ export class Bridge {
   }
 
   #closed(detail) {
-    for (const p of this.assets.values()) p.reject(new Error("bridge closed"));
+    if (this.isClosed) return;
+    this.isClosed = true;
+    for (const p of this.assets.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error("bridge closed"));
+    }
     this.assets.clear();
+    for (const q of this.assetQueue.splice(0)) q.reject(new Error("bridge closed"));
     this.handlers.onStatus?.("closed", this.closedByUs ? null : detail);
   }
 
@@ -146,7 +171,6 @@ export class Bridge {
   #message({ subscriptionId, data }) {
     const topic = this.subTopic.get(subscriptionId);
     if (!topic) return;
-    this.received++;
     const ch = this.channels.get(topic);
     if (ch && INCREMENTAL.has(ch.schemaName)) {
       try {
@@ -156,6 +180,6 @@ export class Bridge {
       }
       return;
     }
-    this.latest.set(topic, { data, at: performance.now() });
+    this.latest.set(topic, { data });
   }
 }

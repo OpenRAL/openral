@@ -40,13 +40,13 @@ are saved in the browser, per robot. Nothing from a robot is rendered as HTML.
 
 ## Camera position
 
-`build_robot_manifest` sets each camera panel's `position`:
+`build_robot_manifest` sets each camera panel's `position` from what the sensor's `name`,
+`frame_id` and `parent_frame` say (`openral_core.camera_position`):
 
-1. `left` / `right` when the sensor name or `frame_id` says so (`left_wrist`, `cam_right`).
-2. `left` for a camera that moves with the arm: `parent_frame` (else `frame_id`) is a robot
-   link other than the base (the SO-101 `wrist` camera on `gripper`), or the name or frame
-   says wrist, hand, gripper or eef.
-3. `center` otherwise (world- or base-fixed, e.g. the SO-101 `top` OAK-D Pro).
+1. `left` / `right` when one names a side (`left_wrist`, `cam_right`).
+2. `left` when one says wrist, hand, gripper or eef (the SO-101 `wrist` camera).
+3. `center` otherwise: overhead, head, torso, base and world cameras (the SO-101 `top`
+   OAK-D Pro, the G1 `head`).
 
 Camera tiles keep manifest order inside a slot. A missing slot leaves no gap.
 
@@ -58,7 +58,8 @@ subscribes only to the layers that are switched on.
 | Layer | Topic | Type | Latest-wins |
 |---|---|---|---|
 | Robot model | `/openral/robot_description`, `/robot_description` | `std_msgs/String` (URDF) | no |
-| Frames | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | no |
+| Frames and link poses | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | no |
+| Joint fallback (no link TF) | `/joint_states` | `sensor_msgs/JointState` | no |
 | Occupancy grid | `/map` | `nav_msgs/OccupancyGrid` | yes |
 | Point cloud | `/openral/world_cloud/self_filtered_rgb`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud` | `sensor_msgs/PointCloud2` | yes |
 | Collision boxes | `/openral/viz/static_geometry`, `/openral/viz/collisions` | `visualization_msgs/MarkerArray` | no |
@@ -66,16 +67,21 @@ subscribes only to the layers that are switched on.
 | Objects | world state from the dashboard stream (`world_state` objects) | SSE snapshot | n/a |
 
 Meshes referenced as `package://…` load through the bridge's `assets` capability
-(allowlist `ASSET_URI_ALLOWLIST`). Other mesh URIs fall back to simple link geometry.
+(allowlist `ASSET_URI_ALLOWLIST`), three at a time, each mesh once; a failed download is
+retried on the next connection. Other mesh URIs fall back to simple link geometry.
+Texture URLs inside a robot-supplied URDF or Collada file are never fetched.
+
+The robot model is posed from `/tf` (URDF link frames), not from `/joint_states`: a HAL
+may publish manifest joint names and units that differ from the URDF's.
 
 ## Keeping it fast through the tunnel
 
 - **Subscribe on demand.** A layer that is off is unsubscribed; the bridge sends nothing for it.
 - **Latest-wins proxy.** The robot's `/ws` proxy parses the Foxglove protocol it already
-  relays. For snapshot types (images, point clouds, occupancy grids, joint states, laser
-  scans, odometry) it keeps only the newest frame per subscription while the socket is
-  busy. Incremental types (TF, markers, URDF) and every control frame are relayed in
-  order, unchanged.
+  relays. For snapshot types (images, point clouds, occupancy grids, laser scans) it keeps only the newest frame per subscription while the socket is
+  busy. Incremental types (TF, markers, URDF), sampled streams (joint states, IMU,
+  odometry) and every control frame are relayed in order, unchanged; their unsent
+  backlog is bounded (8 MiB), after which the proxy stops reading the bridge.
 - **Decode in the page, at display rate.** Messages are decoded (CDR) only when drawn,
   at most once per animation frame per topic; point clouds are decimated to a point budget.
 - **Cameras stay on JPEG snapshots** (`/api/camera/<id>/snapshot.jpg`, 1 Hz remote, 4 Hz

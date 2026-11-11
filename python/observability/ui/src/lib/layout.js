@@ -91,12 +91,15 @@ export function activeTab(prefs, tabs) {
   return tabs.find((t) => t.id === prefs.tab)?.id ?? tabs[0]?.id ?? null;
 }
 
-// Move a tab one step up (-1) or down (+1) in the order.
-export function moveTab(prefs, id, step) {
+// Move a tab one step up (-1) or down (+1) among the tabs in `among` (the ones the
+// operator can see in the list), skipping over any others in the stored order.
+export function moveTab(prefs, id, step, among = prefs.order) {
+  const shown = prefs.order.filter((x) => among.includes(x));
+  const other = shown[shown.indexOf(id) + step];
+  if (!shown.includes(id) || other === undefined) return prefs;
   const order = [...prefs.order];
   const i = order.indexOf(id);
-  const j = i + step;
-  if (i < 0 || j < 0 || j >= order.length) return prefs;
+  const j = order.indexOf(other);
   [order[i], order[j]] = [order[j], order[i]];
   return { ...prefs, order };
 }

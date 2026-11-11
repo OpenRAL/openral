@@ -79,6 +79,19 @@ test("visible tabs follow order and hidden; the active one falls back", () => {
   assert.equal(moveTab(prefs, "reasoner", -1), prefs); // already first: unchanged
 });
 
+test("moving a tab steps over tabs the robot doesn't have", () => {
+  const prefs = normalizePrefs(null); // reasoner, events, world, safety, …
+  const shown = ["reasoner", "world", "safety"]; // this robot has no events tab
+  const moved = moveTab(prefs, "world", -1, shown);
+  assert.deepEqual(
+    moved.order.filter((id) => shown.includes(id)),
+    ["world", "reasoner", "safety"],
+  );
+  assert.equal(moveTab(prefs, "reasoner", -1, shown), prefs);
+  assert.equal(moveTab(prefs, "safety", 1, shown), prefs);
+  assert.equal(moveTab(prefs, "events", 1, shown), prefs); // not in the list
+});
+
 test("toggleIn adds and removes", () => {
   assert.deepEqual(toggleIn(["a"], "b"), ["a", "b"]);
   assert.deepEqual(toggleIn(["a", "b"], "a"), ["b"]);

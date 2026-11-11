@@ -145,8 +145,12 @@ The robot UI draws the 3D scene itself (three.js): the robot from its URDF, TF, 
 occupancy grid (`/map`), a point cloud, collision boxes and payload markers
 (`/openral/viz/*`) and the world-state objects, each a layer the operator can switch
 off. It reads the same `/ws` bridge proxy as Lichtblick and subscribes only to the
-layers that are on. The proxy relays snapshot topics (images, point clouds, maps, joint
-states) latest-wins, so a slow tunnel drops stale frames instead of falling behind.
+layers that are on. Links are posed from `/tf`, so the model follows whatever
+`robot_state_publisher` computed. The proxy relays heavy snapshot topics (images, point
+clouds, maps, laser scans) latest-wins, so a slow tunnel drops stale frames instead of
+falling behind; sampled streams (joint states, IMU, odometry) are never dropped by it.
+From another machine on the LAN the page asks the robot for a 3D ticket first, as it
+does through the tunnel.
 
 The dashboard also serves a pinned [Lichtblick](https://github.com/Lichtblick-Suite/lichtblick)
 web build (MPL-2.0, the open Foxglove Studio fork) at `/viz/`, downloaded on first use.

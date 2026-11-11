@@ -8,6 +8,8 @@ import { connectSSE } from "./lib/sse.js";
 import { fmtAge, robotNow, setRobotNow } from "./lib/render.js";
 import { ActionBar } from "./ActionBar.jsx";
 import { Console, usePrefs, useTheme } from "./Console.jsx";
+import { safetyVerdict } from "./lib/safety.js";
+import { Boundary } from "./panels.jsx";
 
 // Mode comes from the location: `?robot=<id>` means we are www.openral.com's
 // /robot-ui/ (remote, through the robot's tunnel); otherwise the robot itself
@@ -142,15 +144,13 @@ function Header({ children }) {
   );
 }
 
-// Always in the header: the safety kernel's latched state, from the stream.
+// Always in the header: the safety verdict (lib/safety.js). Never green on a stale
+// or missing status; re-evaluated every second by the page's tick.
 function SafetyPill({ topics }) {
-  const st = topics?.safety_status;
-  const latched = !!(st?.latched || topics?.safety?.estopped);
-  const known = st?.ts_unix != null || topics?.safety?.ts_unix != null;
-  const label = !known ? "safety: waiting" : latched ? "E-STOP latched" : "safety nominal";
+  const v = safetyVerdict(topics, robotNow());
   return (
-    <span className={`pill safety ${!known ? "" : latched ? "bad" : "ok"}`} role="status">
-      {label}
+    <span className={`pill safety ${v.state}`} role="status">
+      {v.label}
     </span>
   );
 }
@@ -237,6 +237,8 @@ function Robot({ api, robot }) {
           </div>
         )}
         {manifest && (
+          // Whatever goes wrong below, the header (and its E-STOP) stays.
+          <Boundary title="Console" reset={manifest}>
           <Console
             api={api}
             cfg={cfg}
@@ -250,6 +252,7 @@ function Robot({ api, robot }) {
             layoutOpen={layoutOpen}
             setLayoutOpen={setLayoutOpen}
           />
+          </Boundary>
         )}
       </main>
     </>

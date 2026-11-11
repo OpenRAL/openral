@@ -62,7 +62,15 @@ function markerObject(m) {
   const material = new THREE.MeshStandardMaterial({ color, transparent: opacity < 1, opacity, roughness: 0.8 });
   const [sx, sy, sz] = m.scale.map((v) => Math.max(v, 1e-3));
   let obj = null;
-  if (m.kind === "cube" || m.kind === "mesh") obj = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), material);
+  // A MESH_RESOURCE marker is not drawn: a box of its scale would misstate its shape.
+  if (m.kind === "cube") obj = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), material);
+  else if (m.kind === "triangles" && m.points.length >= 3) {
+    // TRIANGLE_LIST: a declared mesh fixture, points in threes.
+    const g = new THREE.BufferGeometry().setFromPoints(m.points.map((p) => new THREE.Vector3(p[0] * sx, p[1] * sy, p[2] * sz)));
+    g.computeVertexNormals();
+    material.side = THREE.DoubleSide;
+    obj = new THREE.Mesh(g, material);
+  }
   else if (m.kind === "sphere") obj = new THREE.Mesh(new THREE.SphereGeometry(0.5, 20, 14), material), obj.scale.set(sx, sy, sz);
   else if (m.kind === "cylinder") {
     obj = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1, 24), material);
@@ -76,7 +84,7 @@ function markerObject(m) {
     const g = new THREE.BufferGeometry().setFromPoints(m.points.map((p) => new THREE.Vector3(...p)));
     obj = new THREE.Points(g, new THREE.PointsMaterial({ color, size: Math.max(sx, 0.01) }));
   }
-  if (obj && (m.kind === "cube" || m.kind === "mesh")) {
+  if (obj && m.kind === "cube") {
     const edges = new THREE.LineSegments(
       new THREE.EdgesGeometry(obj.geometry),
       new THREE.LineBasicMaterial({ color, transparent: true, opacity: Math.min(1, opacity + 0.4) }),
@@ -97,34 +105,65 @@ function disposeTree(obj) {
   });
 }
 
-// Mesh loading for urdf-loader: package:// through the bridge's assets
-// capability; anything else cannot be reached from the browser. `track` counts
-// meshes in flight: track(+1) when one starts, track(-1, ok) when it ends.
-function meshLoader(bridgeRef, track) {
+// Robot-supplied URDF and Collada files can name texture images by URL. The page
+// never fetches them: every URL a loader asks for becomes this 1×1 transparent GIF.
+const NO_TEXTURE = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+function noFetchManager() {
+  const manager = new THREE.LoadingManager();
+  manager.setURLModifier(() => NO_TEXTURE);
+  return manager;
+}
+
+// Mesh loading for urdf-loader: package:// through the bridge's assets capability
+// (`getBytes`, cached per URI so a mesh used by several links downloads once);
+// anything else cannot be reached from the browser. `track` counts meshes in
+// flight: track(+1) when one starts, track(-1, ok) when it ends.
+function meshLoader(getBytes, track) {
   return (path, _manager, material, done) => {
     track(1);
     const finish = (obj, err) => {
       done(obj, err);
       track(-1, !err);
     };
-    const bridge = bridgeRef.current;
-    if (!bridge || !path.startsWith("package://")) return finish(null, new Error(`mesh not reachable: ${path}`));
-    bridge
-      .fetchAsset(path)
-      .then((view) => {
-        const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    if (!path.startsWith("package://")) return finish(null, new Error(`mesh not reachable: ${path}`));
+    getBytes(path)
+      .then((bytes) => {
         const ext = path.split(".").pop().toLowerCase();
         if (ext === "stl") {
           const g = new STLLoader().parse(bytes.slice().buffer);
           return finish(new THREE.Mesh(g, material));
         }
         const text = new TextDecoder().decode(bytes);
-        if (ext === "dae") return finish(new ColladaLoader().parse(text, "").scene);
+        if (ext === "dae") return finish(new ColladaLoader(noFetchManager()).parse(text, "").scene);
         if (ext === "obj") return finish(new OBJLoader().parse(text));
         throw new Error(`mesh type .${ext} not supported`);
       })
       .catch((e) => finish(null, e));
   };
+}
+
+// Pose every URDF link that has a TF frame from /tf (what robot_state_publisher
+// computed, in URDF names and units). /joint_states cannot do this in general: a HAL
+// may publish manifest joint names and units that differ from the URDF's (a 0–1
+// gripper fraction, other joint names). Returns how many links were posed.
+const _m = new THREE.Matrix4();
+const _inv = new THREE.Matrix4();
+const _p = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const _one = new THREE.Vector3(1, 1, 1);
+function poseLinksFromTf(robot, at) {
+  let posed = 0;
+  robot.traverse((o) => {
+    if (!o.isURDFLink || o === robot || !o.parent) return;
+    const tf = at(o.urdfName);
+    if (!tf) return;
+    _m.compose(_p.set(tf.t[0], tf.t[1], tf.t[2]), _q.set(tf.q[0], tf.q[1], tf.q[2], tf.q[3]), _one);
+    o.parent.updateWorldMatrix(true, false); // ancestors were posed first (pre-order)
+    _m.premultiply(_inv.copy(o.parent.matrixWorld).invert());
+    _m.decompose(o.position, o.quaternion, o.scale);
+    posed++;
+  });
+  return posed;
 }
 
 // The robot as plain shapes when its meshes are unreachable: a sphere per link
@@ -146,9 +185,10 @@ function stickFigure(robot, color) {
   }
 }
 
-// Connect to the bridge: same-origin locally, a viz ticket through the tunnel
-// remotely. Reconnects with backoff, and before each ticket expires.
-function useBridge(api, handlers) {
+// Connect to the bridge. On the robot itself (loopback) /ws needs nothing; from the
+// LAN and through the tunnel the robot wants a viz ticket (`needTicket`).
+// Reconnects with backoff, and before each ticket expires.
+function useBridge(api, needTicket, handlers) {
   const ref = useRef(null);
   const [status, setStatus] = useState({ state: "connecting", detail: null });
   useEffect(() => {
@@ -161,13 +201,13 @@ function useBridge(api, handlers) {
       let url;
       let renewMs = null;
       try {
-        if (!api.remote) url = localBridgeUrl(window.location);
+        if (!needTicket) url = localBridgeUrl(window.location);
         else {
           const r = await api.call("/api/viz/ticket", { method: "POST" });
           if (!r.ok) throw new Error(`the robot refused a 3D ticket (HTTP ${r.status})`);
           const j = await r.json();
           if (typeof j?.ticket !== "string" || !j.ticket) throw new Error("the robot sent no 3D ticket");
-          url = remoteBridgeUrl(api.base, j.ticket);
+          url = api.remote ? remoteBridgeUrl(api.base, j.ticket) : localBridgeUrl(window.location, j.ticket);
           renewMs = renewDelayS(j.expires_in) * 1000;
         }
       } catch (e) {
@@ -209,17 +249,22 @@ function useBridge(api, handlers) {
       ref.current?.close();
       ref.current = null;
     };
-  }, [api]);
+  }, [api, needTicket]);
   return [ref, status];
 }
 
-export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn }) {
+export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, bridgeOn }) {
   const host = useRef(null);
   const labels = useRef(null);
   const world = useRef(null); // three.js state, created once
   const [topics, setTopics] = useState([]);
   const [info, setInfo] = useState({ robot: "waiting", meshesMissing: false });
   const fixed = String(manifest?.base_frame || "base");
+  const fixedRef = useRef(fixed);
+  if (fixedRef.current !== fixed) {
+    fixedRef.current = fixed;
+    if (world.current) world.current.replace = true;
+  }
   const layersRef = useRef(layers);
   layersRef.current = layers;
   const snapRef = useRef(snap);
@@ -227,7 +272,13 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
 
   const handlers = useRef(null);
   handlers.current = {
-    onOpen: (b) => b.want(wantedTopics(b.topics(), layersRef.current)),
+    onOpen: (b) => {
+      // A new connection redelivers the latched URDF: let it reload the meshes that
+      // failed last time (a dropped socket or a slow link mid-download).
+      const w = world.current;
+      if (w?.meshesMissing) w.urdf = null;
+      b.want(wantedTopics(b.topics(), layersRef.current));
+    },
     onTopics: (t) => {
       setTopics(t);
       bridgeRef.current?.want(wantedTopics(t, layersRef.current));
@@ -236,13 +287,35 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
       const w = world.current;
       if (!w) return;
       w.dirty = true;
-      if (topic === "/tf" || topic === "/tf_static") w.tf.addMessage(msg), (w.tfVersion = (w.tfVersion || 0) + 1);
-      else if (COLLISION.has(topic)) applyMarkers(w.collision.store, msg), (w.collision.dirty = true);
-      else if (PAYLOAD.has(topic)) applyMarkers(w.payload.store, msg), (w.payload.dirty = true);
+      if (topic === "/tf" || topic === "/tf_static") w.tf.addMessage(msg), (w.tfVersion += 1);
+      else if (COLLISION.has(topic)) markersFrom(w.collision, topic, msg);
+      else if (PAYLOAD.has(topic)) markersFrom(w.payload, topic, msg);
       else if (ROBOT.has(topic) && typeof msg?.data === "string") loadRobot(msg.data);
     },
   };
-  const [bridgeRef, status] = useBridge(bridgeOn ? api : null, handlers);
+  const [bridgeRef, status] = useBridge(bridgeOn ? api : null, api.remote || mode !== "local", handlers);
+
+  // One marker store per topic: each producer opens its array with DELETEALL, which
+  // must not wipe another topic's markers in the same layer.
+  const markersFrom = (layer, topic, msg) => {
+    if (!layer.stores.has(topic)) layer.stores.set(topic, new Map());
+    applyMarkers(layer.stores.get(topic), msg);
+    layer.dirty = true;
+  };
+
+  // Mesh bytes by URI, shared by every link that uses the mesh and kept across
+  // reloads; a failed download is forgotten so the next load tries it again.
+  const meshBytes = (uri) => {
+    const w = world.current;
+    const bridge = bridgeRef.current;
+    if (!w || !bridge) return Promise.reject(new Error("no 3D stream"));
+    if (!w.meshCache.has(uri)) {
+      const p = bridge.fetchAsset(uri).then((view) => new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+      p.catch(() => w.meshCache.get(uri) === p && w.meshCache.delete(uri));
+      w.meshCache.set(uri, p);
+    }
+    return w.meshCache.get(uri);
+  };
 
   const loadRobot = (urdf) => {
     const w = world.current;
@@ -258,11 +331,12 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
         robot.userData.stickAdded = true;
         stickFigure(robot, w.colors.accent);
       }
+      w.meshesMissing = missing;
       setInfo({ robot: "ok", meshesMissing: missing });
     };
-    const loader = new URDFLoader();
+    const loader = new URDFLoader(noFetchManager());
     loader.packages = (pkg) => `package://${pkg}`;
-    loader.loadMeshCb = meshLoader(bridgeRef, (step, ok) => {
+    loader.loadMeshCb = meshLoader(meshBytes, (step, ok) => {
       inFlight += step;
       w.dirty = true;
       if (step < 0 && !ok) missing = true;
@@ -280,6 +354,8 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
       disposeTree(w.robot);
     }
     w.robot = robot;
+    w.meshesMissing = false;
+    w.replace = true;
     w.layers.robot.add(robot);
     setInfo({ robot: "loading", meshesMissing: false });
     settle();
@@ -322,8 +398,13 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
       tf: new TfBuffer(),
       robot: null,
       urdf: null,
-      collision: { store: new Map(), dirty: false },
-      payload: { store: new Map(), dirty: false },
+      collision: { stores: new Map(), dirty: false },
+      payload: { stores: new Map(), dirty: false },
+      meshCache: new Map(),
+      meshesMissing: false,
+      tfVersion: 0,
+      placedTf: -1,
+      replace: true, // something was (re)drawn: place it even if TF did not move
       map: null,
       cloud: null,
       axes: new Map(),
@@ -377,6 +458,7 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
     w.scene.background = new THREE.Color(w.colors.bg);
     w.grid.material.color = new THREE.Color(w.colors.grid);
     w.mapStale = true;
+    w.replace = true;
     w.dirty = true;
   }, [theme]);
 
@@ -385,59 +467,70 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
     const w = world.current;
     if (w) {
       for (const [id, g] of Object.entries(w.layers)) g.visible = !!layers[id];
+      w.replace = true;
       w.dirty = true;
     }
     bridgeRef.current?.want(wantedTopics(bridgeRef.current.topics(), layers));
   }, [layers, bridgeRef]);
 
-  // Per frame: decode the newest snapshot messages and re-place everything in the fixed frame.
+  // Per frame: decode the newest snapshot messages; re-place things in the fixed
+  // frame only when TF moved or something was redrawn.
   function update(w) {
     const b = bridgeRef.current;
     const L = layersRef.current;
-    const at = (frame) => (frame ? w.tf.lookup(fixed, frame) : null);
-    if (b && w.robot && L.robot) {
-      const js = b.take(LAYER_TOPICS.joints[0]);
-      if (js) w.dirty = true;
-      if (js && Array.isArray(js.name)) {
-        js.name.forEach((n, i) => {
-          const v = js.position?.[i];
-          if (typeof v === "number" && w.robot.joints[n]) w.robot.setJointValue(n, v);
-        });
-      }
-      const tf = at(w.robot.urdfName); // the URDF's root link
-      if (tf) placeAt(w.robot, tf);
-    }
+    const at = (frame) => (frame ? w.tf.lookup(fixedRef.current, frame) : null);
+    const js = b && L.robot ? b.take(LAYER_TOPICS.joints[0]) : null;
     if (b && L.grid) {
       const topic = LAYER_TOPICS.grid.find((t) => b.subs.has(t));
       const msg = topic && b.take(topic);
-      if (msg) (w.mapMsg = msg), (w.mapStale = true), (w.dirty = true);
-      if (w.mapStale && w.mapMsg) drawMap(w);
+      if (msg) (w.mapMsg = msg), (w.mapStale = true);
+      if (w.mapStale && w.mapMsg) drawMap(w), (w.replace = true);
+    }
+    if (b && L.cloud) {
+      const topic = LAYER_TOPICS.cloud.find((t) => b.subs.has(t));
+      const msg = topic && b.take(topic);
+      if (msg) drawCloud(w, msg), (w.replace = true);
+    }
+    for (const id of ["collision", "payload"]) if (w[id].dirty) drawMarkers(w, id), (w.replace = true);
+
+    const place = w.replace || w.placedTf !== w.tfVersion;
+    if (place) {
+      w.replace = false;
+      w.placedTf = w.tfVersion;
+      w.dirty = true;
+      if (w.robot) {
+        const root = at(w.robot.urdfName); // the URDF's root link
+        if (root) placeAt(w.robot, root);
+        w.robotFromTf = poseLinksFromTf(w.robot, at) > 0;
+      }
       if (w.map) {
         const tf = at(w.map.userData.frame);
         w.map.visible = !!tf;
         if (tf) placeAt(w.map, compose(tf, w.map.userData.origin));
       }
-    }
-    if (b && L.cloud) {
-      const topic = LAYER_TOPICS.cloud.find((t) => b.subs.has(t));
-      const msg = topic && b.take(topic);
-      if (msg) drawCloud(w, msg), (w.dirty = true);
       if (w.cloud) {
         const tf = at(w.cloud.userData.frame);
         w.cloud.visible = !!tf;
         if (tf) placeAt(w.cloud, tf);
       }
-    }
-    for (const id of ["collision", "payload"]) {
-      const st = w[id];
-      if (st.dirty) drawMarkers(w, id), (w.dirty = true);
-      for (const obj of w.layers[id].children) {
-        const tf = at(obj.userData.frame);
-        obj.visible = !!tf;
-        if (tf) placeAt(obj, compose(tf, obj.userData.pose));
+      for (const id of ["collision", "payload"]) {
+        for (const obj of w.layers[id].children) {
+          const tf = at(obj.userData.frame);
+          obj.visible = !!tf;
+          if (tf) placeAt(obj, compose(tf, obj.userData.pose));
+        }
       }
+      if (L.tf) drawAxes(w, at);
     }
-    if (L.tf) drawAxes(w, at);
+    // No TF for the links (no robot_state_publisher): fall back to joint states,
+    // which is right only where the HAL publishes URDF joint names and units.
+    if (js && w.robot && !w.robotFromTf && Array.isArray(js.name)) {
+      js.name.forEach((n, i) => {
+        const v = js.position?.[i];
+        if (typeof v === "number" && Object.hasOwn(w.robot.joints, n)) w.robot.setJointValue(n, v);
+      });
+      w.dirty = true;
+    }
     if (L.objects) drawObjects(w, at);
   }
 
@@ -485,11 +578,13 @@ export function Scene3D({ api, manifest, snap, layers, setLayer, theme, bridgeOn
     st.dirty = false;
     const group = w.layers[id];
     for (const c of [...group.children]) group.remove(c), disposeTree(c);
-    for (const m of st.store.values()) {
-      const obj = markerObject(m);
-      if (!obj) continue;
-      obj.userData = { frame: m.frame, pose: m.pose };
-      group.add(obj);
+    for (const store of st.stores.values()) {
+      for (const m of store.values()) {
+        const obj = markerObject(m);
+        if (!obj) continue;
+        obj.userData = { frame: m.frame, pose: m.pose };
+        group.add(obj);
+      }
     }
   }
 

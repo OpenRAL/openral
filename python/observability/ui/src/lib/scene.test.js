@@ -153,6 +153,15 @@ test("marker arrays add, replace and delete primitives", () => {
   assert.equal(store.size, 0);
 });
 
+test("a TRIANGLE_LIST marker (a declared mesh fixture) is kept with its points", () => {
+  const store = new Map();
+  const tri = { ns: "static", id: 7, type: 11, action: 0, header: header("base"), scale: { x: 1, y: 1, z: 1 }, color: { r: 1, g: 0.5, b: 0, a: 0.4 }, points: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }] };
+  applyMarkers(store, { markers: [tri] });
+  const m = store.get("static/7");
+  assert.equal(m.kind, "triangles");
+  assert.deepEqual(m.points, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]);
+});
+
 test("scene objects keep only finite positions and report their age", () => {
   const objs = sceneObjects(
     {

@@ -2,7 +2,7 @@
 // right pane that shows one tab at a time. The operator chooses which tabs show,
 // their order, the default tab, the 3D layers and the theme (saved per robot in
 // this browser). E-STOP lives in the header, outside anything they can hide.
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { ActionBar } from "./ActionBar.jsx";
 import {
   activeTab,
@@ -56,7 +56,9 @@ export function useTheme(theme) {
     return () => mq.removeEventListener("change", on);
   }, []);
   const resolved = resolveTheme(theme, dark);
-  useEffect(() => {
+  // A layout effect: it must be on <html> before the 3D scene's own effect reads the
+  // theme's CSS variables (a child's effects run before its parent's).
+  useLayoutEffect(() => {
     document.documentElement.dataset.theme = resolved;
   }, [resolved]);
   return resolved;
@@ -73,29 +75,39 @@ const KIND_LABEL = {
   error: "Error",
 };
 
-function ReasonerTrace({ snap }) {
+// The stream carries only the latest tick: keep the ones seen this session. Lives in
+// Console, which stays mounted, so the history survives a tab change or the Layout sheet.
+function useTrace(snap) {
   const [trace, setTrace] = useState([]);
   const tick = snap?.topics?.reasoner;
   useEffect(() => {
     if (tick?.ts_unix) setTrace((h) => traceAppend(h, tick));
   }, [tick]);
+  return trace;
+}
+
+// Robot data is rendered as text only; a non-string (a span attribute can be a list
+// or a map) must not reach React as a child.
+const text = (v) => (v == null ? "" : typeof v === "string" ? v : JSON.stringify(v));
+
+function ReasonerTrace({ trace }) {
   if (trace.length === 0) return null;
   return (
     <section className="trace" aria-label="Reasoner trace">
       <h3 className="pane-sub">Trace · this session</h3>
       <ol>
         {trace.map((e) => (
-          <li key={`${e.tick_idx ?? ""}-${e.ts_unix}`} className={`trace-row k-${e.kind}`}>
+          <li key={`${text(e.tick_idx)}-${e.ts_unix}`} className={`trace-row k-${e.kind}`}>
             <span className="trace-t">{fmtTime(e.ts_unix)}</span>
             <span className="trace-dot" aria-hidden="true" />
             <span className="trace-body">
               <span className="trace-kind">{KIND_LABEL[e.kind] || e.kind}</span>
               <span className="trace-text">
                 {e.error_kind
-                  ? `${e.tool ? `${e.tool} → ` : ""}${e.error_kind}`
+                  ? `${e.tool ? `${text(e.tool)} → ` : ""}${text(e.error_kind)}`
                   : e.rskill_id
-                    ? `${e.tool || "ExecuteRskill"} · ${shortId(e.rskill_id)}`
-                    : e.tool || e.suppressed_reason || "no tool this tick"}
+                    ? `${text(e.tool) || "ExecuteRskill"} · ${shortId(text(e.rskill_id))}`
+                    : text(e.tool) || text(e.suppressed_reason) || "no tool this tick"}
               </span>
             </span>
           </li>
@@ -164,7 +176,7 @@ function LayoutSheet({ prefs, update, tabsAvail, cams, onClose }) {
                   className="icon-btn"
                   aria-label={`Move ${tab.label} up`}
                   disabled={i === 0}
-                  onClick={() => update((p) => moveTab(p, id, -1))}
+                  onClick={() => update((p) => moveTab(p, id, -1, [...avail]))}
                 >
                   ↑
                 </button>
@@ -173,7 +185,7 @@ function LayoutSheet({ prefs, update, tabsAvail, cams, onClose }) {
                   className="icon-btn"
                   aria-label={`Move ${tab.label} down`}
                   disabled={i === list.length - 1}
-                  onClick={() => update((p) => moveTab(p, id, 1))}
+                  onClick={() => update((p) => moveTab(p, id, 1, [...avail]))}
                 >
                   ↓
                 </button>
@@ -214,7 +226,7 @@ function LayoutSheet({ prefs, update, tabsAvail, cams, onClose }) {
   );
 }
 
-function RightPane({ tabs, active, setActive, snap, api, cfg, manifest, bar, bridgeOn }) {
+function RightPane({ tabs, active, setActive, snap, api, cfg, manifest, bar, bridgeOn, trace }) {
   const tab = tabs.find((t) => t.id === active);
   return (
     <aside className="pane" aria-label="Details">
@@ -236,7 +248,11 @@ function RightPane({ tabs, active, setActive, snap, api, cfg, manifest, bar, bri
       </nav>
       <div className="pane-body" id="pane-body" role="tabpanel" aria-labelledby={tab ? `tab-${tab.id}` : undefined}>
         {!tab && <p className="empty">Every pane is hidden. Open Layout to show one.</p>}
-        {tab?.id === "reasoner" && <ReasonerTrace snap={snap} />}
+        {tab?.id === "reasoner" && (
+          <Boundary title="Reasoner trace" reset={trace}>
+            <ReasonerTrace trace={trace} />
+          </Boundary>
+        )}
         {tab?.panels.map((p) => {
           const P = PANELS[p.type];
           return (
@@ -245,7 +261,7 @@ function RightPane({ tabs, active, setActive, snap, api, cfg, manifest, bar, bri
             </Boundary>
           );
         })}
-        {tab?.id === "system" && bridgeOn && !api.remote && (
+        {tab?.id === "system" && bridgeOn && cfg.mode === "local" && (
           <p className="meta">
             <a href={localVizUrl(window.location)} target="_blank" rel="noopener noreferrer">
               Open the raw topics in Foxglove (Lichtblick)
@@ -262,35 +278,63 @@ function RightPane({ tabs, active, setActive, snap, api, cfg, manifest, bar, bri
   );
 }
 
+const SceneFallback = ({ children }) => (
+  <section className="scene" aria-label="3D scene">
+    <p className="scene-status" role="status">
+      {children}
+    </p>
+  </section>
+);
+
+// The 3D scene must never take the page (and the E-STOP above it) down: no WebGL, a
+// chunk that fails to load, or a message it can't draw all end here.
+class SceneBoundary extends Component {
+  state = { err: null };
+  static getDerivedStateFromError(err) {
+    return { err };
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <SceneFallback>
+        The 3D view is unavailable in this browser ({String(this.state.err?.message || this.state.err)}). Everything else
+        keeps working; reload to try again.
+      </SceneFallback>
+    );
+  }
+}
+
 export function Console({ api, cfg, manifest, snap, bar, robotId, prefs, update, theme, layoutOpen, setLayoutOpen }) {
-  const panels = useMemo(
-    () => (Array.isArray(manifest?.panels) ? manifest.panels : []).filter((p) => p && typeof p.id === "string" && Object.hasOwn(PANELS, p.type)),
-    [manifest],
-  );
+  const declared = useMemo(() => (Array.isArray(manifest?.panels) ? manifest.panels : []).filter((p) => p && typeof p.id === "string"), [manifest]);
+  const panels = useMemo(() => declared.filter((p) => Object.hasOwn(PANELS, p.type)), [declared]);
   const allCams = orderCameras(panels);
   const cams = allCams.filter((c) => !prefs.hiddenCameras.includes(c.source));
   const tabsAvail = availableTabs(panels);
   const tabs = visibleTabs(prefs, panels);
   const [chosen, setChosen] = useState(null);
   const active = tabs.some((t) => t.id === chosen) ? chosen : activeTab(prefs, tabs);
-  const bridgeOn = panels.some((p) => p.type === "viz3d");
+  // `viz3d` in the manifest means foxglove_bridge runs: the 3D scene has data.
+  const bridgeOn = declared.some((p) => p.type === "viz3d");
+  const trace = useTrace(snap);
   const setLayer = (id) => update((p) => ({ ...p, layers: { ...p.layers, [id]: !p.layers[id] } }));
   return (
     <div className="console">
       <div className="stage">
         <CameraStrip cams={cams} snap={snap} api={api} cfg={cfg} />
-        <Suspense fallback={<section className="scene" aria-label="3D scene"><p className="scene-status">loading the 3D view…</p></section>}>
-          <Scene3D
-          key={robotId}
-          api={api}
-          manifest={manifest}
-          snap={snap}
-          layers={prefs.layers}
-          setLayer={setLayer}
-          theme={theme}
-          bridgeOn={bridgeOn}
-          />
-        </Suspense>
+        <SceneBoundary key={robotId}>
+          <Suspense fallback={<SceneFallback>loading the 3D view…</SceneFallback>}>
+            <Scene3D
+              api={api}
+              mode={cfg.mode}
+              manifest={manifest}
+              snap={snap}
+              layers={prefs.layers}
+              setLayer={setLayer}
+              theme={theme}
+              bridgeOn={bridgeOn}
+            />
+          </Suspense>
+        </SceneBoundary>
       </div>
       {layoutOpen ? (
         <aside className="pane">
@@ -307,6 +351,7 @@ export function Console({ api, cfg, manifest, snap, bar, robotId, prefs, update,
           manifest={manifest}
           bar={bar}
           bridgeOn={bridgeOn}
+          trace={trace}
         />
       )}
     </div>
