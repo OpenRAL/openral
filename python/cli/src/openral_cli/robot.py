@@ -383,7 +383,14 @@ def apply_reasoner_settings(*, echo: Callable[[str], None]) -> list[str]:
     otherwise carry the robot's own key to a URL the site picked. A variable already in
     the environment wins over both. Returns the names it set; never raises.
     """
-    return apply_console_settings(echo=echo) or apply_account_settings(echo=echo)
+    from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
+
+    # Decide by whether the console chooses a reasoner, not by whether it set anything:
+    # with its variables already exported (an inherited environment), it sets nothing,
+    # and the account's endpoint must still never pair with the robot's key.
+    if reasoner_env(load_settings()):
+        return apply_console_settings(echo=echo)
+    return apply_account_settings(echo=echo)
 
 
 def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:

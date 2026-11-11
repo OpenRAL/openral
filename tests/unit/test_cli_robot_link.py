@@ -324,6 +324,10 @@ def test_the_robots_own_key_never_meets_an_account_endpoint(
         "OPENRAL_REASONER_MODEL",
     ]
     assert "OPENRAL_REASONER_ENDPOINT" not in os.environ
+    # Its variables already exported (an inherited environment): the console sets nothing,
+    # and the account's endpoint is still not applied.
+    assert robot.apply_reasoner_settings(echo=lambda _: None) == []
+    assert "OPENRAL_REASONER_ENDPOINT" not in os.environ
     # Without a console model the account's settings apply as before.
     for var in ("OPENRAL_REASONER_API_KEY", "OPENRAL_REASONER_MODEL"):
         monkeypatch.delenv(var)
