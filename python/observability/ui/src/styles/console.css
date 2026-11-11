@@ -925,6 +925,11 @@ main > .waiting {
   opacity: 0;
   pointer-events: none;
 }
+/* The radio itself is invisible: show keyboard focus on its label. */
+.seg label:has(input:focus-visible) {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
+}
 
 /* header: one row, E-STOP on the right (wraps under on narrow screens) */
 .top {

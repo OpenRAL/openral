@@ -1075,9 +1075,12 @@ async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Respo
     if request.method not in _SAFE_METHODS:
         # CSRF: a page on another site driving a local operator's browser. ponytail:
         # Origin check only — a DNS-rebinding page is same-origin by construction.
+        # A forwarded stop from the console (its Origin is an openral.com origin, its
+        # Host the rewritten local one) is still a stop: never refused for that.
+        console_stop = forwarded and request.headers.get("origin") in allowed_origins()
         refusal = (
             "cross-origin request refused"
-            if _cross_origin(request)
+            if _cross_origin(request) and not console_stop
             else None
             if loopback
             or request.url.path in _LAN_WRITES

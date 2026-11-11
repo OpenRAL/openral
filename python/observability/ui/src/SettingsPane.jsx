@@ -32,7 +32,11 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
       live = false;
     };
   }, [url, tries]);
+  // One save at a time: two PUTs answered out of order would show the older state.
+  const saving = useRef(false);
   const save = async (name, value) => {
+    if (saving.current) return setMsg({ text: "Still saving the last change…", kind: "" });
+    saving.current = true;
     try {
       const r = await fetch(url, {
         method: "PUT",
@@ -47,6 +51,8 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
       setMsg({ text: value ? "Saved. Robots use it from their next deploy start." : "Cleared.", kind: "ok" });
     } catch {
       setMsg({ text: "Could not save: check your connection and try again.", kind: "err" });
+    } finally {
+      saving.current = false;
     }
   };
   if (failed)

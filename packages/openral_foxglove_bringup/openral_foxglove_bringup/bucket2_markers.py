@@ -789,7 +789,13 @@ class Bucket2MarkersNode:
             self._viz_clouds.append([topic, pub, None])
             log.info("bucket2_markers: viewer cloud", source=topic, max_points=self._viz_max)
         if self._viz_clouds:
-            self._node.create_timer(1.0, self._follow_viz_viewers)
+            from rclpy.clock import Clock, ClockType
+
+            # Steady time: under use_sim_time a paused /clock would stall it, and a
+            # viewer that subscribes meanwhile would get no cloud until sim time moves.
+            self._node.create_timer(
+                1.0, self._follow_viz_viewers, clock=Clock(clock_type=ClockType.STEADY_TIME)
+            )
 
     def _follow_viz_viewers(self) -> None:
         """Subscribe to a source cloud only while its viewer copy has a subscriber.

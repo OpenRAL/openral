@@ -669,9 +669,19 @@ async def test_a_forwarded_request_on_the_local_listener_is_refused(
         write = await c.post("/api/actions/estop_reset", json={"args": {}}, headers=forwarded)
         plain = await c.get("/api/config")
         stop = await c.post("/api/actions/estop", json={"args": {}}, headers=forwarded)
+        console_stop = await c.post(
+            "/api/actions/estop", json={"args": {}}, headers={**forwarded, "Origin": _SITE}
+        )
+        foreign = await c.post(
+            "/api/actions/estop",
+            json={"args": {}},
+            headers={**forwarded, "Origin": "https://evil.example"},
+        )
     assert (read.status_code, write.status_code) == (403, 403)
     assert plain.json()["mode"] == "local"
     assert stop.status_code != 403, stop.text  # a stop is never refused by the gate
+    assert console_stop.status_code != 403, console_stop.text  # nor with the console's Origin
+    assert foreign.status_code == 403  # another site's page still cannot drive it
 
 
 def test_a_forwarded_websocket_on_the_local_listener_is_refused() -> None:

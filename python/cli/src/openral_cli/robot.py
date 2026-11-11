@@ -355,7 +355,9 @@ ACCOUNT_SETTINGS = frozenset(
 switches: those stay on the robot (ADR-0129, Safety-WG), whatever the site sends."""
 
 
-def apply_console_settings(*, echo: Callable[[str], None]) -> list[str]:
+def apply_console_settings(
+    *, echo: Callable[[str], None], console: dict[str, str] | None = None
+) -> list[str]:
     """Put the reasoner settings set in this robot's console into ``os.environ``.
 
     The console's settings pane saves the provider keys and the model on the robot
@@ -365,11 +367,14 @@ def apply_console_settings(*, echo: Callable[[str], None]) -> list[str]:
     key is never paired with an inherited model, endpoint or dialect it was not chosen
     for. :func:`apply_reasoner_settings` skips the account's settings altogether when
     the console chooses a reasoner, so the robot's key is never paired with an
-    account's endpoint either. Returns the names it set; never raises.
+    account's endpoint either. ``console`` is the ``reasoner_env`` snapshot a caller
+    already read (so one read decides and applies); ``None`` reads the file. Returns
+    the names it set; never raises.
     """
     from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
 
-    console = reasoner_env(load_settings())
+    if console is None:
+        console = reasoner_env(load_settings())
     inherited = sorted(k for k in ACCOUNT_SETTINGS if k in os.environ)
     if console and inherited:
         echo(f"console settings: not applied, the environment sets {', '.join(inherited)}")
@@ -394,8 +399,9 @@ def apply_reasoner_settings(*, echo: Callable[[str], None]) -> list[str]:
     # Decide by whether the console chooses a reasoner, not by whether it set anything:
     # with its variables already exported (an inherited environment), it sets nothing,
     # and the account's endpoint must still never pair with the robot's key.
-    if reasoner_env(load_settings()):
-        return apply_console_settings(echo=echo)
+    console = reasoner_env(load_settings())  # one snapshot decides and is applied
+    if console:
+        return apply_console_settings(echo=echo, console=console)
     return apply_account_settings(echo=echo)
 
 

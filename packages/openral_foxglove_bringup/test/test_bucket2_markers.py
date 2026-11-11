@@ -668,9 +668,8 @@ def test_decimate_cloud_reads_an_rclpy_uint8_array_without_copying_it_first() ->
     import array
 
     import numpy as np
-    from openral_foxglove_bringup.bucket2_markers import decimate_cloud
 
     pts = np.array([[0, 0, 0, 1], [np.nan, 0, 0, 1], [2, 0, 0, 1]], dtype=np.float32)
-    out, n = decimate_cloud(memoryview(array.array("B", pts.tobytes())), 16, 0, 10)
+    out, n = _b2.decimate_cloud(memoryview(array.array("B", pts.tobytes())), 16, 0, 10)
     assert n == 2
     assert np.frombuffer(out, dtype=np.float32).reshape(-1, 4)[:, 0].tolist() == [0.0, 2.0]
