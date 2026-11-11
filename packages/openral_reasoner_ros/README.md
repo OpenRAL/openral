@@ -214,6 +214,7 @@ auth requirement, hosting mode, and local-compute floor.
 | `gpt-5.6` | `openai/gpt-5.6` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
 | `qwen3.5-4b` | `qwen3.5:4b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
+| `qwen3.5-9b` | `qwen3.5:9b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
 
 The env contract is:
 
@@ -456,11 +457,12 @@ plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
 > sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0`. Full findings in the
 > [assessment page](../../docs/reference/cosmos3-edge-reasoner.md).
 
-### On the robot — Qwen 3.5 4B via Ollama
+### On the robot — Qwen 3.5 4B / 9B via Ollama
 
-`qwen3.5-4b` runs on the robot's own [Ollama](https://ollama.com) (vision,
-tools and thinking; Apache-2.0 weights; the 3.4 GB Q4_K_M `qwen3.5:4b` tag).
-It needs no key and nothing but the model:
+`qwen3.5-4b` and `qwen3.5-9b` run on the robot's own [Ollama](https://ollama.com)
+(vision, tools and thinking; Apache-2.0 weights; the Q4_K_M `qwen3.5:4b`
+(3.4 GB) and `qwen3.5:9b` (6.6 GB) tags). They need no key and nothing but the
+model (`just bootstrap-ollama --model qwen3.5:9b` for the 9B):
 
 ```bash
 just bootstrap-ollama            # installs Ollama, pulls qwen3.5:4b, serves a 32K window
@@ -483,19 +485,32 @@ Ollama ignores `tool_choice`
 so the `ollama` endpoint sends `auto`: a prose reply gets the one nudge, then
 counts as an invalid plan.
 
-Measured through the real client (Ollama 0.32.14, RTX 5070 Laptop 8 GB, 32K
-window, thinking on, 20 ticks each; the curation bar is ≥ 17/20, #494):
+The 4B, measured through the real client (Ollama 0.32.14, RTX 5070 Laptop 8 GB,
+32K window, thinking on, 20 ticks each; the curation bar is ≥ 17/20, #494):
 
 | prompt | skills | tokens | valid | median tick |
 |---|---|---|---|---|
 | `so101_follower` + query tools | 3 | 9,229 | 18/20 | 9.2 s |
 | `franka_panda` + query tools, full palette | 14 | 20,379 | 20/20 | 9.7 s |
 
-`describe_image` answered both SO-101 eraser frames correctly (2/2). With
+The 9B, Ollama 0.40.16, same laptop (12% of the model on the CPU):
+`so101_follower` 20/20 (18.8 s), `franka_panda` full palette 20/20 (16.3 s),
+frames 2/2.
+
+`describe_image` answered both SO-101 eraser frames correctly (2/2). Re-run on
+Ollama 0.40.16: `so101_follower` 18/20 again, frames 2/2 (ticks slower there
+because a CI job held 3.4 GB of the same GPU). With
 thinking off (`reasoning_effort: none`) ticks drop to ~2 s but validity to
 16/20, under the bar, so the entry keeps thinking on.
 Failures were a nested `place_target` sent as a JSON string and a
 hallucinated tool name; both come back to the model as invalid-plan feedback.
+
+Not curated, same harness: `qwen3-vl:4b-instruct` 17/20 but 1/2 frames and
+24 s ticks; `gemma4:e4b` 17/20, 1/2 frames, and it re-dispatched a skill the
+context reported done; `ministral-3:3b` 15/20 (`franka_panda` 9/20);
+`granite3.2-vision:2b` 0/20 (a 16K model under a 21K prompt); `qwen3-vl:4b` is
+a thinking-only tag (165 s first tick). `lfm3-vl` needs a newer Ollama than
+0.32.
 
 Ollama Cloud models are not curated: none could be run here without an
 `OLLAMA_API_KEY`. One works through the escape hatch below with

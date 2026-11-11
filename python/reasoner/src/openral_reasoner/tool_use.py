@@ -881,7 +881,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     * ``OPENRAL_REASONER_MODEL`` (**required**) — a curated registry key
       (``REASONER_MODELS``: ``claude-opus-4-8`` / ``claude-opus-5-5`` /
       ``claude-sonnet-5-5`` / ``claude-haiku-5-5`` / ``gpt-5.5`` / ``gpt-5.6``
-      / ``cosmos3-edge`` / ``qwen3.5-4b``), or a raw model id for the uncurated
+      / ``cosmos3-edge`` / ``qwen3.5-4b`` / ``qwen3.5-9b``), or a raw model id for the uncurated
       escape hatch.
     * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a named endpoint
       (``_ENDPOINT_PRESETS``: ``openai`` / ``openrouter`` / ``ollama`` / ``vllm`` /

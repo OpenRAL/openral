@@ -439,18 +439,23 @@ def test_malformed_numeric_env_raises_typed_config_error(
 # ── Curated Ollama models ─────────────────────────────────────────────────────
 
 
-def test_curated_ollama_model_needs_only_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`qwen3.5-4b` alone reaches the local Ollama with the `ollama` preset's properties.
+@pytest.mark.parametrize(
+    ("model", "served"), [("qwen3.5-4b", "qwen3.5:4b"), ("qwen3.5-9b", "qwen3.5:9b")]
+)
+def test_curated_ollama_model_needs_only_the_model(
+    monkeypatch: pytest.MonkeyPatch, model: str, served: str
+) -> None:
+    """A curated Ollama model alone reaches the local Ollama with the `ollama` preset's properties.
 
     The website and the robot console set only the model for a no-key model, so the
     registry default (`OLLAMA_BASE_URL`) must bring Ollama's 60 s cold start and
     `auto` tool_choice, not the 10 s cloud default.
     """
-    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3.5-4b")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model)
     client = build_tool_use_client_from_env()
     assert isinstance(client, OpenAICompatibleToolUseClient)
     assert (client.model_id, client._base_url, client._api_key) == (
-        "qwen3.5:4b",
+        served,
         OLLAMA_BASE_URL,
         None,
     )

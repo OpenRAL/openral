@@ -7,7 +7,8 @@ set -euo pipefail
 # release tag, run only after its sha256 matches the pin below; macOS:
 # `brew install`), starts the daemon if it isn't already running, and
 # pulls the default model: qwen3.5:4b, the curated `qwen3.5-4b` reasoner
-# (vision + tools, ~3.4 GB), so one variable selects it:
+# (vision + tools, ~3.4 GB; `--model qwen3.5:9b` for the curated 9B), so one
+# variable selects it:
 #
 #   export OPENRAL_REASONER_MODEL=qwen3.5-4b
 #
@@ -146,12 +147,12 @@ if [[ "${DO_PULL}" -eq 1 ]]; then
   ollama pull "${MODEL}"
 fi
 
-if [[ "${MODEL}" == "qwen3.5:4b" ]]; then
+if [[ "${MODEL}" == "qwen3.5:4b" || "${MODEL}" == "qwen3.5:9b" ]]; then
   cat <<EOF
 
 ==> Local reasoner ready. Select the curated model (ADR-0088):
 
-    export OPENRAL_REASONER_MODEL=qwen3.5-4b
+    export OPENRAL_REASONER_MODEL=${MODEL/:/-}
 EOF
 else
   cat <<EOF
