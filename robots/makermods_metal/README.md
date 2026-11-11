@@ -199,10 +199,16 @@ which the envelope refuses first), `tests/unit/test_collision_geometry_zero_pose
 mesh evidence) and `tests/unit/test_collision_geometry_enclosure.py` (every MJCF
 mesh vertex inside its link's primitives).
 
-**Still owed**: Safety-WG review of the generated blocks and the lowering change,
-a hazard-log entry, and a C++ kernel run against this manifest (the Python port of
-the kernel predicates is what the tests use). The geometry is the upstream CAD, not
-a measured arm; cables and the camera on the gripper are not modelled.
+**C++ kernel run** (`tests/integration/test_safety_kernel_makermods_metal.py`, the
+real `safety_kernel_node` with the parameters `deploy_e2e.launch.py` builds from each
+manifest, 2026-11-11): the rest pose passes on both manifests; the gripper folded into
+the base stops at -91.3 mm (`base_link` / `gripper_base`), folded onto the upper arm at
+-88.6 mm (`link2` / `gripper_base`), and the station's fingertips meeting at -27.6 mm
+(`left_link7` / `right_link8`, the same gap as the Python port).
+
+**Still owed**: the Safety-WG sign-off of the generated blocks and the lowering change
+(hazard-log Entry 077, review in the management repo). The geometry is the upstream CAD,
+not a measured arm; cables and the camera on the gripper are not modelled.
 
 ## Real hardware
 
