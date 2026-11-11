@@ -600,3 +600,32 @@ def test_stops_are_red_spheres_with_labels() -> None:
     sphere, label = array.markers
     assert sphere.pose.position.x == pytest.approx(0.1) and sphere.color.r == 1.0
     assert sphere.color.g == 0.0 and label.text == "STOP openarm_left_link7"
+
+
+def test_a_full_resolution_depth_cloud_is_thinned_for_viewers() -> None:
+    """A 1080p ZED cloud (2 073 600 points, 33 MB) reaches a viewer as <= 40 000 points.
+
+    Every field of a kept point is kept (the rgb a sim cloud carries), points with no
+    return (NaN x) are dropped, and the kept points spread over the whole cloud.
+    """
+    import numpy as np
+
+    n = 1920 * 1080
+    pts = np.zeros((n, 4), dtype=np.float32)
+    pts[:, 0] = np.arange(n, dtype=np.float32)
+    pts[::3, 0] = np.nan  # a third of the pixels have no return
+    pts[:, 3] = np.frombuffer(np.full(n, 0x00FF8800, dtype="<u4").tobytes(), dtype=np.float32)
+    data, count = _b2.decimate_cloud(pts.tobytes(), 16, 0, _b2.VIZ_CLOUD_MAX_POINTS)
+    kept = np.frombuffer(data, dtype=np.float32).reshape(-1, 4)
+    assert count == len(kept) <= _b2.VIZ_CLOUD_MAX_POINTS
+    assert count > _b2.VIZ_CLOUD_MAX_POINTS * 0.9
+    assert np.isfinite(kept[:, 0]).all()
+    assert kept[-1, 0] > n * 0.99  # spread to the end, not the first 40 000 pixels
+    assert (kept[:, 3].view("<u4") == 0x00FF8800).all()
+    assert _b2.decimate_cloud(b"", 16, 0, 10) == (b"", 0)
+
+
+def test_the_viewer_copy_of_a_camera_cloud_has_its_own_topic() -> None:
+    assert _b2.viz_cloud_topic("/openral/cameras/head_zed/points") == (
+        "/openral/viz/cameras/head_zed/points"
+    )

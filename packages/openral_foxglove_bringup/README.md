@@ -265,6 +265,7 @@ draws it natively — no TypeScript extension:
 |---|---|---|
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
 | `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + measured inner box, grasp/place regions, search box, manipulation workspace) | `/openral/viz/attachments` |
+| `sensor_msgs/PointCloud2` per depth camera (`camera_cloud_topics` param) | the same cloud thinned to `viz_cloud_max_points` (40 000) finite points, every field kept | `/openral/viz/cameras/<name>/points` |
 | `StaticGeometry` YAML (`static_geometry_file` param) | `visualization_msgs/MarkerArray` (declared fixtures: boxes + triangle meshes, latched) | `/openral/viz/static_geometry` |
 | `/openral/failure/safety` (`FailureTrigger`, collision) | `visualization_msgs/MarkerArray` (a red sphere + label where each kernel stop happened, latched) | `/openral/viz/collisions` |
 

@@ -129,7 +129,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (48)
+## Unresolved endpoints (50)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -160,6 +160,7 @@ caller's argument). Shown as their source expression.
 | topic | pub | `topic` | `sensor_msgs/JointState` | tools/joint_state_staleness_probe.py (run) |
 | topic | pub | `topic` | `std_msgs/Empty` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | topic | pub | `topic_for(FailureSource.SAFETY)` | `openral_msgs/FailureTrigger` | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure) |
+| topic | pub | `viz_cloud_topic(topic)` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode._open_viz_clouds) |
 | topic | sub | `arm_status_topic` | `action_msgs/GoalStatusArray` | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) |
 | topic | sub | `completion_camera_topic` | `sensor_msgs/Image` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | topic | sub | `depth[c]` | `sensor_msgs/Image` | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
@@ -183,6 +184,7 @@ caller's argument). Shown as their source expression.
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_configure) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) |
+| topic | sub | `topic` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode._open_viz_clouds) |
 | topic | sub | `topic_for(source)` | `openral_msgs/FailureTrigger` | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure) |
 
 ## Launch remappings (14)

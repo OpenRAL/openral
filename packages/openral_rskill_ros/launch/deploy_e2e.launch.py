@@ -5210,6 +5210,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 flush=True,
             )
 
+        from openral_hal.depth_cloud import is_depth_sensor
+
+        camera_cloud_topics = [
+            camera_topic(sensor.name, CameraTopicKind.POINTS)
+            for sensor in description.sensors
+            if is_depth_sensor(sensor)
+        ]
         # Bucket-2 converter. The layout's voxel panels read
         # `/openral/world_voxels_cloud`, a `sensor_msgs` re-publication of the
         # custom `openral_msgs/OccupancyVoxels` — Foxglove renders the standard
@@ -5234,6 +5241,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                         **(
                             {"attach_link_tf_frames": attach_link_tf_frames}
                             if attach_link_tf_frames
+                            else {}
+                        ),
+                        # Each depth camera's cloud, re-published thinned for viewers on
+                        # /openral/viz/cameras/<name>/points (a 1080p ZED is 33 MB a frame).
+                        **(
+                            {"camera_cloud_topics": camera_cloud_topics}
+                            if camera_cloud_topics
                             else {}
                         ),
                         # Declared static geometry, drawn on /openral/viz/static_geometry

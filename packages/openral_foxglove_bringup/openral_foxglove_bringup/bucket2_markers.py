@@ -20,6 +20,12 @@
   a declared box fixture (grown by one cell): walls, floor and fixtures are drawn once,
   by their markers, and the voxels show what the camera adds. Viewer only — the
   kernel's grid is unchanged.
+- Parameter ``camera_cloud_topics`` (each depth camera's
+  ``/openral/cameras/<name>/points``) → ``/openral/viz/cameras/<name>/points``: the same
+  cloud, every field kept, thinned to ``viz_cloud_max_points`` finite points
+  (:func:`decimate_cloud`). A full-resolution depth cloud (2 M points, 33 MB from a
+  1080p ZED) is octomap's input; viewers (the robot console over a tunnel, Foxglove)
+  read this one.
 
 Conversion math lives in pure functions (``occupied_voxel_centers``,
 ``attachment_markers``) so unit tests exercise it without a ROS context
@@ -46,11 +52,56 @@ __all__ = [
     "STATIC_GEOMETRY_MARKERS_TOPIC",
     "Bucket2MarkersNode",
     "attachment_markers",
+    "decimate_cloud",
     "main",
     "occupied_voxel_centers",
     "parse_attach_link_tf_frames",
     "static_geometry_markers",
+    "viz_cloud_topic",
 ]
+
+#: Points a viewer's copy of a depth cloud keeps (~0.6 MB at 16 bytes a point).
+VIZ_CLOUD_MAX_POINTS = 40_000
+
+
+def viz_cloud_topic(topic: str) -> str:
+    """The viewer copy of a camera cloud topic.
+
+    Example:
+        >>> viz_cloud_topic("/openral/cameras/head_zed/points")
+        '/openral/viz/cameras/head_zed/points'
+    """
+    return "/openral/viz/" + topic.removeprefix("/openral/")
+
+
+def decimate_cloud(
+    data: bytes, point_step: int, x_offset: int, max_points: int
+) -> tuple[bytes, int]:
+    """Keep at most ``max_points`` evenly spaced points whose x is finite.
+
+    ``data`` is a ``PointCloud2`` payload (little-endian float32 x at ``x_offset``);
+    every field of a kept point is kept byte for byte, so rgb survives.
+
+    Returns:
+        ``(payload, count)`` for a dense ``height = 1`` cloud.
+
+    Example:
+        >>> import numpy as np
+        >>> pts = np.array([[0, 0, 0, 1], [np.nan, 0, 0, 1], [2, 0, 0, 1]], dtype=np.float32)
+        >>> out, n = decimate_cloud(pts.tobytes(), 16, 0, 10)
+        >>> n, np.frombuffer(out, dtype=np.float32).reshape(-1, 4)[:, 0].tolist()
+        (2, [0.0, 2.0])
+    """
+    n = len(data) // point_step if point_step > 0 else 0
+    if n == 0 or max_points <= 0:
+        return b"", 0
+    rows = np.frombuffer(data, dtype=np.uint8, count=n * point_step).reshape(n, point_step)
+    x = rows[:, x_offset : x_offset + 4].copy().view("<f4")[:, 0]
+    keep = np.flatnonzero(np.isfinite(x))
+    if keep.size > max_points:
+        keep = keep[:: -(-keep.size // max_points)]
+    return rows[keep].tobytes(), int(keep.size)
+
 
 #: Where the attachment / declaration-region markers are published.
 ATTACHMENT_MARKERS_TOPIC = "/openral/viz/attachments"
@@ -685,11 +736,59 @@ class Bucket2MarkersNode:
             FailureTrigger, "/openral/failure/safety", self._on_failure, failure_qos
         )
 
+        self._open_viz_clouds()
         log.info("bucket2_markers node ready", attach_link_tf_frames=self._tf_frames)
 
     # ------------------------------------------------------------------
     # Subscription callbacks
     # ------------------------------------------------------------------
+
+    def _open_viz_clouds(self) -> None:
+        """Viewer copies of the depth cameras' clouds (sensor QoS both ways: latest wins)."""
+        import rclpy.qos
+        from sensor_msgs.msg import PointCloud2
+
+        sensor_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        topics = self._node.declare_parameter("camera_cloud_topics", [""]).value or []
+        self._viz_max = int(
+            self._node.declare_parameter("viz_cloud_max_points", VIZ_CLOUD_MAX_POINTS).value
+        )
+        self._viz_clouds: list[Any] = []
+        for topic in [str(t) for t in topics if t]:
+            pub = self._node.create_publisher(PointCloud2, viz_cloud_topic(topic), sensor_qos)
+            self._viz_clouds.append(
+                self._node.create_subscription(
+                    PointCloud2,
+                    topic,
+                    lambda msg, pub=pub: self._on_camera_cloud(msg, pub),
+                    sensor_qos,
+                )
+            )
+            log.info("bucket2_markers: viewer cloud", source=topic, max_points=self._viz_max)
+
+    def _on_camera_cloud(self, msg: Any, pub: Any) -> None:  # reason: rclpy types are untyped
+        """Publish ``msg`` thinned to ``viz_cloud_max_points`` (see :func:`decimate_cloud`)."""
+        from sensor_msgs.msg import PointCloud2, PointField
+
+        x = next((f for f in msg.fields if f.name == "x"), None)
+        if x is None or x.datatype != PointField.FLOAT32 or msg.is_bigendian:
+            return  # not a float32 little-endian xyz cloud: nothing a viewer reads
+        data, count = decimate_cloud(bytes(msg.data), int(msg.point_step), x.offset, self._viz_max)
+        out = PointCloud2()
+        out.header = msg.header
+        out.height = 1
+        out.width = count
+        out.fields = msg.fields
+        out.is_bigendian = False
+        out.point_step = msg.point_step
+        out.row_step = msg.point_step * count
+        out.data = data
+        out.is_dense = True
+        pub.publish(out)
 
     def _on_world_voxels(self, msg: OccupancyVoxels) -> None:
         """Convert OccupancyVoxels → PointCloud2 and publish."""
