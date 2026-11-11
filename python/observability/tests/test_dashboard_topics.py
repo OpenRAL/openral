@@ -595,6 +595,40 @@ def test_bringup_row_names_the_node_that_held_the_graph_up() -> None:
     assert "6203.4ms" in title
 
 
+def test_bringup_spans_keep_each_nodes_last_transition() -> None:
+    """`topics.lifecycle` holds the newest transition per node for the prompt bar.
+
+    The console disables its prompt bar when the reasoner's last transition failed
+    (e.g. on_configure without an API key), instead of accepting a prompt that
+    nothing will read.
+    """
+
+    def bringup(node: str, transition: str, result: str) -> Span:
+        return _make_span(
+            "deploy.bringup",
+            attrs={
+                "openral.bringup.node": node,
+                "openral.bringup.transition": transition,
+                "openral.bringup.result": result,
+            },
+        )
+
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                bringup("openral_reasoner", "on_configure", "SUCCESS"),
+                bringup("openral_reasoner", "on_activate", "FAILURE"),
+                bringup("openral_hal_openarm", "on_configure", "SUCCESS"),
+            ]
+        )
+    )
+    lifecycle = store.snapshot()["topics"]["lifecycle"]
+    assert lifecycle["openral_reasoner"]["transition"] == "on_activate"
+    assert lifecycle["openral_reasoner"]["result"] == "FAILURE"
+    assert lifecycle["openral_hal_openarm"]["result"] == "SUCCESS"
+
+
 def test_detect_probe_spans_stay_info() -> None:
     """`detect.probe.*` is a handful of one-shot rows, not a stream."""
     store = TelemetryStore()

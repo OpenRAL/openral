@@ -56,7 +56,8 @@ npm run preview        # serve dist/ with the same proxy
 
 The page is an operator console ([plan](../../../docs/roadmap/robot-console.md)) that fills one
 screen without page scroll: the header (robot, safety, Layout, **E-STOP**); the prompt bar
-(the manifest's `prompt` action; it says why when prompting is unavailable); a fixed-height
+(the manifest's `prompt` action; it says why when prompting is unavailable, including when the
+reasoner's last lifecycle transition failed); a fixed-height
 row of cameras ordered left → center → right by their manifest `position` (only cameras that
 stream viewable frames, then the 2D occupancy map when the robot has a `map` panel); the 3D
 scene filling the rest; and a right pane that shows one tab at a time, scrolls on its own and

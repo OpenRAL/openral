@@ -22,6 +22,7 @@ import {
 } from "./lib/layout.js";
 import { runAction, visibleActions } from "./lib/actions.js";
 import { fmtTime, shortId } from "./lib/render.js";
+import { reasonerDown } from "./lib/reasoner.js";
 import { traceAppend } from "./lib/trace.js";
 import { localVizUrl } from "./lib/viz.js";
 import { Boundary, PANELS } from "./panels.jsx";
@@ -152,24 +153,27 @@ function CameraStrip({ cams, map, snap, api, cfg }) {
 // The operator's line to the reasoner, above everything else in the stage. It is the
 // manifest's `prompt` action; when the robot does not offer it (the reasoner is off)
 // or this viewer may not use it, the bar says why instead of disappearing.
-function PromptBar({ api, cfg, actions }) {
+function PromptBar({ api, cfg, actions, snap }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const { shown, hidden, blocked } = visibleActions(actions, cfg.role, cfg.mode === "remote");
-  const action = shown.find((a) => a.kind === "prompt");
+  const down = reasonerDown(snap?.topics?.lifecycle);
+  const action = down ? undefined : shown.find((a) => a.kind === "prompt");
   const declared = (Array.isArray(actions) ? actions : []).some((a) => a?.kind === "prompt");
   const why = action
     ? null
-    : !declared
-      ? "The reasoner is not running on this deploy, so there is nothing to prompt."
-      : blocked.some((a) => a.kind === "prompt")
-        ? "Prompting is off over the network on this robot (OPENRAL_DASHBOARD_REMOTE_CONTROL=1 turns it on)."
-        : cfg.mode === "lan"
-          ? "LAN view: prompt the robot from its own screen."
-          : hidden.role
-            ? `Your role (${cfg.role}) can watch and E-STOP, not prompt.`
-            : "Prompting is not available.";
+    : down
+      ? down
+      : !declared
+        ? "The reasoner is not running on this deploy, so there is nothing to prompt."
+        : blocked.some((a) => a.kind === "prompt")
+          ? "Prompting is off over the network on this robot (OPENRAL_DASHBOARD_REMOTE_CONTROL=1 turns it on)."
+          : cfg.mode === "lan"
+            ? "LAN view: prompt the robot from its own screen."
+            : hidden.role
+              ? `Your role (${cfg.role}) can watch and E-STOP, not prompt.`
+              : "Prompting is not available.";
   async function submit(e) {
     e.preventDefault();
     const value = text.trim();
@@ -429,7 +433,7 @@ export function Console({ api, cfg, manifest, snap, bar, robotId, prefs, update,
   return (
     <div className="console" style={{ "--pane-w": `${prefs.paneWidth}px` }}>
       <div className="stage">
-        <PromptBar api={api} cfg={cfg} actions={manifest?.actions} />
+        <PromptBar api={api} cfg={cfg} actions={manifest?.actions} snap={snap} />
         <CameraStrip cams={cams} map={map} snap={snap} api={api} cfg={cfg} />
         <SceneBoundary key={robotId}>
           <Suspense fallback={<SceneFallback>loading the 3D view…</SceneFallback>}>

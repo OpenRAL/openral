@@ -318,6 +318,11 @@ main > .waiting {
 .cam-slot .meta > span:first-child {
   flex: none;
 }
+/* The occupancy tile is a camera-sized card: cells and resolution only (origin,
+   frame, source and pose stay on the World tab's full map card). */
+.map-slot .meta > span:nth-child(n + 3) {
+  display: none;
+}
 .cam-slot .empty {
   margin: auto;
 }
