@@ -14,6 +14,7 @@ anyone on the same network as the robot host can:
 | publish `ActionChunk` on `/openral/safe_action` | the HAL executes it; the safety kernel is bypassed |
 | call `/openral/estop_reset` | clears a latched E-stop once the cooldown has passed |
 | `ros2 param set` on the safety kernel | relaxed `joint_velocity_max`, `workspace_box_*`, … would apply on the next configure |
+| `ros2 param set /safety_controller blend_ratio` / `max_blend_ratio_speed` (Unitree G1) | blends the S0 locomotion policy in, up to 1.0 at up to 10 /s; see below |
 | publish `/openral/prompt` | instructs the reasoner |
 | publish `/joint_states`, the deadman heartbeat | the kernel checks against a fake state; a dead operator looks alive |
 
@@ -58,6 +59,19 @@ it override both variables. The shared decision is
 `openral_core.ros_graph_scope.require_host_confined_ros_scope`; the launch hook
 is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
 
+**Unitree G1: the blend parameters stay writable (open risk).** NVIDIA's
+`SafetyController` (`isaac_ros_deploy` f3aa6b89, `deps.repos`) declares
+`blend_ratio` and `max_blend_ratio_speed` with `read_only = false` and applies a
+runtime set immediately: that is how the operator blends the policy in on the
+gantry (`packages/openral_hal_unitree/README.md`). Its
+`out_of_domain_detection.*` parameters already refuse a runtime set, and the rest
+are read at configure. OpenRAL cannot make the blend parameters read-only without
+patching the upstream controller *and* replacing the operator blend-in with
+another path; pinning them at configure would start the policy blended in, which
+is less conservative. Until that is designed (Safety-WG), host confinement is the
+only control on who can set them, and an opted-in network graph (`OPENRAL_ALLOW_NETWORK_ROS=1`)
+must be treated as able to start the G1's locomotion policy.
+
 Host confinement limits *discovery*; it is not a firewall. Combine it with a
 host firewall that drops inbound DDS ports (UDP 7400+) on interfaces the robot
 does not need.
@@ -100,7 +114,7 @@ Recommended permissions profile:
 | `/openral/hal` | `/joint_states`, HAL diagnostics | `/openral/safe_action` (only the kernel may publish it), `/openral/estop` | — |
 | `/openral/runtime` (rSkill) | `/openral/candidate_action` | sensors, `/joint_states` | — |
 | `/openral/supervisor`, `/openral/dashboard` | `/openral/prompt`, deadman heartbeat (dashboard) | status topics | **only** callers of `/openral/estop_reset` |
-| everything else | its own topics | read-only | none of the above; no parameter services on the kernel |
+| everything else | its own topics | read-only | none of the above; no parameter services on the kernel or on `/safety_controller` |
 
 Default-deny for every other enclave, `ROS_SECURITY_STRATEGY=Enforce`, keys
 provisioned per robot. Until it lands, treat the robot network as part of the
