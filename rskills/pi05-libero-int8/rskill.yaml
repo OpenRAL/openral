@@ -92,15 +92,15 @@ min_vram_gb:
   fp32: 16.1
   bf16: 8.1
   int8: 6.4
-weights_uri: "hf://lerobot/pi05_libero_finetuned_v044"
+weights_uri: "hf://lerobot/pi05_libero_finetuned_v044@7152f13e34c6c115d808aea0e5d08aca74eac14b"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # Processors are self-hosted in the OpenRAL rSkill repo (published copies of the
 # source checkpoint's processors), so the rSkill does not depend on the upstream
 # lerobot/pi05_libero_finetuned_v044 repo to resolve them.
 processors:
-  preprocessor_uri: "hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8/policy_preprocessor.json"
-  postprocessor_uri: "hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8/policy_postprocessor.json"
+  preprocessor_uri: "hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8@922de8548af0094edc4c616b9a53ccef48456326/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8@922de8548af0094edc4c616b9a53ccef48456326/policy_postprocessor.json"
 # The pi05 LIBERO finetune wants the default LIBERO image preprocessing
 # (180° rotation + camera1/2 alias remap to image/image2) and the canonical
 # LIBERO 8-D proprio state. Alias keys are VLA slots (the sensors_required

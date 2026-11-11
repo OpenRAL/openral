@@ -505,3 +505,12 @@ def test_deploy_refuses_place_zones_on_a_robot_whose_base_moves(tmp_path: Path) 
     config.write_text(yaml.safe_dump({**scene, "place_zones": zones}))
     with pytest.raises(ROSConfigError, match="mobile_manipulator"):
         _argv(config, "sim", {})
+
+
+def test_instance_cells_is_forwarded_with_tracking_off_so_the_launch_refuses_it() -> None:
+    """Review of afff4f9be: forwarded only inside the tracking block, a scene asking for
+    instance cells with tracking off silently lost the flag instead of being refused."""
+    off = _argv(_PICK_ORANGE, "sim", {"object_tracking": "off", "instance_cells": True})
+    assert "instance_cells:=true" in off
+    assert "instance_cells:=true" in _argv(_PICK_ORANGE, "sim", {"instance_cells": True})
+    assert not [a for a in _argv(_PICK_ORANGE, "sim", {}) if a.startswith("instance_cells")]

@@ -309,6 +309,33 @@ def test_a_bound_tracks_box_follows_the_in_hand_refit() -> None:
     assert track.box.pose.xyz[0] - x > 0.04  # the box followed the orange
 
 
+def test_a_slow_in_hand_drift_never_ratchets_the_bound_box() -> None:
+    """Review of afff4f9be: each partial-kept fit was enclosed into the last KEPT box, so an
+    object moving under a cell per fit stretched the bound box along its whole path."""
+    orange = _oranges(0.05)[1:2]
+    depth, labels = render(orange, _RIG)
+    tr = ObjectTracker(_RIG.frame, params=_params(True))
+    tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
+    wall = _ground(tr, depth, labels, np.zeros(depth.shape, np.uint8), stamp=1, wall=0.0)
+    (clear,) = tr.store.all()
+    tr.store.replace(clear.model_copy(update={
+        "status": TrackStatus.BOUND, "bound_hand": "gripper", "attach_link": "jaw",
+        "pose_in_link": Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id="jaw"),
+    }))  # fmt: skip
+    x, y = _RIG.centre_xy
+    widest = 0.0
+    for k in range(1, 31):  # 0.4 cell per fit, 18 cm in all
+        moved = [sphere((x + 0.4 * RES * k, y, _RIG.support_z + _R), _R)]
+        d, lab = render(moved, _RIG)
+        wall = _ground(tr, d, lab, np.zeros(d.shape, np.uint8), stamp=1 + k, wall=wall + 1.0)
+        (track,) = tr.store.all()
+        widest = max(widest, track.box.half_extents[0])
+    assert track.status is TrackStatus.BOUND
+    # Held to the box it was last seen whole in: never twice the object (the ratchet: 3.4x).
+    assert widest < 2.0 * clear.box.half_extents[0]
+    assert track.box.pose.xyz[0] - x > 0.4 * RES * 30 - 4 * RES  # it still follows the object
+
+
 def _ground_mask(tr: ObjectTracker, rig: Rig, depth: NDArray[np.float64], mask: NDArray[np.bool_],
                  stamp: int, wall: float) -> float:  # fmt: skip
     """``_ground`` on any rig, answering every segment request with ``mask``."""

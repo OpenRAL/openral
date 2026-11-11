@@ -20,6 +20,7 @@ openral/                      ← THIS monorepo
 │  ├─ reasoner/     (openral_reasoner)    ← S2 LLM reasoner/supervisor core — `ReasonerCore`, `ReasonerToolCall` palette, bounded replanning ladder ✓
 │  ├─ dataset/      (openral_dataset)     ← rosbag2 ↔ LeRobotDataset v3 bridge ✓
 │  └─ observability/ (openral_observability) ← OTel SDK + OTLP exporter, span helpers, structlog↔OTel bridge ✓
+│     └─ ui/        (robot UI, Vite + React) ← the manifest-driven robot view the dashboard serves at :4318 and www.openral.com serves at /robot-ui/ (ADR-0129)
 │  World Action Model (WAM) implementations: removed (ADR-0104) — they live in the private OpenRAL Pro monorepo, not this repo
 │  Planned: dispatcher (edge/cloud/split)
 ├─ packages/                      ← ROS 2 packages (colcon build)

@@ -23,6 +23,7 @@ Lifecycle nodes auto-transition UNCONFIGURED → INACTIVE → ACTIVE.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -1632,6 +1633,16 @@ def _workspace_explained_cells(
     return object_tracking == "on" and workspace_contact_enabled and requested
 
 
+def _locate_contrast_labels(locator_specs: list[dict[str, str]]) -> bool:
+    """Whether the tracker asks its locator for contrast labels beside the query.
+
+    Only a ``zeroshot_hf`` (OmDet) locator names each box with one class of the prompt.
+    LocateAnything names an unlabelled box with the whole query, which the tracker's label
+    filter then drops. The tracker uses the first locator (its ``locate_service``).
+    """
+    return bool(locator_specs) and locator_specs[0].get("engine") == "zeroshot_hf"
+
+
 def _tracked_clear_enabled(object_tracking: str) -> bool:
     """Whether a track may drive a map clear (bridge and self-filter ``tracked_clear_enabled``).
 
@@ -1980,6 +1991,50 @@ def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # 
     return includes
 
 
+def _write_robot_manifest(
+    description: RobotDescription,
+    runtime: DeployRuntime,
+    *,
+    bridge_on: bool,
+    unit_serial: str | None,
+) -> str:
+    """Write this deploy's robot manifest (ADR-0129) for the dashboard's ``--manifest``.
+
+    The dashboard serves it until the reasoner, when it runs, sends a fresher one; so a
+    deploy with the reasoner off still has panels and actions. Skills come from the same
+    search path the reasoner seeds from (``manifest_paths_by_name``); an unloadable
+    rSkill is left out. The write-/remote-control flags are this launch's env, which the
+    dashboard inherits. Returns the file.
+    """
+    from openral_core import (
+        REMOTE_CONTROL_ENV,
+        WRITE_CONTROLS_ENV,
+        RSkillManifest,
+        build_robot_manifest,
+    )
+    from openral_rskill.loader import manifest_paths_by_name
+
+    installed = []
+    for yaml_path in manifest_paths_by_name([_RSKILLS_DIR]).values():
+        try:
+            installed.append(RSkillManifest.from_yaml(str(yaml_path)))
+        except (OSError, ValueError) as exc:
+            print(f"[deploy_e2e] manifest: skipping rSkill {yaml_path}: {exc}", flush=True)
+    manifest = build_robot_manifest(
+        description,
+        runtime,
+        installed,
+        bridge_on=bridge_on,
+        write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
+        remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
+        unit_serial=unit_serial,
+    )
+    fd, path = tempfile.mkstemp(prefix=f"openral_manifest_{description.name}_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(manifest.model_dump_json(by_alias=True))
+    return path
+
+
 def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -> str | None:
     """Generate a Foxglove layout for the cameras this deploy actually publishes.
 
@@ -2018,7 +2073,9 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -
     return str(path)
 
 
-def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
+def _foxglove_asset_env(
+    robot_description_xml: str | None, local: dict[str, pathlib.Path] | None = None
+) -> dict[str, str]:
     """``foxglove_bridge``'s env, so a viewer can fetch the URDF's ``package://`` meshes.
 
     The bridge serves a 3D panel's ``fetchAsset`` through ``resource_retriever``,
@@ -2036,7 +2093,7 @@ def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
     from openral_hal.ros_package_overlay import public_package_overlay
 
     try:
-        overlay = public_package_overlay(robot_description_xml)
+        overlay = public_package_overlay(robot_description_xml, local)
     except (ROSConfigError, OSError) as exc:
         print(f"[deploy_e2e] foxglove: URDF meshes will not load: {exc!r}", flush=True)
         return {}
@@ -2048,6 +2105,55 @@ def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
             p for p in (str(overlay), os.environ.get("AMENT_PREFIX_PATH", "")) if p
         )
     }
+
+
+_RELATIVE_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:|/)([^"]+)(")')
+
+
+def _robot_mesh_package(
+    urdf_xml: str, urdf_dir: pathlib.Path
+) -> tuple[str, dict[str, pathlib.Path]]:
+    """``urdf_xml`` with its relative mesh paths as ``package://`` URIs; and that package.
+
+    A manifest's own URDF names its meshes relative to itself (``assets/base.stl``,
+    ``../meshes/link.stl``). ``robot_state_publisher`` doesn't care, but a 3D viewer asks
+    ``foxglove_bridge`` for each mesh by URI, and the bridge serves ``package://`` only,
+    never with ``..`` (topics.py ``ASSET_URI_ALLOWLIST``): with relative paths Lichtblick
+    drew TF axes, no robot. The package holds links to the referenced files only, under
+    ``$OPENRAL_CACHE_DIR/robot_meshes``: every remote viewer can fetch whatever it holds,
+    so never the URDF's whole folder. Named after the folder plus a hash of its path, so
+    two robots in same-named folders don't share one. The bridge's ament overlay
+    registers it (``_foxglove_asset_env``). Any failure leaves the URDF as it was.
+    """
+    refs = {m[2] for m in _RELATIVE_MESH.finditer(urdf_xml)}
+    files = {r: (urdf_dir / r).resolve() for r in refs}
+    files = {r: f for r, f in files.items() if f.is_file()}
+    if not files:
+        return urdf_xml, {}
+    digest = hashlib.sha256(str(urdf_dir.resolve()).encode()).hexdigest()[:8]
+    name = re.sub(r"[^\w]", "_", urdf_dir.name)
+    pkg = f"openral_robot_{name}_{digest}"
+    base = pathlib.Path(
+        os.environ.get("OPENRAL_CACHE_DIR") or pathlib.Path.home() / ".cache/openral"
+    )
+    root = base / "robot_meshes" / pkg
+    common = pathlib.Path(os.path.commonpath([f.parent for f in files.values()]))
+    uris: dict[str, str] = {}
+    try:
+        for ref, target in files.items():
+            rel = target.relative_to(common)
+            link = root / rel
+            link.parent.mkdir(parents=True, exist_ok=True)
+            # Swap the link in atomically: concurrent launches of one robot share it.
+            tmp = link.with_name(f".{link.name}.{uuid.uuid4().hex}")
+            tmp.symlink_to(target)
+            tmp.replace(link)
+            uris[ref] = f"package://{pkg}/{rel.as_posix()}"
+    except OSError as exc:
+        print(f"[deploy_e2e] foxglove: URDF meshes will not load: {exc!r}", flush=True)
+        return urdf_xml, {}
+    xml = _RELATIVE_MESH.sub(lambda m: f"{m[1]}{uris.get(m[2], m[2])}{m[3]}", urdf_xml)
+    return xml, {pkg: root}
 
 
 def _portable_robot_description(urdf_xml: str) -> str:
@@ -2703,12 +2809,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         "true",
         "yes",
     )
-    # Read-only Foxglove live-scene bridge. Off by default;
-    # ``openral deploy sim --foxglove`` opts in.
-    enable_foxglove = LaunchConfiguration("enable_foxglove").perform(context).lower() in (
-        "1",
-        "true",
-        "yes",
+    # Read-only Foxglove live-scene bridge. On whenever the dashboard is (its 3D panel
+    # reaches the bridge through the dashboard's /ws proxy, ADR-0129); an explicit
+    # ``enable_foxglove:=true|false`` overrides.
+    _foxglove_raw = LaunchConfiguration("enable_foxglove").perform(context).lower()
+    enable_foxglove = (
+        enable_dashboard if _foxglove_raw == "" else _foxglove_raw in ("1", "true", "yes")
     )
     foxglove_port = LaunchConfiguration("foxglove_port").perform(context)
     # Graph-wide clock domain (single source of truth). The CLI resolves the
@@ -3189,11 +3295,35 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     if reasoner_endpoint:
         reasoner_env["OPENRAL_REASONER_ENDPOINT"] = reasoner_endpoint
 
-    dashboard = ExecuteProcess(
-        cmd=[_RAL_EXECUTABLE, "dashboard", "--port", dashboard_port],
-        name="openral_dashboard",
-        output="screen",
+    # ADR-0129 — this deploy's resolved toggles (never "auto") for the robot manifest:
+    # the launch writes one for the dashboard (so a deploy without the reasoner has one),
+    # and the reasoner re-emits it on every registry change when it runs.
+    manifest_runtime = DeployRuntime(
+        enable_reasoner=enable_reasoner,
+        enable_slam=enable_slam,
+        enable_octomap=enable_octomap,
+        enable_reward_monitor=enable_reward_monitor,
+        enable_object_detector=enable_object_detector,
     )
+    dashboard_cmd = [
+        _RAL_EXECUTABLE,
+        "dashboard",
+        "--port",
+        dashboard_port,
+        "--bridge-port",
+        foxglove_port,
+    ]
+    if enable_dashboard:
+        dashboard_cmd += [
+            "--manifest",
+            _write_robot_manifest(
+                description,
+                manifest_runtime,
+                bridge_on=enable_foxglove,
+                unit_serial=unit_identity.serial,
+            ),
+        ]
+    dashboard = ExecuteProcess(cmd=dashboard_cmd, name="openral_dashboard", output="screen")
 
     safety_kernel = LifecycleNode(
         package="openral_safety_kernel",
@@ -3345,6 +3475,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # octomap_server gets.
         "grasp_target_voxel_m": _octomap_resolution(hal_mode),
     }
+    # ADR-0129 — the robot manifest the reasoner emits to the dashboard: the same
+    # resolved toggles, whether the 3D bridge runs, and the unit's serial.
+    reasoner_params["manifest_runtime_json"] = manifest_runtime.model_dump_json(exclude_none=True)
+    reasoner_params["manifest_bridge_on"] = enable_foxglove
+    reasoner_params["manifest_unit_serial"] = unit_identity.serial or ""
     if lifecycle_peer_node_ids:
         reasoner_params["lifecycle_peer_node_ids"] = lifecycle_peer_node_ids
     # Same empty-list-omission rule as lifecycle_peer_node_ids
@@ -4096,12 +4231,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             extra_nodes.extend(_build_driver_includes(scene_drivers, deploy_config))
 
     robot_description_xml: str | None = None
+    robot_mesh_packages: dict[str, pathlib.Path] = {}
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
         urdf_path = _resolve_urdf_path(urdf_asset.ref, pathlib.Path(robot_yaml).parent)
         if urdf_path is not None:
             with open(urdf_path, encoding="utf-8") as fh:
-                robot_description_xml = _portable_robot_description(fh.read())
+                robot_description_xml, robot_mesh_packages = _robot_mesh_package(
+                    _portable_robot_description(fh.read()), pathlib.Path(urdf_path).parent
+                )
             extra_nodes.append(
                 Node(
                     package="robot_state_publisher",
@@ -4858,6 +4996,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         extra_nodes.append(segmenter)
         autostart.append(_poll_autostart("openral_segmenter", 120.0))
 
+    instance_cells = LaunchConfiguration("instance_cells").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if instance_cells and object_tracking == "off":
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "instance_cells=true needs the object tracker (object_tracking tracking | on); "
+            "it is sim-only like the tracker (pro#51, Safety-WG review owed)."
+        )
     if object_tracking != "off":
         # Issue #418: the Layer-2 object tracker (packages/world_state/README.md).
         tracker = LifecycleNode(
@@ -4905,6 +5055,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                         else ""
                     ),
                     "joint_states_topic": runtime_joint_states_topic or "/joint_states",
+                    "locate_contrast_labels": _locate_contrast_labels(locator_specs),
+                    "instance_cells": instance_cells,
                     "use_sim_time": use_sim_time,
                 }
             ],
@@ -4913,6 +5065,24 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         )
         extra_nodes.append(tracker)
         autostart.append(_poll_autostart("openral_object_tracker", 60.0))
+        if instance_cells:
+            # EXPERIMENT (pro#51, sim-only): SAM2.1 video masks of the tracker's TARGET /
+            # DESTINATION tracks lifted to voxel cells on /openral/instance_cells.
+            # ponytail: one camera (the first tracked); fuse per camera if a scene needs two.
+            extra_nodes.append(
+                LifecycleNode(
+                    package="openral_world_state",
+                    executable="instance_mask_propagator_node",
+                    name="openral_instance_mask_propagator",
+                    namespace="",
+                    arguments=["--camera", tracked_cameras[0]],
+                    parameters=[{"use_sim_time": use_sim_time}],
+                    additional_env=otel_env,
+                    output="screen",
+                )
+            )
+            # configure loads SAM2.1 (two models, a cold HF cache downloads them).
+            autostart.append(_poll_autostart("openral_instance_mask_propagator", 300.0))
 
     if enable_reward_monitor:
         # Reward monitor runs PARALLEL to the VLA (not a lifecycle/VRAM
@@ -5144,7 +5314,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "use_sim_time": use_sim_time,
                 }
             ],
-            additional_env=_foxglove_asset_env(robot_description_xml),
+            additional_env=_foxglove_asset_env(robot_description_xml, robot_mesh_packages),
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
 
@@ -5262,6 +5432,16 @@ def generate_launch_description() -> LaunchDescription:
                 "Serialized openral_core.GraspDeclaration (real pick-and-place "
                 "design §2.1) the skill_runner scopes to each goal it "
                 "dispatches. Empty = no declaration, no grasp exemption."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "instance_cells",
+            default_value="false",
+            description=(
+                "DeployRuntime.instance_cells (EXPERIMENT, pro#51): run the instance mask "
+                "propagator beside the object tracker, which fits its target / destination "
+                "boxes to the SAM2 video masks' voxel cells. Needs object_tracking not off; "
+                "sim-only, Safety-WG review owed."
             ),
         ),
         DeclareLaunchArgument(
@@ -6048,10 +6228,11 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "enable_foxglove",
-            default_value="false",
+            default_value="",
             description=(
                 "Spawn the read-only foxglove_bridge as part of "
-                "the deploy-sim runtime graph. Default off. The bridge binds "
+                "the deploy-sim runtime graph. Default (empty): on whenever the "
+                "dashboard is, which proxies it at /ws. The bridge binds "
                 "to 127.0.0.1:<foxglove_port> and exposes only the Bucket-1 "
                 "topic allowlist (no safety/e-stop/action topics). View-only: "
                 "clientPublish, services, and parameters capabilities are "

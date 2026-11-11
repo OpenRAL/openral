@@ -46,8 +46,9 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 import structlog
@@ -64,6 +65,7 @@ from openral_rskill._vla_core import (
     resolve_n_action_steps,
     resolve_rskill_repo_id,
     resolve_state_dim,
+    split_repo_revision,
 )
 
 # NF4 quantization + prequantized-state load live in the adapter-agnostic
@@ -92,6 +94,7 @@ if TYPE_CHECKING:
     from openral_sim.rollout import Observation
 
 _log = structlog.get_logger(__name__)
+_T = TypeVar("_T")
 
 # MolmoAct2-LIBERO is trained on the LIBERO mixture; the matching
 # normalization tag selects the right state/action norm_stats entry. The
@@ -237,62 +240,106 @@ def _checkpoint_camera_order(
     return tuple(slot_of[key] for key in checkpoint_keys)
 
 
-def _norm_stats_camera_keys(repo_id: str, revision: str | None, norm_tag: str) -> tuple[str, ...]:
+def _norm_stats_path(repo_id: str, revision: str | None) -> str:
+    """Local path of the checkpoint's ``norm_stats.json`` at ``revision``."""
+    from huggingface_hub import hf_hub_download
+
+    return _hf_cached_first(
+        lambda: str(hf_hub_download(repo_id, "norm_stats.json", revision=revision)),
+        repo_id=repo_id,
+    )
+
+
+def _norm_stats_camera_keys(path: str, norm_tag: str) -> tuple[str, ...]:
     """The checkpoint's camera order for ``norm_tag`` from its ``norm_stats.json``."""
     import json
 
-    from huggingface_hub import hf_hub_download
-
-    with _hf_offline_if_cached(repo_id, probe_file="norm_stats.json", revision=revision):
-        path = hf_hub_download(repo_id, "norm_stats.json", revision=revision)
     with open(path, encoding="utf-8") as fh:
         stats = json.load(fh)
     meta = stats.get("metadata_by_tag", {}).get(norm_tag, {})
     return tuple(str(key) for key in meta.get("camera_keys") or ())
 
 
-@contextlib.contextmanager
-def _hf_offline_if_cached(
-    repo_id: str, probe_file: str = "config.json", revision: str | None = None
-) -> Any:
-    """Flip ``HF_HUB_OFFLINE`` on for the inner block when ``probe_file`` is cached.
+def _restore_checkpoint_state(model: Any, repo_id: str, revision: str | None) -> None:
+    """Re-apply the checkpoint's tensors after ``from_pretrained``.
 
-    Every ``from_pretrained`` (config, processor) and the lazy ``norm_stats.json``
-    fetch re-validate their files against the Hub with a HEAD round-trip, even on
-    a fully warm cache — a stream of ``httpx`` INFO lines on each load. When the
-    file the inner block is about to read is already in the local cache we flip
-    ``huggingface_hub.constants.HF_HUB_OFFLINE`` (which transformers'
-    ``is_offline_mode`` reads) so the cached read does zero HEADs. Cold caches
-    stay online so the first read downloads exactly once. Mirrors the
-    ``call_make_processors_cached_first`` offline-probe the lerobot adapters
-    use for their tokenizer reloads.
+    Under transformers 5.x, ``from_pretrained`` runs lerobot's MolmoAct2
+    ``_init_weights`` after the checkpoint load, and that init writes through
+    ``.data`` (``fill_`` / ``normal_``), which bypasses transformers' "already
+    loaded" guard. The result is a model with every norm at 1.0, every bias at
+    0 and every Linear re-drawn, and no missing-key warning: bf16 MolmoAct2
+    LIBERO scored 0/20 on libero_spatial task 0 on Jetson Thor (2026-11-08)
+    while the NF4 pack (whose loader fills every slot itself) scored 20/20.
 
-    ``probe_file`` must name the file the inner block actually fetches: the
-    ``from_pretrained`` load gate probes ``config.json`` (pulled by the load),
-    while the ``predict_action`` wrap probes ``norm_stats.json`` (fetched lazily
-    on the first inference) — gating the latter on ``config.json`` instead
-    would block the first-run lazy norm-stats download with a
-    ``LocalEntryNotFoundError`` ("normalization stats file is missing"), since
-    the model load warms ``config.json`` but never ``norm_stats.json``.
+    Raises:
+        ROSConfigError: A model tensor is not in the checkpoint, or a
+            checkpoint tensor names no model tensor.
+    """
+    from pathlib import Path
 
-    ``revision`` must be the revision the inner block requests: a file cached
-    for ``main`` says nothing about a pinned revision, and going offline on it
-    would block that revision's first download.
+    from huggingface_hub import snapshot_download
+    from safetensors.torch import load_file
+
+    snapshot = Path(
+        _hf_cached_first(
+            lambda: snapshot_download(repo_id, revision=revision, allow_patterns=["*.safetensors"]),
+            repo_id=repo_id,
+        )
+    )
+    expected = set(model.state_dict())
+    seen: set[str] = set()
+    for shard in sorted(snapshot.glob("*.safetensors")):
+        state = load_file(str(shard), device="cpu")
+        try:
+            unexpected = model.load_state_dict(state, strict=False).unexpected_keys
+        except RuntimeError as exc:  # a known key with the wrong shape
+            raise ROSConfigError(
+                f"MolmoAct2: {repo_id} shard {shard.name} does not fit the model: {exc}"
+            ) from exc
+        if unexpected:
+            raise ROSConfigError(
+                f"MolmoAct2: {repo_id} shard {shard.name} carries tensors the model "
+                f"does not have: {unexpected[:5]}"
+            )
+        seen.update(state)
+    if missing := sorted(expected - seen):
+        raise ROSConfigError(
+            f"MolmoAct2: {repo_id} checkpoint does not fill {len(missing)} model "
+            f"tensors (e.g. {missing[:5]}); refusing to run on init values."
+        )
+
+
+def _hf_cached_first(load: Callable[[], _T], *, repo_id: str) -> _T:
+    """Run ``load`` against the local HF cache only; fall back to the Hub on a miss.
+
+    Every ``from_pretrained`` (config, processor, model) and ``hf_hub_download``
+    re-validates its files against the Hub with a HEAD round-trip, even on a
+    fully warm cache — a stream of ``httpx`` INFO lines on each load. This first
+    runs ``load`` with ``huggingface_hub.constants.HF_HUB_OFFLINE`` flipped on
+    (which transformers' ``is_offline_mode`` reads), so a warm cache does zero
+    HEADs. If any file ``load`` needs is missing it raises an ``OSError``
+    (transformers' missing-file error, huggingface_hub's
+    ``LocalEntryNotFoundError``) and ``load`` is retried online, which
+    downloads what is missing. A real failure re-raises from the online retry.
+
+    Trying the load itself replaces probing a proxy file: a probe of
+    ``config.json`` took a cold weights load offline once the config load had
+    warmed it (cold-cache ``from_pretrained`` could not fetch the shards), and
+    the same proxy could not see missing processor or ``norm_stats.json`` files.
+    The load must be side-effect free up to the point it reads files, since a
+    miss runs it twice. Mirrors ``hf_download_cached_first``.
     """
     import huggingface_hub.constants as _hc
-    from huggingface_hub import try_to_load_from_cache
 
-    cached = try_to_load_from_cache(repo_id, probe_file, revision=revision)
-    if not isinstance(cached, str):
-        # Cold (or sentinel _CACHED_NO_EXIST) — let the load talk to the Hub.
-        yield
-        return
     saved = _hc.HF_HUB_OFFLINE
     _hc.HF_HUB_OFFLINE = True
     try:
-        yield
+        return load()
+    except OSError as exc:
+        _log.info("molmoact2_hf_cache_miss", repo=repo_id, error=str(exc)[:200])
     finally:
         _hc.HF_HUB_OFFLINE = saved
+    return load()
 
 
 def _strip_hf_uri(uri: str | None, *, field_name: str) -> str:
@@ -304,25 +351,6 @@ def _strip_hf_uri(uri: str | None, *, field_name: str) -> str:
             f"hf:// repo (e.g. 'hf://allenai/MolmoAct2-LIBERO'), got {value!r}."
         )
     return value[len("hf://") :]
-
-
-def _split_repo_revision(repo: str) -> tuple[str, str | None]:
-    """Split a ``owner/repo@revision`` string into ``(repo_id, revision)``.
-
-    HuggingFace ``from_pretrained`` treats its first positional argument as a
-    bare repo id; a ``@<sha>`` pin must be passed via the ``revision`` kwarg or
-    it is silently ignored (security audit 2026-06, finding H5 — the pin was
-    being concatenated onto the repo id and dropped). Returns ``revision=None``
-    when no pin is present.
-
-    Args:
-        repo: A repo id, optionally suffixed with ``@<branch-or-sha>``.
-
-    Returns:
-        ``(repo_id, revision_or_None)``.
-    """
-    repo_id, _, revision = repo.partition("@")
-    return repo_id, (revision or None)
 
 
 # NOTE: the former ``_require_remote_code_ack`` / ``OPENRAL_ALLOW_REMOTE_CODE``
@@ -340,10 +368,6 @@ class _MolmoAct2Adapter:
     _model: Any
     _processor: Any
     _torch: Any
-    # source_repo for the lazy norm_stats.json fetch predict_action does on its
-    # first call (outside the load path); used to keep that fetch offline on a
-    # warm cache so inference emits no httpx HEAD stream either. None disables.
-    _source_repo: str | None = None
     _norm_tag: str = _DEFAULT_NORM_TAG
     _num_steps: int = _DEFAULT_NUM_STEPS
     _n_action_steps: int | None = None
@@ -430,16 +454,9 @@ class _MolmoAct2Adapter:
         if self._n_action_steps is not None:
             predict_kwargs["n_action_steps"] = self._n_action_steps
 
-        # predict_action lazily fetches norm_stats.json from source_repo on its
-        # first call; gate offline on norm_stats.json itself (not config.json) so
-        # a cold-norm_stats first run stays online to download it, and only a
-        # warm cache flips offline (no httpx HEAD stream).
-        offline_ctx = (
-            _hf_offline_if_cached(self._source_repo, probe_file="norm_stats.json")
-            if self._source_repo is not None
-            else contextlib.nullcontext()
-        )
-        with torch.no_grad(), autocast_ctx, offline_ctx:
+        # predict_action reads norm_stats.json from config._name_or_path, the local
+        # pinned snapshot dir set at load, so inference makes no Hub call.
+        with torch.no_grad(), autocast_ctx:
             out = self._model.predict_action(**predict_kwargs)
 
         actions = out.actions if hasattr(out, "actions") else out
@@ -542,6 +559,8 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     processor_cls: Any,
     source_repo: str,
     revision: str | None,
+    norm_stats_dir: str,
+    weights_revision: str | None,
     spec: VLASpec,
     device: str,
     dtype_str: str,
@@ -559,14 +578,14 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     use_nf4 = dtype_str == "nf4"
     torch_dtype = torch_dtype_for(torch, None if use_nf4 else dtype_str, device)
 
-    # The processor + config still resolve their files against the Hub; on a
-    # warm cache that is pure HEAD-request noise. Load offline-if-cached so a
+    # The processor + config + model still resolve their files against the Hub;
+    # on a warm cache that is pure HEAD-request noise. Load cache-first so a
     # re-run emits no httpx HEAD stream.
-    with (
-        _hf_offline_if_cached(source_repo, revision=revision),
-        _molmoact2_phase("processor", repo=source_repo),
-    ):
-        processor = processor_cls.from_pretrained(source_repo, revision=revision)
+    with _molmoact2_phase("processor", repo=source_repo):
+        processor = _hf_cached_first(
+            lambda: processor_cls.from_pretrained(source_repo, revision=revision),
+            repo_id=source_repo,
+        )
         if max_crops is not None:
             image_processor = getattr(processor, "image_processor", None)
             if image_processor is not None and hasattr(image_processor, "max_crops"):
@@ -598,17 +617,18 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         # reason: accelerate ships no py.typed; the exact code differs by install state
         from accelerate import init_empty_weights  # type: ignore[import-untyped,unused-ignore]
 
-        fast_state_keys = peek_safetensors_keys(prequant_repo)
-        with (
-            _hf_offline_if_cached(source_repo, revision=revision),
-            _molmoact2_phase("load_config", repo=source_repo),
-        ):
-            config = config_cls.from_pretrained(source_repo, revision=revision)
+        fast_state_keys = peek_safetensors_keys(prequant_repo, revision=weights_revision)
+        with _molmoact2_phase("load_config", repo=source_repo):
+            config = _hf_cached_first(
+                lambda: config_cls.from_pretrained(source_repo, revision=revision),
+                repo_id=source_repo,
+            )
         # transformers 5.x no longer populates config._name_or_path from
         # from_pretrained, but MolmoAct2's `_get_robot_stats` reads it to locate
-        # (and hf_hub_download) norm_stats.json on the first predict_action. Set
-        # it to the source_repo so the lazy norm-stats fetch resolves.
-        config._name_or_path = source_repo
+        # norm_stats.json on the first predict_action. Point it at the pinned
+        # snapshot dir: a local dir is read directly, while a repo id would be
+        # hf_hub_download-ed with no revision (HEAD, not the pin).
+        config._name_or_path = norm_stats_dir
         prev_dtype = torch.get_default_dtype()
         torch.set_default_dtype(torch.bfloat16)
         try:
@@ -648,19 +668,21 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     # bf16 backbone on CPU, then on-the-fly quantize before the device move —
     # instantiating the ~5.5 B backbone on CUDA in fp32 would OOM an 8 GiB card
     # before the nf4 rewrite ever runs.
-    with (
-        _hf_offline_if_cached(source_repo, revision=revision),
-        _molmoact2_phase("from_pretrained", repo=source_repo, dtype=dtype_str),
-    ):
-        model = model_cls.from_pretrained(
-            source_repo,
-            revision=revision,
-            dtype=torch_dtype if not use_nf4 else torch.bfloat16,
-            low_cpu_mem_usage=True,
+    with _molmoact2_phase("from_pretrained", repo=source_repo, dtype=dtype_str):
+        model = _hf_cached_first(
+            lambda: model_cls.from_pretrained(
+                source_repo,
+                revision=revision,
+                dtype=torch_dtype if not use_nf4 else torch.bfloat16,
+                low_cpu_mem_usage=True,
+            ),
+            repo_id=source_repo,
         )
+    with _molmoact2_phase("restore_checkpoint_state", repo=source_repo):
+        _restore_checkpoint_state(model, source_repo, revision)
     # See the fast-path note: transformers 5.x leaves config._name_or_path empty,
     # which MolmoAct2's `_get_robot_stats` needs to fetch norm_stats.json.
-    model.config._name_or_path = source_repo
+    model.config._name_or_path = norm_stats_dir
 
     if not use_nf4:
         with _molmoact2_phase("cast_and_to_device", device=device, dtype=dtype_str):
@@ -740,9 +762,11 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
             "MolmoAct2 adapter requires a bare rSkill reference as weights_uri "
             f"resolving to a manifest; got {spec.weights_uri!r}."
         )
-    source_repo, source_revision = _split_repo_revision(
+    source_repo, source_revision = split_repo_revision(
         _strip_hf_uri(manifest.source_repo, field_name="source_repo")
     )
+    # Resolved once: the camera order and the model's lazy stats read share it.
+    norm_stats = _norm_stats_path(source_repo, source_revision)
 
     plan = resolve_quant_plan(spec, manifest, default=default_dtype_for_device(device))
     # No int8 path: the load either NF4-packs or casts to a plain precision.
@@ -755,6 +779,11 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
         processor_cls=processor_cls,
         source_repo=source_repo,
         revision=source_revision,
+        norm_stats_dir=os.path.dirname(norm_stats),
+        # The NF4 pack's own pin (weights_uri); Pro's prequant probe returns the bare repo.
+        weights_revision=split_repo_revision(str(manifest.weights_uri or "").removeprefix("hf://"))[
+            1
+        ],
         spec=spec,
         device=device,
         dtype_str=dtype_str,
@@ -790,7 +819,7 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
     cam_keys = _checkpoint_camera_order(
         cam_keys,
         checkpoint_image_keys(ip, cam_keys),
-        _norm_stats_camera_keys(source_repo, source_revision, norm_tag),
+        _norm_stats_camera_keys(norm_stats, norm_tag),
     )
     # CUDA graphs default OFF: they pin static buffers (extra VRAM) and don't
     # compose cleanly with bnb's 4-bit dequant on an 8 GiB card.
@@ -809,7 +838,6 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
         _model=model,
         _processor=processor,
         _torch=torch,
-        _source_repo=source_repo,
         _norm_tag=norm_tag,
         _num_steps=num_steps,
         _n_action_steps=int(n_action_steps) if n_action_steps else None,

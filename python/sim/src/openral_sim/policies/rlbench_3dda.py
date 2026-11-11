@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
@@ -41,7 +42,7 @@ from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
 
 if TYPE_CHECKING:
-    from openral_core import SimEnvironment, VLASpec
+    from openral_core import RSkillManifest, SimEnvironment, VLASpec
 
     from openral_sim.rollout import Observation
 
@@ -51,6 +52,9 @@ _REPO_ENV = "OPENRAL_3DDA_REPO"
 _CKPT_ENV = "OPENRAL_3DDA_CHECKPOINT"
 _INSTR_ENV = "OPENRAL_3DDA_INSTRUCTIONS"
 _BOUNDS_ENV = "OPENRAL_3DDA_BOUNDS"
+_CKPT_FILE = "diffuser_actor_peract.pth"
+
+log = structlog.get_logger(__name__)
 
 _RLBENCH_VENV = Path.home() / ".cache" / "openral" / "rlbench-policy" / ".venv"
 _DEFAULT_REPO = Path.home() / ".cache" / "openral" / "policy-src" / "3d_diffuser_actor"
@@ -84,12 +88,35 @@ def _resolve_file(env_name: str, default: Path, what: str) -> Path:
     return p
 
 
-def _default_checkpoint() -> Path:
-    import glob
+def _resolve_checkpoint(manifest: RSkillManifest) -> Path:
+    """The PerAct checkpoint at the manifest's pinned ``weights_uri`` revision.
 
-    base = Path.home() / ".cache/huggingface/hub/models--katefgroup--3d_diffuser_actor/snapshots"
-    hits = glob.glob(str(base / "*" / "diffuser_actor_peract.pth"))
-    return Path(hits[0]) if hits else Path("/__missing_3dda_checkpoint__")
+    ``OPENRAL_3DDA_CHECKPOINT`` overrides it with a local file; that bypasses the
+    pin, so it is logged.
+    """
+    if os.environ.get(_CKPT_ENV):
+        path = _resolve_file(_CKPT_ENV, Path(), "checkpoint")
+        log.warning("diffuser_actor.checkpoint_override", path=str(path), bypasses_pin=True)
+        return path
+    uri = manifest.weights_uri or ""
+    if not uri.startswith("hf://"):
+        raise ROSConfigError(
+            f"3D Diffuser Actor needs an hf:// weights_uri or {_CKPT_ENV}, got {uri!r}."
+        )
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    from openral_rskill import hf_download_cached_first, split_repo_revision
+
+    repo, revision = split_repo_revision(uri.removeprefix("hf://"))
+    return Path(
+        hf_download_cached_first(
+            hf_hub_download,
+            LocalEntryNotFoundError,
+            repo_id=repo,
+            filename=_CKPT_FILE,
+            revision=revision,
+        )
+    )
 
 
 @dataclass
@@ -198,14 +225,14 @@ def _build_diffuser_actor(env_cfg: SimEnvironment) -> _Diffuser3DActorAdapter:
         "diffuser_actor",
     )
     repo = _resolve_file(_REPO_ENV, _DEFAULT_REPO, "repo checkout")
-    checkpoint = _resolve_file(_CKPT_ENV, _default_checkpoint(), "checkpoint")
-    # The sidecar loads the checkpoint itself, so the resolver's provenance gate
-    # (OPENRAL_REQUIRE_SIGNED_SKILLS) must run here.
     if manifest is None:
         raise ROSConfigError(
             "diffuser_actor needs a bare rSkill reference in weights_uri, got "
             f"{env_cfg.vla.weights_uri!r}."
         )
+    checkpoint = _resolve_checkpoint(manifest)
+    # The sidecar loads the checkpoint itself, so the resolver's provenance gate
+    # (OPENRAL_REQUIRE_SIGNED_SKILLS) must run here.
     rSkill._check_provenance(manifest, source=str(checkpoint))
     instructions = _resolve_file(
         _INSTR_ENV,

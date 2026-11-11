@@ -155,6 +155,12 @@ export OPENRAL_REASONER_MODEL=gpt-5.5
 export OPENRAL_REASONER_API_KEY=sk-or-...
 ```
 
+Models that refuse forced tool use (the Claude 5 generation 400s on
+`tool_choice` `any`) run `tool_choice: auto`: a prose reply is nudged once and
+then fed back to the model as an invalid plan, and any other model whose 400
+refuses forced tool use is downgraded to `auto` at runtime
+(`reasoner.tool_choice_downgraded`).
+
 Full model/endpoint matrix, named endpoints, the dialect rule, the legacy
 migration table, and what `openral doctor`'s `Reasoner LLM` row checks:
 [`openral_reasoner_ros` README §Reasoner model

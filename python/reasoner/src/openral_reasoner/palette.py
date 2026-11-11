@@ -25,13 +25,14 @@ from typing import (
 )
 
 from openral_core import (
-    EXECUTE_RSKILL_KINDS,
     DetectorMode,
+    QuantizationDtype,
     RobotCapabilities,
     RobotDescription,
     RSkillAction,
     RSkillManifest,
     TaskSpace,
+    rskill_matches_robot,
     task_space_compatible,
 )
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -265,6 +266,9 @@ class RSkillToolEntry(BaseModel):
             the per-skill tool's ``parameters.properties.goal_params_json``
             so the provider's structured-output path generates a
             well-formed payload.
+        quantization_dtype: The dtype the skill runs at
+            (``RSkillManifest.quantization.dtype``). Not shown to the LLM; the
+            skill-subset ranking prefers higher precision among equal scores.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -275,6 +279,7 @@ class RSkillToolEntry(BaseModel):
     objects: tuple[str, ...] = ()
     scenes: tuple[str, ...] = ()
     goal_params_schema: dict[str, Any] | None = None
+    quantization_dtype: QuantizationDtype = QuantizationDtype.FP32
 
 
 class ToolPalette(BaseModel):
@@ -491,7 +496,6 @@ def build_tool_palette(
         >>> palette.skills
         ()
     """
-    robot_tags = set(robot_capabilities.embodiment_tags)
     entries: list[RSkillToolEntry] = []
     continuous_detectors: list[ContinuousDetectorEntry] = []
     on_demand_detectors: list[OnDemandDetectorEntry] = []
@@ -537,19 +541,11 @@ def build_tool_palette(
             continue
         # Everything else that is not an ExecuteRskill kind has no actuating
         # tool: a segmenter answers the HAL's attachment-evidence producer (the
-        # LLM never asks for a mask), and vlm / reward / playbook are S2.
-        if skill.kind not in EXECUTE_RSKILL_KINDS:
-            continue
-        skill_tags = set(skill.embodiment_tags)
-        if not (skill_tags & robot_tags):
-            continue
-        required = set(skill.capabilities_required or [])
-        capabilities_set: set[str] = {
-            field for field, value in robot_capabilities.model_dump().items() if value is True
-        }
-        if not required.issubset(capabilities_set):
-            continue
-        if commercial_deployment and not skill.is_commercial_use_allowed:
+        # LLM never asks for a mask), and vlm / reward / playbook are S2. The
+        # robot manifest offers skills by the same predicate (ADR-0129).
+        if not rskill_matches_robot(
+            skill, robot_capabilities, commercial_deployment=commercial_deployment
+        ):
             continue
         entries.append(
             RSkillToolEntry(
@@ -559,6 +555,7 @@ def build_tool_palette(
                 objects=tuple(skill.objects),
                 scenes=tuple(skill.scenes),
                 goal_params_schema=skill.goal_params_schema,
+                quantization_dtype=skill.quantization.dtype,
             ),
         )
     # Stable order so tool schemas are deterministic across builds.

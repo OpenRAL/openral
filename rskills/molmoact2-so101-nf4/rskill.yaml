@@ -92,12 +92,9 @@ min_vram_gb:
   fp32: 22.0
   bf16: 11.0
   int4: 4.0
-weights_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4"
+weights_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4@85bfeb1e97f198d2906e3585528bdfd8ca58cfb2"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
-processors:
-  preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4/policy_preprocessor.json"
-  postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4/policy_postprocessor.json"
 # SO-100/101 teleop data is recorded upright — no rotation applied.
 # Aliases map the VLA slots (camera1 / camera2) to the model's training view
 # names (``top`` / ``side``); override per rollout via vla.extra.camera_aliases.
@@ -132,7 +129,7 @@ latency_budget:
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2605.02881"
-source_repo: "hf://allenai/MolmoAct2-SO100_101"
+source_repo: "hf://allenai/MolmoAct2-SO100_101@152569fe57914d97be91055800035f54e250d009"  # the revision its NF4 pack was built from (quantization_metadata.json)
 
 description: >
   MolmoAct2 (Ai2) finetuned on the SO-100/SO-101 teleop mixture, NF4-quantized

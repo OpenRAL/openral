@@ -42,6 +42,7 @@ from openral_core import (
     VLASpec,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.scene_paths import anchor_scene_paths
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
@@ -63,12 +64,16 @@ def _load_scene_for_hal(path: str) -> SimScene:
     ``SimEnvironment`` schema requires but the HAL never invokes
     (see module docstring). When the YAML omits ``task:`` (DeployScene),
     a noop ``TaskSpec`` is synthesised so the HAL boots without the
-    operator having to author a fake task.
+    operator having to author a fake task. Relative asset paths are resolved
+    beside the scene file (``anchor_scene_paths``).
     """
     raw_obj = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw_obj, dict):
         raise ROSConfigError(f"{path}: YAML root must be a mapping, got {type(raw_obj).__name__}")
-    raw: dict[str, object] = raw_obj
+    # Relative asset paths resolve beside the scene file, as in every other scene
+    # loader (openral_core.loaders, DeployScene.from_yaml): a scene shipped outside
+    # this checkout names its stage and props relative to itself.
+    raw: dict[str, object] = anchor_scene_paths(raw_obj, Path(path).parent)
 
     # BenchmarkScene is a superset of SimScene; reject it explicitly so the
     # eval-only contract (n_episodes / metadata / honest_scope) doesn't slip

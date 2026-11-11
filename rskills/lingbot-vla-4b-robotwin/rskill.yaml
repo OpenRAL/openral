@@ -101,8 +101,8 @@ min_vram_gb:
 # pack: same open-loop MAE 0.023) that was never published, so every load 404'd.
 # The mirror is worth republishing for the smaller download -- repoint here when it
 # exists and `_detect_prequantized` takes the fast path again with no other change.
-# Unpinned, like every other third-party upstream in this tree.
-weights_uri: "hf://robbyant/lingbot-vla-4b-posttrain-robotwin"
+# Pinned to the upstream HEAD on 2026-11-07 (CLAUDE.md §1.8).
+weights_uri: "hf://robbyant/lingbot-vla-4b-posttrain-robotwin@fb71a2c9749ccfedbb7290c2c3f0e5e7c7305c9e"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
 # No `processors` block: LingBot-VLA is not a lerobot PolicyProcessorPipeline

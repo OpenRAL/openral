@@ -198,7 +198,7 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
     model_ref = f"{repo}@{revision}" if revision else repo
 
     quantization = sidecar_quant_token(
-        resolve_quant_plan(env_cfg.vla, manifest, default="nf4"),
+        resolve_quant_plan(env_cfg.vla, manifest, default="bf16"),
         frozenset({"none", "nf4", "int8"}),
         "internvla_n1",
     )

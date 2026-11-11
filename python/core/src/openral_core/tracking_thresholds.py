@@ -87,6 +87,24 @@ class _TrackerThresholds(_Section):
     beside_px: int = Field(ge=1)
     beside_min_px: int = Field(ge=1)
     support_flatness_res_fraction: float = Field(gt=0.0)
+    plausible_extent_factor: float = Field(ge=1.0)
+    recent_s: float = Field(gt=0.0)
+    locate_contrast_labels: tuple[str, ...]
+
+
+class _VisionThresholds(_Section):
+    """EXPERIMENT: vision + voxel fusion (instance mask propagator, ``apply_instance_cells``)."""
+
+    min_cells: int = Field(ge=1)
+    need_fraction: float = Field(gt=0.0, le=1.0)
+    max_extent_factor: float = Field(ge=1.0)
+    erode_px: int = Field(ge=0)
+    memory_s: float = Field(gt=0.0)
+    orphan_s: float = Field(ge=0.0)
+    reseed_frames: int = Field(ge=1)
+    empty_reseed_frames: int = Field(ge=1)
+    drift_ratio: float = Field(gt=1.0)
+    drift_frames: int = Field(ge=1)
 
 
 class _CoverThresholds(_Section):
@@ -295,6 +313,7 @@ class TrackingThresholds(_Section):
     schema_version: Literal[1]
     fit: _FitThresholds
     tracker: _TrackerThresholds
+    vision: _VisionThresholds
     cover: _CoverThresholds
     binding: _BindingThresholds
     late_bind: _LateBindThresholds

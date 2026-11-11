@@ -34,6 +34,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import json
+import os
 import pathlib
 import sys
 import threading
@@ -161,6 +162,7 @@ from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_que
 from openral_reasoner.tool_use import (
     ToolUseClient,
     build_tool_use_client_from_env,
+    resolve_max_skill_tools,
     resolve_reasoner_system_prompt,
 )
 from pydantic import ValidationError
@@ -845,6 +847,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # refresh path for HF-Hub-installed skills.
         self.declare_parameter("robot_yaml", "")
         self.declare_parameter("rskill_search_paths", [""])
+        # ADR-0129 — what the robot manifest needs beyond the robot and the registry: the
+        # deploy's resolved DeployRuntime toggles (JSON; "" = no manifest is emitted), whether
+        # foxglove_bridge runs (the 3D panel), and the unit's serial. The launch sets them.
+        self.declare_parameter("manifest_runtime_json", "")
+        self.declare_parameter("manifest_bridge_on", False)
+        self.declare_parameter("manifest_unit_serial", "")
         # Reasoner-managed background services — additional lifecycle peer node names to surface in
         # the LLM tool palette's `node_ids` slot so the Reasoner can
         # emit `LifecycleTransitionTool(node=..., transition=...)` against
@@ -1026,13 +1034,19 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         f"default_patience_s={self._reward_contract.default_patience_s:.0f}",
                     )
 
+        # With OpenRAL Pro installed a manifest's quantization.extra.pro_dtype is what
+        # loads, so the VRAM checks budget that footprint (logged below, §1.4).
+        from openral_rskill.quantization_gate import pro_quantization_installed
+
+        self._pro_quantization = pro_quantization_installed()
         # Make the pair fit check's state explicit in the logs (§1.4):
         # armed only when a reward model is active AND the GPU total is known.
         if self._reward_manifest is not None and self._gpu_total_vram_gb > 0.0:
             self.get_logger().info(
                 f"VLA+reward VRAM fit check ARMED — reward="
                 f"{self._reward_manifest.name!r} "
-                f"({self._reward_manifest.active_min_vram_gb()} GB), "
+                f"({self._reward_manifest.active_min_vram_gb(pro_installed=self._pro_quantization)}"
+                f" GB), pro_quantization={self._pro_quantization}, "
                 f"gpu_total={self._gpu_total_vram_gb:.2f} GB",
             )
         else:
@@ -1255,6 +1269,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         try:
             client = self._injected_client or build_tool_use_client_from_env()
+            # Small models get a mission-ranked top-k of the skills per tick (#494).
+            # Resolved here, before any pool / subscription / sidecar boot exists, so
+            # a bad OPENRAL_REASONER_MAX_SKILL_TOOLS fails configure without leaking.
+            max_skill_tools = resolve_max_skill_tools(client)
         except ROSConfigError as exc:
             self.get_logger().error(f"on_configure: {exc}")
             return TransitionCallbackReturn.FAILURE
@@ -1499,11 +1517,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._core = ReasonerCore(
             client=client,
             system_prompt=system_prompt,
+            max_skill_tools=max_skill_tools,
         )
 
         self.get_logger().info(
             f"on_configure: reasoner ready at {self._tick_hz} Hz "
-            f"({len(self._palette.execute_rskill_ids)} skills in palette)",
+            f"({len(self._palette.execute_rskill_ids)} skills in palette; "
+            f"offered per tick: {max_skill_tools or 'all'})",
         )
         return TransitionCallbackReturn.SUCCESS
 
@@ -2646,6 +2666,50 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().info(f"playbooks: injected {len(entries)} into the system prompt")
         return render_playbooks_block(entries)
 
+    def _emit_robot_manifest(
+        self, description: RobotDescription, installed: list[RSkillManifest]
+    ) -> None:
+        """Send the robot manifest to the dashboard (ADR-0129 Interface A).
+
+        Runs on every palette seed — at configure and on ``/openral/skill_registry_changed``
+        — so the dashboard's actions follow the installed rSkills. Skills ride on the same
+        ``rskill_matches_robot`` predicate as the palette; the write-controls and
+        remote-control flags are read from the env the dashboard also inherits. Skipped
+        when the launch set no ``manifest_runtime_json`` (no deploy runtime to describe).
+        """
+        from openral_core import (
+            REMOTE_CONTROL_ENV,
+            UNIT_SERIAL_ENV,
+            WRITE_CONTROLS_ENV,
+            DeployRuntime,
+            build_robot_manifest,
+        )
+        from openral_observability.producer import emit_robot_manifest
+
+        raw = self.get_parameter("manifest_runtime_json").get_parameter_value().string_value
+        if not raw:
+            return
+        serial = self.get_parameter("manifest_unit_serial").get_parameter_value().string_value
+        try:  # advisory telemetry: a bad manifest never takes the reasoner down
+            manifest = build_robot_manifest(
+                description,
+                DeployRuntime.model_validate_json(raw),
+                installed,
+                bridge_on=self.get_parameter("manifest_bridge_on").get_parameter_value().bool_value,
+                write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
+                remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
+                commercial_deployment=self._commercial_deployment,
+                unit_serial=serial or os.environ.get(UNIT_SERIAL_ENV) or None,
+            )
+            emit_robot_manifest(manifest)
+        except ValueError as exc:  # pydantic's ValidationError is a ValueError
+            self.get_logger().warning(f"robot manifest not emitted: {exc}")
+            return
+        self.get_logger().info(
+            f"robot manifest emitted: {len(manifest.panels)} panels, "
+            f"{len(manifest.actions)} actions"
+        )
+
     def _maybe_seed_palette_from_search_paths(self) -> None:  # noqa: PLR0912, PLR0915  # reason: linear palette-seed pipeline (load → capability filter → ros-server probe → state-contract probe → import-deps probe → build); splitting hides the filter order
         """Populate the palette from in-tree ``rskills/<id>/rskill.yaml`` files.
 
@@ -3014,6 +3078,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             }
         )
         self._palette = new_palette
+        # The dashboard offers the skills the palette admits, after every filter above
+        # (servers up, state contract, action mode, import deps), never more.
+        self._emit_robot_manifest(description, importable)
         self.get_logger().info(
             f"palette seeded from {len(manifest_paths)} manifest(s) "
             f"across {len(search_paths)} path(s): "
@@ -4787,7 +4854,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return manifest
         return None
 
-    def _refuse_unfittable_vla(
+    def _refuse_unfittable_vla(  # noqa: PLR0911  # reason: one early return per refusal tier
         self,
         call: ExecuteRskillTool,
         *,
@@ -4842,7 +4909,26 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         vla = self._manifest_for_rskill(call.rskill_id)
         if vla is None or vla.kind not in POLICY_KINDS:
             return False
-        vla_min_gb = vla.active_min_vram_gb()
+        from openral_sim._quantization import resolved_runtime_dtype
+
+        # The dtype the runner will load at: $OPENRAL_QUANTIZATION_DTYPE and the
+        # manifest's policy_extras override quantization.dtype / pro_dtype.
+        try:
+            vla_dtype = resolved_runtime_dtype(vla)
+        except ROSConfigError as exc:
+            self.get_logger().error(f"dispatch: refusing execute_rskill — {exc}")
+            self._publish_skill_failure(
+                kind=_KIND_CONTROLLER,
+                rskill_id=call.rskill_id,
+                evidence=ControllerEvidence(
+                    controller_name=call.rskill_id,
+                    state="vram_insufficient",
+                    detail=str(exc)[:480],
+                ),
+                traceparent=traceparent,
+            )
+            return True
+        vla_min_gb = vla.active_min_vram_gb(dtype=vla_dtype)
         if call.rskill_id == self._resident_vla_id:
             # Re-dispatch of the skill the runner already holds warm: its own
             # residency is why free VRAM is low, and re-running it needs ~0
@@ -4857,7 +4943,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             if 0.0 < free_gb < vla_min_gb:
                 detail = (
                     f"VLA {call.rskill_id!r} declares {vla_min_gb:.1f} GB at its active "
-                    f"quantization but only {free_gb:.1f} GB of GPU VRAM is free right now "
+                    f"quantization ({vla_dtype.value}) but only {free_gb:.1f} GB of GPU VRAM "
+                    "is free right now "
                     f"(total {self._gpu_total_vram_gb:.1f} GB) — another process is likely "
                     "holding the difference. Refusing before dispatch instead of OOMing "
                     "mid-load; free VRAM or pick a smaller skill."
@@ -4883,7 +4970,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"{self._reward_manifest.name!r}",
             )
         try:
-            assert_vla_reward_fits(vla, self._reward_manifest, self._gpu_total_vram_gb)
+            assert_vla_reward_fits(
+                vla,
+                self._reward_manifest,
+                self._gpu_total_vram_gb,
+                pro_installed=self._pro_quantization,
+                vla_dtype=vla_dtype,
+            )
         except (ROSGPUMemoryError, ROSConfigError) as exc:
             self.get_logger().error(
                 f"dispatch: refusing execute_rskill {call.rskill_id!r} — VLA + reward "

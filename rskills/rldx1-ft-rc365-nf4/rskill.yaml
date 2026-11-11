@@ -76,12 +76,9 @@ quantization:
 min_vram_gb:
   bf16: 18.0
   int4: 7.0
-weights_uri: "hf://RLWRLD/RLDX-1-FT-RC365"
+weights_uri: "hf://RLWRLD/RLDX-1-FT-RC365@c53d0bc01f723dd536fe505d9a3dac25bacbe78a"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
-processors:
-  preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-RC365/policy_preprocessor.json"
-  postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-RC365/policy_postprocessor.json"
 # RC365 trained against the standard robocasa pipeline
 # (`gymnasium_basic.RoboCasaEnv.get_basic_observation`), whose `process_img`
 # does `np.copy(img[::-1, :, :])` (vertical-only flip) before every `*_image`

@@ -24,8 +24,8 @@ metadata:
   latency_budget: {per_chunk_ms: 1000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-molmoact2-multi-so101-nf4
-  source_repo: hf://allenai/MolmoAct2-SO100_101
+  weights_uri: hf://OpenRAL/rskill-molmoact2-multi-so101-nf4@85bfeb1e97f198d2906e3585528bdfd8ca58cfb2
+  source_repo: hf://allenai/MolmoAct2-SO100_101@152569fe57914d97be91055800035f54e250d009
   paper_url: https://arxiv.org/abs/2605.02881
 ---
 

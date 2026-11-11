@@ -239,17 +239,21 @@ def _processors() -> RSkillProcessors:
 
 
 class TestProcessorsRequiredForModernFamilies:
-    @pytest.mark.parametrize(
-        "family",
-        ["smolvla", "pi05", "xvla", "diffusion", "rldx"],
-    )
+    @pytest.mark.parametrize("family", ["smolvla", "pi05", "xvla"])
     def test_modern_family_without_processors_rejected(self, family: str) -> None:
+        kwargs = _minimal_modern_manifest_kwargs(family)
+        with pytest.raises(ValidationError, match="processors"):
+            RSkillManifest(**kwargs)
+
+    @pytest.mark.parametrize("family", ["diffusion", "rldx", "molmoact2"])
+    def test_own_stats_family_without_processors_accepted(self, family: str) -> None:
+        """Diffusion, RLDX and MolmoAct2 read normalization from the checkpoint or
+        model, not a lerobot pipeline, so their checkpoints ship no processor JSONs."""
         kwargs = _minimal_modern_manifest_kwargs(family)
         # rldx skips embodiment so100; relax so the manifest is otherwise valid.
         if family == "rldx":
             kwargs["embodiment_tags"] = ["franka_panda"]
-        with pytest.raises(ValidationError, match="processors"):
-            RSkillManifest(**kwargs)
+        assert RSkillManifest(**kwargs).processors is None
 
     @pytest.mark.parametrize(
         "family",

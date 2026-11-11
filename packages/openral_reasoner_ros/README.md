@@ -172,6 +172,9 @@ auth requirement, hosting mode, and local-compute floor.
 | `OPENRAL_REASONER_MODEL` | Served model | Client | Hosting / endpoint | Auth |
 |---|---|---|---|---|
 | `claude-opus-4-8` | `claude-opus-4-8` | `AnthropicToolUseClient` | Anthropic cloud | required |
+| `claude-opus-5-5` | `claude-opus-5-5` | `AnthropicToolUseClient` (`tool_choice: auto`) | Anthropic cloud | required |
+| `claude-sonnet-5-5` | `claude-sonnet-5-5` | `AnthropicToolUseClient` (`tool_choice: auto`) | Anthropic cloud | required |
+| `claude-haiku-5-5` | `claude-haiku-5-5` | `AnthropicToolUseClient` (`tool_choice: auto`) | Anthropic cloud | required |
 | `gpt-5.5` | `openai/gpt-5.5` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `gpt-5.6` | `openai/gpt-5.6` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
@@ -192,14 +195,68 @@ The env contract is:
   way past it. Before raising it, read `llm_s` / `prompt_tokens` on the tick
   (below) — a ceiling hit driven by a growing prompt wants context management,
   not a longer timeout.
+- `OPENRAL_REASONER_MAX_SKILL_TOOLS` — optional per-tick cap on skill tools.
+  The reasoner ranks the palette's skills against the active mission task and
+  any pending operator prompts by keyword overlap and offers at most `k` (#494).
+  Inside those `k` slots it keeps, in order: the skill in flight; the best match
+  for the newest top-priority pending operator prompt (with `k` ≥ 2 it is offered
+  on the tick the prompt arrives); the task's last dispatched skill (outside a
+  mission, the last one dispatched); the best navigate and look-at skill not
+  already kept (the workflow's APPROACH / FRAME steps; never the last free slot);
+  then the highest scores, so at least one ranked substitute is always offered
+  while a slot remains. With no task and no pending prompt the last ranking is
+  kept. Equal scores (in every pick) prefer
+  skills not yet tried for the active task (so substituting a skill reaches past the
+  top `k`), then higher weight precision (fp32/bf16/fp16, then fp8, int8, 4-bit, from
+  the manifest's `quantization.dtype`), then the id. `cosmos3-edge` defaults to 4 (its tool
+  calls run away with 14 near-identical skills; 19/20 valid with 4); every other
+  curated model sees the whole palette. `0` removes the cap; any positive value
+  sets it for any model, curated or not. A call to a skill outside the subset is
+  refused like an off-palette id.
 - `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
   raw model id.
-- `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — the bare-URL `openai` path
-  sends `tool_choice: "required"`; set `auto` for a gateway whose thinking-mode
-  model rejects that with HTTP 400. Case-insensitive, and any other value fails
-  at client build (and in `openral doctor`). Named endpoints, curated models and
-  the `anthropic` dialect carry their own value, so there it is ignored with a
-  `reasoner.tool_choice_ignored` warning.
+- `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — for an uncurated model on a
+  bare-URL `openai` endpoint or on the `anthropic` dialect (where `required` is
+  sent as `{"type": "any"}`). Set `auto` for a model that rejects forced tool use
+  with HTTP 400 (a thinking-mode gateway; the Claude 5 generation). Case-
+  insensitive, and any other value fails at client build (and in `openral
+  doctor`). Curated models and named `openai` endpoints carry their own value,
+  so there it is ignored with a `reasoner.tool_choice_ignored` warning.
+
+#### Models that refuse forced tool use (#522)
+
+The reasoner asks for exactly one tool call per tick (`tool_choice` `required`,
+Anthropic `any`). Some models refuse that: the Claude 5 generation answers
+`400 tool_choice: type "tool" and "any" are not supported for this model`, and
+some OpenAI-compatible gateways refuse `required` in thinking mode. The clients
+handle this without configuration:
+
+- The curated Claude 5 entries run `tool_choice: auto` from the start, with a
+  16000-token cap because they think before calling a tool and thinking counts
+  against `max_tokens` (an uncurated `anthropic` model gets the same cap).
+- Any other model whose 400 refuses forced tool use is retried once with
+  `auto`; if that retry succeeds the client stays on `auto`, logged as
+  `reasoner.tool_choice_downgraded`. An unrelated 400 that only mentions
+  `tool_choice` does not downgrade it.
+- Under `auto`, a reply with no tool call gets one nudge ("respond with exactly
+  one tool call"). A second prose reply is a tick error (`reasoner.no_tool_call`)
+  that the node feeds back into the next prompt, like any undecodable call — so a
+  model stuck in prose is told to call a tool rather than stalling the mission.
+- A refusal (`stop_reason: refusal` / `finish_reason: content_filter`) or a
+  reply cut off at the token cap is a tick error, not a `wait`.
+- OpenAI's reasoning models (`gpt-5.6-*`, `gpt-6*`) refuse function tools on
+  Chat Completions while reasoning is on, and some (`gpt-6-astra`,
+  `gpt-6.1-sol`) cannot turn reasoning off. So the `openai` named endpoint (or
+  OpenAI's URL spelled out) uses the **Responses API**
+  (`OpenAIResponsesToolUseClient`): reasoning stays at the model's default,
+  requests set `store: false`, and the bare model id is sent (`gpt-5.5`, not
+  OpenRouter's `openai/gpt-5.5`). Every other OpenAI-compatible endpoint stays on
+  Chat Completions; one that asks for `max_completion_tokens` gets it after one
+  400 (`reasoner.max_tokens_param_switched`).
+- Checked live on 2026-11-09 (idle robot → starts the pick skill; skill
+  running → `wait`): `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`,
+  and on `ENDPOINT=openai` `gpt-5.5`, `gpt-5.6`, `gpt-5.6-luna`/`-sol`/`-terra`,
+  `gpt-6-luna`/`-sol`/`-astra`, `gpt-6.1-sol`/`-terra` — all correct, 1–5 s a tick.
 
 ```bash
 # Curated cloud model
@@ -245,8 +302,8 @@ old provider value maps onto a model plus an endpoint:
 
 | Legacy `PROVIDER=` | Model-first replacement |
 |---|---|
-| `anthropic` | curated `claude-opus-4-8`, or `ENDPOINT=anthropic` + a raw model id |
-| `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` |
+| `anthropic` | curated `claude-opus-4-8` / `claude-opus-5-5` / `claude-sonnet-5-5` / `claude-haiku-5-5`, or `ENDPOINT=anthropic` + a raw model id |
+| `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` (an OpenAI key: `ENDPOINT=openai`) |
 | `ollama` / `vllm` | `ENDPOINT=<name>` (no key) |
 | `cosmos` | curated `cosmos3-edge` (managed autostart included) |
 | `openai-compatible` | `ENDPOINT=<url>` + `DIALECT=openai` |
@@ -292,19 +349,27 @@ does default to `OPENRAL_REASONER_MODEL=gpt-5.5`, with
 collective-goal decomposition tests. The default needs
 `OPENRAL_REASONER_API_KEY` and fails loudly without it.
 
-### Cloud — GPT-5.5 / GPT-5.6 via OpenRouter
+### Cloud — GPT-5.5 / GPT-5.6 via OpenRouter or OpenAI
 
 ```bash
 export OPENRAL_REASONER_MODEL=gpt-5.5  # or gpt-5.6
 export OPENRAL_REASONER_API_KEY=sk-or-...
+# With an OpenAI key instead, point the same model at OpenAI's own API
+# (Responses API; uncurated ids such as gpt-6-sol work the same way):
+# export OPENRAL_REASONER_ENDPOINT=openai
+# export OPENRAL_REASONER_API_KEY=sk-...
 ```
 
-### Cloud — Claude Opus 4.8
+### Cloud — Claude Opus 4.8 / Claude 5
 
 ```bash
-export OPENRAL_REASONER_MODEL=claude-opus-4-8
+export OPENRAL_REASONER_MODEL=claude-opus-4-8  # or claude-opus-5-5 / claude-sonnet-5-5 / claude-haiku-5-5
 export OPENRAL_REASONER_API_KEY=sk-ant-...
 ```
+
+The Claude 5 entries run `tool_choice: auto` (they refuse forced tool use) and
+think before they act, so a tick can take longer than on Opus 4.8; raise
+`OPENRAL_REASONER_TIMEOUT_S` if ticks time out at the 10 s default.
 
 ### Managed local — NVIDIA Cosmos 3 Edge
 
@@ -399,6 +464,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.llm_s` | Ticks that reached the LLM | Wall-clock of the LLM round-trip alone. |
 | `reasoner.prompt_tokens` | When the client surfaces usage | Provider-reported prompt tokens, cache reads included. |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
+| `reasoner.offered_skills` | When a skill-tool cap is set | Skill ids offered this tick (`ReasonerCore.offered_palette`). The ranking (every skill's score and the query) is on the `reasoner.skill_subset` log, emitted when the subset changes. |
 | `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
 | `reasoner.llm_s` | Every tick that reached the LLM | Wall-clock of the provider round-trip **alone**. `ReasonerTickResult.elapsed_s` is end-to-end tick time (context render + call + bookkeeping), so `elapsed_s - llm_s` is the reasoner-side overhead — without the split a tick that grew from 6 s to 99 s cannot be attributed. |

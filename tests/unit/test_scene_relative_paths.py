@@ -74,6 +74,31 @@ def test_relative_paths_resolve_beside_the_scene_from_any_cwd(
             assert scene.runtime.static_geometry_file == str((assets / "static.yaml").resolve())
 
 
+@pytest.mark.parametrize("tier", ["deploy", "sim"])
+def test_the_hal_scene_loader_resolves_beside_the_scene_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str
+) -> None:
+    """`deploy sim` hands the HAL node the scene path (``sim_env_yaml``), and the HAL reads
+    it with its own loader: a scene in another repo must find its stage there as well.
+    Before this, the HAL saw ``../../assets/stage.usd`` as written and the Isaac backend
+    looked for it under this checkout's root and the cwd only."""
+    from openral_hal.sim_bringup import _load_scene_for_hal, sim_scene_backend_options
+
+    repo, assets = _repo(tmp_path)
+    path = repo / "scenes" / tier / "x.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(yaml.safe_dump(_scene(task=tier == "sim")))
+    monkeypatch.chdir(tmp_path)  # the HAL node's working directory is arbitrary
+    scene = _load_scene_for_hal(str(path))
+    assert scene.scene.assets_uri == str((assets / "stage.usd").resolve())
+    objs = sim_scene_backend_options(str(path))["objects"]
+    assert isinstance(objs, list)
+    assert [o["usd"] for o in objs] == [
+        str((assets / "prop.usd").resolve()),
+        "isaac:Isaac/Props/x.usd",
+    ]
+
+
 def test_a_path_with_no_file_beside_the_scene_is_left_for_the_repo_root_lookup(
     tmp_path: Path,
 ) -> None:

@@ -27,6 +27,7 @@ ros2 run openral_world_state world_state_node \
 | `scripts/world_state_node` | Console entry point for `ros2 run`. |
 | `openral_world_state_ros/object_tracker_node.py` | The #418 object-tracker lifecycle node (see "Object tracker" below). Wraps `openral_world_state.object_tracker.TrackerSession`. |
 | `scripts/object_tracker_node` | Its console entry point. |
+| `openral_world_state_ros/instance_mask_propagator_node.py` | EXPERIMENT (pro#51, sim-only, `DeployRuntime.instance_cells`): the instance mask propagator lifecycle node (see "Vision + voxel fusion" below). |
 | `CMakeLists.txt` | `ament_cmake_python` install for the Python package + script. |
 | `package.xml` | ROS package manifest (depends on `openral_msgs` for the `WorldStateStamped` IDL). |
 
@@ -203,6 +204,7 @@ target track. The completion check asks its judge only while it is true.
 | `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. Default and the launch's value are `object_tracker.session.RELEASE_DWELL_S` (also the exemption provider's `contact_exemptions.tracked_release_dwell_s`). |
 | `released_clear_timeout_s` | `3.0` (`RELEASED_CLEAR_TIMEOUT_S`) | The longest a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge); it leaves sooner once every hand collision box is 4 cm clear of it (the kernel's `tracked_release_clear_m` separation) or a new track of its label is confirmed touching it (the object at rest, tracked again). The RELEASED track is retired with it, and the object is found afresh under a new id. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
 | `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list (`deploy_sim._object_queries_json`), grounded at start whatever declarations are in force; a declaration re-keys the tracks it matches. |
+| `locate_contrast_labels` | `false` | Append the contrast labels (`tracking_thresholds.yaml` `locate_contrast_labels`) to the locate query. The launch turns it on only for a `zeroshot_hf` (OmDet) locator: LocateAnything labels a box with no `<ref>` with the whole query, which the label filter would drop. |
 | `locate_service` | `""` | Empty: no open-vocabulary detector, seeds and refreshes only. A completed empty locate is recorded as `locate_found_nothing`; service absence, transport errors, and nonempty `LocateInView.failure_reason` are retained as query refusal causes instead. See the [`LocateInView` contract](../msgs/README.md#services--srv). |
 
 Fixed in the node (module constants, no launch or test sets them): `SegmentInView` at
@@ -265,6 +267,23 @@ Clocks: every lifetime runs on source stamps (depth, grid `source_stamp`, joint 
 grasp events); the segmenter rate and budget on wall time. Revisions are seeded from wall
 time at every activate, so a restarted tracker never regresses one (the kernel refuses a
 regressing `tracked_objects` revision until it is re-activated).
+
+### Vision + voxel fusion (EXPERIMENT, pro#51)
+
+`DeployRuntime.instance_cells: true` (sim only; refused with tracking `off`) starts
+`openral_instance_mask_propagator` beside the tracker. It follows each TARGET / DESTINATION
+track with a SAM2.1 video mask, seeded from a CONFIRMED track's projected box only (any other
+status keeps its mask or loses it; never re-seeded on a stale box), lifts the mask minus robot
+pixels through the aligned depth at that depth stamp's TF into `/openral/world_voxels`
+cells, and publishes them per track on `/openral/instance_cells` (`openral_msgs/InstanceCells`).
+`configure` loads SAM2, `activate` starts it, `deactivate` / `cleanup` drop every mask (the
+worker drops its video session itself, and a step begun before the transition publishes
+nothing); a tracker re-activation or a clock reset starts a new episode. A grid the shared
+`lattice_from_msg` refuses (an unset orientation, a wrong-length occupancy) lifts no cells. The
+tracker fits those tracks' boxes to the cells (`ObjectTracker.apply_instance_cells`, only on an
+axis-aligned lattice: `InstanceCells` carries no orientation) and re-finds a released target
+once within `recent_s`. Thresholds: the `vision` section of `tracking_thresholds.yaml`. Safety-WG
+review owed.
 
 Covered by `tests/unit/test_object_tracker_session.py` and the live
 `tests/integration/test_object_tracker_node_live.py` (real tracker + World State nodes:

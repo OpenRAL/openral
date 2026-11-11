@@ -24,7 +24,12 @@ from typing import Any, NamedTuple
 
 import structlog
 from openral_core.exceptions import ROSConfigError
-from openral_rskill.quantization_gate import require_pro_for_checkpoint, require_pro_for_dtype
+from openral_core.schemas import QuantizationDtype
+from openral_rskill.quantization_gate import (
+    pro_quantization_installed,
+    require_pro_for_checkpoint,
+    require_pro_for_dtype,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -610,7 +615,10 @@ def plan_quantization(
     3. ``spec.extra["dtype"]`` — the untyped override (a programmatic
        ``VLASpec``, or a scene that pins the dtype for one pairing).
     4. ``manifest.quantization.dtype`` — the rSkill's declared *runtime*
-       dtype, the normal case. A checkpoint stored at a different precision
+       dtype, the normal case. When OpenRAL Pro's quantization module is
+       installed and the manifest names ``quantization.extra.pro_dtype``, that
+       token is used instead (source ``manifest_pro``), so one manifest runs
+       bf16 on open and NF4 on Pro. A checkpoint stored at a different precision
        than it runs records that in ``quantization.extra.stored_dtype``; the
        resolver never reads it.
     5. ``default`` — the adapter's own fallback, for families that quantize
@@ -648,7 +656,11 @@ def plan_quantization(
     elif spec_raw:
         token, source = canonical_quant_token(spec_raw), "spec_extra"
     elif manifest_token:
-        token, source = manifest_token, "manifest"
+        pro_token = canonical_quant_token(quantization_extra(manifest).get("pro_dtype"))
+        if pro_token is not None and pro_quantization_installed():
+            token, source = pro_token, "manifest_pro"
+        else:
+            token, source = manifest_token, "manifest"
     elif default:
         token, source = canonical_quant_token(default), "default"
     else:
@@ -673,6 +685,43 @@ def plan_quantization(
     return QuantPlan(
         dtype=token, quantize=quantize, source=source, extra=quantization_extra(manifest)
     )
+
+
+def resolved_runtime_dtype(manifest: Any, spec: Any | None = None) -> QuantizationDtype:
+    """The ``QuantizationDtype`` a policy will load at, for VRAM budgeting before the load.
+
+    :func:`plan_quantization`'s precedence (``$OPENRAL_QUANTIZATION_DTYPE`` >
+    ``spec.quantization`` > ``spec.extra["dtype"]`` > the manifest, ``pro_dtype``
+    under Pro), mapped back onto the schema enum so it can key
+    ``RSkillManifest.min_vram_gb``. ``spec=None`` stands for the deploy runner's
+    spec (``rskill_runner_node._build_runtime_skill_from_manifest``): no typed
+    override and ``extra`` = the manifest's ``policy_extras``.
+
+    Raises:
+        ROSConfigError: The resolved token names no ``QuantizationDtype`` (the
+            loader would refuse it too), so no declared size can be looked up.
+
+    Example:
+        >>> from openral_core import RSkillManifest
+        >>> m = RSkillManifest.from_yaml("rskills/robometer-4b/rskill.yaml")
+        >>> resolved_runtime_dtype(m).value
+        'int4'
+    """
+    if spec is None:
+        from types import SimpleNamespace
+
+        spec = SimpleNamespace(quantization=None, extra=dict(manifest.policy_extras))
+    token = plan_quantization(spec, manifest).dtype
+    # ``none`` = do not quantize: the checkpoint loads at its stored precision,
+    # which the manifest does not key; budget the widest one.
+    value = {"nf4": "int4", "none": "fp32"}.get(token or "", token)
+    try:
+        return QuantizationDtype(value)
+    except ValueError:
+        raise ROSConfigError(
+            f"rSkill {getattr(manifest, 'name', '?')!r} resolves to dtype {token!r}, which is "
+            f"not a QuantizationDtype; cannot budget its VRAM"
+        ) from None
 
 
 def resolve_quant_plan(

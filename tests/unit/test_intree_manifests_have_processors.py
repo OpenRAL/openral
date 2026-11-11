@@ -67,6 +67,18 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
         "xr1-robocasa",
         "xr1-robocasa365",
         "xr1-vlabench",
+        # Diffusion-PushT: norm stats are read from the checkpoint; lerobot's
+        # processor JSONs are opt-in (vla.extra.use_lerobot_processors) and the
+        # upstream repo ships none.
+        "diffusion-pusht",
+        # MolmoAct2: the model reads the checkpoint's norm_stats.json itself.
+        "molmoact2-libero-nf4",
+        "molmoact2-so101-nf4",
+        # RLDX: the sidecar reads the checkpoint's statistics.json.
+        "rldx1-ft-gr1-nf4",
+        "rldx1-ft-libero-nf4",
+        "rldx1-ft-rc365-nf4",
+        "rldx1-ft-simpler-widowx-nf4",
     }
 )
 

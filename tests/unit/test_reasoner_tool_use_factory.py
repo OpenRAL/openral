@@ -1,7 +1,7 @@
 """Unit tests for ``openral_reasoner.build_tool_use_client_from_env``.
 
 Drives the model-first env factory (ADR-0088) through every branch — curated
-registry models, the named endpoints (`anthropic` / `openrouter` / `gemini` /
+registry models, the named endpoints (`anthropic` / `openai` / `openrouter` / `gemini` /
 `xai` / `deepseek` / `huggingface` / `ollama` / `vllm`), a bare URL plus an
 explicit dialect, and each missing-required case — with ``monkeypatch.setenv``
 only. No mocks of openral types per CLAUDE.md §1.11; we inspect the constructed

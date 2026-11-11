@@ -17,6 +17,8 @@ Public surface
   helper module via the ``openral.pro_modules`` entry-point group.
 - ``hf_download_cached_first``: Cache-first HF Hub file resolution shared by
   the VLA adapters and ``openral_sim``'s quantization helpers.
+- ``split_repo_revision``: ``owner/repo@<rev>`` -> ``(repo_id, revision)`` for
+  ``revision=`` kwargs; a local path is returned whole.
 - ``local_snapshot_dir``: The resolved checkpoint as a local directory — the
   directory itself for an installed rSkill snapshot, a Hub snapshot otherwise.
 - ``gpu_allocated_mb``: Current CUDA allocator usage in MB, the single GPU-memory
@@ -40,7 +42,11 @@ TensorRT/NVMM fast path is a private OpenRAL Pro plugin); resolve it via
 from importlib.metadata import version as _pkg_version
 
 from openral_rskill._diagnostics import gpu_allocated_mb
-from openral_rskill._vla_core import hf_download_cached_first, local_snapshot_dir
+from openral_rskill._vla_core import (
+    hf_download_cached_first,
+    local_snapshot_dir,
+    split_repo_revision,
+)
 from openral_rskill.backend_registry import (
     maybe_attach_pro_hooks,
     resolve_pro_module,
@@ -88,6 +94,7 @@ __all__ = [
     "resolve_pro_module",
     "resolve_runtime_backend",
     "search_hub_rskills",
+    "split_repo_revision",
     "validate_skill_ref",
 ]
 __version__ = _pkg_version("openral-rskill")

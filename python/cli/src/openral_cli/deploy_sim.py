@@ -276,8 +276,8 @@ class LaunchInvocation:
     ``WorldState.detected_objects`` so ``recall_object`` recalls what the robot
     has seen. Defaults to "auto" = enabled when the object detector is."""
     enable_foxglove: bool
-    """Opt-in. Off by default. Set by ``openral deploy sim --foxglove``;
-    forwarded as ``enable_foxglove:=true``. Spawns the read-only
+    """On with the dashboard unless ``--no-foxglove`` (ADR-0129: the dashboard's 3D view
+    proxies it at ``/ws``); forwarded as ``enable_foxglove:=…``. Spawns the read-only
     ``foxglove_bridge`` as part of the deploy-sim runtime graph so operators
     can view the live scene (cameras, /tf, joint states, nav map) in
     Foxglove Studio without an extra bring-up step. Cannot actuate the robot
@@ -978,7 +978,7 @@ def _vram_refused_launch_args(refused: list[str]) -> list[str]:
     return [f"vram_refused_rskill_ids:={','.join(refused)}"] if refused else []
 
 
-def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy classification (fit / oom / undeclared) + the notify branches read clearest inline
+def _preflight_reward_vram_fit(  # noqa: PLR0912, PLR0915  # reason: linear per-policy classification (fit / oom / undeclared) + the notify branches read clearest inline
     *,
     repo_root: Path,
     description: RobotDescription,
@@ -1026,6 +1026,11 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy cl
     from openral_core import RSkillManifest
     from openral_core.exceptions import ROSGPUMemoryError
     from openral_core.schemas import assert_vla_reward_fits
+    from openral_rskill.quantization_gate import pro_quantization_installed
+    from openral_sim._quantization import resolved_runtime_dtype
+
+    # Under Pro, a manifest's quantization.extra.pro_dtype is what loads.
+    pro_installed = pro_quantization_installed()
 
     try:
         reward = RSkillManifest.from_yaml(reward_manifest_path)
@@ -1049,12 +1054,21 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-policy cl
     undeclared: list[str] = []
     for vla in vlas:
         try:
-            combined = assert_vla_reward_fits(vla, reward, gpu_budget_gb)
+            # Budget the dtype the runner will load ($OPENRAL_QUANTIZATION_DTYPE /
+            # policy_extras override the manifest), not just the manifest's.
+            combined = assert_vla_reward_fits(
+                vla,
+                reward,
+                gpu_budget_gb,
+                pro_installed=pro_installed,
+                vla_dtype=resolved_runtime_dtype(vla),
+            )
         except ROSGPUMemoryError as exc:
             oom.append(f"{vla.name}: {exc}")
             refused.append(vla.name)
         except ROSConfigError:
-            # min_vram_gb undeclared for the active dtype — the pair cannot be
+            # min_vram_gb undeclared for the resolved dtype (or the dtype is not
+            # one the schema knows) — the pair cannot be
             # verified, so the reasoner will refuse this policy at dispatch too.
             undeclared.append(vla.name)
             refused.append(vla.name)
@@ -1152,7 +1166,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     spatial_memory_ingest: bool | None = None,
     memory_dir: str | None = None,
     enable_dashboard: bool = True,
-    enable_foxglove: bool = False,
+    enable_foxglove: bool | None = None,
     foxglove_port: int = 8765,
     initial_task_prompt: str | None = None,
     runtime_overrides: dict[str, object] | None = None,
@@ -1186,6 +1200,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
 
     if hal_mode not in ("sim", "real"):
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
+    # The 3D bridge follows the dashboard unless asked (ADR-0129: the UI proxies it at /ws).
+    if enable_foxglove is None:
+        enable_foxglove = enable_dashboard
     # The skip exists for parallel sim harnesses. On real hardware an abnormal
     # exit would leave a live HAL behind with no kernel, watchdog or E-stop
     # wiring. Safety-WG HZ-0390-5 option (b): refuse, no override.
@@ -1378,6 +1395,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
     # The launch refuses a hardware deploy whose records could not name the machine
     # (issue #467); refuse here first, before any pre-launch work.
+    # A robot linked to openral.com picks up its account settings (e.g. the reasoner's API
+    # key) before anything reads the environment; variables already set win.
+    from openral_cli.robot import apply_account_settings
+
+    apply_account_settings(echo=_console.print)
     resolve_unit_identity(robot_yaml, scene_unit, required=hal_mode == "real")
     # The same selection `resolve_sensor_overlays` made; `None` only for a robot without
     # `units/` on a real deploy (it refuses otherwise). The extrinsic preflight reads that
@@ -2032,6 +2054,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 f"grounding_required:={str(rt.grounding_required).lower()}",
             ]
         )
+    # EXPERIMENT (pro#51): forwarded whatever the tracking mode, so the launch refuses it with
+    # tracking off instead of the flag being dropped silently.
+    if rt is not None and rt.instance_cells:
+        argv_template.append("instance_cells:=true")
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,
     # else repo-relative, resolved absolute; a declared file that is missing is a config error
     # (never run without walls the scene declared).
@@ -3222,6 +3248,8 @@ def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:
         pkgs.append("openral_slam_bringup")
     if invocation.enable_nav2:
         pkgs.append("openral_nav2_bringup")
+    if invocation.enable_foxglove:  # on with the dashboard: its 3D view proxies the bridge
+        pkgs.append("foxglove_bridge")
     return pkgs
 
 
@@ -3246,6 +3274,12 @@ def assert_ros2_packages_discoverable(
     missing = [pkg for pkg in packages if prefix_lookup(pkg) is None]
     if not missing:
         return
+    if missing == ["foxglove_bridge"]:  # a distro package, not the workspace overlay
+        raise ROSConfigError(
+            "ros2 cannot find 'foxglove_bridge', which the dashboard's 3D view needs. "
+            "Install it (sudo apt install ros-$ROS_DISTRO-foxglove-bridge), or pass "
+            "--no-foxglove to deploy without the 3D view."
+        )
     quoted = ", ".join(repr(p) for p in missing)
     raise ROSConfigError(
         f"ros2 cannot find ROS package(s): {quoted}. The OpenRAL workspace "
@@ -3927,13 +3961,14 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "collector instead."
         ),
     ),
-    foxglove: bool = typer.Option(
-        False,
+    foxglove: bool | None = typer.Option(
+        None,
         "--foxglove/--no-foxglove",
         help=(
             "spawn the read-only Foxglove WebSocket bridge "
-            "as part of the deploy-sim runtime graph. Default: off. "
-            "When enabled, open Foxglove Studio and connect via "
+            "as part of the deploy-sim runtime graph. Default: on whenever the "
+            "dashboard is (its 3D view proxies the bridge at /ws). "
+            "Foxglove Studio can also connect via "
             "``ws://127.0.0.1:<foxglove-port>`` to see live cameras, "
             "joint states, /tf, and the navigation map. **View-only** "
             "(cannot actuate the robot): ``clientPublish``, "
@@ -3950,7 +3985,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         help=(
             "Foxglove WebSocket port (ws://127.0.0.1:<port>). "
             "Default 8765 (the foxglove_bridge upstream default). "
-            "Ignored unless ``--foxglove`` is set."
+            "Ignored when the bridge is off."
         ),
     ),
     initial_task: str | None = typer.Option(
@@ -4083,7 +4118,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         "  foxglove:      "
         + (
             f"[green]enabled[/green] (view-only, cannot actuate) at ws://127.0.0.1:{foxglove_port}"
-            if foxglove
+            if (dashboard if foxglove is None else foxglove)
             else "[dim]disabled[/dim] (pass --foxglove to enable read-only live scene view)"
         )
     )

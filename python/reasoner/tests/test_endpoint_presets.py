@@ -251,7 +251,7 @@ def test_tool_choice_env_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) ->
 def test_tool_choice_env_is_validated_on_the_anthropic_dialect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """It is ignored there, but a bad value still fails rather than passing silently."""
+    """It applies there (#522), so a bad value fails rather than passing silently."""
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
     monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "anthropic")

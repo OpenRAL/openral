@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 100.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://facebook/sam2.1-hiera-small
+  weights_uri: hf://facebook/sam2.1-hiera-small@ee5bba1d82bb8749febdf90f45e84b687142ba03
   source_repo: hf://facebook/sam2.1-hiera-small
   paper_url: https://arxiv.org/abs/2408.00714
 ---

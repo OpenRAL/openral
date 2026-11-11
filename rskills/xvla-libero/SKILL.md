@@ -24,7 +24,7 @@ metadata:
   latency_budget: {per_chunk_ms: 200.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://lerobot/xvla-libero
+  weights_uri: hf://lerobot/xvla-libero@8e6aeef01f634f5d3b5be4340328f19cc2c25a65
   source_repo: hf://lerobot/xvla-libero
 ---
 

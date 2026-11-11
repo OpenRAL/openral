@@ -83,7 +83,9 @@ openral deploy sim --config scenes/deploy/<scene>.yaml --foxglove
 openral deploy sim --config scenes/deploy/<scene>.yaml --foxglove --foxglove-port 8770
 ```
 
-Default is `--no-foxglove`. The flag is view-only — it cannot actuate the robot.
+The bridge starts by default whenever the dashboard does — the dashboard's 3D view
+(Lichtblick at `/viz/`) reaches it through the ticketed `/ws` proxy (ADR-0129) — and
+`--no-foxglove` turns it off. It is view-only — it cannot actuate the robot.
 When a manifest robot carries an `assets.urdf`, deploy-sim already
 runs a `robot_state_publisher`, so `/tf` + `/robot_description` are on the bus
 and the 3D panel draws the robot — provided the layout is a generated one

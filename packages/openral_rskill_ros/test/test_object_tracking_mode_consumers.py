@@ -48,6 +48,7 @@ _SCENE = _REPO_ROOT / "scenes" / "deploy" / "isaac_leisaac_pick_orange.yaml"
 _BANANA = _REPO_ROOT / "scenes" / "deploy" / "isaac_arena_droid_banana_in_bowl.yaml"
 
 _TRACKER = ("openral_world_state", "object_tracker_node")
+_PROPAGATOR = ("openral_world_state", "instance_mask_propagator_node")
 _FILTER = ("openral_octomap_bridge", "robot_self_filter")
 _BRIDGE = ("openral_octomap_bridge", "octomap_voxel_bridge")
 _SEGMENTER = ("openral_perception_ros", "segmenter_node.py")
@@ -120,6 +121,7 @@ def _graph(
     real_hal_params: bool = False,
     extra_args: dict[str, str] | None = None,
     provider: str = "",
+    runtime: dict[str, Any] | None = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """``(package, executable) -> evaluated parameters`` of every composed node.
 
@@ -140,6 +142,7 @@ def _graph(
         scene["runtime"]["grounding_required"] = True
     if provider:
         scene["runtime"]["exemption_provider"] = provider
+    scene["runtime"].update(runtime or {})
     path = tmp / f"{mode}.yaml"
     path.write_text(yaml.safe_dump(scene))
     invocation = resolve_launch_invocation(
@@ -170,6 +173,8 @@ def _graph(
             entity.execute(ctx)
     ctx.launch_configurations.update(args)
     ctx.launch_configurations["enable_dashboard"] = "false"
+    # The continuous detector runs the locator's executable too: off, so each key is one node.
+    ctx.launch_configurations["enable_object_detector"] = "false"
     nodes: dict[tuple[str, str], dict[str, Any]] = {}
     for entity in module.compose_runtime_graph(ctx):
         if not isinstance(entity, Node):
@@ -300,3 +305,21 @@ def test_launch_refuses_external_catalog_when_tracking_is_off(tmp_path: Path) ->
 
     with pytest.raises(ROSConfigError, match="declared_object_catalog_json requires"):
         _graph(tmp_path, "off", catalog_json="{}")
+
+
+def test_instance_cells_adds_only_the_propagator_and_turns_the_tracker_to_it(
+    tmp_path: Path,
+) -> None:
+    """pro#51 EXPERIMENT: ``DeployRuntime.instance_cells`` adds the mask propagator beside the
+    tracker and turns on the tracker's subscription to its cells; no other node changes. With
+    the tracker off it is refused, never silently dropped."""
+    from openral_core.exceptions import ROSConfigError
+
+    base = _graph(tmp_path, "tracking")
+    now = _graph(tmp_path, "tracking", runtime={"instance_cells": True})
+    assert set(now) - set(base) == {_PROPAGATOR}
+    assert {k for k in base if base[k] != now[k]} == {_TRACKER}
+    assert base[_TRACKER]["instance_cells"] is False
+    assert now[_TRACKER]["instance_cells"] is True
+    with pytest.raises(ROSConfigError, match="instance_cells"):
+        _graph(tmp_path, "off", extra_args={"instance_cells": "true"})

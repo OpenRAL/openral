@@ -14,7 +14,7 @@ made of it. Two producers, two very different upstream shapes:
 Split the way `test_dashboard_safety_status.py` splits: the rclpy half needs a
 ROS workspace CI's cheap env does not have, so it is import-gated; the store +
 snapshot contract the frontend reads is covered unconditionally. The UI contract
-is pinned by asserting the exact snapshot keys `dashboard.js`'s `drawOverlay`
+is pinned by asserting the exact snapshot keys the robot UI's camera overlay
 reads, which is how the rest of this suite pins card behaviour (no test parses
 the JS).
 
@@ -40,7 +40,7 @@ from openral_observability.dashboard.perception_overlay_subscriber import (
     mono8_mask_to_png_b64,
 )
 
-# The keys dashboard.js's drawOverlay() reads off
+# The keys the robot UI's camera overlay reads off
 # ``snapshot()["topics"]["perception"]["overlays"][camera]``. Renaming one
 # without touching the JS silently blanks the overlay while the camera tile
 # keeps looking healthy — the operator then believes perception saw nothing.
@@ -368,7 +368,7 @@ async def test_overlays_are_served_on_api_state() -> None:
     _set_detections(store)
     app = create_app(store)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/api/state")
     assert resp.status_code == 200
     overlays = resp.json()["topics"]["perception"]["overlays"]
@@ -386,7 +386,7 @@ async def test_app_starts_without_an_overlay_subscriber() -> None:
     app = create_app(TelemetryStore())
     assert app.state.perception_overlay is None
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         resp = await client.get("/api/state")
     assert resp.status_code == 200
     assert resp.json()["topics"]["perception"] == {}

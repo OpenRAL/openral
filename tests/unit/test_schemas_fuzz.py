@@ -244,6 +244,7 @@ _reasoner_model_st = st.builds(
     auth_required=st.booleans(),
     tool_choice=st.sampled_from(["required", "auto"]),
     max_tokens_default=st.none() | st.integers(min_value=1, max_value=131072),
+    max_skill_tools=st.none() | st.integers(min_value=1, max_value=64),
     min_gpu_vram_gb=st.none()
     | st.floats(allow_nan=False, allow_infinity=False, min_value=0.1, max_value=1024.0),
     required_dtype=st.none() | st.sampled_from(list(QuantizationDtype)),

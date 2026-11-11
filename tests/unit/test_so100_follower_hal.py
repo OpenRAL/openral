@@ -23,6 +23,7 @@ from openral_core import (
     ROSSafetyViolation,
 )
 from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
+from openral_hal.ros_control import DownstreamStopReporting
 from openral_hal.so100_follower import (
     _SO100_JOINT_NAMES,
     SO100_DESCRIPTION,
@@ -31,6 +32,8 @@ from openral_hal.so100_follower import (
     _rad_to_deg,
 )
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
+
+from tests.unit.fakes.fake_feetech_bus import SO_FOLLOWER_MOTORS, FakeFeetechBus
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -375,6 +378,145 @@ class TestSO100FollowerHALEstop:
             hal.estop()
         with pytest.raises(ROSRuntimeError, match="not connected"):
             hal.read_state()
+
+
+class _TwinWithFailingClose(SO100DigitalTwin):
+    """A twin whose ``disconnect`` raises, as lerobot does when the port is gone."""
+
+    def disconnect(self) -> None:
+        raise ConnectionError("serial port vanished")
+
+
+def _twin_on_bus(bus: FakeFeetechBus, *, failing_close: bool = False) -> SO100DigitalTwin:
+    """A digital twin with a serial-boundary fake bus attached as ``robot.bus``."""
+    cls = _TwinWithFailingClose if failing_close else SO100DigitalTwin
+    twin = cls(SO100DigitalTwinConfig())
+    twin.bus = bus
+    return twin
+
+
+def _estop(hal: SO100FollowerHAL) -> str:
+    with pytest.raises(ROSEStopRequested) as info:
+        hal.estop()
+    return str(info.value)
+
+
+class TestSO100FollowerHALDownstreamStopReport:
+    """Issue #526: the e-stop reports torque off per servo and never swallows a failure."""
+
+    def test_reports_nothing_before_the_first_estop(self) -> None:
+        hal = SO100FollowerHAL(robot=_twin_on_bus(FakeFeetechBus()))
+        assert isinstance(hal, DownstreamStopReporting)
+        assert hal.last_stop_report is None
+
+    def test_torque_off_on_every_servo_is_acknowledged(self) -> None:
+        bus = FakeFeetechBus()
+        bus.port_handler.is_using = True  # a control-loop transaction cut short
+        hal = SO100FollowerHAL(robot=_twin_on_bus(bus))
+        hal.connect()
+
+        message = _estop(hal)
+
+        report = hal.last_stop_report
+        assert report is not None and report.stopped
+        assert "downstream stop acknowledged" in message
+        assert report.fields()["downstream_stop"] == "acknowledged"
+        assert report.vendor_stop == "torque_off (IEC 60204-1 category 0)"
+        assert dict(report.controller_states) == dict.fromkeys(SO_FOLLOWER_MOTORS, "torque_off")
+        assert bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 0)
+        assert [w[1] for w in bus.writes] == list(SO_FOLLOWER_MOTORS)
+        assert [r[1] for r in bus.reads] == list(SO_FOLLOWER_MOTORS)
+        assert bus.port_handler.cleared == 1
+        assert hal._connected is False
+        assert hal._robot is None
+
+    def test_a_dark_servo_is_unacknowledged_and_the_others_are_still_stopped(self) -> None:
+        bus = FakeFeetechBus(dark=frozenset({"elbow_flex"}))
+        hal = SO100FollowerHAL(robot=_twin_on_bus(bus))
+        hal._robot = hal._injected_robot  # bypass the connect-time ping, which would refuse
+        hal._connected = True
+
+        message = _estop(hal)
+
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "NOT acknowledged" in message
+        fields = report.fields()
+        assert fields["downstream_stop"] == "unacknowledged"
+        assert "elbow_flex: ConnectionError" in fields["downstream_stop_detail"]
+        assert report.controller_states["elbow_flex"] == "torque_unknown"
+        others = [m for m in SO_FOLLOWER_MOTORS if m != "elbow_flex"]
+        assert all(report.controller_states[m] == "torque_off" for m in others)
+        assert all(bus.torque[m] == 0 for m in others)
+
+    def test_a_write_that_does_not_take_fails_the_read_back(self) -> None:
+        bus = FakeFeetechBus(stuck_torque=frozenset({"gripper"}))
+        hal = SO100FollowerHAL(robot=_twin_on_bus(bus))
+        hal.connect()
+
+        _estop(hal)
+
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert report.controller_states["gripper"] == "torque_on"
+        assert "gripper: Torque_Enable reads back 1" in report.detail
+
+    def test_an_unreadable_servo_is_not_counted_as_stopped(self) -> None:
+        bus = FakeFeetechBus(unreadable=frozenset({"wrist_roll"}))
+        hal = SO100FollowerHAL(robot=_twin_on_bus(bus))
+        hal.connect()
+
+        _estop(hal)
+
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert report.controller_states["wrist_roll"] == "torque_unknown"
+
+    def test_a_failed_close_after_proven_torque_off_still_counts_as_stopped(self) -> None:
+        bus = FakeFeetechBus()
+        hal = SO100FollowerHAL(robot=_twin_on_bus(bus, failing_close=True))
+        hal.connect()
+
+        _estop(hal)
+
+        report = hal.last_stop_report
+        assert report is not None and report.stopped
+        assert "disconnect failed: ConnectionError: serial port vanished" in report.detail
+
+    def test_a_failed_close_with_no_bus_to_verify_is_unacknowledged(self) -> None:
+        twin = _TwinWithFailingClose(SO100DigitalTwinConfig())
+        hal = SO100FollowerHAL(robot=twin)
+        hal.connect()
+
+        _estop(hal)
+
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "no motor bus" in report.detail
+        assert "disconnect failed" in report.detail
+
+    def test_a_robot_without_a_motor_bus_is_never_reported_stopped(
+        self, hal: SO100FollowerHAL
+    ) -> None:
+        _estop(hal)
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "no motor bus" in report.detail
+
+    def test_estop_while_disconnected_is_unacknowledged(self, twin: SO100DigitalTwin) -> None:
+        hal = SO100FollowerHAL(robot=twin)
+        _estop(hal)
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "not connected" in report.detail
+
+    def test_reconnect_clears_the_previous_report(self) -> None:
+        hal = SO100FollowerHAL(robot=_twin_on_bus(FakeFeetechBus()))
+        hal.connect()
+        _estop(hal)
+        assert hal.last_stop_report is not None
+        hal.connect()
+        assert hal.last_stop_report is None
 
 
 # ── Full lifecycle sequence ───────────────────────────────────────────────────

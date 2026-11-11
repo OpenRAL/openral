@@ -34,6 +34,7 @@ from opentelemetry.trace import Span, use_span
 
 from openral_reasoner.context import ContextRenderer, PromptRecord
 from openral_reasoner.palette import ToolPalette
+from openral_reasoner.skill_subset import SkillSubset, select_skill_subset
 from openral_reasoner.tool_use import DEFAULT_SYSTEM_PROMPT, ToolUseClient
 
 __all__ = ["PreparedTick", "ReasonerCore", "ReasonerTickResult"]
@@ -86,8 +87,9 @@ def _call_identity(call: ReasonerToolCall) -> str:
 class PreparedTick:
     """In-flight state of a phased tick, prepare_tick → finish_tick.
 
-    Carries everything the blocking LLM phase needs (context text, palette
-    snapshot, system prompt) plus the bookkeeping captured at prepare time
+    Carries everything the blocking LLM phase needs (context text, the palette
+    offered this tick — narrowed by ``ReasonerCore.offered_palette`` when a
+    skill-tool cap is set — and the system prompt) plus the bookkeeping captured at prepare time
     (``seq``, ``prompts``, ``started``, the open OTel span). The ``seq`` and
     ``prompts`` snapshots matter: events that arrive while the LLM call is in
     flight were **not** rendered into the model's context, so
@@ -179,6 +181,12 @@ class ReasonerCore:
         system_prompt: Override the
             ``DEFAULT_SYSTEM_PROMPT``.
             ``None`` keeps the default.
+        max_skill_tools: Offer at most this many skill tools per tick, ranked
+            against the mission (``select_skill_subset``); ``None`` offers the
+            whole palette. Set from ``resolve_max_skill_tools`` for models that
+            break on many near-identical skill tools (Cosmos3-Edge, #494). The
+            subset is recomputed only when the palette, mission text or sticky
+            skills change, so the tool prefix stays cacheable.
         clock: Monotonic clock source (seconds). Override in tests.
 
     Example:
@@ -195,6 +203,7 @@ class ReasonerCore:
         min_interval_s: float = 0.1,
         retry_cap_per_kind: int = 3,
         system_prompt: str | None = None,
+        max_skill_tools: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Stash configuration; no LLM call until ``tick``."""
@@ -206,7 +215,21 @@ class ReasonerCore:
             raise ValueError(
                 f"ReasonerCore.retry_cap_per_kind must be >= 1; got {retry_cap_per_kind!r}",
             )
+        if max_skill_tools is not None and max_skill_tools < 1:
+            raise ValueError(
+                f"ReasonerCore.max_skill_tools must be >= 1 or None; got {max_skill_tools!r}",
+            )
         self._client = client
+        self._max_skill_tools = max_skill_tools
+        # (full palette, sticky ids asked for, subset) for the last tick. Reused while
+        # the palette object, query (``subset.query``) and sticky ids hold; its
+        # narrowed palette object is reused while the offered set holds, so the
+        # clients' per-palette-object tool render (and the provider's prefix cache)
+        # survive across ticks.
+        self._subset: tuple[ToolPalette, tuple[str, ...], SkillSubset] | None = None
+        # rskill_id of the last ExecuteRskillTool this core returned; the
+        # ``recent`` slot when no mission task is active.
+        self._last_dispatched: str | None = None
         self._min_interval_s = min_interval_s
         self._retry_cap = retry_cap_per_kind
         self._system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -232,6 +255,91 @@ class ReasonerCore:
         # the LLM call would see byte-identical context and produce
         # the same (or no) tool call.
         self._last_seen_seq: int = -1
+
+    @property
+    def max_skill_tools(self) -> int | None:
+        """The configured per-tick skill-tool cap, or ``None`` (read-only)."""
+        return self._max_skill_tools
+
+    def offered_palette(self, palette: ToolPalette, renderer: ContextRenderer) -> ToolPalette:
+        """The palette the LLM is shown this tick: ``palette`` narrowed to the skill cap.
+
+        Ranked against the active mission task plus every pending operator prompt
+        (an operator reply mid-mission reaches the LLM through PROMPTS without
+        rebuilding the mission, so it must be able to change the offer too). The
+        skill in flight stays offered so the model can wait on it; next, the best
+        match for the highest-priority pending prompt keeps a slot so the
+        operator's ask is not outvoted by a long task text (with ``k`` >= 2 it is
+        always offered on the tick the prompt arrives, before that tick drains
+        it); then the active task's last dispatched skill, so the model can
+        re-dispatch it. Equal scores prefer skills not yet tried for the active task
+        (so substituting a skill reaches beyond the top-k), then higher weight
+        precision. Without a cap the palette is returned unchanged.
+
+        The ranking (query, every score, offered and kept ids) is logged as
+        ``reasoner.skill_subset`` each time it is recomputed, i.e. whenever the
+        palette, query or sticky ids change.
+        """
+        if self._max_skill_tools is None:
+            return palette
+        mission = renderer.mission
+        active = mission.active() if mission is not None else None
+        texts = ([active.text] if active is not None else []) + [p.text for p in renderer.prompts]
+        query = "\n".join(texts)
+        cached = self._subset
+        if not query.strip() and cached is not None:
+            # No task and no pending prompt (mission finished, or the prompt was
+            # drained last tick) but a failure / perception event woke the tick:
+            # keep ranking on the last real query instead of an empty one, which
+            # would offer the alphabetical first k and refuse the retry.
+            query = cached[2].query
+        inflight = renderer.inflight_skill
+        # Outside a mission the last execute_rskill this core dispatched stays
+        # offered, so a retry after its failure is not refused off-palette.
+        recent = active.last_rskill_id if active is not None else self._last_dispatched
+        tried = active.tried_rskill_ids if active is not None else ()
+        sticky = (inflight or "", recent or "", *tried)
+        # The buffer is priority-ordered (highest first), arrival order within a
+        # priority: the newest prompt of the top band is the operator's latest ask
+        # ("no, the cup instead" outranks the "pick the bowl" it corrects).
+        prompts = renderer.prompts
+        focus = (
+            next(p for p in reversed(prompts) if p.priority == prompts[0].priority).text
+            if prompts
+            else ""
+        )
+        if (
+            cached is not None
+            and cached[0] is palette
+            and (cached[2].query, cached[1]) == (query, sticky)
+        ):
+            return cached[2].palette
+        subset = select_skill_subset(
+            palette,
+            query=query,
+            k=self._max_skill_tools,
+            sticky=(inflight,),
+            focus=focus,
+            recent=(recent,),
+            tried=tried,
+        )
+        if cached is not None and cached[2].palette == subset.palette:
+            subset = subset.model_copy(update={"palette": cached[2].palette})
+        log.info(
+            "reasoner.skill_subset",
+            k=subset.k,
+            offered=list(subset.offered),
+            total=len(subset.scores),
+            query=query[:400],
+            sticky=list(subset.sticky),
+            focused=list(subset.focused),
+            support=list(subset.support),
+            tried=list(subset.tried),
+            max_score=subset.max_score,
+            scores=dict(subset.scores),
+        )
+        self._subset = (palette, sticky, subset)
+        return subset.palette
 
     @property
     def retry_cap(self) -> int:
@@ -441,13 +549,16 @@ class ReasonerCore:
                 elapsed_s=self._clock() - started,
                 suppressed_reason="palette_empty",
             )
+        offered = self.offered_palette(palette, renderer)
+        if self._max_skill_tools is not None:
+            span.set_attribute(semconv.REASONER_OFFERED_SKILLS, sorted(offered.execute_rskill_ids))
         context_text = renderer.render(world_state=world_state)
         # Snapshot seq + the rendered prompt records NOW: anything appended
         # while the LLM phase is in flight was not in the model's context,
         # so finish_tick must neither mark it seen nor drain it.
         return PreparedTick(
             context_text=context_text,
-            palette=palette,
+            palette=offered,
             system_prompt=self._system_prompt,
             renderer=renderer,
             span=span,
@@ -574,6 +685,7 @@ class ReasonerCore:
             rskill_id = getattr(call, "rskill_id", None)
             if rskill_id:
                 span.set_attribute(semconv.REASONER_RSKILL_ID, rskill_id)
+                self._last_dispatched = rskill_id
             # Structured log for every successful tick so the multi-task
             # deploy flow can be inspected from the structured log stream
             # without opening Jaeger (Criterion 4 of the libero multi-task

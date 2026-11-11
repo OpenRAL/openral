@@ -884,3 +884,33 @@ def test_a_grid_a_second_behind_the_joint_states_does_not_move_the_session_clock
     depth, _ = render([], _RIG)
     s.on_grid(grid_from_depth(depth, _RIG), 98 * _S)
     assert s.now_ns == 100 * _S
+
+
+def test_instance_cells_are_applied_only_on_an_axis_aligned_lattice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of #521: ``InstanceCells`` carries no orientation and ``_vision_fit`` reads the
+    lattice's z as the frame's, so on a rotated OccupancyVoxels lattice the cells would land on
+    the wrong voxels. The session refuses them there, and applies them on an aligned one."""
+    from openral_world_state.object_tracker import session as session_mod
+
+    events: list[str] = []
+
+    class _Rec:
+        def __getattr__(self, level: str) -> Any:  # reason: any log level
+            return lambda event, **_: events.append(event)
+
+    monkeypatch.setattr(session_mod, "log", _Rec())
+    s = _session("droid_franka_robotiq")
+    depth, _ = render([], _RIG)
+    aligned = grid_from_depth(depth, _RIG)
+    half = math.radians(10.0) / 2.0
+    rotated = dataclasses.replace(
+        aligned, orientation_xyzw=(0.0, 0.0, math.sin(half), math.cos(half))
+    )
+    for grid, refused in ((rotated, True), (aligned, False)):
+        events.clear()
+        s.on_grid(grid, 1)
+        s.on_instance_cells(1, grid.frame_id, grid.origin, grid.resolution, {})
+        s._apply_instance_cells(())
+        assert ("object_tracker.instance_cells_lattice_rotated" in events) is refused, events

@@ -48,14 +48,25 @@ def test_the_prior_is_clear_same_label_extent_else_own_history_else_none() -> No
     tr = ObjectTracker(_FRAME)
     assert tr._extent_prior(None, "orange") is None, "no clear evidence: nothing is blocked"
     tr = _tracker_with_clear_oranges()
-    expected = max(2.0 * max(_box(n).half_extents[:2]) for n in ("box_trk2", "box_trk4"))
-    assert tr._extent_prior(None, "orange") == (expected, "same_label_tracks")
+    a, b = (2.0 * max(_box(n).half_extents[:2]) for n in ("box_trk2", "box_trk4"))
+    prior = tr._extent_prior(None, "orange")
+    assert prior is not None
+    assert prior[0] == pytest.approx((a + b) / 2) and prior[1] == "same_label_tracks"
     assert tr._extent_prior(None, "banana") is None, "a different label shares nothing"
     [first, _] = tr.store.all()
     tr._clear_extent[first.object_id] = 0.2  # its clear fits once showed more than its box now
-    assert tr._extent_prior(None, "orange") == (0.2, "same_label_tracks")
+    prior = tr._extent_prior(None, "orange")
+    assert prior is not None and prior[0] == pytest.approx((0.2 + b) / 2)
     tr._clear_extent["trk:9"] = 0.07
     assert tr._extent_prior("trk:9", "orange") == (0.07, "own_clear_fit")
+
+
+def test_one_bad_clear_fit_does_not_inflate_the_label_prior() -> None:
+    """yw1 ep8: two touching oranges fitted as one 32 cm "orange". With the largest clear fit as
+    the prior it loosened every later orange's size gate; the median ignores the one outlier."""
+    tr = ObjectTracker(_FRAME)
+    tr._label_clear_extent["orange"] = {"trk:1": 0.066, "trk:2": 0.07, "trk:3": 0.32}
+    assert tr._extent_prior(None, "orange") == (0.07, "label_history")
 
 
 def test_the_r16po_on1_refit_is_oversize_and_its_previous_box_is_not() -> None:

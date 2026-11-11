@@ -7,34 +7,41 @@ critical-path of every ``openral`` invocation.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from openral_core import RobotManifest
+
 if TYPE_CHECKING:
+    import uvicorn
+
     from openral_observability.dashboard.store import TelemetryStore
 
 __all__ = ["run_dashboard"]
 
 _LOG = logging.getLogger(__name__)
 
-# Hosts that keep the (unauthenticated) dashboard reachable only from the local
-# machine. Anything else exposes the OTLP receiver and POST /api/prompt — which
-# injects operator prompts into the robot's reasoner — to the network.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
+# Hosts that keep the (unauthenticated) local listener reachable only from this
+# machine. On any other bind, other hosts get the read-only LAN view plus E-STOP.
+# Not "": uvicorn binds an empty host to every interface.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_DEFAULT_REMOTE_PORT = 4319
 
 
 def _exposure_warning(host: str) -> str | None:
     """Return a security warning when *host* is not loopback, else ``None``.
 
-    The dashboard has no authentication (CLAUDE.md §1 / issue #44 — localhost
-    only). Binding to ``0.0.0.0`` or any routable address lets anyone who can
-    reach the port post prompts that drive the reasoner and spoof telemetry, so
-    a non-loopback bind must be surfaced loudly rather than happen silently.
+    The local listener has no authentication. Bound to a routable address, every
+    host that can reach the port sees the robot read-only and can press E-STOP
+    (ADR-0129: non-loopback clients get nothing else), so the bind is surfaced
+    loudly rather than happening silently.
 
     Args:
         host: The bind address passed to ``run_dashboard``.
@@ -46,33 +53,40 @@ def _exposure_warning(host: str) -> str | None:
     if host.strip().lower() in _LOOPBACK_HOSTS:
         return None
     return (
-        f"dashboard bound to {host!r}, which is NOT loopback. The dashboard has "
-        "no authentication: any host that can reach this port can inject prompts "
-        "into the reasoner (POST /api/prompt) and spoof telemetry. Bind 127.0.0.1 "
-        "and use an SSH tunnel for remote access."
+        f"dashboard bound to {host!r}, which is NOT loopback. It has no login: any "
+        "host that can reach this port sees the robot read-only and can press "
+        "E-STOP (only this machine gets full control). For remote control, link "
+        "the robot to openral.com (`openral robot link`) instead."
     )
 
 
-def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + vad assets + estop pub + discovery + uvicorn)
+def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + UI assets + ROS helpers + discovery + listeners)
     *,
     host: str = "127.0.0.1",
     port: int = 4318,
+    remote_port: int | None = None,
+    bridge_port: int = 8765,
+    manifest_path: Path | None = None,
     inprocess_cmd: list[str] | None = None,
     store: TelemetryStore | None = None,
     log_level: str = "warning",
 ) -> None:
-    """Start the dashboard server on ``host:port`` and block until SIGINT.
+    """Start the dashboard's listeners and block until SIGINT.
 
     Args:
-        host: Bind address; defaults to loopback (no auth, per
-            CLAUDE.md §1 / issue #44 — explicitly localhost-only).
-        port: HTTP port. The same port serves the UI, the SSE stream,
-            and the OTLP/HTTP receiver routes. Defaults to ``4318``, the
-            OTLP/HTTP standard receiver port — chosen over the historic
-            ``8000`` (issue #132) because ``8000`` is the default for
-            ``mkdocs serve`` (``just docs``), ``python -m http.server``,
-            and most FastAPI tutorials, so the dashboard frequently
-            collided with a workload already running on the dev host.
+        host: Local listener bind address; loopback by default. Loopback clients get
+            full control; on another bind, other hosts get read-only + E-STOP.
+        port: Local listener port: the UI, the API and the OTLP/HTTP receiver.
+            Defaults to ``4318``, the OTLP/HTTP standard port (issue #132: ``8000``
+            collides with ``mkdocs serve`` and most FastAPI demos).
+        remote_port: The remote listener, on 127.0.0.1 for the robot's Cloudflare
+            Tunnel (ADR-0129). ``None`` opens it on ``4319`` when the robot is linked
+            (``openral robot link``) and not otherwise; a port without an enrolment
+            is refused.
+        bridge_port: ``foxglove_bridge``'s loopback port, proxied at ``/ws``.
+        manifest_path: A robot manifest JSON file (the deploy launch writes one) served
+            until the runtime sends a fresher ``openral.robot.manifest`` record, so a
+            deploy without the reasoner still has one. Unreadable → logged, ignored.
         inprocess_cmd: Optional argv to spawn as a child process with
             ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``OTEL_EXPORTER_OTLP_PROTOCOL``
             pointed at the dashboard. Lets a user do
@@ -84,27 +98,57 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
             tests that want to assert against the store after a run.
         log_level: uvicorn log level. ``warning`` is quiet enough for a
             demo without being silent on errors.
+
+    Raises:
+        ValueError: ``remote_port`` was given but the robot is not linked, or the
+            enrolment file is invalid.
     """
     import uvicorn  # local import: heavy enough to defer until invocation
 
-    from openral_observability.dashboard.app import _write_controls_enabled, create_app
+    from openral_observability.dashboard.app import (
+        _remote_control_enabled,
+        _write_controls_enabled,
+        create_app,
+    )
+    from openral_observability.dashboard.remote_auth import (
+        JwksCache,
+        TokenVerifier,
+        jwks_cache_file,
+        load_enrolment,
+        remote_listener,
+    )
+    from openral_observability.dashboard.ui_assets import ensure_ui_assets
 
-    app = create_app(store)
-
-    # Voice-prompt (VAD) static assets: fetched on first start into
-    # $OPENRAL_CACHE_DIR (~/.cache/openral by default) and placed under the
-    # served static dir — see vad_assets.py. Best-effort: an offline host or
-    # upstream outage must never block the dashboard from starting; the mic
-    # button just degrades (voice_prompt_enabled=false in /api/config).
-    try:
-        from openral_observability.dashboard.vad_assets import ensure_vad_assets
-
-        if ensure_vad_assets():
-            _LOG.info("dashboard.vad_assets ready (voice prompt available)")
+    enrolment = load_enrolment()
+    if remote_port is not None and enrolment is None:
+        msg = "--remote-port needs a linked robot: run `openral robot link <code>` first"
+        raise ValueError(msg)
+    if enrolment is not None and remote_port is None:
+        remote_port = _DEFAULT_REMOTE_PORT
+    verifier = (
+        TokenVerifier(enrolment, JwksCache(enrolment.jwks, jwks_cache_file()))
+        if enrolment is not None
+        else None
+    )
+    app = create_app(store, verifier=verifier, bridge_url=f"ws://127.0.0.1:{bridge_port}")
+    if host.strip():  # browsing http://<bind address>:<port>/ from this machine is local
+        app.state.local_hosts.add(host.strip().strip("[]").lower())
+    if manifest_path is not None:
+        try:
+            manifest = RobotManifest.model_validate_json(manifest_path.read_text("utf-8"))
+        except (OSError, ValueError) as exc:  # never gate the dashboard (or its E-STOP) on it
+            _LOG.warning("dashboard.manifest_file_unreadable path=%s error=%s", manifest_path, exc)
         else:
-            _LOG.warning("dashboard.vad_assets incomplete — voice prompt disabled")
-    except Exception as exc:  # never gate the dashboard on the voice-prompt assets
-        _LOG.warning("dashboard.vad_assets_start_failed error=%s", exc)
+            app.state.store.set_manifest(manifest)
+
+    # The robot UI: the pinned release, fetched once into $OPENRAL_CACHE_DIR (see
+    # ui_assets.py). Best-effort: offline, `/` serves the built-in fallback page.
+    try:
+        app.state.ui_dir = ensure_ui_assets()
+        if app.state.ui_dir is None:
+            _LOG.warning("dashboard.ui_assets unavailable — serving the fallback page at /")
+    except Exception as exc:  # never gate the dashboard (or its E-STOP) on the UI download
+        _LOG.warning("dashboard.ui_assets_start_failed error=%s", exc)
 
     # Persistent e-stop publisher: created ONCE here so DDS discovery of the
     # HAL/kernel/runner subscribers happens at launch, and every later E-STOP
@@ -183,14 +227,36 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     if inprocess_cmd:
         child = _spawn_child(inprocess_cmd, host=host, port=port)
 
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        log_level=log_level,
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
+    # proxy_headers off on both listeners: the client address decides local vs LAN,
+    # and a forwarded-for header must never turn a LAN client into loopback.
+    servers = [
+        uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level=log_level,
+                access_log=False,
+                proxy_headers=False,
+                ws_ping_interval=30.0,
+            )
+        )
+    ]
+    if remote_port is not None:
+        servers.append(
+            uvicorn.Server(
+                uvicorn.Config(
+                    remote_listener(app),
+                    host="127.0.0.1",
+                    port=remote_port,
+                    log_level=log_level,
+                    access_log=False,
+                    proxy_headers=False,
+                    ws_ping_interval=30.0,
+                    lifespan="off",
+                )
+            )
+        )
 
     exposure = _exposure_warning(host)
     if exposure is not None:
@@ -198,27 +264,27 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
         print(f"WARNING: {exposure}", file=sys.stderr, flush=True)
 
     if _write_controls_enabled():
-        _write_controls_msg = (
-            "dashboard write-controls ENABLED (OPENRAL_DASHBOARD_WRITE_CONTROLS=1): "
-            "skill-switch + non-safety param-tune are live and reach actuation config. "
-            "Pending safety-WG review. The safety kernel still disposes all motion."
-        )
         _LOG.warning("dashboard.write_controls_enabled")
-        print(f"WARNING: {_write_controls_msg}", file=sys.stderr, flush=True)
-
-    if exposure is not None and _write_controls_enabled():
-        _compound_msg = (
-            "CRITICAL: dashboard is bound to a non-loopback address AND write-controls are "
-            f"enabled. The guarded write endpoints (skill-switch + param-tune, bound to {host!r}) "
-            "are reachable from the network by ANY unauthenticated host and reach actuation "
-            "config directly. This is the highest-risk dashboard configuration. "
-            "Bind 127.0.0.1 and use an SSH tunnel for remote access."
+        print(
+            "WARNING: dashboard write-controls ENABLED (OPENRAL_DASHBOARD_WRITE_CONTROLS=1): "
+            "the robot's installed rSkills can be run from the dashboard. The safety kernel "
+            "still disposes all motion.",
+            file=sys.stderr,
+            flush=True,
         )
-        _LOG.warning("dashboard.exposed_write_controls host=%s", host)
-        print(f"WARNING: {_compound_msg}", file=sys.stderr, flush=True)
+    if remote_port is not None and _remote_control_enabled():
+        _LOG.warning("dashboard.remote_control_enabled")
+        print(
+            "WARNING: remote control ENABLED (OPENRAL_DASHBOARD_REMOTE_CONTROL=1): signed-in "
+            "operators can reset the e-stop, prompt and run skills over the robot's tunnel, "
+            "away from the work cell (IEC 60204-1 expects a reset where the hazard is seen).",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _on_signal(signum: int, _frame: object) -> None:
-        server.should_exit = True
+        for server in servers:
+            server.should_exit = True
         if child is not None and child.poll() is None:
             child.send_signal(signal.SIGINT)
 
@@ -234,9 +300,33 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
         file=sys.stderr,
         flush=True,
     )
+    if enrolment is not None and remote_port is not None:
+        print(
+            f"OpenRAL dashboard remote listener: 127.0.0.1:{remote_port} "
+            f"(tunnel target for {enrolment.aud})",
+            file=sys.stderr,
+            flush=True,
+        )
+    tunnel = None
+    if enrolment is not None and remote_port is not None:
+        from openral_observability.dashboard.tunnel import start_tunnel
+
+        tunnel = start_tunnel(remote_port)
+        if tunnel is not None:
+            print(
+                f"OpenRAL robot tunnel: {enrolment.aud} -> 127.0.0.1:{remote_port}",
+                file=sys.stderr,
+                flush=True,
+            )
     try:
-        server.run()
+        asyncio.run(_serve(servers))
     finally:
+        if tunnel is not None and tunnel.poll() is None:
+            tunnel.terminate()
+            try:
+                tunnel.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                tunnel.kill()
         if discovery is not None:
             discovery.stop()
         if child is not None and child.poll() is None:
@@ -245,6 +335,15 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
                 child.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 child.kill()
+
+
+async def _serve(servers: list[uvicorn.Server]) -> None:
+    """Run every listener; when one stops (signal or bind failure), stop them all."""
+    tasks = [asyncio.create_task(server.serve()) for server in servers]
+    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for server in servers:
+        server.should_exit = True
+    await asyncio.gather(*tasks)
 
 
 def _spawn_child(cmd: list[str], *, host: str, port: int) -> subprocess.Popen[bytes]:

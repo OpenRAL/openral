@@ -8,13 +8,13 @@ tags:
 - rskill
 - internvla_n1
 - vision-language-action
-- nf4
-- 4-bit
 - mobile_base
 - rskill-kind:vla
 - rskill-role:s1
 - embodiment:mobile_base
 - rskill-license:cc-by-nc-sa-4.0
+- nf4
+- 4-bit
 inference: false
 openral:
   description: 'InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation
@@ -24,18 +24,18 @@ openral:
     and drives a mobile base with body-twist velocity commands, emitting STOP on arrival.
     Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).'
   model_family: internvla_n1
-  min_vram_gb: 7.0
+  min_vram_gb: 16.6
   latency_ms: 2500.0
   runtime: pytorch
-  dtype: int4
+  dtype: bf16
 ---
 
 # rskill-internvla_n1-mobile_base-vln-nf4
 
-> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+> **Runs bf16 in open OpenRAL, NF4 with OpenRAL Pro.** Open OpenRAL loads it at `bf16` (~16.6 GB, a 24 GB card); under ADR-0123 sub-16-bit weights need the OpenRAL Pro quantization package. With Pro installed it switches to `int4 (NF4)` automatically (`quantization.extra.pro_dtype`), which fits an 8 GB card. `OPENRAL_QUANTIZATION_DTYPE` overrides either. The `-nf4` in the name predates the bf16 open default.
 
 > **OpenRAL rSkill** — InternVLA-N1 / DualVLN vision-language **navigation**
-> foundation model on any mobile base, NF4-quantized to fit an 8 GB GPU.
+> foundation model on any mobile base; bf16 on open, NF4 with Pro to fit an 8 GB GPU.
 > Wraps `hf://InternRobotics/InternVLA-N1-DualVLN`; ships no weights.
 
 This package wraps the upstream checkpoint with a `rskill.yaml` manifest that
@@ -143,17 +143,19 @@ sidecar (SLAM's) via a ping when present, else auto-spawns its own (~0.27 GB,
 
 ## Runtime / manifest summary
 
-- `model_family: internvla_n1`, `runtime: pytorch`, `quantization: int4` (NF4).
+- `model_family: internvla_n1`, `runtime: pytorch`, `quantization: bf16`
+  (`extra.pro_dtype: int4`: NF4 automatically when OpenRAL Pro is installed).
 - **Out-of-process:** upstream InternNav pins `transformers==4.51.0`, so the
   model runs in an auto-provisioned py3.12 ZMQ **sidecar**
   (`tools/internvla_n1_sidecar.py` → `tools/_internvla_n1_server.py`); the
   `openral_sim.policies.internvla_n1` adapter is the client. First boot clones
   InternNav and builds the venv (several minutes); the 8.3B checkpoint is
   cached under `~/.cache/huggingface`.
-- **VRAM:** NF4 backbone (~5 GB) + bf16 NavDP head (~0.6 GB) ≈ 7 GB peak; fits
-  an 8 GB card alongside the sim render context. Full bf16 (~16.6 GB) needs
-  ≥ 24 GB — override `quantization: none` there.
-- `latency_budget.per_chunk_ms: 2500` (worst-case System-2 replan on NF4).
+- **VRAM:** bf16 (open, ~16.6 GB) needs ≥ 24 GB. NF4 (Pro) backbone
+  (~5 GB) + bf16 NavDP head (~0.6 GB) ≈ 7 GB peak; fits an 8 GB card alongside
+  the sim render context.
+- `latency_budget.per_chunk_ms: 2500` (worst-case System-2 replan measured on
+  NF4; bf16 is not yet re-measured).
 
 Run in the RoboCasa navigation scene:
 

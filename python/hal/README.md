@@ -181,7 +181,7 @@ Each adapter's downstream stop and declared `EStopRecovery`:
 | `SawyerRealHAL` | same | `std_msgs/Empty` on `/robot/set_super_stop` | `RESTART_REQUIRED` |
 | `OpenArmRealHAL` | same, all four controllers | — | `RESETTABLE` — `reset_estop` re-activates and reconnects only once confirmed `active` |
 | `AlohaHAL` | `/<arm>/torque_enable(enable=false)` per arm (`interbotix_xs_msgs`) | — | `RESTART_REQUIRED` |
-| `SO100FollowerHAL` | motor bus disconnected | — | `RESTART_REQUIRED` |
+| `SO100FollowerHAL` | `Torque_Enable=0` written to every servo (status packet) and read back, then the bus disconnected — an IEC 60204-1 category-0 stop (arm goes limp) | — | `RESTART_REQUIRED` |
 | `GalaxeaA1HAL` | ROS 1 sidecar stopped (acked after driver + roscore exit) | — | `RESTART_REQUIRED` |
 
 A HAL records a `DownstreamStopReport`; the lifecycle node logs FATAL and

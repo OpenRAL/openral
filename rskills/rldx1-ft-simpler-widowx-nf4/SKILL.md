@@ -26,7 +26,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1500.0}
   license_code: Apache-2.0
   license_weights: rlwrld_non_commercial   # NOT permissive — see License section
-  weights_uri: hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX
+  weights_uri: hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX@e1314689d3796bc919835a4a0421f6530020651d
   source_repo: hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX
   paper_url: https://huggingface.co/RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX
 ---

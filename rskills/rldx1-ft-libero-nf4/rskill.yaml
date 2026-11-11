@@ -75,15 +75,9 @@ quantization:
 min_vram_gb:
   bf16: 18.0   # full-precision weights + 4-frame video activations.
   int4: 7.0    # NF4 backbone + NF4 head + activations on an 8 GiB GPU.
-weights_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO"
+weights_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO@6e934852242bf7c31c422ffb7c79a7d717582fa9"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
-# Per-file URIs are declared for contract completeness; the rldx sidecar
-# handles its own checkpoint loading today and will consume these in a
-# follow-up PR.
-processors:
-  preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO/policy_preprocessor.json"
-  postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO/policy_postprocessor.json"
 # RLDX's RLDXSimPolicyWrapper handles image preprocessing internally —
 # the server flips frames as needed and applies its own normalisation.
 # We pass raw (256, 256, 3) uint8 frames; no adapter-level remap.

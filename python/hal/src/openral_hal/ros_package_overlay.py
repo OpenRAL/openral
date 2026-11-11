@@ -20,6 +20,7 @@ import os
 import re
 import uuid
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 from openral_hal._openamrobot_platform_assets import ensure_openamrobot_description
@@ -56,8 +57,11 @@ def _on_ament_index(pkg: str) -> bool:
     return any((Path(p) / _INDEX / pkg).is_file() for p in prefixes)
 
 
-def public_package_overlay(urdf_xml: str) -> Path | None:
+def public_package_overlay(urdf_xml: str, local: dict[str, Path] | None = None) -> Path | None:
     """An ament prefix registering the public packages ``urdf_xml`` needs, else ``None``.
+
+    ``local`` adds packages by root directly, e.g. a robot folder whose relative
+    mesh paths were rewritten to ``package://<name>/`` (deploy_e2e).
 
     Covers every ``package://<pkg>/`` the URDF names that is in
     ``PUBLIC_ROS_PACKAGES`` and on no ``AMENT_PREFIX_PATH`` entry (a sourced
@@ -75,14 +79,18 @@ def public_package_overlay(urdf_xml: str) -> Path | None:
         True
     """
     pkgs = sorted(set(re.findall(r"package://([^/\"'<>\s]+)/", urdf_xml)))
-    missing = [p for p in pkgs if p in PUBLIC_ROS_PACKAGES and not _on_ament_index(p)]
+    roots: dict[str, Callable[[], Path]] = {
+        p: PUBLIC_ROS_PACKAGES[p] for p in pkgs if p in PUBLIC_ROS_PACKAGES
+    }
+    roots.update({p: partial(Path, r) for p, r in (local or {}).items()})
+    missing = [p for p in sorted(roots) if not _on_ament_index(p)]
     if not missing:
         return None
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
     prefix = base / "ament_overlay"
     (prefix / _INDEX).mkdir(parents=True, exist_ok=True)
     for pkg in missing:
-        root = PUBLIC_ROS_PACKAGES[pkg]()
+        root = roots[pkg]()
         link = prefix / "share" / pkg
         if not (link.is_symlink() and link.resolve() == root.resolve()):
             # Swap the link in atomically: concurrent launches share this cache.

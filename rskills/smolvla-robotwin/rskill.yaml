@@ -71,7 +71,7 @@ runtime: "pytorch"
 quantization:
   dtype: "bf16"
   backend: "pytorch"
-weights_uri: "hf://lerobot/smolvla_robotwin"
+weights_uri: "hf://lerobot/smolvla_robotwin@eb55d3a74f6cd26c6388aecd116b37b63fac144d"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # The official checkpoint ships the lerobot PolicyProcessorPipeline JSONs
@@ -80,8 +80,8 @@ weights_uri: "hf://lerobot/smolvla_robotwin"
 # `materialize_processor_dir` auto-pulls the sibling safetensors. No
 # dataset-stats rebuild fallback needed. Trained on raw SAPIEN renders (no flip).
 processors:
-  preprocessor_uri: "hf://lerobot/smolvla_robotwin/policy_preprocessor.json"
-  postprocessor_uri: "hf://lerobot/smolvla_robotwin/policy_postprocessor.json"
+  preprocessor_uri: "hf://lerobot/smolvla_robotwin@eb55d3a74f6cd26c6388aecd116b37b63fac144d/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/smolvla_robotwin@eb55d3a74f6cd26c6388aecd116b37b63fac144d/policy_postprocessor.json"
 image_preprocessing:
   flip_180: false
   # Camera aliases, keyed by VLA slot. The RoboTwin scene emits

@@ -210,13 +210,17 @@ class Sam2Segmenter:
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self._device = self._device_pref
-        self._processor = Sam2Processor.from_pretrained(self._weights_source)
+        # A pinned ``repo@sha`` source: HF wants the SHA as ``revision=``, not in the id.
+        from openral_rskill import split_repo_revision  # noqa: PLC0415
+
+        repo, rev = split_repo_revision(self._weights_source)
+        self._processor = Sam2Processor.from_pretrained(repo, revision=rev or "main")
         # bf16 on CUDA (the measured 74 MiB / 297 MiB peak configuration); fp32
         # on CPU, where bf16 matmuls are slower rather than faster.
         dtype = torch.bfloat16 if self._device.startswith("cuda") else torch.float32
         # ``Any``: transformers' ``.to()`` overloads are typed for
         # ``PreTrainedModel`` and do not accept the concrete subclass here.
-        model: Any = Sam2Model.from_pretrained(self._weights_source, dtype=dtype)
+        model: Any = Sam2Model.from_pretrained(repo, revision=rev or "main", dtype=dtype)
         self._model = model.to(self._device).eval()
 
     def warm_up(self, *, width: int = 320, height: int = 240) -> None:

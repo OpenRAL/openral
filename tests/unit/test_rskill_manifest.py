@@ -948,7 +948,7 @@ class TestVlmKind:
         assert m.role == "s2"
         # weights_uri is the deployable pre-quantized NF4 checkpoint; source_repo
         # is the SHA-pinned upstream it was quantized from (provenance).
-        assert m.weights_uri == "hf://OpenRAL/rskill-qwen35_4b-any-general-nf4"
+        assert str(m.weights_uri).startswith("hf://OpenRAL/rskill-qwen35_4b-any-general-nf4@")
         assert m.source_repo is not None and m.source_repo.startswith("hf://Qwen/Qwen3.5-4B@")
 
     def test_vlm_missing_weights_uri_raises(self) -> None:
