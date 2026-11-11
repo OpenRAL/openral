@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_sim._website_video import (
     append_video_manifest,
     save_world_mp4,
@@ -35,6 +36,7 @@ def test_save_world_mp4_writes_square_video(tmp_path: Path) -> None:
         _result_with_frames(8, h=200, w=320, success=True),
         tmp_path / "scene_rskill_success.mp4",
         size=256,
+        square=True,
     )
     assert out.exists()
     reader = iio.get_reader(out, format="ffmpeg")  # type: ignore[arg-type]  # reason: imageio stub types format as Format, str is the documented form
@@ -43,6 +45,60 @@ def test_save_world_mp4_writes_square_video(tmp_path: Path) -> None:
     finally:
         reader.close()
     assert frame.shape[0] == 256 and frame.shape[1] == 256
+
+
+def _read_all(path: Path) -> list[NDArray[np.uint8]]:
+    import imageio.v2 as iio
+
+    reader = iio.get_reader(path, format="ffmpeg")  # type: ignore[arg-type]  # reason: imageio stub types format as Format, str is the documented form
+    try:
+        n = reader.count_frames()  # type: ignore[attr-defined]  # reason: ffmpeg plugin Reader method, absent from the base stub
+        return [np.asarray(reader.get_data(i), dtype=np.uint8) for i in range(n)]
+    finally:
+        reader.close()
+
+
+def test_save_world_mp4_keeps_native_aspect_by_default(tmp_path: Path) -> None:
+    out = save_world_mp4(_result_with_frames(4, h=240, w=320, success=True), tmp_path / "a.mp4")
+    assert _read_all(out)[0].shape == (768, 1024, 3)  # 4:3 kept, long edge = size
+
+
+def _near(frame: NDArray[np.uint8], colour: tuple[int, int, int]) -> bool:
+    """The outline's left edge (mid-height, its 2 px) is ``colour`` (yuv420p chroma blur)."""
+    h = frame.shape[0]
+    edge = frame[h // 4 : 3 * h // 4, 0:2].reshape(-1, 3).mean(0)
+    return bool(np.abs(edge - colour).max() < 25)
+
+
+def test_world_border_is_grey_while_running_then_the_grade_colour(tmp_path: Path) -> None:
+    """A real graded episode: ungraded, then partial from step 3, ended partial (reward 0.5)."""
+    grey = np.full((96, 128, 3), 30, np.uint8)
+    r = EpisodeResult(
+        success=False,
+        steps=5,
+        total_reward=0.5,
+        frames=[grey] * 5,
+        frame_grades=[None, ("fail", 0.0), ("fail", 0.0), ("partial", 0.5), ("partial", 0.5)],
+        final_info={"placement_grade": "partial", "placement_score": 0.5},
+    )
+    frames = _read_all(save_world_mp4(r, tmp_path / "p.mp4", fps=4, size=128, min_duration_s=0))
+    assert len(frames) == 5 + 4  # + a 1 s hold of the outcome
+    assert all(_near(f, (128, 128, 128)) for f in frames[:3])
+    assert all(_near(f, (240, 210, 30)) for f in frames[3:])  # partial = yellow
+    # an ungraded fail: grey until the last frame, then red
+    fail = EpisodeResult(success=False, steps=3, frames=[grey] * 3)
+    frames = _read_all(save_world_mp4(fail, tmp_path / "f.mp4", fps=4, size=128))
+    assert _near(frames[1], (128, 128, 128)) and _near(frames[-1], (220, 40, 40))
+    # a partial that earned no reward (graded at the step limit) still ends yellow
+    late = EpisodeResult(
+        success=False,
+        steps=3,
+        total_reward=0.0,
+        frames=[grey] * 3,
+        final_info={"placement_grade": "partial", "placement_score": 0.5},
+    )
+    frames = _read_all(save_world_mp4(late, tmp_path / "l.mp4", fps=4, size=128))
+    assert _near(frames[-1], (240, 210, 30))
 
 
 def test_save_world_mp4_empty_frames_raises(tmp_path: Path) -> None:
@@ -98,8 +154,8 @@ def test_write_world_grid_tiles_every_episode_keeping_aspect(tmp_path: Path) -> 
     finally:
         reader.close()
     # 3 clips -> 2 columns x 2 rows of 160 x 90 tiles; the shortest clips hold their
-    # last frame until the longest (6 frames) ends.
-    assert n_frames == 6
+    # last frame until the longest (6 frames) ends, plus a 1 s (10 frame) outcome hold.
+    assert n_frames == 6 + 10
     assert first.shape == (180, 320, 3)
     assert write_world_grid(
         [_result_with_frames(2, 64, 64, success=True)], tmp_path / "one.mp4"

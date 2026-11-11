@@ -16,6 +16,7 @@ not faked.
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 
 import pytest
 
@@ -27,7 +28,7 @@ from openral_core import (
     ControlMode,
     RobotDescription,
 )
-from openral_core.assets import AssetFetchError
+from openral_core.assets import AssetFetchError, resolve_asset
 from openral_core.exceptions import ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 
@@ -70,28 +71,81 @@ _MANIFEST_DRIVEN_ROBOTS = [
     ),
     "openarm",  # bimanual: 2 grippers + seed_ctrl_from_qpos
     "anvil_openarm_v2",  # bimanual: openarm layout + Anvil J1/J6 ranges (openarm: scheme)
+    "makermods_metal",  # mimic finger at qpos 6; gripper pinned to qpos 7 (makermods: scheme)
+    "makermods_metal_station",  # bimanual: 2 x makermods_metal, explicit actuator_index
 ]
+
+
+def _repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for ancestor in (here, *here.parents):
+        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
+            return ancestor
+    raise RuntimeError("could not locate repo root from test file")
+
+
+#: Robots that also keep a hand-coded ``<ROBOT>_DESCRIPTION`` constant, which
+#: ``test_python_description_matches_yaml`` holds to the manifest. Manifest-only
+#: robots (``makermods_metal*``) have none by design, so they are not parametrised
+#: there (an undeclared skip fails the heavy-lanes ledger).
+_PYTHON_DESCRIPTIONS: dict[str, tuple[str, str]] = {
+    "so100_follower": ("openral_hal.so100_follower", "SO100_DESCRIPTION"),
+    "franka_panda": ("openral_hal.franka_panda", "FRANKA_PANDA_DESCRIPTION"),
+    "ur5e": ("openral_hal.ur", "UR5e_DESCRIPTION"),
+    "ur10e": ("openral_hal.ur", "UR10e_DESCRIPTION"),
+    "rizon4": ("openral_hal.flexiv_rizon4", "RIZON4_DESCRIPTION"),
+    "g1": ("openral_hal.g1", "G1_DESCRIPTION"),
+    "h1": ("openral_hal.h1", "H1_DESCRIPTION"),
+    "h2": ("openral_hal.h2", "H2_DESCRIPTION"),
+    "aloha_bimanual": ("openral_hal.aloha", "ALOHA_DESCRIPTION"),
+    "openarm": ("openral_hal.openarm", "OPENARM_DESCRIPTION"),
+    "anvil_openarm_v2": ("openral_hal.anvil_openarm_v2", "ANVIL_OPENARM_V2_DESCRIPTION"),
+}
+
+
+def _param_robot(param: object) -> str:
+    """The robot id of a ``_MANIFEST_DRIVEN_ROBOTS`` entry (a str or a ``pytest.param``)."""
+    if isinstance(param, str):
+        return param
+    values: tuple[object, ...] = getattr(param, "values", ())
+    return str(values[0])
+
+
+def _resolved_robot(robot: str) -> str:
+    """``robot`` after resolving its MJCF: an unfetchable pinned clone skips, a broken ref fails."""
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / robot / "robot.yaml"))
+    if desc.assets.mjcf is not None:
+        try:
+            resolve_asset(desc.assets.mjcf, "mjcf")
+        except AssetFetchError as exc:
+            pytest.skip(f"{robot}: MJCF {desc.assets.mjcf!r} not fetchable on this host: {exc}")
+    return robot
 
 
 @pytest.fixture(params=_MANIFEST_DRIVEN_ROBOTS)
 def robot_id(request: pytest.FixtureRequest) -> str:
-    """One robot id per test case (see _MANIFEST_DRIVEN_ROBOTS)."""
-    robot: str = request.param
-    return robot
+    """One robot id per test case (see _MANIFEST_DRIVEN_ROBOTS).
+
+    Resolves the manifest's MJCF up front: the ``rd:`` / ``openarm:`` /
+    ``makermods:`` schemes fetch a pinned clone on first use, so an offline
+    host without a warm cache skips that parametrization (``AssetFetchError``)
+    instead of failing (CLAUDE.md §1.11). A broken reference still fails.
+    """
+    return _resolved_robot(request.param)
+
+
+@pytest.fixture(
+    params=[p for p in _MANIFEST_DRIVEN_ROBOTS if _param_robot(p) in _PYTHON_DESCRIPTIONS]
+)
+def python_described_robot_id(request: pytest.FixtureRequest) -> str:
+    """``robot_id`` restricted to robots that keep a ``_PYTHON_DESCRIPTIONS`` constant."""
+    return _resolved_robot(request.param)
 
 
 @pytest.fixture
 def description(robot_id: str) -> RobotDescription:
     """The real ``robots/<id>/robot.yaml`` for the parametrised robot."""
-    from pathlib import Path
-
-    here = Path(__file__).resolve()
-    for ancestor in (here, *here.parents):
-        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
-            repo_root = ancestor
-            break
-    else:
-        raise RuntimeError("could not locate repo root from test file")
+    repo_root = _repo_root()
     return RobotDescription.from_yaml(str(repo_root / "robots" / robot_id / "robot.yaml"))
 
 
@@ -100,7 +154,7 @@ def test_manifest_has_sim_block(description: RobotDescription) -> None:
     assert description.sim is not None
     assert description.assets.mjcf is not None
     assert description.assets.mjcf.startswith(
-        ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:", "file:")
+        ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:", "makermods:", "file:")
     ), f"unexpected mjcf ref scheme: {description.assets.mjcf!r}"
 
 
@@ -145,15 +199,7 @@ def test_no_user_facing_python_required(robot_id: str) -> None:
     seam, but the assertion is implicit in the round-trip — make it
     explicit by avoiding any ``openral_hal.<robot>`` import).
     """
-    from pathlib import Path
-
-    here = Path(__file__).resolve()
-    for ancestor in (here, *here.parents):
-        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
-            repo_root = ancestor
-            break
-    else:
-        raise RuntimeError("could not locate repo root from test file")
+    repo_root = _repo_root()
 
     yaml_path = repo_root / "robots" / robot_id / "robot.yaml"
     description = RobotDescription.from_yaml(str(yaml_path))
@@ -164,7 +210,7 @@ def test_no_user_facing_python_required(robot_id: str) -> None:
     assert len(state.position) == len(description.joints)
 
 
-def test_python_description_matches_yaml(robot_id: str, description: RobotDescription) -> None:
+def test_python_description_matches_yaml(python_described_robot_id: str) -> None:
     """The hand-coded ``<ROBOT>_DESCRIPTION`` Python constant carries the same sim wiring.
 
     Drift between the Python-side constant and ``robots/<id>/robot.yaml``
@@ -173,22 +219,9 @@ def test_python_description_matches_yaml(robot_id: str, description: RobotDescri
     block; otherwise the manifest-driven path and the legacy
     subclass-driven path would silently diverge.
     """
-    py_map = {
-        "so100_follower": ("openral_hal.so100_follower", "SO100_DESCRIPTION"),
-        "franka_panda": ("openral_hal.franka_panda", "FRANKA_PANDA_DESCRIPTION"),
-        "ur5e": ("openral_hal.ur", "UR5e_DESCRIPTION"),
-        "ur10e": ("openral_hal.ur", "UR10e_DESCRIPTION"),
-        "rizon4": ("openral_hal.flexiv_rizon4", "RIZON4_DESCRIPTION"),
-        "g1": ("openral_hal.g1", "G1_DESCRIPTION"),
-        "h1": ("openral_hal.h1", "H1_DESCRIPTION"),
-        "h2": ("openral_hal.h2", "H2_DESCRIPTION"),
-        "aloha_bimanual": ("openral_hal.aloha", "ALOHA_DESCRIPTION"),
-        "openarm": ("openral_hal.openarm", "OPENARM_DESCRIPTION"),
-        "anvil_openarm_v2": ("openral_hal.anvil_openarm_v2", "ANVIL_OPENARM_V2_DESCRIPTION"),
-    }
-    if robot_id not in py_map:
-        pytest.skip(f"no Python-side description for {robot_id!r}")
-    module_name, attr = py_map[robot_id]
+    robot_id = python_described_robot_id
+    description = RobotDescription.from_yaml(str(_repo_root() / "robots" / robot_id / "robot.yaml"))
+    module_name, attr = _PYTHON_DESCRIPTIONS[robot_id]
     import importlib
 
     module = importlib.import_module(module_name)

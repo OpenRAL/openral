@@ -263,3 +263,25 @@ def test_run_benchmark_device_override_propagates(monkeypatch: pytest.MonkeyPatc
     scenes, suite_id = _mini_suite(n_tasks=1, n_episodes=2)
     run_benchmark(scenes, suite_id=suite_id, vla=_vla_zero(), device="cpu")
     assert seen_devices == ["cpu", "cpu"]
+
+
+def test_release_episode_frames_drops_both_image_buffers() -> None:
+    """A suite keeps every EpisodeResult: its world and policy-input frames must go.
+
+    Regression: only ``frames`` was cleared, so a 3-camera ACT suite held ~4 GB of
+    ``vla_input_frames`` per 900-step episode and was OOM-killed after 14 episodes.
+    """
+    import numpy as np
+    from openral_sim.benchmark import release_episode_frames
+    from openral_sim.rollout import EpisodeResult
+
+    img = np.zeros((480, 640, 3), np.uint8)
+    ep = EpisodeResult(
+        frames=[img, img],
+        vla_input_frames=[img, img],
+        frame_grades=[None, ("complete", 1.0)],
+        actions=[np.zeros(14, np.float32)],
+    )
+    release_episode_frames(ep)
+    assert ep.frames == [] and ep.vla_input_frames == []
+    assert ep.frame_grades == [None, ("complete", 1.0)] and len(ep.actions) == 1

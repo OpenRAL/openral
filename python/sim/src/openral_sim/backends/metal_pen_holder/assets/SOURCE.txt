@@ -1,0 +1,27 @@
+Image assets of the metal_pen_holder scene. All are derived from the LeRobot v3 dataset
+makermods/pen_holder_bi_20260723_161553
+(https://huggingface.co/datasets/makermods/pen_holder_bi_20260723_161553), revision
+f9f3d9959464d123a164b1e4bc11d0f0e56ad97d, license Apache-2.0.
+
+top_plate.jpg   640x480 background plate of the static top camera
+                (videos/observation.images.top): per-pixel temporal median over the 704
+                frames sampled every 37th frame from video files 000-002 (all 41 episodes).
+                Arms, cup and pen move between those frames, so the median keeps only the
+                static desk, riser shelf, wall and the tray / cables at the right edge.
+                JPEG q92.
+shelf_wood.jpg  54x400 -> 400x54 shelf board: the plate's shelf-top pixels (rows 214-268,
+                columns 95-495), flipped and transposed so texel rows run along world y and
+                columns along world x (the scene lays it once over the board's top). JPEG q92.
+desk_wood.png   296x296 desk tile from four 224x224 clean-wood patches of the right wrist video
+                (episode 0 frames 220 / 140 / 180 at rows 0 / 64 / 0, columns 384 / 96 / 32;
+                episode 30 frame 90 at row 64, column 64). Each is rotated so its grain runs
+                vertically (structure-tensor angle), centre-cropped to 160x160, de-shaded
+                (divided by a 30 px Gaussian low-pass) and scaled to the common mean colour;
+                the four are cross-faded 2x2 (24 px seams) and then made periodic by blending
+                with its half-period roll (no mirroring). Laid as a 0.13 m tile; the left
+                wrist render darkens it by wrist_material_gain (0.65).
+pen_label.png   96x264 printed sleeve of the marker: right wrist video, episode 0 frame 228
+                (pen upright between the fingers), image rows 176-440 along the barrel and the
+                visible face unwrapped over +-60 deg (column x = 323.5 + 28.5 sin(theta)). It
+                shows both white rings, the "NO.1007" print, the text band and the grey tip
+                section; wrapped 3x around the pen over 27 %-81.5 % of its length.

@@ -196,6 +196,9 @@ def test_sequential_init_propagates_unknown_vla_error() -> None:
         # thread, concurrent with the policy thread's lerobot→transformers load.
         ("tabletop_push", True),
         ("tabletop_push/push_to_goal", True),
+        # metal_pick_place resolves `makermods:metal`, importing openral_hal too.
+        ("metal_pick_place", True),
+        ("metal_pick_place/cube_to_marker", True),
         # so101_box is NOT race-prone despite also being an SO-101 scene: it
         # imports `robot_descriptions` directly for the MJCF, never
         # `_mujoco_arm`, so nothing pulls transformers onto its env thread.

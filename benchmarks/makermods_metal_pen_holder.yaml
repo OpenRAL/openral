@@ -1,0 +1,249 @@
+# MakerMods Metal Arm Station pen holder — 10 graded layouts of the metal_pen_holder sim twin.
+#
+#   openral benchmark run --suite makermods_metal_pen_holder --rskill rskills/act-pen-holder-bi
+#
+# Scene: scenes/sim/makermods_metal_pen_holder.yaml (MuJoCo, real top-camera plate). Layouts
+# P00..P09 place the cup on the shelf (holder_start) and the pen on the desk (pen_start), x / y
+# metres in station_base, yaw degrees, from the dataset analysis of
+# makermods/pen_holder_bi_20260723_161553 (40 valid episodes, one tight cluster): P00 is the
+# dataset mean; P01..P09 a Latin hypercube (seed 42) over the 5th-95th percentile box -- cup
+# x 0.460-0.492, y 0.280-0.313, yaw -5.6..3.1; pen x 0.246-0.288, y -0.342..-0.294, yaw
+# -6.3..4.6. Cup = the left grasp point 0.102 m along the gripper axis (its centre, fitted to
+# the left wrist frames); pen = the midpoint of its two back-projected ends (the blob's pixel
+# centroid sat 2-2.5 cm short in x, toward the top camera). Each episode jitters both starts by +-5 mm / +-2 deg from its seed, so the three
+# seeds of a layout differ; the demonstrations only vary +-1-2 cm.
+#
+# Grading (restock's placement_grade contract), once the pen is released and at rest:
+# complete 1.0 (its centre of mass inside the cup, below the rim; the success) / partial 0.5
+# (part of it inside, its centre out) / semi 0.25 (lifted, resting outside); any of these ends
+# the episode; otherwise it runs 900 steps (30 s at 30 Hz; valid episodes take 546-738) and
+# fails. The cup going back to the shelf is not graded.
+#
+# Shape: bare list of BenchmarkScenes; robot_id / n_episodes / seed / metadata uniform.
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: &opts
+        joint_units: degrees
+        gripper_scale: 100.0
+        control_hz: 30.0
+        top_background: plate
+        spawn_jitter_m: 0.005
+        yaw_jitter_deg: 2.0
+      holder_start: [0.475, 0.294, 0.0]
+      pen_start: [0.27, -0.318, -1.7]  # dataset mean
+  task:
+    id: metal_pen_holder/P00
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: &meta
+    paper: "https://huggingface.co/datasets/makermods/pen_holder_bi_20260723_161553"
+    display_name: "MakerMods Metal Station pen holder (10 layouts)"
+    simulator: "MuJoCo (metal_pen_holder sim twin)"
+    honest_scope: >-
+      Sim twin of the MakerMods Metal Arm Station pen-holder rig: 10 layouts inside the
+      dataset's 5th-95th percentile spread of cup and pen start poses, each jittered +-5 mm /
+      +-2 deg per seed; 3 seeds per layout, 900 steps at 30 Hz. Graded at rest once the pen is
+      released: complete (its centre inside the cup, the success), partial (part inside),
+      semi (lifted, resting outside), fail. The cup's return to the shelf is not graded. Not
+      a published protocol; a sim proxy for the real rig, with a real top-camera background
+      plate.
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.482, 0.313, -1.9]
+      pen_start: [0.266, -0.34, -6.1]
+  task:
+    id: metal_pen_holder/P01
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.461, 0.286, 2.8]
+      pen_start: [0.262, -0.312, 3.0]
+  task:
+    id: metal_pen_holder/P02
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.484, 0.299, 0.0]
+      pen_start: [0.286, -0.321, -0.7]
+  task:
+    id: metal_pen_holder/P03
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.471, 0.294, -4.9]
+      pen_start: [0.256, -0.295, 2.1]
+  task:
+    id: metal_pen_holder/P04
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.469, 0.281, 1.1]
+      pen_start: [0.276, -0.317, 0.7]
+  task:
+    id: metal_pen_holder/P05
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.475, 0.306, 1.7]
+      pen_start: [0.267, -0.303, -3.7]
+  task:
+    id: metal_pen_holder/P06
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.491, 0.303, -4.0]
+      pen_start: [0.253, -0.307, 3.9]
+  task:
+    id: metal_pen_holder/P07
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.465, 0.292, -3.2]
+      pen_start: [0.248, -0.331, -4.5]
+  task:
+    id: metal_pen_holder/P08
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta
+
+- scene:
+    id: metal_pen_holder
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top", "wrist_left", "wrist_right"]
+    backend_options:
+      <<: *opts
+      holder_start: [0.486, 0.289, -2.7]
+      pen_start: [0.274, -0.324, -2.6]
+  task:
+    id: metal_pen_holder/P09
+    scene_id: metal_pen_holder
+    instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+    max_steps: 900
+    success_key: is_success
+  robot_id: makermods_metal_station
+  n_episodes: 3
+  seed: 0
+  metadata: *meta

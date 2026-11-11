@@ -1233,7 +1233,8 @@ class IsaacPlacementSuccess(BaseModel):
     success grade: the scene terminates the episode with ``info[success_key]`` true and
     reward 1.0 once every placement reaches it; otherwise the last step's reward is the
     grade's score, so the episode's ``total_reward`` carries the partial credit. Every
-    step's ``info["placement_grade"]`` is the current grade.
+    step's ``info["placement_grade"]`` is the current grade, ``info["placement_score"]``
+    its score.
 
     Example:
         >>> box = IsaacPlacementRegion

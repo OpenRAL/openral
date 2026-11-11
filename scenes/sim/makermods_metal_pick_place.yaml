@@ -1,0 +1,60 @@
+# MakerMods Metal — pick the orange cube and place it on the white marker.
+#
+# A sim twin of the real rig behind the LeRobot dataset HappyEthan/metal_pick_place
+# (Apache-2.0, 100 episodes, 30 fps), the data makermods/pi05_metal_pick_place_lora
+# was trained on. Every pose / size / colour default in the backend's options model
+# (openral_sim.backends.metal_pick_place._assets.MetalPickPlaceOptions) was
+# calibrated on that dataset's top + wrist videos; only the commonly tuned knobs are
+# repeated here.
+#
+#   top   — the static top camera at its fitted pose and real intrinsics (principal
+#           point included), rendered over a real background plate cut from the
+#           dataset: only arm / leader arm / cube / marker pixels come from MuJoCo.
+#   wrist — fully rendered (it moves), wood-textured desk, grey wall, white cart.
+#
+# Units: the scene speaks the dataset's units (arm joints in degrees, gripper
+# stroke 0..100 with joint8 metres = stroke / 2000) and converts exactly once —
+# an rSkill declaring action_contract.joint_units: degrees + gripper_scale: 100
+# runs on it unconverted (SCENES.register(..., converts_policy_units=True)).
+#
+#   openral sim run --config scenes/sim/makermods_metal_pick_place.yaml \
+#       --rskill rskills/pi05-metal-pick-place
+
+robot_id: makermods_metal
+
+scene:
+  id: metal_pick_place          # @SCENES.register("metal_pick_place", fixed_robot="makermods_metal")
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "wrist"]
+  backend_options:
+    joint_units: degrees
+    gripper_scale: 100.0
+    control_hz: 30.0
+    # Dataset median episode-start state (deg x6, gripper stroke).
+    initial_joint_positions: [0.74, 0.04, -0.05, 0.49, -0.10, -1.38, 2.5]
+    # Real-rig layouts A-D (cube start -> marker); A = episodes 0-29.
+    layout: A
+    spawn_jitter_m: 0.015
+    # mirror_action | static | hidden — the teleop leader arm, visual only.
+    leader_arm: mirror_action
+    # plate (real background + composited robot/cube/marker) | render
+    top_background: plate
+
+task:
+  id: metal_pick_place/cube_to_marker
+  scene_id: metal_pick_place
+  instruction: "Pick up the cube and place it at the marked location"
+  max_steps: 900
+  success_key: is_success
+
+seed: 0
+n_episodes: 1
+record_video: true
+
+metadata:
+  honest_scope: >-
+    sim twin of the HappyEthan/metal_pick_place rig; graded, geometric success judged once the
+    cube is released and at rest: complete (>= 50 % of its footprint over the 3.9 cm marker),
+    partial (> 0 %), semi (lifted but off the marker), else fail

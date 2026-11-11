@@ -290,6 +290,10 @@ class _EpisodeBuffer:
     # ever hit this; LIBERO/RoboCasa-length episodes are unaffected.
     frame_stride: int = 1
     frame_tick: int = 0
+    # Aligned with ``frames``: the placement grade of the step before each frame.
+    frame_grades: list[tuple[str, float] | None] = field(default_factory=list)
+    grade: tuple[str, float] | None = None
+    final_info: dict[str, Any] = field(default_factory=dict)
     vla_input_frames: list[NDArray[np.uint8]] = field(default_factory=list)
     joint_positions: list[NDArray[np.float32]] = field(default_factory=list)
     actions: list[NDArray[np.float32]] = field(default_factory=list)
@@ -300,6 +304,13 @@ class _EpisodeBuffer:
     budget_violations: int = 0
     # (link, other_prim) -> episode contact record (``fold_robot_contacts``).
     contacts: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+
+    def cap_video_frames(self) -> None:
+        """Keep frame grades aligned while bounding all video capture paths."""
+        while len(self.frames) >= _VIDEO_FRAME_CAP:
+            self.frames = self.frames[1::2]
+            self.frame_grades = self.frame_grades[1::2]
+            self.frame_stride *= 2
 
     @property
     def has_data(self) -> bool:
@@ -710,9 +721,8 @@ class SimRunner(InferenceRunnerBase):
                 frame = self._env.render()
                 if frame is not None:
                     self._buf.frames.append(frame)
-                    if len(self._buf.frames) >= _VIDEO_FRAME_CAP:
-                        self._buf.frames = self._buf.frames[::2]
-                        self._buf.frame_stride *= 2
+                    self._buf.frame_grades.append(self._buf.grade)
+                    self._buf.cap_video_frames()
             self._buf.frame_tick += 1
             state = self._obs.get("state") if isinstance(self._obs, dict) else None
             if state is not None:
@@ -768,11 +778,23 @@ class SimRunner(InferenceRunnerBase):
                 step_result = self._env.step(action)
                 physics_ms = (time.perf_counter() - physics_t0) * 1000.0
                 physics_span.set_attribute("physics.step_ms", physics_ms)
+            grade = step_result.info.get("placement_grade")
+            if isinstance(grade, str):
+                score = step_result.info.get("placement_score")
+                self._buf.grade = (grade, float(score) if score is not None else 0.0)
+            self._buf.final_info = {
+                k: v
+                for k, v in step_result.info.items()
+                if not k.startswith("_") and isinstance(v, (bool, int, float, str))
+            }
             if record:
                 _append_adapter_video_frames(
                     self._buf.frames,
                     step_result.info.get(_VIDEO_FRAMES_INFO_KEY),
                 )
+                pad = len(self._buf.frames) - len(self._buf.frame_grades)
+                self._buf.frame_grades.extend([self._buf.grade] * pad)
+                self._buf.cap_video_frames()
             self._obs = _rekey_obs_images(step_result.observation, self._image_rekey)
             self._buf.total_reward += step_result.reward
             self._buf.max_step_reward = max(self._buf.max_step_reward, step_result.reward)
@@ -814,6 +836,14 @@ class SimRunner(InferenceRunnerBase):
                 # Step budget hit without env signal: treat as truncation.
                 truncated = True
                 self._needs_reset = True
+            if record and self._needs_reset:
+                # Frames are captured before each step, so the ending step's own state
+                # (e.g. a scene's grade-coloured target marker) needs one more render.
+                frame = self._env.render()
+                if frame is not None:
+                    self._buf.frames.append(frame)
+                    self._buf.frame_grades.append(self._buf.grade)
+                    self._buf.cap_video_frames()
 
             # Fan out per-step state / images / action to the
             # recorder. We render here unconditionally when a recorder
@@ -949,6 +979,8 @@ class SimRunner(InferenceRunnerBase):
             latency_budget_ms=self._budget_ms,
             budget_violations=self._buf.budget_violations,
             frames=self._buf.frames,
+            frame_grades=self._buf.frame_grades,
+            final_info=self._buf.final_info,
             vla_input_frames=self._buf.vla_input_frames,
             joint_positions=self._buf.joint_positions,
             actions=self._buf.actions,

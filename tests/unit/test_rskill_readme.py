@@ -42,6 +42,19 @@ def test_nf4_derives_base_model_tree_and_quant_tags() -> None:
     assert fm["license"] == "apache-2.0"
 
 
+def test_lora_frontmatter_names_the_pinned_base_as_adapter() -> None:
+    manifest = _manifest("pi05-metal-pick-place")
+    fm = build_rskill_frontmatter(manifest)
+    assert fm["base_model"] == ["lerobot/pi05_base"]
+    assert fm["base_model_relation"] == "adapter"
+    local_base = manifest.model_copy(
+        update={"base_weights_uri": "local:///tmp/pi05", "weights_uri": "local:///tmp/adapter"}
+    )
+    local_fm = build_rskill_frontmatter(local_base)
+    assert local_fm["base_model"] == ["makermods/pi05_metal_pick_place_lora"]
+    assert local_fm["base_model_relation"] == "finetune"
+
+
 def test_detector_uses_object_detection_pipeline() -> None:
     fm = build_rskill_frontmatter(_manifest("rtdetr-coco-r18"))
     assert fm["pipeline_tag"] == "object-detection"

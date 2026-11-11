@@ -122,6 +122,37 @@ def test_inject_joint_fk_is_idempotent() -> None:
     assert once == twice, "re-injecting the same FK must not stack duplicate lines"
 
 
+def test_inject_joint_fk_touches_only_joint_and_mimic_rows() -> None:
+    """An ``end_effectors`` / ``sensors`` item named like a joint (the Metal's ``gripper``)
+    must not receive the joint's FK lines; ``mimic_joints`` rows must."""
+    manifest = (
+        "name: arm\n"
+        "joints:\n"
+        '  - name: "gripper"\n'
+        '    joint_type: "prismatic"\n'
+        "mimic_joints:\n"
+        '  - name: "finger"\n'
+        '    mimics: "gripper"\n'
+        "end_effectors:\n"
+        '  - name: "gripper"\n'
+        '    kind: "parallel_gripper"\n'
+        "sensors:\n"
+        '  - name: "finger"\n'
+        '    modality: "rgb"\n'
+    )
+    fk = {
+        "gripper": ((0.0, 0.1, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        "finger": ((0.0, 0.2, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    }
+    import yaml
+
+    data = yaml.safe_load(inject_joint_fk(manifest, fk))
+    assert data["joints"][0]["origin_xyz"] == [0, 0.1, 0]
+    assert data["mimic_joints"][0]["origin_xyz"] == [0, 0.2, 0]
+    assert "origin_xyz" not in data["end_effectors"][0]
+    assert "origin_xyz" not in data["sensors"][0]
+
+
 def test_render_blocks_emits_provenance_header_and_shapes() -> None:
     model = LoweredCollisionModel(
         collision_geometry=[

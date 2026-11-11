@@ -3598,6 +3598,7 @@ class IsaacManifestScene(IsaacSceneBase):
             }
         if self._placement_success is not None:
             info["placement_grade"] = self._placement_grade
+            info["placement_score"] = float(self._grade_scores.get(self._placement_grade, 0.0))
         self._sample_body_positions()
         pairs, _ = aggregate_robot_contacts(self._contact_points(), self._robot_prim)
         info["robot_contacts"] = [

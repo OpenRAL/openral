@@ -450,6 +450,12 @@ class EpisodeResult:
             empty otherwise.
         metadata: Free-form per-run metadata propagated from
             ``openral_core.SimEnvironment.metadata``.
+        frame_grades: Per ``frames`` entry, the ``(placement_grade, placement_score)``
+            the scene reported on the last step before that frame (``None`` before
+            the first step, or on a scene that grades nothing). Drives the live
+            outcome border of the world videos.
+        final_info: The last step's JSON-scalar ``info`` entries (``placement_grade``,
+            ``lifted``, ...; ``_``-prefixed keys dropped), for per-episode reports.
     """
 
     success: bool = False
@@ -484,6 +490,8 @@ class EpisodeResult:
     # per (robot link, other prim) pair (``fold_robot_contacts``). Empty when the
     # backend does not report contacts (``info["robot_contacts"]`` absent).
     contact_stats: list[dict[str, Any]] = field(default_factory=list)
+    frame_grades: list[tuple[str, float] | None] = field(default_factory=list)
+    final_info: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         """Human-readable single-line summary.

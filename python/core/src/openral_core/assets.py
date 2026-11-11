@@ -14,6 +14,8 @@ Grammar (``resolve_asset(ref, kind)``):
 * ``unitree:<model>`` — official Unitree description files fetched at a pinned
   commit with per-file SHA-256 (``h2``: URDF from ``unitree_ros``, MJCF from
   ``unitree_mujoco``), for robots in neither menagerie nor robot_descriptions.
+* ``makermods:<variant>`` — the MakerMods Metal arm URDF / MJCF, derived from
+  a pinned clone of the unlicensed upstream description (nothing vendored).
 * ``ros2://robot_description`` — dynamic-detection marker (URDF only); not a
   file, returned as ``None`` for the launch to subscribe at runtime.
 
@@ -104,7 +106,7 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
     raise AssetRefError(
         f"unrecognized asset ref {ref!r}; expected one of: rd:<module>, "
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
-        f"menagerie:<model>, unitree:<model>, {_ROS2_DYNAMIC}"
+        f"menagerie:<model>, unitree:<model>, makermods:<variant>, {_ROS2_DYNAMIC}"
     )
 
 
@@ -112,10 +114,10 @@ def resolve_package_uri(uri: str) -> Path:
     """Resolve a ROS ``package://<pkg>/<relpath>`` mesh URI to a file on disk.
 
     Only for the description packages OpenRAL fetches itself as pinned clones
-    (``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`` — today
-    ``openarm_description``); a sourced ROS workspace is not consulted, so the
-    answer is the same on every host. Lazy import, as ``_resolve_openarm``: the
-    fetchers stay off the import path for robots that never need them.
+    (the keys of ``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES``); a
+    sourced ROS workspace is not consulted, so the answer is the same on every
+    host. Lazy import, as ``_resolve_openarm``: the fetchers stay off the
+    import path for robots that never need them.
 
     Args:
         uri: The ``package://`` reference as the URDF spells it.
@@ -367,6 +369,54 @@ def _resolve_unitree(model: str, kind: AssetKind) -> Path:
         raise AssetRefError(f"unitree:{model} ({kind}): {exc}") from exc
 
 
+def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
+    """Resolve ``makermods:<variant>`` to a derived MakerMods Metal URDF or MJCF.
+
+    Variants: ``metal`` (one arm, root ``base_link``) and ``metal_station``
+    (two ``left_`` / ``right_`` arms on ``station_base``); each yields a URDF
+    or an MJCF, derived by ``openral_hal._makermods_metal_assets`` from a
+    pinned clone of ``makermods-robotics/metal-python-ros``. A failed clone is
+    an ``AssetFetchError`` (an offline host may skip on it); a missing
+    ``openral_hal`` or ``mujoco``, a derive failure (including an ``OSError``
+    writing the derived files into the cache), or an unknown variant / kind is
+    an ``AssetRefError``.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if kind == "srdf":
+        raise AssetRefError(f"makermods:{variant} has no srdf (urdf / mjcf only)")
+    try:
+        from openral_hal import _makermods_metal_assets as metal
+    except ImportError as exc:
+        raise AssetRefError(
+            f"makermods:{variant} needs openral_hal ({type(exc).__name__}: {exc})"
+        ) from exc
+    loaders = {
+        ("metal", "urdf"): metal.ensure_metal_urdf,
+        ("metal", "mjcf"): metal.ensure_metal_mjcf,
+        ("metal_station", "urdf"): metal.ensure_metal_station_urdf,
+        ("metal_station", "mjcf"): metal.ensure_metal_station_mjcf,
+    }
+    loader = loaders.get((variant, kind))
+    if loader is None:
+        raise AssetRefError(
+            f"unknown makermods variant {variant!r}; expected 'metal' or 'metal_station'"
+        )
+    # Only the pinned clone is a fetch (an offline host may skip on it); a
+    # missing ``mujoco`` or an upstream tree that no longer matches the derive
+    # step is a broken reference and must fail, not skip.
+    try:
+        metal.fetch_metal_clone()
+    except ROSConfigError as exc:
+        raise AssetFetchError(f"makermods:{variant} ({kind}): {exc}") from exc
+    # ``OSError``: the derive step writes into the cache (mkdir / mkstemp /
+    # rename); an unwritable cache is a broken reference, not a skip.
+    try:
+        return loader()
+    except (ROSConfigError, OSError) as exc:
+        raise AssetRefError(f"makermods:{variant} ({kind}): {exc}") from exc
+
+
 def _resolve_menagerie(model: str, kind: AssetKind) -> Path:
     """Resolve ``menagerie:<model>`` — not yet wired (YAGNI)."""
     raise AssetRefError(f"menagerie:{model} not yet wired — widowx is sim-only via SimplerEnv")
@@ -380,4 +430,5 @@ _SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
     ("openarm:", _resolve_openarm),
     ("menagerie:", _resolve_menagerie),
     ("unitree:", _resolve_unitree),
+    ("makermods:", _resolve_makermods),
 )

@@ -1,0 +1,46 @@
+# MakerMods Metal Arm Station pen holder — sim twin of the makermods/pen_holder_bi_20260723_161553
+# rig (the data makermods/act_pen_holder_bi was trained on): the two-arm station at a wood desk
+# with a riser shelf; the left arm lifts the pen cup off the shelf, the right arm drops the
+# marker into it. MuJoCo, real top-camera background plate, dataset units converted in-scene.
+#
+# Run::
+#
+#     openral sim run --config scenes/sim/makermods_metal_pen_holder.yaml \
+#       --rskill rskills/act-pen-holder-bi --save-video out/ --video-style world
+#
+# Every pose, size and colour is a MetalPenHolderOptions field (backend_options); defaults are
+# the measured station and the dataset's mean layout (cup on the shelf at (0.475, 0.294), pen on
+# the desk at (0.27, -0.318), yaw -1.7 deg, station_base frame).
+
+robot_id: makermods_metal_station
+
+scene:
+  id: metal_pen_holder          # @SCENES.register("metal_pen_holder", fixed_robot="makermods_metal_station")
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "wrist_left", "wrist_right"]
+  backend_options:
+    joint_units: degrees
+    gripper_scale: 100.0
+    control_hz: 30.0
+    # plate (real background + composited robot / cup / pen) | render
+    top_background: plate
+
+task:
+  id: metal_pen_holder/pen_into_holder
+  scene_id: metal_pen_holder
+  instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+  max_steps: 900
+  success_key: is_success
+
+seed: 0
+n_episodes: 1
+record_video: true
+
+metadata:
+  honest_scope: >-
+    sim twin of the MakerMods Metal Arm Station pen-holder rig; graded once the pen is released
+    and at rest: complete (its centre of mass inside the cup, below the rim), partial (part of
+    it inside, its centre out), semi (lifted but resting outside), else fail. The cup going back
+    to the shelf is not graded.
