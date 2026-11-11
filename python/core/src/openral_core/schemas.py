@@ -15131,10 +15131,9 @@ def reasoner_model_options() -> list[dict[str, str | None]]:
 
     Example:
         >>> opts = {o["id"]: o for o in reasoner_model_options()}
-        >>> opts["claude-opus-4-8"]["needs"], opts["gpt-5.5"]["label"]
-        ('ANTHROPIC_API_KEY', 'GPT-5.5')
-        >>> opts["cosmos3-edge"]["needs"] is None
-        True
+        >>> claude, gpt, cosmos = (opts[k] for k in ("claude-opus-4-8", "gpt-5.5", "cosmos3-edge"))
+        >>> claude.get("needs"), gpt.get("label"), cosmos.get("needs") is None
+        ('ANTHROPIC_API_KEY', 'GPT-5.5', True)
     """
     out: list[dict[str, str | None]] = []
     for model in REASONER_MODELS.values():
