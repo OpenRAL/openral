@@ -72,6 +72,8 @@ def test_default_options_change_nothing_for_existing_scenes() -> None:
         "joint_effort_limits": {},
         "physx_scene": None,
         "collision_approximation": {},
+        "link_box_colliders": {},  # empty: no link's colliders are replaced
+        "rtx_settings": {},  # empty: no render setting is touched
     }
 
 
