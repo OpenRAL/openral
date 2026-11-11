@@ -137,3 +137,16 @@ test("E-STOP sends a still-valid token at once and renews on the side; an expire
   await stop;
   assert.equal(seen[2], "Bearer t3");
 });
+
+test("a short-lived token is renewed before valid() gives it up", async () => {
+  let t = 0;
+  let n = 0;
+  const c = createTokenClient({ now: () => t, mint: async () => ({ access_token: `t${++n}`, expires_in: 15 }) });
+  await c.get();
+  t = 7_000; // renewal at 7.5 s, expiry margin at 11.25 s
+  assert.deepEqual([c.valid(), await c.get()], ["t1", "t1"]);
+  t = 7_500;
+  assert.equal(await c.get(), "t2");
+  t = 7_500 + 11_250;
+  assert.equal(c.valid(), null);
+});

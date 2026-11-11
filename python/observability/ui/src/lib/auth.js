@@ -11,8 +11,10 @@ export function renewDelayS(expiresIn, cap = Infinity) {
 // Lazy token cache: a call after ~240 s mints a fresh token and concurrent
 // callers share that one request. A forced call (a write, or a retry after a 401)
 // always mints its own: the robot takes one write per token, so two writes must
-// never share one. `valid()` is the cached token while it has not expired (10 s
-// margin), for E-STOP, which must not wait on openral.com while it holds one.
+// never share one. `valid()` is the cached token while it has not expired (a 10 s
+// margin, a quarter of a shorter life: always past the renewal mark, so `get()`
+// never holds a token `valid()` has given up), for E-STOP, which must not wait on
+// openral.com while it holds one.
 export function createTokenClient({ mint, now = Date.now }) {
   let token = null;
   let renewAt = 0;
@@ -24,7 +26,7 @@ export function createTokenClient({ mint, now = Date.now }) {
     const e = Number(r.expires_in) > 0 ? Number(r.expires_in) : 300;
     token = r.access_token;
     renewAt = now() + renewDelayS(e, 240) * 1000;
-    expAt = now() + (e - 10) * 1000;
+    expAt = now() + (e - Math.min(10, e / 4)) * 1000;
     return token;
   }
   return {
