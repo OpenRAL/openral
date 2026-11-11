@@ -680,6 +680,10 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
 
 SafetyKernelLifecycleNode::CallbackReturn
 SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
+  // Latched on the first configure attempt, not only on cleanup: a configure that
+  // returns FAILURE leaves the node UNCONFIGURED without running on_cleanup, and a
+  // peer must not relax a limit for the retry. New values need a relaunch.
+  params_locked_ = true;
   estop_reset_cooldown_s_ = this->get_parameter("estop_reset_cooldown_s").as_double();
 
   // Stand up the OTel TracerProvider before we start handling chunks so

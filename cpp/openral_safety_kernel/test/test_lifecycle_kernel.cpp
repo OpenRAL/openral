@@ -9511,3 +9511,23 @@ TEST_F(LifecycleKernelTest, SafetyLimitParametersAreRefusedAfterConfigure) {
   exec.remove_node(node->get_node_base_interface());
   node->shutdown();
 }
+
+// A configure that FAILS leaves the node UNCONFIGURED without on_cleanup; the guard
+// must not reopen for the retry (a peer relaxing a limit between attempts).
+TEST_F(LifecycleKernelTest, AFailedConfigureStillLocksTheParameters) {
+  rclcpp::NodeOptions opts;
+  auto overrides = minimal_envelope_params();
+  for (auto& p : overrides) {
+    if (p.get_name() == "n_dof") {
+      p = rclcpp::Parameter("n_dof", std::int64_t{0});  // fails on_configure
+    }
+  }
+  opts.parameter_overrides(overrides);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_param_guard_fail", opts);
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_FALSE(
+      node->set_parameter(rclcpp::Parameter("joint_velocity_max", std::vector<double>{100.0}))
+          .successful);
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("n_dof", std::int64_t{3})).successful);
+  node->shutdown();
+}

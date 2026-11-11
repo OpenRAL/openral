@@ -131,7 +131,8 @@ synthesises the envelope with `openral_safety.envelope_loader.compute_intersecti
 **Parameters are fixed once configured.** An `on_set_parameters` guard
 refuses every change to an existing parameter (`ros2 param set`, the
 `/<node>/set_parameters*` services, in-process) while the node is not
-`UNCONFIGURED`, and for ever after its first cleanup, so a limit loaded from the
+`UNCONFIGURED`, and for ever after its first configure attempt (a failed one
+included) or cleanup, so a limit loaded from the
 manifest (`joint_velocity_max`, `workspace_box_*`, `max_ee_speed_m_s`, …) cannot
 be relaxed over the ROS graph and picked up by the next configure. Launch
 overrides arrive at declaration and are unaffected, and so is a declaration of

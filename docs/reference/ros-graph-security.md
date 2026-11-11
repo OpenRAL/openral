@@ -30,7 +30,10 @@ ephemeral ports) that never lands on a reserved domain
 minus 42. A hash that lands on a reserved domain is re-hashed into the free
 ones; every other `robot_id` keeps the domain it had before the reservations
 (`openarm` stays 43; `so101_follower` moved from 52 to 39). The chosen scope is printed
-as `ros scope:` before launch. An exported non-empty value of either variable
+as `ros scope:` before launch, followed by the `export` line another terminal
+needs: `openral prompt` and `openral estop reset` run `rclpy` on their own
+shell's environment, so they reach the robot only on the same domain and
+range. An exported non-empty value of either variable
 wins; an exported empty value counts as unset. Simulations are unchanged
 (`LOCALHOST`, domain 77). Implementation:
 `openral_cli._dds_scope.confine_real_scope`.
@@ -38,17 +41,21 @@ wins; an exported empty value counts as unset. Simulations are unchanged
 **Networked graphs need an explicit opt-in.** If `ROS_STATIC_PEERS` is set, or
 `ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST` / `OFF`, the deploy
 refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set, and
-logs `dds_scope.real_robot_graph_networked` as a warning when it is. Opt in
+logs `dds_scope.real_robot_graph_networked` as a warning when it is. An unset
+range still defaults to `LOCALHOST` when only `ROS_STATIC_PEERS` is exported,
+so an opted-in graph reaches the listed peers, not the whole subnet. Opt in
 only on a trusted, isolated network (a robot-only VLAN or a direct cable).
 
 **Kernel limits are fixed after configure.** The safety kernel refuses every
-`set_parameters` call once it has left `UNCONFIGURED`, and after any cleanup,
+`set_parameters` call once it has left `UNCONFIGURED`, and after its first
+configure attempt (a failed one included) or any cleanup,
 so a peer cannot relax a limit loaded from the manifest. Change a limit in
 `robot.yaml` and relaunch.
 
 **A hand-run launch is checked too.** `openral deploy run` sets the defaults
 above; a hand-run
-`ros2 launch openral_rskill_ros deploy_e2e.launch.py hal_mode:=real` gets no
+`ros2 launch openral_rskill_ros deploy_e2e.launch.py hal_mode:=real` (any
+`hal_mode` other than `sim`) gets no
 defaults but applies the same decision to the environment it was started with,
 and refuses with `ROSConfigError` when the graph would reach other hosts —
 including when `ROS_AUTOMATIC_DISCOVERY_RANGE` is unset, which ROS reads as
@@ -58,6 +65,12 @@ non-reserved `ROS_DOMAIN_ID` first, or set `OPENRAL_ALLOW_NETWORK_ROS=1`.
 it override both variables. The shared decision is
 `openral_core.ros_graph_scope.require_host_confined_ros_scope`; the launch hook
 is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
+
+**Not covered here: the deadman watchdog's deadlines.**
+`openral_deadman_watchdog` still declares `safe_action_deadline_s` /
+`first_chunk_deadline_s` writable and reads them every tick; a participant on
+the graph can raise them. Host confinement is the only control until they are
+made read-only (Safety-WG follow-up).
 
 **Unitree G1: the blend parameters stay writable (open risk).** NVIDIA's
 `SafetyController` (`isaac_ros_deploy` f3aa6b89, `deps.repos`) declares
