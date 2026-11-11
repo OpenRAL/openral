@@ -87,3 +87,53 @@ test("findRobot only accepts https origins (http for loopback dev)", () => {
   assert.equal(findRobot(list("https://r-a.openral.com"), "b"), null);
   assert.equal(findRobot(null, "a"), null);
 });
+
+test("concurrent writes each get their own token", async () => {
+  let n = 0;
+  const auth = createTokenClient({
+    mint: async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return { access_token: `t${++n}`, expires_in: 300 };
+    },
+  });
+  const seen = [];
+  const api = createApi({
+    base: "https://r-1.openral.com",
+    auth,
+    fetch: async (url, init) => (seen.push(init.headers.get("Authorization")), { status: 200 }),
+  });
+  await Promise.all([1, 2, 3].map(() => api.call("/api/actions/prompt", { method: "POST" })));
+  assert.equal(new Set(seen).size, 3);
+});
+
+test("E-STOP sends a still-valid token at once and renews on the side; an expired one is never sent", async () => {
+  let t = 0;
+  let n = 0;
+  let release;
+  const auth = createTokenClient({
+    now: () => t,
+    mint: async () => {
+      if (n >= 1) await new Promise((r) => (release = r)); // the website stalls
+      return { access_token: `t${++n}`, expires_in: 300 };
+    },
+  });
+  const seen = [];
+  const api = createApi({
+    base: "https://r-1.openral.com",
+    auth,
+    fetch: async (url, init) => (seen.push(init.headers.get("Authorization")), { status: 200 }),
+  });
+  await api.call("/api/state"); // t1, renew due at 240 s, expires at 300 s
+  t = 250_000;
+  await api.call("/api/actions/estop", { method: "POST" }); // does not wait on the stalled mint
+  assert.deepEqual(seen, ["Bearer t1", "Bearer t1"]);
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  t = 600_000; // t2 (minted at 250 s) expired too
+  const stop = api.call("/api/actions/estop", { method: "POST" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(seen.length, 2); // waits for a fresh token instead of sending an expired one
+  release();
+  await stop;
+  assert.equal(seen[2], "Bearer t3");
+});
