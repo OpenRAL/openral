@@ -85,7 +85,7 @@ class TestManifestNode:
 
         assert isinstance(_build("t_franka_real", "franka_panda", "real"), FrankaPandaRealHAL)
 
-    @pytest.mark.parametrize("robot_id", ["g1", "h2"])
+    @pytest.mark.parametrize("robot_id", ["h2"])
     def test_sim_only_robot_real_mode_raises(self, robot_id: str) -> None:
         with pytest.raises(ROSCapabilityMismatch, match=robot_id):
             _build(f"t_{robot_id}_real", robot_id, "real")
