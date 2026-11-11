@@ -1447,17 +1447,11 @@
     <parent link="openarm_right_ee_base_link" />
     <child link="openarm_right_grasp_frame" />
   </joint>
-  <link name="left_wrist_camera_link">
-    <visual>
-      <geometry>
-        <box size="0.04 0.04 0.04" />
-      </geometry>
-    </visual>
-  </link>
+  <link name="left_wrist_camera_link" />
   <joint name="left_wrist_camera_joint" type="fixed">
     <parent link="openarm_left_ee_base_link" />
     <child link="left_wrist_camera_link" />
-    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.05 -0.03" />
+    <origin rpy="-2.100862 1.142449 -2.143093" xyz="0.023 0.0182 -0.10236" />
   </joint>
   <link name="left_wrist_camera_optical_frame" />
   <joint name="left_wrist_camera_optical_joint" type="fixed">
@@ -1465,17 +1459,11 @@
     <child link="left_wrist_camera_optical_frame" />
     <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
   </joint>
-  <link name="right_wrist_camera_link">
-    <visual>
-      <geometry>
-        <box size="0.04 0.04 0.04" />
-      </geometry>
-    </visual>
-  </link>
+  <link name="right_wrist_camera_link" />
   <joint name="right_wrist_camera_joint" type="fixed">
     <parent link="openarm_right_ee_base_link" />
     <child link="right_wrist_camera_link" />
-    <origin rpy="0.0 0.0 0.0" xyz="0.0 -0.05 -0.03" />
+    <origin rpy="2.10087 1.142449 2.143093" xyz="0.023 -0.0182 -0.10236" />
   </joint>
   <link name="right_wrist_camera_optical_frame" />
   <joint name="right_wrist_camera_optical_joint" type="fixed">

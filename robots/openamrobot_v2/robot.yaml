@@ -16,7 +16,7 @@
 #
 # UPSTREAM IS PRE-RELEASE (rc.1 2026-11-20, v2.0.0 2026-12-18; nothing is
 # physically accepted yet). Upstream marks these as placeholders: the wrist
-# camera poses, the 0.400 m wheel track, the lift's velocity/effort (DOLD
+# camera poses (the URDF uses OpenArm's wrist mount instead), the 0.400 m wheel track, the lift's velocity/effort (DOLD
 # catalogue, "provisional") and every acceleration limit. Re-sync at v2.0.0.
 #
 # The MuJoCo twin (`openarm:openamrobot_v2`) is built from this URDF at runtime by
@@ -476,7 +476,8 @@ hal:
 # Upstream models the ZED body behind `head_camera_link`'s origin (its front face is
 # at x = 0), so the lens sits 5 mm ahead of it, looking along +x
 # (tests/unit/test_openamrobot_v2_head_zed_matches_openarm.py).
-# Wrists: frames in the URDF, upstream placeholders on placeholder poses; the twin's
+# Wrists: frames in the URDF at the OpenArm twin's wrist-camera mount (upstream's
+# placeholder poses looked sideways, README step 6); the twin's
 # MJCF carries a camera of each name on the matching optical frame
 # (openral_hal._openamrobot_v2_assets), which Isaac also mounts from.
 sensors:

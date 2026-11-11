@@ -18,7 +18,8 @@ once per URDF revision and caches the result under
   finger kp 30 kv 0.2). The lift takes that file's ``position_lifter`` kv and
   forcerange with a stiffer kp (see ``_LIFT_KP``). The base gains are stiff
   tracking gains for a kinematic base, not motor data.
-* add the mimic-finger equality, the wrist cameras on the URDF optical frames,
+* add the mimic-finger equality, the wrist cameras on the URDF optical frames
+  (OpenArm's wrist mount),
   and a visual-only floor. The head ZED is spliced by the generic camera rig
   from the manifest's ``sim_placement``, on upstream's ``head_camera_link`` (not
   OpenArm's measured mount, which lands inside the Getac tablet here).
@@ -172,10 +173,7 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
         ("wrist_left", "left_wrist_camera_optical_frame"),
         ("wrist_right", "right_wrist_camera_optical_frame"),
     ):
-        # 3 cm out along the optical axis, clear of the mount's own marker box.
-        spec.body(frame_body).add_camera(
-            name=camera, pos=[0, 0, 0.03], quat=[0, 1, 0, 0], fovy=55.4
-        )
+        spec.body(frame_body).add_camera(name=camera, pos=[0, 0, 0], quat=[0, 1, 0, 0], fovy=55.4)
 
     # A 1 m checker so camera frames show the base moving.
     spec.add_texture(

@@ -40,7 +40,15 @@ normalised:
    Upstream's root is massless and empty, and Isaac's URDF converter drops such a
    link. Its two children (`base_link`, `lift_column_base_link`) then become two
    articulations fixed to the world, and the lift and arms fall outside the one the
-   scene drives. Write the result with `ET.indent`.
+   scene drives.
+6. Replace upstream's placeholder wrist cameras with OpenArm's: drop the 4 cm marker
+   boxes on `left/right_wrist_camera_link`, and set `left/right_wrist_camera_joint`
+   to the OpenArm twin's `camera_wrist_left/right` mount on `openarm_*_ee_base_link`
+   (`openarm_v20_bimanual.xml`: xyz `0.023 ±0.0182 -0.10236`, rpy
+   `-2.100862 1.142449 -2.143093` left and `2.10087 1.142449 2.143093` right, so that
+   the optical frame below is that camera). Upstream's poses looked along the hand's
+   +x and never saw the fingers (`tests/unit/test_openamrobot_v2_wrist_cameras.py`).
+   Write the result with `ET.indent`.
 
 ## Simulation
 
@@ -229,10 +237,9 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
       obstacles) and a hazard-log update for robots/openarm. Which shape the
       physical link6 has is still worth confirming with Enactic: the union covers
       both.
-  - Not modelled: the wrist cameras. They are visual-only placeholder cubes
-    in the URDF.
+  - Not modelled: the wrist cameras (frames only in the URDF).
 - **Upstream placeholders.** Upstream marks these as placeholders: the wrist
-  camera poses, the 0.400 m wheel track, the lift speed and effort (DOLD
+  camera poses (replaced here by OpenArm's mount, step 6 above), the 0.400 m wheel track, the lift speed and effort (DOLD
   catalogue, "provisional") and every acceleration limit. Upstream has also not
   accepted any hardware physically yet. Re-sync at v2.0.0 (2026-12-18).
 - **Placeholder sensors.** Camera intrinsics here are nominal, and the base
