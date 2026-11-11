@@ -121,7 +121,7 @@ function CameraStrip({ cams, snap, api, cfg }) {
   if (cams.length === 0) return null;
   const Camera = PANELS.camera;
   return (
-    <section className="cams" aria-label="Cameras" data-count={cams.length}>
+    <section className="cams" aria-label="Cameras" style={{ "--cams": cams.length }}>
       {cams.map((p) => (
         <div className="cam-slot" key={p.id}>
           <Boundary title={p.title} reset={snap}>

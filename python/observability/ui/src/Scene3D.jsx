@@ -332,6 +332,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
         stickFigure(robot, w.colors.accent);
       }
       w.meshesMissing = missing;
+      w.fitPending = true; // frame the robot once its links are posed
       setInfo({ robot: "ok", meshesMissing: missing });
     };
     const loader = new URDFLoader(noFetchManager());
@@ -404,6 +405,8 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       meshesMissing: false,
       tfVersion: 0,
       placedTf: -1,
+      view: { c: [0, 0, 0.12], r: 0.3 },
+      fitPending: false,
       replace: true, // something was (re)drawn: place it even if TF did not move
       map: null,
       cloud: null,
@@ -522,6 +525,10 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       }
       if (L.tf) drawAxes(w, at);
     }
+    if (w.fitPending && w.robot) {
+      w.fitPending = false;
+      fitView(w);
+    }
     // No TF for the links (no robot_state_publisher): fall back to joint states,
     // which is right only where the HAL publishes URDF joint names and units.
     if (js && w.robot && !w.robotFromTf && Array.isArray(js.name)) {
@@ -532,6 +539,25 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       w.dirty = true;
     }
     if (L.objects) drawObjects(w, at);
+  }
+
+  // Frame the robot: a desk arm and a bimanual torso differ by several times in size,
+  // so the view presets are scaled to the robot's bounding sphere.
+  function fitView(w) {
+    w.robot.updateWorldMatrix(true, true);
+    const sphere = new THREE.Box3().setFromObject(w.robot).getBoundingSphere(new THREE.Sphere());
+    if (!Number.isFinite(sphere.radius) || sphere.radius <= 0) return;
+    w.view = { c: sphere.center.toArray(), r: Math.max(0.15, sphere.radius) };
+    setView(w, "perspective");
+  }
+
+  function setView(w, name) {
+    const { c, r } = w.view;
+    const d = r * 2.4;
+    const eye = { perspective: [0.62 * d, -0.62 * d, 0.48 * d], top: [0, -0.001, 1.2 * d], side: [0, -d, 0.15 * d] }[name];
+    w.camera.position.set(c[0] + eye[0], c[1] + eye[1], c[2] + eye[2]);
+    w.controls.target.set(c[0], c[1], c[2]);
+    w.dirty = true;
   }
 
   function drawMap(w) {
@@ -669,13 +695,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
     const list = id === "tf" ? LAYER_TOPICS.tf : LAYER_TOPICS[id] || [];
     return list.some((t) => topics.includes(t));
   };
-  const view = (pos, target) => () => {
-    const w = world.current;
-    if (!w) return;
-    w.camera.position.set(...pos);
-    w.controls.target.set(...target);
-    w.dirty = true;
-  };
+  const view = (name) => () => world.current && setView(world.current, name);
 
   return (
     <section className="scene" aria-label="3D scene">
@@ -692,13 +712,13 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
         ))}
       </div>
       <div className="scene-views">
-        <button type="button" className="glass-btn" onClick={view([0.55, -0.55, 0.45], [0, 0, 0.12])}>
+        <button type="button" className="glass-btn" onClick={view("perspective")}>
           Perspective
         </button>
-        <button type="button" className="glass-btn" onClick={view([0, -0.001, 1.4], [0, 0, 0])}>
+        <button type="button" className="glass-btn" onClick={view("top")}>
           Top
         </button>
-        <button type="button" className="glass-btn" onClick={view([0, -1.1, 0.25], [0, 0, 0.15])}>
+        <button type="button" className="glass-btn" onClick={view("side")}>
           Side
         </button>
       </div>

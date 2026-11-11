@@ -119,7 +119,9 @@
   }
 }
 
-/* ── cameras: present ones centered, up to a third of the row each ── */
+/* ── cameras: one row, centered. Up to three take a third of the row each; more
+   share the row equally (--cams is the number shown), so the 3D scene below stays
+   on screen. They wrap only when a tile would get narrower than 180px. ── */
 .cams {
   display: flex;
   justify-content: center;
@@ -127,8 +129,8 @@
   gap: 12px;
 }
 .cam-slot {
-  flex: 0 1 calc((100% - 24px) / 3);
-  min-width: min(100%, 240px);
+  flex: 0 1 calc((100% - (max(var(--cams, 3), 3) - 1) * 12px) / max(var(--cams, 3), 3));
+  min-width: min(100%, 180px);
 }
 @media (max-width: 700px) {
   .cam-slot {
