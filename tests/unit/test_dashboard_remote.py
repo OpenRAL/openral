@@ -523,6 +523,32 @@ def test_a_remote_port_needs_a_linked_robot(
         run_dashboard(remote_port=4319)
 
 
+def test_an_untrusted_enrolment_refuses_only_the_remote_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asked for the tunnel listener, a refused enrolment is an error naming the issuer."""
+    from openral_observability.dashboard.server import run_dashboard
+
+    stored = tmp_path / "robot.json"
+    stored.write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "robot": "r1",
+                "aud": "https://r-r1.openral.com",
+                "org": "",
+                "iss": "https://evil.example/api/auth",
+                "jwks": "https://evil.example/api/auth/jwks",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(stored))
+    monkeypatch.delenv("OPENRAL_TRUSTED_ISSUERS", raising=False)
+    with pytest.raises(ValueError, match="trusted issuer"):
+        run_dashboard(remote_port=4319)
+
+
 @pytest.mark.asyncio
 async def test_a_dns_rebound_page_is_not_the_local_operator() -> None:
     """A page rebound to 127.0.0.1 sends a matching Origin and Host, but not this machine's."""
