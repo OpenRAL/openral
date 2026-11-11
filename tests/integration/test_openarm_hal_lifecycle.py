@@ -82,11 +82,11 @@ def _lifecycle_harness() -> Iterator[tuple[Any, Any, dict[str, list[Any]]]]:
     # composition + HAL kwargs (gravity_enabled=False, settle_steps=4 so a single
     # safe_action moves qpos visibly) come from the manifest; cameras render via
     # SimSensorBridge + OpenArmMujocoHAL.read_images. viewer off (headless).
-    node = ManifestHALLifecycleNode("openral_hal_openarm")
     composition = DeployScene.from_yaml(str(_OPENARM_SCENE)).composition
     assert composition is not None
-    node.set_parameters(
-        [
+    node = ManifestHALLifecycleNode(
+        "openral_hal_openarm",
+        parameter_overrides=[
             rclpy.parameter.Parameter("robot_yaml", value=str(_OPENARM_YAML)),
             rclpy.parameter.Parameter("hal_mode", value="sim"),
             rclpy.parameter.Parameter("publish_rate_hz", value=60.0),

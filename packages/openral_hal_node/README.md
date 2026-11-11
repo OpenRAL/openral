@@ -45,7 +45,10 @@ Declared in `ManifestHALLifecycleNode` / `HALLifecycleNodeBase`
 `calibration_dir`, `hal_transport_json`), `scene_composition_json`,
 `viewer_enabled`, `walking_enabled`, the camera / scan / depth / odom rates,
 `publish_rate_hz`, `urdf_joint_names`, and the `vision_attachment_*` evidence-producer
-group (default off). Publishes `/joint_states` + `~/joint_states`; subscribes
+group (default off). Every one is **read-only**: set it at launch (`-p` / params
+file) — `ros2 param set` and any DDS peer's `~/set_parameters` are refused, because
+`on_configure` re-reads the parameters that name code, files and hardware
+addresses. Publishes `/joint_states` + `~/joint_states`; subscribes
 `/openral/safe_action` and `/openral/estop`; mobile bases also publish `/odom`,
 the `odom -> base_link` TF and consume `/cmd_vel`.
 

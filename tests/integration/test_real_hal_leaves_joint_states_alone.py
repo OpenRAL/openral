@@ -75,9 +75,9 @@ def _real_mode_node() -> Iterator[Any]:
     owns_context = not rclpy.ok()
     if owns_context:
         rclpy.init()
-    node = ManifestHALLifecycleNode("openral_hal_openarm")
-    node.set_parameters(
-        [
+    node = ManifestHALLifecycleNode(
+        "openral_hal_openarm",
+        parameter_overrides=[
             rclpy.parameter.Parameter("robot_yaml", value=str(_OPENARM_YAML)),
             rclpy.parameter.Parameter("hal_mode", value="real"),
         ],

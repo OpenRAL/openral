@@ -73,13 +73,13 @@ def node_and_executor() -> Iterator[tuple[Any, Any]]:
     # sim (no sim_env_yaml) → PandaMobileHAL; MobileBaseBridge (gated on the
     # manifest's base_joints) publishes /odom + TF + /cmd_vel; SimSensorBridge
     # publishes the /scan no-hit fan.
-    node: Any = ManifestHALLifecycleNode("openral_hal_panda_mobile")
-    node.set_parameters(
-        [
+    node: Any = ManifestHALLifecycleNode(
+        "openral_hal_panda_mobile",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(_PANDA_MOBILE_YAML)),
             Parameter("hal_mode", value="sim"),
             Parameter("viewer_enabled", value=False),
-        ]
+        ],
     )
     executor = SingleThreadedExecutor()
     executor.add_node(node)
