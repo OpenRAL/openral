@@ -27,6 +27,7 @@
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <openral_msgs/msg/attached_collision_primitive.hpp>
 #include <rclcpp/qos.hpp>
 
@@ -646,6 +647,27 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<double>("collision_predict_lambda", 0.05);
   this->declare_parameter<double>("collision_predict_margin_growth_m", 0.01);
   this->declare_parameter<std::int64_t>("collision_predict_max_steps", 0);
+
+  // Registered after every declaration (declare_parameter runs these callbacks,
+  // and launch overrides arrive through it). Refuses any runtime change once the
+  // node has left UNCONFIGURED, or ever after a cleanup: a limit loaded from the
+  // manifest must not be relaxable over the ROS graph.
+  param_guard_ =
+      this->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful =
+            !params_locked_ && this->get_current_state().id() ==
+                                   lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED;
+        if (!result.successful) {
+          result.reason =
+              "openral_safety_kernel parameters are fixed after configure; relaunch with new "
+              "values instead";
+          RCLCPP_WARN(this->get_logger(), "refused runtime change of %zu parameter(s)%s%s",
+                      params.size(), params.empty() ? "" : ", first: ",
+                      params.empty() ? "" : params.front().get_name().c_str());
+        }
+        return result;
+      });
 }
 
 SafetyKernelLifecycleNode::CallbackReturn
@@ -1208,6 +1230,7 @@ SafetyKernelLifecycleNode::on_deactivate(const rclcpp_lifecycle::State& state) {
 
 SafetyKernelLifecycleNode::CallbackReturn
 SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
+  params_locked_ = true;
   diagnostics_timer_.reset();
   voxel_grid_.provider_gate = ProviderGate{};
   provider_replaces_region_ = false;

@@ -416,6 +416,13 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr estop_reset_srv_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
 
+  // Every parameter is configuration, fixed once the node leaves UNCONFIGURED:
+  // `ros2 param set` on a running kernel (joint_velocity_max, workspace_box_*,
+  // ...) would otherwise be re-read on the next configure. `params_locked_`
+  // latches on cleanup so cleanup -> set -> configure cannot relax them either.
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_guard_;
+  bool params_locked_{false};
+
   // Loaded envelope (populated on_configure).
   EnvelopeIntersection envelope_;
   bool envelope_loaded_{false};

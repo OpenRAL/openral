@@ -9444,3 +9444,70 @@ TEST_F(LifecycleKernelTest, AProviderOwnedRowZeroReadsTheMeasuredState) {
   EXPECT_EQ(moved.passed, std::vector<bool>{false});
   EXPECT_TRUE(moved.latched);
 }
+
+// Security (real-robot DDS confinement): the kernel's limits are configuration.
+// A peer on the ROS graph must not relax them with `ros2 param set` — the values
+// were re-read on the next configure, so a refused change has to be refused
+// outright, not just ignored until then. Driven through the real lifecycle state
+// machine and the real /set_parameters service, as an attacker would reach it.
+TEST_F(LifecycleKernelTest, SafetyLimitParametersAreRefusedAfterConfigure) {
+  rclcpp::NodeOptions opts;
+  auto overrides = minimal_envelope_params();
+  overrides.emplace_back("workspace_box_min_xyz", std::vector<double>{-0.5, -0.5, 0.0});
+  overrides.emplace_back("workspace_box_max_xyz", std::vector<double>{0.5, 0.5, 0.8});
+  opts.parameter_overrides(overrides);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_param_guard", opts);
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+  auto helper = std::make_shared<rclcpp::Node>("param_guard_attacker");
+  auto client = std::make_shared<rclcpp::AsyncParametersClient>(helper, "kernel_param_guard");
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper);
+  spin_until(exec, [&] { return client->service_is_ready(); }, std::chrono::milliseconds(5000));
+  ASSERT_TRUE(client->service_is_ready());
+
+  const std::vector<rclcpp::Parameter> relaxed{
+      rclcpp::Parameter("joint_velocity_max", std::vector<double>{100.0, 100.0, 100.0}),
+      rclcpp::Parameter("joint_torque_max", std::vector<double>{1000.0, 1000.0, 1000.0}),
+      rclcpp::Parameter("workspace_box_min_xyz", std::vector<double>{-9.0, -9.0, -9.0}),
+      rclcpp::Parameter("workspace_box_max_xyz", std::vector<double>{9.0, 9.0, 9.0}),
+      rclcpp::Parameter("max_ee_speed_m_s", 50.0),
+      rclcpp::Parameter("max_force_n", 1.0e6),
+      rclcpp::Parameter("self_collision_margin_m", -1.0),
+      rclcpp::Parameter("estop_reset_cooldown_s", 0.0),
+  };
+  for (const auto& p : relaxed) {
+    auto fut = client->set_parameters({p});
+    spin_until(
+        exec, [&] { return fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready; },
+        std::chrono::milliseconds(5000));
+    ASSERT_EQ(fut.wait_for(std::chrono::seconds(0)), std::future_status::ready) << p.get_name();
+    const auto results = fut.get();
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_FALSE(results[0].successful) << p.get_name() << " was relaxable over the graph";
+  }
+  // The in-process path is refused too (same callback).
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("deadman_required", false)).successful);
+
+  EXPECT_EQ(node->get_parameter("joint_velocity_max").as_double_array(),
+            (std::vector<double>{3.15, 3.15, 3.15}));
+  EXPECT_EQ(node->get_parameter("workspace_box_max_xyz").as_double_array(),
+            (std::vector<double>{0.5, 0.5, 0.8}));
+  EXPECT_DOUBLE_EQ(node->get_parameter("max_ee_speed_m_s").as_double(), 0.5);
+
+  // cleanup -> set -> configure must not relax them either: cleanup latches.
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_FALSE(node->set_parameter(relaxed[0]).successful);
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->envelope().joint_velocity_max.size(), 3U);
+  for (const double v : node->envelope().joint_velocity_max) {
+    EXPECT_LE(v, 3.15) << "the re-configured envelope must keep the loaded limit";
+  }
+  EXPECT_DOUBLE_EQ(node->envelope().max_ee_speed_m_s, 0.5);
+  exec.remove_node(helper);
+  exec.remove_node(node->get_node_base_interface());
+  node->shutdown();
+}
