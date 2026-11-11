@@ -421,6 +421,19 @@ async def test_viz_ticket_is_256_bits_and_needs_a_token(issuer: FakeIssuer, tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_token_inside_its_exp_leeway_mints_no_dead_ticket(
+    issuer: FakeIssuer, tmp_path: Path
+) -> None:
+    """Verified within the 60 s leeway, its ticket would be born expired: 401, re-mint."""
+    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
+    late = issuer.mint(role="viewer", exp=int(time.time()) - 10)
+    async with _remote(app) as client:
+        resp = await client.post("/api/viz/ticket", headers=_auth(late))
+    assert resp.status_code == 401, resp.text
+    assert resp.headers["www-authenticate"].startswith("Bearer")
+
+
+@pytest.mark.asyncio
 async def test_viz_index_carries_the_robot_layout_under_its_csp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -655,8 +668,10 @@ async def test_a_forwarded_request_on_the_local_listener_is_refused(
         read = await c.get("/api/config", headers=forwarded)
         write = await c.post("/api/actions/estop_reset", json={"args": {}}, headers=forwarded)
         plain = await c.get("/api/config")
+        stop = await c.post("/api/actions/estop", json={"args": {}}, headers=forwarded)
     assert (read.status_code, write.status_code) == (403, 403)
     assert plain.json()["mode"] == "local"
+    assert stop.status_code != 403, stop.text  # a stop is never refused by the gate
 
 
 def test_a_forwarded_websocket_on_the_local_listener_is_refused() -> None:

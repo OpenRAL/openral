@@ -661,3 +661,16 @@ def test_the_viewer_copy_of_a_camera_cloud_has_its_own_topic() -> None:
         re.fullmatch(p, _b2.viz_cloud_topic("/openral/world_cloud/self_filtered_rgb"))
         for p in _topics.BUCKET2_TOPICS
     )
+
+
+def test_decimate_cloud_reads_an_rclpy_uint8_array_without_copying_it_first() -> None:
+    """rclpy hands ``uint8[]`` as ``array.array('B')``; a memoryview of it is accepted."""
+    import array
+
+    import numpy as np
+    from openral_foxglove_bringup.bucket2_markers import decimate_cloud
+
+    pts = np.array([[0, 0, 0, 1], [np.nan, 0, 0, 1], [2, 0, 0, 1]], dtype=np.float32)
+    out, n = decimate_cloud(memoryview(array.array("B", pts.tobytes())), 16, 0, 10)
+    assert n == 2
+    assert np.frombuffer(out, dtype=np.float32).reshape(-1, 4)[:, 0].tolist() == [0.0, 2.0]

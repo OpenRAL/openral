@@ -90,6 +90,17 @@ async def test_the_lan_reads_but_cannot_write_and_another_site_cannot_write() ->
     assert not settings_path().exists()
 
 
+@pytest.mark.asyncio
+async def test_a_lan_viewer_sees_that_a_key_is_set_but_no_part_of_it() -> None:
+    from openral_observability.dashboard.robot_settings import save_setting
+
+    save_setting("ANTHROPIC_API_KEY", _KEY)
+    async with _client(("192.168.1.20", 50000)) as lan:
+        body = (await lan.get("/api/settings")).json()
+    assert body["values"]["ANTHROPIC_API_KEY"] == {"set": True}
+    assert _KEY[-4:] not in str(body["values"])
+
+
 def test_a_deploy_applies_them_with_the_environment_winning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,12 +119,18 @@ def test_a_deploy_applies_them_with_the_environment_winning(
         "gpt-5.5",
         "openai",
     )
-    # A variable set before the deploy wins over the console.
+    # A variable set before the deploy wins over the whole console set: the console's
+    # OpenAI key is never paired with an inherited model or endpoint.
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-5-5")
     monkeypatch.delenv("OPENRAL_REASONER_API_KEY")
     monkeypatch.delenv("OPENRAL_REASONER_ENDPOINT")
-    assert "OPENRAL_REASONER_MODEL" not in apply_console_settings(echo=lambda _: None)
+    assert apply_console_settings(echo=lambda _: None) == []
     assert os.environ["OPENRAL_REASONER_MODEL"] == "claude-opus-5-5"
+    assert "OPENRAL_REASONER_API_KEY" not in os.environ
+    monkeypatch.delenv("OPENRAL_REASONER_MODEL")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "https://proxy.example/v1")
+    assert apply_console_settings(echo=lambda _: None) == []
+    assert "OPENRAL_REASONER_API_KEY" not in os.environ
 
 
 def test_a_cloud_model_without_its_key_leaves_the_account_settings_in_charge() -> None:

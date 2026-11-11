@@ -111,22 +111,32 @@ def save_setting(name: str, value: str, path: Path | None = None) -> dict[str, s
     return current
 
 
-def shown(values: dict[str, str]) -> dict[str, dict[str, object]]:
-    """What the pane may see: a secret only as set with its last four characters.
+_MIN_HINTED_LEN = 12
+"""A secret shorter than this shows no hint: its last four characters would be most of it."""
+
+
+def shown(values: dict[str, str], *, hints: bool = True) -> dict[str, dict[str, object]]:
+    """What the pane may see: a secret only as set, with its last four characters.
+
+    The hint is left out when ``hints`` is false (a viewer that is not the local
+    operator) and for a secret too short for four characters to be only a hint.
 
     Example:
         >>> shown({"ANTHROPIC_API_KEY": "sk-ant-secret-1234"})
         {'ANTHROPIC_API_KEY': {'set': True, 'hint': '…1234'}}
+        >>> shown({"ANTHROPIC_API_KEY": "sk-ant-secret-1234"}, hints=False)
+        {'ANTHROPIC_API_KEY': {'set': True}}
     """
     out: dict[str, dict[str, object]] = {}
     for name, value in values.items():
         if name not in SETTINGS:
             continue
-        out[name] = (
-            {"set": True, "hint": f"…{value[-4:]}"}
-            if SETTINGS[name]["secret"]
-            else {"set": True, "value": value}
-        )
+        if not SETTINGS[name]["secret"]:
+            out[name] = {"set": True, "value": value}
+        elif hints and len(value) >= _MIN_HINTED_LEN:
+            out[name] = {"set": True, "hint": f"…{value[-4:]}"}
+        else:
+            out[name] = {"set": True}
     return out
 
 

@@ -52,6 +52,7 @@ test("an unadvertised topic drops its untaken snapshot", async () => {
     s.server.removeChannel(s.ch.scan);
     await until(() => b.topics().length === 2);
     assert.equal(b.latest.has("/scan"), false);
+    assert.equal(b.decoders.has(s.ch.scan), false); // a reused channel id gets a fresh decoder
   } finally {
     b.close();
     await s.close();

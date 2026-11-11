@@ -869,12 +869,13 @@ def _served_manifest(manifest: RobotManifest, principal: Principal) -> dict[str,
 
 def _settings_body(principal: Principal) -> dict[str, object]:
     """``GET /api/settings``: openral.com's settings shape, for this robot's own file."""
+    operator = principal.mode == "local" and ROLE_RANK[principal.role] >= ROLE_RANK["operator"]
     return {
         "scope": "robot",
-        "canWrite": principal.mode == "local"
-        and ROLE_RANK[principal.role] >= ROLE_RANK["operator"],
+        "canWrite": operator,
         "settings": SETTINGS,
-        "values": shown(load_settings()),
+        # Key hints only for the operator at the robot, never for a LAN viewer.
+        "values": shown(load_settings(), hints=operator),
     }
 
 
@@ -1056,10 +1057,13 @@ async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Respo
     if is_remote(request.scope):
         return await _gate_remote(request, call_next)
     client = request.client.host if request.client else ""
-    if _via_tunnel(request.headers):
+    forwarded = _via_tunnel(request.headers)
+    if forwarded:
         _logger.warning("dashboard.tunnel_headers_on_local_listener", path=request.url.path)
-        return _error(403, "a forwarded request on the local listener (tunnel misrouted?)")
-    loopback = _is_loopback(client)
+        # A stop is never refused: it goes through as a LAN viewer's would.
+        if request.url.path != "/api/actions/estop":
+            return _error(403, "a forwarded request on the local listener (tunnel misrouted?)")
+    loopback = not forwarded and _is_loopback(client)
     if loopback and not _local_host(request.headers.get("host", ""), request.app.state.local_hosts):
         _logger.warning("dashboard.host_refused", host=request.headers.get("host"))
         return _error(403, "unexpected Host header (DNS rebinding?)")
@@ -1185,6 +1189,7 @@ async def _relay_to_browser(
                     await websocket.send_bytes(frame)
                 else:
                     await websocket.send_text(frame)
+            relay.sent()  # the bound covers a batch until it is actually out
             sent.set()
             if reader.done() and not relay.pending():
                 reader.result()  # re-raise a bridge error
@@ -1516,7 +1521,14 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
     async def post_viz_ticket(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         tickets: VizTickets = request.app.state.viz_tickets
         ticket = tickets.issue(request.state.principal)
-        expires_at = tickets.expires_at(ticket, remote=is_remote(request.scope)) or time.time()
+        expires_at = tickets.expires_at(ticket, remote=is_remote(request.scope))
+        if expires_at is None:
+            # A token inside its exp leeway would mint a ticket already dead: re-mint first.
+            return _error(
+                401,
+                "the token has expired; mint a new one",
+                {"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            )
         return JSONResponse({"ticket": ticket, "expires_in": int(expires_at - time.time())})
 
     @app.websocket("/ws")

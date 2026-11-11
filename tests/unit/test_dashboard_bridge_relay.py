@@ -132,6 +132,8 @@ def test_ordered_frames_are_bounded_and_snapshots_do_not_count() -> None:
     while not relay.full():
         relay.from_bridge(_data(20, 0, b"t" * 100))
     assert len(relay.drain()) < 12  # ~1000 bytes of /tf plus the one image
+    assert relay.full()  # a drained batch still counts while it is being sent
+    relay.sent()
     assert not relay.full()  # sending releases the bound
 
 

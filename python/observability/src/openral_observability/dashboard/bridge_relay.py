@@ -90,6 +90,7 @@ class BridgeRelay:
         self._queue: deque[Frame | int] = deque()
         self._newest: dict[int, bytes] = {}
         self._ordered_bytes = 0
+        self._in_flight = 0  # ordered bytes drained but not yet sent
         self._max_ordered_bytes = max_ordered_bytes
         self.dropped = 0
         """Snapshot messages replaced by a newer one before they were sent."""
@@ -143,7 +144,7 @@ class BridgeRelay:
         return bool(self._queue)
 
     def drain(self) -> list[Frame]:
-        """Every frame to send now, in order."""
+        """Every frame to send now, in order; still counted toward ``full()`` until ``sent()``."""
         out: list[Frame] = []
         while self._queue:
             item = self._queue.popleft()
@@ -153,8 +154,13 @@ class BridgeRelay:
                     out.append(frame)
             else:
                 out.append(item)
-        self._ordered_bytes = 0
+                self._in_flight += len(item)
         return out
+
+    def sent(self) -> None:
+        """The last ``drain()``'s frames reached the browser: release their bytes."""
+        self._ordered_bytes -= self._in_flight
+        self._in_flight = 0
 
     def _learn_channels(self, text: str) -> None:
         msg = _json(text)

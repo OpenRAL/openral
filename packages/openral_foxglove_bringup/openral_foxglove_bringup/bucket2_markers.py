@@ -87,7 +87,7 @@ def viz_cloud_topic(topic: str) -> str:
 
 
 def decimate_cloud(
-    data: bytes,
+    data: bytes | memoryview,
     point_step: int,
     x_offset: int,
     max_points: int,
@@ -821,7 +821,7 @@ class Bucket2MarkersNode:
         if x is None or x.datatype != PointField.FLOAT32 or msg.is_bigendian:
             return  # not a float32 little-endian xyz cloud: nothing a viewer reads
         data, count = decimate_cloud(
-            bytes(msg.data),
+            memoryview(msg.data),  # no copy of a camera-rate cloud before thinning
             int(msg.point_step),
             x.offset,
             self._viz_max,

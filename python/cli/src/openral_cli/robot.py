@@ -360,15 +360,21 @@ def apply_console_settings(*, echo: Callable[[str], None]) -> list[str]:
 
     The console's settings pane saves the provider keys and the model on the robot
     (``openral_observability.dashboard.robot_settings``); a deploy maps them to the
-    reasoner's variables (``reasoner_env``). A variable already in the environment wins;
-    :func:`apply_reasoner_settings` skips the account's settings altogether when this
-    sets anything, so the robot's own choice wins over its openral.com account's and the
-    robot's key is never paired with an account's endpoint. Returns the names it set;
-    never raises.
+    reasoner's variables (``reasoner_env``). The set applies whole or not at all: when
+    the environment already sets any reasoner variable it wins outright, so the robot's
+    key is never paired with an inherited model, endpoint or dialect it was not chosen
+    for. :func:`apply_reasoner_settings` skips the account's settings altogether when
+    the console chooses a reasoner, so the robot's key is never paired with an
+    account's endpoint either. Returns the names it set; never raises.
     """
     from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
 
-    applied = {k: v for k, v in reasoner_env(load_settings()).items() if k not in os.environ}
+    console = reasoner_env(load_settings())
+    inherited = sorted(k for k in ACCOUNT_SETTINGS if k in os.environ)
+    if console and inherited:
+        echo(f"console settings: not applied, the environment sets {', '.join(inherited)}")
+        return []
+    applied = dict(console)
     os.environ.update(applied)
     if applied:
         echo(f"console settings: {', '.join(sorted(applied))}")

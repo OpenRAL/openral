@@ -55,6 +55,7 @@ export class Bridge {
       for (const [topic, ch] of this.channels) {
         if (!ids.includes(ch.id)) continue;
         this.channels.delete(topic);
+        this.decoders.delete(ch.id); // a reused channel id may carry another schema
         this.latest.delete(topic); // a re-advertised topic may carry another schema
         const sid = this.subs.get(topic);
         if (sid != null) this.subTopic.delete(sid);
