@@ -112,6 +112,24 @@ def test_sidecar_env_drops_credentials_keeps_runtime() -> None:
     assert sidecar_env(environ, extra=["RANDOM_TOOL_VAR"])["RANDOM_TOOL_VAR"] == "x"
 
 
+def test_sidecar_env_keeps_simulator_dds_and_threading_config() -> None:
+    """What the sim sidecars read beyond the basics survives the allowlist."""
+    environ = {
+        "LD_PRELOAD": "/usr/lib/aarch64-linux-gnu/libgomp.so.1",
+        "MUJOCO_EGL_DEVICE_ID": "0",
+        "OMP_NUM_THREADS": "8",
+        "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
+        "CYCLONEDDS_URI": "file:///etc/cyclone.xml",
+        "FASTDDS_BUILTIN_TRANSPORTS": "UDPv4",
+        "MS_SKIP_ASSET_DOWNLOAD_PROMPT": "1",
+        "LIBERO_CONFIG_PATH": "/data/libero",
+        "VLABENCH_ROOT": "/data/vlabench",
+        "PRIVACY_CONSENT": "Y",
+        "CURL_CA_BUNDLE": "/etc/ssl/ca.pem",
+    }
+    assert sidecar_env(environ) == environ
+
+
 def test_credential_words_match_whole_words_only() -> None:
     """A *_TOKENS budget is config, not a secret; a *_TOKEN still is."""
     env = sidecar_env(

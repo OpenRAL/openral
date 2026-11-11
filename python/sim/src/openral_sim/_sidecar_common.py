@@ -209,9 +209,11 @@ _SIDECAR_ENV_NAMES = frozenset(
         "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TZ",
         "TMPDIR", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "LD_LIBRARY_PATH",
         "MUJOCO_GL", "PYOPENGL_PLATFORM", "EGL_PLATFORM", "MAX_JOBS", "CC", "CXX",
-        "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "NO_COLOR", "FORCE_COLOR",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO", "NO_COLOR", "FORCE_COLOR", "PRIVACY_CONSENT",
+        # aarch64 hosts preload libgomp etc. for the sidecar's own torch.
+        "LD_PRELOAD",
         "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-        "RMW_IMPLEMENTATION", "CYCLONEDDS_URI", "FASTRTPS_DEFAULT_PROFILES_FILE",
         "ACCEPT_EULA", "TOKENIZERS_PARALLELISM", "EXP_PATH", "COPPELIASIM_ROOT",
         "QWEN25_PATH", "QWEN3VL_PATH",
         # Gated / private weight downloads (the token also sits in ~/.cache/huggingface
@@ -223,6 +225,11 @@ _SIDECAR_ENV_PREFIXES = (
     "LC_", "XDG_", "CUDA_", "NVIDIA_", "HF_", "HUGGINGFACE_", "PYTHON", "PYTORCH_",
     "TORCH", "TRITON_", "NCCL_", "ROS_", "AMENT_", "COLCON_", "OPENRAL_", "UV_",
     "OMNI_", "ISAAC", "CARB_", "KIT_", "VK_", "MESA_", "QT_", "__GLX_", "__NV_", "__EGL_",
+    # DDS vendor config (a sim sidecar stays on the graph's transport / domain).
+    "RMW_", "RCUTILS_", "CYCLONEDDS_", "FASTDDS_", "FASTRTPS_", "ZENOH_",
+    # CPU threading and the simulators' own settings.
+    "OMP_", "KMP_", "MKL_", "OPENBLAS_", "MUJOCO_", "LIBERO_", "ROBOSUITE_",
+    "ROBOCASA_", "MS_", "SAPIEN_", "VLABENCH_", "OMNIGIBSON_", "GIBSON_", "PIP_",
 )  # fmt: skip
 # A credential marker is a whole ``_``-separated word, so OPENRAL_REASONER_MAX_TOKENS
 # (a budget, not a secret) is not caught by TOKEN.
