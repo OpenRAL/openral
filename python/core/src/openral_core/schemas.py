@@ -49,7 +49,7 @@ from pydantic import (
 # ROSConfigError lives in the sibling `exceptions` module and is the
 # canonical exception family for any configuration-level failure (see
 # CLAUDE.md §5).
-from openral_core.code_refs import check_code_ref
+from openral_core.code_refs import check_code_ref, check_ros_interface_package
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSObjectNotInMemory
 from openral_core.time_base import scene_control_rate_hz
 
@@ -8878,6 +8878,12 @@ class RosIntegration(BaseModel):
       same pose-constraint lowering, with the gaze pose computed from the
       camera's live TF pose (``LookAtRskill``,
       a specialisation of the ``pose`` builder)."""
+
+    @field_validator("package")
+    @classmethod
+    def _check_package_is_ros_interface(cls, v: str) -> str:
+        """``package`` is imported, so it must name a rosidl IDL package."""
+        return check_ros_interface_package(v, setting="ros_integration.package")
 
     @field_validator("interface_name")
     @classmethod

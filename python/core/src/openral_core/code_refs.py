@@ -26,6 +26,7 @@ from openral_core.exceptions import ROSConfigError
 __all__ = [
     "ALLOW_EXTERNAL_PLUGINS_ENV",
     "check_code_ref",
+    "check_ros_interface_package",
     "import_code_ref",
 ]
 
@@ -33,6 +34,9 @@ ALLOW_EXTERNAL_PLUGINS_ENV: Final[str] = "OPENRAL_ALLOW_EXTERNAL_PLUGINS"
 
 _REF = re.compile(r"^(?P<module>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*):(?P<attr>[A-Za-z_]\w*)$")
 _TRUSTED_TOP_LEVEL = re.compile(r"^openral_\w+$")
+# A ROS 2 IDL package: one lowercase identifier ending in the rosidl suffixes. No dots,
+# so a manifest cannot reach an arbitrary installed module's ``__init__``.
+_ROS_INTERFACE_PACKAGE = re.compile(r"^[a-z][a-z0-9_]*_(?:msgs|srvs|interfaces)$")
 
 _log = structlog.get_logger(__name__)
 
@@ -78,6 +82,43 @@ def check_code_ref(ref: str, *, setting: str) -> str:
     raise ROSConfigError(
         f"{setting} = {ref!r} names code outside OpenRAL's packages (openral_*); "
         f"set {ALLOW_EXTERNAL_PLUGINS_ENV}=1 to load it from a trusted source."
+    )
+
+
+def check_ros_interface_package(package: str, *, setting: str) -> str:
+    """Refuse a ROS interface package name that is not a rosidl IDL package.
+
+    ``ROSActionRskill`` imports ``<package>.action`` / ``<package>.srv``, which runs
+    ``<package>/__init__.py`` first, so the name is a code reference too. Only a single
+    lowercase identifier ending in ``_msgs`` / ``_srvs`` / ``_interfaces`` is admitted;
+    ``OPENRAL_ALLOW_EXTERNAL_PLUGINS=1`` admits any other name, with a warning.
+
+    Raises:
+        ROSConfigError: ``package`` is not an IDL package name and the opt-in is unset.
+
+    Example:
+        >>> check_ros_interface_package("moveit_msgs", setting="ros_integration.package")
+        'moveit_msgs'
+        >>> try:
+        ...     check_ros_interface_package("os", setting="ros_integration.package")
+        ... except ROSConfigError as exc:
+        ...     print(str(exc).split(";")[0])
+        ros_integration.package = 'os' is not a ROS interface package (*_msgs, *_srvs, *_interfaces)
+    """
+    if _ROS_INTERFACE_PACKAGE.fullmatch(package):
+        return package
+    if os.environ.get(ALLOW_EXTERNAL_PLUGINS_ENV) == "1":
+        _log.warning(
+            "code_ref.external_plugin_allowed",
+            setting=setting,
+            ref=package,
+            env=ALLOW_EXTERNAL_PLUGINS_ENV,
+        )
+        return package
+    raise ROSConfigError(
+        f"{setting} = {package!r} is not a ROS interface package "
+        f"(*_msgs, *_srvs, *_interfaces); "
+        f"set {ALLOW_EXTERNAL_PLUGINS_ENV}=1 to import it from a trusted source."
     )
 
 

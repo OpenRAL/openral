@@ -39,6 +39,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from openral_core.code_refs import check_ros_interface_package
 from openral_core.exceptions import (
     ROSConfigError,
     ROSDeadlineMissed,
@@ -298,6 +299,7 @@ def _import_action_or_service(integration: RosIntegration) -> tuple[type, str]:
     Raises ``ROSConfigError`` quoting ``ros_dependencies`` when the
     import fails.
     """
+    check_ros_interface_package(integration.package, setting="ros_integration.package")
     for sub in ("action", "srv"):
         module_name = f"{integration.package}.{sub}"
         try:

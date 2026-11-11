@@ -12,9 +12,21 @@ from pathlib import Path
 
 import pytest
 import yaml
-from openral_core import DeployScene, RobotDescription, SceneComposition
-from openral_core.code_refs import ALLOW_EXTERNAL_PLUGINS_ENV, check_code_ref, import_code_ref
+from openral_core import (
+    DeployScene,
+    RobotDescription,
+    RosIntegration,
+    RSkillManifest,
+    SceneComposition,
+)
+from openral_core.code_refs import (
+    ALLOW_EXTERNAL_PLUGINS_ENV,
+    check_code_ref,
+    check_ros_interface_package,
+    import_code_ref,
+)
 from openral_core.exceptions import ROSConfigError
+from openral_rskill.ros_action_rskill import _import_action_or_service
 
 REPO = Path(__file__).resolve().parents[2]
 _UR5E = REPO / "robots" / "ur5e" / "robot.yaml"
@@ -93,3 +105,37 @@ def test_a_scene_composer_naming_foreign_code_does_not_load(
     # The HAL node's wire format (scene_composition_json) is validated the same way.
     with pytest.raises(ROSConfigError, match="outside OpenRAL"):
         SceneComposition.model_validate_json('{"composer": "os:system", "params": {}}')
+
+
+# ROSActionRskill imports ``<ros_integration.package>.action``, which runs the package's
+# ``__init__`` first: the manifest field is a code reference too.
+_MOVEIT_JOINTS = REPO / "rskills" / "rskill-moveit-joints" / "rskill.yaml"
+
+
+@pytest.mark.parametrize("package", ["os", "antigravity", "openral_core.code_refs", "Moveit_msgs"])
+def test_a_ros_integration_package_that_is_not_idl_does_not_load(
+    package: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ALLOW_EXTERNAL_PLUGINS_ENV, raising=False)
+    raw = yaml.safe_load(_MOVEIT_JOINTS.read_text())
+    assert RSkillManifest.model_validate(raw).ros_integration is not None
+    raw["ros_integration"]["package"] = package
+    with pytest.raises(ROSConfigError, match=r"ros_integration\.package .*not a ROS interface"):
+        RSkillManifest.model_validate(raw)
+
+
+def test_the_import_seam_rechecks_a_package_that_skipped_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(ALLOW_EXTERNAL_PLUGINS_ENV, raising=False)
+    raw = yaml.safe_load(_MOVEIT_JOINTS.read_text())["ros_integration"]
+    integration = RosIntegration.model_construct(**{**raw, "package": "antigravity"})
+    with pytest.raises(ROSConfigError, match="not a ROS interface"):
+        _import_action_or_service(integration)
+
+
+def test_ros_idl_packages_and_the_opt_in_are_admitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    for package in ("moveit_msgs", "nav2_msgs", "std_srvs", "example_interfaces"):
+        assert check_ros_interface_package(package, setting="p") == package
+    monkeypatch.setenv(ALLOW_EXTERNAL_PLUGINS_ENV, "1")
+    assert check_ros_interface_package("vendor_actions", setting="p") == "vendor_actions"
