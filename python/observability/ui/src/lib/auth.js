@@ -49,12 +49,15 @@ export function websiteMinter(resource, f = globalThis.fetch) {
 
 // Robot API client. Local mode: base "" and no auth (same origin). Remote:
 // base is the robot's origin and every call carries the Bearer token; a 401 is
-// retried once with a freshly minted token.
+// retried once with a freshly minted token. The robot takes one write per token
+// (replay protection) but any number of reads, so every write except E-STOP —
+// which must never wait on openral.com — goes out with a fresh token.
 export function createApi({ base = "", auth = null, fetch: f = (...a) => globalThis.fetch(...a) } = {}) {
   async function call(path, init = {}) {
+    const write = !["GET", "HEAD"].includes((init.method || "GET").toUpperCase()) && path !== "/api/actions/estop";
     for (let attempt = 0; ; attempt++) {
       const headers = new Headers(init.headers);
-      if (auth) headers.set("Authorization", `Bearer ${await auth.get(attempt > 0)}`);
+      if (auth) headers.set("Authorization", `Bearer ${await auth.get(write || attempt > 0)}`);
       const res = await f(base + path, { ...init, headers });
       if (res.status !== 401 || !auth || attempt > 0) return res;
     }

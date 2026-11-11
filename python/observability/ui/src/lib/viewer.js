@@ -19,5 +19,5 @@ export function workspaceLabel(me, cfg, robotName) {
   const name =
     text(me?.orgName) || text(me?.org) || text(cfg?.org) || text(me?.name) || text(me?.email) || text(robotName) || "Robot";
   const logo = text(me?.orgLogo);
-  return { name, initial: name[0].toUpperCase(), logo: /^(https:|\/)/.test(logo) ? logo : null };
+  return { name, initial: name[0].toUpperCase(), logo: /^(https:\/\/|\/(?![/\\]))/.test(logo) ? logo : null };
 }

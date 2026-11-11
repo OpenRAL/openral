@@ -47,6 +47,29 @@ test("api: Bearer on every call, one forced re-mint and retry on 401", async () 
   ]);
 });
 
+test("api: every write but E-STOP gets a fresh token; reads reuse the cached one", async () => {
+  let n = 0;
+  const auth = createTokenClient({ mint: async () => ({ access_token: `t${++n}`, expires_in: 300 }) });
+  const seen = [];
+  const api = createApi({
+    base: "https://r-1.openral.com",
+    auth,
+    fetch: async (url, init) => (seen.push([init.method || "GET", url.slice(23), init.headers.get("Authorization")]), { status: 200 }),
+  });
+  await api.call("/api/state");
+  await api.call("/api/actions/prompt", { method: "POST" });
+  await api.call("/api/viz/ticket", { method: "POST" });
+  await api.call("/api/actions/estop", { method: "POST" });
+  await api.call("/api/state");
+  assert.deepEqual(seen, [
+    ["GET", "/api/state", "Bearer t1"],
+    ["POST", "/api/actions/prompt", "Bearer t2"],
+    ["POST", "/api/viz/ticket", "Bearer t3"],
+    ["POST", "/api/actions/estop", "Bearer t3"],
+    ["GET", "/api/state", "Bearer t3"],
+  ]);
+});
+
 test("api: local mode sends no Authorization and does not retry", async () => {
   const seen = [];
   const api = createApi({ fetch: async (url, init) => (seen.push([url, init.headers.has("Authorization")]), { status: 401 }) });

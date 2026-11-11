@@ -36,6 +36,9 @@ test("the pane's top names the org, else the person, else the robot", () => {
   assert.deepEqual(workspaceLabel({ org: "acme", orgName: "Acme Robotics" }, {}, "amr"), { name: "Acme Robotics", initial: "A", logo: null });
   assert.equal(workspaceLabel({ org: "acme", orgName: "Acme", orgLogo: "/org-logo/acme.png" }, {}).logo, "/org-logo/acme.png");
   assert.equal(workspaceLabel({ orgName: "Acme", orgLogo: "javascript:alert(1)" }, {}).logo, null);
+  assert.equal(workspaceLabel({ orgName: "Acme", orgLogo: "//evil.example/x.png" }, {}).logo, null);
+  assert.equal(workspaceLabel({ orgName: "Acme", orgLogo: "/\\evil.example/x.png" }, {}).logo, null);
+  assert.equal(workspaceLabel({ orgName: "Acme", orgLogo: "https://cdn.openral.com/a.png" }, {}).logo, "https://cdn.openral.com/a.png");
   assert.equal(workspaceLabel({ name: "Ada Lovelace", org: null }, { mode: "remote" }).name, "Ada Lovelace");
   assert.equal(workspaceLabel(null, { org: "acme" }, "amr").name, "acme");
   assert.deepEqual(workspaceLabel(null, { org: "" }, "openamrobot_v2"), { name: "openamrobot_v2", initial: "O", logo: null });

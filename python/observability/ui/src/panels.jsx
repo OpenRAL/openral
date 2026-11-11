@@ -5,6 +5,7 @@ import { Component, useEffect, useRef, useState } from "react";
 import { SAFETY_LIVENESS_S } from "./lib/safety.js";
 import {
   b64Blob,
+  jpegBlob,
   coverMap,
   eventMeta,
   fmtAge,
@@ -174,7 +175,7 @@ function usePolledImage(api, path, every) {
           const r = await api.call(path);
           ok = r.ok;
           if (r.ok) {
-            const u = URL.createObjectURL(await r.blob());
+            const u = URL.createObjectURL(jpegBlob(await r.arrayBuffer()));
             if (stop) return URL.revokeObjectURL(u);
             setImg({ url: u, err: null });
             if (cur) URL.revokeObjectURL(cur);
