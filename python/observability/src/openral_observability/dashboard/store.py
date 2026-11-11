@@ -1260,7 +1260,9 @@ class TelemetryStore:
             self._record_reasoner_tick(attrs, ts_unix, duration_ms)
         elif span_name == semconv.SPAN_DEPLOY_BRINGUP:
             node = attrs.get(semconv.BRINGUP_NODE)
-            if isinstance(node, str):
+            prev = self._topics["lifecycle"].get(node) if isinstance(node, str) else None
+            # Newest by span time: a late-delivered older SUCCESS never hides a newer FAILURE.
+            if isinstance(node, str) and (prev is None or ts_unix >= prev["ts_unix"]):
                 self._topics["lifecycle"][node] = {
                     "transition": attrs.get(semconv.BRINGUP_TRANSITION),
                     "result": attrs.get(semconv.BRINGUP_RESULT),
