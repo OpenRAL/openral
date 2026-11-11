@@ -13,6 +13,10 @@ import {
   sceneObjects,
   TfBuffer,
   wantedTopics,
+  cloudTopic,
+  layerTopics,
+  scanToPoints,
+  viewFrame,
 } from "./scene.js";
 
 // Message definitions exactly as foxglove_bridge advertises them (ros2msg, with
@@ -184,4 +188,58 @@ test("only the layers that are on are subscribed", () => {
     ["/joint_states", "/octomap_point_cloud_centers", "/openral/robot_description", "/openral/viz/collisions", "/openral/viz/static_geometry", "/tf", "/tf_static"],
   );
   assert.deepEqual([...wantedTopics(advertised, {})].sort(), ["/tf", "/tf_static"]);
+});
+
+// The topics the OpenAMRobot Isaac warehouse deploy advertised (2026-11-11), octomap off.
+const AMR = ["/tf", "/tf_static", "/map", "/scan", "/openral/nav2/scan", "/joint_states", "/robot_description", "/openral/world_voxels_cloud", "/openral/cameras/head_zed/points", "/openral/viz/cameras/head_zed/points", "/openral/cameras/head_zed/depth/image", "/openral/viz/collisions"];
+
+test("camera depth clouds and the lidar get their own layers", () => {
+  assert.deepEqual(layerTopics("depth", AMR), ["/openral/viz/cameras/head_zed/points"]);
+  const want = wantedTopics(AMR, { depth: true, scan: true });
+  assert.ok(want.has("/openral/viz/cameras/head_zed/points"));
+  assert.ok(!want.has("/openral/cameras/head_zed/points")); // the raw 33 MB cloud, never
+  assert.ok(want.has("/scan") && !want.has("/openral/nav2/scan"));
+  assert.ok(!want.has("/openral/cameras/head_zed/depth/image"));
+});
+
+test("a silent cloud topic does not hide one with data", () => {
+  const adv = ["/tf", "/octomap_point_cloud_centers", "/openral/world_voxels_cloud"];
+  // Nothing has delivered yet: listen to every candidate.
+  assert.deepEqual([...wantedTopics(adv, { cloud: true })].sort(), ["/octomap_point_cloud_centers", "/openral/world_voxels_cloud", "/tf"]);
+  // The lower-priority one delivers: keep listening to the higher one too.
+  const live = new Set(["/openral/world_voxels_cloud"]);
+  assert.equal(cloudTopic(wantedTopics(adv, { cloud: true }, live), live), "/openral/world_voxels_cloud");
+  // The higher one delivers: drop the copy below it.
+  live.add("/octomap_point_cloud_centers");
+  const want = wantedTopics(adv, { cloud: true }, live);
+  assert.ok(want.has("/octomap_point_cloud_centers") && !want.has("/openral/world_voxels_cloud"));
+  assert.equal(cloudTopic(want, live), "/octomap_point_cloud_centers");
+});
+
+test("a laser scan keeps real returns only, in the scan frame", () => {
+  const msg = {
+    header: { frame_id: "/lidar_link" },
+    angle_min: 0,
+    angle_increment: Math.PI / 2,
+    range_min: 0.05,
+    range_max: 40,
+    ranges: [1, Infinity, 2, 0.01, NaN],
+  };
+  const pts = scanToPoints(msg);
+  assert.equal(pts.count, 2);
+  assert.equal(pts.frame, "lidar_link");
+  const p = Array.from(pts.positions, (v) => Math.round(v * 1000) / 1000);
+  assert.deepEqual(p, [1, 0, 0, -2, 0, 0]);
+  assert.equal(scanToPoints({}), null);
+});
+
+test("the view is pinned to map, else odom, unless following the robot", () => {
+  const tf = new TfBuffer();
+  const t = (parent, child) => ({ header: { frame_id: parent }, child_frame_id: child, transform: { translation: { x: 1, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } } });
+  assert.deepEqual(viewFrame(tf, "base_footprint", false), { fixed: "base_footprint", world: null });
+  tf.addMessage({ transforms: [t("odom", "base_footprint")] });
+  assert.deepEqual(viewFrame(tf, "base_footprint", false), { fixed: "odom", world: "odom" });
+  tf.addMessage({ transforms: [t("map", "odom")] });
+  assert.deepEqual(viewFrame(tf, "base_footprint", false), { fixed: "map", world: "map" });
+  assert.deepEqual(viewFrame(tf, "base_footprint", true), { fixed: "base_footprint", world: "map" });
 });

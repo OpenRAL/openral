@@ -6,6 +6,8 @@
   --scene-bg: #121419;
   --scene-grid: #2c313b;
   --scene-accent: #8fb3ff;
+  --scene-depth: #7fc8a9;
+  --scene-scan: #ff7a59;
   --map-free: #1c1f26;
   --map-occupied: #e8e9ed;
   --glass: rgba(22, 24, 30, 0.82);
@@ -37,6 +39,8 @@
   --scene-bg: #f4f3ef;
   --scene-grid: #d8d5cc;
   --scene-accent: #2f5fc4;
+  --scene-depth: #2e8a63;
+  --scene-scan: #d9480f;
   --map-free: #e6e4dd;
   --map-occupied: #2a2c30;
   --glass: rgba(255, 255, 255, 0.84);
@@ -431,6 +435,11 @@ main > .waiting {
 }
 .glass-btn:hover {
   border-color: var(--hair-2);
+}
+.glass-btn.on {
+  color: var(--bg);
+  background: var(--text);
+  border-color: var(--text);
 }
 .scene-status {
   position: absolute;

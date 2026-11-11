@@ -94,6 +94,15 @@ export class TfBuffer {
   }
 }
 
+// The 3D view's fixed frame. A mobile robot has a world frame (map, else odom)
+// connected to its base: the view is pinned to it unless `follow` is set, so the
+// robot drives through a still world. A fixed-base arm has none: its base frame.
+// `world` says whether a world frame exists (the Follow button is shown only then).
+export function viewFrame(tf, base, follow) {
+  const world = ["map", "odom"].find((f) => f !== base && tf.lookup(f, base)) ?? null;
+  return { fixed: follow || !world ? base : world, world };
+}
+
 // ── nav_msgs/OccupancyGrid → RGBA texture ─────────────────────────────────────
 
 // colors: { free: [r,g,b,a], occupied: [r,g,b,a], unknown: [r,g,b,a] }, 0–255.
@@ -178,6 +187,30 @@ export function cloudToPoints(msg, budget = 60000) {
   };
 }
 
+// ── sensor_msgs/LaserScan → points in the scan frame ──────────────────────────
+
+// Returns only real returns: inf/NaN (no return, REP-117) and readings outside
+// [range_min, range_max] are dropped.
+export function scanToPoints(msg) {
+  const ranges = msg?.ranges;
+  const a0 = Number(msg?.angle_min);
+  const da = Number(msg?.angle_increment);
+  if (!ranges || !Number.isFinite(a0) || !Number.isFinite(da)) return null;
+  const lo = Number.isFinite(msg.range_min) ? msg.range_min : 0;
+  const hi = Number.isFinite(msg.range_max) ? msg.range_max : Infinity;
+  const positions = new Float32Array(ranges.length * 3);
+  let k = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    if (!Number.isFinite(r) || r < lo || r > hi) continue;
+    const a = a0 + i * da;
+    positions[k * 3] = r * Math.cos(a);
+    positions[k * 3 + 1] = r * Math.sin(a);
+    k++;
+  }
+  return { count: k, positions: positions.subarray(0, k * 3), colors: null, frame: strip(msg.header?.frame_id) };
+}
+
 // ── visualization_msgs/MarkerArray → primitives ───────────────────────────────
 
 // visualization_msgs/Marker.type → what the scene draws. TRIANGLE_LIST (11) is how
@@ -243,25 +276,55 @@ export const LAYER_TOPICS = {
   joints: ["/joint_states"],
   tf: ["/tf", "/tf_static"],
   grid: ["/map"],
+  // In priority order: the self-filtered RGB world cloud, octomap's voxel centres, the
+  // voxel grid re-published as a cloud.
   cloud: ["/openral/world_cloud/self_filtered_rgb", "/octomap_point_cloud_centers", "/openral/world_voxels_cloud"],
+  depth: [], // every depth camera's thinned cloud (CAMERA_POINTS), see layerTopics
+  scan: ["/scan", "/openral/nav2/scan"],
   collision: ["/openral/viz/static_geometry", "/openral/viz/collisions"],
   payload: ["/openral/viz/attachments"],
 };
 
-// Layers that take every advertised topic; the others take the first one.
-const ALL_OF = new Set(["tf", "collision"]);
+// A depth camera's cloud as viewers get it: the robot's viz converter re-publishes
+// `/openral/cameras/<name>/points` thinned to ~40k points on this topic. The raw cloud
+// (2 M points, 33 MB a frame from a 1080p ZED) is never subscribed.
+export const CAMERA_POINTS = /^\/openral\/viz\/cameras\/[^/]+\/points$/;
 
-// Which advertised topics to subscribe to, given the layers that are on.
-// TF and joint states are always needed to place anything.
-export function wantedTopics(advertised, layersOn) {
+// The advertised topics a layer can draw, in its priority order.
+export function layerTopics(layer, advertised) {
+  if (layer === "depth") return advertised.filter((t) => CAMERA_POINTS.test(t)).sort();
   const have = new Set(advertised);
+  return (LAYER_TOPICS[layer] || []).filter((t) => have.has(t));
+}
+
+// Layers that take every advertised topic.
+const ALL_OF = new Set(["tf", "depth", "collision"]);
+
+// Which advertised topics to subscribe to, given the layers that are on and the
+// topics that have delivered a message (`live`). TF and joint states are always
+// needed to place anything. `tf`, `depth` and `collision` take every topic; `cloud`
+// takes its candidates down to the first live one (an advertised topic can be
+// silent: the voxel re-publisher runs with octomap off), so a silent topic never
+// hides one with data and two copies of the same world are not streamed; the others
+// take their first advertised topic.
+export function wantedTopics(advertised, layersOn, live = new Set()) {
   const want = new Set();
   const take = (layer) => {
-    const topics = LAYER_TOPICS[layer].filter((t) => have.has(t));
-    for (const t of ALL_OF.has(layer) ? topics : topics.slice(0, 1)) want.add(t);
+    const topics = layerTopics(layer, advertised);
+    if (ALL_OF.has(layer)) {
+      for (const t of topics) want.add(t);
+    } else if (layer === "cloud") {
+      const first = topics.findIndex((t) => live.has(t));
+      for (const t of first < 0 ? topics : topics.slice(0, first + 1)) want.add(t);
+    } else if (topics.length) want.add(topics[0]);
   };
   take("tf");
   if (layersOn.robot) take("robot"), take("joints");
-  for (const layer of ["grid", "cloud", "collision", "payload"]) if (layersOn[layer]) take(layer);
+  for (const layer of ["grid", "cloud", "depth", "scan", "collision", "payload"]) if (layersOn[layer]) take(layer);
   return want;
+}
+
+// The cloud-layer topic to draw: the highest-priority one that has delivered.
+export function cloudTopic(subscribed, live) {
+  return LAYER_TOPICS.cloud.find((t) => subscribed.has(t) && live.has(t)) ?? null;
 }

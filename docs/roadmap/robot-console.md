@@ -64,7 +64,9 @@ subscribes only to the layers that are switched on.
 | Frames and link poses | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | no |
 | Joint fallback (no link TF) | `/joint_states` | `sensor_msgs/JointState` | no |
 | Occupancy grid | `/map` | `nav_msgs/OccupancyGrid` | yes |
-| Point cloud | `/openral/world_cloud/self_filtered_rgb`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud` | `sensor_msgs/PointCloud2` | yes |
+| Point cloud | `/openral/world_cloud/self_filtered_rgb`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, in that priority: every candidate until one delivers, then the ones below it are dropped (an advertised topic can be silent) | `sensor_msgs/PointCloud2` | yes |
+| Camera depth | `/openral/viz/cameras/<name>/points`: each depth camera's cloud thinned to 40k points by `bucket2_markers` (the raw cloud, 33 MB a frame from a 1080p ZED, is never subscribed) | `sensor_msgs/PointCloud2` | yes |
+| Lidar | `/scan`, else `/openral/nav2/scan` | `sensor_msgs/LaserScan` | yes |
 | Collision boxes | `/openral/viz/static_geometry`, `/openral/viz/collisions` | `visualization_msgs/MarkerArray` | no |
 | Payload | `/openral/viz/attachments` | `visualization_msgs/MarkerArray` | no |
 | Objects | world state from the dashboard stream (`world_state` objects) | SSE snapshot | n/a |
@@ -76,6 +78,11 @@ Texture URLs inside a robot-supplied URDF or Collada file are never fetched.
 
 The robot model is posed from `/tf` (URDF link frames), not from `/joint_states`: a HAL
 may publish manifest joint names and units that differ from the URDF's.
+
+The fixed frame is the world (`map`, else `odom`) when TF connects one to the robot's
+base, so a mobile robot drives through a still map; **Follow robot** (top right, saved per
+robot) pins the view to the base instead. A fixed-base arm has no world frame and no
+button.
 
 ## Keeping it fast through the tunnel
 

@@ -59,6 +59,8 @@ export const LAYERS = [
   { id: "grid", label: "Occupancy grid", on: true },
   { id: "objects", label: "World-state objects", on: true },
   { id: "cloud", label: "Point cloud", on: true },
+  { id: "depth", label: "Camera depth", on: true },
+  { id: "scan", label: "Lidar", on: true },
   { id: "collision", label: "Collision boxes", on: true },
   { id: "payload", label: "Payload", on: true },
   { id: "tf", label: "TF frames", on: false },
@@ -74,6 +76,9 @@ export const DEFAULT_PREFS = Object.freeze({
   hiddenCameras: [],
   theme: "system",
   paneWidth: PANE_WIDTH.initial,
+  // The 3D view's frame: false = the world (map, else odom) so the robot moves
+  // through it; true = the robot's base, so the world moves around the robot.
+  follow: false,
 });
 
 const ids = (v, known) => (Array.isArray(v) ? [...new Set(v.filter((x) => known.has(x)))] : []);
@@ -96,6 +101,7 @@ export function normalizePrefs(raw) {
     hiddenCameras: Array.isArray(r.hiddenCameras) ? r.hiddenCameras.filter((x) => typeof x === "string") : [],
     theme: THEMES.includes(r.theme) ? r.theme : "system",
     paneWidth: clampPaneWidth(r.paneWidth),
+    follow: r.follow === true,
   };
 }
 

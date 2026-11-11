@@ -157,3 +157,9 @@ test("system theme follows the OS", () => {
   assert.equal(resolveTheme("system", false), "light");
   assert.equal(resolveTheme("light", true), "light");
 });
+
+test("the 3D follow setting defaults off and survives a reload", () => {
+  assert.equal(normalizePrefs(null).follow, false);
+  assert.equal(normalizePrefs({ follow: true }).follow, true);
+  assert.equal(normalizePrefs({ follow: "yes" }).follow, false);
+});

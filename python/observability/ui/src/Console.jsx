@@ -446,6 +446,8 @@ export function Console({ api, cfg, manifest, snap, bar, robotId, prefs, update,
               setLayer={setLayer}
               theme={theme}
               bridgeOn={bridgeOn}
+              follow={prefs.follow}
+              setFollow={(on) => update((p) => ({ ...p, follow: on }))}
             />
           </Suspense>
         </SceneBoundary>

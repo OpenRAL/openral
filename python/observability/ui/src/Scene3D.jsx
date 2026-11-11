@@ -14,12 +14,17 @@ import { LAYERS } from "./lib/layout.js";
 import { robotNow } from "./lib/render.js";
 import {
   applyMarkers,
+  CAMERA_POINTS,
   cloudToPoints,
+  cloudTopic,
   compose,
   LAYER_TOPICS,
+  layerTopics,
   occupancyToRGBA,
+  scanToPoints,
   sceneObjects,
   TfBuffer,
+  viewFrame,
   wantedTopics,
 } from "./lib/scene.js";
 import { backoffMs } from "./lib/sse.js";
@@ -41,6 +46,8 @@ function sceneColors() {
     bg: get("--scene-bg", "#121419"),
     grid: get("--scene-grid", "#2c313b"),
     accent: get("--scene-accent", "#8fb3ff"),
+    depth: get("--scene-depth", "#7fc8a9"),
+    scan: get("--scene-scan", "#ff7a59"),
     label: get("--text", "#e8e9ed"),
     occupancy: {
       unknown: rgba(get("--scene-bg", "#121419"), 0),
@@ -253,18 +260,21 @@ function useBridge(api, needTicket, handlers) {
   return [ref, status];
 }
 
-export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, bridgeOn }) {
+export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, bridgeOn, follow, setFollow }) {
   const host = useRef(null);
   const labels = useRef(null);
   const world = useRef(null); // three.js state, created once
   const [topics, setTopics] = useState([]);
   const [info, setInfo] = useState({ robot: "waiting", meshesMissing: false });
-  const fixed = String(manifest?.base_frame || "base");
-  const fixedRef = useRef(fixed);
-  if (fixedRef.current !== fixed) {
-    fixedRef.current = fixed;
-    if (world.current) world.current.replace = true;
-  }
+  // The robot's base frame; the view's fixed frame is chosen per frame (viewFrame):
+  // the world frame (map, else odom) unless following the robot.
+  const base = String(manifest?.base_frame || "base");
+  const baseRef = useRef(base);
+  baseRef.current = base;
+  const followRef = useRef(!!follow);
+  followRef.current = !!follow;
+  const fixedRef = useRef(base);
+  const [frame, setFrame] = useState({ fixed: base, world: null });
   const layersRef = useRef(layers);
   layersRef.current = layers;
   const snapRef = useRef(snap);
@@ -277,11 +287,11 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       // failed last time (a dropped socket or a slow link mid-download).
       const w = world.current;
       if (w?.meshesMissing) w.urdf = null;
-      b.want(wantedTopics(b.topics(), layersRef.current));
+      b.want(wantedTopics(b.topics(), layersRef.current, world.current?.live));
     },
     onTopics: (t) => {
       setTopics(t);
-      bridgeRef.current?.want(wantedTopics(t, layersRef.current));
+      bridgeRef.current?.want(wantedTopics(t, layersRef.current, world.current?.live));
     },
     onEvent: (topic, msg) => {
       const w = world.current;
@@ -409,7 +419,8 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       fitPending: false,
       replace: true, // something was (re)drawn: place it even if TF did not move
       map: null,
-      cloud: null,
+      points: new Map(), // topic -> THREE.Points (cloud, camera depth, lidar)
+      live: new Set(), // topics that have delivered a message
       axes: new Map(),
       objects: new Map(),
       dirty: true,
@@ -473,14 +484,28 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       w.replace = true;
       w.dirty = true;
     }
-    bridgeRef.current?.want(wantedTopics(bridgeRef.current.topics(), layers));
+    bridgeRef.current?.want(wantedTopics(bridgeRef.current.topics(), layers, w?.live));
   }, [layers, bridgeRef]);
+
+  // ── follow the robot / pin to the world ──
+  useEffect(() => {
+    if (world.current) world.current.replace = true;
+  }, [follow]);
 
   // Per frame: decode the newest snapshot messages; re-place things in the fixed
   // frame only when TF moved or something was redrawn.
   function update(w) {
     const b = bridgeRef.current;
     const L = layersRef.current;
+    // The fixed frame can change as TF arrives (map appears) or on Follow: re-place
+    // everything and re-frame the robot in the new frame.
+    const vf = viewFrame(w.tf, baseRef.current, followRef.current);
+    if (vf.fixed !== fixedRef.current || vf.world !== w.worldFrame) {
+      if (vf.fixed !== fixedRef.current) (w.replace = true), (w.fitPending = true);
+      fixedRef.current = vf.fixed;
+      w.worldFrame = vf.world;
+      setFrame(vf);
+    }
     const at = (frame) => (frame ? w.tf.lookup(fixedRef.current, frame) : null);
     const js = b && L.robot ? b.take(LAYER_TOPICS.joints[0]) : null;
     if (b && L.grid) {
@@ -489,11 +514,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       if (msg) (w.mapMsg = msg), (w.mapStale = true);
       if (w.mapStale && w.mapMsg) drawMap(w), (w.replace = true);
     }
-    if (b && L.cloud) {
-      const topic = LAYER_TOPICS.cloud.find((t) => b.subs.has(t));
-      const msg = topic && b.take(topic);
-      if (msg) drawCloud(w, msg), (w.replace = true);
-    }
+    if (b) updatePoints(w, b, L);
     for (const id of ["collision", "payload"]) if (w[id].dirty) drawMarkers(w, id), (w.replace = true);
 
     const place = w.replace || w.placedTf !== w.tfVersion;
@@ -511,10 +532,10 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
         w.map.visible = !!tf;
         if (tf) placeAt(w.map, compose(tf, w.map.userData.origin));
       }
-      if (w.cloud) {
-        const tf = at(w.cloud.userData.frame);
-        w.cloud.visible = !!tf;
-        if (tf) placeAt(w.cloud, tf);
+      for (const pts of w.points.values()) {
+        const tf = at(pts.userData.frame);
+        pts.visible = !!tf;
+        if (tf) placeAt(pts, tf);
       }
       for (const id of ["collision", "payload"]) {
         for (const obj of w.layers[id].children) {
@@ -547,7 +568,10 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
     w.robot.updateWorldMatrix(true, true);
     const sphere = new THREE.Box3().setFromObject(w.robot).getBoundingSphere(new THREE.Sphere());
     if (!Number.isFinite(sphere.radius) || sphere.radius <= 0) return;
-    w.view = { c: sphere.center.toArray(), r: Math.max(0.15, sphere.radius) };
+    // Pinned to the world (a mobile robot), frame its surroundings too: the lidar and
+    // depth returns that show where it is are metres away, not on the robot.
+    const world = fixedRef.current !== baseRef.current;
+    w.view = { c: sphere.center.toArray(), r: Math.max(world ? 3 : 0.15, sphere.radius) };
     setView(w, "perspective");
   }
 
@@ -581,22 +605,50 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
     w.layers.grid.add(g);
   }
 
-  function drawCloud(w, msg) {
-    const pts = cloudToPoints(msg);
+  // Point sets, one per topic: the world cloud (the highest-priority topic that has
+  // delivered), every camera's depth cloud, and the lidar scan.
+  function updatePoints(w, b, L) {
+    let fresh = false;
+    const taken = new Map();
+    for (const t of b.subs.keys()) {
+      const layer = LAYER_TOPICS.cloud.includes(t) ? "cloud" : CAMERA_POINTS.test(t) ? "depth" : LAYER_TOPICS.scan.includes(t) ? "scan" : null;
+      if (!layer || !L[layer]) continue;
+      const msg = b.take(t);
+      if (!msg) continue;
+      taken.set(t, { layer, msg });
+      if (!w.live.has(t)) (w.live.add(t), (fresh = true));
+    }
+    // A topic just went live: a lower-priority copy of the world cloud can go.
+    if (fresh) b.want(wantedTopics(b.topics(), L, w.live));
+    const cloud = cloudTopic(b.subs, w.live);
+    for (const [t, { layer, msg }] of taken) {
+      if (layer === "cloud" && t !== cloud) continue;
+      drawPoints(w, layer, t, layer === "scan" ? scanToPoints(msg) : cloudToPoints(msg));
+    }
+    for (const [t, pts] of w.points) {
+      const keep = b.subs.has(t) && (pts.userData.layer !== "cloud" || t === cloud);
+      if (!keep) w.layers[pts.userData.layer].remove(pts), disposeTree(pts), w.points.delete(t), (w.replace = true);
+    }
+  }
+
+  function drawPoints(w, layer, topic, pts) {
     if (!pts) return;
-    if (w.cloud) w.layers.cloud.remove(w.cloud), disposeTree(w.cloud);
+    const old = w.points.get(topic);
+    if (old) w.layers[layer].remove(old), disposeTree(old);
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(pts.positions, 3));
     if (pts.colors) g.setAttribute("color", new THREE.BufferAttribute(pts.colors, 3));
+    const color = layer === "scan" ? w.colors.scan : layer === "depth" ? w.colors.depth : w.colors.accent;
     const material = new THREE.PointsMaterial({
-      size: 0.01,
+      size: layer === "scan" ? 0.04 : layer === "depth" ? 0.015 : 0.01,
       vertexColors: !!pts.colors,
-      color: pts.colors ? 0xffffff : new THREE.Color(w.colors.accent),
+      color: pts.colors ? 0xffffff : new THREE.Color(color),
     });
     const points = new THREE.Points(g, material);
-    points.userData.frame = pts.frame;
-    w.cloud = points;
-    w.layers.cloud.add(points);
+    points.userData = { frame: pts.frame, layer };
+    w.points.set(topic, points);
+    w.layers[layer].add(points);
+    w.replace = true;
   }
 
   function drawMarkers(w, id) {
@@ -692,8 +744,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
 
   const available = (id) => {
     if (id === "objects") return !!snap?.topics?.scene_objects;
-    const list = id === "tf" ? LAYER_TOPICS.tf : LAYER_TOPICS[id] || [];
-    return list.some((t) => topics.includes(t));
+    return layerTopics(id, topics).length > 0;
   };
   const view = (name) => () => world.current && setView(world.current, name);
 
@@ -712,6 +763,17 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
         ))}
       </div>
       <div className="scene-views">
+        {frame.world && (
+          <button
+            type="button"
+            className={follow ? "glass-btn on" : "glass-btn"}
+            aria-pressed={!!follow}
+            title={follow ? `The view follows ${base}; click to pin it to ${frame.world}` : `The view is pinned to ${frame.world}; click to follow the robot`}
+            onClick={() => setFollow(!follow)}
+          >
+            Follow robot
+          </button>
+        )}
         <button type="button" className="glass-btn" onClick={view("perspective")}>
           Perspective
         </button>
@@ -726,7 +788,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
         {!bridgeOn
           ? "3D needs foxglove_bridge on the robot (deploy without --no-foxglove)."
           : status.state === "open"
-            ? `fixed frame ${fixed} · ${topics.length} topics${info.meshesMissing ? " · meshes unavailable, drawing links" : ""}${
+            ? `fixed frame ${frame.fixed} · ${topics.length} topics${info.meshesMissing ? " · meshes unavailable, drawing links" : ""}${
                 info.robot !== "ok" && info.robot !== "waiting" && info.robot !== "loading" ? ` · ${info.robot}` : ""
               }`
             : status.state === "connecting"
