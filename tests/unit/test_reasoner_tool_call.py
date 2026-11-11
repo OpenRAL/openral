@@ -113,6 +113,35 @@ def test_emit_prompt_rejects_relative_topic() -> None:
         EmitPromptTool(target_topic="prompt", text="x")
 
 
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "/openral/prompt_in/cli",  # human priority: the LLM must not impersonate the operator
+        "/openral/prompt_in/dashboard",
+        "/cmd_vel",
+        "/openral/estop",
+        "/openral/prompt/",
+        "/openral/prompt_out/cascade",
+    ],
+)
+def test_emit_prompt_refuses_topics_outside_the_allowlist(topic: str) -> None:
+    """An LLM-chosen target is one of EMIT_PROMPT_TOPICS, never an arbitrary topic."""
+    with pytest.raises(ValidationError):
+        ADAPTER.validate_python({"tool": "emit_prompt", "target_topic": topic, "text": "x"})
+
+
+def test_emit_prompt_allowlist_matches_the_field() -> None:
+    """EMIT_PROMPT_TOPICS is exactly the field's Literal, and both validate."""
+    import typing
+
+    from openral_core import EMIT_PROMPT_TOPICS
+
+    field = EmitPromptTool.model_fields["target_topic"].annotation
+    assert typing.get_args(field) == EMIT_PROMPT_TOPICS
+    for topic in EMIT_PROMPT_TOPICS:
+        assert EmitPromptTool(target_topic=topic, text="x").target_topic == topic
+
+
 def test_lifecycle_transition_rejects_unknown_transition() -> None:
     """The transition Literal is closed to the canonical four."""
     with pytest.raises(ValidationError):

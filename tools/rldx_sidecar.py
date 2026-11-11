@@ -31,6 +31,7 @@ import textwrap
 from pathlib import Path
 
 from openral_rskill.quantization_gate import sidecar_quantization_args
+from openral_sim._deps import _RLDX_SIDECAR_REPO_SHA, _RLDX_SIDECAR_REPO_URL
 from openral_sim._sidecar_common import (
     build_parser,
     ensure_pip_venv,
@@ -40,7 +41,9 @@ from openral_sim._sidecar_common import (
 )
 
 _LABEL = "rldx-sidecar"
-_REPO_URL = "https://github.com/RLWRLD/RLDX-1.git"
+# Pinned upstream commit, shared with the install plan in ``openral_sim._deps``.
+_REPO_URL = _RLDX_SIDECAR_REPO_URL
+_REPO_SHA = _RLDX_SIDECAR_REPO_SHA
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "rldx-sidecar"
 
 # Upstream's pin set is not installable on an aarch64 CUDA host: ``uv sync``
@@ -300,7 +303,9 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
                 "run_rldx_server",
                 "--model-path", _model_path,
                 "--embodiment-tag", {args.embodiment_tag!r},
-                "--host", "0.0.0.0",
+                # Loopback only: the adapter connects to 127.0.0.1 (OPENRAL_RLDX_HOST
+                # default), and the server must not be reachable from the LAN.
+                "--host", "127.0.0.1",
                 "--port", str({args.port}),
                 "--use-sim-policy-wrapper",
                 # --no-strict: with general_embodiment modality config +
@@ -339,6 +344,7 @@ def main() -> int:
         label=_LABEL,
         family="rldx",
         repo_url=_REPO_URL,
+        repo_sha=_REPO_SHA,
         args=args,
         install_deps=_install_deps,
         make_wrapper=_make_wrapper,

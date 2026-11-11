@@ -15571,18 +15571,29 @@ class LifecycleTransitionTool(_ReasonerToolBase):
     )
 
 
-class EmitPromptTool(_ReasonerToolBase):
-    """Tool variant — republish a ``PromptStamped`` onto another topic.
+EMIT_PROMPT_TOPICS: tuple[str, ...] = ("/openral/prompt", "/openral/prompt_in/auto")
+"""The only topics an LLM-chosen ``EmitPromptTool`` may publish on.
 
-    Dispatch: publish on ``target_topic`` (typically ``/openral/prompt``
-    for self-cascading, but any ``PromptStamped`` topic is valid).
-    Lets the reasoner stage multi-step plans, talk to a peer reasoner,
-    or feed a downstream prompt-aware skill without going through an
-    ExecuteRskill goal.
+``/openral/prompt`` (self-cascade) and the prompt router's machine-priority
+``auto`` input. Never a human-priority router input (``cli`` / ``dashboard``),
+which would let the model impersonate the operator, and never an arbitrary
+topic: the target is LLM output, and a ``PromptStamped`` publisher on any
+other name is a write into whatever node listens there.
+"""
+
+
+class EmitPromptTool(_ReasonerToolBase):
+    """Tool variant — republish a ``PromptStamped`` onto a prompt topic.
+
+    Dispatch: publish on ``target_topic``, one of ``EMIT_PROMPT_TOPICS``
+    (``/openral/prompt`` for self-cascading, or the prompt router's
+    machine-priority ``/openral/prompt_in/auto``). Lets the reasoner stage
+    multi-step plans without going through an ExecuteRskill goal.
 
     Attributes:
         tool: Discriminator (always ``"emit_prompt"``).
-        target_topic: Absolute ROS topic name (must start with ``"/"``).
+        target_topic: One of ``EMIT_PROMPT_TOPICS``; anything else fails
+            validation, and the reasoner node refuses it again at dispatch.
             The reasoner's own subscription on ``/openral/prompt`` plus
             the prompt-router's FIFO queue handle the
             cascade.
@@ -15594,10 +15605,9 @@ class EmitPromptTool(_ReasonerToolBase):
     """
 
     tool: Literal["emit_prompt"] = "emit_prompt"
-    target_topic: str = Field(
-        min_length=2,
-        pattern=r"^/",
-        description="Absolute topic to publish on, e.g. '/openral/prompt'.",
+    target_topic: Literal["/openral/prompt", "/openral/prompt_in/auto"] = Field(
+        description="Prompt topic to publish on: '/openral/prompt' (self-cascade) or "
+        "'/openral/prompt_in/auto' (the prompt router's machine-priority input).",
     )
     text: str = Field(min_length=1, description="Prompt text to publish.")
     metadata_json: str = Field(

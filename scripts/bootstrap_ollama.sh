@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Idempotent Ollama bootstrap for the OpenRAL local reasoner baseline.
 #
-# Installs the `ollama` binary (Linux: official install.sh; macOS:
+# Installs the `ollama` binary (Linux: upstream's install.sh at a pinned
+# release tag, run only after its sha256 matches the pin below; macOS:
 # `brew install`), starts the daemon if it isn't already running, and
 # pulls the default baseline model (qwen3:8b — strong tool-use, ~5 GB).
 #
@@ -18,6 +19,15 @@ set -euo pipefail
 # Flags:
 #   --no-pull           Skip the `ollama pull` step (binary install only).
 #   --model <tag>       Pull a different model tag (default: qwen3:8b).
+
+# Linux install pins. The installer script is fetched from the release tag (not
+# the moving ollama.com/install.sh), checked against OLLAMA_INSTALL_SH_SHA256,
+# and told to install exactly OLLAMA_VERSION. Bump both together: download
+# https://raw.githubusercontent.com/ollama/ollama/v<ver>/scripts/install.sh,
+# review it, and pin its `sha256sum`. Empty or a mismatch = refuse (fail closed).
+OLLAMA_VERSION="${OLLAMA_VERSION:-0.32.14}"
+# sha256 of v0.32.14's scripts/install.sh, computed from the tag on 2026-11-11.
+OLLAMA_INSTALL_SH_SHA256="${OLLAMA_INSTALL_SH_SHA256:-25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f}"
 
 MODEL="qwen3:8b"
 DO_PULL=1
@@ -54,8 +64,19 @@ if command -v ollama >/dev/null 2>&1; then
 else
   case "${OS}" in
     Linux)
-      echo "==> installing ollama via official installer"
-      curl -fsSL https://ollama.com/install.sh | sh
+      if [[ ! "${OLLAMA_INSTALL_SH_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "refusing to run an unpinned installer: set OLLAMA_INSTALL_SH_SHA256 to the" >&2
+        echo "reviewed sha256 of ollama v${OLLAMA_VERSION}'s scripts/install.sh, or install" >&2
+        echo "ollama by hand (https://ollama.com/download) and re-run." >&2
+        exit 1
+      fi
+      installer="$(mktemp)"
+      trap 'rm -f "${installer}"' EXIT
+      echo "==> installing ollama v${OLLAMA_VERSION} via its release-tag installer (sha256-pinned)"
+      curl --proto '=https' --tlsv1.2 -fsSL -o "${installer}" \
+        "https://raw.githubusercontent.com/ollama/ollama/v${OLLAMA_VERSION}/scripts/install.sh"
+      echo "${OLLAMA_INSTALL_SH_SHA256}  ${installer}" | sha256sum -c -
+      OLLAMA_VERSION="${OLLAMA_VERSION}" sh "${installer}"
       ;;
     Darwin)
       if command -v brew >/dev/null 2>&1; then

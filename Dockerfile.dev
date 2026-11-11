@@ -78,12 +78,26 @@ ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 # unset by default; setting it to ``1`` at runtime activates the tracer.
 ENV PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH:-}"
 
-# uv (fast Python package manager)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:${PATH}"
-
-# just
-RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+# uv and just: pinned releases, each archive checked against the checksum its
+# release publishes (uv: <asset>.sha256, just: SHA256SUMS) before anything is
+# unpacked. No remote install script is piped into a shell.
+ARG UV_VERSION=0.12.5
+ARG JUST_VERSION=1.58.0
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    tmp="$(mktemp -d)"; cd "$tmp"; \
+    get() { curl --proto '=https' --tlsv1.2 -fsSL -o "$1" "$2"; }; \
+    uv="uv-${arch}-unknown-linux-gnu.tar.gz"; \
+    get "$uv" "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${uv}"; \
+    get "$uv.sha256" "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${uv}.sha256"; \
+    echo "$(cut -d' ' -f1 "$uv.sha256")  $uv" | sha256sum -c -; \
+    tar -xzf "$uv"; install -m 0755 "uv-${arch}-unknown-linux-gnu/uv" "uv-${arch}-unknown-linux-gnu/uvx" /usr/local/bin/; \
+    just="just-${JUST_VERSION}-${arch}-unknown-linux-musl.tar.gz"; \
+    get "$just" "https://github.com/casey/just/releases/download/${JUST_VERSION}/${just}"; \
+    get SHA256SUMS "https://github.com/casey/just/releases/download/${JUST_VERSION}/SHA256SUMS"; \
+    grep -E "^[0-9a-f]{64} [ *]?${just}\$" SHA256SUMS | sed 's/ \*/  /' | sha256sum -c -; \
+    tar -xzf "$just" just; install -m 0755 just /usr/local/bin/; \
+    cd /; rm -rf "$tmp"; uv --version; just --version
 
 # The uv cache lives on a BuildKit cache mount and the target venv lives in the
 # image layer — two different filesystems, so uv's default hardlink install mode

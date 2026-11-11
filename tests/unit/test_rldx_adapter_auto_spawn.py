@@ -179,6 +179,9 @@ def test_boot_wrapper_resolves_a_pinned_model_to_its_revision(tmp_path: Path) ->
     assert "snapshot_download(_repo, revision=_rev)" in src
     assert '"--model-path", _model_path,' in src
     assert f"_model_path = {model!r}" in src
+    # Loopback only: the adapter dials 127.0.0.1; the server is never on the LAN.
+    assert '"--host", "127.0.0.1",' in src
+    assert "0.0.0.0" not in src
 
 
 def test_resolve_model_id_explicit_override_wins() -> None:

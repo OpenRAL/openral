@@ -24,7 +24,7 @@ reasoner's own cascade re-prompts go straight to `/openral/prompt`.
 |---|---|---|
 | `cli` | 100 (human) | `openral prompt "do X"` — see [`openral_cli.prompt`](../../python/cli/src/openral_cli/prompt.py) |
 | `dashboard` | 100 (human) | Dashboard prompt input — shells out to `openral prompt --topic /openral/prompt_in/dashboard` |
-| `auto` | 10 (machine) | Machine-source slot; no in-tree producer publishes on it by default (an `EmitPromptTool` call whose `target_topic` names it would) |
+| `auto` | 10 (machine) | Machine-source slot; no in-tree producer publishes on it by default (an `EmitPromptTool` call whose `target_topic` names it would — the only router input `EMIT_PROMPT_TOPICS` admits; the LLM can never post as `cli` / `dashboard`) |
 
 Per-source allowlist comes from the constructor's `sources` dict (default
 `DEFAULT_SOURCES`, the three above); it is not a ROS parameter.

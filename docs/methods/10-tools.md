@@ -604,17 +604,17 @@ The single canonical producer of the `SKILL.md` mirror: `rskill.yaml` is authori
 _Boot helper for the RLDX-1 inference sidecar, companion to `openral_sim.policies.rldx`._
 Materialises a Python 3.10 venv, clones upstream RLDX-1, installs its dependencies (an override path on aarch64), patches in NF4/int8 quantization for the Qwen3-VL backbone (the `BitsAndBytesConfig` kwargs come from OpenRAL Pro via `sidecar_quantization_args`, baked into the boot wrapper), and execs into the inference server. Needed because upstream pins Python ~3.10 and ships a custom model class Transformers doesn't recognise.
 
-- `_LABEL: str` (L42) — `"rldx-sidecar"`, the sentinel/log label for this sidecar's provisioning.
-- `_REPO_URL: str` (L43) — Upstream `RLWRLD/RLDX-1` git URL cloned into the venv's source tree.
-- `_DEFAULT_HOME: Path` (L44) — `~/.cache/openral/rldx-sidecar`, overridable via `--home`.
-- `_AARCH64_OVERRIDE: Path` (L54) — `sidecar_requirements/rldx-aarch64-override.txt`, the torch/torchvision pin override `_install_deps_aarch64` installs under.
-- `_NVRTC_OVERRIDE: Path` (L62) — Shared `aarch64-nvrtc-override.txt`, raising nvrtc past the sm_121 cliff.
+- `_LABEL: str` (L43) — `"rldx-sidecar"`, the sentinel/log label for this sidecar's provisioning.
+- `_REPO_URL: str` (L45) — Upstream `RLWRLD/RLDX-1` git URL cloned into the venv's source tree.
+- `_DEFAULT_HOME: Path` (L47) — `~/.cache/openral/rldx-sidecar`, overridable via `--home`.
+- `_AARCH64_OVERRIDE: Path` (L57) — `sidecar_requirements/rldx-aarch64-override.txt`, the torch/torchvision pin override `_install_deps_aarch64` installs under.
+- `_NVRTC_OVERRIDE: Path` (L65) — Shared `aarch64-nvrtc-override.txt`, raising nvrtc past the sm_121 cliff.
 
-- `_install_deps(*, source, uv, quantization) -> Path` — `uv sync` in the cloned source tree, then installs `bitsandbytes` when quantizing to NF4/int8. Delegates to `_install_deps_aarch64` on aarch64, where the plain sync can't succeed. (L131)
-- `_install_deps_aarch64(*, source, quantization) -> Path` — aarch64 replacement for `uv sync`: provisions the venv with pinned torch/cuda overrides plus the quantization extras, keyed so a corrected pin repairs an existing venv. (L67)
-- `_aarch64_extras(quantization) -> list[str]` — the packages installed on top of upstream's own dependency set on aarch64; shared between the install pass and the sentinel spec so they cannot drift. (L115)
-- `_make_wrapper(*, work, source, args) -> Path` — Generates the server-launching wrapper script: monkey-patches model loading for NF4/int8/no-op quantization, falls back to `sdpa` attention when flash-attn isn't importable, and hands off to the upstream server entry point. (L167)
-- `main() -> int` — argparse entry point (`--model`, `--port`, `--quantization`, `--home`); stamps the sidecar identity record and execs into the sidecar venv so SIGINT reaches the server. (L326)
+- `_install_deps(*, source, uv, quantization) -> Path` — `uv sync` in the cloned source tree, then installs `bitsandbytes` when quantizing to NF4/int8. Delegates to `_install_deps_aarch64` on aarch64, where the plain sync can't succeed. (L134)
+- `_install_deps_aarch64(*, source, quantization) -> Path` — aarch64 replacement for `uv sync`: provisions the venv with pinned torch/cuda overrides plus the quantization extras, keyed so a corrected pin repairs an existing venv. (L70)
+- `_aarch64_extras(quantization) -> list[str]` — the packages installed on top of upstream's own dependency set on aarch64; shared between the install pass and the sentinel spec so they cannot drift. (L118)
+- `_make_wrapper(*, work, source, args) -> Path` — Generates the server-launching wrapper script: monkey-patches model loading for NF4/int8/no-op quantization, falls back to `sdpa` attention when flash-attn isn't importable, and hands off to the upstream server entry point. (L170)
+- `main() -> int` — argparse entry point (`--model`, `--port`, `--quantization`, `--home`); stamps the sidecar identity record and execs into the sidecar venv so SIGINT reaches the server. (L331)
 
 ### `tools/xr1_sidecar.py` + `tools/_xr1_server.py`
 _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provisions its pinned dependency stack and execs the server, which loads the pinned MiBoT checkpoint (NF4 or BF16), recreates the benchmark-specific chat template, and serves `ping/reset/get_action/close` over the shared ZMQ/msgpack wire._
@@ -661,19 +661,19 @@ _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detecto
 ### `tools/da3_depth_sidecar.py` + `tools/_da3_depth_server.py`
 _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, companion to `openral_perception_ros`'s depth-provider node. Runs in its own Python 3.12 venv behind a ZMQ REQ/REP + msgpack wire, since the model ships outside transformers; the provider republishes the reply as a depth image for nvblox. Loaded by file path so the deploy launch can autostart it under a plain interpreter._
 
-- `_DEFAULT_HOME: Path` (L54) — default cache dir.
-- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L55) — `--venv` override env var name.
-- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L56) — `--home` override env var name.
-- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L62) — x86_64 install set.
-- `_NVRTC_OVERRIDE: Path` (L76) — aarch64 nvrtc override file passed at install time.
-- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L79) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
-- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L106) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
-- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L112) — the anchor statement `_defer_pycolmap_import` rewrites.
-- `_PYCOLMAP_LAZY_IMPORT: str` (L113) — the lazy `__getattr__` proxy it rewrites that statement into.
-- `ensure_venv(home, *, override=None) -> Path` (L167) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
-- `_site_packages(py) -> Path` (L132) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
-- `_defer_pycolmap_import(py) -> None` (L140) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
-- `main() -> int` (L221) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
+- `_DEFAULT_HOME: Path` (L55) — default cache dir.
+- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L56) — `--venv` override env var name.
+- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L57) — `--home` override env var name.
+- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L63) — x86_64 install set.
+- `_NVRTC_OVERRIDE: Path` (L77) — aarch64 nvrtc override file passed at install time.
+- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L80) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
+- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L107) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
+- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L113) — the anchor statement `_defer_pycolmap_import` rewrites.
+- `_PYCOLMAP_LAZY_IMPORT: str` (L114) — the lazy `__getattr__` proxy it rewrites that statement into.
+- `ensure_venv(home, *, override=None) -> Path` (L168) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
+- `_site_packages(py) -> Path` (L133) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
+- `_defer_pycolmap_import(py) -> None` (L141) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
+- `main() -> int` (L222) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
 - `_load(model_id) -> (torch, model)` / `_infer(torch, model, image, process_res) -> (depth, K, latency_ms)` — load DA3 to CUDA in eval mode; one image → metric depth `(H, W)` float32 + 3×3 intrinsics.
 - `main() -> int` (_da3_depth_server.py L70) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
 
@@ -682,13 +682,13 @@ _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.polici
 
 - `_LABEL = "internvla-n1-sidecar"` (L41) — sidecar identity.
 - `_REPO_URL = "https://github.com/InternRobotics/InternNav.git"` (L42) — upstream clone URL.
-- `_DEFAULT_HOME: Path` (L43) — cache dir.
-- `_PYTHON = "3.12"` (L47) — venv Python version (both arches; validated on x86_64 and Jetson Thor).
-- `_venv_python(venv) -> str | None` (L98) — `major.minor` of the interpreter a cached venv was created with, read from its `pyvenv.cfg`; `_install_deps` rebuilds the venv when it differs from `_PYTHON`.
-- `_PINNED_DEPS: list[str]` (L58) — Inference-only pin set mirroring upstream, minus flash-attn (sdpa instead); torch 2.9.1 on the `torch_backend()` index (cu130 on aarch64) for aarch64 support, and `diffusers==0.32.2` specifically since a later release changed the architecture the checkpoint was trained against.
-- `_DIFFUSION_POLICY_PIN: str` (L84) — Pins `diffusion_policy` to one commit installed with `--no-deps`, since System-1's NavDP imports only `SinusoidalPosEmb` from it.
-- `_NVRTC_OVERRIDE: Path` (L93) — aarch64 nvrtc override; without it transformers 4.51's Qwen2.5-VL vision stack's `.prod()` dies past the sm_121 ceiling on every System-2 replan.
-- `main() -> int` (L196) — argparse via the shared `build_parser` plus `--revision` (forwarded to the server); the wrapper binds the server to `127.0.0.1`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
+- `_DEFAULT_HOME: Path` (L46) — cache dir.
+- `_PYTHON = "3.12"` (L50) — venv Python version (both arches; validated on x86_64 and Jetson Thor).
+- `_venv_python(venv) -> str | None` (L101) — `major.minor` of the interpreter a cached venv was created with, read from its `pyvenv.cfg`; `_install_deps` rebuilds the venv when it differs from `_PYTHON`.
+- `_PINNED_DEPS: list[str]` (L61) — Inference-only pin set mirroring upstream, minus flash-attn (sdpa instead); torch 2.9.1 on the `torch_backend()` index (cu130 on aarch64) for aarch64 support, and `diffusers==0.32.2` specifically since a later release changed the architecture the checkpoint was trained against.
+- `_DIFFUSION_POLICY_PIN: str` (L87) — Pins `diffusion_policy` to one commit installed with `--no-deps`, since System-1's NavDP imports only `SinusoidalPosEmb` from it.
+- `_NVRTC_OVERRIDE: Path` (L96) — aarch64 nvrtc override; without it transformers 4.51's Qwen2.5-VL vision stack's `.prod()` dies past the sm_121 ceiling on every System-2 replan.
+- `main() -> int` (L199) — argparse via the shared `build_parser` plus `--revision` (forwarded to the server); the wrapper binds the server to `127.0.0.1`; calls `run_sidecar` with `family="internvla_n1"`, `install_deps=_install_deps`, `make_wrapper=_make_wrapper`.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_internvla_n1_server.py L56) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_ACTION_STOP = 0` (_internvla_n1_server.py L61) — Discrete VLN-CE action ids emitted by System-2 (upstream `InternVLAN1AsyncAgent.actions2idx`): STOP.
 - `_ACTION_FORWARD = 1` (_internvla_n1_server.py L62) — forward 0.25 m.
@@ -730,15 +730,15 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 ### `tools/cosmos3_reasoner_sidecar.py`
 _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASONER_MODEL=cosmos3-edge`), companion to `Cosmos3ToolUseClient`. Provisions an isolated venv plus a SHA-pinned transformers overlay, builds a flattened reasoner view for vLLM's loader, and execs into `vllm serve` — its OpenAI-compatible HTTP API is the wire contract the reasoner already speaks. Cosmos 3 weights are commercial-OK, so there is no license guard; forward-pass inference is currently blocked by an upstream bug (see [`docs/reference/cosmos3-edge-reasoner.md`](../reference/cosmos3-edge-reasoner.md))._
 
-- `ensure_venv(home, *, override=None) -> Path` (L108) — Returns the sidecar venv python, provisioning the pinned lock and the SHA-pinned transformers overlay if absent.
-- `is_diffusers_reasoner_layout(model_dir) -> bool` (L163) — True when the top-level `model.safetensors.index.json` maps tensors into subfolders (the Edge layout needing a view); Nano/Super (bare top-level shards) return False.
-- `materialize_reasoner_view(model_dir, dest) -> Path` (L181) — build a vLLM-loadable flat view: bare-named shard symlinks + a rewritten weight index + tokenizer/config symlinks. Idempotent.
-- `resolve_served_model(model, home, *, native_edge=False) -> tuple[str, str | None]` (L264) — Resolves a repo id or local dir to a `vllm serve` target. For the Edge diffusers layout the target depends on the serving vLLM: a native-Edge-aware vLLM serves the snapshot as-is, otherwise the flattened view is required.
-- `vllm_has_native_edge_model(py) -> bool` (L229) — Asks the serving venv's own model registry whether it knows the native Edge model class, since the answer differs by platform. Fails closed to the flattened-view path on any error.
-- `build_serve_argv(*, vllm_bin, model, host, port, tool_call_parser, max_model_len, gpu_memory_utilization, enforce_eager, served_model_name=None, kv_cache_dtype="auto", max_num_seqs=4, limit_mm_per_prompt=..., kv_cache_memory_bytes=None, extra_args=()) -> list[str]` (L369) — Builds the `vllm serve` argv; `--max-model-len`, `--enforce-eager`, `--gpu-memory-utilization` and fp8 KV cache are the knobs that make an 8 GB card fit, `--kv-cache-memory-bytes` is the one a Jetson needs, and `extra_args` are appended last.
-- `serve_defaults(*, tegra) -> dict[str, object]` (L299) — Platform defaults for the four sizing flags: the 8 GB-card values off a Jetson; on one, KV in bytes, utilization 0.15, a 32K window and CUDA graphs. Weights stay BF16.
-- `pro_serve_args(*, tegra) -> list[str]` (L335) — Extra `vllm serve` flags from an OpenRAL Pro `cosmos3_serving` module (`openral.pro_modules`), via `resolve_pro_module`; `[]` when not installed, `ROSConfigError` when the module has no callable `serve_args`.
-- `main() -> int` (L451) — argparse entry point; sets the CUDA allocator config, resolves the served view, and execs into `vllm serve`.
+- `ensure_venv(home, *, override=None) -> Path` (L109) — Returns the sidecar venv python, provisioning the pinned lock and the SHA-pinned transformers overlay if absent.
+- `is_diffusers_reasoner_layout(model_dir) -> bool` (L164) — True when the top-level `model.safetensors.index.json` maps tensors into subfolders (the Edge layout needing a view); Nano/Super (bare top-level shards) return False.
+- `materialize_reasoner_view(model_dir, dest) -> Path` (L182) — build a vLLM-loadable flat view: bare-named shard symlinks + a rewritten weight index + tokenizer/config symlinks. Idempotent.
+- `resolve_served_model(model, home, *, native_edge=False) -> tuple[str, str | None]` (L265) — Resolves a repo id or local dir to a `vllm serve` target. For the Edge diffusers layout the target depends on the serving vLLM: a native-Edge-aware vLLM serves the snapshot as-is, otherwise the flattened view is required.
+- `vllm_has_native_edge_model(py) -> bool` (L230) — Asks the serving venv's own model registry whether it knows the native Edge model class, since the answer differs by platform. Fails closed to the flattened-view path on any error.
+- `build_serve_argv(*, vllm_bin, model, host, port, tool_call_parser, max_model_len, gpu_memory_utilization, enforce_eager, served_model_name=None, kv_cache_dtype="auto", max_num_seqs=4, limit_mm_per_prompt=..., kv_cache_memory_bytes=None, extra_args=()) -> list[str]` (L370) — Builds the `vllm serve` argv; `--max-model-len`, `--enforce-eager`, `--gpu-memory-utilization` and fp8 KV cache are the knobs that make an 8 GB card fit, `--kv-cache-memory-bytes` is the one a Jetson needs, and `extra_args` are appended last.
+- `serve_defaults(*, tegra) -> dict[str, object]` (L300) — Platform defaults for the four sizing flags: the 8 GB-card values off a Jetson; on one, KV in bytes, utilization 0.15, a 32K window and CUDA graphs. Weights stay BF16.
+- `pro_serve_args(*, tegra) -> list[str]` (L336) — Extra `vllm serve` flags from an OpenRAL Pro `cosmos3_serving` module (`openral.pro_modules`), via `resolve_pro_module`; `[]` when not installed, `ROSConfigError` when the module has no callable `serve_args`.
+- `main() -> int` (L452) — argparse entry point; sets the CUDA allocator config, resolves the served view, and execs into `vllm serve`.
 
 ### `tools/behavior_groot_sidecar.py`
 _Python 3.10 sidecar for the official 2026 BEHAVIOR-1K GR00T N1.7 checkpoint. Imports the pinned behavior runtime, wraps `Gr00tPolicy` for the R1Pro modality slices, and serves ZMQ `ping/reset/get_action/close`. Supports whole-model NF4 quantization (default) plus dropping the unused Qwen3-VL `lm_head` to fit an 8 GB host._
@@ -966,7 +966,7 @@ _Writes the curated `REASONER_MODELS` as openral.com's model drop-down (ADR-0129
 - `export() -> list[dict[str, Any]]` (L22) — `[{id, label, needs}]` in registry order; `needs` is the API-key variable the website asks for (`None` for an on-robot model); providers the website has no key for are left out.
 
 ### `tools/pin_robot_ui.py`
-_Pins the dashboard's robot UI to one `robot-ui.yml` build by sha256 (ADR-0129); the workflow runs it and opens the pin bump as a PR._
+_Pins the dashboard's robot UI to one `robot-ui.yml` build by sha256 (ADR-0129); the workflow's `pin` job runs it from a master checkout (never the built commit's tree) and opens the pin bump as a PR._
 
 - `UI_ASSETS: Path` (L16) — Default `ui_assets.py` it rewrites.
 - `pin(text, version, url, sha256, size) -> str` (L24) — `ui_assets.py` source with `ROBOT_UI` set to the given build.

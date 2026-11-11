@@ -29,10 +29,11 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
-from collections.abc import Callable, MutableMapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import TypeVar
 
@@ -158,15 +159,149 @@ def ensure_uv() -> str:
     return uv
 
 
-def ensure_source(label: str, work: Path, repo_url: str) -> Path:
-    """Shallow-clone ``repo_url`` into ``<work>/source`` if absent; return it."""
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def checkout_head(source: Path) -> str:
+    """Return the full commit SHA ``HEAD`` resolves to in the git checkout ``source``."""
+    out = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    )
+    return out.stdout.strip()
+
+
+def ensure_source(label: str, work: Path, repo_url: str, sha: str) -> Path:
+    """Fetch ``repo_url`` at exactly commit ``sha`` into ``<work>/source``; return it.
+
+    Third-party sidecar sources are executed on the host (their install scripts,
+    their server code), so the commit is pinned, never the default branch's
+    moving ``HEAD``. Fails closed (``SystemExit``) on a ``sha`` that is not a full
+    40-hex commit id, and when the checkout's ``HEAD`` is not ``sha`` after the
+    fetch or on reuse of an existing checkout (delete ``<work>/source`` to
+    re-fetch after a pin bump).
+    """
+    if not _FULL_SHA.fullmatch(sha):
+        raise SystemExit(f"[{label}] refusing to clone {repo_url}: pin {sha!r} is not a full SHA")
     source = work / "source"
     if (source / ".git").is_dir():
         print(f"[{label}] reusing existing checkout at {source}", flush=True)
-        return source
-    work.mkdir(parents=True, exist_ok=True)
-    run_cmd(label, ["git", "clone", "--depth", "1", repo_url, str(source)])
+    else:
+        # Built beside the destination and renamed into place only once complete, so
+        # an interrupted fetch never leaves a source/.git a later run would reuse.
+        partial = work / "source.partial"
+        shutil.rmtree(partial, ignore_errors=True)
+        work.mkdir(parents=True, exist_ok=True)
+        run_cmd(label, ["git", "init", "-q", str(partial)])
+        run_cmd(label, ["git", "-C", str(partial), "remote", "add", "origin", repo_url])
+        run_cmd(label, ["git", "-C", str(partial), "fetch", "-q", "--depth", "1", "origin", sha])
+        run_cmd(label, ["git", "-C", str(partial), "checkout", "-q", "FETCH_HEAD"])
+        partial.rename(source)
+    head = checkout_head(source)
+    if head != sha:
+        raise SystemExit(
+            f"[{label}] {source} is at {head}, not the pinned {sha}: refusing to run it. "
+            f"Delete {source} to re-fetch the pinned commit."
+        )
     return source
+
+
+# Environment a sidecar child inherits. Third-party (often trust_remote_code)
+# sidecars must never see the operator's credentials: everything not matched
+# here is dropped, and names that look like a credential are dropped even when
+# a prefix matches (OPENRAL_REASONER_API_KEY is an OPENRAL_* var).
+_SIDECAR_ENV_NAMES = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TZ",
+        "TMPDIR", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "LD_LIBRARY_PATH",
+        "MUJOCO_GL", "PYOPENGL_PLATFORM", "EGL_PLATFORM", "MAX_JOBS", "CC", "CXX",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO", "NO_COLOR", "FORCE_COLOR", "PRIVACY_CONSENT",
+        # aarch64 hosts preload libgomp etc. for the sidecar's own torch.
+        "LD_PRELOAD",
+        "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "ACCEPT_EULA", "TOKENIZERS_PARALLELISM", "EXP_PATH", "COPPELIASIM_ROOT",
+        "QWEN25_PATH", "QWEN3VL_PATH",
+        # Gated / private weight downloads (the token also sits in ~/.cache/huggingface
+        # for a same-user process, so stripping it would buy nothing).
+        "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN",
+    }
+)  # fmt: skip
+_SIDECAR_ENV_PREFIXES = (
+    "LC_", "XDG_", "CUDA_", "NVIDIA_", "HF_", "HUGGINGFACE_", "PYTHON", "PYTORCH_",
+    "TORCH", "TRITON_", "NCCL_", "ROS_", "AMENT_", "COLCON_", "OPENRAL_", "UV_",
+    "OMNI_", "ISAAC", "CARB_", "KIT_", "VK_", "MESA_", "QT_", "__GLX_", "__NV_", "__EGL_",
+    # DDS vendor config (a sim sidecar stays on the graph's transport / domain).
+    "RMW_", "RCUTILS_", "CYCLONEDDS_", "FASTDDS_", "FASTRTPS_", "ZENOH_",
+    # CPU threading and the simulators' own settings.
+    "OMP_", "KMP_", "MKL_", "OPENBLAS_", "MUJOCO_", "LIBERO_", "ROBOSUITE_",
+    "ROBOCASA_", "MS_", "SAPIEN_", "VLABENCH_", "OMNIGIBSON_", "GIBSON_", "PIP_",
+    # vLLM serving knobs (the Cosmos 3 reasoner sidecar).
+    "VLLM_", "FLASHINFER_",
+    # Per-family server overrides (RLDX_ATTN_IMPL) and model-loader / GL knobs.
+    "RLDX_", "TRANSFORMERS_", "LIBGL_", "__GL_", "JAX_", "XLA_",
+)  # fmt: skip
+# A credential marker is a whole ``_``-separated word, so OPENRAL_REASONER_MAX_TOKENS
+# (a budget, not a secret) is not caught by TOKEN. A bare KEY counts
+# (OPENRAL_ACTOR_KEY is the compliance log's HMAC key).
+_CREDENTIAL_NAME = re.compile(
+    r"(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)"
+)
+
+
+# A URL carrying userinfo (``https://user:pass@index.example/simple``): a private
+# package index's credentials ride in UV_INDEX_URL / PIP_INDEX_URL / *_PROXY values.
+_URL_USERINFO = re.compile(r"://[^/\s@]+@")
+
+_HF_TOKEN_NAMES = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+
+
+def sidecar_env(
+    environ: Mapping[str, str], *, extra: Iterable[str] = (), hf_token: bool = True
+) -> dict[str, str]:
+    """Return the allowlisted subset of ``environ`` a sidecar child may inherit.
+
+    Keeps the runtime basics (``PATH``, ``HOME``, locale, ``CUDA_*`` / ``NVIDIA_*``,
+    ``HF_*`` caches, ``PYTHON*``, ``ROS_*``, ``OPENRAL_*``, ``UV_*``, …) and drops
+    everything else, so ``*_API_KEY`` / ``ANTHROPIC_*`` / ``OPENAI_*`` and other
+    operator secrets never reach a remote-code process. A name with a credential
+    word (``API_KEY``, ``SECRET``, ``TOKEN``, … as a whole ``_``-separated word) is
+    dropped even when a prefix matches, and so is any value holding a URL with
+    credentials in it (a private index in ``UV_INDEX_URL``). ``HF_TOKEN`` is the one
+    deliberate exception (gated weight downloads), and ``hf_token=False`` drops it too
+    for a sidecar whose weights are public.
+    ``extra`` names further variables a particular sidecar needs.
+
+    Example:
+        >>> env = sidecar_env({"PATH": "/bin", "OPENRAL_REASONER_API_KEY": "sk", "X": "1"})
+        >>> env
+        {'PATH': '/bin'}
+    """
+    wanted = _SIDECAR_ENV_NAMES.union(extra)
+    if not hf_token:
+        wanted -= _HF_TOKEN_NAMES
+
+    def allowed(name: str) -> bool:
+        if name in wanted:
+            return True
+        upper = name.upper()
+        if _CREDENTIAL_NAME.search(upper):
+            return False
+        return name.startswith(_SIDECAR_ENV_PREFIXES)
+
+    return {k: v for k, v in environ.items() if allowed(k) and not _URL_USERINFO.search(v)}
+
+
+def scrub_environ(*, hf_token: bool = True) -> None:
+    """Restrict this process's ``os.environ`` to the ``sidecar_env`` allowlist, in place.
+
+    A ``tools/<name>_sidecar.py`` boot helper calls it first thing, so the venv
+    installs it runs (third-party build code) and the server it ``exec``s inherit
+    no operator credentials, however the helper was launched (auto-spawned by an
+    adapter or by hand).
+    """
+    kept = sidecar_env(os.environ, hf_token=hf_token)
+    os.environ.clear()
+    os.environ.update(kept)
 
 
 def spec_marker(spec: Sequence[str] | None) -> str:
@@ -263,8 +398,10 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
 
     Drops the workspace ``PYTHONPATH`` / ``PYTHONHOME`` (their 3.12 wheels would
     shadow the 3.10 venv and crash ``import transformers`` on a regex ABI
-    mismatch), points at the venv, and disables torch.compile / inductor (which
-    stalls post-load on small GPUs). The caller follows with ``exec_server``.
+    mismatch), keeps only the ``sidecar_env`` allowlist (no operator
+    credentials reach the remote-code server), points at the venv, and
+    disables torch.compile / inductor (which stalls post-load on small GPUs).
+    The caller follows with ``exec_server``.
 
     Also defaults the CUDA caching-allocator to ``expandable_segments:True``.
     On an 8 GB-class GPU the sidecar's 3B checkpoint load (NF4 quant peak via
@@ -293,7 +430,7 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     no-op wherever that wheel isn't installed (all x86_64 sidecars today), so
     it cannot perturb the validated x86_64 path.
     """
-    env = os.environ.copy()
+    env = sidecar_env(os.environ)
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
     env["VIRTUAL_ENV"] = str(venv)
@@ -480,6 +617,7 @@ def run_sidecar(
     label: str,
     family: str,
     repo_url: str,
+    repo_sha: str,
     args: argparse.Namespace,
     install_deps: Callable[..., Path],
     make_wrapper: Callable[..., Path],
@@ -491,12 +629,16 @@ def run_sidecar(
     file so the adapter can verify a pre-existing sidecar before reusing it.
     ``install_deps(source, uv, quantization) -> venv`` and
     ``make_wrapper(work, source, args) -> wrapper_path`` are the per-family
-    callbacks. Does not return (``exec_server`` replaces the process); the
-    ``return 0`` is for type-checkers only.
+    callbacks. ``repo_sha`` pins the upstream commit (``ensure_source``).
+    Does not return (``exec_server`` replaces the process); the ``return 0``
+    is for type-checkers only.
     """
+    # The clone's build code (`uv sync` in install_deps) runs here, before the
+    # server: no operator credential may reach it either.
+    scrub_environ()
     uv = ensure_uv()
     work: Path = args.home
-    source = ensure_source(label, work, repo_url)
+    source = ensure_source(label, work, repo_url, repo_sha)
     venv = install_deps(source=source, uv=uv, quantization=args.quantization)
     wrapper = make_wrapper(work=work, source=source, args=args)
     # Stamp the identity record before exec: the server binds the port within
