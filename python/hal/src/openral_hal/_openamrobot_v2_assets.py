@@ -56,11 +56,56 @@ _DM4340 = (190.0, 2.2, 0.9, 0.16, 0.1)
 _DM4310 = (30.0, 1.5, 0.9, 0.01, 0.04)
 _FINGER = (30.0, 0.2, 2.0, 0.0, 0.0)
 _ARM_GAINS = (_DM8009, _DM8009, _DM4340, _DM4340, _DM4310, _DM4310, _DM4310)
-# Kinematic base: stiff and critically damped, enough for a 38 kg body.
-_BASE_KP = 20000.0
+# Kinematic base: a critically damped tracker at a fixed natural frequency, so its
+# lag does not change when upstream's masses do (87 kg since openamr-platform-sw
+# #126). sqrt(500) rad/s is the old kp 20000 on a 40 kg body. Not motor data.
+_BASE_OMEGA_RAD_S = math.sqrt(500.0)
 # openarm_mujoco's position_lifter kp (8000) sags 24 mm under the arms with
-# gravity on; 1e5 holds within 2 mm. Its kv and forcerange are kept.
+# gravity on; 1e5 holds within 2.3 mm (upstream's 8 Nov carriage masses). Its kv
+# and forcerange are kept.
 _LIFT_KP, _LIFT_KV, _LIFT_FORCE = 1.0e5, 4000.0, 3000.0
+
+
+def _srgb(hex_rgb: str) -> list[float]:
+    return [int(hex_rgb[i : i + 2], 16) / 255.0 for i in (1, 3, 5)] + [1.0]
+
+
+# Visual finishes (presentation only: no geometry, mass or contact change). Upstream's
+# URDF draws the whole upper body in one placeholder colour; these are the colours its
+# own roadmap model renders (openAMRobot/openamrobot-docs, docs/assets/roadmap/model:
+# finish.json RAL references, else model.js materials alu #C9CDD2, anod #D7DBDE, steel
+# #4A4F55, black #15181C). Links the roadmap model draws only as placeholder envelopes
+# (Getac, head light, second E-stop) keep upstream's placeholder colour.
+_LINK_FINISH: dict[str, list[float]] = {
+    "lift_column_base_link": _srgb("#D7DBDE"),  # anodised column body (model.js anod)
+    "lift_carriage_link": _srgb("#C9CDD2"),  # lift stage (model.js alu)
+    "adapter_plate_link": _srgb("#0A0A0A"),  # RAL 9005, satin (finish.json)
+    "arm_profile_link": _srgb("#383E42"),  # RAL 7016, satin (finish.json)
+    "head_camera_link": _srgb("#15181C"),  # ZED Mini body (model.js black)
+    "head_camera_bracket_link": _srgb("#C9CDD2"),
+    "lift_flag_rod_link": _srgb("#C9CDD2"),
+    "lift_flag_link": _srgb("#4A4F55"),
+    "lift_stop_sensor_l1000_link": _srgb("#4A4F55"),
+    "lift_stop_sensor_l1175_link": _srgb("#4A4F55"),
+    "lift_stop_sensor_l1350_link": _srgb("#4A4F55"),
+}
+# base_link carries three visual meshes: the steel shell (side, front and rear panels,
+# RAL 7035) and the top cover (RAL 7016), as finish.json; the equipment keeps its own.
+_BASE_MESH_FINISH: dict[str, list[float]] = {
+    "base_chassis": _srgb("#CBD0CC"),
+    "base_covers": _srgb("#383E42"),
+}
+
+
+def _apply_finish(geom: object) -> None:
+    """Colour one visual geom from ``_LINK_FINISH`` / ``_BASE_MESH_FINISH`` (else unchanged)."""
+    body = geom.parent.name  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
+    if body in _LINK_FINISH:
+        geom.rgba = _LINK_FINISH[body]  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
+    elif body == "base_link":
+        for stem, rgba in _BASE_MESH_FINISH.items():
+            if geom.meshname.startswith(f"{stem}_"):  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
+                geom.rgba = rgba  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
 
 
 def _actuated_joints() -> list[tuple[str, tuple[float, float, float, float, float]]]:
@@ -121,6 +166,13 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
     for geom in spec.geoms:
         if geom.contype or geom.conaffinity:  # collision geom (visuals import as 0/0)
             geom.contype, geom.conaffinity = 2, 1
+            # Group 3 is not rendered by default, so cameras and viewers draw the
+            # visual meshes instead of the coarse collision shells drawn over them
+            # (the chassis box hid the base meshes). Contacts and mj_ray (lidar,
+            # depth ray-cast) ignore groups unless asked, so they still hit these.
+            geom.group = 3
+        else:
+            _apply_finish(geom)
 
     base = spec.body("base_footprint")
     slide, hinge = mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE
@@ -140,9 +192,15 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
             act.forcelimited = mujoco.mjtLimited.mjLIMITED_TRUE
             act.forcerange = [-force, force]
 
-    base_kv = 2.0 * math.sqrt(_BASE_KP * 40.0)
+    # Gains from the mass the slides actually carry (the whole robot), so the base
+    # stays critically damped whatever upstream's masses are.
+    compiled = spec.compile()
+    base_id = mujoco.mj_name2id(compiled, mujoco.mjtObj.mjOBJ_BODY, "base_footprint")
+    base_mass = float(compiled.body_subtreemass[base_id])
+    base_kp = base_mass * _BASE_OMEGA_RAD_S**2
+    base_kv = 2.0 * base_mass * _BASE_OMEGA_RAD_S
     for name, _jtype, _axis in base_joints:
-        _position(name, _BASE_KP, base_kv)
+        _position(name, base_kp, base_kv)
     _position("lift_joint", _LIFT_KP, _LIFT_KV, _LIFT_FORCE)
     for joint_name, (kp, kv, damping, armature, friction) in _actuated_joints():
         joint = spec.joint(joint_name)
