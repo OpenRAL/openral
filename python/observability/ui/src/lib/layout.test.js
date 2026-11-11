@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  clampPaneWidth,
+  rowCameras,
   activeTab,
   availableTabs,
   DEFAULT_PREFS,
@@ -42,6 +44,40 @@ test("cameras go left → center → right, manifest order inside a slot", () =>
     ["wrist", "top", "old", "r"],
   );
   assert.deepEqual(orderCameras(null), []);
+});
+
+test("the camera row shows only cameras an operator can look at", () => {
+  // OpenArm: head_zed is a depth sensor whose image is never streamed to the dashboard.
+  const panels = [
+    { id: "cam:head_zed", type: "camera", source: "head_zed", position: "center" },
+    { id: "cam:top", type: "camera", source: "top", position: "center" },
+    { id: "cam:wrist_left", type: "camera", source: "wrist_left", position: "left" },
+    { id: "cam:wrist_right", type: "camera", source: "wrist_right", position: "right" },
+    { id: "cam:front_depth", type: "camera", source: "front_depth", position: "center" },
+  ];
+  const cameras = {
+    top: { ts_unix: 10, modality: "rgb" },
+    wrist_left: { ts_unix: 10, modality: "rgb" },
+    wrist_right: { ts_unix: 10, modality: "rgb" },
+    front_depth: { ts_unix: 10, modality: "depth" },
+  };
+  assert.deepEqual(
+    rowCameras(panels, cameras).map((p) => p.source),
+    ["wrist_left", "top", "wrist_right"],
+  );
+  assert.deepEqual(
+    rowCameras(panels, cameras, ["top"]).map((p) => p.source),
+    ["wrist_left", "wrist_right"],
+  );
+  assert.deepEqual(rowCameras(panels, undefined), []); // nothing streamed yet
+});
+
+test("the pane width is clamped and survives bad stored values", () => {
+  assert.equal(clampPaneWidth(100), 320);
+  assert.equal(clampPaneWidth(5000), 900);
+  assert.equal(clampPaneWidth(512.4), 512);
+  assert.equal(normalizePrefs({ paneWidth: "wide" }).paneWidth, 440);
+  assert.equal(normalizePrefs({ paneWidth: 600 }).paneWidth, 600);
 });
 
 test("tabs appear only for panel types the robot declares", () => {

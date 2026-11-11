@@ -14,12 +14,29 @@ export function orderCameras(panels) {
     .map(({ p }) => p);
 }
 
+// Cameras to put in the row: the ordered camera panels, minus the ones the operator
+// hid, minus any that is not an operator view: a camera with no frame yet (a depth
+// sensor whose image is never streamed, a camera that is not plugged in) or whose
+// frames are depth. `cameras` is `snap.topics.perception.cameras`.
+export function rowCameras(panels, cameras, hidden = []) {
+  const live = cameras && typeof cameras === "object" ? cameras : {};
+  return orderCameras(panels).filter((p) => {
+    const cam = live[p.source];
+    return !hidden.includes(p.source) && cam && cam.ts_unix != null && cam.modality !== "depth";
+  });
+}
+
+// The right pane's width: draggable, kept within what leaves room for the scene.
+export const PANE_WIDTH = { min: 320, max: 900, initial: 440 };
+export const clampPaneWidth = (w) =>
+  Number.isFinite(w) ? Math.round(Math.max(PANE_WIDTH.min, Math.min(PANE_WIDTH.max, w))) : PANE_WIDTH.initial;
+
 // The right pane's tabs, in default order. Each lists the manifest panel types
 // it draws; a tab shows only when the robot declares at least one of them.
 export const TABS = [
   { id: "reasoner", label: "Reasoner", types: ["reasoner"] },
   { id: "events", label: "Events", types: ["events"] },
-  { id: "world", label: "World", types: ["world_state", "map"] },
+  { id: "world", label: "World", types: ["world_state"] },
   { id: "safety", label: "Safety", types: ["safety_status", "safety_ledger"] },
   { id: "skill", label: "Skill", types: ["rskill", "reward"] },
   { id: "robot", label: "Robot", types: ["joints", "pointcloud"] },
@@ -56,6 +73,7 @@ export const DEFAULT_PREFS = Object.freeze({
   layers: Object.fromEntries(LAYERS.map((l) => [l.id, l.on])),
   hiddenCameras: [],
   theme: "system",
+  paneWidth: PANE_WIDTH.initial,
 });
 
 const ids = (v, known) => (Array.isArray(v) ? [...new Set(v.filter((x) => known.has(x)))] : []);
@@ -77,6 +95,7 @@ export function normalizePrefs(raw) {
     layers,
     hiddenCameras: Array.isArray(r.hiddenCameras) ? r.hiddenCameras.filter((x) => typeof x === "string") : [],
     theme: THEMES.includes(r.theme) ? r.theme : "system",
+    paneWidth: clampPaneWidth(r.paneWidth),
   };
 }
 

@@ -54,11 +54,14 @@ npm run preview        # serve dist/ with the same proxy
 
 ## Layout
 
-The page is an operator console ([plan](../../../docs/roadmap/robot-console.md)): the header
-(robot, safety, Layout, **E-STOP**), the cameras ordered left → center → right by their
-manifest `position` (missing slots are dropped, the rest centered), the 3D scene under
-them, and a right pane that shows one tab at a time. Layout choices (tabs shown, order,
-default tab, 3D layers, cameras, light/dark/system theme) are saved per robot in the browser.
+The page is an operator console ([plan](../../../docs/roadmap/robot-console.md)) that fills one
+screen without page scroll: the header (robot, safety, Layout, **E-STOP**); the prompt bar
+(the manifest's `prompt` action; it says why when prompting is unavailable); a fixed-height
+row of cameras ordered left → center → right by their manifest `position` (only cameras that
+stream viewable frames, then the 2D occupancy map when the robot has a `map` panel); the 3D
+scene filling the rest; and a right pane that shows one tab at a time, scrolls on its own and
+can be dragged wider. Layout choices (tabs shown, order, default tab, pane width, 3D layers,
+cameras, light/dark/system theme) are saved per robot in the browser.
 
 - `src/main.jsx`: mode detection, manifest/config polling, the SSE stream, and the header.
 - `src/Console.jsx`: the camera strip, the right pane and its tabs, the reasoner trace, the Layout sheet.

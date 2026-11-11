@@ -12,12 +12,15 @@ Users: operators who supervise what the robot does. Light and dark themes.
 | Zone | Contents | Can the operator hide it? |
 |---|---|---|
 | Header | robot + unit, mode/role, connection, safety pill, Layout, **E-STOP** | no |
-| Cameras | one tile per image sensor, ordered **left → center → right**; missing slots are dropped and the rest centered | per camera |
-| 3D scene | URDF + TF, occupancy grid, point cloud, world-state objects, collision boxes, payload, markers; a layer list | layers, per layer |
-| Right pane | one tab at a time: Reasoner (default), Events, World, Safety, Skill, Robot, System | per tab, reorderable |
+| Prompt bar | one line to the reasoner (the `prompt` action); disabled with the reason when the reasoner is off or the viewer may not prompt | no |
+| Cameras | fixed-height row: one tile per camera that streams viewable frames, ordered **left → center → right**, then the 2D occupancy map when the robot has one; missing slots are dropped and the rest centered | per camera |
+| 3D scene | URDF posed from TF, occupancy grid, point cloud, world-state objects, collision boxes, payload, markers; a layer list. Fills the rest of the screen | layers, per layer |
+| Right pane | one tab at a time: Reasoner (default), Events, World, Safety, Skill, Robot, System. Scrolls on its own; drag its edge to resize | per tab, reorderable |
 | Timeline | replay only (phase 3); not shown live | — |
 
-Layout choices (visible tabs, their order, the default tab, the 3D layers, the theme)
+The page itself does not scroll (below 1000 px wide it stacks and scrolls normally).
+
+Layout choices (visible tabs, their order, the default tab, the pane width, the 3D layers, the theme)
 are saved in the browser, per robot. Nothing from a robot is rendered as HTML.
 
 ## Phases

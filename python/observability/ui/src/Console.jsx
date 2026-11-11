@@ -8,7 +8,10 @@ import {
   activeTab,
   loadPrefs,
   moveTab,
+  clampPaneWidth,
   orderCameras,
+  PANE_WIDTH,
+  rowCameras,
   resolveTheme,
   savePrefs,
   TABS,
@@ -17,6 +20,7 @@ import {
   availableTabs,
   visibleTabs,
 } from "./lib/layout.js";
+import { runAction, visibleActions } from "./lib/actions.js";
 import { fmtTime, shortId } from "./lib/render.js";
 import { traceAppend } from "./lib/trace.js";
 import { localVizUrl } from "./lib/viz.js";
@@ -117,11 +121,16 @@ function ReasonerTrace({ trace }) {
   );
 }
 
-function CameraStrip({ cams, snap, api, cfg }) {
-  if (cams.length === 0) return null;
+// The row above the 3D scene: the cameras, left → center → right, then the 2D
+// occupancy map when the robot has one (the `map` panel, i.e. SLAM runs). A fixed
+// height, so nothing below it moves when a frame or a caption changes.
+function CameraStrip({ cams, map, snap, api, cfg }) {
   const Camera = PANELS.camera;
+  const MapPanel = PANELS.map;
+  const tiles = cams.length + (map ? 1 : 0);
+  if (tiles === 0) return null;
   return (
-    <section className="cams" aria-label="Cameras" style={{ "--cams": cams.length }}>
+    <section className="cams" aria-label="Cameras" style={{ "--cams": tiles }}>
       {cams.map((p) => (
         <div className="cam-slot" key={p.id}>
           <Boundary title={p.title} reset={snap}>
@@ -129,7 +138,105 @@ function CameraStrip({ cams, snap, api, cfg }) {
           </Boundary>
         </div>
       ))}
+      {map && (
+        <div className="cam-slot map-slot" key={map.id}>
+          <Boundary title={map.title} reset={snap}>
+            <MapPanel panel={{ ...map, title: "Occupancy" }} snap={snap} />
+          </Boundary>
+        </div>
+      )}
     </section>
+  );
+}
+
+// The operator's line to the reasoner, above everything else in the stage. It is the
+// manifest's `prompt` action; when the robot does not offer it (the reasoner is off)
+// or this viewer may not use it, the bar says why instead of disappearing.
+function PromptBar({ api, cfg, actions }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const { shown, hidden, blocked } = visibleActions(actions, cfg.role, cfg.mode === "remote");
+  const action = shown.find((a) => a.kind === "prompt");
+  const declared = (Array.isArray(actions) ? actions : []).some((a) => a?.kind === "prompt");
+  const why = action
+    ? null
+    : !declared
+      ? "The reasoner is not running on this deploy, so there is nothing to prompt."
+      : blocked.some((a) => a.kind === "prompt")
+        ? "Prompting is off over the network on this robot (OPENRAL_DASHBOARD_REMOTE_CONTROL=1 turns it on)."
+        : cfg.mode === "lan"
+          ? "LAN view: prompt the robot from its own screen."
+          : hidden.role
+            ? `Your role (${cfg.role}) can watch and E-STOP, not prompt.`
+            : "Prompting is not available.";
+  async function submit(e) {
+    e.preventDefault();
+    const value = text.trim();
+    if (!action || !value || busy) return;
+    setBusy(true);
+    const res = await runAction(api.call, action.id, { text: value });
+    setResult(res);
+    setBusy(false);
+    if (res.ok) setText("");
+  }
+  return (
+    <form className="prompt-bar" onSubmit={submit} aria-label="Prompt the reasoner">
+      <label className="sr-only" htmlFor="prompt-input">
+        Tell the robot what to do
+      </label>
+      <input
+        id="prompt-input"
+        type="text"
+        value={text}
+        disabled={!action}
+        placeholder={action ? "Tell the robot what to do…" : why}
+        title={why || undefined}
+        autoComplete="off"
+        onChange={(e) => setText(e.target.value)}
+      />
+      <button type="submit" className="btn prompt-send" disabled={!action || busy || !text.trim()}>
+        {busy ? "Sending…" : "Send"}
+      </button>
+      {result && (
+        <span className={result.ok ? "prompt-note" : "prompt-note err"} role="status">
+          {String(result.text ?? "")}
+        </span>
+      )}
+    </form>
+  );
+}
+
+// Drag (or arrow keys) to widen or narrow the right pane.
+function PaneResizer({ width, setWidth }) {
+  const onPointerDown = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const move = (ev) => setWidth(clampPaneWidth(width + (startX - ev.clientX)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowLeft") setWidth(clampPaneWidth(width + 24));
+    else if (e.key === "ArrowRight") setWidth(clampPaneWidth(width - 24));
+  };
+  return (
+    <div
+      className="pane-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the side pane"
+      aria-valuemin={PANE_WIDTH.min}
+      aria-valuemax={PANE_WIDTH.max}
+      aria-valuenow={width}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
+    />
   );
 }
 
@@ -271,7 +378,7 @@ function RightPane({ tabs, active, setActive, snap, api, cfg, manifest, bar, bri
       </div>
       <footer className="pane-actions">
         <Boundary title="Actions" reset={manifest}>
-          <ActionBar part="rest" {...bar} />
+          <ActionBar part="rest" skipKinds={["prompt"]} {...bar} />
         </Boundary>
       </footer>
     </aside>
@@ -308,7 +415,9 @@ export function Console({ api, cfg, manifest, snap, bar, robotId, prefs, update,
   const declared = useMemo(() => (Array.isArray(manifest?.panels) ? manifest.panels : []).filter((p) => p && typeof p.id === "string"), [manifest]);
   const panels = useMemo(() => declared.filter((p) => Object.hasOwn(PANELS, p.type)), [declared]);
   const allCams = orderCameras(panels);
-  const cams = allCams.filter((c) => !prefs.hiddenCameras.includes(c.source));
+  const cams = rowCameras(panels, snap?.topics?.perception?.cameras, prefs.hiddenCameras);
+  const map = panels.find((p) => p.type === "map") || null;
+  const setPaneWidth = (w) => update((p) => ({ ...p, paneWidth: w }));
   const tabsAvail = availableTabs(panels);
   const tabs = visibleTabs(prefs, panels);
   const [chosen, setChosen] = useState(null);
@@ -318,9 +427,10 @@ export function Console({ api, cfg, manifest, snap, bar, robotId, prefs, update,
   const trace = useTrace(snap);
   const setLayer = (id) => update((p) => ({ ...p, layers: { ...p.layers, [id]: !p.layers[id] } }));
   return (
-    <div className="console">
+    <div className="console" style={{ "--pane-w": `${prefs.paneWidth}px` }}>
       <div className="stage">
-        <CameraStrip cams={cams} snap={snap} api={api} cfg={cfg} />
+        <PromptBar api={api} cfg={cfg} actions={manifest?.actions} />
+        <CameraStrip cams={cams} map={map} snap={snap} api={api} cfg={cfg} />
         <SceneBoundary key={robotId}>
           <Suspense fallback={<SceneFallback>loading the 3D view…</SceneFallback>}>
             <Scene3D
@@ -336,6 +446,7 @@ export function Console({ api, cfg, manifest, snap, bar, robotId, prefs, update,
           </Suspense>
         </SceneBoundary>
       </div>
+      <PaneResizer width={prefs.paneWidth} setWidth={setPaneWidth} />
       {layoutOpen ? (
         <aside className="pane">
           <LayoutSheet prefs={prefs} update={update} tabsAvail={tabsAvail} cams={allCams} onClose={() => setLayoutOpen(false)} />
