@@ -165,12 +165,12 @@ function PromptBar({ api, cfg, actions, snap }) {
     ? null
     : down
       ? down
-      : !declared
-        ? "The reasoner is not running on this deploy, so there is nothing to prompt."
-        : blocked.some((a) => a.kind === "prompt")
-          ? "Prompting is off over the network on this robot (OPENRAL_DASHBOARD_REMOTE_CONTROL=1 turns it on)."
-          : cfg.mode === "lan"
-            ? "LAN view: prompt the robot from its own screen."
+      : cfg.mode === "lan" // the LAN manifest carries only E-STOP, so `declared` is false there
+        ? "LAN view: prompt the robot from its own screen."
+        : !declared
+          ? "The reasoner is not running on this deploy, so there is nothing to prompt."
+          : blocked.some((a) => a.kind === "prompt")
+            ? "Prompting is off over the network on this robot (OPENRAL_DASHBOARD_REMOTE_CONTROL=1 turns it on)."
             : hidden.role
               ? `Your role (${cfg.role}) can watch and E-STOP, not prompt.`
               : "Prompting is not available.";
