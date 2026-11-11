@@ -21,8 +21,14 @@ anyone on the same network as the robot host can:
 
 **Host confinement (default).** A real deploy (`hal_mode=real`) runs with
 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a per-robot `ROS_DOMAIN_ID`,
-a stable hash of the `robot_id` into 10–101 (skipping 77, the sim domain;
-above 101 collides with Linux ephemeral ports). The chosen scope is printed
+a stable hash of the `robot_id` into 10–101 (above 101 collides with Linux
+ephemeral ports) that never lands on a reserved domain
+(`openral_cli._dds_scope.RESERVED_DOMAINS`): 0, 42 (`tools/_demo_env.sh`), 77
+(the sim), 50–99 (per-PID test domains, which also cover the lab harnesses'
+76/80–92) and 100–101 (package test conftests). That leaves 39 domains, 10–49
+minus 42. A hash that lands on a reserved domain is re-hashed into the free
+ones; every other `robot_id` keeps the domain it had before the reservations
+(`openarm` stays 43; `so101_follower` moved from 52 to 39). The chosen scope is printed
 as `ros scope:` before launch. An exported non-empty value of either variable
 wins; an exported empty value counts as unset. Simulations are unchanged
 (`LOCALHOST`, domain 77). Implementation:
@@ -64,7 +70,7 @@ computer, for example:
 On **every** host of that graph:
 
 ```bash
-export ROS_DOMAIN_ID=42                     # same value everywhere; not 0
+export ROS_DOMAIN_ID=23                     # same value everywhere; not 0 or a reserved one
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET # or LOCALHOST + ROS_STATIC_PEERS=<ip>
 export OPENRAL_ALLOW_NETWORK_ROS=1          # on the host running `openral deploy run`
 ```

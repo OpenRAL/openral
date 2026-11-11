@@ -48,6 +48,7 @@ from openral_core.exceptions import ROSConfigError
 __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
     "ALLOW_UNVERIFIED_GRAPH_ENV",
+    "RESERVED_DOMAINS",
     "SIM_DOMAIN_ID",
     "assert_graph_unoccupied",
     "confine_real_scope",
@@ -86,11 +87,33 @@ SIM_DOMAIN_ID: Final[str] = "77"
 #: host that can discover the graph can command the arm (see module docstring).
 ALLOW_NETWORK_ROS_ENV: Final[str] = "OPENRAL_ALLOW_NETWORK_ROS"
 
-#: Domains a real robot is hashed into. Upper bound 101: on Linux, domains
-#: 102-232 collide with the default ephemeral port range (ROS 2 "The ROS_DOMAIN_ID"
-#: concept page). Below 10 is skipped (0 = unset, small values are what people
-#: pick by hand), and the sim's domain is skipped so a twin never lands on it.
-_REAL_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in range(10, 102) if d != int(SIM_DOMAIN_ID))
+#: Domains the hash table spans. Upper bound 101: on Linux, domains 102-232
+#: collide with the default ephemeral port range (ROS 2 "The ROS_DOMAIN_ID"
+#: concept page; RTPS port = 7400 + 250 * domain + offsets). Below 10 is skipped
+#: (0 = unset, small values are what people pick by hand). The sim's domain was
+#: excluded from the start; this table is kept as-is so a robot id that never
+#: landed on a reserved value keeps the domain it had.
+_HASH_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in range(10, 102) if d != int(SIM_DOMAIN_ID))
+
+#: Domains something else on a robot host already uses, so a real robot is never
+#: hashed onto them (a twin, a test or a lab harness on the robot's own domain
+#: is on the robot's graph):
+#:
+#: * ``0`` — the unset default; ``42`` — ``tools/_demo_env.sh``'s default, and
+#:   never a robot's by explicit request; ``77`` — ``SIM_DOMAIN_ID``;
+#: * ``50-99`` — per-PID test domains (``50 + pid % 50`` in the safety-kernel
+#:   launch tests and ``tests/sim/safety``, ``60 + pid % 40`` in the OTel test),
+#:   which also cover the lab harnesses' fixed domains (76, 80-89, 85, 87, 88 in
+#:   ``docs/reference/dds-large-messages.md``, 90, 91, 92);
+#: * ``100-101`` — the bottom of the package test conftests' ``100 + pid % 100``.
+#:
+#: Exporting ``ROS_DOMAIN_ID`` still wins over all of this.
+RESERVED_DOMAINS: Final[frozenset[int]] = frozenset({0, 42, int(SIM_DOMAIN_ID)}) | frozenset(
+    range(50, 102)
+)
+
+#: Where a robot id whose hash lands on a reserved domain is re-hashed to.
+_FREE_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in _HASH_DOMAINS if d not in RESERVED_DOMAINS)
 
 #: Discovery ranges that keep a graph on this host.
 _HOST_CONFINED_RANGES: Final[frozenset[str]] = frozenset({"LOCALHOST", "OFF"})
@@ -148,18 +171,27 @@ def real_domain_id(robot_id: str) -> str:
     """The ``ROS_DOMAIN_ID`` a real robot runs on when the operator sets none.
 
     Stable per ``robot_id`` (SHA-256, not ``hash()``, which is salted per
-    process), in 10-101 minus the sim's domain. Two robots of the same model on
-    one host hash alike; they are told apart by the occupancy guard, and an
-    operator separates them by exporting ``ROS_DOMAIN_ID``.
+    process), in 10-101 and never in ``RESERVED_DOMAINS``. A hash that lands
+    on a reserved domain is re-hashed into the free ones (deterministic, and
+    spread rather than piled onto the next free value); every other id keeps
+    the domain it had before the reservations, so only ids that used to land on
+    a reserved domain moved. Two robots of the same model on one host hash
+    alike; they are told apart by the occupancy guard, and an operator
+    separates them by exporting ``ROS_DOMAIN_ID``.
 
     Example:
         >>> real_domain_id("openarm") == real_domain_id("openarm")
         True
         >>> 10 <= int(real_domain_id("openarm")) <= 101
         True
+        >>> int(real_domain_id("openarm")) in RESERVED_DOMAINS
+        False
     """
     digest = int.from_bytes(hashlib.sha256(robot_id.encode()).digest()[:8], "big")
-    return str(_REAL_DOMAINS[digest % len(_REAL_DOMAINS)])
+    domain = _HASH_DOMAINS[digest % len(_HASH_DOMAINS)]
+    if domain in RESERVED_DOMAINS:
+        domain = _FREE_DOMAINS[digest % len(_FREE_DOMAINS)]
+    return str(domain)
 
 
 def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:

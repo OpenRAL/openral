@@ -22,9 +22,12 @@ boundary to a DDS network) is a substituted seam.
 
 from __future__ import annotations
 
+import hashlib
 from typing import ClassVar
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from openral_cli import _dds_scope
 from openral_core.exceptions import ROSConfigError
 
@@ -86,6 +89,29 @@ class TestConfineRealScope:
             assert domain == _dds_scope.real_domain_id(robot_id)
             assert 10 <= int(domain) <= 101
             assert domain != _dds_scope.SIM_DOMAIN_ID
+
+    @settings(max_examples=2000, deadline=None)
+    @given(robot_id=st.text())
+    def test_no_robot_id_lands_on_a_reserved_domain(self, robot_id: str) -> None:
+        """42 by explicit request, plus every domain a sim, test or lab harness uses."""
+        domain = int(_dds_scope.real_domain_id(robot_id))
+        assert 10 <= domain <= 101
+        assert domain not in _dds_scope.RESERVED_DOMAINS
+        assert domain != 42
+
+    @settings(max_examples=2000, deadline=None)
+    @given(robot_id=st.text())
+    def test_ids_that_never_hit_a_reserved_domain_keep_their_domain(self, robot_id: str) -> None:
+        """The reservations moved only ids whose old hash was reserved (documented)."""
+        digest = int.from_bytes(hashlib.sha256(robot_id.encode()).digest()[:8], "big")
+        before = tuple(d for d in range(10, 102) if d != 77)[digest % 91]
+        if before not in _dds_scope.RESERVED_DOMAINS:
+            assert _dds_scope.real_domain_id(robot_id) == str(before)
+
+    def test_known_robot_domains_are_pinned(self) -> None:
+        """openarm kept 43; so101_follower used to hash onto 52 (a test domain), now 39."""
+        assert _dds_scope.real_domain_id("openarm") == "43"
+        assert _dds_scope.real_domain_id("so101_follower") == "39"
 
     def test_an_explicit_host_confined_scope_wins(self) -> None:
         env = {"ROS_DOMAIN_ID": "42", "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
