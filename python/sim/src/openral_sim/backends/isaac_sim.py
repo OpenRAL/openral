@@ -995,6 +995,32 @@ class IsaacPhysxScene(BaseModel):
     bounce_threshold: float | None = Field(default=None, ge=0.0)
 
 
+class IsaacLinkBox(BaseModel):
+    """One box collider replacing a robot link's own colliders (``link_box_colliders``).
+
+    ``xyz`` is the box centre and ``half_extents`` its half sizes, both in the link's frame
+    (m). For a link whose imported collider is wrong for grasping: the URDF converter
+    wraps each instanced finger mesh in one convex hull, so a thin finger's pad face is
+    not where the hull's face is and an object is pinched on the hull's edge.
+
+    Example:
+        >>> IsaacLinkBox(xyz=(0.0, 0.0, 0.054), half_extents=(0.001, 0.009, 0.034)).xyz[2]
+        0.054
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    xyz: tuple[float, float, float]
+    half_extents: tuple[float, float, float]
+
+    @field_validator("half_extents")
+    @classmethod
+    def _positive(cls, value: tuple[float, float, float]) -> tuple[float, float, float]:
+        if min(value) <= 0.0:
+            raise ValueError(f"half_extents must be > 0, got {value}")
+        return value
+
+
 class IsaacEnvironmentArchive(BaseModel):
     """A pinned zip holding the environment USD (``environment_archive``).
 
@@ -1379,6 +1405,9 @@ class IsaacSimOptions(BaseModel):
     collision_approximation: dict[
         str, Literal["convexHull", "convexDecomposition", "boundingCube", "boundingSphere", "sdf"]
     ] = Field(default_factory=dict)
+    # Robot link name -> the single box collider that replaces the link's own colliders
+    # (IsaacLinkBox, link frame); the link's visual meshes are untouched.
+    link_box_colliders: dict[str, IsaacLinkBox] = Field(default_factory=dict)
     # Per-sensor camera mount overrides (manifest sensor name -> mount); see
     # IsaacCameraMount and default_camera_mounts.
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
@@ -1391,6 +1420,10 @@ class IsaacSimOptions(BaseModel):
     sim_sensors: list[SensorSpec] = Field(default_factory=list)
     # USD assets do not carry these process-level RTX settings.
     translucent_materials: bool = False
+    # Raw carb settings (path -> value), applied after the presets above and so winning
+    # over them. E.g. {"/rtx/post/aa/op": 2}: FXAA instead of DLSS, whose upscaler smears
+    # a 640x480 camera's fine texture (the Metal pen-holder desk).
+    rtx_settings: dict[str, bool | int | float | str] = Field(default_factory=dict)
     exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
     # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
     # sharper than a real camera's compressed stream (OpenArm pick-and-place: ~0.9 px). 0 = off.
@@ -1468,6 +1501,16 @@ class IsaacSimOptions(BaseModel):
                 raise ValueError(f"joint_drive_gains[{pattern!r}] is not a regex: {exc}") from exc
             if stiffness < 0 or damping < 0:
                 raise ValueError(f"joint_drive_gains[{pattern!r}] must be >= 0")
+        return value
+
+    @field_validator("rtx_settings")
+    @classmethod
+    def _rtx_setting_paths(
+        cls, value: dict[str, bool | int | float | str]
+    ) -> dict[str, bool | int | float | str]:
+        bad = [k for k in value if not k.startswith("/")]
+        if bad:
+            raise ValueError(f"rtx_settings keys are carb setting paths starting '/': {bad}")
         return value
 
     @field_validator("collision_approximation")
@@ -1939,6 +1982,22 @@ def _gripper_spec(
             f"onto its {'passthrough' if passthrough else 'normalised'} joint in the Isaac "
             f"scene (raw_joint_rad needs write_mode: passthrough)."
         )
+    followers = [
+        {"dof": u.name, "multiplier": u.mimic[1], "offset": u.mimic[2]}
+        for u in urdf.values()
+        if u.mimic is not None and u.mimic[0] == leader.name
+    ]
+    if leader.mimic is not None and leader.mimic[1] != 0.0:
+        # The driven joint is itself the URDF's mimic of another (the Metal's joint8 =
+        # -joint7): invert the relation, so the URDF's own leader (and its other mimics)
+        # follow it instead of standing undriven once the sidecar strips <mimic>.
+        src, m, o = leader.mimic
+        followers.append({"dof": src, "multiplier": 1.0 / m, "offset": -o / m})
+        followers += [
+            {"dof": u.name, "multiplier": u.mimic[1] / m, "offset": u.mimic[2] - u.mimic[1] * o / m}
+            for u in urdf.values()
+            if u.mimic is not None and u.mimic[0] == src and u.name != leader.name
+        ]
     return {
         "name": j.name,
         "leader": leader.name,
@@ -1948,11 +2007,7 @@ def _gripper_spec(
         "manifest_open": m_open,
         "command_closed": cmd_closed,
         "command_open": cmd_open,
-        "followers": [
-            {"dof": u.name, "multiplier": u.mimic[1], "offset": u.mimic[2]}
-            for u in urdf.values()
-            if u.mimic is not None and u.mimic[0] == leader.name
-        ],
+        "followers": followers,
     }
 
 
@@ -2299,7 +2354,9 @@ def default_camera_mounts(
     that transform (its ``frame_id`` is a REP-103 body frame, x forward / z up =
     ``axes: world``, or an ``*_optical_frame``, z forward = ``axes: ros``); else the
     robot's MJCF camera of that name (``_mjcf_camera_mounts``, which also takes its
-    field of view unless the sensor is in ``calibrated``). ``mountable`` is what the
+    field of view unless the sensor is in ``calibrated``), else its ``sim_placement``
+    (the camera the MuJoCo twin splices onto that body; the Metal's wrist cameras).
+    ``mountable`` is what the
     sidecar can mount on (URDF links and the ``base_frame``). Otherwise the field of
     view is left to the sensor's intrinsics. A camera none of these places gets the scene's
     generic viewpoint (announced by ``_write_robot_spec``).
@@ -2316,6 +2373,8 @@ def default_camera_mounts(
         (True, 'openarm_base', (0.06597, -0.004548, 0.094539))
     """
     out = _mjcf_camera_mounts(desc, manifest_dir, mountable, calibrated or set())
+    from openral_core.geometry import look_at_quat_wxyz
+
     for s in desc.sensors:
         tf = s.static_transform_xyz_rpy
         if s.parent_frame is None or tf is None or s.parent_frame not in mountable:
@@ -2325,6 +2384,19 @@ def default_camera_mounts(
             xyz=(float(tf[0]), float(tf[1]), float(tf[2])),
             quat_wxyz=_quat_wxyz_from_rpy(tf[3], tf[4], tf[5]),
             axes="ros" if s.frame_id.endswith("_optical_frame") else "world",
+        )
+    # Last resort, after every mount the manifest states outright.
+    for s in desc.sensors:
+        sp = s.sim_placement
+        if sp is None or s.name in out or s.shares_mount_with or sp.parent_body not in mountable:
+            continue
+        # The MuJoCo twin's splice of this camera (openral_hal._camera_rig): -z looks at
+        # target, +y toward `up` = `axes: usd`, in the parent body's frame.
+        out[s.name] = IsaacCameraMount(
+            link=sp.parent_body,
+            xyz=sp.pos,
+            quat_wxyz=look_at_quat_wxyz(sp.pos, sp.target, up=sp.up),
+            axes="usd",
         )
     for s in desc.sensors:
         if s.shares_mount_with in out:
@@ -2706,10 +2778,13 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
 def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
     """The robot spec's environment-USD load fields (``stage_objects`` and the fixes).
 
+    Also the scene-wide asset fixes the sidecar applies at boot: ``link_box_colliders``
+    and the raw ``rtx_settings``.
+
     Example:
         >>> sorted(_environment_spec(IsaacSimOptions()))  # doctest: +NORMALIZE_WHITESPACE
-        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'physx_scene',
-         'stage_objects', 'strip_xform_colliders']
+        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'link_box_colliders',
+         'physx_scene', 'rtx_settings', 'stage_objects', 'strip_xform_colliders']
     """
     return opts.model_dump(
         mode="json",
@@ -2720,6 +2795,8 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
             "joint_effort_limits",
             "physx_scene",
             "collision_approximation",
+            "link_box_colliders",
+            "rtx_settings",
         },
     )
 
@@ -2888,6 +2965,7 @@ def _placement(
         include={
             "camera_intrinsics",
             "translucent_materials",
+            "rtx_settings",
             "exposure_ev",
             "image_blur_sigma_px",
             "camera_image_post",
@@ -2898,6 +2976,7 @@ def _placement(
             "joint_effort_limits",
             "physx_scene",
             "collision_approximation",
+            "link_box_colliders",
             "gripper_joint_curve",
             "gripper_finger_coupling_rad",
             "gripper_followers_track",

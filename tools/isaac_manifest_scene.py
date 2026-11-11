@@ -50,6 +50,8 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "joint_effort_limits": {joint_regex: Nm},  # drive maxForce caps, fullmatch on joint name
       "physx_scene": {"friction_correlation_distance", "bounce_threshold"} | null,
       "collision_approximation": {link_regex: token},  # PhysX mesh approximation per link
+      "link_box_colliders": {link: {"xyz", "half_extents"}},  # replace a link's colliders
+      "rtx_settings": {carb_path: value},  # raw render settings, applied last
     }
 """
 
@@ -1016,6 +1018,10 @@ def follower_velocity_caps(
     return out
 
 
+#: The velocity cap a joint whose URDF leaves the velocity unset gets (no cap in practice).
+_UNSET_VELOCITY_CAP = 1.0e6
+
+
 def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
     """A URDF without ``<mimic>`` tags, its relative mesh paths made absolute.
 
@@ -1025,6 +1031,11 @@ def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
     follower itself (``grippers[].followers``), so the engine never needs the
     constraint. The copy lives elsewhere, hence the absolute mesh paths
     (``package://`` and absolute refs are left alone).
+
+    A massless root link that branches (the Metal station's ``station_base``: two arms
+    on fixed mounts) gets a 1 g inertial: the converter drops a root without one and
+    imports each branch as an articulation of its own, so the second arm's joints are
+    not DOFs of the robot. A single-child root is left as authored.
 
     Example:
         >>> text = (
@@ -1036,6 +1047,15 @@ def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
         >>> out = strip_urdf_mimics(text, "/robots/r")
         >>> "mimic" in out, 'filename="/robots/r/m/x.stl"' in out
         (False, True)
+        >>> joints = "".join(
+        ...     f'<joint name="{c}" type="fixed"><parent link="b"/><child link="{c}"/></joint>'
+        ...     for c in "lr"
+        ... )
+        >>> two = (
+        ...     f'<robot name="s"><link name="b"/><link name="l"/><link name="r"/>{joints}</robot>'
+        ... )
+        >>> "<inertial>" in strip_urdf_mimics(two, "/")
+        True
     """
     import os
     import xml.etree.ElementTree as ET
@@ -1044,6 +1064,20 @@ def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
     for joint in root.iter("joint"):
         for mimic in joint.findall("mimic"):
             joint.remove(mimic)
+    parents = [
+        p.attrib.get("link") for j in root.iter("joint") if (p := j.find("parent")) is not None
+    ]
+    children = {
+        c.attrib.get("link") for j in root.iter("joint") if (c := j.find("child")) is not None
+    }
+    for link in root.iter("link"):
+        name = link.attrib.get("name")
+        if name not in children and parents.count(name) > 1 and link.find("inertial") is None:
+            inertial = ET.SubElement(link, "inertial")
+            ET.SubElement(inertial, "mass", value="0.001")
+            ET.SubElement(
+                inertial, "inertia", ixx="1e-7", ixy="0", ixz="0", iyy="1e-7", iyz="0", izz="1e-7"
+            )
     for mesh in root.iter("mesh"):
         ref = mesh.attrib.get("filename", "")
         if ref and not ref.startswith(("package://", "file://", "/")):
@@ -1463,6 +1497,8 @@ def _configure_rendering(spec: dict[str, Any]) -> None:
                 "/rtx/post/tonemap/responsivity": 1.1026709,
             }
         )
+    # Raw carb settings last: an explicit scene value wins over the presets above.
+    values.update(spec.get("rtx_settings") or {})
     for name, value in values.items():
         settings.set(name, value)
     if values:
@@ -2561,9 +2597,36 @@ class IsaacManifestScene(IsaacSceneBase):
                 flush=True,
             )
         self._cap_joint_efforts(stage, prim_path)
+        self._uncap_zero_velocity_limits(stage, prim_path)
         self._match_follower_velocity_limits(stage, prim_path)
         self._set_collision_approximation(stage, prim_path)
+        self._set_link_box_colliders(stage, prim_path)
         return prim_path
+
+    def _uncap_zero_velocity_limits(self, stage: Any, prim_path: str) -> None:
+        """Lift a joint velocity cap of 0: the URDF left the velocity unset.
+
+        The converter writes a missing or ``velocity="0"`` URDF limit (the SolidWorks
+        exporter's "unset", on the Metal's fingers) as ``newton:velocityLimit = 0``, and
+        PhysX then crawls the joint at ~0.6 mm/s (q5090 gripper probe, 2026-11-07: 1.7 of
+        105 stroke in 45 ticks). Such a joint gets ``_UNSET_VELOCITY_CAP`` (no cap in
+        practice); the drive's ``maxForce`` still bounds it.
+        """
+        from pxr import Sdf, Usd, UsdPhysics
+
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)):
+            if not prim.IsA(UsdPhysics.Joint):
+                continue
+            attr = prim.GetAttribute("newton:velocityLimit")
+            if not (attr and attr.HasAuthoredValue() and attr.Get() == 0.0):
+                continue
+            for name in ("physxJoint:maxJointVelocity", "newton:velocityLimit"):
+                prim.CreateAttribute(name, Sdf.ValueTypeNames.Float).Set(_UNSET_VELOCITY_CAP)
+            print(
+                f"[isaac_manifest_scene] joint {prim.GetName()} velocity cap 0 (unset in the "
+                f"URDF) -> {_UNSET_VELOCITY_CAP}",
+                flush=True,
+            )
 
     def _apply_physx_scene(self) -> None:
         """Author the spec's ``physx_scene`` contact settings on the World's physics scene."""
@@ -2616,6 +2679,49 @@ class IsaacManifestScene(IsaacSceneBase):
                     n += 1
             print(
                 f"[isaac_manifest_scene] link {link.GetName()}: {n} collider(s) -> {token}",
+                flush=True,
+            )
+
+    def _set_link_box_colliders(self, stage: Any, prim_path: str) -> None:
+        """Replace each named link's colliders with one box (``link_box_colliders``).
+
+        The link's own collision prims are disabled (their visuals stay), and an invisible
+        ``guide`` cube at the link-frame ``xyz`` with the given half extents takes their
+        place. The converter's colliders are instanceable, so the link is de-instanced first.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        boxes = self._spec.get("link_box_colliders") or {}
+        if not boxes:
+            return
+        links = {
+            p.GetName(): p
+            for p in Usd.PrimRange(stage.GetPrimAtPath(prim_path))
+            if p.HasAPI(UsdPhysics.RigidBodyAPI)
+        }
+        missing = sorted(set(boxes) - set(links))
+        if missing:
+            raise RuntimeError(f"link_box_colliders names no robot link: {missing}")
+        for name, box in boxes.items():
+            link = links[name]
+            while instances := [p for p in Usd.PrimRange(link) if p.IsInstance()]:
+                for inst in instances:
+                    inst.SetInstanceable(False)
+            n = 0
+            for prim in Usd.PrimRange(link):
+                if prim.HasAPI(UsdPhysics.CollisionAPI):
+                    UsdPhysics.CollisionAPI(prim).CreateCollisionEnabledAttr().Set(False)
+                    n += 1
+            cube = UsdGeom.Cube.Define(stage, link.GetPath().AppendChild("openral_box_collider"))
+            cube.CreateSizeAttr().Set(2.0)
+            cube.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+            xf = UsdGeom.Xformable(cube.GetPrim())
+            xf.AddTranslateOp().Set(Gf.Vec3d(*box["xyz"]))
+            xf.AddScaleOp().Set(Gf.Vec3f(*box["half_extents"]))
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+            print(
+                f"[isaac_manifest_scene] link {name}: {n} collider(s) off -> box at "
+                f"{box['xyz']} half {box['half_extents']}",
                 flush=True,
             )
 
