@@ -4455,6 +4455,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             )
         )
 
+    self_filter_rgb = False  # the robot self filter runs: its colour cloud goes to viewers
     if enable_octomap:
         assert coverage is not None  # reason: computed whenever enable_octomap
         octomap_cloud_topic = _octomap_cloud_topic(
@@ -4484,6 +4485,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             and has_collision_capsules
         ):
             octomap_input_topic = _SELF_FILTERED_CLOUD_TOPIC
+            self_filter_rgb = True
             self_filter_nodes.append(
                 Node(
                     package="openral_octomap_bridge",
@@ -5212,11 +5214,28 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
 
         from openral_hal.depth_cloud import is_depth_sensor
 
-        camera_cloud_topics = [
-            camera_topic(sensor.name, CameraTopicKind.POINTS)
-            for sensor in description.sensors
-            if is_depth_sensor(sensor)
-        ]
+        # Every cloud a viewer may draw, each re-published thinned: the sim depth cameras',
+        # the deploy's own cloud (an estimated-depth RGB camera's, or a pinned driver
+        # topic; octomap_cloud_topic is resolved by now when octomap runs), and the self
+        # filter's colour cloud.
+        camera_cloud_topics = list(
+            dict.fromkeys(
+                [
+                    *(
+                        camera_topic(sensor.name, CameraTopicKind.POINTS)
+                        for sensor in description.sensors
+                        if is_depth_sensor(sensor)
+                    ),
+                    *(
+                        [camera_topic(estimated_depth_camera, CameraTopicKind.POINTS)]
+                        if estimated_depth_camera
+                        else []
+                    ),
+                    *([octomap_cloud_topic] if octomap_cloud_topic else []),
+                    *([_SELF_FILTERED_RGB_CLOUD_TOPIC] if self_filter_rgb else []),
+                ]
+            )
+        )
         # Bucket-2 converter. The layout's voxel panels read
         # `/openral/world_voxels_cloud`, a `sensor_msgs` re-publication of the
         # custom `openral_msgs/OccupancyVoxels` — Foxglove renders the standard
@@ -5243,8 +5262,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                             if attach_link_tf_frames
                             else {}
                         ),
-                        # Each depth camera's cloud, re-published thinned for viewers on
-                        # /openral/viz/cameras/<name>/points (a 1080p ZED is 33 MB a frame).
+                        # Each cloud above, re-published thinned for viewers on its
+                        # viz_cloud_topic (a 1080p ZED is 33 MB a frame).
                         **(
                             {"camera_cloud_topics": camera_cloud_topics}
                             if camera_cloud_topics

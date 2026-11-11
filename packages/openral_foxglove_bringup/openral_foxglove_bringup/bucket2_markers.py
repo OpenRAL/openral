@@ -21,11 +21,13 @@
   by their markers, and the voxels show what the camera adds. Viewer only — the
   kernel's grid is unchanged.
 - Parameter ``camera_cloud_topics`` (each depth camera's
-  ``/openral/cameras/<name>/points``) → ``/openral/viz/cameras/<name>/points``: the same
-  cloud, every field kept, thinned to ``viz_cloud_max_points`` finite points
-  (:func:`decimate_cloud`). A full-resolution depth cloud (2 M points, 33 MB from a
-  1080p ZED) is octomap's input; viewers (the robot console over a tunnel, Foxglove)
-  read this one.
+  ``/openral/cameras/<name>/points``, the deploy's own cloud, and the self-filtered
+  colour cloud) → its :func:`viz_cloud_topic` (``/openral/viz/cameras/<name>/points``,
+  ``/openral/viz/world_cloud/self_filtered_rgb``): the same cloud, every field kept,
+  thinned to ``viz_cloud_max_points`` finite points (:func:`decimate_cloud`). A
+  full-resolution depth cloud (2 M points, 33 MB from a 1080p ZED) is octomap's input;
+  viewers (the robot console over a tunnel, Foxglove) read this one. A source is
+  subscribed only while its viewer copy has a subscriber.
 
 Conversion math lives in pure functions (``occupied_voxel_centers``,
 ``attachment_markers``) so unit tests exercise it without a ROS context
@@ -65,13 +67,23 @@ VIZ_CLOUD_MAX_POINTS = 40_000
 
 
 def viz_cloud_topic(topic: str) -> str:
-    """The viewer copy of a camera cloud topic.
+    """The viewer copy of a cloud topic.
+
+    An ``/openral/...`` topic keeps its path under ``/openral/viz/``. Any other (a depth
+    driver's own topic, pinned as the deploy's cloud) becomes a camera named after its
+    path, so viewers find it with the per-camera clouds.
 
     Example:
         >>> viz_cloud_topic("/openral/cameras/head_zed/points")
         '/openral/viz/cameras/head_zed/points'
+        >>> viz_cloud_topic("/openral/world_cloud/self_filtered_rgb")
+        '/openral/viz/world_cloud/self_filtered_rgb'
+        >>> viz_cloud_topic("/zed/zed_node/point_cloud/cloud_registered")
+        '/openral/viz/cameras/zed_zed_node_point_cloud_cloud_registered/points'
     """
-    return "/openral/viz/" + topic.removeprefix("/openral/")
+    if topic.startswith("/openral/"):
+        return "/openral/viz/" + topic.removeprefix("/openral/")
+    return f"/openral/viz/cameras/{topic.strip('/').replace('/', '_')}/points"
 
 
 def decimate_cloud(
@@ -769,18 +781,37 @@ class Bucket2MarkersNode:
         self._viz_max = int(
             self._node.declare_parameter("viz_cloud_max_points", VIZ_CLOUD_MAX_POINTS).value
         )
-        self._viz_clouds: list[Any] = []
-        for topic in [str(t) for t in topics if t]:
+        self._viz_qos = sensor_qos
+        # [source topic, viewer publisher, source subscription or None]
+        self._viz_clouds: list[list[Any]] = []
+        for topic in dict.fromkeys(str(t) for t in topics if t):
             pub = self._node.create_publisher(PointCloud2, viz_cloud_topic(topic), sensor_qos)
-            self._viz_clouds.append(
-                self._node.create_subscription(
+            self._viz_clouds.append([topic, pub, None])
+            log.info("bucket2_markers: viewer cloud", source=topic, max_points=self._viz_max)
+        if self._viz_clouds:
+            self._node.create_timer(1.0, self._follow_viz_viewers)
+
+    def _follow_viz_viewers(self) -> None:
+        """Subscribe to a source cloud only while its viewer copy has a subscriber.
+
+        An unwatched cloud is then never received at all, and the self filter, which
+        copies its colour cloud only while that has a subscriber, does no work for it.
+        """
+        from sensor_msgs.msg import PointCloud2
+
+        for entry in self._viz_clouds:
+            topic, pub, sub = entry
+            watched = pub.get_subscription_count() > 0
+            if watched and sub is None:
+                entry[2] = self._node.create_subscription(
                     PointCloud2,
                     topic,
                     lambda msg, pub=pub: self._on_camera_cloud(msg, pub),
-                    sensor_qos,
+                    self._viz_qos,
                 )
-            )
-            log.info("bucket2_markers: viewer cloud", source=topic, max_points=self._viz_max)
+            elif not watched and sub is not None:
+                self._node.destroy_subscription(sub)
+                entry[2] = None
 
     def _on_camera_cloud(self, msg: Any, pub: Any) -> None:  # reason: rclpy types are untyped
         """Publish ``msg`` thinned to ``viz_cloud_max_points`` (see :func:`decimate_cloud`)."""

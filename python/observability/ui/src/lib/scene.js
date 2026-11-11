@@ -352,9 +352,10 @@ export const LAYER_TOPICS = {
   joints: ["/joint_states"],
   tf: ["/tf", "/tf_static"],
   grid: ["/map"],
-  // In priority order: the self-filtered RGB world cloud, octomap's voxel centres, the
-  // voxel grid re-published as a cloud.
-  cloud: ["/openral/world_cloud/self_filtered_rgb", "/octomap_point_cloud_centers", "/openral/world_voxels_cloud"],
+  // In priority order: the self-filtered RGB world cloud (bucket2_markers' thinned copy;
+  // the full cloud can be camera resolution), octomap's voxel centres, the voxel grid
+  // re-published as a cloud.
+  cloud: ["/openral/viz/world_cloud/self_filtered_rgb", "/octomap_point_cloud_centers", "/openral/world_voxels_cloud"],
   depth: [], // every depth camera's thinned cloud (CAMERA_POINTS), see layerTopics
   scan: ["/scan", "/openral/nav2/scan"],
   collision: ["/openral/viz/static_geometry", "/openral/viz/collisions"],

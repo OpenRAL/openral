@@ -184,7 +184,7 @@ caller's argument). Shown as their source expression.
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_configure) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) |
-| topic | sub | `topic` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode._open_viz_clouds) |
+| topic | sub | `topic` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode._follow_viz_viewers) |
 | topic | sub | `topic_for(source)` | `openral_msgs/FailureTrigger` | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure) |
 
 ## Launch remappings (14)

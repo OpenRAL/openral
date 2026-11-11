@@ -64,8 +64,8 @@ subscribes only to the layers that are switched on.
 | Frames and link poses | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | no |
 | Joint fallback (no link TF) | `/joint_states` | `sensor_msgs/JointState` | no |
 | Occupancy grid | `/map` | `nav_msgs/OccupancyGrid` | yes |
-| Point cloud | `/openral/world_cloud/self_filtered_rgb`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, in that priority: every candidate until one delivers, then the ones below it are dropped (an advertised topic can be silent) | `sensor_msgs/PointCloud2` | yes |
-| Camera depth | `/openral/viz/cameras/<name>/points`: each depth camera's cloud thinned to 40k points by `bucket2_markers` (the raw cloud, 33 MB a frame from a 1080p ZED, is never subscribed) | `sensor_msgs/PointCloud2` | yes |
+| Point cloud | `/openral/viz/world_cloud/self_filtered_rgb` (the self filter's colour cloud thinned to 40k points by `bucket2_markers`), `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, in that priority: every candidate until one delivers, then the ones below it are dropped (an advertised topic can be silent) | `sensor_msgs/PointCloud2` | yes |
+| Camera depth | `/openral/viz/cameras/<name>/points`: each depth camera's cloud, and the deploy's own cloud (an estimated-depth camera's, or a pinned driver topic, named after its path), thinned to 40k points by `bucket2_markers` (the raw cloud, 33 MB a frame from a 1080p ZED, is never subscribed; `bucket2_markers` subscribes to a source only while its thinned copy has a viewer) | `sensor_msgs/PointCloud2` | yes |
 | Lidar | `/scan`, else `/openral/nav2/scan` | `sensor_msgs/LaserScan` | yes |
 | Collision boxes | `/openral/viz/static_geometry`, `/openral/viz/collisions` | `visualization_msgs/MarkerArray` | no |
 | Payload | `/openral/viz/attachments` | `visualization_msgs/MarkerArray` | no |

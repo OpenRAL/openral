@@ -265,7 +265,7 @@ draws it natively — no TypeScript extension:
 |---|---|---|
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
 | `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + measured inner box, grasp/place regions, search box, manipulation workspace) | `/openral/viz/attachments` |
-| `sensor_msgs/PointCloud2` per depth camera (`camera_cloud_topics` param) | the same cloud thinned to `viz_cloud_max_points` (40 000) finite points, every field kept | `/openral/viz/cameras/<name>/points` |
+| `sensor_msgs/PointCloud2` per depth camera, the deploy's own cloud and the self-filtered colour cloud (`camera_cloud_topics` param) | the same cloud thinned to `viz_cloud_max_points` (40 000) finite points, every field kept; the source is subscribed only while the copy has a subscriber | `viz_cloud_topic(source)`: `/openral/viz/cameras/<name>/points` (a non-`/openral` driver topic is named after its path), `/openral/viz/world_cloud/self_filtered_rgb` |
 | `StaticGeometry` YAML (`static_geometry_file` param) | `visualization_msgs/MarkerArray` (declared fixtures: boxes + triangle meshes, latched) | `/openral/viz/static_geometry` |
 | `/openral/failure/safety` (`FailureTrigger`, collision) | `visualization_msgs/MarkerArray` (a red sphere + label where each kernel stop happened, latched) | `/openral/viz/collisions` |
 

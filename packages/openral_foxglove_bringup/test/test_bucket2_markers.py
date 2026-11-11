@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import re
 from pathlib import Path
 from types import ModuleType
 from typing import Any, TypeAlias
@@ -42,6 +43,12 @@ def _load_bucket2() -> ModuleType:
 
 
 _b2 = _load_bucket2()
+_topics_spec = importlib.util.spec_from_file_location(
+    "_bucket2_topics", _PKG_DIR / "openral_foxglove_bringup" / "topics.py"
+)
+assert _topics_spec is not None and _topics_spec.loader is not None
+_topics = importlib.util.module_from_spec(_topics_spec)
+_topics_spec.loader.exec_module(_topics)
 occupied_voxel_centers = _b2.occupied_voxel_centers
 
 
@@ -643,4 +650,14 @@ def test_padded_cloud_rows_are_skipped_when_thinning() -> None:
 def test_the_viewer_copy_of_a_camera_cloud_has_its_own_topic() -> None:
     assert _b2.viz_cloud_topic("/openral/cameras/head_zed/points") == (
         "/openral/viz/cameras/head_zed/points"
+    )
+    # A pinned driver topic lands among the per-camera clouds a viewer lists.
+    assert re.fullmatch(
+        r"/openral/viz/cameras/[^/]+/points",
+        _b2.viz_cloud_topic("/zed/zed_node/point_cloud/cloud_registered"),
+    )
+    # The self-filtered colour cloud's viewer copy is on the bridge allowlist.
+    assert any(
+        re.fullmatch(p, _b2.viz_cloud_topic("/openral/world_cloud/self_filtered_rgb"))
+        for p in _topics.BUCKET2_TOPICS
     )

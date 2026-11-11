@@ -86,6 +86,8 @@ BUCKET2_TOPICS: list[str] = [
     r"/openral/viz/collisions",
     # sensor_msgs/PointCloud2 — each depth camera's cloud thinned for viewers
     r"/openral/viz/cameras/[^/]+/points",
+    # sensor_msgs/PointCloud2 — the self-filtered colour cloud thinned for viewers
+    r"/openral/viz/world_cloud/self_filtered_rgb",
 ]
 
 #: **Telemetry** — the mission/state plane the OTel dashboard also renders,
