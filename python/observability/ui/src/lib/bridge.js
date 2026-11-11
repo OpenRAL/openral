@@ -2,8 +2,13 @@
 // proxy). Subscribes only to the topics asked for; keeps the newest raw message
 // of snapshot topics and decodes it when the scene draws (`take`), while
 // incremental topics (TF, markers, the URDF) are decoded and delivered in order.
-import { FoxgloveClient } from "@foxglove/ws-protocol";
+// Node resolves this package to CommonJS, whose named exports Node 22's ESM loader
+// cannot see (the CI runner's `npm test`); Vite resolves its ESM build, which has
+// no default export. A namespace import reads the class either way.
+import * as wsProtocol from "@foxglove/ws-protocol";
 import { makeDecoder } from "./decode.js";
+
+const FoxgloveClient = wsProtocol.FoxgloveClient ?? wsProtocol.default?.FoxgloveClient;
 
 const INCREMENTAL = new Set([
   "tf2_msgs/msg/TFMessage",
