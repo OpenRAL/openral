@@ -20,7 +20,9 @@ const SETTINGS = {
 const data = (values) => ({ scope: "org", canWrite: true, settings: SETTINGS, values });
 
 test("the model needs a key, a curated id, and its own provider's key", () => {
-  assert.match(modelProblem(data({})), /Set an Anthropic or OpenAI API key/);
+  // Only cloud models offered: one of their keys is needed first.
+  const cloudOnly = { ...SETTINGS, OPENRAL_REASONER_MODEL: { ...SETTINGS.OPENRAL_REASONER_MODEL, options: SETTINGS.OPENRAL_REASONER_MODEL.options.filter((o) => o.needs) } };
+  assert.match(modelProblem({ scope: "org", canWrite: true, settings: cloudOnly, values: {} }), /Set an Anthropic or OpenAI API key/);
   const anth = { ANTHROPIC_API_KEY: { set: true, hint: "…abcd" } };
   assert.equal(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "claude-sonnet-5-5" } })), "");
   assert.match(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "gpt-5.5" } })), /GPT-5.5 needs the OpenAI API key/);
