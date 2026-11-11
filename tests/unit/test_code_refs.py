@@ -27,6 +27,7 @@ from openral_core.code_refs import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.ros_action_rskill import _import_action_or_service
+from pydantic import ValidationError
 
 REPO = Path(__file__).resolve().parents[2]
 _UR5E = REPO / "robots" / "ur5e" / "robot.yaml"
@@ -75,7 +76,7 @@ def test_a_robot_manifest_naming_foreign_code_does_not_load(
     field: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(ALLOW_EXTERNAL_PLUGINS_ENV, raising=False)
-    with pytest.raises(ROSConfigError, match=rf"hal\.{field} = 'os:system'"):
+    with pytest.raises(ValidationError, match=rf"hal\.{field} = 'os:system'"):
         RobotDescription.model_validate(_robot_with({field: "os:system"}))
 
 
@@ -100,10 +101,10 @@ def test_a_scene_composer_naming_foreign_code_does_not_load(
     assert raw["composition"]["composer"].startswith("openral_sim.")
     DeployScene.model_validate(raw)  # the shipped scene loads
     raw["composition"]["composer"] = "os:system"
-    with pytest.raises(ROSConfigError, match=r"composition\.composer = 'os:system'"):
+    with pytest.raises(ValidationError, match=r"composition\.composer = 'os:system'"):
         DeployScene.model_validate(raw)
     # The HAL node's wire format (scene_composition_json) is validated the same way.
-    with pytest.raises(ROSConfigError, match="outside OpenRAL"):
+    with pytest.raises(ValidationError, match="outside OpenRAL"):
         SceneComposition.model_validate_json('{"composer": "os:system", "params": {}}')
 
 
@@ -120,7 +121,7 @@ def test_a_ros_integration_package_that_is_not_idl_does_not_load(
     raw = yaml.safe_load(_MOVEIT_JOINTS.read_text())
     assert RSkillManifest.model_validate(raw).ros_integration is not None
     raw["ros_integration"]["package"] = package
-    with pytest.raises(ROSConfigError, match=r"ros_integration\.package .*not a ROS interface"):
+    with pytest.raises(ValidationError, match=r"ros_integration\.package .*not a ROS interface"):
         RSkillManifest.model_validate(raw)
 
 
@@ -158,3 +159,12 @@ def test_a_foreign_callable_re_exported_by_an_openral_module_is_refused(
         import_code_ref(ref, setting="composition.composer")
     monkeypatch.setenv(ALLOW_EXTERNAL_PLUGINS_ENV, "1")
     assert callable(import_code_ref(ref, setting="composition.composer"))
+
+
+def test_a_refused_code_ref_is_a_validation_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ValueError subclass, so `except (OSError, ValueError)` skip-loops skip the file."""
+    monkeypatch.delenv(ALLOW_EXTERNAL_PLUGINS_ENV, raising=False)
+    raw = yaml.safe_load(_MOVEIT_JOINTS.read_text())
+    raw["ros_integration"]["package"] = "turtlesim"
+    with pytest.raises(ValueError, match="not a ROS interface"):
+        RSkillManifest.model_validate(raw)

@@ -2270,7 +2270,12 @@ class SceneComposition(BaseModel):
     @field_validator("composer")
     @classmethod
     def _composer_is_openral_code(cls, value: str) -> str:
-        return check_code_ref(value, setting="composition.composer")
+        # ValueError, not ROSConfigError: pydantic wraps only ValueError into a
+        # ValidationError, which every "skip an unloadable file" loop catches.
+        try:
+            return check_code_ref(value, setting="composition.composer")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class SceneDefaults(BaseModel):
@@ -3051,7 +3056,12 @@ class HalEntrypoints(BaseModel):
     @field_validator("sim", "real")
     @classmethod
     def _entrypoint_is_openral_code(cls, value: str | None, info: ValidationInfo) -> str | None:
-        return None if value is None else check_code_ref(value, setting=f"hal.{info.field_name}")
+        if value is None:
+            return None
+        try:  # ValueError so pydantic raises a ValidationError (see SceneComposition)
+            return check_code_ref(value, setting=f"hal.{info.field_name}")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class RobotDescription(BaseModel):
@@ -8883,7 +8893,10 @@ class RosIntegration(BaseModel):
     @classmethod
     def _check_package_is_ros_interface(cls, v: str) -> str:
         """``package`` is imported, so it must name a rosidl IDL package."""
-        return check_ros_interface_package(v, setting="ros_integration.package")
+        try:  # ValueError so pydantic raises a ValidationError (see SceneComposition)
+            return check_ros_interface_package(v, setting="ros_integration.package")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("interface_name")
     @classmethod
