@@ -235,6 +235,8 @@ _SIDECAR_ENV_PREFIXES = (
     # CPU threading and the simulators' own settings.
     "OMP_", "KMP_", "MKL_", "OPENBLAS_", "MUJOCO_", "LIBERO_", "ROBOSUITE_",
     "ROBOCASA_", "MS_", "SAPIEN_", "VLABENCH_", "OMNIGIBSON_", "GIBSON_", "PIP_",
+    # vLLM serving knobs (the Cosmos 3 reasoner sidecar).
+    "VLLM_", "FLASHINFER_",
 )  # fmt: skip
 # A credential marker is a whole ``_``-separated word, so OPENRAL_REASONER_MAX_TOKENS
 # (a budget, not a secret) is not caught by TOKEN.
@@ -243,7 +245,12 @@ _CREDENTIAL_NAME = re.compile(
 )
 
 
-def sidecar_env(environ: Mapping[str, str], *, extra: Iterable[str] = ()) -> dict[str, str]:
+_HF_TOKEN_NAMES = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+
+
+def sidecar_env(
+    environ: Mapping[str, str], *, extra: Iterable[str] = (), hf_token: bool = True
+) -> dict[str, str]:
     """Return the allowlisted subset of ``environ`` a sidecar child may inherit.
 
     Keeps the runtime basics (``PATH``, ``HOME``, locale, ``CUDA_*`` / ``NVIDIA_*``,
@@ -252,7 +259,8 @@ def sidecar_env(environ: Mapping[str, str], *, extra: Iterable[str] = ()) -> dic
     operator secrets never reach a remote-code process. A name with a credential
     word (``API_KEY``, ``SECRET``, ``TOKEN``, … as a whole ``_``-separated word) is
     dropped even when a prefix matches; ``HF_TOKEN`` is the one deliberate exception (gated weight
-    downloads). ``extra`` names further variables a particular sidecar needs.
+    downloads), and ``hf_token=False`` drops it too for a sidecar whose weights are public.
+    ``extra`` names further variables a particular sidecar needs.
 
     Example:
         >>> env = sidecar_env({"PATH": "/bin", "OPENRAL_REASONER_API_KEY": "sk", "X": "1"})
@@ -260,6 +268,8 @@ def sidecar_env(environ: Mapping[str, str], *, extra: Iterable[str] = ()) -> dic
         {'PATH': '/bin'}
     """
     wanted = _SIDECAR_ENV_NAMES.union(extra)
+    if not hf_token:
+        wanted -= _HF_TOKEN_NAMES
 
     def allowed(name: str) -> bool:
         if name in wanted:
@@ -270,6 +280,19 @@ def sidecar_env(environ: Mapping[str, str], *, extra: Iterable[str] = ()) -> dic
         return name.startswith(_SIDECAR_ENV_PREFIXES)
 
     return {k: v for k, v in environ.items() if allowed(k)}
+
+
+def scrub_environ(*, hf_token: bool = True) -> None:
+    """Restrict this process's ``os.environ`` to the ``sidecar_env`` allowlist, in place.
+
+    A ``tools/<name>_sidecar.py`` boot helper calls it first thing, so the venv
+    installs it runs (third-party build code) and the server it ``exec``s inherit
+    no operator credentials, however the helper was launched (auto-spawned by an
+    adapter or by hand).
+    """
+    kept = sidecar_env(os.environ, hf_token=hf_token)
+    os.environ.clear()
+    os.environ.update(kept)
 
 
 def spec_marker(spec: Sequence[str] | None) -> str:

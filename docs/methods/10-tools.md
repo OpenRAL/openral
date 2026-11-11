@@ -673,19 +673,19 @@ _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detecto
 ### `tools/da3_depth_sidecar.py` + `tools/_da3_depth_server.py`
 _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, companion to `openral_perception_ros`'s depth-provider node. Runs in its own Python 3.12 venv behind a ZMQ REQ/REP + msgpack wire, since the model ships outside transformers; the provider republishes the reply as a depth image for nvblox. Loaded by file path so the deploy launch can autostart it under a plain interpreter._
 
-- `_DEFAULT_HOME: Path` (L54) — default cache dir.
-- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L55) — `--venv` override env var name.
-- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L56) — `--home` override env var name.
-- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L62) — x86_64 install set.
-- `_NVRTC_OVERRIDE: Path` (L76) — aarch64 nvrtc override file passed at install time.
-- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L79) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
-- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L106) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
-- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L112) — the anchor statement `_defer_pycolmap_import` rewrites.
-- `_PYCOLMAP_LAZY_IMPORT: str` (L113) — the lazy `__getattr__` proxy it rewrites that statement into.
-- `ensure_venv(home, *, override=None) -> Path` (L167) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
-- `_site_packages(py) -> Path` (L132) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
-- `_defer_pycolmap_import(py) -> None` (L140) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
-- `main() -> int` (L221) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
+- `_DEFAULT_HOME: Path` (L55) — default cache dir.
+- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L56) — `--venv` override env var name.
+- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L57) — `--home` override env var name.
+- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L63) — x86_64 install set.
+- `_NVRTC_OVERRIDE: Path` (L77) — aarch64 nvrtc override file passed at install time.
+- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L80) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
+- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L107) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
+- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L113) — the anchor statement `_defer_pycolmap_import` rewrites.
+- `_PYCOLMAP_LAZY_IMPORT: str` (L114) — the lazy `__getattr__` proxy it rewrites that statement into.
+- `ensure_venv(home, *, override=None) -> Path` (L168) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
+- `_site_packages(py) -> Path` (L133) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
+- `_defer_pycolmap_import(py) -> None` (L141) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
+- `main() -> int` (L222) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
 - `_load(model_id) -> (torch, model)` / `_infer(torch, model, image, process_res) -> (depth, K, latency_ms)` — load DA3 to CUDA in eval mode; one image → metric depth `(H, W)` float32 + 3×3 intrinsics.
 - `main() -> int` (_da3_depth_server.py L70) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
 
@@ -742,15 +742,15 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 ### `tools/cosmos3_reasoner_sidecar.py`
 _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASONER_MODEL=cosmos3-edge`), companion to `Cosmos3ToolUseClient`. Provisions an isolated venv plus a SHA-pinned transformers overlay, builds a flattened reasoner view for vLLM's loader, and execs into `vllm serve` — its OpenAI-compatible HTTP API is the wire contract the reasoner already speaks. Cosmos 3 weights are commercial-OK, so there is no license guard; forward-pass inference is currently blocked by an upstream bug (see [`docs/reference/cosmos3-edge-reasoner.md`](../reference/cosmos3-edge-reasoner.md))._
 
-- `ensure_venv(home, *, override=None) -> Path` (L108) — Returns the sidecar venv python, provisioning the pinned lock and the SHA-pinned transformers overlay if absent.
-- `is_diffusers_reasoner_layout(model_dir) -> bool` (L163) — True when the top-level `model.safetensors.index.json` maps tensors into subfolders (the Edge layout needing a view); Nano/Super (bare top-level shards) return False.
-- `materialize_reasoner_view(model_dir, dest) -> Path` (L181) — build a vLLM-loadable flat view: bare-named shard symlinks + a rewritten weight index + tokenizer/config symlinks. Idempotent.
-- `resolve_served_model(model, home, *, native_edge=False) -> tuple[str, str | None]` (L264) — Resolves a repo id or local dir to a `vllm serve` target. For the Edge diffusers layout the target depends on the serving vLLM: a native-Edge-aware vLLM serves the snapshot as-is, otherwise the flattened view is required.
-- `vllm_has_native_edge_model(py) -> bool` (L229) — Asks the serving venv's own model registry whether it knows the native Edge model class, since the answer differs by platform. Fails closed to the flattened-view path on any error.
-- `build_serve_argv(*, vllm_bin, model, host, port, tool_call_parser, max_model_len, gpu_memory_utilization, enforce_eager, served_model_name=None, kv_cache_dtype="auto", max_num_seqs=4, limit_mm_per_prompt=..., kv_cache_memory_bytes=None, extra_args=()) -> list[str]` (L369) — Builds the `vllm serve` argv; `--max-model-len`, `--enforce-eager`, `--gpu-memory-utilization` and fp8 KV cache are the knobs that make an 8 GB card fit, `--kv-cache-memory-bytes` is the one a Jetson needs, and `extra_args` are appended last.
-- `serve_defaults(*, tegra) -> dict[str, object]` (L299) — Platform defaults for the four sizing flags: the 8 GB-card values off a Jetson; on one, KV in bytes, utilization 0.15, a 32K window and CUDA graphs. Weights stay BF16.
-- `pro_serve_args(*, tegra) -> list[str]` (L335) — Extra `vllm serve` flags from an OpenRAL Pro `cosmos3_serving` module (`openral.pro_modules`), via `resolve_pro_module`; `[]` when not installed, `ROSConfigError` when the module has no callable `serve_args`.
-- `main() -> int` (L451) — argparse entry point; sets the CUDA allocator config, resolves the served view, and execs into `vllm serve`.
+- `ensure_venv(home, *, override=None) -> Path` (L109) — Returns the sidecar venv python, provisioning the pinned lock and the SHA-pinned transformers overlay if absent.
+- `is_diffusers_reasoner_layout(model_dir) -> bool` (L164) — True when the top-level `model.safetensors.index.json` maps tensors into subfolders (the Edge layout needing a view); Nano/Super (bare top-level shards) return False.
+- `materialize_reasoner_view(model_dir, dest) -> Path` (L182) — build a vLLM-loadable flat view: bare-named shard symlinks + a rewritten weight index + tokenizer/config symlinks. Idempotent.
+- `resolve_served_model(model, home, *, native_edge=False) -> tuple[str, str | None]` (L265) — Resolves a repo id or local dir to a `vllm serve` target. For the Edge diffusers layout the target depends on the serving vLLM: a native-Edge-aware vLLM serves the snapshot as-is, otherwise the flattened view is required.
+- `vllm_has_native_edge_model(py) -> bool` (L230) — Asks the serving venv's own model registry whether it knows the native Edge model class, since the answer differs by platform. Fails closed to the flattened-view path on any error.
+- `build_serve_argv(*, vllm_bin, model, host, port, tool_call_parser, max_model_len, gpu_memory_utilization, enforce_eager, served_model_name=None, kv_cache_dtype="auto", max_num_seqs=4, limit_mm_per_prompt=..., kv_cache_memory_bytes=None, extra_args=()) -> list[str]` (L370) — Builds the `vllm serve` argv; `--max-model-len`, `--enforce-eager`, `--gpu-memory-utilization` and fp8 KV cache are the knobs that make an 8 GB card fit, `--kv-cache-memory-bytes` is the one a Jetson needs, and `extra_args` are appended last.
+- `serve_defaults(*, tegra) -> dict[str, object]` (L300) — Platform defaults for the four sizing flags: the 8 GB-card values off a Jetson; on one, KV in bytes, utilization 0.15, a 32K window and CUDA graphs. Weights stay BF16.
+- `pro_serve_args(*, tegra) -> list[str]` (L336) — Extra `vllm serve` flags from an OpenRAL Pro `cosmos3_serving` module (`openral.pro_modules`), via `resolve_pro_module`; `[]` when not installed, `ROSConfigError` when the module has no callable `serve_args`.
+- `main() -> int` (L452) — argparse entry point; sets the CUDA allocator config, resolves the served view, and execs into `vllm serve`.
 
 ### `tools/behavior_groot_sidecar.py`
 _Python 3.10 sidecar for the official 2026 BEHAVIOR-1K GR00T N1.7 checkpoint. Imports the pinned behavior runtime, wraps `Gr00tPolicy` for the R1Pro modality slices, and serves ZMQ `ping/reset/get_action/close`. Supports whole-model NF4 quantization (default) plus dropping the unused Qwen3-VL `lm_head` to fit an 8 GB host._

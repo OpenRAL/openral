@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 from openral_rskill.quantization_gate import sidecar_quantization_args
-from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, torch_backend
+from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, scrub_environ, torch_backend
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "qwen-vlm-sidecar"
 _VENV_ENV = "OPENRAL_QWEN_VLM_SIDECAR_VENV"
@@ -110,6 +110,9 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
 
 
 def main() -> int:
+    # Allowlist the environment before any install or the exec: no API key reaches
+    # the remote-code server. HF_TOKEN stays for a private hf:// weights pack.
+    scrub_environ()
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

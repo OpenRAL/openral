@@ -159,3 +159,68 @@ def test_isolated_env_never_carries_the_reasoner_key(monkeypatch: pytest.MonkeyP
     assert "OPENRAL_REASONER_API_KEY" not in env
     assert "ANTHROPIC_API_KEY" not in env
     assert env["PATH"].startswith("/tmp/sidecar/.venv/bin")
+
+
+_TOOLS = Path(__file__).resolve().parents[2] / "tools"
+_OPERATOR_SECRETS = {
+    "OPENRAL_REASONER_API_KEY": "sk-openral",
+    "ANTHROPIC_API_KEY": "sk-ant",
+    "OPENAI_API_KEY": "sk-oai",
+    "GH_TOKEN": "ghp_x",
+    "VLLM_API_KEY": "sk-vllm",
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "reads", "keeps_hf_token"),
+    [
+        ("da3_depth_sidecar", {"OPENRAL_DA3_DEPTH_SIDECAR_HOME": "/h"}, False),
+        ("qwen_vlm_sidecar", {"OPENRAL_QWEN_VLM_SIDECAR_VENV": "/v"}, True),
+        (
+            "locateanything_sidecar",
+            {"OPENRAL_LOCATEANYTHING_SIDECAR_HOME": "/h", "OPENRAL_ALLOW_REMOTE_CODE": "1"},
+            True,
+        ),
+        (
+            "cosmos3_reasoner_sidecar",
+            {
+                "OPENRAL_COSMOS3_MAX_MODEL_LEN": "8192",
+                "OPENRAL_COSMOS3_SIDECAR_HOME": "/h",
+                "VLLM_USE_FLASHINFER_SAMPLER": "1",
+            },
+            True,
+        ),
+    ],
+)
+def test_boot_helper_scrubs_environ_before_anything(
+    tool: str,
+    reads: dict[str, str],
+    keeps_hf_token: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The env each sidecar's installs and server inherit: what it reads, no API key.
+
+    ``--help`` exits right after argument parsing, i.e. after the scrub and before
+    any venv install or exec, so the patched ``os.environ`` is exactly what the
+    rest of the boot (and the exec'd server) would see.
+    """
+    import importlib.util
+    import os
+    import sys
+
+    environ = {"PATH": "/usr/bin", "HF_HOME": "/data/hf", "HF_TOKEN": "hf_x"}
+    environ |= reads | _OPERATOR_SECRETS
+    spec = importlib.util.spec_from_file_location(f"_scrub_{tool}", _TOOLS / f"{tool}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(os, "environ", dict(environ))
+    monkeypatch.setattr(sys, "argv", [tool, "--help"])
+    with pytest.raises(SystemExit):
+        module.main()
+    capsys.readouterr()
+    expected = {"PATH": "/usr/bin", "HF_HOME": "/data/hf", **reads}
+    if keeps_hf_token:
+        expected["HF_TOKEN"] = "hf_x"
+    assert dict(os.environ) == expected
