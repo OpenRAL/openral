@@ -499,8 +499,14 @@ class ReasonerCore:
         # bypass via the ``force`` flag). Exception: while a skill is IN
         # FLIGHT the heartbeat stays live even on an unchanged seq — the
         # tick is the reasoner's only chance to poll ``query_task_progress``
-        # mid-execution (the system prompt instructs exactly that).
-        if not force and renderer.seq == self._last_seen_seq and renderer.inflight_skill is None:
+        # mid-execution (the system prompt instructs exactly that). A result-only
+        # skill (wrapped Nav2-shape action) has no progress to poll; its terminal
+        # result is an event of its own, so it does not keep the heartbeat live
+        # (2026-11-11: 103 of 109 LLM calls were `wait` ticks during one drive).
+        inflight = renderer.inflight_skill
+        entry = palette.skill(inflight)
+        pollable = inflight is not None and not (entry is not None and entry.result_only)
+        if not force and renderer.seq == self._last_seen_seq and not pollable:
             self._last_tick_s = started
             return ReasonerTickResult(
                 tool_call=None,

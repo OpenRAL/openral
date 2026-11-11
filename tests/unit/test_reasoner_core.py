@@ -18,6 +18,7 @@ from openral_core import (
     EmitPromptTool,
     ExecuteRskillTool,
     LifecycleTransitionTool,
+    RSkillAction,
 )
 from openral_core.exceptions import ROSPlanningError, ROSReasonerInvalidPlan
 from openral_reasoner import (
@@ -28,6 +29,7 @@ from openral_reasoner import (
     ReasonerCore,
     ToolPalette,
 )
+from openral_reasoner.palette import RSkillToolEntry
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
 from tests.unit.conftest import _CaptureProcessor
@@ -617,3 +619,41 @@ def test_wait_is_transparent_to_the_retry_cap() -> None:
         results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
     assert all(r.tool_call is not None for r in results)
     assert all(not r.suppressed_reason for r in results)
+
+
+def test_result_only_inflight_skill_does_not_keep_the_heartbeat_live() -> None:
+    """A result-only skill in flight has no progress to poll: unchanged context stays idle.
+
+    A pollable (VLA) skill in flight keeps the heartbeat live so the LLM can call
+    query_task_progress mid-execution; a wrapped Nav2-shape action reports only its
+    terminal result, so heartbeat ticks there are pure `wait` calls (2026-11-11:
+    103 of 109 LLM calls during one drive).
+    """
+    nav = RSkillToolEntry(
+        rskill_id="openral/rskill-nav",
+        description="navigate",
+        actions=(RSkillAction.NAVIGATE,),
+        result_only=True,
+    )
+    vla = RSkillToolEntry(
+        rskill_id="openral/rskill-vla", description="pick", actions=(RSkillAction.PICK,)
+    )
+    palette = ToolPalette(skills=(nav, vla))
+    client = FakeToolUseClient(
+        responses=[EmitPromptTool(target_topic="/openral/prompt", text=str(i)) for i in range(4)],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0)
+    renderer = _renderer_with_prompt("drive to x=4")
+    renderer.set_inflight_skill("openral/rskill-nav", stamp_ns=1)
+    assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
+    idle = core.tick(world_state=None, renderer=renderer, palette=palette)
+    assert idle.tool_call is None
+    assert idle.suppressed_reason == "heartbeat_idle"
+    # The terminal result (an event) still wakes the very next tick.
+    renderer.set_inflight_skill(None)
+    assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
+    # A pollable skill in flight keeps the heartbeat live on unchanged context.
+    renderer.set_inflight_skill("openral/rskill-vla", stamp_ns=2)
+    assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
+    live = core.tick(world_state=None, renderer=renderer, palette=palette)
+    assert live.suppressed_reason == ""

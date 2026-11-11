@@ -45,7 +45,11 @@ Heartbeat ticks that see no new event since the last successful tick
 are short-circuited inside `ReasonerCore` with
 `suppressed_reason="heartbeat_idle"` — **except while an
 `execute_rskill` goal is in flight**, when the heartbeat stays live so
-the reasoner can poll `query_task_progress` mid-execution. The retry
+the reasoner can poll `query_task_progress` mid-execution. A *result-only*
+skill (a wrapped ROS action with no `result_trajectory_field`, e.g. Nav2
+`NavigateToPose`) has no progress to poll, so it does not keep the heartbeat
+live; its terminal result, prompts and safety events still wake the next tick.
+The retry
 cap is keyed on the **identical tool call** (same tool + same
 arguments): a healthy navigate → pick → place sequence never trips it,
 a verbatim repeat does, and after a capped streak further
@@ -75,6 +79,32 @@ carries `{"new_goal": true}` (`openral prompt --new-goal "..."` stamps it).
 The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
 `scene_vlm` / `reward_monitor` / `memory` / `mission` frame_ids) never rebuild
 the mission and never reset the search budgets or retry-cap streak.
+One more case rebuilds mid-flight: the active task's last dispatch *succeeded*
+and no reward monitor can verify it (`mission: task … succeeded with no
+verifier` in the log) — the operator's next prompt is then a new goal, not an
+aside after which the finished task resumes.
+
+**Task completion without a verifier.** A task normally completes only on a
+reward / VLM verdict. A wrapped ROS action rSkill whose manifest sets
+`ros_integration.completes_task_on_success: true` (the in-tree Nav2
+`navigate_to_pose` skill) completes the active task when its goal succeeds —
+Nav2 SUCCEEDED means "within the goal tolerance", so the reasoner must not
+re-drive a 0.2 m residual. With no reward monitor, the per-task attempt cap
+(`DEFAULT_MAX_ATTEMPTS`, 3) still applies: the task is abandoned through the
+usual abandon path (one subdivision offer, then hand-off). Both decisions log
+`mission: <complete|abandon> task <id> after '<rskill_id>' …`.
+
+**What a success says.** The `## EXECUTION` line for a successful goal carries
+the runner's `ExecuteRskill.Result.outcome_summary` before the trace id. For a
+result-only wrapped action that is the terminal status, the result's scalar
+fields and the goal that was sent, bounded to 400 characters:
+
+```
+[ok] skill=OpenRAL/rskill-nav2-mobile_base-navigate_to_pose: wrapped result-only action completed: status=STATUS_SUCCEEDED result{error_code=0} goal{pose.header.frame_id=map pose.pose.position.x=4 pose.pose.position.y=0 pose.pose.position.z=0 pose.pose.orientation.x=0 pose.pose.orientation.y=0 pose.pose.orientation.z=0 pose.pose.orientation.w=1} trace=1a2b3c4d
+```
+
+A failure carries the same `status=… result{…} goal{…}` line in its
+`failure_reason`.
 
 For direct `locate_in_view` tool calls, a missing service, failed request, or nonempty
 `LocateInView.failure_reason` produces a bounded detector failure prompt that says

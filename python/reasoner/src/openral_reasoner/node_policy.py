@@ -12,12 +12,14 @@ pure, single-sourced, and unit-testable without a ROS install.
 from __future__ import annotations
 
 import json
+from typing import Literal
 
-from openral_reasoner.mission import MissionState
+from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, MissionState
 
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
     "should_rebuild_mission",
+    "task_step_without_verifier",
 ]
 
 # Prompt frame_ids the reasoner re-publishes onto /openral/prompt for its OWN
@@ -35,6 +37,8 @@ def should_rebuild_mission(
     source: str,
     metadata_json: str,
     mission: MissionState | None,
+    *,
+    active_succeeded_unverified: bool = False,
 ) -> bool:
     """Whether an inbound prompt replaces the mission queue.
 
@@ -48,7 +52,10 @@ def should_rebuild_mission(
     when the human explicitly starts over): an operator *reply* to a
     reasoner question ("the red one") must not silently discard the
     in-flight task queue — it reaches the LLM through the PROMPTS section
-    instead.
+    instead. Exception: ``active_succeeded_unverified`` (the active task's
+    last dispatch succeeded and no reward monitor can judge it) — the task is
+    as done as the reasoner can know, so the operator's next prompt is a new
+    goal, not an aside the finished task resumes after.
 
     Example:
         >>> should_rebuild_mission("cli", "", None)
@@ -61,6 +68,8 @@ def should_rebuild_mission(
         False
         >>> should_rebuild_mission("cli", '{"new_goal": true}', m)
         True
+        >>> should_rebuild_mission("cli", "", m, active_succeeded_unverified=True)
+        True
         >>> _ = m.abandon_active("x")
         >>> _ = m.abandon_active("x")
         >>> should_rebuild_mission("cli", "", m)  # mission finished: next goal
@@ -72,6 +81,8 @@ def should_rebuild_mission(
         return False
     if mission is None or mission.is_empty() or mission.is_complete() or not mission.has_started():
         return True
+    if active_succeeded_unverified:
+        return True
     if not metadata_json:
         return False
     try:
@@ -79,3 +90,45 @@ def should_rebuild_mission(
     except json.JSONDecodeError:
         return False
     return isinstance(parsed, dict) and parsed.get("new_goal") is True
+
+
+def task_step_without_verifier(
+    *,
+    succeeded: bool,
+    completes_task_on_success: bool,
+    reward_available: bool,
+    attempts: int,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+) -> tuple[Literal["complete", "abandon"], str] | None:
+    """Settle the active task after a dispatch returns, where no reward verdict decides it.
+
+    * ``complete`` — the skill succeeded and its manifest opts in
+      (``RosIntegration.completes_task_on_success``): the action's own success
+      is the task's success, reward monitor or not.
+    * ``abandon`` — no reward monitor is available and the task has used its
+      ``max_attempts`` dispatches: the same cap the reward gate enforces, so a
+      task nobody can verify is still bounded (the node's abandon path offers
+      subdivision first, then hands off).
+    * ``None`` — the reward gate (when available) or the LLM decides.
+
+    Example:
+        >>> task_step_without_verifier(
+        ...     succeeded=True, completes_task_on_success=True, reward_available=True, attempts=1
+        ... )[0]
+        'complete'
+        >>> task_step_without_verifier(
+        ...     succeeded=True, completes_task_on_success=False, reward_available=False, attempts=3
+        ... )[0]
+        'abandon'
+        >>> task_step_without_verifier(
+        ...     succeeded=False, completes_task_on_success=True, reward_available=False, attempts=1
+        ... ) is None
+        True
+    """
+    if succeeded and completes_task_on_success:
+        return "complete", "the skill's own success completes the task (completes_task_on_success)"
+    if not reward_available and attempts >= max_attempts:
+        return "abandon", (
+            f"unverified after {attempts} attempt(s): no reward monitor can judge the task"
+        )
+    return None

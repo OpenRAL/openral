@@ -438,6 +438,96 @@ def test_result_only_mode_returns_result_on_action_succeeded() -> None:
     assert isinstance(result, _NavResult)
 
 
+_NAV_GOAL: dict[str, Any] = {
+    "pose": {
+        "header": {"frame_id": "map"},
+        "pose": {
+            "position": {"x": 4.0, "y": 0.0, "z": 0.0},
+            "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        },
+    },
+    "behavior_tree": "",
+}
+
+
+def _nav_skill(status: int, error_code: int, error_msg: str) -> ROSActionRskill:
+    """Result-only adapter over a faked client returning a NavigateToPose-shaped result.
+
+    With ROS sourced the goal is applied to the real ``nav2_msgs`` Goal (via
+    ``rosidl_runtime_py``) and the result is the real IDL Result, so the summary walks
+    real rosidl slots; without ROS, synthetic stand-ins with the same fields.
+    """
+
+    @dataclass
+    class _NavResult:
+        error_code: int = 0
+        error_msg: str = ""
+
+    result: Any = _NavResult(error_code, error_msg)
+    nav_idl: Any = None
+    try:
+        from nav2_msgs.action import NavigateToPose  # reason: ROS-only IDL, absent on bare hosts
+
+        nav_idl = NavigateToPose
+        result = NavigateToPose.Result(error_code=error_code, error_msg=error_msg)
+    except ImportError:
+        pass
+    skill = _make_skill_with_fake_action(
+        _result_only_manifest(), _FakeResultWrapper(status=status, result=result)
+    )
+    if nav_idl is not None:
+        skill._interface_type = nav_idl
+    else:  # the fallback setter writes nested dicts onto a plain object
+        skill._interface_type = type("_FakeIDL", (), {"Goal": type("Goal", (), {})})
+    skill._goal_dict = _NAV_GOAL
+    return skill
+
+
+def test_result_only_success_reports_the_goal_and_the_result() -> None:
+    """A Nav2 success says what was sent and what came back, not just "completed".
+
+    2026-11-11: the reasoner saw only ``trace=…`` for a SUCCEEDED drive that stopped
+    0.2 m short (inside Nav2's goal tolerance) and re-issued the same goal twice.
+    """
+
+    skill = _nav_skill(status=4, error_code=0, error_msg="")
+    skill._info = skill._info.model_copy(update={"state": RSkillState.ACTIVE})
+    with pytest.raises(ROSRskillGoalSatisfied) as done:
+        skill.step(world_state=None)  # type: ignore[arg-type]
+    assert str(done.value) == (
+        "wrapped result-only action completed: status=STATUS_SUCCEEDED "
+        "result{error_code=0} goal{pose.header.frame_id=map pose.pose.position.x=4 "
+        "pose.pose.position.y=0 pose.pose.position.z=0 pose.pose.orientation.x=0 "
+        "pose.pose.orientation.y=0 pose.pose.orientation.z=0 pose.pose.orientation.w=1}"
+    )
+
+
+def test_result_only_failure_reports_the_goal_with_its_reason() -> None:
+    """A failure carries the same status/result/goal line, so a replan sees the target."""
+    from openral_core.exceptions import ROSRuntimeError
+
+    skill = _nav_skill(status=6, error_code=104, error_msg="Goal was outside the costmap")
+    with pytest.raises(ROSRuntimeError) as failed:
+        skill._send_action_goal_and_await_result()
+    message = str(failed.value)
+    assert "status=STATUS_ABORTED result{error_code=104 error_msg=Goal was outside" in message
+    assert "goal{pose.header.frame_id=map pose.pose.position.x=4" in message
+
+
+def test_outcome_summary_is_bounded() -> None:
+    """A large result (or goal) never floods the reasoner's EXECUTION line."""
+    from openral_rskill.ros_action_rskill import (
+        _OUTCOME_SUMMARY_MAX_CHARS,
+        _summarize_wrapped_outcome,
+    )
+
+    line = _summarize_wrapped_outcome(
+        "STATUS_SUCCEEDED", {f"f{i}": "x" * 40 for i in range(50)}, _NAV_GOAL
+    )
+    assert len(line) == _OUTCOME_SUMMARY_MAX_CHARS
+    assert line.endswith("…")
+
+
 # ── _merge_nested + goal_params_json merge ──────────────────────────────────
 
 
