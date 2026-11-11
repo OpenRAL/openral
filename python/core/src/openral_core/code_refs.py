@@ -125,9 +125,12 @@ def check_ros_interface_package(package: str, *, setting: str) -> str:
 def import_code_ref(ref: str, *, setting: str) -> object:
     """``check_code_ref``, then import the module and return the attribute.
 
+    The attribute must also be *defined* in an ``openral_*`` module (its
+    ``__module__``), so a foreign callable re-exported by an OpenRAL module is refused.
+
     Raises:
         ROSConfigError: The reference is refused, its module is not importable,
-            or the attribute is absent.
+            the attribute is absent, or it is defined outside ``openral_*``.
 
     Example:
         >>> import_code_ref("openral_core.code_refs:check_code_ref", setting="x").__name__
@@ -142,8 +145,27 @@ def import_code_ref(ref: str, *, setting: str) -> object:
             f"{setting} = {ref!r}: module {module_path!r} is not importable ({exc})."
         ) from exc
     try:
-        return getattr(module, attr)
+        obj: object = getattr(module, attr)
     except AttributeError as exc:
         raise ROSConfigError(
             f"{setting} = {ref!r}: module {module_path!r} has no attribute {attr!r}."
         ) from exc
+    # An openral_* module re-exports foreign callables (``from importlib import
+    # import_module``); the object itself must be defined in OpenRAL's packages too.
+    defined_in = getattr(obj, "__module__", None)
+    if isinstance(defined_in, str) and _TRUSTED_TOP_LEVEL.match(defined_in.split(".", 1)[0]):
+        return obj
+    if os.environ.get(ALLOW_EXTERNAL_PLUGINS_ENV) == "1":
+        _log.warning(
+            "code_ref.external_plugin_allowed",
+            setting=setting,
+            ref=ref,
+            defined_in=defined_in,
+            env=ALLOW_EXTERNAL_PLUGINS_ENV,
+        )
+        return obj
+    raise ROSConfigError(
+        f"{setting} = {ref!r} resolves to an object defined in {defined_in!r}, not in "
+        f"OpenRAL's packages (openral_*); set {ALLOW_EXTERNAL_PLUGINS_ENV}=1 to load it "
+        f"from a trusted source."
+    )

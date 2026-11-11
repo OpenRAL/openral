@@ -144,3 +144,17 @@ def test_ros_idl_packages_and_the_opt_in_are_admitted(monkeypatch: pytest.Monkey
 def test_a_trailing_newline_does_not_pass_the_reference_check() -> None:
     with pytest.raises(ROSConfigError, match="malformed"):
         check_code_ref("openral_hal.ur_real:UR5eRealHAL\n", setting="hal.real")
+
+
+def test_a_foreign_callable_re_exported_by_an_openral_module_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # backend_registry does ``from importlib import import_module``: an openral_* path to
+    # stdlib code that a composer's config kwargs could drive (``name=<any module>``).
+    ref = "openral_rskill.backend_registry:import_module"
+    monkeypatch.delenv(ALLOW_EXTERNAL_PLUGINS_ENV, raising=False)
+    assert check_code_ref(ref, setting="composition.composer") == ref
+    with pytest.raises(ROSConfigError, match="defined in 'importlib'"):
+        import_code_ref(ref, setting="composition.composer")
+    monkeypatch.setenv(ALLOW_EXTERNAL_PLUGINS_ENV, "1")
+    assert callable(import_code_ref(ref, setting="composition.composer"))
