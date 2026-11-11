@@ -1208,10 +1208,10 @@ _Latest-wins relay for the `/ws` proxy: reads the `foxglove.websocket.v1` frames
 - `MAX_ORDERED_BYTES` (L67) — 8 MiB: unsent ordered frames held before `full()`.
 - `class BridgeRelay` (L77) — `BridgeRelay(max_ordered_bytes=MAX_ORDERED_BYTES)`. Ordered bridge→browser queue with per-subscription coalescing; single event loop. `dropped` counts coalesced messages (logged by the proxy as `dashboard.bridge_relay_coalesced`).
   - `from_browser(frame) -> None` (L97) — Learns `subscribe` / `unsubscribe` (the frame itself is forwarded by the caller); malformed ids are ignored.
-  - `from_bridge(frame) -> None` (L116) — Queues a frame; learns `advertise` / `unadvertise`; replaces an unsent older message of a latest-wins subscription.
-  - `full() -> bool` (L135) — The unsent ordered frames reached the bound: the caller stops reading the bridge until it has sent them.
-  - `pending() -> bool` (L139) — Anything to send.
-  - `drain() -> list[str | bytes]` (L143) — Frames to send now, in order; releases the bound.
+  - `from_bridge(frame) -> None` (L118) — Queues a frame; learns `advertise` / `unadvertise`; replaces an unsent older message of a latest-wins subscription.
+  - `full() -> bool` (L137) — The unsent ordered frames reached the bound: the caller stops reading the bridge until it has sent them.
+  - `pending() -> bool` (L141) — Anything to send.
+  - `drain() -> list[str | bytes]` (L145) — Frames to send now, in order; releases the bound.
 
 ### `python/observability/src/openral_observability/dashboard/remote_auth.py`
 _Who is asking (ADR-0129 §6, Interface B): the local / LAN / remote principal and the robot-token check of the remote (tunnel) listener. Never logs Authorization headers or tickets._

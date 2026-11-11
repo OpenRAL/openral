@@ -40,6 +40,24 @@ async function serve() {
   return { server, wss, ch, subscribed, offered, url: `ws://127.0.0.1:${wss.address().port}`, close };
 }
 
+test("an unadvertised topic drops its untaken snapshot", async () => {
+  const s = await serve();
+  const b = new Bridge({ url: s.url });
+  try {
+    await until(() => b.topics().length === 3);
+    b.want(["/scan"]);
+    await until(() => s.subscribed.length === 1);
+    s.server.sendMessage(s.ch.scan, 1n, write(SCAN, { ranges: new Float32Array([1]) }));
+    await until(() => b.latest.has("/scan"));
+    s.server.removeChannel(s.ch.scan);
+    await until(() => b.topics().length === 2);
+    assert.equal(b.latest.has("/scan"), false);
+  } finally {
+    b.close();
+    await s.close();
+  }
+});
+
 test("subscribes only to wanted topics; ordered events and newest-only snapshots", async () => {
   const s = await serve();
   const events = [];

@@ -112,6 +112,8 @@ class BridgeRelay:
             for sid in _list(msg.get("subscriptionIds")):
                 if isinstance(sid, int):
                     self._latest_subs.discard(sid)
+                    # An unsent snapshot of a closed subscription must not reach the browser.
+                    self._newest.pop(sid, None)
 
     def from_bridge(self, frame: Frame) -> None:
         """Queue a bridge→browser frame, replacing an older unsent snapshot of its subscription."""

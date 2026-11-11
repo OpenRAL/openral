@@ -150,7 +150,12 @@ export function cloudToPoints(msg, budget = 60000) {
   const step = msg?.point_step | 0;
   const data = msg?.data;
   if (!fx || !fy || !fz || step <= 0 || !data) return null;
-  const n = Math.min((msg.width | 0) * Math.max(1, msg.height | 0), Math.floor(data.byteLength / step));
+  const width = msg.width | 0;
+  // Rows may be padded (row_step > width * point_step): address points by row and column.
+  const rowStep = Math.max(width * step, msg.row_step | 0);
+  const rows = Math.min(Math.max(1, msg.height | 0), Math.ceil(data.byteLength / Math.max(1, rowStep)));
+  const n = width * rows;
+  const pointAt = (i) => Math.floor(i / width) * rowStep + (i % width) * step;
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const little = !msg.is_bigendian;
   const read = (f, off) =>
@@ -162,7 +167,8 @@ export function cloudToPoints(msg, budget = 60000) {
   const colors = rgb ? new Float32Array(cap * 3) : null;
   let k = 0;
   for (let i = 0; i < n; i += stride) {
-    const off = i * step;
+    const off = pointAt(i);
+    if (off + step > data.byteLength) break;
     const x = read(fx, off);
     const y = read(fy, off);
     const z = read(fz, off);

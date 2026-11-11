@@ -123,8 +123,10 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
 
 export function SettingsPane({ onWebsite, reasonerModel, onClose }) {
   const ref = useRef(null);
+  // Focus once, on open: the console re-renders on every snapshot with a new onClose,
+  // and refocusing then would pull the caret out of a key being typed.
+  useEffect(() => ref.current?.focus(), []);
   useEffect(() => {
-    ref.current?.focus();
     const esc = (e) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);

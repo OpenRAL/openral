@@ -75,12 +75,18 @@ def viz_cloud_topic(topic: str) -> str:
 
 
 def decimate_cloud(
-    data: bytes, point_step: int, x_offset: int, max_points: int
+    data: bytes,
+    point_step: int,
+    x_offset: int,
+    max_points: int,
+    width: int = 0,
+    row_step: int = 0,
 ) -> tuple[bytes, int]:
     """Keep at most ``max_points`` evenly spaced points whose x is finite.
 
     ``data`` is a ``PointCloud2`` payload (little-endian float32 x at ``x_offset``);
-    every field of a kept point is kept byte for byte, so rgb survives.
+    every field of a kept point is kept byte for byte, so rgb survives. When rows are
+    padded (``row_step > width * point_step``) the padding is skipped.
 
     Returns:
         ``(payload, count)`` for a dense ``height = 1`` cloud.
@@ -92,8 +98,14 @@ def decimate_cloud(
         >>> n, np.frombuffer(out, dtype=np.float32).reshape(-1, 4)[:, 0].tolist()
         (2, [0.0, 2.0])
     """
-    n = len(data) // point_step if point_step > 0 else 0
-    if n == 0 or max_points <= 0:
+    if point_step <= 0 or max_points <= 0:
+        return b"", 0
+    if width > 0 and row_step > width * point_step:
+        h = len(data) // row_step
+        grid = np.frombuffer(data, dtype=np.uint8, count=h * row_step).reshape(h, row_step)
+        data = grid[:, : width * point_step].tobytes()
+    n = len(data) // point_step
+    if n == 0:
         return b"", 0
     rows = np.frombuffer(data, dtype=np.uint8, count=n * point_step).reshape(n, point_step)
     x = rows[:, x_offset : x_offset + 4].copy().view("<f4")[:, 0]
@@ -777,7 +789,14 @@ class Bucket2MarkersNode:
         x = next((f for f in msg.fields if f.name == "x"), None)
         if x is None or x.datatype != PointField.FLOAT32 or msg.is_bigendian:
             return  # not a float32 little-endian xyz cloud: nothing a viewer reads
-        data, count = decimate_cloud(bytes(msg.data), int(msg.point_step), x.offset, self._viz_max)
+        data, count = decimate_cloud(
+            bytes(msg.data),
+            int(msg.point_step),
+            x.offset,
+            self._viz_max,
+            width=int(msg.width),
+            row_step=int(msg.row_step),
+        )
         out = PointCloud2()
         out.header = msg.header
         out.height = 1

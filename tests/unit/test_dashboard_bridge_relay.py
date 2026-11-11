@@ -68,6 +68,19 @@ def test_snapshot_topics_keep_only_the_newest_unsent_message() -> None:
     assert [_stamp(f) for f in relay.drain()] == [5]
 
 
+def test_an_unsubscribe_drops_the_unsent_snapshot_of_that_subscription() -> None:
+    relay = _relay()
+    relay.from_bridge(_data(10, 1, b"img"))
+    relay.from_bridge(_data(30, 1, b"map"))
+    relay.from_browser(json.dumps({"op": "unsubscribe", "subscriptionIds": [10]}))
+    # The browser reuses id 10 for another channel: the old image is never sent.
+    relay.from_browser(_subscribe((10, 3)))
+    out = [(f[1], _stamp(f)) for f in relay.drain() if isinstance(f, bytes)]
+    assert out == [(30, 1)]
+    relay.from_bridge(_data(10, 2, b"map-2"))
+    assert [_stamp(f) for f in relay.drain()] == [2]
+
+
 def test_incremental_topics_and_control_frames_are_relayed_in_order_unchanged() -> None:
     relay = _relay()
     sent: list[str | bytes] = [

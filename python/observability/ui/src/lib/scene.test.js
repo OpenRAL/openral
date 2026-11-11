@@ -143,6 +143,27 @@ test("a point cloud decodes xyz + packed rgb and respects the point budget", () 
   assert.ok(some.decimated && some.count <= 4);
 });
 
+test("a cloud with padded rows reads each point at its row and column", () => {
+  // 2 x 2 points of x,y,z float32 (12 bytes), each row padded to 32 bytes with NaN.
+  const rowStep = 32;
+  const buf = new DataView(new ArrayBuffer(rowStep * 2));
+  for (let off = 0; off < buf.byteLength; off += 4) buf.setFloat32(off, NaN, true);
+  for (let r = 0; r < 2; r++)
+    for (let c = 0; c < 2; c++) for (let f = 0; f < 3; f++) buf.setFloat32(r * rowStep + c * 12 + f * 4, r * 10 + c + f, true);
+  const field = (name, offset) => ({ name, offset, datatype: 7, count: 1 });
+  const out = cloudToPoints({
+    header: { frame_id: "cam" },
+    width: 2,
+    height: 2,
+    point_step: 12,
+    row_step: rowStep,
+    fields: [field("x", 0), field("y", 4), field("z", 8)],
+    data: new Uint8Array(buf.buffer),
+  });
+  assert.equal(out.count, 4);
+  assert.deepEqual([...out.positions], [0, 1, 2, 1, 2, 3, 10, 11, 12, 11, 12, 13]);
+});
+
 test("marker arrays add, replace and delete primitives", () => {
   const store = new Map();
   const cube = { ns: "static", id: 1, type: 1, action: 0, header: header("base"), pose: { position: { x: 0.3, y: 0.1, z: 0 } }, scale: { x: 0.2, y: 0.3, z: 0.02 }, color: { r: 1, g: 0.5, b: 0, a: 0.4 } };

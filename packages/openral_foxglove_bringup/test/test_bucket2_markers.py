@@ -625,6 +625,21 @@ def test_a_full_resolution_depth_cloud_is_thinned_for_viewers() -> None:
     assert _b2.decimate_cloud(b"", 16, 0, 10) == (b"", 0)
 
 
+def test_padded_cloud_rows_are_skipped_when_thinning() -> None:
+    """A cloud whose rows carry padding (row_step > width * point_step) stays aligned."""
+    import numpy as np
+
+    width, height, pad = 3, 2, 8
+    pts = np.arange(width * height * 4, dtype=np.float32).reshape(height, width * 4)
+    padded = np.concatenate([pts.view(np.uint8), np.full((height, pad), 0xFF, np.uint8)], axis=1)
+    data, count = _b2.decimate_cloud(
+        padded.tobytes(), 16, 0, 100, width=width, row_step=width * 16 + pad
+    )
+    assert count == width * height
+    xs = np.frombuffer(data, dtype=np.float32).reshape(-1, 4)[:, 0].tolist()
+    assert xs == list(range(0, 24, 4))
+
+
 def test_the_viewer_copy_of_a_camera_cloud_has_its_own_topic() -> None:
     assert _b2.viz_cloud_topic("/openral/cameras/head_zed/points") == (
         "/openral/viz/cameras/head_zed/points"
