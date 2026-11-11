@@ -152,6 +152,22 @@ class TestParametersAreReadOnly:
             peer.destroy_node()
             node.destroy_node()
 
+    def test_a_late_declaration_stays_dynamic_and_leaves_the_descriptor_alone(self) -> None:
+        """A name-only declare keeps rclpy's dynamic typing; a passed descriptor is copied."""
+        from rcl_interfaces.msg import ParameterDescriptor
+
+        node = _ManifestHALLifecycleNode("t_readonly_late")
+        shared = ParameterDescriptor(description="shared with another node")
+        try:
+            node.declare_parameter("late_untyped")
+            node.declare_parameter("late_typed", 1.5, shared)
+            assert node.describe_parameter("late_untyped").read_only
+            assert node.describe_parameter("late_untyped").dynamic_typing
+            assert node.describe_parameter("late_typed").read_only
+            assert shared.read_only is False
+        finally:
+            node.destroy_node()
+
     def test_every_declared_parameter_is_read_only(self) -> None:
         node = _ManifestHALLifecycleNode("t_readonly_all")
         try:

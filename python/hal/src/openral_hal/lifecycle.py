@@ -823,7 +823,11 @@ if _ROS2_AVAILABLE:
             locked: list[tuple[Any, ...]] = []
             for name, *rest in parameters:
                 value = rest[0] if rest else None
-                descriptor = rest[1] if rest[1:] else ParameterDescriptor()
+                # A copy, so a caller's shared descriptor is not locked for other nodes; a
+                # name-only declaration keeps rclpy's dynamic typing (its 1-tuple path).
+                descriptor = (
+                    copy.copy(rest[1]) if rest[1:] else ParameterDescriptor(dynamic_typing=not rest)
+                )
                 descriptor.read_only = True
                 locked.append((name, value, descriptor))
             return list(super().declare_parameters(namespace, locked, ignore_override))
