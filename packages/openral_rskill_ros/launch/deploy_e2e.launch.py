@@ -938,14 +938,22 @@ def _coverage_ball(
     return ball
 
 
-def _octomap_input_bounds(ball: _CoverageBall) -> dict[str, float]:
+def _octomap_input_bounds(ball: _CoverageBall, description: RobotDescription) -> dict[str, float]:
     """``octomap_server``'s input-cloud clip: the robot's reach box plus the margin.
 
     Returns the ``point_cloud_{min,max}_{x,y,z}`` parameters, in the map frame
     (``base_frame``). A return outside it is outside every link's check window, so
     integrating it is pure cost: on Thor the floor 0.7 m below the base and the wall
     3 m out were most of the ZED cloud.
+
+    Empty for a mobile robot: ``octomap_server`` clips in its ``frame_id``, which is
+    then ``odom`` (``_octomap_frames``), so a box about the base would stay at the
+    start pose and drop every return once the robot drove off it (an empty map, so
+    no world voxels near the robot). ``sensor_model.max_range`` still bounds the rays.
     """
+    fixed_frame, base_frame = _octomap_frames(description)
+    if fixed_frame != base_frame:
+        return {}
     return {
         f"point_cloud_{side}_{axis}": value
         for side, corner in (("min", ball.clip_lo), ("max", ball.clip_hi))
@@ -4521,7 +4529,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # octomap_server at ~2 Hz with multi-second gaps, i.e. a stale map
                     # (2026-10-02).
                     "sensor_model.max_range": 2.0 * coverage.radius,
-                    **_octomap_input_bounds(coverage),
+                    **_octomap_input_bounds(coverage, description),
                     # Keep the map fresh for manipulation: octomap ray-clears
                     # free space, so a grasped/moved object's old cells decay
                     # back to free once re-observed. A slightly higher

@@ -317,7 +317,10 @@ def test_octomap_only_integrates_the_reach_box(launch_module: ModuleType) -> Non
     ball = launch_module._CoverageBall(
         (0.0, 0.0, 0.0), 0.871, (-0.7, -0.86, -0.717), (0.7, 0.82, 0.7)
     )
-    bounds = launch_module._octomap_input_bounds(ball)
+    from openral_core import RobotDescription
+
+    openarm = RobotDescription.from_yaml(str(REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
+    bounds = launch_module._octomap_input_bounds(ball, openarm)
     assert bounds == {
         "point_cloud_min_x": -0.7,
         "point_cloud_min_y": -0.86,
@@ -326,6 +329,22 @@ def test_octomap_only_integrates_the_reach_box(launch_module: ModuleType) -> Non
         "point_cloud_max_y": 0.82,
         "point_cloud_max_z": 0.7,
     }
+
+
+def test_a_mobile_robot_keeps_every_return_near_it(launch_module: ModuleType) -> None:
+    """No input clip on a mobile base: octomap_server clips in its frame_id (odom).
+
+    A box about the base, applied in odom, stays at the start pose: once OpenAMRobot 2.0
+    drove off it in the Isaac warehouse, every head ZED return was dropped and the map
+    near the robot stayed empty (measured on octomap_server, Jazzy: a return 0.5 m ahead
+    of a base 10 m from the odom origin is dropped by a +-1 m clip).
+    """
+    from openral_core import RobotDescription
+
+    ball = launch_module._CoverageBall((0.0, 0.0, 1.0), 1.2, (-1.0, -1.0, 0.0), (1.0, 1.0, 2.0))
+    amr = RobotDescription.from_yaml(str(REPO_ROOT / "robots" / "openamrobot_v2" / "robot.yaml"))
+    assert launch_module._octomap_frames(amr) == (amr.odom_frame, amr.base_frame)
+    assert launch_module._octomap_input_bounds(ball, amr) == {}
 
 
 def test_workcell_self_collision_margin_tightens_but_never_loosens(
