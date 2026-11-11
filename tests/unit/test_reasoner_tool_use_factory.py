@@ -434,3 +434,33 @@ def test_malformed_numeric_env_raises_typed_config_error(
     monkeypatch.setenv(env, value)
     with pytest.raises(ROSConfigError, match=env):
         build_tool_use_client_from_env()
+
+
+# ── Curated Ollama models ─────────────────────────────────────────────────────
+
+
+def test_curated_ollama_model_needs_only_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`qwen3.5-4b` alone reaches the local Ollama with the `ollama` preset's properties.
+
+    The website and the robot console set only the model for a no-key model, so the
+    registry default (`OLLAMA_BASE_URL`) must bring Ollama's 60 s cold start and
+    `auto` tool_choice, not the 10 s cloud default.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3.5-4b")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client.model_id, client._base_url, client._api_key) == (
+        "qwen3.5:4b",
+        OLLAMA_BASE_URL,
+        None,
+    )
+    assert (client._timeout_s, client._tool_choice) == (60.0, "auto")
+
+
+def test_ollama_endpoint_sends_auto_tool_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ollama ignores tool_choice, so the preset sends `auto` and keeps the prose nudge."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:0.6b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "auto"

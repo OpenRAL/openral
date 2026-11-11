@@ -6,19 +6,26 @@ set -euo pipefail
 # Installs the `ollama` binary (Linux: upstream's install.sh at a pinned
 # release tag, run only after its sha256 matches the pin below; macOS:
 # `brew install`), starts the daemon if it isn't already running, and
-# pulls the default baseline model (qwen3:8b — strong tool-use, ~5 GB).
+# pulls the default model: qwen3.5:4b, the curated `qwen3.5-4b` reasoner
+# (vision + tools, ~3.4 GB), so one variable selects it:
 #
-# Model-first contract (ADR-0088): an Ollama tag is *uncurated*, so the
-# reasoner logs an expected `reasoner.model.uncurated` warning. `ollama` is a
-# named endpoint with its own URL, dialect and cold-start timeout, so no
-# DIALECT is needed:
+#   export OPENRAL_REASONER_MODEL=qwen3.5-4b
 #
-#   export OPENRAL_REASONER_MODEL=qwen3:8b
+# Any other tag is *uncurated* (ADR-0088): the reasoner logs an expected
+# `reasoner.model.uncurated` warning, and the named `ollama` endpoint supplies
+# the URL, dialect and cold-start timeout:
+#
+#   export OPENRAL_REASONER_MODEL=<tag>
 #   export OPENRAL_REASONER_ENDPOINT=ollama
+#
+# The reasoner's prompt is 9-26K tokens; Ollama's default window on a GPU
+# under 24 GiB is 4096, and it truncates silently (the client refuses that).
+# A daemon this script starts gets OLLAMA_CONTEXT_LENGTH=32768; a systemd one
+# needs `Environment=OLLAMA_CONTEXT_LENGTH=32768` (`sudo systemctl edit ollama`).
 #
 # Flags:
 #   --no-pull           Skip the `ollama pull` step (binary install only).
-#   --model <tag>       Pull a different model tag (default: qwen3:8b).
+#   --model <tag>       Pull a different model tag (default: qwen3.5:4b).
 
 # Linux install pins. The installer script is fetched from the release tag (not
 # the moving ollama.com/install.sh), checked against OLLAMA_INSTALL_SH_SHA256,
@@ -29,7 +36,7 @@ OLLAMA_VERSION="${OLLAMA_VERSION:-0.32.14}"
 # sha256 of v0.32.14's scripts/install.sh, computed from the tag on 2026-11-11.
 OLLAMA_INSTALL_SH_SHA256="${OLLAMA_INSTALL_SH_SHA256:-25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f}"
 
-MODEL="qwen3:8b"
+MODEL="qwen3.5:4b"
 DO_PULL=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,16 +46,14 @@ while [[ $# -gt 0 ]]; do
       cat <<'EOF'
 Usage: bootstrap_ollama.sh [--no-pull] [--model <tag>]
 
-Installs Ollama (if missing), starts the daemon, and pulls the local
-reasoner baseline model (qwen3:8b by default).
+Installs Ollama (if missing), starts the daemon with a 32K window, and pulls
+the curated local reasoner model (qwen3.5:4b by default).
 
   --no-pull         Skip the `ollama pull` step (binary install only).
-  --model <tag>     Pull a different model tag (default: qwen3:8b).
+  --model <tag>     Pull a different model tag (default: qwen3.5:4b).
 
-Afterwards, export these to wire the reasoner at the local endpoint
-(model-first contract, ADR-0088):
-  export OPENRAL_REASONER_MODEL=qwen3:8b
-  export OPENRAL_REASONER_ENDPOINT=ollama
+Afterwards, select it (model-first contract, ADR-0088):
+  export OPENRAL_REASONER_MODEL=qwen3.5-4b
 EOF
       exit 0
       ;;
@@ -116,11 +121,13 @@ PY
 
 if probe_port localhost 11434; then
   echo "==> ollama daemon already serving on localhost:11434"
+  echo "    its context window must hold the reasoner's prompt: start it with"
+  echo "    OLLAMA_CONTEXT_LENGTH=32768 (systemd: sudo systemctl edit ollama)"
 else
   echo "==> starting ollama serve in the background"
   # A private mktemp file, not a fixed /tmp name another local user could pre-create.
   OLLAMA_LOG="$(mktemp -t ollama-serve.XXXXXX.log)"
-  nohup ollama serve >"${OLLAMA_LOG}" 2>&1 &
+  OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-32768}" nohup ollama serve >"${OLLAMA_LOG}" 2>&1 &
   echo "    log: ${OLLAMA_LOG}"
   # Wait up to ~5 s for the listener to come up before giving up.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -139,16 +146,21 @@ if [[ "${DO_PULL}" -eq 1 ]]; then
   ollama pull "${MODEL}"
 fi
 
-cat <<EOF
+if [[ "${MODEL}" == "qwen3.5:4b" ]]; then
+  cat <<EOF
 
-==> Local reasoner baseline ready. Export these to wire it up
-    (model-first contract, ADR-0088 — an Ollama tag is uncurated, so the
-    reasoner logs an expected reasoner.model.uncurated warning; the named
-    'ollama' endpoint supplies the URL and dialect):
+==> Local reasoner ready. Select the curated model (ADR-0088):
+
+    export OPENRAL_REASONER_MODEL=qwen3.5-4b
+EOF
+else
+  cat <<EOF
+
+==> Local reasoner ready. ${MODEL} is uncurated, so the reasoner logs an
+    expected reasoner.model.uncurated warning; the named 'ollama' endpoint
+    supplies the URL and dialect:
 
     export OPENRAL_REASONER_MODEL=${MODEL}
     export OPENRAL_REASONER_ENDPOINT=ollama
-
-Then 'openral doctor' reports "Reasoner LLM" as warn (uncurated model —
-expected) and "Reasoner endpoint" as ok.
 EOF
+fi

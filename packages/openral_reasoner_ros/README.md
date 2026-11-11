@@ -213,6 +213,7 @@ auth requirement, hosting mode, and local-compute floor.
 | `gpt-5.5` | `openai/gpt-5.5` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `gpt-5.6` | `openai/gpt-5.6` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
+| `qwen3.5-4b` | `qwen3.5:4b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
 
 The env contract is:
 
@@ -455,6 +456,52 @@ plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
 > sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0`. Full findings in the
 > [assessment page](../../docs/reference/cosmos3-edge-reasoner.md).
 
+### On the robot — Qwen 3.5 4B via Ollama
+
+`qwen3.5-4b` runs on the robot's own [Ollama](https://ollama.com) (vision,
+tools and thinking; Apache-2.0 weights; the 3.4 GB Q4_K_M `qwen3.5:4b` tag).
+It needs no key and nothing but the model:
+
+```bash
+just bootstrap-ollama            # installs Ollama, pulls qwen3.5:4b, serves a 32K window
+export OPENRAL_REASONER_MODEL=qwen3.5-4b
+```
+
+**The context window is the one setting that matters.** The reasoner's prompt
+is 9–26K tokens (system prompt plus one tool per skill); Ollama loads a model
+with a 4096-token window on a GPU under 24 GiB
+([docs](https://docs.ollama.com/context-length)) and **silently truncates** a
+longer prompt, and its OpenAI-compatible API has no field to raise it. Start
+the daemon with `OLLAMA_CONTEXT_LENGTH=32768` (a systemd install:
+`sudo systemctl edit ollama` → `Environment=OLLAMA_CONTEXT_LENGTH=32768`). The
+client compares the prompt tokens Ollama reports with the request it sent and
+fails the tick (`ROSPlanningError: … cut the prompt to fit`) rather than act
+on a truncated prompt.
+
+Ollama ignores `tool_choice`
+([OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility)),
+so the `ollama` endpoint sends `auto`: a prose reply gets the one nudge, then
+counts as an invalid plan.
+
+Measured through the real client (Ollama 0.32.14, RTX 5070 Laptop 8 GB, 32K
+window, thinking on, 20 ticks each; the curation bar is ≥ 17/20, #494):
+
+| prompt | skills | tokens | valid | median tick |
+|---|---|---|---|---|
+| `so101_follower` + query tools | 3 | 9,229 | 18/20 | 9.2 s |
+| `franka_panda` + query tools, full palette | 14 | 20,379 | 20/20 | 9.7 s |
+
+`describe_image` answered both SO-101 eraser frames correctly (2/2). With
+thinking off (`reasoning_effort: none`) ticks drop to ~2 s but validity to
+16/20, under the bar, so the entry keeps thinking on.
+Failures were a nested `place_target` sent as a JSON string and a
+hallucinated tool name; both come back to the model as invalid-plan feedback.
+
+Ollama Cloud models are not curated: none could be run here without an
+`OLLAMA_API_KEY`. One works through the escape hatch below with
+`OPENRAL_REASONER_ENDPOINT=https://ollama.com/v1`, `OPENRAL_REASONER_DIALECT=openai`
+and the key as `OPENRAL_REASONER_API_KEY` (sent as `Authorization: Bearer`).
+
 ### Uncurated local endpoint — explicit escape hatch
 
 Models outside `REASONER_MODELS` are not claimed compatible. They work when the
@@ -464,10 +511,9 @@ warn that robotics tool-calling reliability is unverified.
 ```bash
 # Linux: runs ollama's release-tag install.sh only when its sha256 matches
 # OLLAMA_INSTALL_SH_SHA256 (scripts/bootstrap_ollama.sh); refuses otherwise.
-just bootstrap-ollama
+just bootstrap-ollama --model qwen3:8b
 export OPENRAL_REASONER_MODEL=qwen3:8b
-export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
-export OPENRAL_REASONER_DIALECT=openai
+export OPENRAL_REASONER_ENDPOINT=ollama
 ```
 
 ## Synopsis

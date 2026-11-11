@@ -753,6 +753,55 @@ def _prompt_tokens(response: object) -> int | None:
     return total
 
 
+# A JSON tool schema or English prompt runs ~3-4 characters per token; a server
+# that reports fewer than one token per this many request characters did not
+# read the whole request.
+_MAX_CHARS_PER_PROMPT_TOKEN: int = 8
+
+
+# Ollama's OpenAI-compatible endpoint stamps every reply with this.
+_OLLAMA_FINGERPRINT: str = "fp_ollama"
+
+
+def _check_prompt_not_truncated(response: object, request: list[object], *, model_id: str) -> None:
+    """Raise when an Ollama server read far fewer prompt tokens than the request holds.
+
+    Ollama cuts a prompt longer than the model's loaded context window down to
+    fit, silently, and its OpenAI-compatible endpoint has no field to raise that
+    window (it defaults to 4096 tokens on a GPU under 24 GiB). The reasoner's
+    prompt is 9-26K tokens, so on a default ``ollama serve`` the model never sees
+    most of its tools or the system prompt's rules — and still answers. Other
+    servers refuse an over-long prompt with a 400, so only a reply carrying
+    Ollama's ``system_fingerprint`` is checked.
+
+    Raises:
+        ROSPlanningError: When the reply's prompt tokens are under one per
+            ``_MAX_CHARS_PER_PROMPT_TOKEN`` characters of ``request``.
+
+    Example:
+        >>> from types import SimpleNamespace as NS
+        >>> def reply(n, fp="fp_ollama"):
+        ...     return NS(system_fingerprint=fp, usage=NS(prompt_tokens=n))
+        >>> _check_prompt_not_truncated(reply(9000), ["x" * 30000], model_id="m")
+        >>> _check_prompt_not_truncated(reply(2051, fp=None), ["x" * 30000], model_id="m")
+        >>> _check_prompt_not_truncated(reply(2051), ["x" * 30000], model_id="m")
+        Traceback (most recent call last):
+        ...
+        openral_core.exceptions.ROSPlanningError: ...
+    """
+    prompt_tokens = _prompt_tokens(response)
+    if getattr(response, "system_fingerprint", None) != _OLLAMA_FINGERPRINT or not prompt_tokens:
+        return
+    chars = len(json.dumps(request))
+    if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
+        return
+    raise ROSPlanningError(
+        f"the endpoint read {prompt_tokens} prompt tokens of a ~{chars // 4}-token request to "
+        f"{model_id!r}: it cut the prompt to fit the model's context window. On Ollama, start "
+        "the server with OLLAMA_CONTEXT_LENGTH=32768 (or more) so the reasoner's tools fit."
+    )
+
+
 def _openai_choices(response: object) -> list[Any]:
     """``response.choices``, or a legible error when the provider sent none.
 
@@ -832,7 +881,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     * ``OPENRAL_REASONER_MODEL`` (**required**) — a curated registry key
       (``REASONER_MODELS``: ``claude-opus-4-8`` / ``claude-opus-5-5`` /
       ``claude-sonnet-5-5`` / ``claude-haiku-5-5`` / ``gpt-5.5`` / ``gpt-5.6``
-      / ``cosmos3-edge``), or a raw model id for the uncurated
+      / ``cosmos3-edge`` / ``qwen3.5-4b``), or a raw model id for the uncurated
       escape hatch.
     * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a named endpoint
       (``_ENDPOINT_PRESETS``: ``openai`` / ``openrouter`` / ``ollama`` / ``vllm`` /
@@ -1016,7 +1065,15 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
     # orthogonal axis"). Using only `preset.url` drops the other four: e.g.
     # `gpt-5.5` on the HF router built with `tool_choice="required"` (a 400)
     # and a cold `ollama` on the 10 s cloud timeout instead of 60 s.
-    preset = _ENDPOINT_PRESETS.get(raw_endpoint.lower()) if raw_endpoint else None
+    # With no endpoint set, a registry default that IS a named endpoint's URL
+    # (a curated Ollama model on ``OLLAMA_BASE_URL``) brings that endpoint's
+    # properties too, so the website's model-only setting gets Ollama's cold-start
+    # timeout and tool_choice, not the 10 s cloud default.
+    preset = (
+        _ENDPOINT_PRESETS.get(raw_endpoint.lower())
+        if raw_endpoint
+        else next((p for p in _ENDPOINT_PRESETS.values() if p.url == entry.default_endpoint), None)
+    )
     if preset is not None and preset.dialect != entry.dialect:
         # e.g. claude-opus-4-8 (anthropic) on `ollama` (openai): building an
         # Anthropic client against an OpenAI-only server configures cleanly
@@ -2193,6 +2250,7 @@ class OpenAICompatibleToolUseClient:
         try:
             choices, response = self._complete(client, messages, tools)
             prompt_tokens = _prompt_tokens(response)
+            _check_prompt_not_truncated(response, [messages, tools], model_id=self.model_id)
             if (
                 not _openai_tool_calls(choices)
                 and self._tool_choice != "required"
