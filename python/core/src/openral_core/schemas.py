@@ -49,6 +49,7 @@ from pydantic import (
 # ROSConfigError lives in the sibling `exceptions` module and is the
 # canonical exception family for any configuration-level failure (see
 # CLAUDE.md §5).
+from openral_core.code_refs import check_code_ref
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSObjectNotInMemory
 from openral_core.time_base import scene_control_rate_hz
 
@@ -2244,6 +2245,8 @@ class SceneComposition(BaseModel):
     composed MJCF XML and the mesh directory it references (the node writes the
     XML next to ``meshdir`` so relative mesh paths resolve). Today's only
     composer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.
+    The composer must live in an ``openral_*`` package (``check_code_ref``), checked
+    here and again before the import.
 
     Attributes:
         composer: ``"module.path:function"`` returning ``(xml, meshdir)``.
@@ -2252,7 +2255,7 @@ class SceneComposition(BaseModel):
 
     Example:
         >>> sc = SceneComposition(
-        ...     composer="pkg.scenes:compose_tabletop",
+        ...     composer="openral_sim.scenes:compose_tabletop",
         ...     params={"robot_lift_z": 0.36, "white_background": True},
         ... )
         >>> sc.params["robot_lift_z"]
@@ -2263,6 +2266,11 @@ class SceneComposition(BaseModel):
 
     composer: str
     params: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("composer")
+    @classmethod
+    def _composer_is_openral_code(cls, value: str) -> str:
+        return check_code_ref(value, setting="composition.composer")
 
 
 class SceneDefaults(BaseModel):
@@ -3039,6 +3047,11 @@ class HalEntrypoints(BaseModel):
     real_bringup: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9_]+:[A-Za-z0-9_.\-]+\.launch\.py$"
     )
+
+    @field_validator("sim", "real")
+    @classmethod
+    def _entrypoint_is_openral_code(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return None if value is None else check_code_ref(value, setting=f"hal.{info.field_name}")
 
 
 class RobotDescription(BaseModel):

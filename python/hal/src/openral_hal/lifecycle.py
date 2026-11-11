@@ -2478,11 +2478,14 @@ if _ROS2_AVAILABLE:
             the path is threaded into the HAL as ``mjcf_path``. Issue #191 Phase 3b
             replaces openarm's bespoke ``_create_hal`` scene splicing.
             """
-            import importlib
+            from openral_core.code_refs import import_code_ref
 
-            module_path, _, fn_name = composition.composer.partition(":")  # type: ignore[attr-defined]
-            composer = getattr(importlib.import_module(module_path), fn_name)
-            xml, meshdir = composer(**composition.params)  # type: ignore[attr-defined]
+            # Re-checked although SceneComposition validated it: openral_* only.
+            composer = import_code_ref(
+                composition.composer,  # type: ignore[attr-defined]
+                setting="composition.composer",
+            )
+            xml, meshdir = composer(**composition.params)  # type: ignore[attr-defined,operator]
             scene_path = meshdir.parent / f"{description.name}_composed_scene.xml"
             scene_path.write_text(xml)
             self.get_logger().info(

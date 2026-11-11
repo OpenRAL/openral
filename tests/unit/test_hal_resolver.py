@@ -130,11 +130,9 @@ class TestBadEntrypoint:
             build_hal(desc, mode="real")
 
     def test_malformed_entry_no_colon(self) -> None:
-        desc = _load("ur5e").model_copy(
-            update={"hal": HalEntrypoints(real="openral_hal.ur_real.UR5eRealHAL")}
-        )
+        # Refused when the manifest loads (check_code_ref), before any build_hal.
         with pytest.raises(ROSConfigError, match="malformed"):
-            build_hal(desc, mode="real")
+            HalEntrypoints(real="openral_hal.ur_real.UR5eRealHAL")
 
 
 class TestHalJointStatesTopic:

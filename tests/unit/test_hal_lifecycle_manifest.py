@@ -161,3 +161,22 @@ class TestParametersAreReadOnly:
             assert writable == []
         finally:
             node.destroy_node()
+
+
+@pytest.mark.usefixtures("_rclpy_ctx")
+def test_the_node_rechecks_a_composer_that_skipped_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The composer import seam refuses foreign code even past the schema check."""
+    from openral_core import RobotDescription, SceneComposition
+    from openral_core.code_refs import ALLOW_EXTERNAL_PLUGINS_ENV
+
+    monkeypatch.delenv(ALLOW_EXTERNAL_PLUGINS_ENV, raising=False)
+    description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    hostile = SceneComposition.model_construct(composer="os:system", params={"command": "true"})
+    node = _ManifestHALLifecycleNode("t_composer_recheck")
+    try:
+        with pytest.raises(ROSConfigError, match=r"composition\.composer = 'os:system'"):
+            node._compose_scene_mjcf(description, hostile)
+    finally:
+        node.destroy_node()
