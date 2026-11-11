@@ -389,6 +389,7 @@ main > .waiting {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow-y: auto; /* a viewport too short for the scene's floor scrolls, never clips */
 }
 .pane {
   min-width: 0;
@@ -439,15 +440,6 @@ main > .waiting {
   .pane-resizer {
     display: none;
   }
-  .scene {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  border: 1px solid var(--hair);
-  border-radius: 16px;
-  overflow: hidden;
-  background: var(--scene-bg);
-}
   .pane {
     max-height: 80vh;
   }
@@ -584,15 +576,22 @@ main > .waiting {
   margin: auto;
 }
 
-/* ── 3D scene ── */
+/* ── 3D scene: on the desktop it fills what the prompt bar and the camera row leave;
+   below 1000px (one scrolling column) it keeps a fixed height. ── */
 .scene {
   position: relative;
-  min-height: 460px;
-  height: clamp(460px, 62vh, 820px);
+  flex: 1 1 auto;
+  min-height: 280px;
   border: 1px solid var(--hair);
   border-radius: 16px;
   overflow: hidden;
   background: var(--scene-bg);
+}
+@media (max-width: 1000px) {
+  .scene {
+    flex: none;
+    height: clamp(460px, 62vh, 820px);
+  }
 }
 .scene-canvas,
 .scene-canvas canvas {
