@@ -2313,7 +2313,7 @@ def default_camera_mounts(
         ...     {"openarm_base"},
         ... )
         >>> (m["top"] == m["head_zed"], m["head_zed"].link, m["head_zed"].xyz)
-        (True, 'openarm_base', (0.0, 0.0, 0.2))
+        (True, 'openarm_base', (0.06597, -0.004548, 0.094539))
     """
     out = _mjcf_camera_mounts(desc, manifest_dir, mountable, calibrated or set())
     for s in desc.sensors:
