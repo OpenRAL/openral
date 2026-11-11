@@ -84,6 +84,7 @@ from openral_core.schemas import (
     RobotCapabilities,
     RobotDescription,
     RobotUnit,
+    RosIntegration,
     RSkillAction,
     RSkillEvalBenchmark,
     RSkillEvalResult,
@@ -1717,8 +1718,29 @@ _eval_result_st = st.builds(
 )
 
 
+_ros_integration_st = st.builds(
+    RosIntegration,
+    # check_ros_interface_package admits only rosidl IDL package names.
+    package=st.from_regex(r"[a-z][a-z0-9_]{0,10}_msgs", fullmatch=True),
+    interface_type=_name,
+    interface_name=_name.map(lambda n: f"/{n}"),
+    result_trajectory_field=st.one_of(st.none(), _name),
+    default_goal_json=st.dictionaries(_name, st.integers(), max_size=3).map(json.dumps),
+    ros_dependencies=st.lists(_name, max_size=3),
+    completes_task_on_success=st.booleans(),
+    goal_builder=st.sampled_from([None, "joint", "pose", "look_at"]),
+)
+
+
 @_FUZZ_SETTINGS
 @given(_eval_result_st)
 def test_fuzz_rskill_eval_result(instance: RSkillEvalResult) -> None:
     """RSkillEvalResult (incl. the optional grade_counts) round-trips + validates its schema."""
     _round_trip_and_validate(RSkillEvalResult, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_ros_integration_st)
+def test_fuzz_ros_integration(instance: RosIntegration) -> None:
+    """RosIntegration (incl. the opt-in completes_task_on_success) round-trips."""
+    _round_trip_and_validate(RosIntegration, instance)
