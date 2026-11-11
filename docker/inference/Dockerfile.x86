@@ -168,8 +168,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && dpkg-query -W "ros-${ROS_DISTRO}-*" > "/opt/openral/ros-${ROS_DISTRO}-versions.builder.txt" \
     && cat "/opt/openral/ros-${ROS_DISTRO}-versions.builder.txt"
 
-# uv installs to /usr/local/bin so it's on the default PATH.
-RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+# uv installs to /usr/local/bin so it's on the default PATH: a pinned release,
+# the archive checked against the <asset>.sha256 its release publishes before it
+# is unpacked (same pin as Dockerfile.dev). No install script piped into a shell.
+ARG UV_VERSION=0.12.5
+RUN set -eux; \
+    uv="uv-$(uname -m)-unknown-linux-gnu"; \
+    tmp="$(mktemp -d)"; cd "$tmp"; \
+    base="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${uv}.tar.gz"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$uv.tar.gz" "$base"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$uv.tar.gz.sha256" "$base.sha256"; \
+    echo "$(cut -d' ' -f1 "$uv.tar.gz.sha256")  $uv.tar.gz" | sha256sum -c -; \
+    tar -xzf "$uv.tar.gz"; install -m 0755 "$uv/uv" "$uv/uvx" /usr/local/bin/; \
+    cd /; rm -rf "$tmp"; uv --version
 
 # Precompile bytecode at install time. uv skips .pyc generation by default, so
 # without this the FIRST import of the torch/lerobot/transformers stack inside

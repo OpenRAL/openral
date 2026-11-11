@@ -10,11 +10,9 @@ if ! command -v brew >/dev/null 2>&1; then
   exit 1
 fi
 
+# uv comes from Homebrew too (checksum-verified bottle), not a piped install script.
 brew install cmake ninja just llvm libusb python@3.12 jq
-
-if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
+command -v uv >/dev/null 2>&1 || brew install uv
 
 echo ""
 echo "==> macOS system bootstrap complete."

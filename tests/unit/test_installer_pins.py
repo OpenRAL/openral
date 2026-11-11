@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
-_INSTALLERS = ("scripts/install.sh", "scripts/bootstrap_ollama.sh", "Dockerfile.dev")
+_INSTALLERS = (
+    "scripts/install.sh",
+    "scripts/bootstrap_ollama.sh",
+    "Dockerfile.dev",
+    "docker/inference/Dockerfile.x86",
+    "python/cli/src/openral_cli/bootstrap/bootstrap_ubuntu.sh",
+    "python/cli/src/openral_cli/bootstrap/bootstrap_macos.sh",
+)
 
 
 @pytest.mark.parametrize("rel", _INSTALLERS)
