@@ -193,6 +193,17 @@ def test_spawn_argv_shape() -> None:
     assert argv[argv.index("--port") + 1] == "9333"
 
 
+@pytest.mark.parametrize(
+    ("host", "bound"),
+    [("0.0.0.0", "127.0.0.1"), ("localhost", "127.0.0.1"), ("[::1]", "::1")],
+)
+def test_the_managed_sidecar_binds_loopback_only(host: str, bound: str) -> None:
+    """vLLM serves unauthenticated: an endpoint naming 0.0.0.0 must not bind every NIC."""
+    client = Cosmos3ToolUseClient(base_url=f"http://{host}:9333/v1", auto_start=True)
+    argv = client._spawn_argv()
+    assert argv[argv.index("--host") + 1] == bound
+
+
 # ── Managed-server lifecycle decisions ─────────────────────────────────────────
 
 

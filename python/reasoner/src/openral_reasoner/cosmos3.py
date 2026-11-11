@@ -81,7 +81,23 @@ BOOT_TIMEOUT_ENV: str = "OPENRAL_COSMOS3_BOOT_TIMEOUT_S"
 SIDECAR_SCRIPT_ENV: str = "OPENRAL_COSMOS3_SIDECAR"
 DEFAULT_BOOT_TIMEOUT_S: float = 1800.0
 
+# Hosts a managed (autostarted) endpoint URL may name. `0.0.0.0` stays here because a
+# client connecting to it reaches loopback, but the server never BINDS it: vLLM has no
+# auth, so `_bind_host` maps every one of these to a loopback address.
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _bind_host(hostname: str) -> str:
+    """The loopback address the managed sidecar binds for a ``_LOOPBACK_HOSTS`` name.
+
+    ``::1`` keeps IPv6 loopback; everything else (``0.0.0.0``, ``localhost``) binds
+    ``127.0.0.1``, never all interfaces.
+
+    Example:
+        >>> _bind_host("0.0.0.0"), _bind_host("::1")
+        ('127.0.0.1', '::1')
+    """
+    return "::1" if hostname == "::1" else "127.0.0.1"
 
 
 def find_cosmos3_sidecar_script() -> Path:
@@ -249,7 +265,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
             "--model",
             self.model_id,
             "--host",
-            parsed.hostname or "127.0.0.1",
+            _bind_host(parsed.hostname or ""),
             "--port",
             str(port),
         ]
