@@ -131,8 +131,14 @@ keeps the gripper's shadow on the desk, which the pi0.5 LoRA uses as a cue.
 
 ```bash
 openral sim run --config scenes/sim/makermods_metal_pick_place.yaml \
-    --rskill rskills/<metal-pick-place-skill>
+    --rskill rskills/pi05-metal-pick-place
 ```
+
+The same task on Isaac Sim 6.1 is
+[`scenes/sim/isaac_makermods_metal_pick_place.yaml`](../../scenes/sim/isaac_makermods_metal_pick_place.yaml),
+its desk, cube and marker generated from this scene's options
+(`tools/make_metal_isaac_usd.py`); a recorded episode replays to `complete` there too
+(`tests/sim/test_makermods_metal_hal_isaac_pick_place.py`).
 
 Replaying eight recorded episodes open-loop (two per layout, the cube and marker
 measured from each episode's own top frames, its own start state) grasps, lifts

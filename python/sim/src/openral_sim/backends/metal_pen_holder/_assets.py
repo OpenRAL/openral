@@ -54,9 +54,11 @@ __all__ = [
     "ASSET_DIR",
     "MetalPenHolderOptions",
     "compose_metal_pen_holder",
+    "holder_collider_boxes",
     "holder_hex_texture",
     "holder_hole_mask",
     "holder_inner_half_width",
+    "holder_visual_mesh",
 ]
 
 #: Bundled image assets (background plate, textures) + their SOURCE.txt.
@@ -510,10 +512,6 @@ def _add_holder(spec: mujoco.MjSpec, opts: MetalPenHolderOptions) -> None:
     """
     import mujoco as mj
 
-    hb, ht = opts.holder_bottom_width_m / 2.0, opts.holder_top_width_m / 2.0
-    t, h = opts.holder_wall_m, opts.holder_height_m
-    tilt = math.atan2(ht - hb, h)
-    slant = math.hypot(h, ht - hb)
     x, y, yaw = opts.holder_start
     body = spec.worldbody.add_body()
     body.name = "pen_holder"
@@ -521,7 +519,38 @@ def _add_holder(spec: mujoco.MjSpec, opts: MetalPenHolderOptions) -> None:
     body.quat = [math.cos(math.radians(yaw) / 2), 0.0, 0.0, math.sin(math.radians(yaw) / 2)]
     body.add_freejoint().name = "pen_holder_joint"
     mat = _material(spec, "holder", opts.holder_rgba, opts.holder_emission)
-    n_geoms = 5
+    parts = holder_collider_boxes(opts)
+    for name, pos, size, quat in parts:
+        g = body.add_geom()
+        g.name = name
+        g.type = mj.mjtGeom.mjGEOM_BOX
+        g.pos = list(pos)
+        g.size = list(size)
+        g.quat = list(quat)
+        g.mass = opts.holder_mass_kg / len(parts)
+        g.friction = list(opts.holder_friction)
+        g.condim = 4
+        g.group = 3  # not rendered: the closed visual tube below is the cup's look
+    _add_holder_visual(spec, body, opts, mat)
+
+
+def holder_collider_boxes(
+    opts: MetalPenHolderOptions,
+) -> list[tuple[str, _Vec3, _Vec3, tuple[float, float, float, float]]]:
+    """The cup's colliders: a floor and four walls leaning out to the rim, in the cup frame.
+
+    Each is ``(name, centre, half sizes, quat wxyz)``; the Isaac twin's USD uses the same
+    boxes (``tools/make_metal_isaac_usd.py``).
+
+    Example:
+        >>> boxes = holder_collider_boxes(MetalPenHolderOptions())
+        >>> [b[0] for b in boxes][:2], len(boxes)
+        (['holder_floor', 'holder_wall_0'], 5)
+    """
+    hb, ht = opts.holder_bottom_width_m / 2.0, opts.holder_top_width_m / 2.0
+    t, h = opts.holder_wall_m, opts.holder_height_m
+    tilt = math.atan2(ht - hb, h)
+    slant = math.hypot(h, ht - hb)
     parts: list[tuple[str, _Vec3, _Vec3, tuple[float, float, float, float]]] = [
         (
             "holder_floor",
@@ -546,18 +575,7 @@ def _add_holder(spec: mujoco.MjSpec, opts: MetalPenHolderOptions) -> None:
                 _quat_mul(qz, qy),
             )
         )
-    for name, pos, size, quat in parts:
-        g = body.add_geom()
-        g.name = name
-        g.type = mj.mjtGeom.mjGEOM_BOX
-        g.pos = list(pos)
-        g.size = list(size)
-        g.quat = list(quat)
-        g.mass = opts.holder_mass_kg / n_geoms
-        g.friction = list(opts.holder_friction)
-        g.condim = 4
-        g.group = 3  # not rendered: the closed visual tube below is the cup's look
-    _add_holder_visual(spec, body, opts, mat)
+    return parts
 
 
 def holder_hex_texture(size: int = 256) -> NDArray[np.uint8]:
@@ -698,17 +716,43 @@ def _holed_wall(
 def _add_holder_visual(
     spec: mujoco.MjSpec, body: mujoco.MjsBody, opts: MetalPenHolderOptions, material: str
 ) -> None:
-    """A closed tapered rounded-square tube (outer + inner walls, rim, floor), visual only.
-
-    The collision walls stand apart at the corners (slits narrower than the pen); the
-    rendered cup is the real cup's closed shape with rounded corners
-    (``holder_corner_radius_m`` at the rim). With ``holder_hole_grid`` its walls are cell
-    grids with the hexagonal holes (``holder_hole_mask``, once per side) cut out, except on
-    ``holder_solid_side``; with 0 the holes are painted (``holder_hex_texture``). MuJoCo
-    draws a visual mesh's own faces, with smooth normals around the ring.
-    """
+    """The cup's look (``holder_visual_mesh``) as a non-colliding mesh geom on its body."""
     import mujoco as mj
 
+    vert, uv, face = holder_visual_mesh(opts)
+    mesh = spec.add_mesh()
+    mesh.name = "holder_visual"
+    mesh.uservert = vert
+    mesh.usertexcoord = uv
+    mesh.userface = face
+    mesh.inertia = mj.mjtMeshInertia.mjMESH_INERTIA_SHELL
+    _texture_holder_material(spec, material, painted=not opts.holder_hole_grid)
+    g = body.add_geom()
+    g.name = "holder_visual"
+    g.type = mj.mjtGeom.mjGEOM_MESH
+    g.meshname = "holder_visual"
+    g.material = material
+    g.contype = 0
+    g.conaffinity = 0
+    g.density = 0.0
+
+
+def holder_visual_mesh(opts: MetalPenHolderOptions) -> tuple[list[float], list[float], list[int]]:
+    """The cup's closed tapered rounded-square tube (outer + inner walls, rim, floor).
+
+    Flat ``(vertices xyz, texcoords uv, triangle indices)`` in the cup frame (origin at the
+    centre of its bottom face). The collision walls stand apart at the corners (slits
+    narrower than the pen); this is the real cup's closed shape with rounded corners
+    (``holder_corner_radius_m`` at the rim). With ``holder_hole_grid`` its walls are cell
+    grids with the hexagonal holes (``holder_hole_mask``, once per side) cut out, except on
+    ``holder_solid_side``; with 0 the holes are left to a texture (``holder_hex_texture``).
+    The MuJoCo twin and the Isaac twin's USD render this same mesh.
+
+    Example:
+        >>> v, uv, f = holder_visual_mesh(MetalPenHolderOptions(holder_hole_grid=0))
+        >>> len(v) // 3 == len(uv) // 2, len(f) % 3, max(f) < len(v) // 3
+        (True, 0, True)
+    """
     hb, ht = opts.holder_bottom_width_m / 2.0, opts.holder_top_width_m / 2.0
     t, h, f = opts.holder_wall_m, opts.holder_height_m, opts.holder_floor_m
     nc = 6
@@ -761,21 +805,7 @@ def _add_holder_visual(
         for i in range(n):
             a, b = base + 1 + i, base + 1 + (i + 1) % n
             face.extend((base, a, b) if z_up else (base, b, a))
-    mesh = spec.add_mesh()
-    mesh.name = "holder_visual"
-    mesh.uservert = vert
-    mesh.usertexcoord = uv
-    mesh.userface = face
-    mesh.inertia = mj.mjtMeshInertia.mjMESH_INERTIA_SHELL
-    _texture_holder_material(spec, material, painted=not opts.holder_hole_grid)
-    g = body.add_geom()
-    g.name = "holder_visual"
-    g.type = mj.mjtGeom.mjGEOM_MESH
-    g.meshname = "holder_visual"
-    g.material = material
-    g.contype = 0
-    g.conaffinity = 0
-    g.density = 0.0
+    return vert, uv, face
 
 
 def _add_pen(spec: mujoco.MjSpec, opts: MetalPenHolderOptions) -> None:

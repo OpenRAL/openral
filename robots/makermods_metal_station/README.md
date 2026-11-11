@@ -111,6 +111,16 @@ print(hal.read_state().name)
 hal.disconnect()
 ```
 
+### Isaac Sim
+
+[`scenes/sim/isaac_makermods_metal_pen_holder.yaml`](../../scenes/sim/isaac_makermods_metal_pen_holder.yaml)
+is the pen-holder task on Isaac Sim 6.1: the desk, shelf, cup and pen come from the MuJoCo
+twin's options (`tools/make_metal_isaac_usd.py`; the cup is the twin's own mesh), the wrist
+cameras carry the twin's fitted offsets, and episode 0 replays to `complete`
+(`tests/sim/test_makermods_metal_station_hal_isaac_pen_holder.py`). Its top view renders
+the scene (the MuJoCo twin composites a real photo), so it reads brighter than the real top
+camera; the wrist views match the twin's.
+
 ## Safety: self- and inter-arm collision model
 
 `collision_geometry` / `allowed_collision_pairs` are generated from the derived
