@@ -127,6 +127,12 @@ docker run --rm --gpus all --network host \
 > `HF_HOME`). Without it every `--rm` run re-downloads the rSkill weights:
 > gigabytes and minutes per launch.
 
+> `deploy run` keeps the robot's ROS graph on this host (`LOCALHOST` discovery,
+> a per-robot `ROS_DOMAIN_ID`): an unauthenticated ROS graph on the LAN lets any
+> peer command the arm. A graph that must span machines needs
+> `OPENRAL_ALLOW_NETWORK_ROS=1`; see
+> [ROS graph security](docs/reference/ros-graph-security.md).
+
 One-liner install (no clone, no sudo):
 
 ```bash

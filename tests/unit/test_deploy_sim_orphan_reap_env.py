@@ -18,5 +18,8 @@ def test_the_orphan_reap_prints_no_transport_ready_marker(
     monkeypatch.delenv("OPENRAL_SKIP_ORPHAN_REAP", raising=False)
     # A domain no graph of this host runs on: the sweep is scoped by domain + checkout.
     monkeypatch.setenv("ROS_DOMAIN_ID", "231")
+    # A real reap applies the real scope, which refuses a networked one.
+    monkeypatch.delenv("ROS_AUTOMATIC_DISCOVERY_RANGE", raising=False)
+    monkeypatch.delenv("ROS_STATIC_PEERS", raising=False)
     deploy_sim._reap_orphans_with_log("real")
     assert deploy_sim.DDS_TRANSPORT_READY_MARKER not in capsys.readouterr().out

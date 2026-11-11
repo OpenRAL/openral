@@ -40,6 +40,16 @@ block at all) and `build_hal` raises `ROSCapabilityMismatch` under
 `OpenArmRealHAL`; `anvil_openarm_v2` (Anvil) is sim-only. Both MakerMods Metal manifests are sim-only too: the arm has no
 brakes, so a real HAL waits on a safety-WG-reviewed stop behaviour.
 
+### The graph stays on this host
+
+`deploy run` confines the robot's ROS graph to the deploy host
+(`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) on a per-robot `ROS_DOMAIN_ID`, and
+prints the result as `ros scope:`. A graph that must reach another computer
+(a remote driver, `rviz2` on a laptop) needs `OPENRAL_ALLOW_NETWORK_ROS=1`
+plus the same exported domain on every host; otherwise the deploy refuses. The
+Foxglove bridge and the dashboard are unaffected. Why, and the opt-in recipe:
+[ROS graph security](../../reference/ros-graph-security.md).
+
 ### Set a reasoner model — the graph will not plan without one
 
 The S2 reasoner has **no hidden default model** by design. Set a curated one:

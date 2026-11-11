@@ -95,7 +95,11 @@ back to (or fails on) CPU.
 - **`/entrypoint.sh`** probes `/opt/ros/*/setup.bash` AND
   `/workspace/install/setup.bash`, sources both, and exec's the user command.
 - ENV: `ROS_DISTRO=jazzy`, `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`,
-  `ROS_DOMAIN_ID=0`, `PATH=/workspace/.venv/bin:$PATH`, `PYTHONUNBUFFERED=1`.
+  `PATH=/workspace/.venv/bin:$PATH`, `PYTHONUNBUFFERED=1`. **No `ROS_DOMAIN_ID`**:
+  `deploy run` confines a real robot's graph to the host on a per-robot domain
+  and refuses a networked scope without `OPENRAL_ALLOW_NETWORK_ROS=1`
+  ([ROS graph confinement](../../docs/reference/ros-graph-security.md)).
+  Pass `-e ROS_DOMAIN_ID=N` only to pin a domain; never run a real robot on 0.
 - `ENTRYPOINT` is the bare `openral` CLI (`docker run openral:x86 doctor`,
   `… detect`, `… deploy run --config …`); the default `CMD` is `deploy run --help`.
 

@@ -32,6 +32,11 @@ services:
       - ../../skills:/workspace/skills:ro
       - ../../robots:/workspace/robots:ro
       - ../../scenes:/workspace/scenes:ro
+    # ROS graph: no ROS_DOMAIN_ID default. `deploy run` confines discovery to
+    # this container on a per-robot domain; a graph that must reach other hosts
+    # needs `network_mode: host`, an exported ROS_AUTOMATIC_DISCOVERY_RANGE /
+    # ROS_STATIC_PEERS and OPENRAL_ALLOW_NETWORK_ROS=1 — see
+    # docs/reference/ros-graph-security.md.
     # `deploy run` is real-hardware only: append your own
     # `command: ["run", "--config", "scenes/deploy/<your-workcell>.yaml"]`
     # once a DeployScene config exists and a robot is connected. With no

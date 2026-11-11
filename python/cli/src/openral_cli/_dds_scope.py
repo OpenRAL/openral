@@ -16,6 +16,11 @@ Two controls:
   domain. Measured against a live OpenArm: `ROS_AUTOMATIC_DISCOVERY_RANGE=
   SUBNET` (default) makes its nodes visible, `LOCALHOST` hides them without
   affecting same-host discovery; `OFF` would also hide the sim's own nodes.
+* ``confine_real_scope`` — the same prevention for a real robot. Left on
+  domain 0 with subnet discovery, anyone on the LAN could publish
+  ``/openral/safe_action`` (the HAL obeys it), call ``/openral/estop_reset``
+  or spoof ``/joint_states`` and the deadman heartbeat. A real graph that
+  must span hosts opts in with ``OPENRAL_ALLOW_NETWORK_ROS=1``.
 * ``assert_graph_unoccupied`` — detection: covers a real-robot launch
   joining an existing sim graph, or two runs on one host in the same domain.
 
@@ -30,20 +35,27 @@ Signature: a `/joint_states` publisher — every robot has exactly one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 from typing import Final
 
+import structlog
 from openral_core.exceptions import ROSConfigError
 
 __all__ = [
+    "ALLOW_NETWORK_ROS_ENV",
     "ALLOW_UNVERIFIED_GRAPH_ENV",
     "SIM_DOMAIN_ID",
     "assert_graph_unoccupied",
+    "confine_real_scope",
     "confine_sim_scope",
+    "real_domain_id",
 ]
+
+_log = structlog.get_logger(__name__)
 
 #: Escape hatch for **one** of this module's two refusals: the one raised when
 #: the graph could not be *read* at all (``rclpy`` will not import, the probe
@@ -67,6 +79,21 @@ ALLOW_UNVERIFIED_GRAPH_ENV: Final[str] = "OPENRAL_ALLOW_UNVERIFIED_GRAPH"
 #: The domain a confined sim runs on. Any fixed value would do — what matters is
 #: that it is not 0, which is where an unconfigured robot host lands.
 SIM_DOMAIN_ID: Final[str] = "77"
+
+#: Opt-in for a real robot's ROS graph to reach beyond this host
+#: (``ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`` / ``SYSTEM_DEFAULT`` or
+#: ``ROS_STATIC_PEERS``). Without it ``confine_real_scope`` refuses: every
+#: host that can discover the graph can command the arm (see module docstring).
+ALLOW_NETWORK_ROS_ENV: Final[str] = "OPENRAL_ALLOW_NETWORK_ROS"
+
+#: Domains a real robot is hashed into. Upper bound 101: on Linux, domains
+#: 102-232 collide with the default ephemeral port range (ROS 2 "The ROS_DOMAIN_ID"
+#: concept page). Below 10 is skipped (0 = unset, small values are what people
+#: pick by hand), and the sim's domain is skipped so a twin never lands on it.
+_REAL_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in range(10, 102) if d != int(SIM_DOMAIN_ID))
+
+#: Discovery ranges that keep a graph on this host.
+_HOST_CONFINED_RANGES: Final[frozenset[str]] = frozenset({"LOCALHOST", "OFF"})
 
 #: How long the probe listens before deciding the graph is empty. DDS discovery
 #: is asynchronous: a participant that exists is not necessarily *known* the
@@ -111,6 +138,77 @@ def confine_sim_scope(env: dict[str, str]) -> None:
     """
     env.setdefault("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
     env.setdefault("ROS_DOMAIN_ID", SIM_DOMAIN_ID)
+
+
+def real_domain_id(robot_id: str) -> str:
+    """The ``ROS_DOMAIN_ID`` a real robot runs on when the operator sets none.
+
+    Stable per ``robot_id`` (SHA-256, not ``hash()``, which is salted per
+    process), in 10-101 minus the sim's domain. Two robots of the same model on
+    one host hash alike; they are told apart by the occupancy guard, and an
+    operator separates them by exporting ``ROS_DOMAIN_ID``.
+
+    Example:
+        >>> real_domain_id("openarm") == real_domain_id("openarm")
+        True
+        >>> 10 <= int(real_domain_id("openarm")) <= 101
+        True
+    """
+    digest = int.from_bytes(hashlib.sha256(robot_id.encode()).digest()[:8], "big")
+    return str(_REAL_DOMAINS[digest % len(_REAL_DOMAINS)])
+
+
+def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
+    """Keep a real robot's ROS graph on its own host and off domain 0, in place.
+
+    Defaults ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` and
+    ``ROS_DOMAIN_ID=real_domain_id(robot_id)``; an exported non-empty value of
+    either wins (an empty one is what ROS reads as unset: SUBNET, domain 0).
+    A scope that reaches other hosts (``ROS_STATIC_PEERS`` set, or a range other
+    than ``LOCALHOST`` / ``OFF``) is refused unless
+    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set, and logged as a warning when it is.
+
+    Args:
+        env: The launch environment, mutated in place. The opt-in is read from
+            it too, so the decision depends on nothing else.
+        robot_id: Seeds the default domain.
+
+    Raises:
+        ROSConfigError: A networked scope without the opt-in.
+
+    Example:
+        >>> env: dict[str, str] = {}
+        >>> confine_real_scope(env, robot_id="openarm")
+        >>> env["ROS_AUTOMATIC_DISCOVERY_RANGE"]
+        'LOCALHOST'
+    """
+    discovery = env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip().upper()
+    peers = env.get("ROS_STATIC_PEERS", "").strip()
+    networked = bool(peers) or (discovery != "" and discovery not in _HOST_CONFINED_RANGES)
+    if networked:
+        scope = f"ROS_AUTOMATIC_DISCOVERY_RANGE={discovery or '(unset)'} ROS_STATIC_PEERS={peers}"
+        if env.get(ALLOW_NETWORK_ROS_ENV) != "1":
+            raise ROSConfigError(
+                f"refusing to start a real robot on a ROS graph that reaches other hosts "
+                f"({scope}). Any host that can discover this graph can publish "
+                f"/openral/safe_action (the HAL executes it), call /openral/estop_reset, "
+                f"and spoof /joint_states or the deadman heartbeat. Unset those variables "
+                f"to keep the graph on this host (the default), or, when the graph must "
+                f"span machines on a trusted, isolated network, set "
+                f"{ALLOW_NETWORK_ROS_ENV}=1 and export the same ROS_DOMAIN_ID on every host.",
+            )
+        _log.warning(
+            "dds_scope.real_robot_graph_networked",
+            scope=scope,
+            robot_id=robot_id,
+            opt_in=ALLOW_NETWORK_ROS_ENV,
+            hazard="every host on this network can command the robot",
+        )
+    elif not discovery:
+        # Not setdefault: an exported-but-empty value means SUBNET to ROS.
+        env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+    if not env.get("ROS_DOMAIN_ID", "").strip():
+        env["ROS_DOMAIN_ID"] = real_domain_id(robot_id)
 
 
 def _probe_source() -> str:

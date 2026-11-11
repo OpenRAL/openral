@@ -2299,7 +2299,27 @@ def _ros2_argv_head() -> list[str]:
     return [sys.executable, ros2_bin]
 
 
-def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
+def _confine_launch_scope(env: dict[str, str], *, hal_mode: str, robot_id: str) -> None:
+    """Apply the DDS scope for ``hal_mode`` to ``env`` (sim and real), in place.
+
+    One place, so the orphan reap and the launch see the same domain.
+
+    Raises:
+        ROSConfigError: A real robot on a networked scope without the opt-in
+            (``openral_cli._dds_scope.confine_real_scope``).
+    """
+    from openral_cli._dds_scope import (  # reason: deferred
+        confine_real_scope,
+        confine_sim_scope,
+    )
+
+    if hal_mode == "sim":
+        confine_sim_scope(env)
+    else:
+        confine_real_scope(env, robot_id=robot_id)
+
+
+def _prepare_launch_env(*, hal_mode: str = "sim", robot_id: str = "") -> dict[str, str]:
     """Build the environment for the ``ros2 launch`` subprocess (deploy sim + deploy run).
 
     Shared by both shelling paths so the wiring stays identical:
@@ -2323,18 +2343,20 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
       ``confine_sim_scope``). A sim graph lives on
       one host; left on the default domain 0 with subnet discovery it joins
       whatever else is on the LAN, which on 2026-09-05 was a live OpenArm
-      (#227). ``deploy run`` is deliberately **not** confined — a real robot's
-      graph may legitimately span machines — and is covered by the occupancy
-      guard instead.
+      (#227). A **real robot is confined too** (``confine_real_scope``):
+      LOCALHOST + a per-robot domain, because every host that can discover
+      the graph can command the arm; spanning machines needs
+      ``OPENRAL_ALLOW_NETWORK_ROS=1``.
 
     Args:
-        hal_mode: ``"sim"`` or ``"real"``; only a sim is scope-confined.
-    """
-    from openral_cli._dds_scope import confine_sim_scope  # reason: deferred
+        hal_mode: ``"sim"`` or ``"real"``.
+        robot_id: Seeds a real robot's default ``ROS_DOMAIN_ID``.
 
+    Raises:
+        ROSConfigError: A real robot on a networked scope without the opt-in.
+    """
     env = os.environ.copy()
-    if hal_mode == "sim":
-        confine_sim_scope(env)
+    _confine_launch_scope(env, hal_mode=hal_mode, robot_id=robot_id)
     venv_site = sysconfig.get_paths()["purelib"]
     env["OPENRAL_VENV_SITE"] = venv_site
     env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
@@ -2390,7 +2412,11 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
             _console.print(f"[red]config error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-        _reap_orphans_with_log(invocation.hal_mode)
+        try:
+            _reap_orphans_with_log(invocation.hal_mode, invocation.robot_id)
+        except ROSConfigError as exc:
+            _console.print(f"[red]refusing to launch:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
 
         _preflight_palette_deps(
             repo_root=repo_root,
@@ -2427,7 +2453,18 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         ] + _vram_refused_launch_args(vram_refused)
         _console.print(f"  hal_params_tmp:{hal_params_tmp.name}")
         _console.print(f"  argv: {shlex.join(argv)}")
-        venv_env = _prepare_launch_env(hal_mode=invocation.hal_mode)
+        try:
+            venv_env = _prepare_launch_env(
+                hal_mode=invocation.hal_mode, robot_id=invocation.robot_id
+            )
+        except ROSConfigError as exc:
+            _console.print(f"[red]refusing to launch:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        _console.print(
+            f"  ros scope: ROS_DOMAIN_ID={venv_env.get('ROS_DOMAIN_ID', '0 (unset)')} "
+            f"ROS_AUTOMATIC_DISCOVERY_RANGE="
+            f"{venv_env.get('ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET (unset)')}"
+        )
         # Both directions, one rule: a sim must not start beside a robot and a
         # robot must not start beside a sim (#227). Checked against the scope
         # actually about to be used, so a confined sim sees the empty graph it
@@ -2538,7 +2575,7 @@ def _ros2_pkg_prefix(pkg: str) -> str | None:
     return out or None
 
 
-def _reap_orphans_with_log(hal_mode: str = "sim") -> None:
+def _reap_orphans_with_log(hal_mode: str = "sim", robot_id: str = "") -> None:
     """Kill orphan openral-graph processes and log the count.
 
     Reap orphan graph processes from a prior crashed/Ctrl-C'd run.
@@ -2563,11 +2600,8 @@ def _reap_orphans_with_log(hal_mode: str = "sim") -> None:
     # Only what `_graph_identity` reads (domain + checkout): `_prepare_launch_env` also
     # purges the DDS SHM and prints DDS_TRANSPORT_READY_MARKER, which must come once,
     # after this reap (#421 review).
-    from openral_cli._dds_scope import confine_sim_scope  # reason: deferred, as above
-
     env = os.environ.copy()
-    if hal_mode == "sim":
-        confine_sim_scope(env)
+    _confine_launch_scope(env, hal_mode=hal_mode, robot_id=robot_id)
     env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
     killed = _kill_orphan_openral_graph_processes(env)
     if killed:
@@ -4232,7 +4266,18 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         # shebangs on spawned nodes resolve to the venv interpreter — the
         # only one that processes .pth files via site.py at startup
         # (PYTHONPATH alone does not trigger that).
-        venv_env = _prepare_launch_env(hal_mode=invocation.hal_mode)
+        try:
+            venv_env = _prepare_launch_env(
+                hal_mode=invocation.hal_mode, robot_id=invocation.robot_id
+            )
+        except ROSConfigError as exc:
+            _console.print(f"[red]refusing to launch:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        _console.print(
+            f"  ros scope: ROS_DOMAIN_ID={venv_env.get('ROS_DOMAIN_ID', '0 (unset)')} "
+            f"ROS_AUTOMATIC_DISCOVERY_RANGE="
+            f"{venv_env.get('ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET (unset)')}"
+        )
         # Both directions, one rule — see the twin call in
         # ``run_launch_invocation``. Runs against ``venv_env`` because that is
         # the scope the launch will actually use (#227).
