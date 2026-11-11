@@ -224,7 +224,11 @@ _SIDECAR_ENV_PREFIXES = (
     "TORCH", "TRITON_", "NCCL_", "ROS_", "AMENT_", "COLCON_", "OPENRAL_", "UV_",
     "OMNI_", "ISAAC", "CARB_", "KIT_", "VK_", "MESA_", "QT_", "__GLX_", "__NV_", "__EGL_",
 )  # fmt: skip
-_CREDENTIAL_MARKERS = ("API_KEY", "APIKEY", "SECRET", "PASSWORD", "TOKEN", "CREDENTIAL")
+# A credential marker is a whole ``_``-separated word, so OPENRAL_REASONER_MAX_TOKENS
+# (a budget, not a secret) is not caught by TOKEN.
+_CREDENTIAL_NAME = re.compile(
+    r"(?:^|_)(?:API_?KEY|ACCESS_KEY|PRIVATE_KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)"
+)
 
 
 def sidecar_env(environ: Mapping[str, str], *, extra: Iterable[str] = ()) -> dict[str, str]:
@@ -233,9 +237,9 @@ def sidecar_env(environ: Mapping[str, str], *, extra: Iterable[str] = ()) -> dic
     Keeps the runtime basics (``PATH``, ``HOME``, locale, ``CUDA_*`` / ``NVIDIA_*``,
     ``HF_*`` caches, ``PYTHON*``, ``ROS_*``, ``OPENRAL_*``, ``UV_*``, …) and drops
     everything else, so ``*_API_KEY`` / ``ANTHROPIC_*`` / ``OPENAI_*`` and other
-    operator secrets never reach a remote-code process. A name containing a
-    credential marker (``API_KEY``, ``SECRET``, ``TOKEN``, …) is dropped even when
-    a prefix matches; ``HF_TOKEN`` is the one deliberate exception (gated weight
+    operator secrets never reach a remote-code process. A name with a credential
+    word (``API_KEY``, ``SECRET``, ``TOKEN``, … as a whole ``_``-separated word) is
+    dropped even when a prefix matches; ``HF_TOKEN`` is the one deliberate exception (gated weight
     downloads). ``extra`` names further variables a particular sidecar needs.
 
     Example:
@@ -249,7 +253,7 @@ def sidecar_env(environ: Mapping[str, str], *, extra: Iterable[str] = ()) -> dic
         if name in wanted:
             return True
         upper = name.upper()
-        if any(marker in upper for marker in _CREDENTIAL_MARKERS):
+        if _CREDENTIAL_NAME.search(upper):
             return False
         return name.startswith(_SIDECAR_ENV_PREFIXES)
 

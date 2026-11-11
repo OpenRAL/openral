@@ -112,6 +112,19 @@ def test_sidecar_env_drops_credentials_keeps_runtime() -> None:
     assert sidecar_env(environ, extra=["RANDOM_TOOL_VAR"])["RANDOM_TOOL_VAR"] == "x"
 
 
+def test_credential_words_match_whole_words_only() -> None:
+    """A *_TOKENS budget is config, not a secret; a *_TOKEN still is."""
+    env = sidecar_env(
+        {
+            "OPENRAL_REASONER_MAX_TOKENS": "4096",
+            "OPENRAL_HUB_TOKEN": "t",
+            "OPENRAL_SECRET_KEY": "s",
+            "OPENRAL_APIKEY": "k",
+        }
+    )
+    assert env == {"OPENRAL_REASONER_MAX_TOKENS": "4096"}
+
+
 def test_isolated_env_never_carries_the_reasoner_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-openral")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
