@@ -25,9 +25,16 @@
 # Run::
 #
 #     openral deploy sim --config scenes/deploy/isaac_openamrobot_v2_warehouse.yaml \
-#       --no-enable-octomap --hal viewer_enabled=false
+#       --hal viewer_enabled=false
+#
+# The voxel map is on: octomap maps the head ZED's back-projected depth
+# (/openral/cameras/head_zed/points), so the shelves reach the world model, the
+# safety kernel's voxel check and the robot console's 3D view.
 
 robot_id: "openamrobot_v2"
+
+runtime:
+  enable_octomap: true
 
 base_pose:
   xyz: [-4.8, 0.0, 0.0]

@@ -64,7 +64,9 @@ normalised:
   `/scan` published missed beams as `+inf`, the map under-counted travel by ~14 %
   (3.72 m mapped, 4.31 m driven) and Nav2 overshot, as it did in the Isaac aisle.
 - **Isaac Sim:** run `scenes/deploy/isaac_openamrobot_v2_warehouse.yaml`, which
-  places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`.
+  places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`. The scene
+  runs with the voxel map on: octomap maps the head ZED's depth, so the shelves reach
+  the safety kernel's voxel check and the robot console's 3D view.
 
 ## Head camera
 
