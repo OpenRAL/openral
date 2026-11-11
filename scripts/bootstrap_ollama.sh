@@ -24,9 +24,10 @@ set -euo pipefail
 # the moving ollama.com/install.sh), checked against OLLAMA_INSTALL_SH_SHA256,
 # and told to install exactly OLLAMA_VERSION. Bump both together: download
 # https://raw.githubusercontent.com/ollama/ollama/v<ver>/scripts/install.sh,
-# review it, and pin its `sha256sum`. Empty = refuse to install (fail closed).
+# review it, and pin its `sha256sum`. Empty or a mismatch = refuse (fail closed).
 OLLAMA_VERSION="${OLLAMA_VERSION:-0.32.14}"
-OLLAMA_INSTALL_SH_SHA256="${OLLAMA_INSTALL_SH_SHA256:-}"  # TODO(maintainer): pin for v0.32.14
+# sha256 of v0.32.14's scripts/install.sh, computed from the tag on 2026-11-11.
+OLLAMA_INSTALL_SH_SHA256="${OLLAMA_INSTALL_SH_SHA256:-25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f}"
 
 MODEL="qwen3:8b"
 DO_PULL=1
