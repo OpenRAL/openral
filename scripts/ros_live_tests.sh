@@ -68,6 +68,8 @@ TARGETS=(
     # shoulder block is refused as a self hit naming openarm_body_link0, and
     # the rest pose (pedestals inside the torso, SRDF-exempt) is accepted.
     tests/integration/test_safety_kernel_openarm_torso.py
+    # #499 / hazard-log Entry 077: the Metal manifests' folded poses stop the real kernel.
+    tests/integration/test_safety_kernel_makermods_metal.py
     # Issue #373: the real kernel's external-torque observer on the MuJoCo OpenArm
     # (lowered force_observer model): no stop in free motion, a stop on a push
     # and on a deliberate arm/box collision. Needs mujoco in the venv.
