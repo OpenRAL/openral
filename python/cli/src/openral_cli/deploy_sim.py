@@ -1397,11 +1397,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # (issue #467); refuse here first, before any pre-launch work.
     # A robot linked to openral.com picks up its account settings (e.g. the reasoner's API
     # key) before anything reads the environment; variables already set win.
-    # The robot console's own settings come first, so they win over the account's.
-    from openral_cli.robot import apply_account_settings, apply_console_settings
+    from openral_cli.robot import apply_reasoner_settings
 
-    apply_console_settings(echo=_console.print)
-    apply_account_settings(echo=_console.print)
+    apply_reasoner_settings(echo=_console.print)
     resolve_unit_identity(robot_yaml, scene_unit, required=hal_mode == "real")
     # The same selection `resolve_sensor_overlays` made; `None` only for a robot without
     # `units/` on a real deploy (it refuses otherwise). The extrinsic preflight reads that

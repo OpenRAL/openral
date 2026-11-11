@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 
 from openral_core import (
@@ -95,13 +96,18 @@ def save_setting(name: str, value: str, path: Path | None = None) -> dict[str, s
         current[name] = value
     else:
         current.pop(name, None)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(current, fh)
-    os.chmod(tmp, 0o600)
-    tmp.replace(target)
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # A fresh, exclusive, never-symlinked temp file in the same folder, then an atomic rename:
+    # no partial file, no write through a planted link, no shared name between two writers.
+    tmp = target.with_name(f".{target.name}.{secrets.token_hex(8)}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(current, fh)
+        tmp.replace(target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return current
 
 

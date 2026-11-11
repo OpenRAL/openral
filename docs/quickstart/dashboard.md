@@ -134,8 +134,10 @@ edits the reasoner's Anthropic and OpenAI API keys and its model in place. On op
 it edits your account's and your org's settings (above). On the robot it edits the robot's
 own (`robot-settings.json` beside the enrolment, 0600), which only the operator at the
 robot can change (read-only from the LAN, never over the tunnel); a secret only ever shows
-as `set …abcd`. A deploy applies them at start: a variable already set wins, then the
-robot's own settings, then the account's.
+as `set …abcd`. A deploy applies them at start: a variable already set wins; when the
+robot's own settings choose a model, the account's reasoner settings are not applied at
+all (so the robot's key never goes to an endpoint the account names); otherwise the
+account's apply.
 
 Manage the service like any user unit:
 

@@ -1192,13 +1192,13 @@ _The robot dashboard's routes (ADR-0129). One app behind two listeners; `_gate` 
 ### `python/observability/src/openral_observability/dashboard/robot_settings.py`
 _The reasoner settings the operator sets in the robot console (ADR-0129): the Anthropic/OpenAI API keys and the model, the same three settings openral.com's Account → Settings holds, in the same `GET`/`PUT /api/settings` shape. Kept in `robot-settings.json` beside the enrolment (0600); a deploy applies them at start (`openral_cli.robot.apply_console_settings`). Secrets never leave the module in the clear._
 
-- `MODEL_SETTING: str` (L38) — `"OPENRAL_REASONER_MODEL"`.
-- `SETTINGS: dict[str, dict[str, object]]` (L41) — name → `{label, secret, options?}`; the model's options are `openral_core.reasoner_model_options()`.
-- `settings_path() -> Path` (L54) — `robot-settings.json` beside `openral_core.enrolment_path()`.
-- `load_settings(path=None) -> dict[str, str]` (L59) — The saved settings (known names, non-empty strings); `{}` when none or unreadable.
-- `save_setting(name, value, path=None) -> dict[str, str]` (L70) — Set (`""` clears) one setting, written atomically at mode 0600. Raises `ValueError` on an unknown name, a value over 4096 characters, or an uncurated model.
-- `shown(values) -> dict[str, dict[str, object]]` (L108) — What the pane may see: a secret as `{set, hint: "…<last 4>"}`, the model as `{set, value}`.
-- `reasoner_env(values) -> dict[str, str]` (L127) — The reasoner's variables from the saved settings, as openral.com's `robotEnv`: the model, its provider's key as `OPENRAL_REASONER_API_KEY`, and `OPENRAL_REASONER_ENDPOINT=openai` for an OpenAI model; `{}` without a curated model.
+- `MODEL_SETTING: str` (L39) — `"OPENRAL_REASONER_MODEL"`.
+- `SETTINGS: dict[str, dict[str, object]]` (L42) — name → `{label, secret, options?}`; the model's options are `openral_core.reasoner_model_options()`.
+- `settings_path() -> Path` (L55) — `robot-settings.json` beside `openral_core.enrolment_path()`.
+- `load_settings(path=None) -> dict[str, str]` (L60) — The saved settings (known names, non-empty strings); `{}` when none or unreadable.
+- `save_setting(name, value, path=None) -> dict[str, str]` (L71) — Set (`""` clears) one setting, written atomically at mode 0600. Raises `ValueError` on an unknown name, a value over 4096 characters, or an uncurated model.
+- `shown(values) -> dict[str, dict[str, object]]` (L114) — What the pane may see: a secret as `{set, hint: "…<last 4>"}`, the model as `{set, value}`.
+- `reasoner_env(values) -> dict[str, str]` (L133) — The reasoner's variables from the saved settings, as openral.com's `robotEnv`: the model, its provider's key as `OPENRAL_REASONER_API_KEY`, and `OPENRAL_REASONER_ENDPOINT=openai` for an OpenAI model; `{}` without a curated model.
 
 ### `python/observability/src/openral_observability/dashboard/bridge_relay.py`
 _Latest-wins relay for the `/ws` proxy: reads the `foxglove.websocket.v1` frames it carries and, for snapshot-type topics only, keeps just the newest unsent message per subscription, so a slow tunnel never builds a backlog. Every other frame is relayed unchanged, in order._

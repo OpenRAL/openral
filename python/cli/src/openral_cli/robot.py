@@ -361,8 +361,10 @@ def apply_console_settings(*, echo: Callable[[str], None]) -> list[str]:
     The console's settings pane saves the provider keys and the model on the robot
     (``openral_observability.dashboard.robot_settings``); a deploy maps them to the
     reasoner's variables (``reasoner_env``). A variable already in the environment wins;
-    run before :func:`apply_account_settings`, so the robot's own choice wins over its
-    openral.com account's. Returns the names it set; never raises.
+    :func:`apply_reasoner_settings` skips the account's settings altogether when this
+    sets anything, so the robot's own choice wins over its openral.com account's and the
+    robot's key is never paired with an account's endpoint. Returns the names it set;
+    never raises.
     """
     from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
 
@@ -371,6 +373,17 @@ def apply_console_settings(*, echo: Callable[[str], None]) -> list[str]:
     if applied:
         echo(f"console settings: {', '.join(sorted(applied))}")
     return sorted(applied)
+
+
+def apply_reasoner_settings(*, echo: Callable[[str], None]) -> list[str]:
+    """The reasoner settings a deploy starts with: the robot console's, else the account's.
+
+    When the console's settings choose the reasoner (a model, and its key) the account's
+    reasoner settings are not applied at all: an account's endpoint or dialect would
+    otherwise carry the robot's own key to a URL the site picked. A variable already in
+    the environment wins over both. Returns the names it set; never raises.
+    """
+    return apply_console_settings(echo=echo) or apply_account_settings(echo=echo)
 
 
 def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:

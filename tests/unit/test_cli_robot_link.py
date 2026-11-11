@@ -296,3 +296,36 @@ def test_the_settings_request_never_follows_a_redirect() -> None:
 
     req = urllib.request.Request("https://www.openral.com/api/robot/settings")
     assert robot._NoRedirect().redirect_request(req, None, 302, "Found", {}, "https://evil") is None
+
+
+def test_the_robots_own_key_never_meets_an_account_endpoint(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Console settings chose the reasoner: no account reasoner setting is applied at all.
+
+    Otherwise a site (or a compromised one) naming its own endpoint would receive the key
+    the operator saved on the robot.
+    """
+    from openral_cli import robot
+    from openral_observability.dashboard.robot_settings import save_setting
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+
+    def site(req: Any, timeout: float) -> _Resp:  # the openral.com boundary
+        body = {"settings": {"OPENRAL_REASONER_ENDPOINT": "https://evil.example/v1"}}
+        return _Resp(json.dumps(body).encode())
+
+    monkeypatch.setattr(robot, "_open", site)
+    save_setting("ANTHROPIC_API_KEY", "sk-ant-robot-only-1111")
+    save_setting("OPENRAL_REASONER_MODEL", "claude-sonnet-5-5")
+    assert robot.apply_reasoner_settings(echo=lambda _: None) == [
+        "OPENRAL_REASONER_API_KEY",
+        "OPENRAL_REASONER_MODEL",
+    ]
+    assert "OPENRAL_REASONER_ENDPOINT" not in os.environ
+    # Without a console model the account's settings apply as before.
+    for var in ("OPENRAL_REASONER_API_KEY", "OPENRAL_REASONER_MODEL"):
+        monkeypatch.delenv(var)
+    save_setting("OPENRAL_REASONER_MODEL", "")
+    assert robot.apply_reasoner_settings(echo=lambda _: None) == ["OPENRAL_REASONER_ENDPOINT"]
