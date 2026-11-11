@@ -2,13 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import { modelProblem, shownValue } from "./lib/settings.js";
 
 // Settings, opened from the left pane's ⋯ menu: the reasoner's provider API keys
-// (Anthropic, OpenAI) and its model. On the website these are the account's and the
-// org's settings (GET/PUT /api/settings, the same rules as the account page: only an
-// org admin writes the org's, a secret only ever comes back as "set …abcd"); robots
-// read them when a deploy starts. On the robot itself there is no account: the pane
-// says where they are set and which model this deploy runs.
-function Scope({ which }) {
-  const url = `/api/settings?scope=${which}`;
+// (Anthropic, OpenAI) and its model, edited in place. On the website these are the
+// account's and the org's settings (the site's GET/PUT /api/settings: only an org admin
+// writes the org's); on the robot they are the robot's own (the robot's /api/settings,
+// written only by the operator at the robot). Either way a secret only ever comes back
+// as "set …abcd", and robots use the values from their next deploy start.
+const TITLES = { org: "Organization", me: "Your own robot", robot: "This robot" };
+const NOTES = {
+  org: "Your organization's robots read these when a deploy starts; a value set on the robot itself wins.",
+  me: "The robot on your own account reads these when a deploy starts; a value set on the robot itself wins.",
+  robot: "This robot uses these from its next deploy start. They win over its openral.com account's settings; an environment variable set on the robot wins over both.",
+};
+
+function Scope({ which, url = `/api/settings?scope=${which}` }) {
   const [data, setData] = useState(null);
   const [draft, setDraft] = useState({});
   const [msg, setMsg] = useState({ text: "", kind: "" });
@@ -41,11 +47,11 @@ function Scope({ which }) {
   if (!data || data.scope !== which) return null; // no org: only your own
   const problem = modelProblem(data);
   return (
-    <section className="set-scope" aria-label={which === "org" ? "Organization" : "Your own robot"}>
-      <h3>{which === "org" ? "Organization" : "Your own robot"}</h3>
+    <section className="set-scope" aria-label={TITLES[which]}>
+      <h3>{TITLES[which]}</h3>
       <p className="set-note">
-        {which === "org" ? "Your organization's robots" : "The robot on your own account"} read these when a deploy starts; a value
-        set on the robot itself (an environment variable) wins.{data.canWrite ? "" : " Only an org admin can change them."}
+        {NOTES[which]}
+        {data.canWrite ? "" : which === "org" ? " Only an org admin can change them." : " Only the operator at the robot can change them."}
       </p>
       {Object.entries(data.settings).map(([name, s]) => {
         const v = data.values[name];
@@ -53,9 +59,14 @@ function Scope({ which }) {
           const isSet = (n) => Boolean(data.values[n]?.set);
           const chosen = s.options.find((o) => o.id === v?.value);
           return (
-            <label key={name} className="set-row">
+            <div key={name} className="set-row">
               <span className="set-label">{s.label}</span>
-              <select value={chosen ? chosen.id : ""} disabled={!data.canWrite} onChange={(e) => save(name, e.target.value)}>
+              <select
+                value={chosen ? chosen.id : ""}
+                disabled={!data.canWrite}
+                onChange={(e) => save(name, e.target.value)}
+                aria-label={s.label}
+              >
                 <option value="" disabled>
                   Choose a model
                 </option>
@@ -71,7 +82,7 @@ function Scope({ which }) {
                   {problem}
                 </small>
               )}
-            </label>
+            </div>
           );
         }
         return (
@@ -141,18 +152,14 @@ export function SettingsPane({ onWebsite, reasonerModel, onClose }) {
           <Scope which="me" />
         </>
       ) : (
-        <div className="set-scope">
-          <p className="set-note">
-            This robot reads its reasoner's API key and model when a deploy starts: from your account's or organization's settings
-            on openral.com (Account → Settings) once the robot is linked, or from environment variables on the robot
-            (<code>OPENRAL_REASONER_MODEL</code>, <code>OPENRAL_REASONER_API_KEY</code>), which win.
-          </p>
+        <>
+          <Scope which="robot" url="/api/settings" />
           <div className="set-row">
             <span className="set-label">
-              Model in use <span className="set-value">{reasonerModel || "no reasoner tick yet"}</span>
+              Model this deploy runs <span className="set-value">{reasonerModel || "no reasoner tick yet"}</span>
             </span>
           </div>
-        </div>
+        </>
       )}
     </section>
   );

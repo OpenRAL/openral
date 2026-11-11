@@ -129,6 +129,14 @@ the robot at every deploy start: the link stored the robot's own credential
 (`settings.json`, 0600) for offline starts, and puts them in the environment. A variable
 already set on the robot wins.
 
+**Settings in the console.** The console's left pane (⋯ next to your name → **Settings**)
+edits the reasoner's Anthropic and OpenAI API keys and its model in place. On openral.com
+it edits your account's and your org's settings (above). On the robot it edits the robot's
+own (`robot-settings.json` beside the enrolment, 0600), which only the operator at the
+robot can change (read-only from the LAN, never over the tunnel); a secret only ever shows
+as `set …abcd`. A deploy applies them at start: a variable already set wins, then the
+robot's own settings, then the account's.
+
 Manage the service like any user unit:
 
 ```bash

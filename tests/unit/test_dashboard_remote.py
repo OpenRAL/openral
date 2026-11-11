@@ -575,3 +575,20 @@ def test_viz_tickets_are_capped_oldest_first() -> None:
     assert tickets.expires_at(issued[0]) is None  # evicted
     assert tickets.expires_at(issued[-1]) is not None
     assert len(tickets._tickets) == VizTickets.MAX
+
+
+@pytest.mark.asyncio
+async def test_the_tunnel_never_reaches_the_robots_own_settings(
+    issuer: FakeIssuer, tmp_path: Path
+) -> None:
+    """openral.com keeps its own settings; the robot's (its API keys) stay at the robot."""
+    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
+    async with _remote(app) as client:
+        token = issuer.mint(role="operator")
+        assert (await client.get("/api/settings", headers=_auth(token))).status_code == 403
+        put = await client.put(
+            "/api/settings",
+            json={"name": "ANTHROPIC_API_KEY", "value": "sk-ant-x"},
+            headers={**_auth(token), "Origin": _SITE},
+        )
+        assert put.status_code == 403

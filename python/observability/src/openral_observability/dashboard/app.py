@@ -80,6 +80,12 @@ from openral_observability.dashboard.remote_auth import (
     bearer,
     is_remote,
 )
+from openral_observability.dashboard.robot_settings import (
+    SETTINGS,
+    load_settings,
+    save_setting,
+    shown,
+)
 from openral_observability.dashboard.store import TelemetryStore
 from openral_observability.dashboard.ui_assets import ui_dir
 
@@ -837,6 +843,17 @@ def _served_manifest(manifest: RobotManifest, principal: Principal) -> dict[str,
     return served.model_dump(mode="json", by_alias=True)
 
 
+def _settings_body(principal: Principal) -> dict[str, object]:
+    """``GET /api/settings``: openral.com's settings shape, for this robot's own file."""
+    return {
+        "scope": "robot",
+        "canWrite": principal.mode == "local"
+        and ROLE_RANK[principal.role] >= ROLE_RANK["operator"],
+        "settings": SETTINGS,
+        "values": shown(load_settings()),
+    }
+
+
 def _action_refusal(action: ManifestAction, principal: Principal) -> str | None:
     """Why ``principal`` may not run ``action`` (ADR-0129 §6), or ``None``."""
     if action.kind == "estop":
@@ -1335,6 +1352,46 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
                 "robots": [r.model_dump() for r in discovery.robots()],
             }
         )
+
+    @app.get("/api/settings")
+    async def get_settings(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # The reasoner settings kept on this robot (robot_settings): never over the tunnel
+        # (openral.com has its own), secrets only as "set ...abcd".
+        principal: Principal = request.state.principal
+        if principal.mode == "remote":
+            return _error(403, "this robot's own settings are set at the robot")
+        return JSONResponse(_settings_body(principal))
+
+    @app.put("/api/settings")
+    async def put_setting(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        principal: Principal = request.state.principal
+        if principal.mode != "local" or ROLE_RANK[principal.role] < ROLE_RANK["operator"]:
+            _logger.warning(
+                "dashboard_write_attempt",
+                operation="settings",
+                outcome="denied",
+                reason="settings are set by the local operator",
+                mode=principal.mode,
+                role=principal.role,
+            )
+            return _error(403, "only the operator at the robot can change its settings")
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "expected JSON {name, value}")
+        name = body.get("name") if isinstance(body, dict) else None
+        value = body.get("value", "") if isinstance(body, dict) else None
+        if not isinstance(name, str) or not isinstance(value, str):
+            return _error(400, "expected JSON {name, value}")
+        try:
+            save_setting(name, value)
+        except ValueError as exc:
+            return _error(400, str(exc))
+        except OSError as exc:
+            return _error(500, f"could not save the setting: {exc.strerror or exc}")
+        # Audited without the value.
+        _logger.info("dashboard.setting_written", name=name, cleared=not value.strip())
+        return JSONResponse(_settings_body(principal))
 
     @app.get("/api/config")
     async def get_config(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]

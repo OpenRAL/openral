@@ -355,6 +355,24 @@ ACCOUNT_SETTINGS = frozenset(
 switches: those stay on the robot (ADR-0129, Safety-WG), whatever the site sends."""
 
 
+def apply_console_settings(*, echo: Callable[[str], None]) -> list[str]:
+    """Put the reasoner settings set in this robot's console into ``os.environ``.
+
+    The console's settings pane saves the provider keys and the model on the robot
+    (``openral_observability.dashboard.robot_settings``); a deploy maps them to the
+    reasoner's variables (``reasoner_env``). A variable already in the environment wins;
+    run before :func:`apply_account_settings`, so the robot's own choice wins over its
+    openral.com account's. Returns the names it set; never raises.
+    """
+    from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
+
+    applied = {k: v for k, v in reasoner_env(load_settings()).items() if k not in os.environ}
+    os.environ.update(applied)
+    if applied:
+        echo(f"console settings: {', '.join(sorted(applied))}")
+    return sorted(applied)
+
+
 def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
     """Put this robot's openral.com account settings into ``os.environ`` (ADR-0129).
 
