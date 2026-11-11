@@ -30,7 +30,7 @@ def _import_launch_module() -> ModuleType:
     return module
 
 
-def _lowered(robot: str) -> tuple[object, dict[str, object], list[str]]:
+def _lowered(robot: str) -> tuple[object, dict[str, object], list[object]]:
     mujoco = pytest.importorskip("mujoco")
     pytest.importorskip("openral_safety")
     from openral_core import RobotDescription
@@ -46,7 +46,7 @@ def _lowered(robot: str) -> tuple[object, dict[str, object], list[str]]:
         pytest.skip(f"{robot} MJCF unavailable: {exc}")
     model = mujoco.MjModel.from_xml_path(str(path))
     names = [j.name for j in desc.joints]
-    return model, lower_collision_params(model, names, margin_m=0.0), names
+    return model, lower_collision_params(model, names, margin_m=0.0), list(desc.joints)
 
 
 def test_a_planar_base_on_one_body_is_refused() -> None:
@@ -54,6 +54,9 @@ def test_a_planar_base_on_one_body_is_refused() -> None:
     model, lowered, names = _lowered("openamrobot_v2")
     mismatches = mod._mjcf_dof_mismatches(model, lowered, names)
     assert any("base_x" in m and "one body" in m for m in mismatches)
+    # The arms are judged through the manifest's sim_joint_name (left_joint1 is
+    # openarm_left_joint1 in the MJCF): the link that read base_yaw is named.
+    assert any(m.startswith("openarm_left_link1: joint openarm_left_joint1") for m in mismatches)
 
 
 def test_a_consistent_lowering_is_kept() -> None:

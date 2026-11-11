@@ -41,7 +41,8 @@ this package is the Python seam around it.
   `mjcf_lowering` numbers links by movable-joint order, one joint per body, so
   `openral deploy` refuses its result (and keeps the manifest's name-indexed
   model, loudly) when a body carries several joints (a planar base) or an MJCF
-  joint named like a manifest joint lands on another column
+  joint named like a manifest joint (its `sim_joint_name`, else its `name`) lands
+  on another column
   (`deploy_e2e.launch.py::_mjcf_dof_mismatches`; refused today: OpenAMRobot 2.0,
   Unitree H2).
 * **`dynamics_lowering`** (`openral_safety/dynamics_lowering.py`) — offline

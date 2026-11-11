@@ -74,7 +74,7 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from launch import LaunchDescriptionEntity
     from launch.actions import IncludeLaunchDescription
-    from openral_core import RobotDescription, SafetyEnvelope, SensorSpec
+    from openral_core import JointSpec, RobotDescription, SafetyEnvelope, SensorSpec
     from openral_hal.resolver import UrdfJointMap
 from lifecycle_msgs.msg import Transition
 from openral_core import (
@@ -828,7 +828,7 @@ class _ReachModel:
 def _mjcf_dof_mismatches(
     model: Any,  # reason: mujoco.MjModel has no type stubs
     lowered: dict[str, object],
-    joint_names: list[str],
+    joints: list[JointSpec],
 ) -> list[str]:
     """Where an MJCF lowering's ``collision_dof_index`` disagrees with the manifest by name.
 
@@ -837,16 +837,17 @@ def _mjcf_dof_mismatches(
     ``shoulder_pan``). That ordinal drifts when a body carries several joints (a planar
     base: x, y, yaw on one body) or when a movable joint is not a commanded column (a
     mimic finger): every later link then reads another joint's angle in the kernel's FK.
-    Where an MJCF joint IS named like a manifest joint, its link must read that column;
-    a body with several hinge/slide joints cannot be represented at all. Joints with no
-    manifest namesake are not judged (the ordinal mapping is the contract there).
+    Where an MJCF joint IS named like a manifest joint (its ``sim_joint_name``, the
+    manifest's own name for it in the MJCF, else its ``name``), its link must read that
+    column; a body with several hinge/slide joints cannot be represented at all. Joints
+    with no manifest namesake are not judged (the ordinal mapping is the contract there).
 
     Returns:
         One line per disagreement; empty when the lowering is consistent.
     """
     import mujoco as mj
 
-    index = {name: i for i, name in enumerate(joint_names)}
+    index = {j.sim_joint_name or j.name: i for i, j in enumerate(joints)}
     dof = cast("list[int]", lowered.get("collision_dof_index", []))
     movable = (int(mj.mjtJoint.mjJNT_HINGE), int(mj.mjtJoint.mjJNT_SLIDE))
     by_body: dict[int, list[str]] = {}
@@ -2859,7 +2860,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # that would silently DISABLE self-collision, so keep the manifest's
             # hand-authored capsules + ACM instead.
             mismatches = (
-                _mjcf_dof_mismatches(model, mjcf_params, [j.name for j in description.joints])
+                _mjcf_dof_mismatches(model, mjcf_params, list(description.joints))
                 if mjcf_params.get("self_collision_enabled")
                 else []
             )
