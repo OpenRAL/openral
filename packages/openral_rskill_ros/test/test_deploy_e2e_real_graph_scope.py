@@ -70,6 +70,13 @@ def test_a_host_confined_or_opted_in_real_hal_launches(
     launch_module._require_host_confined_real_graph("real", env)
 
 
+@pytest.mark.parametrize("hal_mode", ["hardware", "Real", "rael"])
+def test_any_non_sim_mode_is_checked(launch_module: ModuleType, hal_mode: str) -> None:
+    """Fail closed: the launch composes the hardware path for every non-"sim" value."""
+    with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_NETWORK_ROS"):
+        launch_module._require_host_confined_real_graph(hal_mode, {})
+
+
 def test_a_sim_is_not_checked(launch_module: ModuleType) -> None:
     """Sims are confined by ``openral deploy sim``; this gate is for real HALs."""
     launch_module._require_host_confined_real_graph(

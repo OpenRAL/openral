@@ -2186,9 +2186,10 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
     is SUBNET to ROS and is refused here. ``OPENRAL_ALLOW_NETWORK_ROS=1`` opts in.
 
     Raises:
-        ROSConfigError: ``hal_mode == "real"`` on a networked scope without the opt-in.
+        ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in.
     """
-    if hal_mode != "real":
+    # Fail closed: the rest of the launch treats every non-"sim" value as hardware.
+    if hal_mode == "sim":
         return
     from openral_core.ros_graph_scope import require_host_confined_ros_scope
 

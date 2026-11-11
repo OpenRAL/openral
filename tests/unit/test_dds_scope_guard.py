@@ -136,6 +136,13 @@ class TestConfineRealScope:
         assert "/openral/safe_action" in str(excinfo.value)
         assert env == scope, "a refusal must leave the env untouched"
 
+    def test_opted_in_static_peers_still_default_the_range_to_localhost(self) -> None:
+        """Peers alone leave the range unset, which ROS reads as SUBNET (the whole LAN)."""
+        env = {"ROS_STATIC_PEERS": "10.0.0.5", _dds_scope.ALLOW_NETWORK_ROS_ENV: "1"}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_STATIC_PEERS"] == "10.0.0.5"
+
     def test_the_legacy_localhost_only_flag_is_host_confined(self) -> None:
         """rcl (Jazzy) lets ROS_LOCALHOST_ONLY=1 override the range and the static
         peers ("will be ignored"), so the graph is host-confined: no refusal."""

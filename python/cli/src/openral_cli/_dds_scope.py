@@ -211,11 +211,9 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
         'LOCALHOST'
     """
     localhost_only = env.get("ROS_LOCALHOST_ONLY", "").strip() == "1"
-    defaulted = (
-        not localhost_only
-        and not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip()
-        and not env.get("ROS_STATIC_PEERS", "").strip()
-    )
+    # Static peers do not replace the range: unset is still SUBNET to ROS, so the
+    # LOCALHOST default applies with or without them (LOCALHOST + one peer).
+    defaulted = not localhost_only and not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip()
     # The default first, on a copy, so a refusal leaves `env` untouched. Not
     # setdefault: an exported-but-empty value means SUBNET to ROS.
     scoped = {**env, "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"} if defaulted else env

@@ -2315,8 +2315,33 @@ def _confine_launch_scope(env: dict[str, str], *, hal_mode: str, robot_id: str) 
 
     if hal_mode == "sim":
         confine_sim_scope(env)
+    elif not robot_id:
+        # The default domain is hashed from it: "" would reap / launch on another one.
+        raise ROSConfigError(f"hal_mode={hal_mode!r} needs the robot id to scope its ROS graph")
     else:
         confine_real_scope(env, robot_id=robot_id)
+
+
+def _print_ros_scope(env: Mapping[str, str]) -> None:
+    """Print the launch's ROS scope and what another terminal must export to join it.
+
+    ``openral prompt`` / ``openral estop reset`` run ``rclpy`` on their own shell's
+    environment, so on a confined graph they reach the robot only with the same
+    ``ROS_DOMAIN_ID`` and discovery range.
+    """
+    domain = env.get("ROS_DOMAIN_ID", "")
+    discovery = env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "")
+    _console.print(
+        f"  ros scope: ROS_DOMAIN_ID={domain or '0 (unset)'} "
+        f"ROS_AUTOMATIC_DISCOVERY_RANGE={discovery or 'SUBNET (unset)'}"
+    )
+    if domain or discovery:
+        exports = " ".join(
+            f"{k}={v}"
+            for k, v in (("ROS_DOMAIN_ID", domain), ("ROS_AUTOMATIC_DISCOVERY_RANGE", discovery))
+            if v
+        )
+        _console.print(f"  other terminals (openral prompt / estop reset): export {exports}")
 
 
 def _prepare_launch_env(*, hal_mode: str = "sim", robot_id: str = "") -> dict[str, str]:
@@ -2460,11 +2485,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         except ROSConfigError as exc:
             _console.print(f"[red]refusing to launch:[/red] {exc}")
             raise typer.Exit(code=1) from exc
-        _console.print(
-            f"  ros scope: ROS_DOMAIN_ID={venv_env.get('ROS_DOMAIN_ID', '0 (unset)')} "
-            f"ROS_AUTOMATIC_DISCOVERY_RANGE="
-            f"{venv_env.get('ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET (unset)')}"
-        )
+        _print_ros_scope(venv_env)
         # Both directions, one rule: a sim must not start beside a robot and a
         # robot must not start beside a sim (#227). Checked against the scope
         # actually about to be used, so a confined sim sees the empty graph it
@@ -4273,11 +4294,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         except ROSConfigError as exc:
             _console.print(f"[red]refusing to launch:[/red] {exc}")
             raise typer.Exit(code=1) from exc
-        _console.print(
-            f"  ros scope: ROS_DOMAIN_ID={venv_env.get('ROS_DOMAIN_ID', '0 (unset)')} "
-            f"ROS_AUTOMATIC_DISCOVERY_RANGE="
-            f"{venv_env.get('ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET (unset)')}"
-        )
+        _print_ros_scope(venv_env)
         # Both directions, one rule — see the twin call in
         # ``run_launch_invocation``. Runs against ``venv_env`` because that is
         # the scope the launch will actually use (#227).
