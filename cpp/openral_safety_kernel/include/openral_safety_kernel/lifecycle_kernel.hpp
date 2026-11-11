@@ -420,6 +420,7 @@ private:
   // `ros2 param set` on a running kernel (joint_velocity_max, workspace_box_*,
   // ...) would otherwise be re-read on the next configure. `params_locked_`
   // latches on cleanup so cleanup -> set -> configure cannot relax them either.
+  // Declaring a new parameter (an exemption provider's own) stays allowed.
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_guard_;
   bool params_locked_{false};
 

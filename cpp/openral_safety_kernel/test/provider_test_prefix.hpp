@@ -50,7 +50,7 @@ inline void serve_test_providers() {
   for (const char* cls :
        {"TolerateEveryPair", "WrongApiVersion", "Declines", "Throws", "Recorder",
         "RecorderReplacing", "Holder", "Releaser", "Braker", "ApiV4", "QuotesTheVerdict",
-        "UnsoundWorkspaceConfig", "BrakeWithoutContact", "MemoryReleaser"}) {
+        "UnsoundWorkspaceConfig", "BrakeWithoutContact", "MemoryReleaser", "DeclaresAParameter"}) {
     xml << "  <class name=\"" << kTestPkg << "/" << cls
         << "\" type=\"openral_safety_kernel_test::" << cls
         << "\" base_class_type=\"openral_safety_kernel::ExemptionProvider\"/>\n";

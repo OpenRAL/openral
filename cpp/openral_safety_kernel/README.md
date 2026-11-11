@@ -129,12 +129,13 @@ synthesises the envelope with `openral_safety.envelope_loader.compute_intersecti
   counters.
 
 **Parameters are fixed once configured.** An `on_set_parameters` guard
-refuses every `set_parameters` call (`ros2 param set`, the
+refuses every change to an existing parameter (`ros2 param set`, the
 `/<node>/set_parameters*` services, in-process) while the node is not
 `UNCONFIGURED`, and for ever after its first cleanup, so a limit loaded from the
 manifest (`joint_velocity_max`, `workspace_box_*`, `max_ee_speed_m_s`, …) cannot
 be relaxed over the ROS graph and picked up by the next configure. Launch
-overrides arrive at declaration and are unaffected. To change a limit, edit
+overrides arrive at declaration and are unaffected, and so is a declaration of
+a new parameter (an exemption provider declares its own during configure). To change a limit, edit
 `robot.yaml` and relaunch. Threat model:
 [`docs/reference/ros-graph-security.md`](../../docs/reference/ros-graph-security.md).
 

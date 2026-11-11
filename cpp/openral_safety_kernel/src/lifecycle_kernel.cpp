@@ -649,15 +649,23 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::int64_t>("collision_predict_max_steps", 0);
 
   // Registered after every declaration (declare_parameter runs these callbacks,
-  // and launch overrides arrive through it). Refuses any runtime change once the
-  // node has left UNCONFIGURED, or ever after a cleanup: a limit loaded from the
-  // manifest must not be relaxable over the ROS graph.
+  // and launch overrides arrive through it). Refuses any change to an existing
+  // parameter once the node has left UNCONFIGURED, or ever after a cleanup: a
+  // limit loaded from the manifest must not be relaxable over the ROS graph.
   param_guard_ =
       this->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& params) {
         rcl_interfaces::msg::SetParametersResult result;
+        // A declaration adds a parameter and cannot relax one: rclcpp runs this callback before
+        // the parameter exists, so `has_parameter` is false. The exemption provider declares its
+        // own in `initialize`, which the real state machine runs in CONFIGURING.
+        const bool declarations_only =
+            std::none_of(params.begin(), params.end(), [this](const rclcpp::Parameter& p) {
+              return this->has_parameter(p.get_name());
+            });
         result.successful =
-            !params_locked_ && this->get_current_state().id() ==
-                                   lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED;
+            declarations_only ||
+            (!params_locked_ && this->get_current_state().id() ==
+                                    lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
         if (!result.successful) {
           result.reason =
               "openral_safety_kernel parameters are fixed after configure; relaunch with new "
