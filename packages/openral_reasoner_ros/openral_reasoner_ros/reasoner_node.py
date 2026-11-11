@@ -4228,7 +4228,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     # ── §2 — automatic reward-gated task verification ──────────────
 
     def _maybe_verify_active_mission_task(  # noqa: PLR0911  # reason: linear guard clauses before the reward query
-        self, call: ExecuteRskillTool, *, traceparent: str | None, succeeded: bool = False
+        self,
+        call: ExecuteRskillTool,
+        *,
+        traceparent: str | None,
+        succeeded: bool = False,
+        dispatch_task_id: str | None = None,
+        dispatch_mission_generation: int | None = None,
     ) -> None:
         """Verify the active mission task against the reward signal after a skill returns.
 
@@ -4243,6 +4249,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         has to: a ``succeeded`` skill whose manifest sets
         ``completes_task_on_success`` completes the task, and with no reward
         monitor the per-task attempt cap still abandons it.
+
+        ``dispatch_task_id`` / ``dispatch_mission_generation`` name the task the
+        returning goal was dispatched for; when given and no longer the active task
+        (a new goal rebuilt the mission, or a decompose replaced the task, while the
+        goal ran) the result is stale and settles nothing.
         """
         mission = self._renderer.mission
         if mission is None:
@@ -4252,6 +4263,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         # Only verify the skill that was dispatched for this task.
         if active.last_rskill_id is not None and active.last_rskill_id != call.rskill_id:
+            return
+        if dispatch_mission_generation is not None and not object_query_task_is_current(
+            dispatch_task_id=dispatch_task_id,
+            dispatch_mission_generation=dispatch_mission_generation,
+            current_task_id=active.task_id,
+            current_mission_generation=self._mission_generation,
+        ):
+            self.get_logger().info(
+                f"mission: stale {call.rskill_id!r} result for task {dispatch_task_id} "
+                f"(generation {dispatch_mission_generation}) does not settle active task "
+                f"{active.task_id} (generation {self._mission_generation})",
+            )
             return
         entry = self._palette.skill(call.rskill_id)
         step = task_step_without_verifier(
@@ -5903,7 +5926,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # Reward-gated task verification §2 — runner "success" for a VLA means "ran to its
             # deadline without a controller fault", NOT "task accomplished". Verify the active
             # mission task against the reward signal before advancing.
-            self._maybe_verify_active_mission_task(call, traceparent=traceparent, succeeded=True)
+            self._maybe_verify_active_mission_task(
+                call,
+                traceparent=traceparent,
+                succeeded=True,
+                dispatch_task_id=dispatch_task_id,
+                dispatch_mission_generation=dispatch_mission_generation,
+            )
             return
         # VLM-adjudicated completion §2 — a reasoner-driven cancel (status 5, reason "reward" from
         # the reward-watcher wake, or "patience" from the patience-ceiling
@@ -5918,7 +5947,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
                 "— verifying",
             )
-            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
+            self._maybe_verify_active_mission_task(
+                call,
+                traceparent=traceparent,
+                dispatch_task_id=dispatch_task_id,
+                dispatch_mission_generation=dispatch_mission_generation,
+            )
             return
         # Typed classification for the replanning ladder — the uint8
         # ``failure_kind`` the runner stamped from the caught exception type,
@@ -5973,7 +6007,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # by the attempt cap (abandon → hand off) rather than looping forever. Canceled (status 5)
         # is operator-driven, not an attempt.
         if status == 6:
-            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
+            self._maybe_verify_active_mission_task(
+                call,
+                traceparent=traceparent,
+                dispatch_task_id=dispatch_task_id,
+                dispatch_mission_generation=dispatch_mission_generation,
+            )
 
     def _on_execute_rskill_deadline(
         self,

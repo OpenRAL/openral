@@ -161,3 +161,47 @@ def test_prompt_after_an_unverified_success_replaces_the_mission() -> None:
         assert replaced is not None and replaced.tasks[0].text == "drive back to start"
     finally:
         rclpy.try_shutdown()
+
+
+def test_a_stale_success_does_not_complete_the_goal_that_replaced_its_mission() -> None:
+    """A Nav2 success that lands after a new operator goal rebuilt the mission settles
+    nothing: the new goal's first task (no attempt yet) is not completed by it."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner.mission import MissionState
+    from rclpy.task import Future
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        first = MissionState.from_prompt("drive to x=4,y=0 in map")
+        reasoner._renderer.set_mission(first)
+        first.record_attempt(rskill_id=_NAV)
+        active = first.active()
+        assert active is not None
+        # The goal is in flight for the first mission's task ...
+        reasoner._active_dispatch_generation = 3
+        reasoner._active_dispatch_task_id = active.task_id
+        reasoner._active_dispatch_mission_generation = reasoner._mission_generation
+        # ... when the operator starts over.
+        prompt = PromptStamped()
+        prompt.header.frame_id = "dashboard"
+        prompt.text = "drive to the kitchen"
+        prompt.metadata_json = '{"new_goal": true}'
+        reasoner._on_prompt(prompt)
+        second = reasoner._renderer.mission
+        assert second is not None and second is not first
+        wrapped = ExecuteRskill.Impl.GetResultService.Response()
+        wrapped.status = 4
+        wrapped.result.success = True
+        future = Future()
+        future.set_result(wrapped)
+        reasoner._on_execute_rskill_result(
+            ExecuteRskillTool(rskill_id=_NAV), 3, b"\x00" * 16, future, None
+        )
+        assert not second.is_complete(), "a stale success completed the new goal's task"
+        assert reasoner._unverified_success is None
+    finally:
+        rclpy.try_shutdown()
