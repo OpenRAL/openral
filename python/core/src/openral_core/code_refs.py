@@ -17,9 +17,8 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import warnings
 from typing import Final
-
-import structlog
 
 from openral_core.exceptions import ROSConfigError
 
@@ -38,7 +37,22 @@ _TRUSTED_TOP_LEVEL = re.compile(r"^openral_\w+$")
 # so a manifest cannot reach an arbitrary installed module's ``__init__``.
 _ROS_INTERFACE_PACKAGE = re.compile(r"^[a-z][a-z0-9_]*_(?:msgs|srvs|interfaces)$")
 
-_log = structlog.get_logger(__name__)
+
+def _external_allowed(setting: str, ref: str, detail: str = "") -> bool:
+    """Whether the opt-in admits ``ref``; warns on every admission.
+
+    ``warnings``, not a logger: core has no logging dependency, and an unconfigured
+    structlog prints to stdout, which would corrupt a CLI's JSON output.
+    """
+    if os.environ.get(ALLOW_EXTERNAL_PLUGINS_ENV) != "1":
+        return False
+    warnings.warn(
+        f"{setting} = {ref!r}{detail} admitted outside OpenRAL's packages by "
+        f"{ALLOW_EXTERNAL_PLUGINS_ENV}=1",
+        UserWarning,
+        stacklevel=3,
+    )
+    return True
 
 
 def check_code_ref(ref: str, *, setting: str) -> str:
@@ -71,13 +85,7 @@ def check_code_ref(ref: str, *, setting: str) -> str:
     top_level = match["module"].split(".", 1)[0]
     if _TRUSTED_TOP_LEVEL.match(top_level):
         return ref
-    if os.environ.get(ALLOW_EXTERNAL_PLUGINS_ENV) == "1":
-        _log.warning(
-            "code_ref.external_plugin_allowed",
-            setting=setting,
-            ref=ref,
-            env=ALLOW_EXTERNAL_PLUGINS_ENV,
-        )
+    if _external_allowed(setting, ref):
         return ref
     raise ROSConfigError(
         f"{setting} = {ref!r} names code outside OpenRAL's packages (openral_*); "
@@ -107,13 +115,7 @@ def check_ros_interface_package(package: str, *, setting: str) -> str:
     """
     if _ROS_INTERFACE_PACKAGE.fullmatch(package):
         return package
-    if os.environ.get(ALLOW_EXTERNAL_PLUGINS_ENV) == "1":
-        _log.warning(
-            "code_ref.external_plugin_allowed",
-            setting=setting,
-            ref=package,
-            env=ALLOW_EXTERNAL_PLUGINS_ENV,
-        )
+    if _external_allowed(setting, package):
         return package
     raise ROSConfigError(
         f"{setting} = {package!r} is not a ROS interface package "
@@ -140,7 +142,7 @@ def import_code_ref(ref: str, *, setting: str) -> object:
     module_path, _, attr = ref.partition(":")
     try:
         module = importlib.import_module(module_path)
-    except ModuleNotFoundError as exc:
+    except ImportError as exc:  # absent, or an import inside it failing
         raise ROSConfigError(
             f"{setting} = {ref!r}: module {module_path!r} is not importable ({exc})."
         ) from exc
@@ -155,14 +157,7 @@ def import_code_ref(ref: str, *, setting: str) -> object:
     defined_in = getattr(obj, "__module__", None)
     if isinstance(defined_in, str) and _TRUSTED_TOP_LEVEL.match(defined_in.split(".", 1)[0]):
         return obj
-    if os.environ.get(ALLOW_EXTERNAL_PLUGINS_ENV) == "1":
-        _log.warning(
-            "code_ref.external_plugin_allowed",
-            setting=setting,
-            ref=ref,
-            defined_in=defined_in,
-            env=ALLOW_EXTERNAL_PLUGINS_ENV,
-        )
+    if _external_allowed(setting, ref, f" (defined in {defined_in!r})"):
         return obj
     raise ROSConfigError(
         f"{setting} = {ref!r} resolves to an object defined in {defined_in!r}, not in "

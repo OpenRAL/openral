@@ -168,3 +168,19 @@ def test_a_refused_code_ref_is_a_validation_error(monkeypatch: pytest.MonkeyPatc
     raw["ros_integration"]["package"] = "turtlesim"
     with pytest.raises(ValueError, match="not a ROS interface"):
         RSkillManifest.model_validate(raw)
+
+
+def test_an_import_error_inside_an_openral_module_is_a_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module that exists but fails its own import still raises the typed error."""
+    (tmp_path / "openral_broken_fixture.py").write_text("from json import not_a_name\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(ROSConfigError, match="not importable"):
+        import_code_ref("openral_broken_fixture:x", setting="hal.sim")
+
+
+def test_the_opt_in_warns_on_every_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ALLOW_EXTERNAL_PLUGINS_ENV, "1")
+    with pytest.warns(UserWarning, match=r"hal\.real = 'vendor\.hal:X' admitted"):
+        check_code_ref("vendor.hal:X", setting="hal.real")

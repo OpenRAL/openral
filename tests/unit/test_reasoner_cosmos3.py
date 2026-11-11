@@ -195,7 +195,12 @@ def test_spawn_argv_shape() -> None:
 
 @pytest.mark.parametrize(
     ("host", "bound"),
-    [("0.0.0.0", "127.0.0.1"), ("localhost", "127.0.0.1"), ("[::1]", "::1")],
+    [
+        ("0.0.0.0", "127.0.0.1"),
+        ("localhost", "localhost"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("[::1]", "::1"),
+    ],
 )
 def test_the_managed_sidecar_binds_loopback_only(host: str, bound: str) -> None:
     """vLLM serves unauthenticated: an endpoint naming 0.0.0.0 must not bind every NIC."""

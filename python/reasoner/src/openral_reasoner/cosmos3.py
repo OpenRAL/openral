@@ -90,14 +90,15 @@ _LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1", "0
 def _bind_host(hostname: str) -> str:
     """The loopback address the managed sidecar binds for a ``_LOOPBACK_HOSTS`` name.
 
-    ``::1`` keeps IPv6 loopback; everything else (``0.0.0.0``, ``localhost``) binds
-    ``127.0.0.1``, never all interfaces.
+    ``0.0.0.0`` (or no host) binds ``127.0.0.1``, never all interfaces; a loopback
+    name (``localhost``, ``127.0.0.1``, ``::1``) is bound as given, so the server
+    listens where the readiness probe and the client connect.
 
     Example:
-        >>> _bind_host("0.0.0.0"), _bind_host("::1")
-        ('127.0.0.1', '::1')
+        >>> _bind_host("0.0.0.0"), _bind_host("::1"), _bind_host("localhost")
+        ('127.0.0.1', '::1', 'localhost')
     """
-    return "::1" if hostname == "::1" else "127.0.0.1"
+    return "127.0.0.1" if hostname in ("", "0.0.0.0") else hostname
 
 
 def find_cosmos3_sidecar_script() -> Path:

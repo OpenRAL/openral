@@ -2486,10 +2486,10 @@ if _ROS2_AVAILABLE:
 
             # Re-checked although SceneComposition validated it: openral_* only.
             composer = import_code_ref(
-                composition.composer,  # type: ignore[attr-defined]
+                composition.composer,  # type: ignore[attr-defined]  # reason: composition is untyped (manifest or scene JSON model)
                 setting="composition.composer",
             )
-            xml, meshdir = composer(**composition.params)  # type: ignore[attr-defined,operator]
+            xml, meshdir = composer(**composition.params)  # type: ignore[attr-defined,operator]  # reason: import_code_ref returns object; the composer contract is (xml, meshdir)
             scene_path = meshdir.parent / f"{description.name}_composed_scene.xml"
             scene_path.write_text(xml)
             self.get_logger().info(

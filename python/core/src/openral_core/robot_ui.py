@@ -398,8 +398,19 @@ class RobotEnrolment(BaseModel):
 
 
 def _origin(url: str) -> str:
+    """``scheme://host[:port]`` lowercased, a default port (443 / 80) dropped (RFC 6454).
+
+    Example:
+        >>> _origin("https://WWW.openral.com:443/api/auth"), _origin("http://127.0.0.1:8080/x")
+        ('https://www.openral.com', 'http://127.0.0.1:8080')
+    """
     parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}".lower()
+    scheme, host = parts.scheme.lower(), (parts.hostname or "").lower()
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    port = parts.port
+    default = {"https": 443, "http": 80}.get(scheme)
+    return f"{scheme}://{host}" if port in (None, default) else f"{scheme}://{host}:{port}"
 
 
 def _trusted_issuers_override() -> tuple[str, ...] | None:

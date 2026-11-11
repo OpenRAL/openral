@@ -325,6 +325,19 @@ def test_both_openral_sites_are_trusted_issuers(monkeypatch: pytest.MonkeyPatch)
         assert parse_robot_link_code(_code({**_LINK, **fields}))[0].iss == fields["iss"]
 
 
+def test_an_explicit_default_port_is_the_same_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``https://www.openral.com:443`` is the trusted origin (RFC 6454 effective port)."""
+    monkeypatch.delenv(TRUSTED_ISSUERS_ENV, raising=False)
+    fields = {
+        "iss": "https://www.openral.com:443/api/auth",
+        "jwks": "https://WWW.openral.com/api/auth/jwks",
+    }
+    assert parse_robot_link_code(_code({**_LINK, **fields}))[0].iss == fields["iss"]
+    other_port = {**fields, "iss": "https://www.openral.com:8443/api/auth"}
+    with pytest.raises(ROSConfigError, match="trusted issuer"):
+        parse_robot_link_code(_code({**_LINK, **other_port}))
+
+
 def test_the_override_replaces_the_trusted_issuers(monkeypatch: pytest.MonkeyPatch) -> None:
     self_hosted = {
         "iss": "https://auth.acme.example/api/auth",
