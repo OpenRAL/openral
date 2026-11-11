@@ -64,7 +64,6 @@ KNOWN_GAPS: dict[str, dict[str, str]] = {
             "left_wheel_link",
             "right_wheel_link",
             "lidar_link",
-            "camera_link",
         )
     },
     "ur5e": {

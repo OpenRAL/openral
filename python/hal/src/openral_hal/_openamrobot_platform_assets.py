@@ -20,8 +20,8 @@ from openral_hal._pinned_clone import fetch_pinned_clone
 __all__ = ["ensure_openamrobot_description"]
 
 # The platform commit openamr-upperbody-sw pins in its
-# config/upstream_pins.yaml (upperbody main @ 17cf693, 2026-11-02).
-_PINNED_SHA: str = "131e500fc4e5afc9f648cbd7dbf5b416280761fb"
+# config/upstream_pins.yaml (upperbody PR #48 @ e6ab3d1, 2026-11-11: platform #126 merge).
+_PINNED_SHA: str = "713574fd2a5a9e38cde6b07c5b96ac4f380b3402"
 _REPO_URL: str = "https://github.com/openAMRobot/openamr-platform-sw.git"
 _PACKAGE_REL: str = "ros2/src/openamrobot_description"
 

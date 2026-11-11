@@ -1,16 +1,16 @@
 # RobotDescription — OpenAMRobot 2.0 (open-source mobile base + 350 mm DOLD
 # lift + two Enactic OpenArm v2.0 arms with pinch grippers). Sim-only for now.
 #
-# Source: openAMRobot/openamr-upperbody-sw @ 17cf693 (main, 2026-11-02, MIT;
+# Source: openAMRobot/openamr-upperbody-sw @ e6ab3d1 (PR #48, 2026-11-11, MIT;
 # CAD-derived geometry CERN-OHL-P-2.0). `openamrobot_v2.urdf` is its
-# `combined_robot.xacro` expanded with the defaults (column=dold_v4_350,
+# `combined_robot.xacro` expanded with the defaults (column=dold_v4_350, roadmap_masses=true,
 # base_plate=bp000, head_pitch=hp30, base_tilt=bt10, arm_package=openarm,
 # hardware_profile=mock), then normalised: the <gazebo>/<ros2_control> blocks and
 # comments dropped, the two drive wheels made fixed (the base is driven as a
 # planar body, not wheel by wheel), and the root base_footprint given a 0.1 kg
 # inertial (Isaac's converter drops a massless root and splits the robot into two
 # articulations). The xacro pins openarm_description@14ff67b and
-# openamr-platform-sw@131e500f; the meshes resolve through the pinned clones in
+# openamr-platform-sw@713574f (#126 masses); the meshes resolve through the pinned clones in
 # openral_hal.ros_package_overlay (OpenArm meshes are byte-identical at our
 # c103041 pin). Regenerate: robots/openamrobot_v2/README.md.
 #
@@ -29,11 +29,22 @@ embodiment_kind: "mobile_manipulator"
 # the platform must (ADR-0127; its legacy EKF publishes odom -> base_link until upstream's
 # TF migration to the composed model, see README "TF").
 base_frame: "base_footprint"
-# Nav2 mobile-base properties. The chassis is 0.80 x 0.43 m around base_footprint
-# (casters at x ±0.275, y ±0.215; front sensors at x 0.399). The radius encloses
-# the polygon's corners.
+# Nav2 mobile-base properties: upstream's own Nav2 footprint (openamr-platform-sw
+# @ 713574f, openamrobot_nav2/config/nav2_params.yaml, both costmaps; rear edge per
+# the 2026-10-12 chassis decision), an octagon 0.805 x 0.58 m with chamfered
+# corners. It is given in base_link, which sits straight above base_footprint
+# (z offset only), so it carries over unchanged. The radius encloses its corners
+# (farthest: 0.456 m at x 0.415, y ±0.19).
 footprint_radius: 0.46
-footprint_polygon: [[0.40, 0.23], [-0.40, 0.23], [-0.40, -0.23], [0.40, -0.23]]
+footprint_polygon:
+  - [0.415, 0.19]
+  - [0.415, -0.19]
+  - [0.315, -0.29]
+  - [-0.290, -0.29]
+  - [-0.390, -0.19]
+  - [-0.390, 0.19]
+  - [-0.290, 0.29]
+  - [0.315, 0.29]
 base_kinematics: "differential"
 
 assets:
@@ -379,9 +390,9 @@ safety:
   contact_force_threshold_n: 30.0
   self_collision_margin_m: 0.0
   # BODY_TWIST kernel bounds; nav2.launch.py also clamps Nav2's vx_max/wz_max to them.
-  # Linear: upstream's current Nav2 profile runs the base at 0.20 m/s (OpenAMRobot
-  # project lead, openral#497, 2026-11-07). Angular: provisional, a slow indoor-AMR
-  # value until the platform publishes its own.
+  # Both are upstream's own Nav2 limits (openamr-platform-sw @ 713574f,
+  # openamrobot_nav2/config/nav2_params.yaml: max_vel_x 0.20, max_vel_theta 0.5;
+  # linear also confirmed by the OpenAMRobot project lead, openral#497, 2026-11-07).
   max_base_linear_speed_m_s: 0.2
   max_base_angular_speed_rad_s: 0.5
   # Runner ramp to a skill's starting_pose: the OpenArm manifest's values for the
@@ -677,59 +688,59 @@ fixed_attachments:
     origin_xyz: [0.06, 0, 0.304]
     origin_rpy: [0, 0, 0]
   - name: "second_estop_joint"
-    parent_link: "lift_column_base_link"
+    parent_link: "adapter_plate_link"
     child_link: "second_estop_link"
-    origin_xyz: [-0.168, 0, 0.472]
-    origin_rpy: [0, 0, 3.14159265359]
+    origin_xyz: [-0.0275, 0, 0.053]
+    origin_rpy: [0, -1.5707963267948966, 0]
   - name: "lift_stop_sensor_l1000_joint"
     parent_link: "lift_column_base_link"
     child_link: "lift_stop_sensor_l1000_link"
-    origin_xyz: [-0.095, 0.045, 0.12]
+    origin_xyz: [-0.148, 0.024, 0.12]
     origin_rpy: [0, 0, 0]
   - name: "lift_stop_sensor_l1175_joint"
     parent_link: "lift_column_base_link"
     child_link: "lift_stop_sensor_l1175_link"
-    origin_xyz: [-0.095, 0.045, 0.295]
+    origin_xyz: [-0.148, 0.024, 0.295]
     origin_rpy: [0, 0, 0]
   - name: "lift_stop_sensor_l1350_joint"
     parent_link: "lift_column_base_link"
     child_link: "lift_stop_sensor_l1350_link"
-    origin_xyz: [-0.095, 0.045, 0.47]
+    origin_xyz: [-0.148, 0.024, 0.47]
     origin_rpy: [0, 0, 0]
   - name: "adapter_plate_joint"
     parent_link: "lift_carriage_link"
     child_link: "adapter_plate_link"
-    origin_xyz: [0.06, 0, 0.005]
+    origin_xyz: [0.0275, 0, 0.005]
     origin_rpy: [0, 0, 0]
   - name: "arm_profile_joint"
     parent_link: "adapter_plate_link"
     child_link: "arm_profile_link"
-    origin_xyz: [0.12, 0, 0.175]
+    origin_xyz: [0.1525, 0, 0.175]
     origin_rpy: [0, 0, 0]
   - name: "getac_tablet_joint"
     parent_link: "arm_profile_link"
     child_link: "getac_tablet_link"
-    origin_xyz: [0.0688, 0, 0.066]
+    origin_xyz: [0.0688, 0, 0.011]
     origin_rpy: [0, 0, 0]
   - name: "head_light_joint"
     parent_link: "arm_profile_link"
     child_link: "head_light_link"
-    origin_xyz: [0.07, 0, -0.0474]
+    origin_xyz: [0.07, 0, -0.1245]
     origin_rpy: [0, 0, 0]
   - name: "lift_flag_rod_joint"
     parent_link: "adapter_plate_link"
     child_link: "lift_flag_rod_link"
-    origin_xyz: [-0.169, 0.07, -0.005]
+    origin_xyz: [-0.2005, 0.038, -0.005]
     origin_rpy: [0, 0, 0]
   - name: "lift_flag_joint"
     parent_link: "lift_flag_rod_link"
     child_link: "lift_flag_link"
-    origin_xyz: [0.011, -0.0125, -0.41]
+    origin_xyz: [0.0125, -0.011, -0.41]
     origin_rpy: [0, 0, 0]
   - name: "head_camera_mount_joint"
     parent_link: "lift_carriage_link"
     child_link: "head_camera_mount_link"
-    origin_xyz: [0.222, 0, 0.389]
+    origin_xyz: [0.24, 0, 0.389]
     origin_rpy: [0, 0, 0]
   - name: "head_camera_pitch_joint"
     parent_link: "head_camera_mount_link"
@@ -794,31 +805,31 @@ collision_geometry_imports:
 # tests/unit/test_collision_geometry_urdf_enclosure.py every URDF mesh vertex.
 collision_geometry:
   - link_name: "base_link"
-    shape: { shape: "box", half_extents_m: [0.4139, 0.2921, 0.1615] }
-    origin_xyz_rpy: [0.0112, 0.0000, 0.0596, 0.0000, 0.0000, 0.0000]
+    shape: { shape: "box", half_extents_m: [0.4139, 0.2921, 0.1500] }
+    origin_xyz_rpy: [0.0112, 0.0000, 0.0481, 0.0000, 0.0000, 0.0000]
   - link_name: "lift_column_base_link"
-    shape: { shape: "box", half_extents_m: [0.1210, 0.0310, 0.2661] }
-    origin_xyz_rpy: [0.0000, 0.0000, 0.2650, 0.0000, 0.0000, 0.0000]
+    shape: { shape: "box", half_extents_m: [0.1210, 0.0310, 0.2535] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.2525, 0.0000, 0.0000, 0.0000]
   - link_name: "second_estop_link"
-    shape: { shape: "box", half_extents_m: [0.0420, 0.0210, 0.0245] }
+    shape: { shape: "box", half_extents_m: [0.0420, 0.0260, 0.0330] }
     origin_xyz_rpy: [-0.0070, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "lift_stop_sensor_l1000_link"
-    shape: { shape: "box", half_extents_m: [0.0351, 0.0211, 0.0136] }
-    origin_xyz_rpy: [0.0140, 0.0050, 0.0000, 0.0000, 0.0000, 0.0000]
+    shape: { shape: "box", half_extents_m: [0.0210, 0.0330, 0.0135] }
+    origin_xyz_rpy: [0.0080, -0.0320, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "lift_stop_sensor_l1175_link"
-    shape: { shape: "box", half_extents_m: [0.0351, 0.0211, 0.0135] }
-    origin_xyz_rpy: [0.0140, 0.0050, 0.0000, 0.0000, 0.0000, 0.0000]
+    shape: { shape: "box", half_extents_m: [0.0210, 0.0330, 0.0135] }
+    origin_xyz_rpy: [0.0080, -0.0320, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "lift_stop_sensor_l1350_link"
-    shape: { shape: "box", half_extents_m: [0.0351, 0.0211, 0.0135] }
-    origin_xyz_rpy: [0.0140, 0.0050, 0.0000, 0.0000, 0.0000, 0.0000]
+    shape: { shape: "box", half_extents_m: [0.0210, 0.0330, 0.0135] }
+    origin_xyz_rpy: [0.0080, -0.0320, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "adapter_plate_link"
-    shape: { shape: "box", half_extents_m: [0.1810, 0.0511, 0.0061] }
+    shape: { shape: "box", half_extents_m: [0.2135, 0.0510, 0.0060] }
     origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "arm_profile_link"
     shape: { shape: "box", half_extents_m: [0.0610, 0.0310, 0.1711] }
     origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "getac_tablet_link"
-    shape: { shape: "box", half_extents_m: [0.0098, 0.1180, 0.0759] }
+    shape: { shape: "box", half_extents_m: [0.0098, 0.0759, 0.1180] }
     origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "head_light_link"
     shape: { shape: "box", half_extents_m: [0.0111, 0.0800, 0.0095] }
@@ -827,7 +838,7 @@ collision_geometry:
     shape: { shape: "box", half_extents_m: [0.0111, 0.0111, 0.2160] }
     origin_xyz_rpy: [0.0000, 0.0000, -0.2150, 0.0000, 0.0000, 0.0000]
   - link_name: "lift_flag_link"
-    shape: { shape: "box", half_extents_m: [0.0021, 0.0236, 0.0111] }
+    shape: { shape: "box", half_extents_m: [0.0235, 0.0020, 0.0110] }
     origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
   - link_name: "head_camera_link"
     shape: { shape: "box", half_extents_m: [0.0143, 0.0633, 0.0163] }
@@ -836,8 +847,8 @@ collision_geometry:
     shape: { shape: "box", half_extents_m: [0.0161, 0.0160, 0.0206] }
     origin_xyz_rpy: [0.0000, 0.0000, 0.0195, 0.0000, 0.0000, 0.0000]
   - link_name: "lift_carriage_link"
-    shape: { shape: "box", half_extents_m: [0.1058, 0.0265, 0.1761] }
-    origin_xyz_rpy: [0.0000, 0.0000, -0.1750, 0.0000, 0.0000, 0.0000]
+    shape: { shape: "box", half_extents_m: [0.1058, 0.0277, 0.2360] }
+    origin_xyz_rpy: [0.0000, 0.0000, -0.2350, 0.0000, 0.0000, 0.0000]
 
 schema_version: "0.2"
 
@@ -845,14 +856,13 @@ schema_version: "0.2"
 allowed_collision_pairs:
   - [adapter_plate_link, arm_profile_link]
   - [adapter_plate_link, lift_carriage_link]
-  - [adapter_plate_link, lift_column_base_link]
   - [adapter_plate_link, lift_flag_rod_link]
+  - [adapter_plate_link, second_estop_link]
   - [arm_profile_link, getac_tablet_link]
   - [arm_profile_link, head_camera_bracket_link]
   - [arm_profile_link, head_light_link]
   - [arm_profile_link, openarm_left_base_link]
   - [arm_profile_link, openarm_right_base_link]
-  - [base_link, lift_column_base_link]
   - [head_camera_bracket_link, head_camera_link]
   - [lift_carriage_link, lift_column_base_link]
   - [lift_carriage_link, openarm_left_base_link]
@@ -860,14 +870,10 @@ allowed_collision_pairs:
   - [lift_column_base_link, lift_stop_sensor_l1000_link]
   - [lift_column_base_link, lift_stop_sensor_l1175_link]
   - [lift_column_base_link, lift_stop_sensor_l1350_link]
-  - [lift_column_base_link, second_estop_link]
   - [lift_flag_link, lift_flag_rod_link]
   - [lift_flag_link, lift_stop_sensor_l1000_link]
   - [lift_flag_link, lift_stop_sensor_l1175_link]
   - [lift_flag_link, lift_stop_sensor_l1350_link]
-  - [lift_flag_rod_link, lift_stop_sensor_l1000_link]
-  - [lift_flag_rod_link, lift_stop_sensor_l1175_link]
-  - [lift_flag_rod_link, lift_stop_sensor_l1350_link]
   - [openarm_left_base_link, openarm_left_link1]
   - [openarm_left_ee_base_link, openarm_left_ee_link1]
   - [openarm_left_ee_base_link, openarm_left_ee_link2]

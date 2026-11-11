@@ -11,8 +11,8 @@ not yet run on hardware.
 
 | What | Source | Licence |
 | --- | --- | --- |
-| Combined URDF | [`openAMRobot/openamr-upperbody-sw`](https://github.com/openAMRobot/openamr-upperbody-sw) @ `17cf693` (main, 2026-11-02), `ros2/src/openamrobot_upperbody_description/urdf/combined_robot.xacro` | MIT (software); CAD-derived geometry CERN-OHL-P-2.0 |
-| Base meshes | [`openAMRobot/openamr-platform-sw`](https://github.com/openAMRobot/openamr-platform-sw) @ `131e500f`, fetched on first use (`openral_hal._openamrobot_platform_assets`) | MIT / CERN-OHL-P-2.0 |
+| Combined URDF | [`openAMRobot/openamr-upperbody-sw`](https://github.com/openAMRobot/openamr-upperbody-sw) @ `e6ab3d1` (PR #48, the owner decisions of 8 Nov 2026, head of 2026-11-11; not yet merged upstream), `ros2/src/openamrobot_upperbody_description/urdf/combined_robot.xacro` | MIT (software); CAD-derived geometry CERN-OHL-P-2.0 |
+| Base meshes | [`openAMRobot/openamr-platform-sw`](https://github.com/openAMRobot/openamr-platform-sw) @ `713574f` (the #126 merge: base masses from the BOM 7.15 mass export), fetched on first use (`openral_hal._openamrobot_platform_assets`) | MIT / CERN-OHL-P-2.0 |
 | Arm and gripper meshes | [`enactic/openarm_description`](https://github.com/enactic/openarm_description), fetched on first use (our pin `c103041`; upstream builds against `14ff67b`, and the meshes are byte-identical between the two) | Apache-2.0 |
 
 The OpenAMRobot name and logos are trademarks and are excluded from upstream's
@@ -21,11 +21,13 @@ licences.
 ## Regenerating `openamrobot_v2.urdf`
 
 The file is `combined_robot.xacro`, expanded with its defaults
-(`column=dold_v4_350 base_plate=bp000 head_pitch=hp30 base_tilt=bt10
+(`column=dold_v4_350 roadmap_masses=true base_plate=bp000 head_pitch=hp30 base_tilt=bt10
 arm_package=openarm hardware_profile=mock enable_planar_base=false`) and then
 normalised:
 
-1. Clone the three repos at the pinned commits (upperbody `config/upstream_pins.yaml`).
+1. Clone the three repos at the pinned commits: upperbody at the commit in the
+   provenance table, and the two it pins in its `config/upstream_pins.yaml`
+   (`openarm_description` `14ff67b`, `openamr-platform-sw` `713574f`).
 2. Build a scratch ament prefix with `share/<pkg>` links and
    `share/ament_index/resource_index/packages/<pkg>` markers for
    `openarm_description`, `openamrobot_description`,
@@ -50,6 +52,18 @@ normalised:
    +x and never saw the fingers (`tests/unit/test_openamrobot_v2_wrist_cameras.py`).
    Write the result with `ET.indent`.
 
+## Mass
+
+The masses are upstream's: the base from its reviewed mass export (BOM 7.15,
+`openamr-platform-sw` #126: `base_link` 49.948 kg, complete base 58.163 kg) and every
+upper-body link from the roadmap mass export (`roadmap_masses=true`). The whole robot
+is 87.11 kg, plus the 0.1 kg root of step 5. Before 2026-11-11 the vendored URDF
+carried 31.5 kg (a 4.2 kg `base_link`). The MuJoCo twin derives its base gains from
+the compiled mass (`openral_hal._openamrobot_v2_assets`, a critically damped tracker at
+a fixed natural frequency), so the base tracks a twist identically at either mass
+(0.2 m/s ramp: 17.5 mm lag, no overshoot); the lift holds within 2.3 mm under the
+new carriage masses.
+
 ## Simulation
 
 - **MuJoCo:** `assets.mjcf: openarm:openamrobot_v2` resolves to an MJCF that
@@ -57,6 +71,12 @@ normalised:
   `OpenAMRobotV2MujocoHAL` drives it. The 20-D action is: 3 planar base joints, the
   lift, then for each arm 7 joints and a gripper. `BODY_TWIST` takes `vx` and
   `wz` only. Run `openral deploy sim --config scenes/deploy/openamrobot_v2_empty.yaml`.
+  Cameras and viewers draw the visual meshes: the collision geoms sit in group 3,
+  which MuJoCo does not render by default (contacts and the lidar ray-cast still hit
+  them). The upper body, still upstream's placeholder boxes, takes the colours of
+  upstream's roadmap model (`openamrobot-docs` `finish.json` / `model.js`), and the
+  base shell and cover theirs (RAL 7035 / RAL 7016); the Getac, head light and second
+  E-stop keep upstream's placeholder colour.
 - **MuJoCo, walled room:** `scenes/deploy/openamrobot_v2_walls.yaml` puts the twin in a
   20 m room with three pillars at known poses and runs SLAM and Nav2. The base is
   kinematic, so odometry is exact and any map→odom drift is SLAM's error. A 4 m
@@ -200,11 +220,14 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
 
 ## Known gaps
 
-- **Pinned geometry predates recent upstream decisions.** The second E-stop now sits
-  on the moving lift adapter plate, and the head camera and tablet placement has been
-  updated upstream; the vendored URDF at `17cf693` has neither. Upstream will publish
-  tagged releases with resolved commits and checksums for the expanded URDF and meshes;
-  the pin moves to the first one.
+- **Pinned to an open upstream PR.** The URDF follows upperbody PR #48 (owner
+  decisions of 8 Nov 2026: the second E-stop on the moving adapter plate, the stop
+  sensors and flag rod on the column's rear face, a portrait Getac, the head camera
+  18 mm further forward, the longer lift stage), which upstream has not merged yet
+  (changes requested on 2026-11-11). Re-sync when it merges, and again when upstream
+  publishes tagged releases with resolved commits and checksums for the expanded URDF
+  and meshes. The upper body is still upstream's placeholder boxes: neither the lift
+  column, the adapter plate nor the arm profile has CAD upstream yet.
 
 - **Collision model: reused, not refitted; Safety-WG sign-off owed.** The arms
   import `robots/openarm`'s `collision_geometry` at load (`collision_geometry_imports`:
@@ -214,9 +237,11 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   whole chassis subtree. The ACM is `openral collision lower --acm-only`
   (mjcf route: `select_lowering` now treats the partially resolving URDF as
   not usable for lowering) unioned with `openamrobot_v2.srdf`: OpenArm's six arm
-  rows renamed, plus six lift-internal rows (adapter plate on the column top
-  at the bottom of the stroke; the position flag and its rod through the stop
-  sensors' forks). No arm link is exempted against any body part. Owed: a
+  rows renamed, plus three lift-internal rows (the position flag through the stop
+  sensors' forks), re-measured over the whole stroke on the 8 Nov geometry. The
+  adapter plate (23 mm clear of the column) and the flag rod (1.9 mm clear of every
+  sensor) lost their rows on 2026-11-11 and are checked again. No arm link is
+  exempted against any body part. Owed: a
   Safety-WG review and a private hazard-log entry for the model and those
   rows. Known holes:
   - **link6 hull gap: found here, already on master, fixed for both robots.**
@@ -244,8 +269,11 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   camera poses (replaced here by OpenArm's mount, step 6 above), the 0.400 m wheel track, the lift speed and effort (DOLD
   catalogue, "provisional") and every acceleration limit. Upstream has also not
   accepted any hardware physically yet. Re-sync at v2.0.0 (2026-12-18).
-- **Placeholder sensors.** Camera intrinsics here are nominal, and the base
-  speed caps (`safety.max_base_*`) are a conservative placeholder envelope.
+- **Placeholder sensors.** Camera intrinsics here are nominal. The base speed caps
+  (`safety.max_base_*`: 0.20 m/s, 0.5 rad/s) and the Nav2 footprint are upstream's
+  own Nav2 values (`openamrobot_nav2/config/nav2_params.yaml` @ `713574f`); its
+  acceleration limits (1.0 / −2.5 m/s², 3.0 rad/s²) are not carried over, since the
+  manifest has no field for them and OpenRAL's Nav2 profile keeps its own.
 - **Isaac base is kinematic.** The Isaac base integrates any planar twist, so the
   HAL refuses `vy` before it reaches the sidecar (`SimAttachedHAL`, on the manifest's
   `base_kinematics: differential`), as the MuJoCo twin and `PlatformBaseHAL` do.
