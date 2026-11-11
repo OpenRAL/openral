@@ -961,3 +961,15 @@ _Force/contact layer (#373) feasibility tools on the MuJoCo OpenArm v2 right arm
 - `class _Cell` (L204) — The cell scene (`cell.xml`) with IK, arm-on-table contact force, hold/average, static TCP estimate and `cond(J)` helpers.
 - `sweep(x, y) -> int` (L300) — The simulated load-cell sweep at table site `(x, y)`; returns 1 if no contact is found or the arm is already in contact before descending. Measured 2026-10-15: at well-conditioned sites (cond(J) 4-6) the hw-like estimate tracks the load cell within ~1-3 N from 2 N to 45 N (resting floor ~3 N); with the elbow on its limit near a singularity (cond(J) 31-112) it reads 27-40 N with no contact.
 - `main(argv=None) -> int` (L341) — CLI: `probe [--force-n N]` or `load-cell [--xy X Y]`.
+
+### `tools/export_reasoner_models.py`
+_Export the curated `REASONER_MODELS` for openral.com's Account → Settings model drop-down (ADR-0129); `.github/workflows/reasoner-models.yml` writes it to the website on every change on master._
+
+- `export() -> list[dict[str, Any]]` (L22) — `[{id, label, needs}]` in the registry's order; `needs` is the API-key variable the model's dialect requires (none for an on-robot model).
+
+### `tools/pin_robot_ui.py`
+_Pin the robot UI the dashboard serves to one `robot-ui.yml` build (ADR-0129): the pin stays a sha256 committed in code. Run by `robot-ui.yml` after it publishes a `robot-ui-<sha>` pre-release._
+
+- const `UI_ASSETS: Path` (L16) — `python/observability/src/openral_observability/dashboard/ui_assets.py`, the file holding the `ROBOT_UI` pin.
+- `pin(text, version, url, sha256, size) -> str` (L24) — `ui_assets.py` source with `ROBOT_UI` set to the given build; raises `ValueError` on a malformed argument or a missing pin block.
+- `main(argv) -> int` (L52) — CLI: `<version> <url> <sha256> <size> [ui_assets.py]`; rewrites the file in place.
