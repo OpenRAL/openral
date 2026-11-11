@@ -269,6 +269,13 @@ class RSkillToolEntry(BaseModel):
         quantization_dtype: The dtype the skill runs at
             (``RSkillManifest.quantization.dtype``). Not shown to the LLM; the
             skill-subset ranking prefers higher precision among equal scores.
+        result_only: A wrapped ROS action / service with no
+            ``result_trajectory_field``: it reports nothing until its terminal
+            result, so the reasoner keeps no heartbeat alive to poll it. Not
+            shown to the LLM.
+        completes_task_on_success: Mirrors
+            ``RosIntegration.completes_task_on_success``: the goal's success
+            completes the reasoner's active mission task. Not shown to the LLM.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -280,6 +287,8 @@ class RSkillToolEntry(BaseModel):
     scenes: tuple[str, ...] = ()
     goal_params_schema: dict[str, Any] | None = None
     quantization_dtype: QuantizationDtype = QuantizationDtype.FP32
+    result_only: bool = False
+    completes_task_on_success: bool = False
 
 
 class ToolPalette(BaseModel):
@@ -374,6 +383,22 @@ class ToolPalette(BaseModel):
     memory every tick as the ``## MEMORY`` context block — these tools let it edit
     that file explicitly and recall superseded/archived entries (reader/writer
     split)."""
+
+    def skill(self, rskill_id: str | None) -> RSkillToolEntry | None:
+        """The palette entry for ``rskill_id``, or ``None`` (absent / no per-skill metadata).
+
+        Example:
+            >>> p = ToolPalette(
+            ...     skills=(
+            ...         RSkillToolEntry(
+            ...             rskill_id="a", description="d", actions=(RSkillAction.NAVIGATE,)
+            ...         ),
+            ...     )
+            ... )
+            >>> p.skill("a").rskill_id, p.skill("b")
+            ('a', None)
+        """
+        return next((s for s in self.skills if s.rskill_id == rskill_id), None)
 
     @model_validator(mode="before")
     @classmethod
@@ -547,6 +572,7 @@ def build_tool_palette(
             skill, robot_capabilities, commercial_deployment=commercial_deployment
         ):
             continue
+        ros = skill.ros_integration
         entries.append(
             RSkillToolEntry(
                 rskill_id=skill.name,
@@ -556,6 +582,8 @@ def build_tool_palette(
                 scenes=tuple(skill.scenes),
                 goal_params_schema=skill.goal_params_schema,
                 quantization_dtype=skill.quantization.dtype,
+                result_only=ros is not None and ros.result_trajectory_field is None,
+                completes_task_on_success=ros is not None and ros.completes_task_on_success,
             ),
         )
     # Stable order so tool schemas are deterministic across builds.

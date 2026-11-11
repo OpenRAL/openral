@@ -8849,6 +8849,13 @@ class RosIntegration(BaseModel):
             ``"ros-${ROS_DISTRO}-moveit"``). Surfaced by ``ral skill check``
             and quoted in ``ROSConfigError``
             messages when the action client fails to connect.
+        completes_task_on_success: Opt-in: the wrapped action's own success is
+            the task's success, so the reasoner completes its active mission
+            task when this skill's goal succeeds — no reward model or VLM
+            verdict needed. Set it only for actions whose success criterion
+            *is* the task (Nav2 ``NavigateToPose``: SUCCEEDED means "within the
+            goal tolerance of the pose"), never for a planner whose success only
+            means "a plan exists". Default ``False`` keeps the reward / VLM gate.
 
     Example:
         >>> ri = RosIntegration(
@@ -8871,6 +8878,7 @@ class RosIntegration(BaseModel):
     result_trajectory_field: str | None = Field(default=None, max_length=200)
     default_goal_json: str = Field(min_length=2, max_length=10_000)
     ros_dependencies: list[str] = Field(default_factory=list)
+    completes_task_on_success: bool = False
     goal_builder: Literal["joint", "pose", "look_at"] | None = None
     """Optional goal-lowering adapter over the shared
     ``ROSActionRskill`` MoveGroup engine. ``None`` (the default) sends

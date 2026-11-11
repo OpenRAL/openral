@@ -157,3 +157,24 @@ def test_lingbot_vla2_robotwin_manifest_and_palette() -> None:
     assert isinstance(entry, RSkillToolEntry)
     assert entry.description and not entry.description.startswith("Scaffold template")
     assert RSkillAction.GENERALIST in entry.actions
+
+
+def test_palette_flags_the_result_only_nav2_skill_that_completes_its_task() -> None:
+    """The real Nav2 manifest reaches the palette as result-only + completes-on-success.
+
+    The reasoner keys two decisions on these flags: no live heartbeat while it is in
+    flight (nothing to poll) and completing the active task when it succeeds.
+    """
+    from openral_core import RobotDescription
+
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"))
+    palette = build_tool_palette(
+        installed_skills=_load_intree(), robot_capabilities=robot.capabilities
+    )
+    nav = palette.skill("OpenRAL/rskill-nav2-mobile_base-navigate_to_pose")
+    assert nav is not None
+    assert nav.result_only is True
+    assert nav.completes_task_on_success is True
+    others = [s for s in palette.skills if s.rskill_id != nav.rskill_id]
+    assert others, "expected panda_mobile to match more than the Nav2 skill"
+    assert not any(s.completes_task_on_success for s in others)

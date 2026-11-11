@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import pytest
 from openral_reasoner import MissionState
+from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
     should_rebuild_mission,
+    task_step_without_verifier,
 )
 
 # ── CASCADE_PROMPT_SOURCES ──────────────────────────────────────────────────
@@ -100,3 +102,96 @@ def test_non_true_new_goal_metadata_does_not_replace(metadata: str) -> None:
 def test_cascade_prompts_never_rebuild(source: str) -> None:
     assert not should_rebuild_mission(source, '{"new_goal": true}', None)
     assert not should_rebuild_mission(source, "", _in_progress_mission())
+
+
+# ── finished-but-unverified tasks (2026-11-11 Nav2 run) ──────────────────────
+
+
+def test_prompt_after_an_unverified_success_starts_a_new_goal() -> None:
+    """ "drive back to start" after a Nav2 drive that succeeded with no verifier is a
+    new goal, not an aside the first task resumes after; a reply after a FAILED
+    attempt still keeps the queue."""
+    mission = MissionState(["drive to x=4,y=0 in map"])
+    mission.record_attempt(rskill_id="openral/rskill-x")
+    assert should_rebuild_mission("dashboard", "", mission, active_succeeded_unverified=True)
+    assert not should_rebuild_mission("dashboard", "", mission, active_succeeded_unverified=False)
+    # Cascade prompts never rebuild, whatever the task's state.
+    assert not should_rebuild_mission("mission", "", mission, active_succeeded_unverified=True)
+
+
+def test_an_unverified_success_never_drops_queued_tasks() -> None:
+    """t1 succeeded unverified, t2 is queued: a prompt is an aside, not a new mission."""
+    mission = _in_progress_mission()  # "pick the bowl" active, "place the butter" queued
+    assert not should_rebuild_mission("dashboard", "", mission, active_succeeded_unverified=True)
+    assert should_rebuild_mission("dashboard", '{"new_goal": true}', mission)
+
+
+def test_a_task_completed_on_action_success_is_rebuilt_by_the_next_prompt() -> None:
+    """Once ``completes_task_on_success`` completed the only task, the mission is
+    finished, so the operator's next prompt replaces it."""
+    mission = MissionState(["drive to x=4,y=0 in map"])
+    mission.record_attempt(rskill_id="OpenRAL/rskill-nav2-mobile_base-navigate_to_pose")
+    step = task_step_without_verifier(
+        succeeded=True, completes_task_on_success=True, reward_available=False, attempts=1
+    )
+    assert step is not None and step[0] == "complete"
+    mission.complete_active(step[1])
+    assert mission.is_complete()
+    assert should_rebuild_mission("dashboard", "", mission)
+
+
+@pytest.mark.parametrize("reward_available", [False, True])
+def test_opted_in_success_completes_with_or_without_a_reward_monitor(
+    reward_available: bool,
+) -> None:
+    step = task_step_without_verifier(
+        succeeded=True,
+        completes_task_on_success=True,
+        reward_available=reward_available,
+        attempts=1,
+    )
+    assert step is not None
+    assert step[0] == "complete"
+    assert "completes_task_on_success" in step[1]
+
+
+def test_success_without_the_opt_in_is_not_completed() -> None:
+    assert (
+        task_step_without_verifier(
+            succeeded=True, completes_task_on_success=False, reward_available=False, attempts=1
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("succeeded", [False, True])
+def test_attempt_cap_abandons_without_a_reward_monitor(succeeded: bool) -> None:
+    """The per-task cap binds even when no reward gate runs (it used to live only there)."""
+    below = task_step_without_verifier(
+        succeeded=succeeded,
+        completes_task_on_success=False,
+        reward_available=False,
+        attempts=DEFAULT_MAX_ATTEMPTS - 1,
+    )
+    assert below is None
+    at_cap = task_step_without_verifier(
+        succeeded=succeeded,
+        completes_task_on_success=False,
+        reward_available=False,
+        attempts=DEFAULT_MAX_ATTEMPTS,
+    )
+    assert at_cap is not None
+    assert at_cap[0] == "abandon"
+    assert f"{DEFAULT_MAX_ATTEMPTS} attempt(s)" in at_cap[1]
+
+
+def test_attempt_cap_is_left_to_the_reward_gate_when_one_is_available() -> None:
+    assert (
+        task_step_without_verifier(
+            succeeded=False,
+            completes_task_on_success=False,
+            reward_available=True,
+            attempts=DEFAULT_MAX_ATTEMPTS + 5,
+        )
+        is None
+    )

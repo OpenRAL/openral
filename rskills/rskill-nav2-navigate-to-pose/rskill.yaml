@@ -102,6 +102,11 @@ ros_integration:
       },
       "behavior_tree": ""
     }
+  # Nav2 SUCCEEDED means "within xy/yaw_goal_tolerance of the pose" — that IS the
+  # task, so the reasoner completes its active mission task on success instead of
+  # re-issuing the goal for a residual inside the tolerance (2026-11-11 Isaac run:
+  # SUCCEEDED at x=3.79 for x=4.0 was re-driven twice and never marked done).
+  completes_task_on_success: true
   ros_dependencies:
     - "ros-${ROS_DISTRO}-nav2-bringup"
     - "ros-${ROS_DISTRO}-nav2-msgs"

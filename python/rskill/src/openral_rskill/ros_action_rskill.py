@@ -150,6 +150,64 @@ _GOAL_STATUS_LABELS: dict[int, str] = {
     6: "STATUS_ABORTED",
 }
 
+# Bound on the one-line outcome summary a wrapped action's terminal result is
+# reduced to (``_summarize_wrapped_outcome``): it rides the goal result into the
+# reasoner's ``## EXECUTION`` line every tick, so it must stay short.
+_OUTCOME_SUMMARY_MAX_CHARS = 400
+
+
+def _scalar_items(obj: Any, prefix: str = "") -> list[tuple[str, Any]]:  # noqa: ANN401  # reason: walks arbitrary IDL slots / dicts
+    """Flatten ``obj``'s scalar leaves to ``(dotted.key, value)`` pairs (empty strings dropped).
+
+    Walks dicts and rosidl messages (``get_fields_and_field_types``) or plain objects
+    (``__dict__``); a ``.val`` wrapper (MoveIt's ``MoveItErrorCodes``) reads as its value.
+    Sequences are skipped: a path or a costmap is not a summary.
+    """
+    if isinstance(obj, dict):
+        names = [str(k) for k in obj]
+        values = [obj[k] for k in obj]
+    else:
+        getter = getattr(obj, "get_fields_and_field_types", None)
+        names = list(getter()) if callable(getter) else list(getattr(obj, "__dict__", {}))
+        values = [getattr(obj, name, None) for name in names]
+    out: list[tuple[str, Any]] = []
+    for name, raw in zip(names, values, strict=True):
+        value = getattr(raw, "val", raw)
+        key = f"{prefix}{name}"
+        if isinstance(value, bool | int | float | str):
+            if value != "":
+                out.append((key, value))
+        elif isinstance(value, dict) or hasattr(value, "get_fields_and_field_types"):
+            out.extend(_scalar_items(value, f"{key}."))
+    return out
+
+
+def _summarize_wrapped_outcome(status: str, result: Any, goal: dict[str, Any]) -> str:  # noqa: ANN401  # reason: arbitrary IDL result
+    """One bounded line naming a wrapped action's terminal status, result scalars and goal.
+
+    Example:
+        >>> _summarize_wrapped_outcome(
+        ...     "STATUS_SUCCEEDED",
+        ...     {"error_code": 0, "error_msg": ""},
+        ...     {"frame_id": "map", "position": {"x": 4.0}},
+        ... )
+        'status=STATUS_SUCCEEDED result{error_code=0} goal{frame_id=map position.x=4}'
+    """
+
+    def fmt(items: list[tuple[str, Any]]) -> str:
+        return " ".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}" for k, v in items)
+
+    # The error code / message first and no header stamps / frame ids: a MoveIt
+    # result is mostly zero-filled headers, which would spend the budget first.
+    items = [kv for kv in _scalar_items(result) if "header." not in kv[0]]
+    items.sort(key=lambda kv: not any(p.startswith("error") for p in kv[0].split(".")))
+    res, gol = fmt(items), fmt(_scalar_items(goal))
+    # One line: a server's multi-line ``error_msg`` must not break the EXECUTION line.
+    line = " ".join(f"status={status} result{{{res}}} goal{{{gol}}}".split())
+    if len(line) > _OUTCOME_SUMMARY_MAX_CHARS:
+        line = line[: _OUTCOME_SUMMARY_MAX_CHARS - 1] + "…"
+    return line
+
 
 def _merge_nested(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Deep-merge ``overrides`` onto ``base``; return a new dict.
@@ -429,6 +487,8 @@ class ROSActionRskill(rSkillBase):
         self._replay_budget: ExecutionBudget | None = None
         # Set once the wrapped action's result has been awaited.
         self._result_consumed: bool = False
+        # Result-only mode: ``_summarize_wrapped_outcome`` of the awaited result.
+        self._outcome_summary: str = ""
         # Per-slot values used to populate joints the wrapped planner
         # doesn't move (e.g. a gripper slot when MoveIt plans for an
         # arm-only `JointModelGroup`). Captured from the live
@@ -626,7 +686,7 @@ class ROSActionRskill(rSkillBase):
             if not is_trajectory_mode:
                 # Result-only mode: nothing to actuate via OpenRAL.
                 raise ROSRskillGoalSatisfied(
-                    f"{self.name}: wrapped result-only action completed (no trajectory)."
+                    f"wrapped result-only action completed: {self._outcome_summary}"
                 )
 
         last = len(self._waypoints) - 1
@@ -738,7 +798,18 @@ class ROSActionRskill(rSkillBase):
             result = self._call_service_and_await_response()
 
         if self._integration.result_trajectory_field is None:
-            return  # result-only — nothing to extract
+            # Result-only: nothing to extract, but say what happened (the goal sent and
+            # the server's result scalars) so the reasoner sees more than "ok".
+            status = "STATUS_SUCCEEDED" if self._interface_kind == "action" else "RESPONDED"
+            summary = _summarize_wrapped_outcome(status, result, self._goal_dict)
+            # A service that answers ``success: false`` (std_srvs/Trigger, SetBool) did not
+            # do it: a failure, never a completed (or task-completing) goal.
+            if self._interface_kind != "action" and getattr(result, "success", None) is False:
+                raise ROSRuntimeError(
+                    f"ROSActionRskill({self.name!r}): wrapped service reported failure: {summary}"
+                )
+            self._outcome_summary = summary
+            return
 
         try:
             jtraj = _resolve_dotted(result, self._integration.result_trajectory_field)
@@ -921,15 +992,11 @@ class ROSActionRskill(rSkillBase):
         if status != status_succeeded:
             label = _GOAL_STATUS_LABELS.get(status, f"unknown({status!r})")
             # The Nav2 result IDL carries an ``error_code`` + ``error_msg``;
-            # MoveIt's ``MoveGroup.Result`` carries ``error_code.val``. Try
-            # both shapes so the failure message is actionable.
+            # MoveIt's ``MoveGroup.Result`` carries ``error_code.val``. Both
+            # land in the summary's ``result{…}`` (with the goal that was sent).
             err_msg = getattr(wrapper.result, "error_msg", "") or ""
             err_code = getattr(wrapper.result, "error_code", None)
-            err_code_str = ""
-            err_code_val: Any = None
-            if err_code is not None:
-                err_code_val = getattr(err_code, "val", err_code)
-                err_code_str = f" error_code={err_code_val!r}"
+            err_code_val: Any = None if err_code is None else getattr(err_code, "val", err_code)
             # A generic abort with no error_code/message (Nav2 BT abort, the
             # common case) is almost always operational, not a bug: the goal is
             # unreachable (in furniture / outside the known free space), the
@@ -944,9 +1011,7 @@ class ROSActionRskill(rSkillBase):
                 )
             raise ROSRuntimeError(
                 f"ROSActionRskill({self.name!r}): wrapped server returned "
-                f"status={label}{err_code_str}"
-                + (f" error_msg={err_msg!r}" if err_msg else "")
-                + hint
+                f"{_summarize_wrapped_outcome(label, wrapper.result, self._goal_dict)}{hint}"
             )
         return wrapper.result
 

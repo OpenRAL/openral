@@ -76,7 +76,13 @@ in `map`, or a relative turn / drive in `base_link`) and sends it as
    `result_trajectory_field is None` — raises
    `ROSRskillGoalSatisfied` immediately on success. The runner catches
    it specifically and closes the `ExecuteRskill` goal with
-   `success=True`.
+   `success=True`, forwarding the completion line (terminal status, Nav2's
+   `error_code` / `error_msg`, and the goal pose + frame that was sent) as
+   `Result.outcome_summary` for the reasoner's `## EXECUTION` line.
+3. `ros_integration.completes_task_on_success: true` — Nav2 SUCCEEDED means
+   "within `xy_goal_tolerance` / `yaw_goal_tolerance` of the pose", which is
+   the task, so the reasoner completes its active mission task on success
+   instead of re-driving a residual inside the tolerance.
 
 ### Observation → action contract (result-only mode)
 
@@ -150,6 +156,7 @@ action's contract is unchanged.
 | `ros_integration.interface_type` | `NavigateToPose` |
 | `ros_integration.interface_name` | `/navigate_to_pose` |
 | `ros_integration.result_trajectory_field` | _omitted → result-only mode_ |
+| `ros_integration.completes_task_on_success` | `true` (success completes the reasoner's task) |
 | `is_commercial_use_allowed` | `true` (apache-2.0) |
 
 Full schema:
