@@ -460,7 +460,7 @@ _Offline MJCF → kernel collision-params lowering; imports `mujoco` lazily._
 - module constant `_MJ_GEOM_CYLINDER: int = 5` (L38)
 - module constant `_MJ_GEOM_BOX: int = 6` (L39) — MJCF `geom_type` enum values `lower_collision_params` reads from the compiled model.
 - module constant `_LOWERABLE_GEOM_TYPES: frozenset[int]` (L80) — `{sphere, capsule, cylinder, box}`, the geom types this lowering path handles (mesh/plane skipped).
-- `lower_collision_params(model, joint_names, *, margin_m=0.0) -> dict[str, object]` (L270) — Lowers a compiled `mujoco.MjModel` to the kernel's collision params: per-link origins, every collidable primitive as a capsule, `dof_index` assigned by movable-joint order (not by MJCF joint name, which can differ from the manifest), ACM = parent↔child + MJCF excludes + a neutral-pose overlap sweep.
+- `lower_collision_params(model, joint_names, *, margin_m=0.0) -> dict[str, object]` (L270) — Lowers a compiled `mujoco.MjModel` to the kernel's collision params: per-link origins, every collidable primitive as a capsule, `dof_index` assigned by movable-joint order (not by MJCF joint name, which can differ from the manifest; the deploy launch refuses a result that disagrees with the manifest by name, `_mjcf_dof_mismatches`), ACM = parent↔child + MJCF excludes + a neutral-pose overlap sweep.
 
 ### `packages/openral_safety/openral_safety/kernel_predicates.py`
 _The Python mirror of the C++ kernel's narrow phase (`cpp/openral_safety_kernel/src/collision.cpp`), batched over a leading configuration axis. Anything offline that decides what the kernel will do must ask the same question with the same geometry. Every dispatch is exhaustive over `CollisionShape` and ends in a typed `ROSConfigError`, never a silent fallback._

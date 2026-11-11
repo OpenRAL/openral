@@ -46,7 +46,7 @@ if _VENV_SITE and os.path.isdir(_VENV_SITE):
     site.addsitedir(_VENV_SITE)
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
 from launch import LaunchContext, LaunchDescription
@@ -823,6 +823,49 @@ class _ReachModel:
                 keep = v.argmax(axis=1)
                 best[:, j] = grid[keep]
         return float(max(values.max(), score(*self.extremes(best)).max()))
+
+
+def _mjcf_dof_mismatches(
+    model: Any,  # reason: mujoco.MjModel has no type stubs
+    lowered: dict[str, object],
+    joint_names: list[str],
+) -> list[str]:
+    """Where an MJCF lowering's ``collision_dof_index`` disagrees with the manifest by name.
+
+    ``lower_collision_params`` numbers links by movable-joint ordinal, one joint per body,
+    because an MJCF's joint names need not match the manifest's (SO-101's ``Rotation`` vs
+    ``shoulder_pan``). That ordinal drifts when a body carries several joints (a planar
+    base: x, y, yaw on one body) or when a movable joint is not a commanded column (a
+    mimic finger): every later link then reads another joint's angle in the kernel's FK.
+    Where an MJCF joint IS named like a manifest joint, its link must read that column;
+    a body with several hinge/slide joints cannot be represented at all. Joints with no
+    manifest namesake are not judged (the ordinal mapping is the contract there).
+
+    Returns:
+        One line per disagreement; empty when the lowering is consistent.
+    """
+    import mujoco as mj
+
+    index = {name: i for i, name in enumerate(joint_names)}
+    dof = cast("list[int]", lowered.get("collision_dof_index", []))
+    movable = (int(mj.mjtJoint.mjJNT_HINGE), int(mj.mjtJoint.mjJNT_SLIDE))
+    by_body: dict[int, list[str]] = {}
+    for ji in range(int(model.njnt)):
+        if int(model.jnt_type[ji]) in movable:
+            name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, ji) or ""
+            by_body.setdefault(int(model.jnt_bodyid[ji]), []).append(name)
+    out: list[str] = []
+    for body, names in sorted(by_body.items()):
+        link = body - 1  # lower_collision_params skips the world body
+        bname = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, body) or f"body_{body}"
+        if len(names) > 1:
+            out.append(f"{bname}: {len(names)} joints {names} on one body (one per link)")
+        elif names[0] in index and 0 <= link < len(dof) and dof[link] != index[names[0]]:
+            out.append(
+                f"{bname}: joint {names[0]} is manifest column {index[names[0]]}, "
+                f"lowered to column {dof[link]}"
+            )
+    return out
 
 
 def _coverage_ball(
@@ -2815,7 +2858,22 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # bimanual openarm) lower to {"self_collision_enabled": False}; using
             # that would silently DISABLE self-collision, so keep the manifest's
             # hand-authored capsules + ACM instead.
-            if mjcf_params.get("self_collision_enabled"):
+            mismatches = (
+                _mjcf_dof_mismatches(model, mjcf_params, [j.name for j in description.joints])
+                if mjcf_params.get("self_collision_enabled")
+                else []
+            )
+            if mismatches:
+                # A link reading another joint's angle is a wrong safety model, not a
+                # coarser one: keep the manifest's, which indexes joints by name.
+                print(
+                    "[deploy_e2e] MJCF self-collision lowering REFUSED: its joint columns "
+                    "disagree with the manifest; keeping the manifest self-collision model. "
+                    + "; ".join(mismatches[:6])
+                    + (f" (+{len(mismatches) - 6} more)" if len(mismatches) > 6 else ""),
+                    flush=True,
+                )
+            elif mjcf_params.get("self_collision_enabled"):
                 collision_params = mjcf_params
             else:
                 print(
