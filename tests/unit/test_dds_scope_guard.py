@@ -48,6 +48,14 @@ class TestConfineSimScope:
         _dds_scope.confine_sim_scope(env)
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] != "OFF"
 
+    def test_an_exported_but_empty_scope_is_treated_as_unset(self) -> None:
+        """ROS reads an empty value as the default (SUBNET, domain 0): a compose file
+        passing ``VAR=${VAR:-}`` must not leave the sim on the LAN."""
+        env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "", "ROS_DOMAIN_ID": " "}
+        _dds_scope.confine_sim_scope(env)
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.SIM_DOMAIN_ID
+
     def test_an_explicit_operator_scope_wins(self) -> None:
         """Attaching a dashboard from another host has to stay possible."""
         env = {"ROS_DOMAIN_ID": "5", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
@@ -101,6 +109,22 @@ class TestConfineRealScope:
         assert _dds_scope.ALLOW_NETWORK_ROS_ENV in str(excinfo.value)
         assert "/openral/safe_action" in str(excinfo.value)
         assert env == scope, "a refusal must leave the env untouched"
+
+    def test_the_legacy_localhost_only_flag_is_host_confined(self) -> None:
+        """rcl (Jazzy) lets ROS_LOCALHOST_ONLY=1 override the range and the static
+        peers ("will be ignored"), so the graph is host-confined: no refusal."""
+        env = {
+            "ROS_LOCALHOST_ONLY": "1",
+            "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",
+            "ROS_STATIC_PEERS": "10.0.0.2",
+        }
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
+    def test_localhost_only_zero_does_not_confine(self) -> None:
+        env = {"ROS_LOCALHOST_ONLY": "0", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+        with pytest.raises(ROSConfigError):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
 
     def test_an_opt_in_other_than_one_does_not_count(self) -> None:
         env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", _dds_scope.ALLOW_NETWORK_ROS_ENV: "true"}

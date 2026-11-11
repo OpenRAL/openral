@@ -128,7 +128,8 @@ _HARDWARE_SIGNATURES: Final[tuple[str, ...]] = (
 def confine_sim_scope(env: dict[str, str]) -> None:
     """Pin a simulation to its own host and its own DDS domain, in place.
 
-    Both settings are skipped when the caller has already exported one, so an
+    Both settings are skipped when the caller has already exported a non-empty
+    one (an empty one is unset to ROS: SUBNET, domain 0), so an
     operator who wants a shared graph keeps it by saying so — the same posture
     ``packages/openral_safety_watchdog/test/conftest.py`` takes for
     ``ROS_DOMAIN_ID``.
@@ -136,8 +137,11 @@ def confine_sim_scope(env: dict[str, str]) -> None:
     Args:
         env: The launch environment, mutated in place.
     """
-    env.setdefault("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
-    env.setdefault("ROS_DOMAIN_ID", SIM_DOMAIN_ID)
+    # Not setdefault: an exported-but-empty value is unset to ROS (SUBNET, domain 0).
+    if not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip():
+        env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+    if not env.get("ROS_DOMAIN_ID", "").strip():
+        env["ROS_DOMAIN_ID"] = SIM_DOMAIN_ID
 
 
 def real_domain_id(robot_id: str) -> str:
@@ -184,7 +188,12 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
     """
     discovery = env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip().upper()
     peers = env.get("ROS_STATIC_PEERS", "").strip()
-    networked = bool(peers) or (discovery != "" and discovery not in _HOST_CONFINED_RANGES)
+    # rcl honours the deprecated ROS_LOCALHOST_ONLY=1 over both variables above
+    # ("'automatic_discovery_range' and 'static_peers' will be ignored", Jazzy).
+    localhost_only = env.get("ROS_LOCALHOST_ONLY", "").strip() == "1"
+    networked = not localhost_only and (
+        bool(peers) or (discovery != "" and discovery not in _HOST_CONFINED_RANGES)
+    )
     if networked:
         scope = f"ROS_AUTOMATIC_DISCOVERY_RANGE={discovery or '(unset)'} ROS_STATIC_PEERS={peers}"
         if env.get(ALLOW_NETWORK_ROS_ENV) != "1":
@@ -204,7 +213,7 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
             opt_in=ALLOW_NETWORK_ROS_ENV,
             hazard="every host on this network can command the robot",
         )
-    elif not discovery:
+    elif not discovery and not localhost_only:
         # Not setdefault: an exported-but-empty value means SUBNET to ROS.
         env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
     if not env.get("ROS_DOMAIN_ID", "").strip():

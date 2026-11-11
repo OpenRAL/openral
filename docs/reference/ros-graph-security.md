@@ -39,6 +39,12 @@ only on a trusted, isolated network (a robot-only VLAN or a direct cable).
 so a peer cannot relax a limit loaded from the manifest. Change a limit in
 `robot.yaml` and relaunch.
 
+Only `openral deploy run` applies this. A hand-run
+`ros2 launch openral_rskill_ros deploy_e2e.launch.py hal_mode:=real` inherits
+your shell's scope as-is: export `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a
+non-zero `ROS_DOMAIN_ID` first. `ROS_LOCALHOST_ONLY=1` (deprecated) also counts
+as host-confined, since rcl lets it override both variables.
+
 Host confinement limits *discovery*; it is not a firewall. Combine it with a
 host firewall that drops inbound DDS ports (UDP 7400+) on interfaces the robot
 does not need.
