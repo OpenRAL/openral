@@ -436,6 +436,8 @@ async def test_root_serves_the_fallback_page_without_a_ui(monkeypatch: pytest.Mo
     assert f"script-src 'self' 'sha256-{digest}';" in csp
     assert "object-src 'none'" in csp
     assert "frame-ancestors 'self' https://www.openral.com https://dev.openral.com" in csp
+    # This origin only: no bare ws:/wss: that would let an injected script reach anywhere.
+    assert "connect-src 'self';" in csp and "ws:" not in csp
 
 
 @pytest.mark.asyncio
@@ -473,6 +475,8 @@ async def test_viz_serves_lichtblick_under_its_own_csp(tmp_path: Path) -> None:
     digest = base64.b64encode(hashlib.sha256(inline.encode()).digest()).decode()
     assert f"script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' 'sha256-{digest}';" in csp
     assert "worker-src 'self' blob:" in csp
+    # A crafted ?ds.url=wss://elsewhere cannot point Lichtblick at a foreign bridge.
+    assert "connect-src 'self';" in csp and "ws:" not in csp
     assert "frame-ancestors 'self'" in csp
 
 
