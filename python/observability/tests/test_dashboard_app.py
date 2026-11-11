@@ -216,6 +216,7 @@ async def test_api_config_reflects_env_url(monkeypatch: pytest.MonkeyPatch) -> N
         resp = await client.get("/api/config")
         assert resp.status_code == 200
         assert resp.json()["jaeger_ui_url"] == "https://jaeger.example"
+        assert resp.json()["org"] == ""  # no enrolment: no org
 
 
 @pytest.mark.asyncio

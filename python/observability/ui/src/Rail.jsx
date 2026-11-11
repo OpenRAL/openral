@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { viewerLabel } from "./lib/viewer.js";
+import { viewerLabel, workspaceLabel } from "./lib/viewer.js";
+import { SettingsPane } from "./SettingsPane.jsx";
 
-// The left pane: the OpenRAL logo at the top, the sections (none yet) and, at the
-// bottom, the viewer's profile, which opens Settings (and the website account).
+// The left pane: whose workspace this is at the top (the org's logo or first letter,
+// and its name), the sections (none yet) and, at the bottom, the viewer with a ⋯ menu
+// that opens the settings pane (and, on the website, the account page).
 // It starts closed (an icon rail) and remembers open/closed in this browser.
 const KEY = "openral.rail.open";
 
@@ -42,11 +44,13 @@ function useMe(onWebsite) {
   return me;
 }
 
-export function Rail({ cfg, onWebsite, onSettings }) {
+export function Rail({ cfg, onWebsite, robotName, reasonerModel }) {
   const [open, setOpen] = useOpen();
   const [menu, setMenu] = useState(false);
+  const [settings, setSettings] = useState(false);
   const me = useMe(onWebsite);
   const v = viewerLabel(me, cfg);
+  const ws = workspaceLabel(me, cfg, robotName);
   const box = useRef(null);
 
   useEffect(() => {
@@ -63,64 +67,84 @@ export function Rail({ cfg, onWebsite, onSettings }) {
   }, [menu]);
 
   return (
-    <aside className={open ? "rail open" : "rail"} aria-label="OpenRAL">
-      <div className="rail-top">
-        <img className="rail-logo" src="openral-logo.svg" alt="OpenRAL" width="24" height="27" />
-        {open && <span className="rail-brand">OpenRAL</span>}
-        <button
-          type="button"
-          className="rail-toggle"
-          aria-expanded={open}
-          aria-label={open ? "Close the side pane" : "Open the side pane"}
-          title={open ? "Close" : "Open"}
-          onClick={() => setOpen(!open)}
-        >
-          {open ? "‹" : "›"}
-        </button>
-      </div>
-      <nav className="rail-nav" aria-label="Sections" />
-      <div className="rail-profile" ref={box}>
-        {menu && (
-          <div className="rail-menu" role="menu">
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!onSettings}
-              title={onSettings ? undefined : "Settings open once the robot has announced itself."}
-              onClick={() => {
-                setMenu(false);
-                onSettings?.();
-              }}
-            >
-              Settings
-            </button>
-            {onWebsite && (
-              <a role="menuitem" href="/account" target="_top">
-                Account settings
-              </a>
-            )}
-          </div>
-        )}
-        <button
-          type="button"
-          className="rail-me"
-          aria-haspopup="menu"
-          aria-expanded={menu}
-          title={`${v.name} · ${v.detail}`}
-          onClick={() => setMenu(!menu)}
-        >
-          <span className="rail-avatar" aria-hidden="true">
-            {v.initials}
-          </span>
-          {open && (
-            <span className="rail-who">
-              <span className="rail-name">{v.name}</span>
-              <span className="rail-detail">{v.detail}</span>
+    <>
+      <aside className={open ? "rail open" : "rail"} aria-label={ws.name}>
+        <div className="rail-top">
+          {ws.logo ? (
+            <img className="rail-org" src={ws.logo} alt="" width="28" height="28" />
+          ) : (
+            <span className="rail-org" aria-hidden="true">
+              {ws.initial}
             </span>
           )}
-          {!open && <span className="sr-only">{v.name}</span>}
-        </button>
-      </div>
-    </aside>
+          {open ? <span className="rail-brand">{ws.name}</span> : <span className="sr-only">{ws.name}</span>}
+          <button
+            type="button"
+            className="rail-toggle"
+            aria-expanded={open}
+            aria-label={open ? "Close the side pane" : "Open the side pane"}
+            title={open ? "Close" : "Open"}
+            onClick={() => setOpen(!open)}
+          >
+            {open ? "‹" : "›"}
+          </button>
+        </div>
+        <nav className="rail-nav" aria-label="Sections" />
+        <div className="rail-profile" ref={box}>
+          {menu && (
+            <div className="rail-menu" role="menu" aria-label={v.name}>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenu(false);
+                  setSettings(true);
+                }}
+              >
+                Settings
+              </button>
+              {onWebsite && (
+                <a role="menuitem" href="/account" target="_top">
+                  Account
+                </a>
+              )}
+            </div>
+          )}
+          <div className="rail-me" title={`${v.name} · ${v.detail}`}>
+            <button
+              type="button"
+              className="rail-avatar"
+              aria-label={`${v.name}: menu`}
+              aria-haspopup="menu"
+              aria-expanded={menu}
+              onClick={() => setMenu(!menu)}
+            >
+              {v.initials}
+            </button>
+            {open && (
+              <span className="rail-who">
+                <span className="rail-name">{v.name}</span>
+                <span className="rail-detail">{v.detail}</span>
+              </span>
+            )}
+            {open && (
+              <button
+                type="button"
+                className="rail-more"
+                aria-label="More"
+                aria-haspopup="menu"
+                aria-expanded={menu}
+                onClick={() => setMenu(!menu)}
+              >
+                ⋯
+              </button>
+            )}
+          </div>
+        </div>
+      </aside>
+      {settings && (
+        <SettingsPane onWebsite={onWebsite} reasonerModel={reasonerModel} onClose={() => setSettings(false)} />
+      )}
+    </>
   );
 }

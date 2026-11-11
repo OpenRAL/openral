@@ -143,6 +143,7 @@ async def test_a_valid_token_is_a_remote_principal(issuer: FakeIssuer, tmp_path:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert (body["mode"], body["role"], body["robot_id"]) == ("remote", "viewer", ROBOT)
+    assert body["org"] == ORG  # the enrolment's org: the console's left pane names it
     assert resp.headers["access-control-allow-origin"] == _SITE
     assert "access-control-allow-credentials" not in resp.headers
 

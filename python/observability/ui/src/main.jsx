@@ -191,7 +191,7 @@ function Robot({ api, robot }) {
   };
   return (
     <div className="app">
-      <Rail cfg={cfg} onWebsite={!!robot} onSettings={manifest ? () => setLayoutOpen(true) : null} />
+      <Rail cfg={cfg} onWebsite={!!robot} robotName={name} reasonerModel={t.reasoner?.model} />
       <div className="app-body">
       <header className="top">
         <Header logo={false}>

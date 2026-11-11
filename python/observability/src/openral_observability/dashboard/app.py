@@ -1354,6 +1354,9 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
                 "mode": principal.mode,
                 "role": principal.role,
                 "robot_id": robot_id,
+                # The owning org's slug from the robot's enrolment ("" for a free or
+                # unlinked robot): the console's left pane names whose robot this is.
+                "org": verifier_.enrolment.org if verifier_ is not None else "",
                 "write_controls": _write_controls_enabled(),
                 "remote_control": _remote_control_enabled(),
                 "jaeger_ui_url": os.environ.get("OPENRAL_JAEGER_UI_URL", "").rstrip("/"),

@@ -10,3 +10,14 @@ export function viewerLabel(me, cfg) {
   const where = cfg?.mode === "remote" ? text(me?.org) || "openral.com" : cfg?.mode === "lan" ? "LAN" : "on the robot";
   return { name, initials, detail: `${role} · ${where}` };
 }
+
+// The top of the left pane: whose workspace this is. The org (its logo when it has
+// one, else its first letter) on the website and on an org's robot; a free account
+// is the person's own; a robot with no org is just itself.
+export function workspaceLabel(me, cfg, robotName) {
+  const text = (v) => (typeof v === "string" && v.trim() ? v.trim() : "");
+  const name =
+    text(me?.orgName) || text(me?.org) || text(cfg?.org) || text(me?.name) || text(me?.email) || text(robotName) || "Robot";
+  const logo = text(me?.orgLogo);
+  return { name, initial: name[0].toUpperCase(), logo: /^(https:|\/)/.test(logo) ? logo : null };
+}

@@ -152,13 +152,26 @@ main > .waiting {
   padding: 14px 12px 10px 16px;
   flex-wrap: wrap;
 }
-.rail-logo {
+.rail-org {
   flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: grid;
+  place-items: center;
+  font: 600 14px var(--body);
+  color: var(--on-accent);
+  background: var(--text);
 }
 .rail-brand {
   font: 600 15px var(--body);
   color: var(--text);
   flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .rail-toggle {
   font: 500 16px var(--body);
@@ -189,24 +202,38 @@ main > .waiting {
   border-top: 1px solid var(--hair);
 }
 .rail-me {
-  width: 100%;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 6px;
+  color: var(--text);
+}
+.rail-who {
+  flex: 1 1 auto;
+}
+.rail-more {
+  flex: none;
+  font: 600 16px var(--body);
+  line-height: 1;
+  color: var(--muted);
   background: none;
   border: 1px solid transparent;
-  border-radius: 10px;
-  color: var(--text);
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
   cursor: pointer;
-  text-align: left;
 }
-.rail-me:hover,
-.rail-me[aria-expanded="true"] {
+.rail-more:hover,
+.rail-more[aria-expanded="true"],
+.rail-more:focus-visible {
   border-color: var(--hair-2);
+  color: var(--text);
   background: var(--surface);
 }
 .rail-avatar {
+  border: none;
+  padding: 0;
+  cursor: pointer;
   flex: none;
   width: 28px;
   height: 28px;
@@ -267,6 +294,84 @@ main > .waiting {
 .rail-menu > :disabled {
   color: var(--muted);
   cursor: default;
+}
+
+/* settings: a pane between the rail and the console, opened from the ⋯ menu */
+.settings-pane {
+  flex: none;
+  width: min(380px, 80vw);
+  overflow-y: auto;
+  border-right: 1px solid var(--hair);
+  background: var(--surface);
+  padding: 14px 18px 24px;
+  outline: none;
+}
+.settings-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-hd h2 {
+  font: 600 17px var(--body);
+  margin: 0;
+}
+.settings-sub {
+  font: 600 11px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 18px 0 6px;
+}
+.set-scope {
+  border-top: 1px solid var(--hair);
+  padding: 12px 0 4px;
+}
+.set-scope h3 {
+  font: 600 14px var(--body);
+  margin: 0 0 4px;
+}
+.set-note {
+  font: 400 12px var(--body);
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.set-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+.set-label {
+  font: 500 13px var(--body);
+}
+.set-value {
+  font: 400 12px var(--mono);
+  color: var(--muted);
+  margin-left: 6px;
+}
+.set-edit {
+  display: flex;
+  gap: 6px;
+}
+.set-edit input,
+.set-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 400 13px var(--body);
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+.set-err,
+.set-msg.err {
+  color: var(--red);
+  font: 400 12px var(--body);
+}
+.set-msg.ok {
+  color: var(--ok);
+  font: 400 12px var(--body);
 }
 
 /* ── console grid: stage | drag handle | pane ── */
