@@ -49,6 +49,7 @@ from pydantic import (
 # ROSConfigError lives in the sibling `exceptions` module and is the
 # canonical exception family for any configuration-level failure (see
 # CLAUDE.md §5).
+from openral_core.code_refs import check_code_ref, check_ros_interface_package
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSObjectNotInMemory
 from openral_core.time_base import scene_control_rate_hz
 
@@ -2244,6 +2245,8 @@ class SceneComposition(BaseModel):
     composed MJCF XML and the mesh directory it references (the node writes the
     XML next to ``meshdir`` so relative mesh paths resolve). Today's only
     composer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.
+    The composer must live in an ``openral_*`` package (``check_code_ref``), checked
+    here and again before the import.
 
     Attributes:
         composer: ``"module.path:function"`` returning ``(xml, meshdir)``.
@@ -2252,7 +2255,7 @@ class SceneComposition(BaseModel):
 
     Example:
         >>> sc = SceneComposition(
-        ...     composer="pkg.scenes:compose_tabletop",
+        ...     composer="openral_sim.scenes:compose_tabletop",
         ...     params={"robot_lift_z": 0.36, "white_background": True},
         ... )
         >>> sc.params["robot_lift_z"]
@@ -2263,6 +2266,16 @@ class SceneComposition(BaseModel):
 
     composer: str
     params: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("composer")
+    @classmethod
+    def _composer_is_openral_code(cls, value: str) -> str:
+        # ValueError, not ROSConfigError: pydantic wraps only ValueError into a
+        # ValidationError, which every "skip an unloadable file" loop catches.
+        try:
+            return check_code_ref(value, setting="composition.composer")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class SceneDefaults(BaseModel):
@@ -3039,6 +3052,16 @@ class HalEntrypoints(BaseModel):
     real_bringup: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9_]+:[A-Za-z0-9_.\-]+\.launch\.py$"
     )
+
+    @field_validator("sim", "real")
+    @classmethod
+    def _entrypoint_is_openral_code(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        try:  # ValueError so pydantic raises a ValidationError (see SceneComposition)
+            return check_code_ref(value, setting=f"hal.{info.field_name}")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class RobotDescription(BaseModel):
@@ -8865,6 +8888,15 @@ class RosIntegration(BaseModel):
       same pose-constraint lowering, with the gaze pose computed from the
       camera's live TF pose (``LookAtRskill``,
       a specialisation of the ``pose`` builder)."""
+
+    @field_validator("package")
+    @classmethod
+    def _check_package_is_ros_interface(cls, v: str) -> str:
+        """``package`` is imported, so it must name a rosidl IDL package."""
+        try:  # ValueError so pydantic raises a ValidationError (see SceneComposition)
+            return check_ros_interface_package(v, setting="ros_integration.package")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("interface_name")
     @classmethod

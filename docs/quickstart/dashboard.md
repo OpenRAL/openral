@@ -98,6 +98,12 @@ openral robot link <code>
 
 That is the only step on the robot. Nothing to install and no root:
 
+- the code's issuer (`iss`) must be `https://www.openral.com` or
+  `https://dev.openral.com`, and its signing keys (`jwks`) must be on the same origin;
+  any other code is refused, and so is a stored `robot.json` naming another site. A
+  self-hosted issuer sets `OPENRAL_TRUSTED_ISSUERS` (comma-separated origins; it
+  replaces the openral.com pair, and an origin listed there may also serve another
+  listed issuer's keys);
 - the robot's identity (no secrets) goes to `~/.config/openral/robot.json` and its tunnel
   token to `tunnel.env` beside it, both mode 0600;
 - a pinned `cloudflared` (sha256-checked) is fetched into `~/.cache/openral`;

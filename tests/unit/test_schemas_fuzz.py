@@ -267,10 +267,15 @@ _safety_st = st.builds(
     cycle_time_violation_threshold_ms=_pos_float,
 )
 
+# `check_code_ref` admits only "module.path:attribute" in an openral_* package.
+_code_ref = st.from_regex(
+    r"openral_[a-z]{1,8}(\.[a-z_]{1,8}){0,2}:[A-Za-z_][A-Za-z0-9_]{0,10}", fullmatch=True
+)
+
 _hal_entrypoints_st = st.builds(
     HalEntrypoints,
-    sim=st.none() | _name,
-    real=st.none() | _name,
+    sim=st.none() | _code_ref,
+    real=st.none() | _code_ref,
 )
 
 _robot_description_st = st.builds(
@@ -286,7 +291,7 @@ _robot_description_st = st.builds(
     # Sim-only: a manifest with `hal.real` must also declare its control rate,
     # every kernel-read safety field and joint velocity limits (the real-hardware
     # contract), which tests/unit/test_robot_description_real_contract.py pins.
-    hal=st.builds(HalEntrypoints, sim=st.none() | _name, real=st.none()),
+    hal=st.builds(HalEntrypoints, sim=st.none() | _code_ref, real=st.none()),
     compute_edge=st.one_of(st.none(), _compute_spec_st),
     compute_local=st.one_of(st.none(), _compute_spec_st),
     compute_cloud=st.one_of(st.none(), _compute_spec_st),

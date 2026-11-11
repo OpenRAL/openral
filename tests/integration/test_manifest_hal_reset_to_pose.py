@@ -55,13 +55,13 @@ PANDA_MOBILE_YAML = REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
 def _make_node(robot_yaml: Path) -> Any:
     from rclpy.parameter import Parameter
 
-    node = ManifestHALLifecycleNode("test_reset_to_pose")
-    node.set_parameters(
-        [
+    node = ManifestHALLifecycleNode(
+        "test_reset_to_pose",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(robot_yaml)),
             Parameter("hal_mode", value="sim"),
             Parameter("publish_rate_hz", value=50.0),
-        ]
+        ],
     )
     return node
 

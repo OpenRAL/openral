@@ -72,14 +72,14 @@ def _run_lifecycle_and_count(robot_yaml: Path, *, rate_hz: float = 50.0) -> tupl
     from sensor_msgs.msg import JointState
 
     rclpy.init()
-    node: Any = ManifestHALLifecycleNode("test_manifest_hal_live")
-    node.set_parameters(
-        [
+    node: Any = ManifestHALLifecycleNode(
+        "test_manifest_hal_live",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(robot_yaml)),
             Parameter("hal_mode", value="sim"),
             Parameter("publish_rate_hz", value=rate_hz),
             Parameter("viewer_enabled", value=False),
-        ]
+        ],
     )
     executor = SingleThreadedExecutor()
     executor.add_node(node)

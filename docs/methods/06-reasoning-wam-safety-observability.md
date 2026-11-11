@@ -78,14 +78,15 @@ _NVIDIA Cosmos 3 reasoner backend (`OPENRAL_REASONER_MODEL=cosmos3-edge`), the p
 - module constant `BOOT_TIMEOUT_ENV: str = "OPENRAL_COSMOS3_BOOT_TIMEOUT_S"` (L80)
 - module constant `SIDECAR_SCRIPT_ENV: str = "OPENRAL_COSMOS3_SIDECAR"` (L81)
 - module constant `DEFAULT_BOOT_TIMEOUT_S: float = 1800.0` (L82) — default boot timeout in seconds.
-- module constant `_LOOPBACK_HOSTS: frozenset[str]` (L84) — `{"localhost", "127.0.0.1", "::1", "0.0.0.0"}`, hostnames `_managed_port` treats as loopback.
-- `find_cosmos3_sidecar_script() -> Path` — Locate `tools/cosmos3_reasoner_sidecar.py` (env override or repo-parent walk); raises `ROSConfigError` when an explicit override path is missing or the walk finds nothing. (L87)
-- `_managed_port(base_url) -> int | None` — Explicit port of a loopback base URL, or `None` (unmanaged, e.g. a portless reverse proxy). Autostart needs an explicit loopback port so spawn and readiness probe agree. (L119)
-- `class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient)` — Managed local sidecar client over the inherited OpenAI-compatible wire path; adds probe/spawn/readiness/teardown. `warm()` lets `ReasonerNode.on_configure` start the sidecar at bringup instead of on the first tick, overlapping the model load with other startup work. Idempotent: reuses a still-booting child instead of duplicate-spawning. (L155)
-  - `warm(self) -> None` (L342) — Start the managed sidecar now instead of on the first tick.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L361) — Ensure the managed server is up, then run the OpenAI-compatible path.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L376) — Ensure the managed server is up, then run the OpenAI-compatible path.
-  - `close(self) -> None` (L328) — Terminate the server child if (and only if) we spawned it.
+- module constant `_LOOPBACK_HOSTS: frozenset[str]` (L87) — `{"localhost", "127.0.0.1", "::1", "0.0.0.0"}`, hostnames `_managed_port` treats as loopback (a client URL may name `0.0.0.0`; the server never binds it).
+- `_bind_host(hostname: str) -> str` (L90) — The address the autostarted sidecar binds for a `_LOOPBACK_HOSTS` name: `::1` stays `::1`, everything else (`0.0.0.0`, `localhost`) is `127.0.0.1`, so the unauthenticated vLLM is never exposed on every interface. Used by `_spawn_argv`.
+- `find_cosmos3_sidecar_script() -> Path` — Locate `tools/cosmos3_reasoner_sidecar.py` (env override or repo-parent walk); raises `ROSConfigError` when an explicit override path is missing or the walk finds nothing. (L104)
+- `_managed_port(base_url) -> int | None` — Explicit port of a loopback base URL, or `None` (unmanaged, e.g. a portless reverse proxy). Autostart needs an explicit loopback port so spawn and readiness probe agree. (L136)
+- `class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient)` — Managed local sidecar client over the inherited OpenAI-compatible wire path; adds probe/spawn/readiness/teardown. `warm()` lets `ReasonerNode.on_configure` start the sidecar at bringup instead of on the first tick, overlapping the model load with other startup work. Idempotent: reuses a still-booting child instead of duplicate-spawning. (L172)
+  - `warm(self) -> None` (L359) — Start the managed sidecar now instead of on the first tick.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L378) — Ensure the managed server is up, then run the OpenAI-compatible path.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L393) — Ensure the managed server is up, then run the OpenAI-compatible path.
+  - `close(self) -> None` (L345) — Terminate the server child if (and only if) we spawned it.
 
 ### `python/reasoner/src/openral_reasoner/palette.py`
 _Closed-set `ToolPalette` + builder. Three tool variants (reload_gst_pipeline / lifecycle_transition / emit_prompt) are always available; `execute_skill` is gated by the installed-rSkill registry filtered by `RobotCapabilities` + license posture._

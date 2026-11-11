@@ -78,10 +78,16 @@ def test_deploy_scene_composition_round_trips():
     d = DeployScene(
         scene=SceneSpec(id="openarm_tabletop_pnp", backend="mujoco"),
         robot_id="openarm",
-        composition=SceneComposition(composer="pkg.mod:compose", params={"top_camera_fovy": 65.0}),
+        composition=SceneComposition(
+            composer="openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf",
+            params={"top_camera_fovy": 65.0},
+        ),
     )
     assert d.composition is not None
-    assert d.composition.composer == "pkg.mod:compose"
+    assert (
+        d.composition.composer
+        == "openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf"
+    )
     # survives a JSON round-trip (the wire format deploy_sim forwards to the node)
     again = DeployScene.model_validate_json(d.model_dump_json())
     assert again.composition == d.composition

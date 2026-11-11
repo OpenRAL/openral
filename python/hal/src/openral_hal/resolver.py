@@ -21,11 +21,11 @@ otherwise the class self-describes from its accepted ``transport`` keys.
 
 from __future__ import annotations
 
-import importlib
 import inspect
 from typing import Literal, cast
 
 from openral_core import RobotDescription, sim_scene_description
+from openral_core.code_refs import import_code_ref
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -139,7 +139,7 @@ def build_hal(
             if "mjcf_path" in derived:
                 derived["mjcf_path_override"] = derived.pop("mjcf_path")
             return _construct(MujocoArmHAL.from_description, description, derived)
-        return _construct(_import_object(entry), description, resolved)
+        return _construct(_import_object(entry, setting="hal.sim"), description, resolved)
     if mode == "real":
         entry = description.hal.real
         if entry is None:
@@ -147,7 +147,7 @@ def build_hal(
                 f"robot {description.name!r} has no real-hardware HAL (hal.real is "
                 "null); it is simulation-only — use `deploy sim` / `sim run`."
             )
-        return _construct(_import_object(entry), description, resolved)
+        return _construct(_import_object(entry, setting="hal.real"), description, resolved)
     raise ROSConfigError(f"build_hal: unknown mode {mode!r}; expected 'sim' or 'real'.")
 
 
@@ -220,7 +220,7 @@ def ros_control_hal(description: RobotDescription, *, mode: HalMode) -> bool:
         return False
     from openral_hal.ros_control_transport import RosControlDrivable
 
-    cls = _import_object(description.hal.real)
+    cls = _import_object(description.hal.real, setting="hal.real")
     members: frozenset[str] = RosControlDrivable.__protocol_attrs__  # type: ignore[attr-defined]  # reason: typing's 3.12 protocol member set, no public accessor before 3.13
     return all(hasattr(cls, m) for m in members)
 
@@ -388,27 +388,14 @@ def _construct(obj: object, description: RobotDescription, transport: dict[str, 
     return cast(HAL, obj(**kwargs))
 
 
-def _import_object(path: str) -> object:
-    """Resolve a ``"module.path:Attribute"`` string to the referenced object.
+def _import_object(path: str, *, setting: str = "hal entrypoint") -> object:
+    """Resolve a ``"module.path:Attribute"`` HAL entrypoint via ``import_code_ref``.
+
+    Only ``openral_*`` modules are admitted (``OPENRAL_ALLOW_EXTERNAL_PLUGINS=1`` widens
+    it), re-checked here although the manifest schema already checked it.
 
     Raises:
-        ROSConfigError: The string is malformed, the module is not importable,
-            or the attribute is absent.
+        ROSConfigError: The string is malformed or refused, the module is not
+            importable, or the attribute is absent.
     """
-    if ":" not in path:
-        raise ROSConfigError(
-            f"HAL entrypoint {path!r} is malformed; expected 'module.path:Attribute'."
-        )
-    module_path, _, attr = path.partition(":")
-    try:
-        module = importlib.import_module(module_path)
-    except ModuleNotFoundError as exc:
-        raise ROSConfigError(
-            f"HAL entrypoint {path!r}: module {module_path!r} is not importable ({exc})."
-        ) from exc
-    try:
-        return getattr(module, attr)
-    except AttributeError as exc:
-        raise ROSConfigError(
-            f"HAL entrypoint {path!r}: module {module_path!r} has no attribute {attr!r}."
-        ) from exc
+    return import_code_ref(path, setting=setting)

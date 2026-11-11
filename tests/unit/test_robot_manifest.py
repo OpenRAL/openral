@@ -30,6 +30,7 @@ from openral_core import (
     rskill_matches_robot,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.robot_ui import TRUSTED_ISSUERS, TRUSTED_ISSUERS_ENV
 from openral_reasoner.palette import build_tool_palette
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -190,14 +191,18 @@ _manifest_st = st.builds(
 _https = st.from_regex(
     r"https://[a-z][a-z0-9-]{0,20}\.openral\.com(/[a-z]{1,8}){0,2}", fullmatch=True
 )
-_enrolment_st = st.builds(
-    RobotEnrolment,
-    v=st.just(1),
-    robot=_id,
-    aud=_https,
-    org=st.text(max_size=12),
-    iss=_https,
-    jwks=_https,
+_path = st.from_regex(r"(/[a-z]{1,8}){0,2}", fullmatch=True)
+# iss on a trusted origin; jwks on the same one (TRUSTED_ISSUERS).
+_enrolment_st = st.sampled_from(TRUSTED_ISSUERS).flatmap(
+    lambda origin: st.builds(
+        RobotEnrolment,
+        v=st.just(1),
+        robot=_id,
+        aud=_https,
+        org=st.text(max_size=12),
+        iss=_path.map(lambda p: origin + p),
+        jwks=_path.map(lambda p: origin + p),
+    )
 )
 
 
@@ -279,3 +284,66 @@ def test_link_code_parses(pad: bool) -> None:
 def test_bad_link_codes_are_refused(bad: str) -> None:
     with pytest.raises(ROSConfigError):
         parse_robot_link_code(bad)
+
+
+# A crafted code naming another site would make the robot trust that site's tokens
+# and fetch its account settings from there.
+_FOREIGN_ISSUER = [
+    {"iss": "https://evil.example/api/auth", "jwks": "https://evil.example/api/auth/jwks"},
+    {
+        "iss": "https://openral.com.evil.example/api/auth",
+        "jwks": "https://openral.com.evil.example/api/auth/jwks",
+    },
+    {"iss": "https://www.openral.com/api/auth", "jwks": "https://evil.example/jwks"},
+    {"iss": "https://www.openral.com/api/auth", "jwks": "http://127.0.0.1:8080/jwks"},
+    {"iss": "https://www.openral.com/api/auth", "jwks": "https://dev.openral.com/api/auth/jwks"},
+]
+
+
+@pytest.mark.parametrize("fields", _FOREIGN_ISSUER)
+def test_a_link_code_naming_an_untrusted_issuer_is_refused(
+    fields: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from openral_observability.dashboard.remote_auth import load_enrolment
+
+    monkeypatch.delenv(TRUSTED_ISSUERS_ENV, raising=False)
+    with pytest.raises(ROSConfigError, match=r"trusted issuer|issuer's origin"):
+        parse_robot_link_code(_code({**_LINK, **fields}))
+    # A stored enrolment written before this check is refused the same way.
+    stored = tmp_path / "robot.json"
+    stored.write_text(
+        json.dumps({k: v for k, v in {**_LINK, **fields}.items() if k not in ("tunnel", "secret")})
+    )
+    with pytest.raises(ValueError, match=r"trusted issuer|issuer's origin"):
+        load_enrolment(stored)
+
+
+def test_both_openral_sites_are_trusted_issuers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(TRUSTED_ISSUERS_ENV, raising=False)
+    for origin in ("https://www.openral.com", "https://dev.openral.com"):
+        fields = {"iss": f"{origin}/api/auth", "jwks": f"{origin}/api/auth/jwks"}
+        assert parse_robot_link_code(_code({**_LINK, **fields}))[0].iss == fields["iss"]
+
+
+def test_an_explicit_default_port_is_the_same_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``https://www.openral.com:443`` is the trusted origin (RFC 6454 effective port)."""
+    monkeypatch.delenv(TRUSTED_ISSUERS_ENV, raising=False)
+    fields = {
+        "iss": "https://www.openral.com:443/api/auth",
+        "jwks": "https://WWW.openral.com/api/auth/jwks",
+    }
+    assert parse_robot_link_code(_code({**_LINK, **fields}))[0].iss == fields["iss"]
+    other_port = {**fields, "iss": "https://www.openral.com:8443/api/auth"}
+    with pytest.raises(ROSConfigError, match="trusted issuer"):
+        parse_robot_link_code(_code({**_LINK, **other_port}))
+
+
+def test_the_override_replaces_the_trusted_issuers(monkeypatch: pytest.MonkeyPatch) -> None:
+    self_hosted = {
+        "iss": "https://auth.acme.example/api/auth",
+        "jwks": "https://keys.acme.example/jwks",
+    }
+    monkeypatch.setenv(TRUSTED_ISSUERS_ENV, "https://auth.acme.example, https://keys.acme.example")
+    assert parse_robot_link_code(_code({**_LINK, **self_hosted}))[0].jwks == self_hosted["jwks"]
+    with pytest.raises(ROSConfigError, match="trusted issuer"):
+        parse_robot_link_code(_code(_LINK))  # openral.com is no longer listed

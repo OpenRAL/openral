@@ -162,6 +162,16 @@ owns its model (`options_model=` on `@SCENES.register`: RoboCasa's
 `make_env`, so a misspelled or out-of-range key fails with a
 `ROSConfigError` naming the scene id and the field.
 
+## Scene files name code — load them from trusted sources only
+
+A DeployScene's `composition.composer` is a `"module.path:function"` that the HAL
+node imports and calls with `composition.params` to build the arena MJCF. Only
+OpenRAL's own packages (top-level module `openral_*`, OpenRAL Pro's `openral_pro_*`
+included) are admitted, checked when the scene loads and again before the import
+(`openral_core.code_refs`); anything else is a `ROSConfigError` naming the field.
+`OPENRAL_ALLOW_EXTERNAL_PLUGINS=1` admits another module with a warning on every use.
+Treat a scene YAML like code: load it only from a source you trust.
+
 ## Available scene IDs (`scene.id`)
 
 | Backend             | Built-in scene IDs                                                                                                                                                                                                                                                                          | Adapter file                              |
