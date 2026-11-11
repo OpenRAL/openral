@@ -29,6 +29,15 @@ test("the model needs a key, a curated id, and its own provider's key", () => {
   assert.equal(modelProblem(data({ OPENRAL_REASONER_MODEL: { set: true, value: "cosmos3-edge" } })), "");
 });
 
+test("a model that runs on the robot needs no key", () => {
+  const onRobot = { id: "cosmos3-edge", label: "NVIDIA Cosmos 3 Edge", needs: null };
+  const withLocal = { ...SETTINGS, OPENRAL_REASONER_MODEL: { ...SETTINGS.OPENRAL_REASONER_MODEL, options: [...SETTINGS.OPENRAL_REASONER_MODEL.options, onRobot] } };
+  const d = (values) => ({ scope: "org", canWrite: true, settings: withLocal, values });
+  assert.equal(modelProblem(d({})), "");
+  assert.equal(modelProblem(d({ OPENRAL_REASONER_MODEL: { set: true, value: "cosmos3-edge" } })), "");
+  assert.match(modelProblem(d({ OPENRAL_REASONER_MODEL: { set: true, value: "gpt-5.5" } })), /GPT-5.5 needs the OpenAI API key/);
+});
+
 test("a secret only ever shows as set with its last four characters", () => {
   assert.equal(shownValue(SETTINGS.ANTHROPIC_API_KEY, { set: true, hint: "…abcd" }), "set …abcd");
   assert.equal(shownValue(SETTINGS.ANTHROPIC_API_KEY, null), "not set");
