@@ -139,3 +139,8 @@ def test_ros_idl_packages_and_the_opt_in_are_admitted(monkeypatch: pytest.Monkey
         assert check_ros_interface_package(package, setting="p") == package
     monkeypatch.setenv(ALLOW_EXTERNAL_PLUGINS_ENV, "1")
     assert check_ros_interface_package("vendor_actions", setting="p") == "vendor_actions"
+
+
+def test_a_trailing_newline_does_not_pass_the_reference_check() -> None:
+    with pytest.raises(ROSConfigError, match="malformed"):
+        check_code_ref("openral_hal.ur_real:UR5eRealHAL\n", setting="hal.real")

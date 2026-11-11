@@ -65,7 +65,7 @@ def check_code_ref(ref: str, *, setting: str) -> str:
         ...     print(str(exc).split(";")[0])
         hal.real = 'os:system' names code outside OpenRAL's packages (openral_*)
     """
-    match = _REF.match(ref)
+    match = _REF.fullmatch(ref)
     if match is None:
         raise ROSConfigError(f"{setting} = {ref!r} is malformed; expected 'module.path:attribute'.")
     top_level = match["module"].split(".", 1)[0]
