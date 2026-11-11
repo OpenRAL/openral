@@ -514,6 +514,19 @@ def test_result_only_failure_reports_the_goal_with_its_reason() -> None:
     assert "goal{pose.header.frame_id=map pose.pose.position.x=4" in message
 
 
+def test_outcome_summary_stays_on_one_line() -> None:
+    """A multi-line server message cannot split the reasoner's one-line EXECUTION record."""
+    from openral_rskill.ros_action_rskill import _summarize_wrapped_outcome
+
+    line = _summarize_wrapped_outcome(
+        "STATUS_ABORTED", {"error_code": 104, "error_msg": "no path\n\tcostmap blocked"}, {}
+    )
+    assert (
+        line
+        == "status=STATUS_ABORTED result{error_code=104 error_msg=no path costmap blocked} goal{}"
+    )
+
+
 def test_outcome_summary_is_bounded() -> None:
     """A large result (or goal) never floods the reasoner's EXECUTION line."""
     from openral_rskill.ros_action_rskill import (

@@ -198,7 +198,8 @@ def _summarize_wrapped_outcome(status: str, result: Any, goal: dict[str, Any]) -
         return " ".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}" for k, v in items)
 
     res, gol = fmt(_scalar_items(result)), fmt(_scalar_items(goal))
-    line = f"status={status} result{{{res}}} goal{{{gol}}}"
+    # One line: a server's multi-line ``error_msg`` must not break the EXECUTION line.
+    line = " ".join(f"status={status} result{{{res}}} goal{{{gol}}}".split())
     if len(line) > _OUTCOME_SUMMARY_MAX_CHARS:
         line = line[: _OUTCOME_SUMMARY_MAX_CHARS - 1] + "…"
     return line
