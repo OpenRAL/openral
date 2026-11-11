@@ -683,6 +683,13 @@ _Torch-free GPU probes shared across layers: one `nvidia-smi` VRAM query for the
 - `is_tegra_host(release_path=None) -> bool` — The one Tegra/L4T probe (`None` reads `TEGRA_RELEASE_PATH` at call time, so tests point that constant at a captured fixture), shared by `openral_sim._sidecar_common.default_expandable_segments` (allocator default), `openral_runner…gstreamer.pipeline.detect_platform` and `openral_detect.probes.gpu._probe_jetson`. Answers "L4T image", not "unified memory": DGX Spark (GB10) runs DGX OS. (L26)
 - `detect_gpu_vram_gb(field) -> float` (L42) — One `nvidia-smi --query-gpu=<field>` value for GPU 0 in GB; `0.0` on any failure so callers skip their check rather than block.
 
+### `python/core/src/openral_core/ros_graph_scope.py`
+_Whether a process's ROS graph reaches beyond this host — the one decision shared by `openral_cli._dds_scope.confine_real_scope` (`deploy run`) and `deploy_e2e.launch.py`'s `_require_host_confined_real_graph` (a hand-run `hal_mode:=real`). Lives in core because the launch cannot import `openral_cli`. Threat model: `docs/reference/ros-graph-security.md`._
+
+- const `ALLOW_NETWORK_ROS_ENV: Final[str]` — `"OPENRAL_ALLOW_NETWORK_ROS"`; only `"1"` opts a real robot's graph into spanning hosts. (L27)
+- `networked_ros_scope(env: Mapping[str, str]) -> str | None` — The scope description when `env` reaches other hosts (`ROS_STATIC_PEERS` set, or `ROS_AUTOMATIC_DISCOVERY_RANGE` unset/empty — SUBNET to ROS — or anything but `LOCALHOST`/`OFF`), else `None`; `ROS_LOCALHOST_ONLY=1` overrides both, as in rcl. (L33)
+- `require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None` — Raises `ROSConfigError` on a networked scope unless `env[ALLOW_NETWORK_ROS_ENV] == "1"`; returns the scope when opted in so the caller logs the hazard, `None` when confined. (L59)
+
 ### `python/core/src/openral_core/can.py`
 _Robot-agnostic SocketCAN transport discovery — a CAN-bus robot is invisible to USB/serial discovery, so this is the one place that reads the kernel's view of CAN links. Linux-only, dependency-free, needs no root, and never perturbs a running robot._
 

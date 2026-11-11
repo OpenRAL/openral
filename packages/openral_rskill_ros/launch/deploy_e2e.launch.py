@@ -46,7 +46,7 @@ _VENV_SITE = os.environ.get("OPENRAL_VENV_SITE")
 if _VENV_SITE and os.path.isdir(_VENV_SITE):
     site.addsitedir(_VENV_SITE)
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
@@ -2175,6 +2175,32 @@ def _portable_robot_description(urdf_xml: str) -> str:
         return urdf_xml
 
 
+def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> None:
+    """Refuse a real HAL on a ROS graph that reaches other hosts, unless opted in.
+
+    ``openral deploy run`` confines its launch env first
+    (``openral_cli._dds_scope.confine_real_scope``); a hand-run
+    ``ros2 launch ... hal_mode:=real`` gets no such default, so this checks the
+    environment the graph actually runs under with the same decision
+    (``openral_core.ros_graph_scope``). Unset ``ROS_AUTOMATIC_DISCOVERY_RANGE``
+    is SUBNET to ROS and is refused here. ``OPENRAL_ALLOW_NETWORK_ROS=1`` opts in.
+
+    Raises:
+        ROSConfigError: ``hal_mode == "real"`` on a networked scope without the opt-in.
+    """
+    if hal_mode != "real":
+        return
+    from openral_core.ros_graph_scope import require_host_confined_ros_scope
+
+    scope = require_host_confined_ros_scope(env)
+    if scope is not None:
+        print(
+            f"[deploy_e2e] WARNING: real robot on a networked ROS graph ({scope}); "
+            f"every host on this network can command the robot.",
+            flush=True,
+        )
+
+
 def _build_real_bringup_include(real_bringup: str | None) -> IncludeLaunchDescription | None:
     """Include the robot's vendor ros2_control bringup, if its manifest declares one.
 
@@ -2614,6 +2640,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # ``supported_control_modes``. Default ``"sim"`` matches the launch's
     # digital-twin heritage.
     hal_mode = LaunchConfiguration("hal_mode").perform(context)
+    _require_host_confined_real_graph(hal_mode, os.environ)
     hardware_estop_device = LaunchConfiguration("hardware_estop_device").perform(context)
     enable_slam = LaunchConfiguration("enable_slam").perform(context).lower() in (
         "1",

@@ -45,11 +45,18 @@ only on a trusted, isolated network (a robot-only VLAN or a direct cable).
 so a peer cannot relax a limit loaded from the manifest. Change a limit in
 `robot.yaml` and relaunch.
 
-Only `openral deploy run` applies this. A hand-run
-`ros2 launch openral_rskill_ros deploy_e2e.launch.py hal_mode:=real` inherits
-your shell's scope as-is: export `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a
-non-zero `ROS_DOMAIN_ID` first. `ROS_LOCALHOST_ONLY=1` (deprecated) also counts
-as host-confined, since rcl lets it override both variables.
+**A hand-run launch is checked too.** `openral deploy run` sets the defaults
+above; a hand-run
+`ros2 launch openral_rskill_ros deploy_e2e.launch.py hal_mode:=real` gets no
+defaults but applies the same decision to the environment it was started with,
+and refuses with `ROSConfigError` when the graph would reach other hosts —
+including when `ROS_AUTOMATIC_DISCOVERY_RANGE` is unset, which ROS reads as
+`SUBNET`. Export `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a non-zero,
+non-reserved `ROS_DOMAIN_ID` first, or set `OPENRAL_ALLOW_NETWORK_ROS=1`.
+`ROS_LOCALHOST_ONLY=1` (deprecated) also counts as host-confined, since rcl lets
+it override both variables. The shared decision is
+`openral_core.ros_graph_scope.require_host_confined_ros_scope`; the launch hook
+is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
 
 Host confinement limits *discovery*; it is not a firewall. Combine it with a
 host firewall that drops inbound DDS ports (UDP 7400+) on interfaces the robot

@@ -44,6 +44,7 @@ from typing import Final
 
 import structlog
 from openral_core.exceptions import ROSConfigError
+from openral_core.ros_graph_scope import ALLOW_NETWORK_ROS_ENV, require_host_confined_ros_scope
 
 __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
@@ -81,12 +82,6 @@ ALLOW_UNVERIFIED_GRAPH_ENV: Final[str] = "OPENRAL_ALLOW_UNVERIFIED_GRAPH"
 #: that it is not 0, which is where an unconfigured robot host lands.
 SIM_DOMAIN_ID: Final[str] = "77"
 
-#: Opt-in for a real robot's ROS graph to reach beyond this host
-#: (``ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`` / ``SYSTEM_DEFAULT`` or
-#: ``ROS_STATIC_PEERS``). Without it ``confine_real_scope`` refuses: every
-#: host that can discover the graph can command the arm (see module docstring).
-ALLOW_NETWORK_ROS_ENV: Final[str] = "OPENRAL_ALLOW_NETWORK_ROS"
-
 #: Domains the hash table spans. Upper bound 101: on Linux, domains 102-232
 #: collide with the default ephemeral port range (ROS 2 "The ROS_DOMAIN_ID"
 #: concept page; RTPS port = 7400 + 250 * domain + offsets). Below 10 is skipped
@@ -114,9 +109,6 @@ RESERVED_DOMAINS: Final[frozenset[int]] = frozenset({0, 42, int(SIM_DOMAIN_ID)})
 
 #: Where a robot id whose hash lands on a reserved domain is re-hashed to.
 _FREE_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in _HASH_DOMAINS if d not in RESERVED_DOMAINS)
-
-#: Discovery ranges that keep a graph on this host.
-_HOST_CONFINED_RANGES: Final[frozenset[str]] = frozenset({"LOCALHOST", "OFF"})
 
 #: How long the probe listens before deciding the graph is empty. DDS discovery
 #: is asynchronous: a participant that exists is not necessarily *known* the
@@ -218,26 +210,17 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
         >>> env["ROS_AUTOMATIC_DISCOVERY_RANGE"]
         'LOCALHOST'
     """
-    discovery = env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip().upper()
-    peers = env.get("ROS_STATIC_PEERS", "").strip()
-    # rcl honours the deprecated ROS_LOCALHOST_ONLY=1 over both variables above
-    # ("'automatic_discovery_range' and 'static_peers' will be ignored", Jazzy).
     localhost_only = env.get("ROS_LOCALHOST_ONLY", "").strip() == "1"
-    networked = not localhost_only and (
-        bool(peers) or (discovery != "" and discovery not in _HOST_CONFINED_RANGES)
+    defaulted = (
+        not localhost_only
+        and not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip()
+        and not env.get("ROS_STATIC_PEERS", "").strip()
     )
-    if networked:
-        scope = f"ROS_AUTOMATIC_DISCOVERY_RANGE={discovery or '(unset)'} ROS_STATIC_PEERS={peers}"
-        if env.get(ALLOW_NETWORK_ROS_ENV) != "1":
-            raise ROSConfigError(
-                f"refusing to start a real robot on a ROS graph that reaches other hosts "
-                f"({scope}). Any host that can discover this graph can publish "
-                f"/openral/safe_action (the HAL executes it), call /openral/estop_reset, "
-                f"and spoof /joint_states or the deadman heartbeat. Unset those variables "
-                f"to keep the graph on this host (the default), or, when the graph must "
-                f"span machines on a trusted, isolated network, set "
-                f"{ALLOW_NETWORK_ROS_ENV}=1 and export the same ROS_DOMAIN_ID on every host.",
-            )
+    # The default first, on a copy, so a refusal leaves `env` untouched. Not
+    # setdefault: an exported-but-empty value means SUBNET to ROS.
+    scoped = {**env, "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"} if defaulted else env
+    scope = require_host_confined_ros_scope(scoped)
+    if scope is not None:
         _log.warning(
             "dds_scope.real_robot_graph_networked",
             scope=scope,
@@ -245,8 +228,7 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
             opt_in=ALLOW_NETWORK_ROS_ENV,
             hazard="every host on this network can command the robot",
         )
-    elif not discovery and not localhost_only:
-        # Not setdefault: an exported-but-empty value means SUBNET to ROS.
+    if defaulted:
         env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
     if not env.get("ROS_DOMAIN_ID", "").strip():
         env["ROS_DOMAIN_ID"] = real_domain_id(robot_id)
