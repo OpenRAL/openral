@@ -136,6 +136,18 @@ class TestConfineRealScope:
         assert "/openral/safe_action" in str(excinfo.value)
         assert env == scope, "a refusal must leave the env untouched"
 
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            {"ROS_DISCOVERY_SERVER": "10.0.0.9:11811"},
+            {"RMW_IMPLEMENTATION": "rmw_zenoh_cpp"},
+        ],
+    )
+    def test_a_discovery_server_or_zenoh_needs_the_opt_in(self, scope: dict[str, str]) -> None:
+        """Neither is confined by the discovery range the default sets."""
+        with pytest.raises(ROSConfigError, match=_dds_scope.ALLOW_NETWORK_ROS_ENV):
+            _dds_scope.confine_real_scope(dict(scope), robot_id="openarm")
+
     def test_opted_in_static_peers_still_default_the_range_to_localhost(self) -> None:
         """Peers alone leave the range unset, which ROS reads as SUBNET (the whole LAN)."""
         env = {"ROS_STATIC_PEERS": "10.0.0.5", _dds_scope.ALLOW_NETWORK_ROS_ENV: "1"}

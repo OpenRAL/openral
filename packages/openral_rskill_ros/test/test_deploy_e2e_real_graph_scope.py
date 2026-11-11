@@ -46,6 +46,10 @@ def launch_module() -> ModuleType:
         {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_STATIC_PEERS": "10.0.0.2"},
         {"ROS_LOCALHOST_ONLY": "0", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"},
         {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", "OPENRAL_ALLOW_NETWORK_ROS": "true"},
+        # Fast DDS discovery server / Zenoh reach other hosts whatever the range says.
+        {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_DISCOVERY_SERVER": "10.0.0.9:11811"},
+        {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "RMW_IMPLEMENTATION": "rmw_zenoh_cpp"},
+        {"ROS_LOCALHOST_ONLY": "1", "RMW_IMPLEMENTATION": "rmw_zenoh_cpp"},
     ],
 )
 def test_a_real_hal_on_a_networked_graph_is_refused(
@@ -59,7 +63,6 @@ def test_a_real_hal_on_a_networked_graph_is_refused(
     "env",
     [
         {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"},
-        {"ROS_AUTOMATIC_DISCOVERY_RANGE": "off"},
         {"ROS_LOCALHOST_ONLY": "1", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"},
         {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", "OPENRAL_ALLOW_NETWORK_ROS": "1"},
     ],
@@ -75,6 +78,14 @@ def test_any_non_sim_mode_is_checked(launch_module: ModuleType, hal_mode: str) -
     """Fail closed: the launch composes the hardware path for every non-"sim" value."""
     with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_NETWORK_ROS"):
         launch_module._require_host_confined_real_graph(hal_mode, {})
+
+
+def test_discovery_off_is_refused(launch_module: ModuleType) -> None:
+    """OFF hides the robot's own nodes from each other: refuse, point at LOCALHOST."""
+    with pytest.raises(ROSConfigError, match="use LOCALHOST"):
+        launch_module._require_host_confined_real_graph(
+            "real", {"ROS_AUTOMATIC_DISCOVERY_RANGE": "off"}
+        )
 
 
 def test_a_sim_is_not_checked(launch_module: ModuleType) -> None:

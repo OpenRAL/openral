@@ -38,13 +38,17 @@ wins; an exported empty value counts as unset. Simulations are unchanged
 (`LOCALHOST`, domain 77). Implementation:
 `openral_cli._dds_scope.confine_real_scope`.
 
-**Networked graphs need an explicit opt-in.** If `ROS_STATIC_PEERS` is set, or
-`ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST` / `OFF`, the deploy
+**Networked graphs need an explicit opt-in.** If `ROS_STATIC_PEERS` or a Fast DDS
+`ROS_DISCOVERY_SERVER` is set, `RMW_IMPLEMENTATION=rmw_zenoh_cpp` (Zenoh reads
+neither discovery variable and its router listens on every interface), or
+`ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST`, the deploy
 refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set, and
 logs `dds_scope.real_robot_graph_networked` as a warning when it is. An unset
 range still defaults to `LOCALHOST` when only `ROS_STATIC_PEERS` is exported,
 so an opted-in graph reaches the listed peers, not the whole subnet. Opt in
-only on a trusted, isolated network (a robot-only VLAN or a direct cable).
+only on a trusted, isolated network (a robot-only VLAN or a direct cable). `OFF` is refused outright: in Jazzy it hides nodes
+even from each other on one host, so the robot's lifecycle nodes would never
+find one another.
 
 **Kernel limits are fixed after configure.** The safety kernel refuses every
 `set_parameters` call once it has left `UNCONFIGURED`, and after a failed configure or any cleanup,
