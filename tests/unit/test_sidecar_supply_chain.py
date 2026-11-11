@@ -18,6 +18,7 @@ from openral_sim._sidecar_common import (
     checkout_head,
     ensure_source,
     make_isolated_env,
+    run_sidecar,
     sidecar_env,
 )
 
@@ -81,6 +82,8 @@ def test_rldx_install_plan_fetches_the_pin_and_verifies_head() -> None:
     assert f"fetch -q --depth 1 origin {_RLDX_SIDECAR_REPO_SHA}" in script
     assert f'rev-parse HEAD)" = {_RLDX_SIDECAR_REPO_SHA} ]' in script
     assert " clone " not in script
+    # Fetched beside the destination and moved in only when complete.
+    assert 'part="$src.partial"' in script and 'mv "$part" "$src"' in script
 
 
 def test_sidecar_env_drops_credentials_keeps_runtime() -> None:
@@ -150,6 +153,45 @@ def test_credential_words_match_whole_words_only() -> None:
         }
     )
     assert env == {"OPENRAL_REASONER_MAX_TOKENS": "4096"}
+
+
+def test_sidecar_env_drops_any_key_and_keeps_server_overrides() -> None:
+    """OPENRAL_ACTOR_KEY is the compliance log's HMAC key; RLDX_ATTN_IMPL a documented opt-out."""
+    env = sidecar_env(
+        {"OPENRAL_ACTOR_KEY": "k", "RLDX_ATTN_IMPL": "sdpa", "TRANSFORMERS_OFFLINE": "1"}
+    )
+    assert env == {"RLDX_ATTN_IMPL": "sdpa", "TRANSFORMERS_OFFLINE": "1"}
+
+
+def test_run_sidecar_scrubs_before_the_clone_is_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RLDX / InternVLA boot through run_sidecar: the clone's `uv sync` sees no API key."""
+    import argparse
+    import os
+
+    if shutil.which("uv") is None:
+        pytest.skip("uv not on PATH")
+    url, _, tip = _upstream(tmp_path)
+    monkeypatch.setattr(os, "environ", {**os.environ, **_OPERATOR_SECRETS})
+    seen: dict[str, str] = {}
+
+    def install_deps(**_: object) -> Path:
+        seen.update(os.environ)
+        raise SystemExit("stop before exec")
+
+    args = argparse.Namespace(home=tmp_path / "work", quantization="bf16")
+    with pytest.raises(SystemExit, match="stop before exec"):
+        run_sidecar(
+            label="t",
+            family="rldx",
+            repo_url=url,
+            repo_sha=tip,
+            args=args,
+            install_deps=install_deps,
+            make_wrapper=lambda **_: tmp_path,
+        )
+    assert seen and not set(_OPERATOR_SECRETS) & set(seen)
 
 
 def test_isolated_env_never_carries_the_reasoner_key(monkeypatch: pytest.MonkeyPatch) -> None:

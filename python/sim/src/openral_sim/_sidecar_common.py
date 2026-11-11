@@ -237,11 +237,14 @@ _SIDECAR_ENV_PREFIXES = (
     "ROBOCASA_", "MS_", "SAPIEN_", "VLABENCH_", "OMNIGIBSON_", "GIBSON_", "PIP_",
     # vLLM serving knobs (the Cosmos 3 reasoner sidecar).
     "VLLM_", "FLASHINFER_",
+    # Per-family server overrides (RLDX_ATTN_IMPL) and model-loader / GL knobs.
+    "RLDX_", "TRANSFORMERS_", "LIBGL_", "__GL_", "JAX_", "XLA_",
 )  # fmt: skip
 # A credential marker is a whole ``_``-separated word, so OPENRAL_REASONER_MAX_TOKENS
-# (a budget, not a secret) is not caught by TOKEN.
+# (a budget, not a secret) is not caught by TOKEN. A bare KEY counts
+# (OPENRAL_ACTOR_KEY is the compliance log's HMAC key).
 _CREDENTIAL_NAME = re.compile(
-    r"(?:^|_)(?:API_?KEY|ACCESS_KEY|PRIVATE_KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)"
+    r"(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)"
 )
 
 
@@ -624,6 +627,9 @@ def run_sidecar(
     Does not return (``exec_server`` replaces the process); the ``return 0``
     is for type-checkers only.
     """
+    # The clone's build code (`uv sync` in install_deps) runs here, before the
+    # server: no operator credential may reach it either.
+    scrub_environ()
     uv = ensure_uv()
     work: Path = args.home
     source = ensure_source(label, work, repo_url, repo_sha)

@@ -1502,12 +1502,15 @@ def _rldx_sidecar_setup_plan() -> BackendInstallPlan:
                 argv=[
                     "sh",
                     "-c",
-                    f"set -e; src={_sh(source)}; "
-                    f'if [ ! -d "$src/.git" ]; then '
-                    f'{_sh(git)} init -q "$src"; '
-                    f'{_sh(git)} -C "$src" remote add origin {_RLDX_SIDECAR_REPO_URL}; '
-                    f'{_sh(git)} -C "$src" fetch -q --depth 1 origin {_RLDX_SIDECAR_REPO_SHA}; '
-                    f'{_sh(git)} -C "$src" checkout -q FETCH_HEAD; fi; '
+                    # Built in "$src.partial" and moved into place only when complete
+                    # (as ensure_source does): an interrupted fetch never leaves a
+                    # "$src/.git" that a retry would skip the fetch for.
+                    f'set -e; src={_sh(source)}; part="$src.partial"; '
+                    f'if [ ! -d "$src/.git" ]; then rm -rf "$part"; '
+                    f'{_sh(git)} init -q "$part"; '
+                    f'{_sh(git)} -C "$part" remote add origin {_RLDX_SIDECAR_REPO_URL}; '
+                    f'{_sh(git)} -C "$part" fetch -q --depth 1 origin {_RLDX_SIDECAR_REPO_SHA}; '
+                    f'{_sh(git)} -C "$part" checkout -q FETCH_HEAD; mv "$part" "$src"; fi; '
                     f'[ "$({_sh(git)} -C "$src" rev-parse HEAD)" = {_RLDX_SIDECAR_REPO_SHA} ] '
                     f'|| {{ echo "$src is not at the pinned {_RLDX_SIDECAR_REPO_SHA}: '
                     f'delete it to re-fetch" >&2; exit 1; }}',
