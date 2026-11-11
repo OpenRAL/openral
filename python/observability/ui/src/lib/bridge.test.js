@@ -24,7 +24,8 @@ const until = async (cond, ms = 3000) => {
 
 async function serve() {
   const server = new FoxgloveServer({ name: "test", capabilities: ["assets"] });
-  const wss = new WebSocketServer({ port: 0, handleProtocols: (p) => server.handleProtocols(p) });
+  const offered = [];
+  const wss = new WebSocketServer({ port: 0, handleProtocols: (p) => (offered.push(...p), server.handleProtocols(p)) });
   await once(wss, "listening");
   wss.on("connection", (conn, req) => server.handleConnection(conn, `${req.socket.remoteAddress}:${req.socket.remotePort}`));
   const add = (topic, schemaName, schema) => server.addChannel({ topic, encoding: "cdr", schemaName, schema, schemaEncoding: "ros2msg" });
@@ -36,7 +37,7 @@ async function serve() {
   const subscribed = [];
   server.on("subscribe", (id) => subscribed.push(id));
   const close = () => new Promise((r) => (wss.clients.forEach((c) => c.terminate()), wss.close(r)));
-  return { server, wss, ch, subscribed, url: `ws://127.0.0.1:${wss.address().port}`, close };
+  return { server, wss, ch, subscribed, offered, url: `ws://127.0.0.1:${wss.address().port}`, close };
 }
 
 test("subscribes only to wanted topics; ordered events and newest-only snapshots", async () => {
@@ -46,6 +47,8 @@ test("subscribes only to wanted topics; ordered events and newest-only snapshots
   const b = new Bridge({ url: s.url, onEvent: (t, m) => events.push([t, m.data]), onStatus: (st) => statuses.push(st) });
   try {
     await until(() => b.topics().length === 3);
+    // foxglove_bridge 3.x refuses a client that does not offer foxglove.sdk.v1.
+    assert.deepEqual(s.offered, ["foxglove.sdk.v1", "foxglove.websocket.v1"]);
     b.want(["/robot_description", "/scan"]);
     await until(() => s.subscribed.length === 2);
     assert.deepEqual(s.subscribed.sort(), [s.ch.urdf, s.ch.scan].sort()); // never /other

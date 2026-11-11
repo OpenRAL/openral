@@ -11,6 +11,11 @@ const INCREMENTAL = new Set([
   "std_msgs/msg/String",
 ]);
 
+// foxglove_bridge 3.x (built on the Foxglove SDK) accepts only `foxglove.sdk.v1` and
+// answers HTTP 400 to a client that offers just the legacy name; older bridges know
+// only the legacy one. Same wire format for everything this page uses, so offer both.
+export const SUBPROTOCOLS = ["foxglove.sdk.v1", FoxgloveClient.SUPPORTED_SUBPROTOCOL];
+
 // Mesh downloads share the socket with live data: a few at a time, each with its
 // own deadline counted from when it is sent, not from when it was queued.
 const ASSET_PARALLEL = 3;
@@ -34,7 +39,7 @@ export class Bridge {
     this.nextAsset = 1;
     this.wanted = new Set();
     this.isClosed = false;
-    const ws = new WebSocketImpl(url, [FoxgloveClient.SUPPORTED_SUBPROTOCOL]);
+    const ws = new WebSocketImpl(url, SUBPROTOCOLS);
     this.client = new FoxgloveClient({ ws });
     this.client.on("open", () => onStatus?.("open"));
     this.client.on("close", (e) => this.#closed(e?.reason || `closed (${e?.code ?? "?"})`));
