@@ -366,6 +366,16 @@ checkout. The first run without the flag ends it. For several seeds of one scene
         dynamic: true              # graspable rigid body (default) vs static prop
 ```
 
+A local USD works as the environment too: the MakerMods Metal examples
+([`sim/isaac_makermods_metal_pick_place.yaml`](sim/isaac_makermods_metal_pick_place.yaml),
+[`sim/isaac_makermods_metal_pen_holder.yaml`](sim/isaac_makermods_metal_pen_holder.yaml))
+name their desk / wall / floor USD (written by `tools/make_metal_isaac_usd.py` from the
+MuJoCo twins' options) in `scene.assets_uri`, so it replaces the default ground plane, and
+spawn the task objects from `objects`. Two options they use: `link_box_colliders` (robot
+link → one box collider in the link frame, replacing the converter's convex hull, e.g. a
+finger's pad) and `rtx_settings` (raw carb render settings applied last, e.g.
+`/rtx/post/aa/op: 2` for FXAA instead of DLSS at 640 x 480).
+
 A dynamic object without physics gets a rigid body and convex-hull colliders;
 `world.reset()` returns every object to its declared pose. Step `info` carries
 `object_positions` and `robot_position` (simulator ground truth, not a policy

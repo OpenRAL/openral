@@ -1,0 +1,141 @@
+# MakerMods Metal Arm Station "pen holder" on OpenRAL's Isaac Sim 6.x backend: the Isaac
+# example of the two-arm station, the twin of scenes/sim/makermods_metal_pen_holder.yaml
+# (MuJoCo). The left arm lifts the hex-perforated cup off the riser shelf, the right arm
+# drops the marker into it (makermods/pen_holder_bi_20260723_161553, robot_type
+# bi_metal_follower; rskills/act-pen-holder-bi).
+#
+# * Geometry: tools/make_metal_isaac_usd.py writes scenes/sim/assets/makermods_metal_pen_holder/
+#   from the MuJoCo twin's MetalPenHolderOptions defaults (desk, riser shelf with the real
+#   board, wall, the cup's mesh with its holes and solid wall, the 20 mm marker with its
+#   print), so the two twins share every size, mass and friction. Start poses: the twin's
+#   holder_start / pen_start.
+# * Robot: robots/makermods_metal_station from its derived URDF, fixed base at station_mid.
+#   The URDF's finger <mimic> (joint8 = -joint7) is stripped by the sidecar; the driven
+#   joint8 leads and joint7 = -joint8 follows the measured joint8
+#   (gripper_followers_track: measured), as the real coupled jaws.
+# * Gripper: the dataset stroke s (0 closed .. ~105 open) reaches the scene as s / 100
+#   (rskills/act-pen-holder-bi gripper_scale 100); joint8 = s / 2000 - 1.25 mm, the twin's
+#   finger map, as the curve below.
+# * Finger colliders: the converter wraps each finger mesh in one instanced convex hull,
+#   whose face is not the finger's pad; each finger instead collides as a thin box on its
+#   inner face (link_box_colliders), so a 20 mm pen is pinched pad to pad.
+# * Cameras, 640x480: `top` and both wrists from the station manifest (top: the measured
+#   static mount; wrists: sim_placement plus the MuJoCo twin's fitted camera_offsets,
+#   resolved below; the left wrist's fx 335.4 is the manifest's refit).
+# * Rendering: FXAA instead of DLSS (rtx_settings), whose upscaler smears the 640x480
+#   wrist views' desk grain; no motion blur; texture streaming off, so the baked desk
+#   texture is resident from the first frame.
+# * Success (placement_success): the pen's centre inside the cup's interior (below the
+#   rim), released and at rest = complete; resting on the cup above its rim = partial.
+#   The MuJoCo twin's semi grade (lifted, then dropped beside the cup) has no Isaac
+#   counterpart: that is a fail here.
+#
+# Requirements: NVIDIA RTX GPU, Isaac Sim 6.1 (binary install via
+# OPENRAL_ISAAC_SIDECAR_PYTHON or /opt/isaac-sim).
+#
+# Run::
+#
+#     openral sim run --config scenes/sim/isaac_makermods_metal_pen_holder.yaml \
+#       --rskill rskills/act-pen-holder-bi
+
+robot_id: "makermods_metal_station"
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 480
+  observation_width: 640
+  # The static station (desk, wall, floor) is the environment: it replaces Isaac's default
+  # ground plane, which would show past the desk's edges.
+  assets_uri: "scenes/sim/assets/makermods_metal_pen_holder/table.usda"
+  cameras: ["top", "wrist_left", "wrist_right"]
+  backend_options:
+    boot_timeout_s: 1200
+    depth_cameras: false
+    dome_light:
+      intensity: 1500.0
+      color: [0.95, 0.95, 0.93]
+    # The real arm's dark anodised links: the MuJoCo twin's arm_rgba (0.30, 0.33, 0.32), darkened
+    # until the rendered arm matched the twin's (Isaac's lights read brighter); the derived
+    # URDF's meshes are white.
+    robot_material_colors:
+      "*": [0.03, 0.036, 0.034]
+    rtx_settings:
+      /rtx/post/aa/op: 2
+      /rtx/post/motionblur/enabled: false
+      /rtx-transient/resourcemanager/texturestreaming/enabled: false
+    objects:
+      - name: pen_holder  # on the shelf top; origin at the centre of its bottom face
+        usd: "scenes/sim/assets/makermods_metal_pen_holder/pen_holder.usda"
+        xyz: [0.475, 0.294, 0.0905]
+      - name: pen  # on the desk: radius 0.01
+        usd: "scenes/sim/assets/makermods_metal_pen_holder/pen.usda"
+        xyz: [0.27, -0.318, 0.0105]
+        yaw: -0.0297
+    # The wrists' sim_placement composed with MetalPenHolderOptions.camera_offsets (the
+    # fits to the real wrist frames), in each gripper_base frame; MuJoCo camera axes.
+    camera_mounts:
+      wrist_left:
+        link: left_gripper_base
+        xyz: [0.0847, 0.00023, -0.01585]
+        quat_wxyz: [0.151094, 0.682939, 0.704825, 0.118266]
+        axes: usd
+      wrist_right:
+        link: right_gripper_base
+        xyz: [0.07189, -0.00394, -0.02464]
+        quat_wxyz: [0.118749, 0.710486, 0.687849, 0.089285]
+        axes: usd
+    # The MuJoCo twin's start pose (MetalPenHolderOptions.initial_joint_positions, deg -> rad).
+    initial_joint_positions:
+      left_joint1: -0.1148
+      left_joint2: -0.0028
+      left_joint3: 0.0012
+      left_joint4: 0.0346
+      left_joint5: -0.048
+      left_joint6: 0.026
+      left_gripper: 0.0
+      right_joint1: -0.0211
+      right_joint2: 0.0
+      right_joint3: 0.0836
+      right_joint4: -0.2951
+      right_joint5: -0.0291
+      right_joint6: -0.0091
+      right_gripper: 0.0
+    # Manifest s/100 -> URDF joint8 (m): s/2000 - 1.25 mm, closed below s = 2.5.
+    gripper_joint_curve:
+      left_gripper: [[0.025, 0.0], [1.025, 0.05]]
+      right_gripper: [[0.025, 0.0], [1.025, 0.05]]
+    gripper_followers_track: measured
+    # Pad boxes on each finger's inner face (link frame: half 1 x 9 x 34 mm, 54 mm out).
+    link_box_colliders:
+      left_link7: {xyz: [-0.0029, 0.0, 0.054], half_extents: [0.001, 0.009, 0.034]}
+      left_link8: {xyz: [0.0029, 0.0, 0.054], half_extents: [0.001, 0.009, 0.034]}
+      right_link7: {xyz: [-0.0029, 0.0, 0.054], half_extents: [0.001, 0.009, 0.034]}
+      right_link8: {xyz: [0.0029, 0.0, 0.054], half_extents: [0.001, 0.009, 0.034]}
+    placement_success:
+      regions:
+        in_holder:  # the cup's interior: 69 mm wide at its floor, 79 mm at the 95 mm rim
+          min_xyz: [-0.0345, -0.0345, 0.004]
+          max_xyz: [0.0345, 0.0345, 0.095]
+          relative_to: pen_holder
+        on_holder:
+          min_xyz: [-0.045, -0.045, 0.095]
+          max_xyz: [0.045, 0.045, 0.2]
+          relative_to: pen_holder
+      grades:
+        - {name: complete, score: 1.0, region: target}
+        - {name: partial, score: 0.5, region: adjacent}
+      settle_s: 1.0
+      require_released: true
+      tasks:
+        "Move the pen holder with the left arm and put the pen into it with the right arm":
+          - {object: pen, target: in_holder, adjacent: [on_holder]}
+
+task:
+  id: isaac_sim/makermods_metal_pen_holder
+  scene_id: isaac_sim
+  instruction: "Move the pen holder with the left arm and put the pen into it with the right arm"
+  max_steps: 900  # 30 s at 30 Hz; valid dataset episodes run 546-738 frames (median 649)
+
+seed: 0
+n_episodes: 1

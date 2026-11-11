@@ -1,0 +1,106 @@
+# MakerMods Metal arm pick-and-place ("the orange cube") on OpenRAL's Isaac Sim 6.x
+# backend: the Isaac example of the single Metal arm, the twin of
+# scenes/sim/makermods_metal_pick_place.yaml (MuJoCo). The arm picks the 25 mm orange cube
+# and puts it on the round target sticker (HappyEthan/metal_pick_place, 100 real teleop
+# episodes, robot_type metal_follower; rskills/pi05-metal-pick-place).
+#
+# * Geometry: tools/make_metal_isaac_usd.py writes scenes/sim/assets/makermods_metal_pick_place/
+#   from the MuJoCo twin's MetalPickPlaceOptions defaults (desk with its wood, wall, the
+#   cube, the marker sticker). Layout A of the twin (cube (0.267, -0.069) -> marker
+#   (0.278, 0.076), base_link); the MuJoCo twin's real-photo top background and the teleop
+#   leader arm are not reproduced (this is a fully rendered scene).
+# * Robot: robots/makermods_metal from its derived URDF, fixed base; joint7 = -joint8
+#   follows the measured driven finger (gripper_followers_track: measured).
+# * Gripper: the dataset stroke s reaches the scene as s / 100; joint8 = s / 2000 - 1.25 mm.
+# * Cameras, 640x480: the manifest's `top` (the fit to the dataset's top video: static
+#   mount + its intrinsics) and `wrist` (sim_placement on gripper_base).
+# * Success (placement_success): the MuJoCo twin grades the cube's footprint overlap with
+#   the 39 mm marker (complete >= 50 %, partial > 0). Isaac grades the cube's centre in a
+#   box, so complete = centre within 12 mm of the marker's centre (about half the cube's
+#   footprint on the sticker), partial = within 31 mm (any overlap), both resting on the
+#   desk, released. The twin's semi grade (lifted, then put down off the marker) is a
+#   fail here.
+#
+# Requirements: NVIDIA RTX GPU, Isaac Sim 6.1 (binary install via
+# OPENRAL_ISAAC_SIDECAR_PYTHON or /opt/isaac-sim).
+#
+# Run::
+#
+#     openral sim run --config scenes/sim/isaac_makermods_metal_pick_place.yaml \
+#       --rskill rskills/pi05-metal-pick-place
+
+robot_id: "makermods_metal"
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 480
+  observation_width: 640
+  # The static station (desk, wall, floor) is the environment: it replaces Isaac's default
+  # ground plane, which would show past the desk's edges.
+  assets_uri: "scenes/sim/assets/makermods_metal_pick_place/table.usda"
+  cameras: ["top", "wrist"]
+  backend_options:
+    boot_timeout_s: 1200
+    depth_cameras: false
+    dome_light:
+      intensity: 1500.0
+      color: [0.95, 0.95, 0.93]
+    # The real arm's dark anodised links: the MuJoCo twin's arm_rgba (0.12, 0.17, 0.14), darkened
+    # until the rendered arm matched the twin's (Isaac's lights read brighter); the derived
+    # URDF's meshes are white.
+    robot_material_colors:
+      "*": [0.008, 0.014, 0.01]
+    rtx_settings:
+      /rtx/post/aa/op: 2
+      /rtx/post/motionblur/enabled: false
+      /rtx-transient/resourcemanager/texturestreaming/enabled: false
+    objects:
+      - name: marker  # the target sticker, visual only
+        usd: "scenes/sim/assets/makermods_metal_pick_place/marker.usda"
+        xyz: [0.278, 0.076, 0.0036]
+        dynamic: false
+      - name: cube  # resting on the desk: half edge 0.0125
+        usd: "scenes/sim/assets/makermods_metal_pick_place/cube.usda"
+        xyz: [0.267, -0.069, 0.0155]
+    # The MuJoCo twin's start pose (dataset median first state, deg -> rad; stroke 2.5).
+    # joint2 / joint3 sit < 1 mrad past their 0 limits in the data: clamped to 0.
+    initial_joint_positions:
+      joint1: 0.0129
+      joint2: 0.0
+      joint3: 0.0
+      joint4: 0.0086
+      joint5: -0.0017
+      joint6: -0.0241
+      gripper: 0.025
+    gripper_joint_curve:
+      gripper: [[0.025, 0.0], [1.025, 0.05]]
+    gripper_followers_track: measured
+    link_box_colliders:
+      link7: {xyz: [-0.0029, 0.0, 0.054], half_extents: [0.001, 0.009, 0.034]}
+      link8: {xyz: [0.0029, 0.0, 0.054], half_extents: [0.001, 0.009, 0.034]}
+    placement_success:
+      regions:
+        on_marker:
+          min_xyz: [0.266, 0.064, 0.003]
+          max_xyz: [0.290, 0.088, 0.03]
+        touching_marker:
+          min_xyz: [0.247, 0.045, 0.003]
+          max_xyz: [0.309, 0.107, 0.03]
+      grades:
+        - {name: complete, score: 1.0, region: target}
+        - {name: partial, score: 0.5, region: adjacent}
+      settle_s: 1.0
+      require_released: true
+      tasks:
+        "Pick up the cube and place it at the marked location":
+          - {object: cube, target: on_marker, adjacent: [touching_marker]}
+
+task:
+  id: isaac_sim/makermods_metal_pick_place
+  scene_id: isaac_sim
+  instruction: "Pick up the cube and place it at the marked location"
+  max_steps: 900  # 30 s at 30 Hz
+
+seed: 0
+n_episodes: 1

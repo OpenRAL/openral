@@ -1,0 +1,170 @@
+#usda 1.0
+(
+    defaultPrim = "table"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "table"
+{
+    def Material "Desk"
+    {
+        token outputs:surface.connect = </table/Desk/Shader.outputs:surface>
+        def Shader "Shader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor.connect = </table/Desk/Tex.outputs:rgb>
+            float inputs:roughness = 0.35
+            float inputs:metallic = 0
+            token outputs:surface
+        }
+        def Shader "Tex"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @textures/desk_baked.jpg@
+            token inputs:sourceColorSpace = "sRGB"
+            float4 inputs:scale = (0.67, 0.67, 0.67, 1)
+            float2 inputs:st.connect = </table/Desk/St.outputs:result>
+            float3 outputs:rgb
+        }
+        def Shader "St"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            string inputs:varname = "st"
+            float2 outputs:result
+        }
+    }
+    def Material "Wall"
+    {
+        token outputs:surface.connect = </table/Wall/Shader.outputs:surface>
+        def Shader "Shader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.5974, 0.6516, 0.5974)
+            float inputs:roughness = 0.9
+            float inputs:metallic = 0
+            token outputs:surface
+        }
+    }
+    def Cube "desk" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+    )
+    {
+        double size = 2
+        double3 xformOp:translate = (0.117500, 0.360500, -0.009500)
+        quatf xformOp:orient = (1.000000, 0.000000, 0.000000, 0.000000)
+        float3 xformOp:scale = (0.417500, 0.509500, 0.012500)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        rel material:binding = </table/Desk>
+        rel material:binding:physics = </table/PhysicsMaterial> (
+            bindMaterialAs = "weakerThanDescendants"
+        )
+    }
+    def Mesh "desk_top" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3,3]
+        int[] faceVertexIndices = [0,3,2,0,2,1]
+        point3f[] points = [(-0.3000,-0.1490,0.0035),(-0.3000,0.8700,0.0035),(0.5350,0.8700,0.0035),(0.5350,-0.1490,0.0035)]
+        texCoord2f[] primvars:st = [(0.00000, 0.00000), (0.00000, 1.00000), (1.00000, 1.00000), (0.00000, 0.00000), (1.00000, 1.00000), (1.00000, 0.00000)] (
+            interpolation = "faceVarying"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </table/Desk>
+    }
+    def Cube "wall" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+    )
+    {
+        double size = 2
+        double3 xformOp:translate = (0.555000, 0.360500, 0.600000)
+        quatf xformOp:orient = (1.000000, 0.000000, 0.000000, 0.000000)
+        float3 xformOp:scale = (0.010000, 0.509500, 0.600000)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        rel material:binding = </table/Wall>
+        rel material:binding:physics = </table/PhysicsMaterial> (
+            bindMaterialAs = "weakerThanDescendants"
+        )
+    }
+    def Material "Floor"
+    {
+        token outputs:surface.connect = </table/Floor/Shader.outputs:surface>
+        def Shader "Shader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.1005, 0.0946, 0.089)
+            float inputs:roughness = 0.9
+            float inputs:metallic = 0
+            token outputs:surface
+        }
+    }
+    def Cube "floor" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+    )
+    {
+        double size = 2
+        double3 xformOp:translate = (0.000000, 0.000000, -0.750000)
+        quatf xformOp:orient = (1.000000, 0.000000, 0.000000, 0.000000)
+        float3 xformOp:scale = (4.000000, 4.000000, 0.010000)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        rel material:binding = </table/Floor>
+        rel material:binding:physics = </table/PhysicsMaterial> (
+            bindMaterialAs = "weakerThanDescendants"
+        )
+    }
+    def Material "Clutter0"
+    {
+        token outputs:surface.connect = </table/Clutter0/Shader.outputs:surface>
+        def Shader "Shader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.4064, 0.448, 0.4339)
+            float inputs:roughness = 0.8
+            float inputs:metallic = 0
+            token outputs:surface
+        }
+    }
+    def Cylinder "clutter_0" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform token axis = "Z"
+        double height = 0.88
+        double radius = 0.014
+        double3 xformOp:translate = (0.531, -0.213, -0.3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </table/Clutter0>
+    }
+    def Material "Clutter1"
+    {
+        token outputs:surface.connect = </table/Clutter1/Shader.outputs:surface>
+        def Shader "Shader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.4064, 0.448, 0.4339)
+            float inputs:roughness = 0.8
+            float inputs:metallic = 0
+            token outputs:surface
+        }
+    }
+    def Cylinder "clutter_1" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform token axis = "Z"
+        double height = 0.88
+        double radius = 0.014
+        double3 xformOp:translate = (0.531, -0.262, -0.3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </table/Clutter1>
+    }
+    def Material "PhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI"]
+    )
+    {
+        float physics:staticFriction = 1.0
+        float physics:dynamicFriction = 1.0
+        float physics:restitution = 0
+    }
+}
