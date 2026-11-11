@@ -151,9 +151,13 @@ BUCKET1_TOPIC_WHITELIST: list[str] = [
 #: explicitly by the leading negative lookahead instead — this list is the only
 #: thing standing between a connected viewer and the deploy host's filesystem,
 #: and ``..`` must stay unreachable however the rest of the pattern relaxes.
+#: Upstream's ``%`` is dropped from both classes: a percent-encoded ``%2e%2e``
+#: passes a literal ``..`` check and is decoded to one downstream. The classes
+#: spell ASCII out instead of ``\w`` so no locale or Unicode word character
+#: (a look-alike dot or slash) gets in either.
 #: The extension set is upstream's, unchanged.
 ASSET_URI_ALLOWLIST: list[str] = [
-    r"^package://(?!.*\.\.)(?:[-\w%.]+/)*[-\w%.]+"
+    r"^package://(?!.*\.\.)(?:[-a-zA-Z0-9_.]+/)*[-a-zA-Z0-9_.]+"
     r"\.(?:dae|fbx|glb|gltf|jpeg|jpg|mtl|obj|png|stl|tif|tiff|urdf|webp|xacro)$",
 ]
 
