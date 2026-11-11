@@ -419,11 +419,13 @@ private:
   // Every parameter is configuration, fixed once the node leaves UNCONFIGURED:
   // `ros2 param set` on a running kernel (joint_velocity_max, workspace_box_*,
   // ...) would otherwise be re-read on the next configure. `params_locked_`
-  // latches on the first configure attempt (a failed one included) and on
-  // cleanup, so neither set -> retry nor cleanup -> set -> configure relaxes them.
+  // latches on a configure that fails and on cleanup, so neither set -> retry
+  // nor cleanup -> set -> configure relaxes them.
   // Declaring a new parameter (an exemption provider's own) stays allowed.
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_guard_;
   bool params_locked_{false};
+  // on_configure's body; on_configure latches params_locked_ when it does not succeed.
+  CallbackReturn configure_from_params(const rclcpp_lifecycle::State& state);
 
   // Loaded envelope (populated on_configure).
   EnvelopeIntersection envelope_;

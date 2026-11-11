@@ -47,8 +47,7 @@ so an opted-in graph reaches the listed peers, not the whole subnet. Opt in
 only on a trusted, isolated network (a robot-only VLAN or a direct cable).
 
 **Kernel limits are fixed after configure.** The safety kernel refuses every
-`set_parameters` call once it has left `UNCONFIGURED`, and after its first
-configure attempt (a failed one included) or any cleanup,
+`set_parameters` call once it has left `UNCONFIGURED`, and after a failed configure or any cleanup,
 so a peer cannot relax a limit loaded from the manifest. Change a limit in
 `robot.yaml` and relaunch.
 
