@@ -406,18 +406,6 @@ _Opt-in lane accounting — decides, records and attests what each dependency la
 - `build_record(lane, *, passed, failed, skip_reasons, config, exit_code=None, from_exit_code=False) -> LaneRecord` (L140) — Apply the lane policy: declared capability gaps are allowed and attributed, every other skip fails, an all-gated lane is `declared-not-run` and an empty one fails.
 - `main(argv=None) -> int` (L355) — CLI; `lane` (account one lane's reports) / `attest` (cross-check the ledger against the selection, write the job summary).
 
-### `tools/export_reasoner_models.py`
-_Exports `REASONER_MODELS` for openral.com's Account → Settings model drop-down (ADR-0129); run by `.github/workflows/reasoner-models.yml`._
-
-- `export() -> list[dict[str, Any]]` (L22) — `[{id, label, needs}]` in the registry's order; `needs` is the key the website asks for (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / none for an on-robot model).
-
-### `tools/pin_robot_ui.py`
-_Pins the robot UI the dashboard serves to one `robot-ui.yml` build (ADR-0129); run by that workflow's `pin` job from a master checkout._
-
-- `UI_ASSETS` (L16) — Path of `ui_assets.py`, the file holding the `ROBOT_UI` pin.
-- `pin(text, version, url, sha256, size) -> str` (L24) — `ui_assets.py` source `text` with `ROBOT_UI` set to the given build; `ValueError` when no pin block is found.
-- `main(argv) -> int` (L52) — Rewrite `ui_assets.py` in place (`<version> <url> <sha256> <size> [ui_assets.py]`).
-
 ### `tools/heavy_lanes_trigger.py`
 _Starts the required `heavy-lanes` check on a PR (fork PRs included) automatically once the PR is ready — no approval, no label — and keeps the `heavy-lanes` commit status on the PR head saying what it waits for. Run by `.github/workflows/heavy-lanes-trigger.yml`. See [`docs/contributing/development.md`](../contributing/development.md#review-policy)._
 
@@ -978,7 +966,7 @@ _Writes the curated `REASONER_MODELS` as openral.com's model drop-down (ADR-0129
 - `export() -> list[dict[str, Any]]` (L22) — `[{id, label, needs}]` in registry order; `needs` is the API-key variable the website asks for (`None` for an on-robot model); providers the website has no key for are left out.
 
 ### `tools/pin_robot_ui.py`
-_Pins the dashboard's robot UI to one `robot-ui.yml` build by sha256 (ADR-0129); the workflow runs it and opens the pin bump as a PR._
+_Pins the dashboard's robot UI to one `robot-ui.yml` build by sha256 (ADR-0129); the workflow's `pin` job runs it from a master checkout (never the built commit's tree) and opens the pin bump as a PR._
 
 - `UI_ASSETS: Path` (L16) — Default `ui_assets.py` it rewrites.
 - `pin(text, version, url, sha256, size) -> str` (L24) — `ui_assets.py` source with `ROBOT_UI` set to the given build.
