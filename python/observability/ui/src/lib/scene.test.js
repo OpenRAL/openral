@@ -17,6 +17,7 @@ import {
   layerTopics,
   scanToPoints,
   viewFrame,
+  WorldCloud,
 } from "./scene.js";
 
 // Message definitions exactly as foxglove_bridge advertises them (ros2msg, with
@@ -242,4 +243,26 @@ test("the view is pinned to map, else odom, unless following the robot", () => {
   tf.addMessage({ transforms: [t("map", "odom")] });
   assert.deepEqual(viewFrame(tf, "base_footprint", false), { fixed: "map", world: "map" });
   assert.deepEqual(viewFrame(tf, "base_footprint", true), { fixed: "base_footprint", world: "map" });
+});
+
+test("depth points build up in the world frame, one per voxel, oldest dropped", () => {
+  const cloud = new WorldCloud({ cell: 0.1, capacity: 3 });
+  const pts = (xyz, rgb) => ({ count: xyz.length / 3, positions: Float32Array.from(xyz), colors: rgb ? Float32Array.from(rgb) : null });
+  // The camera 1 m up, yawed 90 deg: its x axis is the world's y.
+  const s = Math.SQRT1_2;
+  const tf = { t: [0, 0, 1], q: [0, 0, s, s] };
+  assert.equal(cloud.add(pts([2.02, -0.02, 0, 2.03, -0.03, 0], [1, 0, 0, 0, 1, 0]), tf), 1); // same voxel: newest wins
+  let a = cloud.arrays();
+  assert.deepEqual(Array.from(a.positions, (v) => Math.round(v * 100) / 100), [0.03, 2.03, 1]);
+  assert.deepEqual(Array.from(a.colors), [0, 1, 0]);
+  // The robot drove on: earlier points stay where they were in the world.
+  cloud.add(pts([1, 0, 0, 3, 0, 0, 4, 0, 0]), { t: [5, 0, 1], q: [0, 0, 0, 1] });
+  a = cloud.arrays();
+  assert.equal(a.count, 3); // capacity 3: the first voxel was dropped
+  assert.deepEqual(Array.from(a.positions.subarray(0, 3)), [6, 0, 1]);
+  assert.equal(a.colors, null); // no kept point carries rgb
+  assert.equal(cloud.add(null, tf), 0);
+  // The expanded rotation matches rotate().
+  const r = rotate(tf.q, [2, 0, 0]);
+  assert.ok(Math.abs(r[0]) < 1e-9 && Math.abs(r[1] - 2) < 1e-9);
 });

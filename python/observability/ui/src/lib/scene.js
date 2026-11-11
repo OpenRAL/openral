@@ -187,6 +187,76 @@ export function cloudToPoints(msg, budget = 60000) {
   };
 }
 
+// ── what the cameras have seen, kept in the world frame ──────────────────────
+
+// Depth points placed in the world (map) frame as they arrive, one per `cell`-sized
+// voxel (the newest point and colour win), oldest voxel dropped past `capacity`. The
+// robot drives on and what its camera saw stays where it was: the warehouse builds up
+// as a coloured cloud. Matrix math only; the caller decides when to draw.
+export class WorldCloud {
+  constructor({ cell = 0.05, capacity = 300000 } = {}) {
+    this.cell = cell;
+    this.capacity = capacity;
+    this.cells = new Map(); // voxel key -> [x, y, z, r, g, b]
+    this.version = 0;
+  }
+
+  // `pts` from cloudToPoints (sensor frame); `tf` the sensor frame in the world frame.
+  add(pts, tf) {
+    if (!pts || !tf || !pts.count) return 0;
+    const [qx, qy, qz, qw] = tf.q;
+    const [tx, ty, tz] = tf.t;
+    const inv = 1 / this.cell;
+    const { positions: p, colors: c } = pts;
+    for (let i = 0; i < pts.count; i++) {
+      const x = p[i * 3], y = p[i * 3 + 1], z = p[i * 3 + 2];
+      // v' = q v q* + t (expanded: no allocation per point)
+      const ix = qw * x + qy * z - qz * y;
+      const iy = qw * y + qz * x - qx * z;
+      const iz = qw * z + qx * y - qy * x;
+      const iw = -qx * x - qy * y - qz * z;
+      const wx = ix * qw + iw * -qx + iy * -qz - iz * -qy + tx;
+      const wy = iy * qw + iw * -qy + iz * -qx - ix * -qz + ty;
+      const wz = iz * qw + iw * -qz + ix * -qy - iy * -qx + tz;
+      const key = `${Math.floor(wx * inv)},${Math.floor(wy * inv)},${Math.floor(wz * inv)}`;
+      this.cells.delete(key); // re-insert: a voxel seen again is the newest
+      this.cells.set(key, [wx, wy, wz, c ? c[i * 3] : -1, c ? c[i * 3 + 1] : -1, c ? c[i * 3 + 2] : -1]);
+    }
+    for (const key of this.cells.keys()) {
+      if (this.cells.size <= this.capacity) break;
+      this.cells.delete(key);
+    }
+    this.version += 1;
+    return this.cells.size;
+  }
+
+  clear() {
+    this.cells.clear();
+    this.version += 1;
+  }
+
+  // { positions, colors } (colors null when no point carried one).
+  arrays() {
+    const n = this.cells.size;
+    const positions = new Float32Array(n * 3);
+    let colors = null;
+    let k = 0;
+    for (const v of this.cells.values()) {
+      positions[k * 3] = v[0];
+      positions[k * 3 + 1] = v[1];
+      positions[k * 3 + 2] = v[2];
+      if (v[3] >= 0) {
+        colors ??= new Float32Array(n * 3).fill(0.6);
+        colors[k * 3] = v[3];
+        colors[k * 3 + 1] = v[4];
+        colors[k * 3 + 2] = v[5];
+      }
+      k++;
+    }
+    return { count: n, positions, colors };
+  }
+}
+
 // ── sensor_msgs/LaserScan → points in the scan frame ──────────────────────────
 
 // Returns only real returns: inf/NaN (no return, REP-117) and readings outside

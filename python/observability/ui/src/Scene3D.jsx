@@ -26,6 +26,7 @@ import {
   TfBuffer,
   viewFrame,
   wantedTopics,
+  WorldCloud,
 } from "./lib/scene.js";
 import { backoffMs } from "./lib/sse.js";
 import { localBridgeUrl, remoteBridgeUrl } from "./lib/viz.js";
@@ -421,6 +422,10 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       map: null,
       points: new Map(), // topic -> THREE.Points (cloud, camera depth, lidar)
       live: new Set(), // topics that have delivered a message
+      seen: new WorldCloud(), // depth points kept in the world frame (mobile robots)
+      seenPoints: null, // THREE.Points drawn from `seen`
+      seenDrawn: -1, // `seen.version` last drawn
+      seenAt: 0, // when it was last redrawn (ms)
       axes: new Map(),
       objects: new Map(),
       dirty: true,
@@ -502,6 +507,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
     const vf = viewFrame(w.tf, baseRef.current, followRef.current);
     if (vf.fixed !== fixedRef.current || vf.world !== w.worldFrame) {
       if (vf.fixed !== fixedRef.current) (w.replace = true), (w.fitPending = true);
+      if (vf.world !== w.worldFrame) w.seen.clear(); // a different world: what was seen is elsewhere
       fixedRef.current = vf.fixed;
       w.worldFrame = vf.world;
       setFrame(vf);
@@ -532,7 +538,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
         w.map.visible = !!tf;
         if (tf) placeAt(w.map, compose(tf, w.map.userData.origin));
       }
-      for (const pts of w.points.values()) {
+      for (const pts of [...w.points.values(), ...(w.seenPoints ? [w.seenPoints] : [])]) {
         const tf = at(pts.userData.frame);
         pts.visible = !!tf;
         if (tf) placeAt(pts, tf);
@@ -623,12 +629,50 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
     const cloud = cloudTopic(b.subs, w.live);
     for (const [t, { layer, msg }] of taken) {
       if (layer === "cloud" && t !== cloud) continue;
-      drawPoints(w, layer, t, layer === "scan" ? scanToPoints(msg) : cloudToPoints(msg));
+      const pts = layer === "scan" ? scanToPoints(msg) : cloudToPoints(msg);
+      // A mobile robot's depth cameras build up one coloured cloud in the world frame;
+      // a fixed-base arm (no world frame) draws each camera's latest frame.
+      if (layer === "depth" && w.worldFrame) {
+        // ponytail: latest TF, not TF at the frame's stamp; a moving base smears points by
+        // speed x latency (a few cm at Nav2 speeds). Buffer TF history if that matters.
+        if (pts) w.seen.add(pts, w.tf.lookup(w.worldFrame, pts.frame));
+        continue;
+      }
+      drawPoints(w, layer, t, pts);
     }
+    drawSeen(w);
     for (const [t, pts] of w.points) {
-      const keep = b.subs.has(t) && (pts.userData.layer !== "cloud" || t === cloud);
+      const keep =
+        b.subs.has(t) && (pts.userData.layer !== "cloud" || t === cloud) && !(pts.userData.layer === "depth" && w.worldFrame);
       if (!keep) w.layers[pts.userData.layer].remove(pts), disposeTree(pts), w.points.delete(t), (w.replace = true);
     }
+  }
+
+  // Redraw the accumulated world cloud at most twice a second (it can hold 300k points).
+  function drawSeen(w) {
+    if (w.seen.version === w.seenDrawn || performance.now() - w.seenAt < 500) return;
+    w.seenDrawn = w.seen.version;
+    w.seenAt = performance.now();
+    if (w.seenPoints) w.layers.depth.remove(w.seenPoints), disposeTree(w.seenPoints);
+    w.seenPoints = null;
+    const pts = w.seen.arrays();
+    if (!pts.count) return;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pts.positions, 3));
+    if (pts.colors) g.setAttribute("color", new THREE.BufferAttribute(pts.colors, 3));
+    const points = new THREE.Points(
+      g,
+      new THREE.PointsMaterial({
+        size: 2.5,
+        sizeAttenuation: false,
+        vertexColors: !!pts.colors,
+        color: pts.colors ? 0xffffff : new THREE.Color(w.colors.depth),
+      }),
+    );
+    points.userData = { frame: w.worldFrame, layer: "depth" };
+    w.seenPoints = points;
+    w.layers.depth.add(points);
+    w.replace = true;
   }
 
   function drawPoints(w, layer, topic, pts) {
@@ -639,8 +683,12 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
     g.setAttribute("position", new THREE.BufferAttribute(pts.positions, 3));
     if (pts.colors) g.setAttribute("color", new THREE.BufferAttribute(pts.colors, 3));
     const color = layer === "scan" ? w.colors.scan : layer === "depth" ? w.colors.depth : w.colors.accent;
+    // Lidar and depth points keep a fixed size on screen, so they stay visible when
+    // the view frames metres of world; voxel centres keep their 1 cm world size.
+    const screen = layer === "scan" || layer === "depth";
     const material = new THREE.PointsMaterial({
-      size: layer === "scan" ? 0.04 : layer === "depth" ? 0.015 : 0.01,
+      size: layer === "scan" ? 4 : layer === "depth" ? 2.5 : 0.01,
+      sizeAttenuation: !screen,
       vertexColors: !!pts.colors,
       color: pts.colors ? 0xffffff : new THREE.Color(color),
     });
