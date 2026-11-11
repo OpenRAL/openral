@@ -135,20 +135,25 @@ def reasoner_env(values: dict[str, str]) -> dict[str, str]:
 
     The model, the key its provider needs as ``OPENRAL_REASONER_API_KEY``, and for an
     OpenAI model OpenAI's own API (openral's default for those is OpenRouter). Nothing
-    without a curated model.
+    without a curated model, or without the key that model needs: an incomplete choice
+    must not stand in for the account's settings.
 
     Example:
         >>> reasoner_env({"OPENRAL_REASONER_MODEL": "gpt-5.5", "OPENAI_API_KEY": "sk-x"})
         {'OPENRAL_REASONER_MODEL': 'gpt-5.5', 'OPENRAL_REASONER_API_KEY': 'sk-x', \
 'OPENRAL_REASONER_ENDPOINT': 'openai'}
+        >>> reasoner_env({"OPENRAL_REASONER_MODEL": "gpt-5.5"})
+        {}
     """
     chosen = values.get(MODEL_SETTING)
     model = next((o for o in reasoner_model_options() if o["id"] == chosen), None)
     if model is None:
         return {}
-    out = {MODEL_SETTING: str(model["id"])}
     needs = model["needs"]
-    if needs and values.get(needs):
+    if needs and not values.get(needs):
+        return {}
+    out = {MODEL_SETTING: str(model["id"])}
+    if needs:
         out["OPENRAL_REASONER_API_KEY"] = values[needs]
     if needs == OPENAI_KEY_SETTING:
         out["OPENRAL_REASONER_ENDPOINT"] = "openai"

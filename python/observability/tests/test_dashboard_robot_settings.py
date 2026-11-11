@@ -114,3 +114,18 @@ def test_a_deploy_applies_them_with_the_environment_winning(
     monkeypatch.delenv("OPENRAL_REASONER_ENDPOINT")
     assert "OPENRAL_REASONER_MODEL" not in apply_console_settings(echo=lambda _: None)
     assert os.environ["OPENRAL_REASONER_MODEL"] == "claude-opus-5-5"
+
+
+def test_a_cloud_model_without_its_key_leaves_the_account_settings_in_charge() -> None:
+    """A model saved, its key cleared: the console chooses nothing (the account path runs)."""
+    from openral_observability.dashboard.robot_settings import (
+        load_settings,
+        reasoner_env,
+        save_setting,
+    )
+
+    save_setting("OPENAI_API_KEY", "sk-openai-5678")
+    save_setting("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    assert reasoner_env(load_settings())
+    save_setting("OPENAI_API_KEY", "")
+    assert reasoner_env(load_settings()) == {}
