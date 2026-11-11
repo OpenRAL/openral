@@ -130,37 +130,32 @@ _SIDE_TOKEN = re.compile(r"(?:^|[^a-z])(left|right)(?:[^a-z]|$)")
 _HAND_TOKEN = re.compile(r"(?:^|[^a-z])(wrist|hand|gripper|eef)(?:[^a-z]|$)")
 
 
-def camera_position(sensor: SensorSpec, robot: RobotDescription) -> CameraPosition:
+def camera_position(sensor: SensorSpec) -> CameraPosition:
     """Where a camera sits in the console's camera row (left to right).
 
-    1. ``left`` / ``right`` when the sensor's name or ``frame_id`` says so
-       (``left_wrist``, ``cam_right``).
-    2. ``left`` for a camera that moves with the robot: its ``parent_frame`` (or,
-       without one, its ``frame_id``) is a robot link other than ``base_frame``,
-       or its name or ``frame_id`` says wrist, hand, gripper or eef.
-    3. ``center`` otherwise (fixed to the world or the base, e.g. an overhead camera).
+    Decided by what the sensor's ``name``, ``frame_id`` and ``parent_frame`` say:
+
+    1. ``left`` / ``right`` when one names a side (``left_wrist``, ``cam_right``).
+    2. ``left`` when one says wrist, hand, gripper or eef (a single arm's hand camera).
+    3. ``center`` otherwise: overhead, head, torso, base and world cameras.
 
     Args:
         sensor: The camera's sensor spec.
-        robot: The robot it belongs to.
 
     Returns:
         ``"left"``, ``"center"`` or ``"right"``.
 
     Example:
         >>> robot = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-        >>> {s.name: camera_position(s, robot) for s in robot.sensors if s.name in ("top", "wrist")}
+        >>> {s.name: camera_position(s) for s in robot.sensors if s.name in ("top", "wrist")}
         {'top': 'center', 'wrist': 'left'}
     """
-    for text in (sensor.name, sensor.frame_id):
-        m = _SIDE_TOKEN.search(text.lower())
+    texts = [t.lower() for t in (sensor.name, sensor.frame_id, sensor.parent_frame) if t]
+    for text in texts:
+        m = _SIDE_TOKEN.search(text)
         if m:
             return "left" if m.group(1) == "left" else "right"
-    links = {j.parent_link for j in robot.joints} | {j.child_link for j in robot.joints}
-    parent = sensor.parent_frame or sensor.frame_id
-    if parent and parent != robot.base_frame and parent in links:
-        return "left"
-    if any(_HAND_TOKEN.search(text.lower()) for text in (sensor.name, sensor.frame_id)):
+    if any(_HAND_TOKEN.search(text) for text in texts):
         return "left"
     return "center"
 
@@ -308,7 +303,7 @@ def build_robot_manifest(
             type="camera",
             title=s.name,
             source=s.name,
-            position=camera_position(s, robot),
+            position=camera_position(s),
         )
         for s in robot.sensors
         if s.modality in _IMAGE_MODALITIES
