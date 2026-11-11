@@ -121,6 +121,154 @@ main > .waiting {
   flex: none;
 }
 
+/* ── left pane: an icon rail that opens into a side pane ── */
+.app {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.app-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.rail {
+  flex: none;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--hair);
+  background: var(--bg-2);
+  transition: width 160ms var(--ease, ease);
+}
+.rail.open {
+  width: 240px;
+}
+.rail-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 12px 10px 16px;
+  flex-wrap: wrap;
+}
+.rail-logo {
+  flex: none;
+}
+.rail-brand {
+  font: 600 15px var(--body);
+  color: var(--text);
+  flex: 1 1 auto;
+}
+.rail-toggle {
+  font: 500 16px var(--body);
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+}
+.rail:not(.open) .rail-toggle {
+  margin: 4px 0 0 -2px;
+}
+.rail-toggle:hover,
+.rail-toggle:focus-visible {
+  border-color: var(--hair-2);
+  color: var(--text);
+}
+.rail-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.rail-profile {
+  position: relative;
+  padding: 10px 8px 12px;
+  border-top: 1px solid var(--hair);
+}
+.rail-me {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.rail-me:hover,
+.rail-me[aria-expanded="true"] {
+  border-color: var(--hair-2);
+  background: var(--surface);
+}
+.rail-avatar {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font: 600 11px var(--body);
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.rail-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.rail-name,
+.rail-detail {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-name {
+  font: 500 13px var(--body);
+}
+.rail-detail {
+  font: 400 11px var(--mono);
+  color: var(--muted);
+}
+.rail-menu {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% - 4px);
+  min-width: 200px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--hair-2);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+.rail-menu > * {
+  font: 500 13px var(--body);
+  color: var(--text);
+  text-decoration: none;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.rail-menu > *:hover:not(:disabled),
+.rail-menu > *:focus-visible {
+  background: var(--bg-2);
+}
+.rail-menu > :disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
 /* ── console grid: stage | drag handle | pane ── */
 .console {
   flex: 1 1 auto;

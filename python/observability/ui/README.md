@@ -55,7 +55,10 @@ npm run preview        # serve dist/ with the same proxy
 ## Layout
 
 The page is an operator console ([plan](../../../docs/roadmap/robot-console.md)) that fills one
-screen without page scroll: the header (robot, safety, Layout, **E-STOP**); the prompt bar
+screen without page scroll: a left pane (closed by default, an icon rail; the OpenRAL logo at
+the top, sections to come, and the viewer's profile at the bottom, which opens Settings and, on
+openral.com, the account page; on the website it names the signed-in account from the site's
+`/api/dashboard`, on the robot the local operator); the header (robot, safety, Layout, **E-STOP**); the prompt bar
 (the manifest's `prompt` action; it says why when prompting is unavailable, including when the
 reasoner's last lifecycle transition failed); a fixed-height
 row of cameras ordered left → center → right by their manifest `position` (only cameras that

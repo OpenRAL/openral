@@ -1,5 +1,6 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Rail } from "./Rail.jsx";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/console.css";
@@ -134,11 +135,11 @@ function Conn({ conn, snap }) {
   );
 }
 
-function Header({ children }) {
+function Header({ children, logo = true }) {
   return (
     <div className="brand">
-      <img src="openral-logo.svg" alt="" width="22" height="25" />
-      <span className="brand-name">OpenRAL</span>
+      {logo && <img src="openral-logo.svg" alt="" width="22" height="25" />}
+      {logo && <span className="brand-name">OpenRAL</span>}
       {children}
     </div>
   );
@@ -189,9 +190,11 @@ function Robot({ api, robot }) {
     latched: !!(t.safety_status?.latched || t.safety?.estopped),
   };
   return (
-    <>
+    <div className="app">
+      <Rail cfg={cfg} onWebsite={!!robot} onSettings={manifest ? () => setLayoutOpen(true) : null} />
+      <div className="app-body">
       <header className="top">
-        <Header>
+        <Header logo={false}>
           <span className="robot-name">{name}</span>
           <span className="badge">
             {MODE_LABEL[cfg.mode] || cfg.mode} · {cfg.role}
@@ -255,7 +258,8 @@ function Robot({ api, robot }) {
           </Boundary>
         )}
       </main>
-    </>
+      </div>
+    </div>
   );
 }
 
