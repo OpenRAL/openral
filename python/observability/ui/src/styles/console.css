@@ -672,9 +672,19 @@ main > .waiting {
 .scene-views {
   position: absolute;
   right: 12px;
+  /* never under the layer list (left: 12px, ~200px wide): when the 3D view is narrow
+     (the settings pane open) the buttons wrap onto a second row instead of overlapping */
+  left: 232px;
   top: 12px;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-content: flex-start;
   gap: 6px;
+  pointer-events: none;
+}
+.scene-views > * {
+  pointer-events: auto;
 }
 .glass-btn {
   font: 500 12px var(--body);
@@ -707,6 +717,9 @@ main > .waiting {
   .scene-layers {
     position: static;
     margin: 8px;
+  }
+  .scene-views {
+    left: auto;
   }
 }
 
