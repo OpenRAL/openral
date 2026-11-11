@@ -186,11 +186,16 @@ def ensure_source(label: str, work: Path, repo_url: str, sha: str) -> Path:
     if (source / ".git").is_dir():
         print(f"[{label}] reusing existing checkout at {source}", flush=True)
     else:
+        # Built beside the destination and renamed into place only once complete, so
+        # an interrupted fetch never leaves a source/.git a later run would reuse.
+        partial = work / "source.partial"
+        shutil.rmtree(partial, ignore_errors=True)
         work.mkdir(parents=True, exist_ok=True)
-        run_cmd(label, ["git", "init", "-q", str(source)])
-        run_cmd(label, ["git", "-C", str(source), "remote", "add", "origin", repo_url])
-        run_cmd(label, ["git", "-C", str(source), "fetch", "-q", "--depth", "1", "origin", sha])
-        run_cmd(label, ["git", "-C", str(source), "checkout", "-q", "FETCH_HEAD"])
+        run_cmd(label, ["git", "init", "-q", str(partial)])
+        run_cmd(label, ["git", "-C", str(partial), "remote", "add", "origin", repo_url])
+        run_cmd(label, ["git", "-C", str(partial), "fetch", "-q", "--depth", "1", "origin", sha])
+        run_cmd(label, ["git", "-C", str(partial), "checkout", "-q", "FETCH_HEAD"])
+        partial.rename(source)
     head = checkout_head(source)
     if head != sha:
         raise SystemExit(

@@ -58,6 +58,15 @@ def test_refuses_an_existing_checkout_at_another_commit(tmp_path: Path) -> None:
         ensure_source("t", tmp_path / "work", url, first)
 
 
+def test_a_failed_fetch_leaves_nothing_that_looks_like_a_checkout(tmp_path: Path) -> None:
+    """An interrupted first fetch must not block the next run (no half-made source/)."""
+    url, first, _ = _upstream(tmp_path)
+    with pytest.raises(subprocess.CalledProcessError):
+        ensure_source("t", tmp_path / "work", url, "0" * 40)  # not in the repo
+    assert not (tmp_path / "work" / "source").exists()
+    assert checkout_head(ensure_source("t", tmp_path / "work", url, first)) == first
+
+
 @pytest.mark.parametrize("pin", ["", "main", "HEAD", "cf67c31f", "Z" * 40])
 def test_refuses_a_pin_that_is_not_a_full_sha(tmp_path: Path, pin: str) -> None:
     url, _, _ = _upstream(tmp_path)
