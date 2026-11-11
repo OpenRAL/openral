@@ -44,7 +44,7 @@ import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
-from openral_sim._sidecar_common import read_sidecar_identity
+from openral_sim._sidecar_common import read_sidecar_identity, sidecar_env
 from openral_sim.rollout import StepResult
 
 if TYPE_CHECKING:
@@ -502,7 +502,13 @@ class SidecarClient:
         # py3.12 venv's site-packages (e.g. `openral deploy sim` injects it). That
         # would shadow the sidecar venv's own numpy with an ABI-incompatible build
         # → "No module named 'numpy._core._multiarray_umath'" at sidecar boot.
-        child_env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
+        # Allowlisted (``sidecar_env``): the launcher runs third-party installs and
+        # remote code, so operator credentials (reasoner API keys) never reach it.
+        child_env = {
+            k: v
+            for k, v in sidecar_env(os.environ).items()
+            if k not in ("PYTHONPATH", "VIRTUAL_ENV")
+        }
         if self.keep_alive:
             child_env[KEPT_ALIVE_ENV] = "1"
         out: Any = None

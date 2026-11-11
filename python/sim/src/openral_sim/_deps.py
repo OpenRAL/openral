@@ -1410,6 +1410,10 @@ def _rldx_client_plan() -> BackendInstallPlan:
 # where things live on disk. Keep them in sync if the sidecar layout
 # ever changes.
 _RLDX_SIDECAR_REPO_URL = "https://github.com/RLWRLD/RLDX-1.git"
+# The upstream commit the sidecar runs (RLDX-1 "Release v1.0.2", 2026-07-31) —
+# never the default branch's moving HEAD: the clone is executed on the host.
+# ``tools/rldx_sidecar.py`` imports this constant, so one edit bumps both.
+_RLDX_SIDECAR_REPO_SHA = "cf67c31f7f168ebbca6d06e8c3c23914cb94435c"
 _RLDX_SIDECAR_HOME = _DEFAULT_CACHE_HOME / "rldx-sidecar"
 
 
@@ -1486,20 +1490,27 @@ def _rldx_sidecar_setup_plan() -> BackendInstallPlan:
                 description=f"mkdir -p {source.parent} (sidecar work directory)",
                 argv=["mkdir", "-p", str(source.parent)],
             ),
-            # Idempotent: only clone if the .git directory is absent.
-            # Mirrors ``tools/rldx_sidecar.py:_ensure_source`` — we run
-            # this here so the slow first-run download happens behind
-            # one typer.confirm() rather than mid-rollout.
+            # Idempotent: only fetch if the .git directory is absent.
+            # Mirrors ``_sidecar_common.ensure_source`` — the pinned commit,
+            # then HEAD checked against the pin (fails closed on a mismatch,
+            # including a pre-existing checkout at another commit).
             InstallStep(
                 description=(
-                    f"git clone --depth 1 {_RLDX_SIDECAR_REPO_URL} → {source} "
-                    "(idempotent: skipped when .git already exists)"
+                    f"git fetch {_RLDX_SIDECAR_REPO_URL}@{_RLDX_SIDECAR_REPO_SHA} → {source} "
+                    "(idempotent: skipped when .git already exists; HEAD verified)"
                 ),
                 argv=[
                     "sh",
                     "-c",
-                    f"[ -d {_sh(source)}/.git ] || {_sh(git)} clone --depth 1 "
-                    f"{_RLDX_SIDECAR_REPO_URL} {_sh(source)}",
+                    f"set -e; src={_sh(source)}; "
+                    f'if [ ! -d "$src/.git" ]; then '
+                    f'{_sh(git)} init -q "$src"; '
+                    f'{_sh(git)} -C "$src" remote add origin {_RLDX_SIDECAR_REPO_URL}; '
+                    f'{_sh(git)} -C "$src" fetch -q --depth 1 origin {_RLDX_SIDECAR_REPO_SHA}; '
+                    f'{_sh(git)} -C "$src" checkout -q FETCH_HEAD; fi; '
+                    f'[ "$({_sh(git)} -C "$src" rev-parse HEAD)" = {_RLDX_SIDECAR_REPO_SHA} ] '
+                    f'|| {{ echo "$src is not at the pinned {_RLDX_SIDECAR_REPO_SHA}: '
+                    f'delete it to re-fetch" >&2; exit 1; }}',
                 ],
             ),
             # uv sync inside the sidecar's own pyproject creates
@@ -1538,8 +1549,10 @@ def _rldx_sidecar_setup_plan() -> BackendInstallPlan:
         ),
         manual_hint=(
             f"mkdir -p {_sh(source.parent)} && "
-            f"git clone --depth 1 {_RLDX_SIDECAR_REPO_URL} {_sh(source)} && "
-            f"cd {_sh(source)} && uv sync && "
+            f"git init -q {_sh(source)} && cd {_sh(source)} && "
+            f"git remote add origin {_RLDX_SIDECAR_REPO_URL} && "
+            f"git fetch --depth 1 origin {_RLDX_SIDECAR_REPO_SHA} && git checkout FETCH_HEAD && "
+            f"uv sync && "
             f"uv pip install --python {venv_python} 'bitsandbytes>=0.43.0'"
         ),
     )

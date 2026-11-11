@@ -1,0 +1,121 @@
+"""Sidecar supply-chain controls: pinned upstream clones and an allowlisted env.
+
+``ensure_source`` fetches a third-party repo at a pinned commit and refuses to
+hand back a checkout whose ``HEAD`` is anything else; ``sidecar_env`` keeps
+operator credentials (reasoner API keys) away from remote-code sidecars. Real
+``git`` against a local repo, no network.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+from openral_sim._deps import _RLDX_SIDECAR_REPO_SHA, _rldx_sidecar_setup_plan
+from openral_sim._sidecar_common import (
+    checkout_head,
+    ensure_source,
+    make_isolated_env,
+    sidecar_env,
+)
+
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
+
+
+def _git(*args: str, cwd: Path) -> str:
+    out = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+def _upstream(tmp_path: Path) -> tuple[str, str, str]:
+    """A two-commit upstream repo; returns ``(url, first_sha, tip_sha)``."""
+    repo = tmp_path / "upstream"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    for i in (1, 2):
+        (repo / "f.txt").write_text(str(i))
+        _git("add", "f.txt", cwd=repo)
+        _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", f"c{i}", cwd=repo)
+    # Let a shallow fetch ask for a non-tip commit by id, as GitHub allows.
+    _git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=repo)
+    return repo.as_uri(), _git("rev-parse", "HEAD~1", cwd=repo), _git("rev-parse", "HEAD", cwd=repo)
+
+
+def test_fetches_exactly_the_pinned_commit_not_head(tmp_path: Path) -> None:
+    url, first, tip = _upstream(tmp_path)
+    source = ensure_source("t", tmp_path / "work", url, first)
+    assert checkout_head(source) == first != tip
+    # Reuse of a checkout at the pin is fine.
+    assert ensure_source("t", tmp_path / "work", url, first) == source
+
+
+def test_refuses_an_existing_checkout_at_another_commit(tmp_path: Path) -> None:
+    url, first, tip = _upstream(tmp_path)
+    ensure_source("t", tmp_path / "work", url, tip)
+    with pytest.raises(SystemExit, match="not the pinned"):
+        ensure_source("t", tmp_path / "work", url, first)
+
+
+@pytest.mark.parametrize("pin", ["", "main", "HEAD", "cf67c31f", "Z" * 40])
+def test_refuses_a_pin_that_is_not_a_full_sha(tmp_path: Path, pin: str) -> None:
+    url, _, _ = _upstream(tmp_path)
+    with pytest.raises(SystemExit, match="not a full SHA"):
+        ensure_source("t", tmp_path / "work", url, pin)
+    assert not (tmp_path / "work" / "source").exists()
+
+
+def test_rldx_install_plan_fetches_the_pin_and_verifies_head() -> None:
+    clone = next(s for s in _rldx_sidecar_setup_plan().steps if "fetch" in s.description)
+    script = clone.argv[-1]
+    assert f"fetch -q --depth 1 origin {_RLDX_SIDECAR_REPO_SHA}" in script
+    assert f'rev-parse HEAD)" = {_RLDX_SIDECAR_REPO_SHA} ]' in script
+    assert " clone " not in script
+
+
+def test_sidecar_env_drops_credentials_keeps_runtime() -> None:
+    environ = {
+        "PATH": "/usr/bin",
+        "HOME": "/home/op",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+        "HF_HOME": "/data/hf",
+        "HF_HUB_OFFLINE": "1",
+        "HF_TOKEN": "hf_x",
+        "OPENRAL_ALLOW_REMOTE_CODE": "1",
+        "ROS_DOMAIN_ID": "7",
+        "OPENRAL_REASONER_API_KEY": "sk-openral",
+        "ANTHROPIC_API_KEY": "sk-ant",
+        "OPENAI_API_KEY": "sk-oai",
+        "GH_TOKEN": "ghp_x",
+        "AWS_SECRET_ACCESS_KEY": "aws",
+        "OPENRAL_ROBOT_UI_TOKEN": "tok",
+        "SSH_AUTH_SOCK": "/run/agent",
+        "RANDOM_TOOL_VAR": "x",
+    }
+    env = sidecar_env(environ)
+    for kept in (
+        "PATH", "HOME", "LANG", "LC_ALL", "CUDA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
+        "LD_LIBRARY_PATH", "HF_HOME", "HF_HUB_OFFLINE", "HF_TOKEN", "OPENRAL_ALLOW_REMOTE_CODE",
+        "ROS_DOMAIN_ID",
+    ):  # fmt: skip
+        assert env[kept] == environ[kept], kept
+    for dropped in (
+        "OPENRAL_REASONER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GH_TOKEN",
+        "AWS_SECRET_ACCESS_KEY", "OPENRAL_ROBOT_UI_TOKEN", "SSH_AUTH_SOCK", "RANDOM_TOOL_VAR",
+    ):  # fmt: skip
+        assert dropped not in env, dropped
+    assert sidecar_env(environ, extra=["RANDOM_TOOL_VAR"])["RANDOM_TOOL_VAR"] == "x"
+
+
+def test_isolated_env_never_carries_the_reasoner_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-openral")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    env = make_isolated_env(Path("/tmp/sidecar/.venv"))
+    assert "OPENRAL_REASONER_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["PATH"].startswith("/tmp/sidecar/.venv/bin")

@@ -40,6 +40,9 @@ from openral_sim._sidecar_common import build_parser, run_cmd, run_sidecar, torc
 
 _LABEL = "internvla-n1-sidecar"
 _REPO_URL = "https://github.com/InternRobotics/InternNav.git"
+# The upstream commit the sidecar runs ("Revise citations in README (#310)",
+# 2026-03-10), never the default branch's moving HEAD (``ensure_source``).
+_REPO_SHA = "7a5c62400ac45b313d9b709c740b64191556a242"
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "internvla-n1-sidecar"
 # py3.12 matches the workspace; nothing in the inference pin set needs 3.11.
 # Validated 2026-10-28 on x86_64 (RTX 5070: same twists and timings as 3.11)
@@ -213,6 +216,7 @@ def main() -> int:
         label=_LABEL,
         family="internvla_n1",
         repo_url=_REPO_URL,
+        repo_sha=_REPO_SHA,
         args=args,
         install_deps=_install_deps,
         make_wrapper=_make_wrapper,
