@@ -23,20 +23,28 @@ concurrency:
 
 jobs:
   sync:
+    # The bot token merges into the website: master only, in the same environment
+    # as robot-ui.yml's pin job (see the setup notes there).
+    if: github.ref == 'refs/heads/master'
+    environment: robot-ui-release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      GH_TOKEN: ${{ secrets.ROBOT_UI_BOT_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      # openral-core and its deps from uv.lock (hash-checked). No token in this
+      # step's environment: ROBOT_UI_BOT_TOKEN is scoped to `website dev` only.
       - name: export
         run: |
           set -euo pipefail
-          uv run --no-project --python 3.12 --with ./python/core \
-            python tools/export_reasoner_models.py > "$RUNNER_TEMP/reasoner-models.json"
+          uv sync --frozen --package openral-core --no-default-groups --python 3.12
+          .venv/bin/python tools/export_reasoner_models.py > "$RUNNER_TEMP/reasoner-models.json"
           cat "$RUNNER_TEMP/reasoner-models.json"
       - name: website dev
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_UI_BOT_TOKEN }}  # this step only
         run: |
           set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then

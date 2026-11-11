@@ -20,6 +20,19 @@ name: robot-ui
 # write to the website. Without it the pre-release is still published and the
 # job says which pins to bump by hand.
 #
+# Trust boundary: only master publishes. A workflow_dispatch with publish:true runs
+# from refs/heads/master only (any other ref is refused in `build`), and the release
+# path attaches only to a v* tag, dispatched from master or that tag. The `pin` job
+# (the one holding ROBOT_UI_BOT_TOKEN, which merges into the website's dev branch)
+# runs in the `robot-ui-release` environment and executes tools/pin_robot_ui.py
+# from a master checkout, never from the commit that built the UI.
+# Maintainer setup (Settings → Environments → New environment `robot-ui-release`):
+#   - Deployment branches and tags: "Selected branches" → master only;
+#   - move ROBOT_UI_BOT_TOKEN from repository secrets into this environment's
+#     secrets, so no other branch or job can read it (reasoner-models.yml uses
+#     the same environment);
+#   - optionally: Required reviewers, to approve each rollout by hand.
+#
 # TOKEN — same caveat as release-pypi.yml: GitHub does not fire `release`
 # events for releases created with the default GITHUB_TOKEN. Without
 # RELEASE_PLEASE_TOKEN in release-please.yml, dispatch this workflow by hand
@@ -71,6 +84,14 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
           PUBLISH: ${{ inputs.publish }}
         run: |
+          set -euo pipefail
+          # Publishing and attaching are master/tag-only: refuse anything else up front.
+          if [ "$PUBLISH" = true ] && [ "$GITHUB_REF" != refs/heads/master ]; then
+            echo "::error::publish:true runs from refs/heads/master only (got ${GITHUB_REF})"; exit 1
+          fi
+          if [ -n "$RELEASE_TAG" ] && ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::not a release tag: ${RELEASE_TAG}"; exit 1
+          fi
           # A push to master publishes robot-ui-<sha7>; a release attaches to its own tag.
           tag="$RELEASE_TAG"
           if [ "$GITHUB_EVENT_NAME" = push ] || [ "$PUBLISH" = true ]; then
@@ -82,7 +103,10 @@ jobs:
         with:
           # The exact source the tag names: this commit for robot-ui-<sha7> (a ref could
           # have moved on since the push), else the release's tag.
-          ref: ${{ (github.event_name == 'push' || inputs.publish) && github.sha || github.event.release.tag_name || inputs.tag || github.ref }}
+          # A release tag is checked out as refs/tags/<tag>, so a branch of the same
+          # name can never stand in for it.
+          ref: ${{ (github.event_name == 'push' || inputs.publish) && github.sha || ((github.event.release.tag_name || inputs.tag) && format('refs/tags/{0}', github.event.release.tag_name || inputs.tag)) || github.ref }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 22
@@ -113,7 +137,10 @@ jobs:
   # Separate job so the write token never shares a runner with npm.
   attach:
     needs: build
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && !inputs.publish)
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tag != '' && !inputs.publish &&
+       (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -135,7 +162,7 @@ jobs:
   # A push to master: publish the build as a pre-release on this commit.
   publish:
     needs: build
-    if: github.event_name == 'push' || inputs.publish
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.publish)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -169,7 +196,9 @@ jobs:
   # Roll it out: one pin-bump PR per repo (see ROBOT_UI_BOT_TOKEN above).
   pin:
     needs: [build, publish]
-    if: github.event_name == 'push' || inputs.publish
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.publish)
+    # Holds ROBOT_UI_BOT_TOKEN: environment-gated (master only, optional reviewers).
+    environment: robot-ui-release
     # One at a time, newest last: an older build never overwrites a newer pin.
     concurrency:
       group: robot-ui-pin
@@ -223,10 +252,9 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          # The pin tool as of the commit that built the UI (master may not have it yet).
-          git fetch -q --depth 1 origin "$GITHUB_SHA"
-          git show "${GITHUB_SHA}:tools/pin_robot_ui.py" > "$RUNNER_TEMP/pin_robot_ui.py"
-          python3 "$RUNNER_TEMP/pin_robot_ui.py" "$TAG" "$URL" "$SHA" "$SIZE"
+          # The pin tool from the master checkout above: reviewed code only, never
+          # the (possibly newer, unreviewed) tree of the commit that built the UI.
+          python3 tools/pin_robot_ui.py "$TAG" "$URL" "$SHA" "$SIZE"
           if git diff --quiet; then
             echo "::notice::master already pins ${TAG}"
             exit 0
