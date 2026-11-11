@@ -14,15 +14,24 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
   const [data, setData] = useState(null);
   const [draft, setDraft] = useState({});
   const [msg, setMsg] = useState({ text: "", kind: "" });
+  const [failed, setFailed] = useState(false);
+  const [tries, setTries] = useState(0);
   useEffect(() => {
     let live = true;
+    setFailed(false);
     fetch(url, { credentials: "same-origin" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((b) => live && setData(b), () => {});
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(
+        (b) => live && setData(b),
+        () => live && setFailed(true),
+      );
     return () => {
       live = false;
     };
-  }, [url]);
+  }, [url, tries]);
   const save = async (name, value) => {
     try {
       const r = await fetch(url, {
@@ -40,7 +49,20 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
       setMsg({ text: "Could not save: check your connection and try again.", kind: "err" });
     }
   };
-  if (!data || data.scope !== which) return null; // no org: only your own
+  if (failed)
+    return (
+      <section className="set-scope" aria-label={TITLES[which] || "Reasoner"}>
+        {TITLES[which] && <h3>{TITLES[which]}</h3>}
+        <p className="set-msg err" role="alert">
+          Could not load these settings.{" "}
+          <button className="btn" type="button" onClick={() => setTries((n) => n + 1)}>
+            Retry
+          </button>
+        </p>
+      </section>
+    );
+  if (!data) return <p className="set-msg">Loading…</p>;
+  if (data.scope !== which) return null; // no org: only your own
   const problem = modelProblem(data);
   return (
     <section className="set-scope" aria-label={TITLES[which] || "Reasoner"}>
@@ -59,8 +81,9 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
                 onChange={(e) => save(name, e.target.value)}
                 aria-label={s.label}
               >
-                <option value="" disabled>
-                  Choose a model
+                {/* On the robot "" is a choice: no model here, so a deploy uses the account's. */}
+                <option value="" disabled={which !== "robot"}>
+                  {which === "robot" ? "Use account settings" : "Choose a model"}
                 </option>
                 {s.options.map((o) => (
                   <option key={o.id} value={o.id} disabled={Boolean(o.needs) && !isSet(o.needs)}>

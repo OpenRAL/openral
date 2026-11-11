@@ -12,7 +12,8 @@ export function modelProblem(data) {
   const isSet = (n) => Boolean(data.values?.[n]?.set);
   const label = (n) => data.settings[n]?.label || n;
   const chosen = s.options.find((o) => o.id === v?.value);
-  if (!s.options.some((o) => o.needs && isSet(o.needs))) return "Set an Anthropic or OpenAI API key to choose a model.";
+  const local = chosen && !chosen.needs; // an on-device model (cosmos3-edge) needs no cloud key
+  if (!local && !s.options.some((o) => o.needs && isSet(o.needs))) return "Set an Anthropic or OpenAI API key to choose a model.";
   if (v?.set && !chosen) return `"${v.value}" isn't a model robots run: pick one.`;
   if (chosen?.needs && !isSet(chosen.needs)) return `${chosen.label} needs the ${label(chosen.needs)}.`;
   return "";

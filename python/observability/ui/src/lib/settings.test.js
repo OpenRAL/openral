@@ -13,6 +13,7 @@ const SETTINGS = {
     options: [
       { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", needs: "ANTHROPIC_API_KEY" },
       { id: "gpt-5.5", label: "GPT-5.5", needs: "OPENAI_API_KEY" },
+      { id: "cosmos3-edge", label: "Cosmos 3 Edge", needs: null },
     ],
   },
 };
@@ -24,6 +25,8 @@ test("the model needs a key, a curated id, and its own provider's key", () => {
   assert.equal(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "claude-sonnet-5-5" } })), "");
   assert.match(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "gpt-5.5" } })), /GPT-5.5 needs the OpenAI API key/);
   assert.match(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "llama" } })), /isn't a model robots run/);
+  // An on-device model needs no cloud key.
+  assert.equal(modelProblem(data({ OPENRAL_REASONER_MODEL: { set: true, value: "cosmos3-edge" } })), "");
 });
 
 test("a secret only ever shows as set with its last four characters", () => {
