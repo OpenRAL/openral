@@ -86,9 +86,20 @@ plus E-STOP, and the removal of free-form parameter writes (ADR-0129 §6).
 
 ### The 3D view
 
-`/viz/` serves a pinned Lichtblick web build (`dashboard/viz_assets.py`, MPL-2.0, its
+The robot UI draws the 3D scene itself (three.js, `ui/src/Scene3D.jsx`) from
+`foxglove_bridge` through `WS /ws`: the URDF (meshes through the bridge's `assets`
+capability), link poses from `/tf`, the occupancy grid, a point cloud, collision and
+payload markers and the world-state objects. It subscribes only to the layers that are
+on. `/ws` runs every bridge→browser frame through `dashboard/bridge_relay.py`: for heavy
+snapshot topics (images, point clouds, occupancy grids, laser scans) only the newest
+unsent message per subscription is kept while the browser is slow; everything else is
+relayed in order, and once 8 MiB of ordered frames wait unsent the proxy stops reading
+the bridge, so the bridge's own `send_buffer_limit` sheds load. The number of coalesced
+frames is logged when the connection ends (`dashboard.bridge_relay_coalesced`).
+
+For raw topic inspection `/viz/` also serves a pinned Lichtblick web build (`dashboard/viz_assets.py`, MPL-2.0, its
 source noted in `NOTICE.txt` beside it), fetched on first use without its source maps.
-It reaches `foxglove_bridge` (loopback, read-only) through `WS /ws`, a proxy that pings
+Both reach `foxglove_bridge` (loopback, read-only) through `WS /ws`, a proxy that pings
 every 30 s and checks `Origin` on upgrade. Remote and LAN clients need a ticket from
 `POST /api/viz/ticket` (256-bit, bound to the caller, reusable for 15 minutes). The
 `/viz/` index.html carries this robot's layout (`openral_foxglove_bringup.layout`) in

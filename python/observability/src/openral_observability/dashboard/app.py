@@ -922,7 +922,8 @@ def _without_images(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 # The robot UI and the fallback page: their own scripts only, styles may be inline (React
 # sets element styles), images from blob: snapshots, the API and the /ws bridge on this
-# origin, the 3D view framed from /viz/; framed only here and by openral.com.
+# origin (the page draws the 3D scene itself from /ws; /viz/ is Lichtblick, opened in
+# its own tab); framed only here and by openral.com.
 _UI_CSP = (
     "default-src 'self'; script-src 'self'{inline}; style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; "
@@ -1090,15 +1091,20 @@ async def _relay_to_browser(
 ) -> None:
     """Read the bridge into ``relay`` and send what it releases while the browser keeps up.
 
-    Reading never waits on the browser, so while a send is in flight newer snapshot
-    frames replace older unsent ones instead of queuing behind them.
+    While a send is in flight the reader keeps going, so newer snapshot frames replace
+    older unsent ones. Ordered frames are bounded: when the relay is ``full()`` the reader
+    waits for the browser, which hands the backpressure back to ``foxglove_bridge``.
     """
     ready = asyncio.Event()
+    sent = asyncio.Event()
 
     async def read_bridge() -> None:
         async for message in upstream:
             relay.from_bridge(message)
             ready.set()
+            while relay.full():
+                sent.clear()
+                await sent.wait()
 
     reader = asyncio.create_task(read_bridge())
     try:
@@ -1115,12 +1121,16 @@ async def _relay_to_browser(
                     await websocket.send_bytes(frame)
                 else:
                     await websocket.send_text(frame)
+            sent.set()
             if reader.done() and not relay.pending():
                 reader.result()  # re-raise a bridge error
                 return
     finally:
         reader.cancel()
         await asyncio.gather(reader, return_exceptions=True)
+        if relay.dropped:
+            # Explicit, not silent: how many stale snapshot frames this viewer never got.
+            _logger.info("dashboard.bridge_relay_coalesced", dropped=relay.dropped)
 
 
 async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None) -> None:

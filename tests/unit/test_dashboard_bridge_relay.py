@@ -94,6 +94,49 @@ def test_unsubscribing_and_resubscribing_to_another_channel_stops_coalescing() -
     assert relay.drain() == frames
 
 
+def test_sampled_streams_are_never_coalesced() -> None:
+    # A plot needs every joint-state sample, and two publishers may share the topic.
+    relay = BridgeRelay()
+    channel = {"id": 9, "topic": "/joint_states", "schemaName": "sensor_msgs/msg/JointState"}
+    relay.from_bridge(json.dumps({"op": "advertise", "channels": [channel]}))
+    relay.from_browser(_subscribe((90, 9)))
+    relay.drain()
+    frames = [_data(90, stamp, b"js") for stamp in range(4)]
+    for frame in frames:
+        relay.from_bridge(frame)
+    assert relay.drain() == frames
+    assert relay.dropped == 0
+
+
+def test_ordered_frames_are_bounded_and_snapshots_do_not_count() -> None:
+    relay = BridgeRelay(max_ordered_bytes=1000)
+    relay.from_bridge(_advertise())
+    relay.from_browser(_subscribe((10, 1), (20, 2)))
+    relay.drain()
+    for stamp in range(50):  # snapshot frames replace each other: never "full"
+        relay.from_bridge(_data(10, stamp, b"x" * 500))
+    assert not relay.full()
+    while not relay.full():
+        relay.from_bridge(_data(20, 0, b"t" * 100))
+    assert len(relay.drain()) < 12  # ~1000 bytes of /tf plus the one image
+    assert not relay.full()  # sending releases the bound
+
+
+def test_a_malformed_subscribe_is_ignored_not_fatal() -> None:
+    relay = _relay()
+    for bad in (
+        '{"op":"subscribe","subscriptions":[{"id":1,"channelId":[]}]}',
+        '{"op":"subscribe","subscriptions":[{"id":{},"channelId":1}, 7]}',
+        '{"op":"unsubscribe","subscriptionIds":[[1]]}',
+        "not json",
+        "[1, 2]",
+    ):
+        relay.from_browser(bad)  # the frame still goes to the bridge, which rejects it
+    relay.from_bridge(_data(1, 1))
+    relay.from_bridge(_data(1, 2))
+    assert len(relay.drain()) == 2  # sub 1 was never classed as a snapshot subscription
+
+
 def test_every_ros2_snapshot_schema_is_in_ros1_spelling() -> None:
     # The lookup drops "/msg/", so the set must hold the short spelling only.
     assert all("/msg/" not in name for name in LATEST_WINS_SCHEMAS)

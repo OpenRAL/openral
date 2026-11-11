@@ -4,13 +4,19 @@ Through a robot's Cloudflare Tunnel the link to the browser is often slower than
 the bridge. Relaying every frame in order then builds a queue, and the 3D view
 falls seconds behind. This relay reads the Foxglove WebSocket protocol
 (``foxglove.websocket.v1``) it already carries and, **for snapshot-type topics
-only** (images, point clouds, occupancy grids, joint states, …), keeps just the
+only** (images, point clouds, occupancy grids, laser scans), keeps just the
 newest message per subscription while the browser side is busy.
 
 Everything else is relayed unchanged and in order: every text (JSON) frame,
 every binary frame that is not message data, and message data for incremental
 topics (``/tf``, marker arrays, the URDF string), where dropping a message would
-lose state. The relay never edits a frame.
+lose state, and for sampled streams (joint states, IMU, odometry), which a
+plot needs whole. The relay never edits a frame.
+
+Ordered frames are bounded: once ``max_ordered_bytes`` of them wait unsent,
+``full()`` turns true and the caller stops reading the bridge until they are
+sent, so the bridge's own ``send_buffer_limit`` decides what to shed, as it did
+before this relay existed.
 
 Example:
     >>> import struct
@@ -35,13 +41,16 @@ import json
 import struct
 from collections import deque
 
-__all__ = ["LATEST_WINS_SCHEMAS", "BridgeRelay", "Frame"]
+__all__ = ["LATEST_WINS_SCHEMAS", "MAX_ORDERED_BYTES", "BridgeRelay", "Frame"]
 
 Frame = str | bytes
 
-#: Message types where only the newest message matters: each one is a full
-#: snapshot of its stream. ``/msg/`` is dropped before the lookup, so both the
-#: ROS 2 (``sensor_msgs/msg/Image``) and ROS 1 (``sensor_msgs/Image``) spellings match.
+#: Message types where only the newest message matters: each one is a full,
+#: heavy snapshot of its stream. Sampled streams (``JointState``, ``Imu``,
+#: ``Odometry``) are deliberately absent: a plot needs every sample, and two
+#: publishers may share one topic with partial messages. ``/msg/`` is dropped
+#: before the lookup, so both the ROS 2 (``sensor_msgs/msg/Image``) and ROS 1
+#: (``sensor_msgs/Image``) spellings match.
 LATEST_WINS_SCHEMAS: frozenset[str] = frozenset(
     {
         "sensor_msgs/Image",
@@ -49,14 +58,13 @@ LATEST_WINS_SCHEMAS: frozenset[str] = frozenset(
         "sensor_msgs/CameraInfo",
         "sensor_msgs/PointCloud2",
         "sensor_msgs/LaserScan",
-        "sensor_msgs/JointState",
-        "sensor_msgs/Imu",
         "nav_msgs/OccupancyGrid",
-        "nav_msgs/Odometry",
-        "std_msgs/Float32MultiArray",
-        "openral_msgs/WorldStateStamped",
     }
 )
+
+#: Unsent ordered frames the relay holds before ``full()`` asks the caller to
+#: stop reading the bridge (foxglove_bridge's ``send_buffer_limit`` is 10 MB).
+MAX_ORDERED_BYTES = 8 * 1024 * 1024
 
 _MESSAGE_DATA = 0x01
 _HEADER = struct.Struct("<BI")  # opcode, subscription id (then u64 timestamp, payload)
@@ -74,16 +82,17 @@ class BridgeRelay:
     send what ``drain`` returns. Single-threaded: call it from one event loop.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_ordered_bytes: int = MAX_ORDERED_BYTES) -> None:
         """Start with no channels or subscriptions known."""
         self._latest_channels: set[int] = set()
         self._latest_subs: set[int] = set()
-        self._queue: deque[Frame | int] = (
-            deque()
-        )  # a frame, or a subscription id to send the newest of
+        # A frame, or a subscription id standing for "the newest of that subscription".
+        self._queue: deque[Frame | int] = deque()
         self._newest: dict[int, bytes] = {}
+        self._ordered_bytes = 0
+        self._max_ordered_bytes = max_ordered_bytes
         self.dropped = 0
-        """Messages replaced by a newer one before they were sent."""
+        """Snapshot messages replaced by a newer one before they were sent."""
 
     def from_browser(self, frame: Frame) -> None:
         """Learn subscriptions from a browser→bridge frame (the frame is not changed)."""
@@ -93,9 +102,11 @@ class BridgeRelay:
         if msg.get("op") == "subscribe":
             for sub in _dicts(msg.get("subscriptions")):
                 sid, cid = sub.get("id"), sub.get("channelId")
-                if isinstance(sid, int) and cid in self._latest_channels:
+                if not isinstance(sid, int):
+                    continue
+                if isinstance(cid, int) and cid in self._latest_channels:
                     self._latest_subs.add(sid)
-                elif isinstance(sid, int):
+                else:
                     self._latest_subs.discard(sid)
         elif msg.get("op") == "unsubscribe":
             for sid in _list(msg.get("subscriptionIds")):
@@ -107,6 +118,7 @@ class BridgeRelay:
         if isinstance(frame, str):
             self._learn_channels(frame)
             self._queue.append(frame)
+            self._ordered_bytes += len(frame)
             return
         if len(frame) >= _HEADER.size and frame[0] == _MESSAGE_DATA:
             sid = _HEADER.unpack_from(frame)[1]
@@ -118,6 +130,11 @@ class BridgeRelay:
                 self._newest[sid] = frame
                 return
         self._queue.append(frame)
+        self._ordered_bytes += len(frame)
+
+    def full(self) -> bool:
+        """Whether the unsent ordered frames reached the bound: stop reading the bridge."""
+        return self._ordered_bytes >= self._max_ordered_bytes
 
     def pending(self) -> bool:
         """Whether ``drain`` has anything to return."""
@@ -134,6 +151,7 @@ class BridgeRelay:
                     out.append(frame)
             else:
                 out.append(item)
+        self._ordered_bytes = 0
         return out
 
     def _learn_channels(self, text: str) -> None:
