@@ -5914,7 +5914,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     summary=" ".join(
                         part
                         for part in (
-                            str(getattr(result, "outcome_summary", "") or ""),
+                            # Bounded here too: any ExecuteRskill producer may fill it.
+                            str(getattr(result, "outcome_summary", "") or "")[:480],
                             f"trace={result.trace_id[:8] if result.trace_id else '-'}",
                         )
                         if part

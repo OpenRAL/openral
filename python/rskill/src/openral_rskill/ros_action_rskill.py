@@ -197,7 +197,11 @@ def _summarize_wrapped_outcome(status: str, result: Any, goal: dict[str, Any]) -
     def fmt(items: list[tuple[str, Any]]) -> str:
         return " ".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}" for k, v in items)
 
-    res, gol = fmt(_scalar_items(result)), fmt(_scalar_items(goal))
+    # The error code / message first and no header stamps / frame ids: a MoveIt
+    # result is mostly zero-filled headers, which would spend the budget first.
+    items = [kv for kv in _scalar_items(result) if "header." not in kv[0]]
+    items.sort(key=lambda kv: not any(p.startswith("error") for p in kv[0].split(".")))
+    res, gol = fmt(items), fmt(_scalar_items(goal))
     # One line: a server's multi-line ``error_msg`` must not break the EXECUTION line.
     line = " ".join(f"status={status} result{{{res}}} goal{{{gol}}}".split())
     if len(line) > _OUTCOME_SUMMARY_MAX_CHARS:

@@ -2017,7 +2017,8 @@ if _ROS2_AVAILABLE:
                         # success=True. Logged so traces show why the loop
                         # exited.
                         self.get_logger().info(
-                            f"rskill_runner.rskill_goal_satisfied: {completion!s}"
+                            f"rskill_runner.rskill_goal_satisfied "
+                            f"rskill={self._active_skill_id}: {completion!s}"
                         )
                         self._goal_outcome_summary = str(completion)[:_OUTCOME_SUMMARY_MAX_CHARS]
                         inf_span.set_attribute("rskill.completion", "goal_satisfied")

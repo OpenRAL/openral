@@ -657,3 +657,24 @@ def test_result_only_inflight_skill_does_not_keep_the_heartbeat_live() -> None:
     assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
     live = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert live.suppressed_reason == ""
+
+
+def test_result_only_inflight_skill_stays_pollable_with_a_reward_monitor() -> None:
+    """With query_task_progress wired, a stalled drive can still be polled (and cancelled)."""
+    nav = RSkillToolEntry(
+        rskill_id="openral/rskill-nav",
+        description="navigate",
+        actions=(RSkillAction.NAVIGATE,),
+        result_only=True,
+    )
+    palette = ToolPalette(skills=(nav,), task_progress_available=True)
+    client = FakeToolUseClient(
+        responses=[EmitPromptTool(target_topic="/openral/prompt", text=str(i)) for i in range(3)],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0)
+    renderer = _renderer_with_prompt("drive to x=4")
+    renderer.set_inflight_skill("openral/rskill-nav", stamp_ns=1)
+    assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
+    live = core.tick(world_state=None, renderer=renderer, palette=palette)
+    assert live.tool_call is not None
+    assert not live.suppressed_reason

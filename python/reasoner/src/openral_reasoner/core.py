@@ -502,10 +502,12 @@ class ReasonerCore:
         # mid-execution (the system prompt instructs exactly that). A result-only
         # skill (wrapped Nav2-shape action) has no progress to poll; its terminal
         # result is an event of its own, so it does not keep the heartbeat live
-        # (2026-11-11: 103 of 109 LLM calls were `wait` ticks during one drive).
+        # (2026-11-11: 103 of 109 LLM calls were `wait` ticks during one drive) —
+        # unless a reward monitor is wired, which a stalled drive can still be polled on.
         inflight = renderer.inflight_skill
         entry = palette.skill(inflight)
-        pollable = inflight is not None and not (entry is not None and entry.result_only)
+        result_only = entry is not None and entry.result_only
+        pollable = inflight is not None and (palette.task_progress_available or not result_only)
         if not force and renderer.seq == self._last_seen_seq and not pollable:
             self._last_tick_s = started
             return ReasonerTickResult(

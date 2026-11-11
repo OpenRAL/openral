@@ -527,6 +527,23 @@ def test_outcome_summary_stays_on_one_line() -> None:
     )
 
 
+def test_outcome_summary_leads_with_the_error_and_drops_result_headers() -> None:
+    """A MoveIt abort is mostly zero-filled headers: the error code must survive the bound."""
+    from types import SimpleNamespace
+
+    from openral_rskill.ros_action_rskill import _summarize_wrapped_outcome
+
+    header = {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": "world"}
+    result = {
+        "trajectory_start": {"joint_state": {"header": header}},
+        "planned_trajectory": {"joint_trajectory": {"header": header}},
+        "planning_time": 0.5,
+        "error_code": SimpleNamespace(val=-1),  # MoveItErrorCodes reads as its .val
+    }
+    line = _summarize_wrapped_outcome("STATUS_ABORTED", result, {})
+    assert line == "status=STATUS_ABORTED result{error_code=-1 planning_time=0.5} goal{}"
+
+
 def test_outcome_summary_is_bounded() -> None:
     """A large result (or goal) never floods the reasoner's EXECUTION line."""
     from openral_rskill.ros_action_rskill import (

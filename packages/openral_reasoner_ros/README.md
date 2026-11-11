@@ -48,7 +48,7 @@ are short-circuited inside `ReasonerCore` with
 the reasoner can poll `query_task_progress` mid-execution. A *result-only*
 skill (a wrapped ROS action with no `result_trajectory_field`, e.g. Nav2
 `NavigateToPose`) has no progress to poll, so it does not keep the heartbeat
-live; its terminal result, prompts and safety events still wake the next tick.
+live unless a reward monitor (`query_task_progress`) is wired; its terminal result, prompts and safety events still wake the next tick.
 The retry
 cap is keyed on the **identical tool call** (same tool + same
 arguments): a healthy navigate → pick → place sequence never trips it,
@@ -104,7 +104,8 @@ fields and the goal that was sent, bounded to 400 characters:
 ```
 
 A failure carries the same `status=… result{…} goal{…}` line in its
-`failure_reason`.
+`failure_reason`; the result's `error*` fields come first and its `header.*`
+fields are dropped, so a MoveIt abort's error code survives the bound.
 
 For direct `locate_in_view` tool calls, a missing service, failed request, or nonempty
 `LocateInView.failure_reason` produces a bounded detector failure prompt that says
