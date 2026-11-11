@@ -22,7 +22,8 @@ from openral_sim._sidecar_common import (
     sidecar_env,
 )
 
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
+# Only the fetch tests need git; the environment-policy tests run everywhere.
+_needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -44,6 +45,7 @@ def _upstream(tmp_path: Path) -> tuple[str, str, str]:
     return repo.as_uri(), _git("rev-parse", "HEAD~1", cwd=repo), _git("rev-parse", "HEAD", cwd=repo)
 
 
+@_needs_git
 def test_fetches_exactly_the_pinned_commit_not_head(tmp_path: Path) -> None:
     url, first, tip = _upstream(tmp_path)
     source = ensure_source("t", tmp_path / "work", url, first)
@@ -52,6 +54,7 @@ def test_fetches_exactly_the_pinned_commit_not_head(tmp_path: Path) -> None:
     assert ensure_source("t", tmp_path / "work", url, first) == source
 
 
+@_needs_git
 def test_refuses_an_existing_checkout_at_another_commit(tmp_path: Path) -> None:
     url, first, tip = _upstream(tmp_path)
     ensure_source("t", tmp_path / "work", url, tip)
@@ -59,6 +62,7 @@ def test_refuses_an_existing_checkout_at_another_commit(tmp_path: Path) -> None:
         ensure_source("t", tmp_path / "work", url, first)
 
 
+@_needs_git
 def test_a_failed_fetch_leaves_nothing_that_looks_like_a_checkout(tmp_path: Path) -> None:
     """An interrupted first fetch must not block the next run (no half-made source/)."""
     url, first, _ = _upstream(tmp_path)
@@ -68,6 +72,7 @@ def test_a_failed_fetch_leaves_nothing_that_looks_like_a_checkout(tmp_path: Path
     assert checkout_head(ensure_source("t", tmp_path / "work", url, first)) == first
 
 
+@_needs_git
 @pytest.mark.parametrize("pin", ["", "main", "HEAD", "cf67c31f", "Z" * 40])
 def test_refuses_a_pin_that_is_not_a_full_sha(tmp_path: Path, pin: str) -> None:
     url, _, _ = _upstream(tmp_path)
@@ -163,6 +168,7 @@ def test_sidecar_env_drops_any_key_and_keeps_server_overrides() -> None:
     assert env == {"RLDX_ATTN_IMPL": "sdpa", "TRANSFORMERS_OFFLINE": "1"}
 
 
+@_needs_git
 def test_run_sidecar_scrubs_before_the_clone_is_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -266,3 +272,15 @@ def test_boot_helper_scrubs_environ_before_anything(
     if keeps_hf_token:
         expected["HF_TOKEN"] = "hf_x"
     assert dict(os.environ) == expected
+
+
+def test_sidecar_env_drops_urls_carrying_credentials() -> None:
+    """A private index's user:password rides in the URL, not in a credential-named variable."""
+    env = sidecar_env(
+        {
+            "UV_INDEX_URL": "https://bot:s3cret@pypi.internal.example/simple",
+            "PIP_INDEX_URL": "https://pypi.org/simple",
+            "HTTPS_PROXY": "http://user:pw@proxy.example:3128",
+        }
+    )
+    assert env == {"PIP_INDEX_URL": "https://pypi.org/simple"}

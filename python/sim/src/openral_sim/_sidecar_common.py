@@ -248,6 +248,10 @@ _CREDENTIAL_NAME = re.compile(
 )
 
 
+# A URL carrying userinfo (``https://user:pass@index.example/simple``): a private
+# package index's credentials ride in UV_INDEX_URL / PIP_INDEX_URL / *_PROXY values.
+_URL_USERINFO = re.compile(r"://[^/\s@]+@")
+
 _HF_TOKEN_NAMES = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
 
 
@@ -261,8 +265,10 @@ def sidecar_env(
     everything else, so ``*_API_KEY`` / ``ANTHROPIC_*`` / ``OPENAI_*`` and other
     operator secrets never reach a remote-code process. A name with a credential
     word (``API_KEY``, ``SECRET``, ``TOKEN``, … as a whole ``_``-separated word) is
-    dropped even when a prefix matches; ``HF_TOKEN`` is the one deliberate exception (gated weight
-    downloads), and ``hf_token=False`` drops it too for a sidecar whose weights are public.
+    dropped even when a prefix matches, and so is any value holding a URL with
+    credentials in it (a private index in ``UV_INDEX_URL``). ``HF_TOKEN`` is the one
+    deliberate exception (gated weight downloads), and ``hf_token=False`` drops it too
+    for a sidecar whose weights are public.
     ``extra`` names further variables a particular sidecar needs.
 
     Example:
@@ -282,7 +288,7 @@ def sidecar_env(
             return False
         return name.startswith(_SIDECAR_ENV_PREFIXES)
 
-    return {k: v for k, v in environ.items() if allowed(k)}
+    return {k: v for k, v in environ.items() if allowed(k) and not _URL_USERINFO.search(v)}
 
 
 def scrub_environ(*, hf_token: bool = True) -> None:

@@ -92,6 +92,11 @@ jobs:
           if [ -n "$RELEASE_TAG" ] && ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::not a release tag: ${RELEASE_TAG}"; exit 1
           fi
+          # An attach (tag, no publish) runs only from master or a v* tag; refuse, don't skip.
+          if [ -n "$RELEASE_TAG" ] && [ "$PUBLISH" != true ] && [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] \
+             && [ "$GITHUB_REF" != refs/heads/master ] && [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "::error::attaching to ${RELEASE_TAG} runs from master or a v* tag only (got ${GITHUB_REF})"; exit 1
+          fi
           # A push to master publishes robot-ui-<sha7>; a release attaches to its own tag.
           tag="$RELEASE_TAG"
           if [ "$GITHUB_EVENT_NAME" = push ] || [ "$PUBLISH" = true ]; then
