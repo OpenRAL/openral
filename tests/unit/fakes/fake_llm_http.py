@@ -222,7 +222,7 @@ class FakeLLMServer:
     """
 
     def __init__(
-        self, replies: list[Reply], *, get_bodies: dict[str, dict[str, Any]] | None = None
+        self, replies: list[Reply], *, get_bodies: dict[str, object] | None = None
     ) -> None:
         """Bind an ephemeral loopback port; serving starts on ``__enter__``."""
         self._replies: deque[Reply] = deque(replies)
@@ -248,9 +248,10 @@ class FakeLLMServer:
                 self.wfile.write(payload)
 
             def do_GET(self) -> None:
-                body = server._get_bodies.get(self.path)
-                payload = json.dumps(body if body is not None else {"error": "not found"}).encode()
-                self.send_response(200 if body is not None else 404)
+                found = self.path in server._get_bodies
+                body = server._get_bodies.get(self.path, {"error": "not found"})
+                payload = json.dumps(body).encode()
+                self.send_response(200 if found else 404)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()

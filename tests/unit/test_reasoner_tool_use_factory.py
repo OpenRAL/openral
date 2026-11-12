@@ -574,3 +574,18 @@ def test_a_ratio_flagged_reply_is_refused_without_a_reported_window() -> None:
         )
         with pytest.raises(ROSPlanningError, match="cut the prompt"):
             client.select_tool(context_text="x" * 31_000, palette=ToolPalette(skills=()))
+
+
+@pytest.mark.parametrize("ps", [[], {"models": [None]}, {"models": "x"}])
+def test_a_malformed_api_ps_body_falls_back_to_the_ratio(ps: object) -> None:
+    """A body that is not ``/api/ps``'s shape reads as no window, not a crash."""
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    replies = [_ollama_reply(4096, "fp_ollama")]
+    with FakeLLMServer(replies, get_bodies={"/api/ps": ps}) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3.5:4b", base_url=server.openai_base_url, tool_choice="auto"
+        )
+        with pytest.raises(ROSPlanningError, match="cut the prompt"):
+            client.select_tool(context_text="x" * 31_000, palette=ToolPalette(skills=()))

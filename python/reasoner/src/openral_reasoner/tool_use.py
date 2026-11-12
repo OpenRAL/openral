@@ -770,11 +770,26 @@ _MAX_CHARS_PER_PROMPT_TOKEN: float = 4.0
 _OLLAMA_FINGERPRINT: str = "fp_ollama"
 
 
+class _OllamaLoadedModel(BaseModel):
+    """One entry of Ollama's ``GET /api/ps`` (only the fields read here)."""
+
+    name: str = ""
+    model: str = ""
+    context_length: int | None = None
+
+
+class _OllamaPs(BaseModel):
+    """Ollama's ``GET /api/ps`` body: the models it has loaded."""
+
+    models: list[_OllamaLoadedModel] = []
+
+
 def _ollama_context_length(base_url: str | None, model_id: str) -> int | None:
     """The context window Ollama loaded ``model_id`` with (``GET /api/ps``), or ``None``.
 
     ``base_url`` is the OpenAI-compatible root (``…/v1``); the native API sits
-    beside it. ``None`` when the server, the model or the field is missing.
+    beside it. ``None`` when the server, the model or the field is missing, or
+    the body is not the documented shape.
     """
     if not base_url:
         return None
@@ -782,16 +797,13 @@ def _ollama_context_length(base_url: str | None, model_id: str) -> int | None:
     try:
         # The configured reasoner endpoint, never a user-supplied URL.
         with urllib.request.urlopen(f"{root}/api/ps", timeout=2.0) as reply:
-            models = json.load(reply).get("models", [])
-    except (OSError, ValueError):
+            loaded = _OllamaPs.model_validate_json(reply.read()).models
+    except (OSError, ValidationError):
         return None
-    for entry in models:
-        if (
-            model_id in (entry.get("name"), entry.get("model"))
-            or entry.get("name") == f"{model_id}:latest"
-        ):
-            length = entry.get("context_length")
-            return length if isinstance(length, int) and length > 0 else None
+    for entry in loaded:
+        if model_id in (entry.name, entry.model) or entry.name == f"{model_id}:latest":
+            length = entry.context_length
+            return length if length is not None and length > 0 else None
     return None
 
 

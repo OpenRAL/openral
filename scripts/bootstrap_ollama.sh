@@ -56,6 +56,7 @@ the curated local reasoner model (qwen3.5:4b by default).
 
 Afterwards, select it (model-first contract, ADR-0088):
   export OPENRAL_REASONER_MODEL=qwen3.5-4b
+  export OPENRAL_REASONER_ENDPOINT=ollama   # if another endpoint is exported
 EOF
       exit 0
       ;;
@@ -143,7 +144,7 @@ if [[ "${OLLAMA_UNIT_SET:-0}" -eq 1 ]]; then
 fi
 
 if [[ "${OLLAMA_UNIT_SET:-0}" -eq 1 ]] && probe_port localhost 11434; then
-  echo "==> ollama systemd unit serving on localhost:11434 with the 32K window"
+  echo "==> ollama systemd unit serving on localhost:11434 with OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-32768}"
 elif probe_port localhost 11434; then
   echo "==> ollama daemon already serving on localhost:11434"
   # Not started here (e.g. the systemd unit Ollama's installer registers), so it
@@ -182,6 +183,7 @@ if [[ "${MODEL}" == "qwen3.5:4b" || "${MODEL}" == "qwen3.5:9b" ]]; then
 ==> Local reasoner ready. Select the curated model (ADR-0088):
 
     export OPENRAL_REASONER_MODEL=${MODEL/:/-}
+    export OPENRAL_REASONER_ENDPOINT=ollama   # overrides an endpoint set for another model
 EOF
 else
   cat <<EOF
