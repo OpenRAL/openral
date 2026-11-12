@@ -154,6 +154,11 @@ elif probe_port localhost 11434; then
   echo "         the client refuses a truncated prompt). For the systemd unit:" >&2
   echo "           sudo systemctl edit ollama   # Environment=OLLAMA_CONTEXT_LENGTH=32768" >&2
   echo "           sudo systemctl restart ollama" >&2
+elif [[ "${OLLAMA_UNIT_SET:-0}" -eq 1 ]]; then
+  # Never race the unit with a second, unmanaged serve on the same port.
+  echo "the ollama systemd unit stopped listening on localhost:11434 after it was restarted;" >&2
+  echo "see: systemctl status ollama; journalctl -u ollama" >&2
+  exit 1
 else
   echo "==> starting ollama serve in the background"
   # A private mktemp file, not a fixed /tmp name another local user could pre-create.
