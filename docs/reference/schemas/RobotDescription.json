@@ -267,6 +267,32 @@
       "title": "CapsuleShape",
       "type": "object"
     },
+    "CollisionGeometryImport": {
+      "additionalProperties": false,
+      "description": "Collision volumes taken from another robot's manifest, renamed onto this robot's links.\n\nA robot built from another robot (an OpenArm on a mobile platform) reuses that\nrobot's lowered, Safety-WG-reviewed arm geometry instead of a copy that drifts\nwhen the source is re-lowered. ``RobotDescription.from_yaml`` resolves it: every\n``collision_geometry`` entry of ``robots/<robot>/robot.yaml`` whose ``link_name``\nis a ``link_map`` key is appended with ``link_name`` renamed to the value. The\nlink frames must be identical in both robots (same joint origins and axes), since\nthe volumes are expressed in them.\n\nExample:\n    >>> CollisionGeometryImport(robot=\"openarm\", link_map={\"openarm_left_link1\": \"l1\"}).robot\n    'openarm'",
+      "properties": {
+        "robot": {
+          "minLength": 1,
+          "pattern": "^[a-z0-9_]+$",
+          "title": "Robot",
+          "type": "string"
+        },
+        "link_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1,
+          "title": "Link Map",
+          "type": "object"
+        }
+      },
+      "required": [
+        "robot",
+        "link_map"
+      ],
+      "title": "CollisionGeometryImport",
+      "type": "object"
+    },
     "ComputeSpec": {
       "description": "Compute profile for one deployment tier \u2014 runtime inference and GPU capabilities.\n\nUsed for all three deployment tiers:\n\n* **Edge** \u2014 on-robot SoC (Jetson AGX Orin, NVIDIA Thor).\n* **Local** \u2014 laptop / workstation tethered to the robot or running the simulation.\n* **Cloud** \u2014 remote GPU node reachable via SSH or HTTP.\n\nAttached to ``RobotDescription`` as ``compute_edge``, ``compute_local``,\nand ``compute_cloud``.  Consumed by ``rSkill.check_runtime`` and\n``rSkill.check_quantization_dtype`` to match ``RSkillManifest.runtime`` /\n``quantization.dtype`` against what the hardware can actually execute.\n\nAttributes:\n    compute_tops: Peak compute in INT8 TOPS (0 = unknown).\n    system_memory_gb: Total system / unified RAM in GB (0 = unknown).\n    num_gpus: Number of GPUs on this node (default 1; use > 1 for cloud\n        multi-GPU pods \u2014 total VRAM budget = ``gpu_vram_gb * num_gpus``).\n    gpu_vram_gb: VRAM of a single GPU in GB (0 when no discrete GPU).\n    cuda_compute_capability: Highest CUDA compute capability (major, minor),\n        e.g. ``(8, 9)`` for Ada Lovelace, ``(10, 0)`` for Blackwell.\n        ``None`` on non-CUDA hosts.\n    cuda_toolkit_version: ``nvcc`` version string, e.g. ``\"12.4\"``.\n        ``None`` when CUDA is absent or the version cannot be determined.\n    tensorrt_version: TensorRT runtime version string when importable.\n    gpu_supported_runtimes: Inference runtimes the hardware can execute,\n        used by ``rSkill.check_capabilities`` to match\n        ``RSkillManifest.runtime``.  Empty list = \"unknown \u2014 skip check\".\n    gpu_supported_dtypes: Quantization dtypes the accelerator supports\n        (derived from CUDA compute capability or platform).  Empty =\n        \"unknown \u2014 skip check\".\n    nvmm_available: Whether ``libnvbufsurface.so`` is present on this node\n        (Tegra L4T multimedia stack).  ``True`` enables the NVMM zero-copy\n        sensor-ingest path; probed on all tiers and returns ``False``\n        gracefully when the library is absent.\n    endpoint: Remote access address for cloud / SSH nodes.\n        Format: ``ssh://user@host[:port]`` or ``https://host:port``.\n        ``None`` for edge and local nodes.\n    network_latency_ms: Measured round-trip latency to this node in ms.\n        Populated by the SSH probe; ``None`` for local/edge (no network hop).\n        Used by the reasoner dispatcher to decide whether cloud dispatch\n        fits within a skill's latency budget.\n\nExample:\n    >>> spec = ComputeSpec(\n    ...     gpu_vram_gb=24.0,\n    ...     cuda_compute_capability=(8, 9),\n    ...     cuda_toolkit_version=\"13.2\",\n    ... )\n    >>> spec.supports_cumotion()\n    True",
       "properties": {
@@ -2955,6 +2981,13 @@
         "$ref": "#/$defs/LinkCollisionGeometry"
       },
       "title": "Collision Geometry",
+      "type": "array"
+    },
+    "collision_geometry_imports": {
+      "items": {
+        "$ref": "#/$defs/CollisionGeometryImport"
+      },
+      "title": "Collision Geometry Imports",
       "type": "array"
     },
     "allowed_collision_pairs": {

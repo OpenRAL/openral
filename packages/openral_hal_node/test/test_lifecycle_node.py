@@ -49,6 +49,7 @@ _SIM_ROBOTS = [
     ("g1", 29),
     ("h1", 19),
     ("h2", 31),
+    ("openamrobot_v2", 20),
     ("openarm", 16),
     ("rizon4", 7),
     ("so100_follower", 6),

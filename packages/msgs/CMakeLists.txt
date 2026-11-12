@@ -55,6 +55,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # rosbag2 ↔ LeRobotDataset bridge.
   msg/Tick.msg
   msg/Episode.msg
+  # rskill runner -> deadman watchdog: a goal that publishes no chunks and its wall bound
+  # (ADR-0127 Decision 5).
+  msg/ResultOnlyGoal.msg
   action/ExecuteRskill.action
   # Snap a HAL's MuJoCo qpos to a manifest.starting_pose before the
   # skill_runner's first inference tick (fix for pi0.5 OOD drift).

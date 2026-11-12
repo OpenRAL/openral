@@ -22,7 +22,6 @@ from __future__ import annotations
 import math
 
 import pytest
-import yaml
 from openral_core.schemas import RobotDescription, SensorModality
 
 #: Where the sim casts the fan, in world z — `openral_sim.backends.robocasa`
@@ -36,8 +35,7 @@ _BASE_LINK_WORLD_Z_M = 0.700
 
 
 def _panda_mobile() -> RobotDescription:
-    with open("robots/panda_mobile/robot.yaml", encoding="utf-8") as fh:
-        return RobotDescription.model_validate(yaml.safe_load(fh))
+    return RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
 
 
 def test_lidar_has_its_own_frame_not_the_base_frame() -> None:

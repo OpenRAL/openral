@@ -131,6 +131,7 @@ isolate_globs = [
   "packages/openral_safety/test/test_urdf_lowering_always_colliding.py",
   "packages/openral_safety/test/test_urdf_lowering_fk.py",
   "packages/openral_safety/test/test_urdf_lowering_lower_robot.py",
+  "packages/openral_safety/test/test_urdf_lowering_routing.py",
   "packages/openral_slam_bringup/test/test_depth_height_filter.py",
 ]
 "robots/aloha_bimanual/**" = ["tests/sim/test_aloha_bimanual_hal_mujoco.py"]
@@ -372,6 +373,7 @@ lowering = [
   "packages/openral_safety/test/test_urdf_lowering_lower_robot.py",
   "packages/openral_safety/test/test_urdf_lowering_sampling.py",
   "packages/openral_safety/test/test_urdf_lowering_srdf.py",
+  "packages/openral_safety/test/test_urdf_lowering_routing.py",
   # Not here: test_collision_geometry_enclosure.py (per-robot known-gap skips the
   # lane report cannot declare as a capability gap), python/cli/tests/
   # test_vendor_urdf.py (needs an openarm_description clone in /tmp), and

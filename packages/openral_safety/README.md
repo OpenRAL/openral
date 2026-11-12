@@ -38,6 +38,13 @@ this package is the Python seam around it.
   for a pair whose links both declare `tight_geometry`, because the
   kernel decides those on the exact hulls and this module reasons with
   the box (issue #191).
+  `mjcf_lowering` numbers links by movable-joint order, one joint per body, so
+  `openral deploy` refuses its result (and keeps the manifest's name-indexed
+  model, loudly) when a body carries several joints (a planar base) or an MJCF
+  joint named like a manifest joint (its `sim_joint_name`, else its `name`) lands
+  on another column
+  (`deploy_e2e.launch.py::_mjcf_dof_mismatches`; refused today: OpenAMRobot 2.0,
+  Unitree H2).
 * **`dynamics_lowering`** (`openral_safety/dynamics_lowering.py`) — offline
   MJCF → `RobotDescription.force_observer` lowering for the kernel's
   external-torque observer (issue #373): inertials re-expressed in the

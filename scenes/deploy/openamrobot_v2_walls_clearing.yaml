@@ -1,0 +1,36 @@
+# The walled room (openamrobot_v2_walls.yaml) plus two 2 m boxes that stand in the lidar
+# plane while the graph comes up, then sink through the floor (~2 cm/s, gone from
+# the plane ~85 s of sim time after connect): a costmap clearing test.
+#
+# * box 0 at (1.3, -0.3): once it is gone, the beams on its bearing return off the
+#   east wall (~9.6 m), so Nav2's obstacle layer must ray-trace its cells free.
+# * box 1 at (1.18, 0.85): on the 45 deg bearing from the lidar, where the corner is
+#   ~14 m away. With the 12 m A1-class range this was the stale-obstacle case (no
+#   return, +inf, nothing cleared, as on a real lidar). The RPLIDAR S3's 40 m reaches
+#   that corner, so its cells now clear like box 0's (not re-run since the range
+#   change); a beam with nothing inside 40 m would still leave a stale obstacle.
+#
+#   openral deploy sim --config scenes/deploy/openamrobot_v2_walls_clearing.yaml
+scene:
+  id: openamrobot_v2_walls_clearing
+robot_id: openamrobot_v2
+composition:
+  composer: "openral_hal._openamrobot_v2_assets:compose_openamrobot_v2_walls_mjcf"
+  params:
+    sinking_boxes: [[1.3, -0.3], [1.18, 0.85]]
+runtime:
+  enable_slam: true
+  enable_nav2: true
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

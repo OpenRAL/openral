@@ -22,7 +22,10 @@ Action-goal lifecycle (CLAUDE.md §3 rSkill packaging + the F1 design):
    ``failure_kind=FAILURE_SAFETY_ESTOP`` and transitions to ``inactive``. OR-ed into one seam,
    ``RskillRunnerNode._safety_abort_reason``, read by the ``ROSPublishingHAL`` apply-wait
    and (via ``RskillRunnerNode._raise_if_safety_aborted``) every other blocking wait on the
-   dispatch path, so a latched safety layer is never reported as a generic timeout.
+   dispatch path, so a latched safety layer is never reported as a generic timeout. A wrapped
+   result-only goal (Nav2) blocked inside one step reads it through its ``stop_check``: the
+   stop cancels the wrapped server's goal and waits for the server to confirm, and a goal
+   that completes while a stop is latched is never reported as a success.
 
 The action-goal path is the only way an external client triggers a rskill; the legacy CLI /
 single-process invocation is a thin wrapper that sends a goal to this server.
@@ -290,6 +293,10 @@ def ungrounded_target_queries(queries: Any, tracked: Any, key: str) -> list[str]
     ]
 
 
+_RESULT_ONLY_GOAL_TOPIC = "/openral/result_only_goal"
+"""Runner -> deadman watchdog: a goal that publishes no chunks (``ResultOnlyGoal``)."""
+
+
 def _failure_kind_for_exception(exc: BaseException) -> int:
     """Map a caught exception onto an ``ExecuteRskill.Result.failure_kind``.
 
@@ -542,6 +549,9 @@ if _ROS2_AVAILABLE:
             self._goal_started_monotonic = 0.0
             self._safety_failure_sub: Any = None
             self._episode_pub: Any = None
+            # Announces a goal that publishes no chunks (a wrapped result-only skill) to the
+            # deadman watchdog, with the runner's own wall bound on it (ADR-0127 D5).
+            self._result_only_pub: Any = None
             self._episode_counter: int = 0
             # Set once a goal-end publish found the context already shut down.
             self._shutdown_publish_logged: bool = False
@@ -585,6 +595,10 @@ if _ROS2_AVAILABLE:
             self._resident_key: tuple[str, ...] = ()
             self._chunks_published: int = 0
             self._estop_latched: bool = False
+            # (skill name, result future) of a wrapped goal whose cancel was never
+            # confirmed: it may still be driving the robot, so no goal is accepted until
+            # the future completes. An e-stop reset does not clear it.
+            self._unterminated_wrapped: tuple[str, Any] | None = None
             self._cancel_requested: bool = False
             # Issue #418: set when the tracker exhausts a query of this goal's armed
             # declaration (/openral/failure/world_state); the goal then ends along the
@@ -819,6 +833,20 @@ if _ROS2_AVAILABLE:
                 depth=10,
             )
             self._episode_pub = self.create_publisher(Episode, "/openral/episode", episode_qos)
+
+            # One message per result-only goal, read by the deadman watchdog. Latched
+            # (TRANSIENT_LOCAL) so a watchdog that joins mid-goal still sees it.
+            from openral_msgs.msg import ResultOnlyGoal
+
+            self._result_only_pub = self.create_publisher(
+                ResultOnlyGoal,
+                _RESULT_ONLY_GOAL_TOPIC,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                    depth=1,
+                ),
+            )
 
             # Announce the executing instruction on
             # /openral/reward/active_task so the reward monitor's scoring heartbeat
@@ -1161,6 +1189,9 @@ if _ROS2_AVAILABLE:
             if self._episode_pub is not None:
                 self.destroy_publisher(self._episode_pub)
                 self._episode_pub = None
+            if self._result_only_pub is not None:
+                self.destroy_publisher(self._result_only_pub)
+                self._result_only_pub = None
             if self._action_server is not None:
                 self._action_server.destroy()
                 self._action_server = None
@@ -1319,6 +1350,16 @@ if _ROS2_AVAILABLE:
                     "and HAL latched"
                 )
                 return GoalResponse.REJECT
+            if self._unterminated_wrapped is not None:
+                name, future = self._unterminated_wrapped
+                if not future.done():
+                    self.get_logger().error(
+                        f"rskill_runner.goal_rejected: wrapped goal of {name!r} was never "
+                        "confirmed ended after its cancel and may still be driving the robot; "
+                        "stop it at its own server (or restart that server) first"
+                    )
+                    return GoalResponse.REJECT
+                self._unterminated_wrapped = None
             if self._preload_in_flight.is_set():
                 # Not accept-and-wait: acceptance is what arms the deadman
                 # watchdog's first-chunk window, and a goal parked on
@@ -1530,19 +1571,17 @@ if _ROS2_AVAILABLE:
                             deadline_s=deadline_s,
                         )
                     except ROSEStopRequested as exc:
-                        # Latched by /openral/estop or HAL.estop().
-                        span.record_exception(exc)
-                        result.success = False
-                        result.failure_reason = f"safety_estop:{exc!s}"
-                        result.failure_kind = _failure_kind_for_exception(exc)
-                        self._finalize_goal(goal_handle, "abort")
-                        self._reset_active_goal()
+                        # Latched by /openral/estop or HAL.estop(), or a safety stop a
+                        # wrapped goal's stop_check raised (after cancelling that goal).
+                        self._note_unterminated_wrapped(skill)
+                        self._end_safety_stopped(goal_handle, result, span, exc)
                         return result
                     except ROSSafetyViolation:
                         # Never convert a safety violation into a soft failure_reason
                         # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
                         raise
                     except ROSError as exc:
+                        self._note_unterminated_wrapped(skill)
                         if self._cancel_requested or goal_handle.is_cancel_requested:
                             # A wrapped wait that gave up because the goal was
                             # cancelled (``ROSActionRskill.stop_check``) ends as a
@@ -1586,6 +1625,23 @@ if _ROS2_AVAILABLE:
                         result.failure_kind = _failure_kind
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
+                        return result
+
+                    # The per-tick guard runs before each step, so a step already
+                    # running when a stop latched (a wrapped wait, a slow policy) ends
+                    # here. A latched stop outranks a cancel and a completion, as it does
+                    # inside a wrapped wait: neither is reported over it.
+                    safety_reason = self._safety_abort_reason()
+                    if safety_reason is not None:
+                        self._end_safety_stopped(
+                            goal_handle,
+                            result,
+                            span,
+                            ROSEStopRequested(
+                                f"goal ended ({exit_reason}) while a safety stop was latched "
+                                f"({safety_reason})"
+                            ),
+                        )
                         return result
 
                     # Honour cancel — drain then idle-hold (F1 design).
@@ -1927,7 +1983,7 @@ if _ROS2_AVAILABLE:
             (skips per-stage timing); the full integration lands with F2's
             ``WorldStateStamped`` typed staleness array.
             """
-            from openral_core.exceptions import ROSRskillGoalSatisfied
+            from openral_core.exceptions import ROSEStopRequested, ROSRskillGoalSatisfied
             from openral_msgs.action import ExecuteRskill
             from openral_observability import inference_span
 
@@ -1937,12 +1993,24 @@ if _ROS2_AVAILABLE:
             rate_hz = self._control_rate_hz()
             period_s = 1.0 / max(rate_hz, 1.0)
             budget = self._new_execution_budget(deadline_s)
+            budget_wall_start_ns = time.time_ns()  # the deadman counts a result-only bound here
             from openral_rskill.ros_action_rskill import ROSActionRskill
 
             if isinstance(skill, ROSActionRskill):
                 # A wrapped result-only goal (Nav2) blocks inside one ``step()``,
-                # where this loop cannot check cancel or the budget; hand both in.
+                # where this loop cannot check a safety stop, cancel or the budget;
+                # hand all three in. A safety stop first: the wrapped server may be
+                # driving the robot itself, so the stop must end its goal (the skill
+                # cancels it and waits for the server to confirm), not only latch here.
                 def _goal_ended() -> str | None:
+                    safety_reason = self._safety_abort_reason()
+                    if safety_reason is not None:
+                        # Typed, so the cause reaches the runner as the stop it is,
+                        # whatever the latch reads by the time the cancel is confirmed.
+                        raise ROSEStopRequested(
+                            f"safety stop latched ({safety_reason}) while waiting on the "
+                            "wrapped goal"
+                        )
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         return "cancel requested"
                     miss = budget.check()
@@ -1951,6 +2019,10 @@ if _ROS2_AVAILABLE:
                     return None if miss is None else f"{miss.kind}: {miss.detail}"
 
                 skill.stop_check = _goal_ended
+                if skill.result_only:
+                    self._announce_result_only_goal(
+                        goal_handle, skill, budget, wall_start_ns=budget_wall_start_ns
+                    )
             # Absolute deadlines absorb tick work into the configured period.
             chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
@@ -2161,6 +2233,24 @@ if _ROS2_AVAILABLE:
                 self._finalize_goal(goal_handle, "canceled")
             self._reset_active_goal()
 
+        def _end_safety_stopped(
+            self, goal_handle: Any, result: Any, span: Any, exc: BaseException
+        ) -> None:
+            """End the goal as a safety stop: the one ``FAILURE_SAFETY_ESTOP`` result shape."""
+            span.record_exception(exc)
+            self.get_logger().error(f"rskill_runner.safety_abort: {exc!s}")
+            result.success = False
+            result.failure_reason = f"safety_estop:{exc!s}"
+            result.failure_kind = _failure_kind_for_exception(exc)
+            self._finalize_goal(goal_handle, "abort")
+            self._reset_active_goal()
+
+        def _note_unterminated_wrapped(self, skill: Any) -> None:
+            """Remember a wrapped goal whose cancel was never confirmed (see ``_goal_cb``)."""
+            future = getattr(skill, "unterminated_result_future", None)
+            if future is not None and not future.done():
+                self._unterminated_wrapped = (str(getattr(skill, "name", "?")), future)
+
         def _end_stopped_before_skill(self, goal_handle: Any, result: Any, span: Any) -> bool:
             """End a goal stopped before its skill loaded; ``True`` when it was ended.
 
@@ -2170,13 +2260,12 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSEStopRequested
 
             if self._estop_latched:
-                exc = ROSEStopRequested("e-stop latched before the skill loaded")
-                span.record_exception(exc)
-                result.success = False
-                result.failure_reason = f"safety_estop:{exc!s}"
-                result.failure_kind = _failure_kind_for_exception(exc)
-                self._finalize_goal(goal_handle, "abort")
-                self._reset_active_goal()
+                self._end_safety_stopped(
+                    goal_handle,
+                    result,
+                    span,
+                    ROSEStopRequested("e-stop latched before the skill loaded"),
+                )
                 return True
             if self._cancel_requested or goal_handle.is_cancel_requested:
                 self._end_cancelled(goal_handle, result, span)
@@ -2258,6 +2347,7 @@ if _ROS2_AVAILABLE:
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
             bounds = self._starting_pose_bounds()
+            description = self._description
             deadline = time.monotonic() + float(
                 self.get_parameter("action_applied_timeout_s").value
             )
@@ -2266,12 +2356,14 @@ if _ROS2_AVAILABLE:
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return False
                 js = self._aggregator.snapshot().joint_state
-                if (
-                    js is not None
-                    and int(js.stamp_ns) >= starting_pose_wall_ns
-                    and starting_pose_reached(
-                        self._joint_positions_in_manifest_order(js, names), pose, bounds
-                    )
+                measured = (
+                    self._joint_positions_in_manifest_order(js, names)
+                    if js is not None and int(js.stamp_ns) >= starting_pose_wall_ns
+                    else None
+                )
+                # A slot-subset pose holds the other joints at their measured value.
+                if measured is not None and starting_pose_reached(
+                    measured, expand_starting_pose(pose, manifest, description, measured), bounds
                 ):
                     self.get_logger().info(
                         "rskill_runner.starting_pose_verified "
@@ -2298,18 +2390,28 @@ if _ROS2_AVAILABLE:
             )
             if not starting_pose:
                 return None
-            from openral_core.exceptions import ROSConfigError
-
             target = [float(value) for value in starting_pose]
             assert self._description is not None
-            if len(target) != len(self._description.joints):
-                raise ROSConfigError(
-                    f"starting_pose has {len(target)} values; robot {self._description.name!r} "
-                    f"has {len(self._description.joints)} joints"
+            names = [joint.name for joint in self._description.joints]
+            held: frozenset[str] = frozenset()
+            if len(target) != len(names):
+                # A pose over only the slot-named joints (an OpenArm skill on the
+                # OpenAMRobot v2): the other joints hold where they are measured. A pose
+                # of neither width is refused before the HAL is read.
+                measured = (
+                    self._joint_positions_in_manifest_order(self._hal.read_state(), names)
+                    if self._hal is not None
+                    else []
+                )
+                target = expand_starting_pose(target, manifest, self._description, measured)
+                from openral_rskill._policy_io import slot_state_joint_names
+
+                held = frozenset(names) - frozenset(
+                    slot_state_joint_names(manifest, self._description) or ()
                 )
             if self.get_parameter("approach_skill_id").get_parameter_value().string_value:
                 return self._dispatch_moveit_approach(target, goal_handle)
-            return self._interpolate_starting_pose(target, goal_handle)
+            return self._interpolate_starting_pose(target, goal_handle, held_joints=held)
 
         def _dispatch_moveit_approach(
             self, pose: list[float], goal_handle: Any
@@ -2445,32 +2547,29 @@ if _ROS2_AVAILABLE:
             )
 
         def _interpolate_starting_pose(
-            self, pose: list[float], goal_handle: Any
+            self,
+            pose: list[float],
+            goal_handle: Any,
+            *,
+            held_joints: frozenset[str] = frozenset(),
         ) -> tuple[int, str] | None:
-            """Publish a bounded starting-pose ramp through the safety kernel."""
-            from openral_core.exceptions import ROSConfigError
-            from openral_core.schemas import Action, ControlMode
+            """Publish a bounded starting-pose ramp through the safety kernel.
+
+            ``held_joints`` are joints the pose did not name (``expand_starting_pose``
+            set them to their measured value). The ramp does not command them: each
+            waypoint names only the other joints and is zero-padded at the held ones
+            (the ADR-0102 slot-row form), so the kernel takes their measured value and
+            the HAL holds them. A held joint is therefore never range-checked, sent to a
+            part that cannot take a joint target (a platform base), or placed at a
+            measured value just past its declared limit.
+            """
             from openral_msgs.action import ExecuteRskill
 
             assert self._description is not None
             assert self._hal is not None
             names = [joint.name for joint in self._description.joints]
             target = [float(value) for value in pose]
-            if len(target) != len(names):
-                raise ROSConfigError(
-                    f"starting_pose has {len(target)} values; robot {self._description.name!r} "
-                    f"has {len(names)} joints"
-                )
-            for joint, value in zip(self._description.joints, target, strict=True):
-                if not math.isfinite(value):
-                    raise ROSConfigError(f"starting_pose[{joint.name!r}] is not finite")
-                if joint.position_limits is not None and not (
-                    joint.position_limits[0] <= value <= joint.position_limits[1]
-                ):
-                    raise ROSConfigError(
-                        f"starting_pose[{joint.name!r}]={value:g} is outside "
-                        f"{joint.position_limits!r}"
-                    )
+            validate_starting_pose(self._description, target, held_joints=held_joints)
 
             self._raise_if_safety_aborted("moving to starting_pose")
             current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
@@ -2489,19 +2588,11 @@ if _ROS2_AVAILABLE:
                 self._raise_if_safety_aborted("moving to starting_pose")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return (int(ExecuteRskill.Result.FAILURE_CANCELLED), "cancelled")
-                alpha = index / steps
-                waypoint = [
-                    start + delta * alpha for start, delta in zip(current, deltas, strict=True)
-                ]
                 self._current_tick_index = self._next_tick_index
                 self._next_tick_index += 1
                 self._hal.send_action(
-                    Action(
-                        control_mode=ControlMode.JOINT_POSITION,
-                        horizon=1,
-                        joint_targets=[waypoint],
-                        joint_names=names,
-                        stamp_ns=time.time_ns(),
+                    starting_pose_waypoint_action(
+                        names, current, target, index / steps, held_joints=held_joints
                     )
                 )
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
@@ -2621,6 +2712,40 @@ if _ROS2_AVAILABLE:
                     )
                 return False
             return True
+
+        def _announce_result_only_goal(
+            self,
+            goal_handle: Any,  # reason: rclpy ServerGoalHandle is untyped
+            skill: ROSActionRskill,
+            budget: ExecutionBudget,
+            *,
+            wall_start_ns: int,
+        ) -> None:
+            """Tell the deadman watchdog this goal publishes no chunks, and its wall bound.
+
+            Without it the watchdog's first-chunk window e-stops every Nav2 goal longer
+            than that window. The bound is the one this runner enforces itself
+            (``ExecutionBudget.wall_bound_s``); a disabled budget announces nothing, so the
+            goal keeps the first-chunk window.
+            """
+            if self._result_only_pub is None:
+                return
+            bound_s = float(budget.wall_bound_s)
+            if bound_s <= 0.0:
+                return
+            from openral_msgs.msg import ResultOnlyGoal
+
+            msg = ResultOnlyGoal()
+            msg.goal_uuid = [int(b) for b in goal_handle.goal_id.uuid]
+            msg.wall_start.sec = wall_start_ns // 1_000_000_000
+            msg.wall_start.nanosec = wall_start_ns % 1_000_000_000
+            msg.rskill_id = str(skill.name)
+            msg.wall_bound_s = bound_s
+            if self._publish_unless_shut_down(self._result_only_pub, msg, "result-only goal"):
+                self.get_logger().info(
+                    f"rskill_runner.result_only_goal: {skill.name!r} publishes no chunks; "
+                    f"deadman bound {bound_s:.1f} s wall"
+                )
 
         def _publish_episode_marker(self, *, phase: int, task_string: str, success: bool) -> None:
             """Publish one ``openral_msgs/Episode`` boundary marker; bump idx on END."""
@@ -3501,6 +3626,9 @@ if _ROS2_AVAILABLE:
             """
             if self._estop_latched:
                 return
+            # The in-flight goal aborts at its next guard: the per-tick check, or, for a
+            # wrapped goal blocked in one step, its ``stop_check`` (which cancels the
+            # wrapped server's goal and waits for it to confirm).
             self._estop_latched = True
             self.get_logger().error(
                 "rskill_runner.estop_received; "
@@ -3956,6 +4084,130 @@ def starting_pose_joint_bounds(
             speed = min(speed, float(joint.velocity_limit))
         bounds.append((speed, tolerance))
     return bounds
+
+
+def expand_starting_pose(
+    pose: Sequence[float],
+    manifest: RSkillManifest | None,
+    description: RobotDescription,
+    measured: Sequence[float],
+) -> list[float]:
+    """A manifest ``starting_pose`` as one target per ``RobotDescription.joints`` entry.
+
+    A pose as long as the robot's joints is already that. A pose as long as the joints
+    the skill's ``action_contract.slots`` name (``slot_state_joint_names``, slot range
+    order: an OpenArm skill's 16-D pose on the OpenAMRobot v2) sets those joints by name;
+    every other joint (base, lift) keeps its ``measured`` position, so it holds.
+
+    Raises:
+        ROSConfigError: The pose fits neither width, or ``measured`` is not one value
+            per robot joint.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> expand_starting_pose([0.1] * 6, None, desc, [0.0] * 6)
+        [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+    """
+    names = [j.name for j in description.joints]
+    target = [float(v) for v in pose]
+    if len(target) == len(names):
+        return target
+    from openral_rskill._policy_io import slot_state_joint_names
+
+    slot_names = slot_state_joint_names(manifest, description)
+    if slot_names is None or len(target) != len(slot_names):
+        raise ROSConfigError(
+            f"starting_pose has {len(target)} values; robot {description.name!r} has "
+            f"{len(names)} joints and the skill's slots name "
+            f"{'none' if slot_names is None else len(slot_names)}"
+        )
+    if len(measured) != len(names):
+        raise ROSConfigError(
+            f"measured joint state has {len(measured)} values; expected {len(names)}"
+        )
+    out = [float(v) for v in measured]
+    for name, value in zip(slot_names, target, strict=True):
+        out[names.index(name)] = value
+    return out
+
+
+def starting_pose_waypoint_action(
+    names: Sequence[str],
+    current: Sequence[float],
+    target: Sequence[float],
+    alpha: float,
+    *,
+    held_joints: Collection[str] = (),
+) -> Action:
+    """One starting-pose ramp waypoint, ``alpha`` of the way from ``current`` to ``target``.
+
+    The joints in ``held_joints`` are not commanded: the action names only the others
+    and is zero-padded at the held ones (the ADR-0102 slot-row form), so the safety
+    kernel places them at their measured value and the HAL holds them. A platform base
+    that takes only twists never receives a joint target, and a held joint measured
+    past its limit is never published.
+
+    Example:
+        >>> a = starting_pose_waypoint_action(
+        ...     ["base_x", "j1"], [3.0, 0.0], [3.0, 1.0], 0.5, held_joints={"base_x"}
+        ... )
+        >>> a.joint_names, a.joint_targets
+        (['j1'], [[0.0, 0.5]])
+    """
+    from openral_core.schemas import Action
+
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[
+            [
+                0.0 if name in held_joints else start + (end - start) * alpha
+                for name, start, end in zip(names, current, target, strict=True)
+            ]
+        ],
+        joint_names=[name for name in names if name not in held_joints],
+        stamp_ns=time.time_ns(),
+    )
+
+
+def validate_starting_pose(
+    description: RobotDescription,
+    target: Sequence[float],
+    *,
+    held_joints: Collection[str] = (),
+) -> None:
+    """Refuse a robot-order ``starting_pose`` target the ramp must not publish.
+
+    Every value must be finite, and every joint the pose named must lie inside its
+    ``position_limits``. ``held_joints`` (not named by a slot-subset pose, so set to
+    their measured value by ``expand_starting_pose``) skip the range check: the ramp
+    holds them, and a reading just past a declared limit must not abort the goal.
+
+    Raises:
+        ROSConfigError: Wrong width, a non-finite value, or a named joint out of range.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> validate_starting_pose(desc, [0.0] * 6)
+    """
+    if len(target) != len(description.joints):
+        raise ROSConfigError(
+            f"starting_pose has {len(target)} values; robot {description.name!r} "
+            f"has {len(description.joints)} joints"
+        )
+    for joint, value in zip(description.joints, target, strict=True):
+        if not math.isfinite(value):
+            raise ROSConfigError(f"starting_pose[{joint.name!r}] is not finite")
+        if (
+            joint.name not in held_joints
+            and joint.position_limits is not None
+            and not (joint.position_limits[0] <= value <= joint.position_limits[1])
+        ):
+            raise ROSConfigError(
+                f"starting_pose[{joint.name!r}]={value:g} is outside {joint.position_limits!r}"
+            )
 
 
 def starting_pose_reached(

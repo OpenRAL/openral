@@ -162,7 +162,5 @@ class TestRobotsThatOptOut:
         path = REPO_ROOT / "robots" / manifest / "robot.yaml"
         if not path.exists():
             pytest.skip(f"no committed manifest for {manifest}")
-        description = RobotDescription.model_validate(
-            yaml.safe_load(path.read_text(encoding="utf-8"))
-        )
+        description = RobotDescription.from_yaml(str(path))
         assert description.hal.parameters.can_bus_bindings == {}

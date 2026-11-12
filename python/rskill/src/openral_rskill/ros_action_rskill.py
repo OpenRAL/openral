@@ -44,6 +44,7 @@ from openral_core.exceptions import (
     ROSConfigError,
     ROSDeadlineMissed,
     ROSError,
+    ROSEStopRequested,
     ROSPerceptionStale,
     ROSRskillGoalSatisfied,
     ROSRuntimeError,
@@ -503,8 +504,14 @@ class ROSActionRskill(rSkillBase):
         # Set by the runner: returns why the enclosing ExecuteRskill goal ended
         # (cancel, its execution budget) or ``None``. A wrapped wait blocks inside
         # one ``step()``, where the runner cannot interrupt it, so ``_poll_future``
-        # polls this and gives up (cancelling the wrapped goal) when it fires.
+        # polls this and gives up (cancelling the wrapped goal) when it fires. It may
+        # instead raise ``ROSEStopRequested`` for a safety stop, which reaches the runner
+        # typed (after the same cancel), not as a deadline message.
         self.stop_check: Callable[[], str | None] | None = None
+        # The result future of a wrapped goal whose cancel the server rejected or never
+        # confirmed: it may still be driving the robot. The runner refuses new goals until
+        # it is done.
+        self.unterminated_result_future: Any = None
         # Result-only deadline budget (s) — sourced from latency budget.
         budget_ms = (
             manifest.latency_budget.per_chunk_ms if manifest.latency_budget is not None else None
@@ -956,11 +963,17 @@ class ROSActionRskill(rSkillBase):
                 what="result",
                 graph_clock=self._integration.result_trajectory_field is None,
             )
-        except ROSError:
+        except ROSError as exc:
             # Giving up on the wait must not leave the wrapped server driving the
             # robot toward a goal nobody is tracking any more.
             log.warning("ros_action_rskill.cancelling_wrapped_goal", name=self.name)
-            self._cancel_and_confirm_terminated(goal_handle, result_future)
+            try:
+                self._cancel_and_confirm_terminated(goal_handle, result_future)
+            except ROSRuntimeError as cancel_exc:
+                if isinstance(exc, ROSEStopRequested):
+                    # A safety stop stays a safety stop when its cancel fails.
+                    raise ROSEStopRequested(f"{exc}; {cancel_exc}") from cancel_exc
+                raise
             raise
         wrapper = result_future.result()
         if wrapper is None:
@@ -1046,6 +1059,7 @@ class ROSActionRskill(rSkillBase):
             # missing from goals_canceling, not as ERROR_REJECTED.
             dropped = code == _CANCEL_ERROR_NONE and not getattr(response, "goals_canceling", [])
             if code == _CANCEL_ERROR_REJECTED or dropped:
+                self.unterminated_result_future = result_future
                 raise ROSRuntimeError(
                     f"ROSActionRskill({self.name!r}): wrapped server rejected the cancel; "
                     "the wrapped goal may still be running."
@@ -1058,10 +1072,21 @@ class ROSActionRskill(rSkillBase):
                 stoppable=False,
             )
         except ROSDeadlineMissed as exc:
+            self.unterminated_result_future = result_future
             raise ROSRuntimeError(
                 f"ROSActionRskill({self.name!r}): wrapped goal not confirmed terminated "
                 f"after cancel ({exc}); it may still be running."
             ) from exc
+
+    @property
+    def result_only(self) -> bool:
+        """``True`` when the wrapped server moves the robot itself and no chunks are published.
+
+        A ``ros_action`` or ``ros_service`` skill with no ``result_trajectory_field``
+        (Nav2): the whole goal runs inside one ``step()``. The
+        runner announces such goals to the deadman watchdog (``ResultOnlyGoal``).
+        """
+        return self._integration.result_trajectory_field is None
 
     def _call_service_and_await_response(self) -> Any:  # noqa: ANN401  # reason: arbitrary IDL response
         """Send the cached service request, poll the response future."""
@@ -1077,9 +1102,17 @@ class ROSActionRskill(rSkillBase):
             ) from exc
         future = self._client.call_async(request)
         # A service response is compute / IPC, not robot motion: wall clock.
-        self._poll_future(
-            future, deadline_s=self._result_deadline_s, what="service-response", graph_clock=False
-        )
+        try:
+            self._poll_future(
+                future,
+                deadline_s=self._result_deadline_s,
+                what="service-response",
+                graph_clock=False,
+            )
+        except ROSEStopRequested as exc:
+            raise ROSEStopRequested(
+                f"{exc}; a wrapped service call cannot be cancelled and may still be running"
+            ) from exc
         response = future.result()
         if response is None:
             raise ROSRuntimeError(f"ROSActionRskill({self.name!r}): wrapped service returned null.")
@@ -1113,6 +1146,8 @@ class ROSActionRskill(rSkillBase):
                 ``clock_stalled`` in the message) — ``FAILURE_DEADLINE_MISSED`` on the
                 goal, like the runner's own budget. A non-positive ``deadline_s``
                 lapses at once (fail closed) unless the future is already done.
+            ROSEStopRequested: raised by ``stop_check`` itself for a safety stop, and
+                propagated unchanged.
         """
         budget = node_execution_budget(self._node, deadline_s, graph_clock=graph_clock)
         while not future.done():

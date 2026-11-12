@@ -56,8 +56,10 @@ from openral_core.time_base import scene_control_rate_hz
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
-def _load_yaml_model(model: type[_ModelT], path: str) -> _ModelT:
-    """Load ``path`` as YAML and validate it against ``model``.
+def _load_yaml_model(
+    model: type[_ModelT], path: str, *, context: dict[str, Any] | None = None
+) -> _ModelT:
+    """Load ``path`` as YAML and validate it against ``model`` (with ``context``).
 
     Shared body for every ``from_yaml`` classmethod in this module
     (docs/methods/14-duplication-watch.md — "from_yaml classmethods").
@@ -67,7 +69,7 @@ def _load_yaml_model(model: type[_ModelT], path: str) -> _ModelT:
 
     with open(path, encoding="utf-8") as fh:
         data = safe_load(fh)
-    return model.model_validate(data)
+    return model.model_validate(data, context=context)
 
 
 # ─── Enums ─────────────────────────────────────────────────────────────────────
@@ -2677,6 +2679,75 @@ class LinkCollisionGeometry(BaseModel):
         return self
 
 
+class CollisionGeometryImport(BaseModel):
+    """Collision volumes taken from another robot's manifest, renamed onto this robot's links.
+
+    A robot built from another robot (an OpenArm on a mobile platform) reuses that
+    robot's lowered, Safety-WG-reviewed arm geometry instead of a copy that drifts
+    when the source is re-lowered. ``RobotDescription.from_yaml`` resolves it: every
+    ``collision_geometry`` entry of ``robots/<robot>/robot.yaml`` whose ``link_name``
+    is a ``link_map`` key is appended with ``link_name`` renamed to the value. The
+    link frames must be identical in both robots (same joint origins and axes), since
+    the volumes are expressed in them.
+
+    Example:
+        >>> CollisionGeometryImport(robot="openarm", link_map={"openarm_left_link1": "l1"}).robot
+        'openarm'
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    robot: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
+    """Source manifest id: ``robots/<robot>/robot.yaml`` beside this one."""
+    link_map: dict[str, str] = Field(min_length=1)
+    """Source ``link_name`` -> this robot's link; only these links are imported."""
+
+
+def _resolve_collision_geometry_imports(data: dict[str, Any], path: Path) -> dict[str, Any]:
+    """``data`` with every ``collision_geometry_imports`` entry appended, renamed.
+
+    Idempotent: a target link whose authored geometry equals the import (a resolved
+    manifest dumped and loaded again) keeps it as is.
+
+    Raises:
+        ValueError: An import names a link its source has no geometry for, a target
+            link that ``data`` authors different geometry for, or a target link two
+            imports both map onto.
+    """
+    authored: dict[str, list[dict[str, Any]]] = {}
+    for g in data.get("collision_geometry") or []:
+        authored.setdefault(g.get("link_name"), []).append(g)
+    out = list(data.get("collision_geometry") or [])
+    targets: set[str] = set()
+    for raw in data.get("collision_geometry_imports") or []:
+        imp = CollisionGeometryImport.model_validate(raw)
+        source = RobotDescription.from_yaml(str(path.parent.parent / imp.robot / "robot.yaml"))
+        for src_link, link in imp.link_map.items():
+            if link in targets:
+                raise ValueError(f"collision_geometry_imports map two links onto {link!r}")
+            targets.add(link)
+            entries = [
+                g.model_copy(update={"link_name": link})
+                for g in source.collision_geometry
+                if g.link_name == src_link
+            ]
+            if not entries:
+                raise ValueError(
+                    f"collision_geometry_imports: robot {imp.robot!r} has no geometry for "
+                    f"link {src_link!r}"
+                )
+            if link in authored:
+                have = [type(entries[0]).model_validate(g) for g in authored[link]]
+                if have != entries:
+                    raise ValueError(
+                        f"collision_geometry for {link!r} is both authored and imported from "
+                        f"{imp.robot!r}; keep one source"
+                    )
+                continue
+            out += [g.model_dump(mode="json") for g in entries]
+    return {**data, "collision_geometry": out}
+
+
 class FixedAttachment(BaseModel):
     """A rigid, zero-DoF parent→child link attachment in the kinematic tree.
 
@@ -3171,6 +3242,9 @@ class RobotDescription(BaseModel):
     # existing manifests loadable; ``joints`` stays normative for the chain, so
     # URDF/SRDF contribute geometry + ACM only (no dual source of truth).
     collision_geometry: list[LinkCollisionGeometry] = Field(default_factory=list)
+    # Geometry reused from another manifest (``CollisionGeometryImport``), resolved
+    # into ``collision_geometry`` by ``from_yaml``; kept for provenance.
+    collision_geometry_imports: list[CollisionGeometryImport] = Field(default_factory=list)
     allowed_collision_pairs: list[tuple[str, str]] = Field(default_factory=list)
     # Rigid (zero-DoF) links of the kinematic tree that ``joints`` cannot
     # carry — ``joints`` is consumed unfiltered as a DoF vector, so a fixed
@@ -3551,6 +3625,39 @@ class RobotDescription(BaseModel):
             wrist = joint_parent[wrist]
         return tuple(out)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_collision_geometry_imports_from_path(
+        cls,
+        data: Any,  # noqa: ANN401  # reason: raw pre-validation input
+        info: ValidationInfo,
+    ) -> Any:  # noqa: ANN401  # reason: raw pre-validation input
+        """Resolve the imports when the loader passed the manifest's path (``from_yaml``)."""
+        path = (info.context or {}).get("manifest_path")
+        if path is None or not isinstance(data, dict) or not data.get("collision_geometry_imports"):
+            return data
+        return _resolve_collision_geometry_imports(data, Path(path))
+
+    @model_validator(mode="after")
+    def _validate_collision_geometry_imports_resolved(self) -> RobotDescription:
+        """Every imported link has geometry: the imports were resolved, not dropped.
+
+        Only ``from_yaml`` can resolve them (it knows the sibling manifests), so a
+        manifest validated from a bare dict would otherwise reach the kernel with no
+        volumes on the imported links. Refused here instead.
+        """
+        have = {g.link_name for g in self.collision_geometry}
+        missing = sorted(
+            {link for imp in self.collision_geometry_imports for link in imp.link_map.values()}
+            - have
+        )
+        if missing:
+            raise ValueError(
+                f"collision_geometry_imports are unresolved for links {missing}; load the "
+                "manifest with RobotDescription.from_yaml, which reads the source manifests"
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_force_observer(self) -> RobotDescription:
         """The observer's links and joints, and every torque ceiling, name real ones.
@@ -3761,10 +3868,13 @@ class RobotDescription(BaseModel):
             FileNotFoundError: If ``path`` does not exist.
             pydantic.ValidationError: If the YAML fails schema validation.
 
+        ``collision_geometry_imports`` are resolved here, from the sibling manifests
+        beside ``path`` (``CollisionGeometryImport``).
+
         Example:
             >>> # RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
         """
-        return _load_yaml_model(cls, path)
+        return _load_yaml_model(cls, path, context={"manifest_path": Path(path)})
 
     def validate_for_e2e_pipeline(self) -> None:
         """Assert this manifest carries every field the e2e ROS graph needs.
@@ -9711,12 +9821,19 @@ class RSkillManifest(BaseModel):
     # (``_check_n_action_steps_within_chunk``).
     n_action_steps: int | None = Field(default=None, gt=0)
     # Optional initial joint pose the policy expects an episode to
-    # start from. The list is ``state_contract.dim``-long and uses the
-    # checkpoint's own ``action_feature_names`` order (i.e. the same
-    # order the policy emits actions in — *not* the robot.yaml URDF
-    # order). Units are radians. Sim adapters apply this as the qpos
-    # at ``reset()`` and the live HAL can use it as the calibration
-    # target.
+    # start from, in each joint's native unit (radians for revolute,
+    # metres for prismatic). The deploy runner
+    # (``rskill_runner_node.expand_starting_pose``) accepts two widths:
+    # one value per ``RobotDescription.joints`` entry, in robot.yaml
+    # order; or one value per joint the ``action_contract.slots`` name
+    # (``openral_rskill._policy_io.slot_state_joint_names``: slot range
+    # order, i.e. the policy's own order; it needs a declared
+    # ``state_contract.dim`` equal to that joint count), which sets those joints by
+    # name and holds every other joint (a mobile base, a lift) at its
+    # measured position. When the two widths are equal (the slots name
+    # every robot joint), the pose is read in robot.yaml order. Sim
+    # adapters apply this as the qpos at
+    # ``reset()``.
     #
     # When omitted, sim adapters fall back to a kinematic default
     # (e.g. elbows at +π/2). There is no implicit "centre-of-training"

@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (57)
+## Topics (58)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -29,7 +29,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/map` | `nav_msgs/OccupancyGrid` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) [param `occupancy_map_topic`]<br>python/runner/src/openral_runner/slam_bridge.py (SlamMapBridge.__init__) |
 | `/octomap_binary` | `octomap_msgs/Octomap` | — | packages/openral_octomap_bridge/src/octomap_voxel_bridge.hpp [param `octomap_topic`] |
 | `/octomap_point_cloud_centers` | `sensor_msgs/PointCloud2` | — | python/runner/src/openral_runner/world_cloud_bridge.py (WorldCloudBridge.__init__) |
-| `/odom` | `nav_msgs/Odometry` | python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) | — |
+| `/odom` | `nav_msgs/Odometry` | python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) | python/hal/src/openral_hal/platform_base.py (PlatformBaseHAL.attach_ros_node) |
 | `/openral/action_applied` | `std_msgs/UInt64` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) |
 | `/openral/attachment_state` | `openral_msgs/AttachmentState` | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._create_outputs)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `attachment_state_topic`]<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/attachment_state_applied` | `std_msgs/UInt64` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
@@ -56,6 +56,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/place_declaration` | `openral_msgs/PlaceDeclaration` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe)<br>python/hal/src/openral_hal/_place_target_leg.py (PlaceTargetLeg.setup)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_place_declaration) |
 | `/openral/policy_state` | `std_msgs/Float32MultiArray` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._publish_policy_state) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 | `/openral/prompt` | `openral_msgs/PromptStamped` | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
+| `/openral/result_only_goal` | `openral_msgs/ResultOnlyGoal` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) [param `result_only_topic`] |
 | `/openral/reward/active_task` | `std_msgs/String` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__)<br>packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode._subscribe_active_task) |
 | `/openral/safe_action` | `openral_msgs/ActionChunk` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>tools/kernel_replay_diff.py (_Side.__init__) |
 | `/openral/safety/external_torque` | `sensor_msgs/JointState` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp | — |
@@ -129,7 +130,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (50)
+## Unresolved endpoints (51)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -148,6 +149,7 @@ caller's argument). Shown as their source expression.
 | topic | pub | `gp('depth_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | pub | `out[c]` | `sensor_msgs/Image` | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | topic | pub | `points_topic` | `sensor_msgs/PointCloud2` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
+| topic | pub | `self._cmd_vel_topic` | `geometry_msgs/Twist` | python/hal/src/openral_hal/platform_base.py (PlatformBaseHAL.attach_ros_node) |
 | topic | pub | `self._info_topic` | `sensor_msgs/CameraInfo` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |
 | topic | pub | `self._topic` | `openral_msgs/FailureTrigger` | python/observability/src/openral_observability/failure_bus.py (FailureBusPublisher.create_publisher) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher._start_ros) |

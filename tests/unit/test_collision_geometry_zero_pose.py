@@ -294,6 +294,10 @@ def test_no_non_allowed_pair_interpenetrates_at_rest(manifest_path: Path) -> Non
 #     reaching to the middle of the plate until the fingertips meet — 21
 #     left_link7 vertices inside the convex hull of right_link8 (and 21 the
 #     other way); kernel gap -27.6 mm.
+#   openamrobot_v2: the left hand swung behind the shoulder into the lift carriage
+#     (lift at 0): 38 of the twin hand's 458 vertices inside the carriage's box
+#     geom, up to 22 mm deep; kernel gap -45 mm. Seeded search (seed 7) over the
+#     left arm's limits, on the OpenArm arm geometry this robot reuses.
 _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
     (
         "makermods_metal",
@@ -330,6 +334,19 @@ _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
             "right_joint3": 1.57,
         },
         ("left_link7", "right_link8"),
+    ),
+    (
+        "openamrobot_v2",
+        {
+            "left_joint1": -2.38,
+            "left_joint2": -2.88,
+            "left_joint3": -1.47,
+            "left_joint4": 1.23,
+            "left_joint5": -1.18,
+            "left_joint6": -0.51,
+            "left_joint7": 1.13,
+        },
+        ("lift_carriage_link", "openarm_left_ee_base_link"),
     ),
     (
         "openarm",

@@ -63,6 +63,33 @@ def describes_mobile_base(description: RobotDescription) -> bool:
     return bool(description.base_joints)
 
 
+def platform_owns_navigation(description: RobotDescription, *, hal_mode: str) -> bool:
+    """Whether the robot's own platform owns navigation in this deploy (ADR-0127 Decision 1).
+
+    The deploy command decides; there is no setting. ``deploy sim`` keeps OpenRAL's SLAM,
+    Nav2 and ``MobileBaseBridge``. ``deploy run`` (``hal_mode="real"``) of a robot with a
+    mobile base leaves navigation, localization, ``/odom``, ``odom -> base`` and the final
+    ``/cmd_vel`` to the platform's own stack: OpenRAL launches neither SLAM nor Nav2,
+    attaches no ``MobileBaseBridge`` and sends ``navigate_to_pose`` goals to the platform's
+    server. Today ``openamrobot_v2`` is the only manifest with a mobile base and a real HAL.
+
+    Args:
+        description: The robot manifest.
+        hal_mode: The deploy's HAL mode, ``"sim"`` or ``"real"``.
+
+    Returns:
+        ``True`` for a real deploy of a manifest that declares ``base_joints``.
+
+    Example:
+        >>> from openral_hal.panda_mobile import PANDA_MOBILE_DESCRIPTION
+        >>> platform_owns_navigation(PANDA_MOBILE_DESCRIPTION, hal_mode="sim")
+        False
+        >>> platform_owns_navigation(PANDA_MOBILE_DESCRIPTION, hal_mode="real")
+        True
+    """
+    return hal_mode == "real" and describes_mobile_base(description)
+
+
 class MobileBaseBridge:
     """Owns ``/odom`` + ``odom->base_link`` TF + ``/cmd_vel``→BODY_TWIST for a node.
 
@@ -187,9 +214,21 @@ class MobileBaseBridge:
             pose_6dof = frame.base_pose_6dof
             bt: tuple[float, ...] = frame.base_twist
         else:
+            from openral_core.exceptions import ROSPerceptionStale
+
             getter = getattr(self._hal, "base_pose_6dof", None)
-            pose_6dof = getter() if getter is not None else None
-            base_pose = self._hal.base_pose
+            try:
+                pose_6dof = getter() if getter is not None else None
+                base_pose = self._hal.base_pose
+            except ROSPerceptionStale as exc:
+                # A real base's odometry can be late (none yet at activation, an EKF
+                # pause). Publishing nothing lets odom -> base go stale, so Nav2 stops
+                # on its own TF timeout; raising here would kill the HAL node's
+                # executor and leave the base on its last twist.
+                self._node.get_logger().warning(
+                    f"mobile_base_bridge: no /odom published: {exc}", throttle_duration_sec=2.0
+                )
+                return
             bt = getattr(self._hal, "base_twist", (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
         # Prefer a 6-DoF proprio (robocasa base pos+quat) so base_z carries the

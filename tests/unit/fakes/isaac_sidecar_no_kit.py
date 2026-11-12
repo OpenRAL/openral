@@ -44,12 +44,17 @@ class _NoKitScene:
         self.sim_dt_per_tick_s = sim_dt_per_tick_s
         # The sidecar's reset reply reads the observed cadence; the fake observes the same.
         self._observed_sim_dt_per_tick_s = sim_dt_per_tick_s
+        # Like the real scene, the sim clock advances one tick per step (30 Hz when the
+        # spec carries no rate) and restarts at reset.
+        self._tick_ns = int((sim_dt_per_tick_s or 1.0 / 30.0) * 1e9)
+        self._sim_time_ns = 0
 
     def _obs(self) -> dict[str, Any]:
         return {"images": {}, "state": np.zeros(0, dtype=np.float32), "task": ""}
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         del seed
+        self._sim_time_ns = 0
         return self._obs()
 
     def step(self, action: npt.NDArray[np.float64], frames: str = "render") -> dict[str, Any]:
@@ -58,6 +63,7 @@ class _NoKitScene:
             row = [None if np.isnan(v) else float(v) for v in np.asarray(action).reshape(-1)]
             with open(out, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row) + "\n")
+        self._sim_time_ns += self._tick_ns
         obs = self._obs()
         if frames == "none":  # as the real scene: no frame keys without a render
             del obs["images"]
@@ -68,11 +74,11 @@ class _NoKitScene:
             "terminated": False,
             "truncated": False,
             "info": {},
-            "sim_time_ns": 0,
+            "sim_time_ns": self._sim_time_ns,
         }
 
     def sim_time_ns(self) -> int:
-        return 0
+        return self._sim_time_ns
 
 
 def main(argv: list[str]) -> int:

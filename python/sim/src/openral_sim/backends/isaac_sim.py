@@ -1759,6 +1759,12 @@ def _sensor_dict(sensor: SensorSpec) -> dict[str, Any]:
         "range_min_m": sensor.range_min_m,
         "range_max_m": sensor.range_max_m,
         "n_channels": sensor.n_channels,
+        # The lidar fan is cast from parent_frame composed with this mount.
+        "static_transform_xyz_rpy": (
+            list(sensor.static_transform_xyz_rpy)
+            if sensor.static_transform_xyz_rpy is not None
+            else None
+        ),
     }
 
 

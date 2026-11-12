@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OpenAMRobot 2.0 — hand-reviewed self-collision exemptions.
+
+  Like robots/openarm/openarm.srdf, this SRDF exists ONLY to carry deliberate
+  ACM exemptions into the MJCF collision lowering (`openral collision lower`,
+  acm-only, source: mjcf). The sweep can auto-disable a pair only when it
+  collides in EVERY sampled pose; these pairs do not, so each is a reviewed
+  judgment recorded here instead of a hand edit to the generated ACM block.
+
+  ARM ROWS: copied from robots/openarm/openarm.srdf (re-measured 2026-09-24,
+  hazard-log Entry 045) with only the link names translated to this robot's
+  URDF/TF names, because the arm collision_geometry is OpenArm's, copied
+  byte-for-byte (see robot.yaml):
+      openarm_{s}_finger_pair -> openarm_{s}_ee_link1
+      openarm_{s}_link7       -> openarm_{s}_ee_base_link
+  Every arm link frame (joint1..7, gripper, mimic finger) is identical between
+  the two manifests, so the measured mesh clearances carry over unchanged.
+  OpenArm's two torso rows (openarm_body_link0 vs the pedestals) have no
+  counterpart: this robot has no OpenArm torso.
+
+  NO rigid body rows. The carriage, adapter plate, arm profile, tablet, head
+  light, head camera, column and chassis are rigid to each other and to the
+  arm pedestals; any rigid pair that overlaps is always-colliding and the
+  sweep disables it on its own, and one that does not overlap can never trip.
+  A MOVING arm link (link1 .. ee_link2) is never exempted against any body
+  part: those are exactly the contacts the kernel must stop.
+
+  LIFT-INTERNAL ROWS (2026-11-04; re-measured 2026-11-11 on upstream's 8 Nov
+  geometry, openamr-upperbody-sw #48 @ e6ab3d1). The only non-arm pairs that move
+  relative to each other are carriage-side vs column-side parts; the second E-stop
+  is now carriage-side (on the adapter plate). Measured with the kernel predicates
+  on the committed boxes (tests/unit/_collision_kernel_verdict.kernel_link_gap)
+  over lift_joint 0..0.35 m in 1 mm steps; every other carriage/column pair keeps
+  >= 1.9 mm at every lift height and stays checked:
+    lift_flag  vs stop_sensor_l1000   0.0 mm (contact), q 0.000-0.024
+    lift_flag  vs stop_sensor_l1175   0.0 mm (contact), q 0.151-0.199
+    lift_flag  vs stop_sensor_l1350   0.0 mm (contact), q 0.326-0.350
+  The flag rides through each stop sensor's fork by design: that pass is how the
+  lift senses 0 / 175 / 350 mm. Upstream's boxes for these parts are placeholders
+  (`placeholder_*`), so the contact is not a mesh measurement. None of these links
+  is an arm link, and every arm link vs each of them stays checked.
+  Dropped on 2026-11-11 (now checked): adapter_plate vs column (the column's
+  static profile ends 25 mm below the plate: 23.0 mm clear) and the flag rod vs
+  every stop sensor (1.9 mm clear at every height).
+  The lift_joint itself drives these pairs only; it is bounded by its own
+  position limits [0, 0.35] and the kernel's joint-limit check, not by these.
+
+  SAFETY (CLAUDE.md §3): every row here REDUCES what the kernel checks and
+  needs safety-WG sign-off to change.
+-->
+<robot name="openamrobot_v2">
+  <disable_collisions link1="openarm_left_ee_link1" link2="openarm_left_link5" reason="OpenArm row (finger_pair/link5): meshes never closer than 16.3 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
+  <disable_collisions link1="openarm_right_ee_link1" link2="openarm_right_link5" reason="OpenArm row (finger_pair/link5): meshes never closer than 16.1 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
+  <disable_collisions link1="openarm_left_ee_link1" link2="openarm_left_link6" reason="OpenArm row (finger_pair/link6): meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>
+  <disable_collisions link1="openarm_right_ee_link1" link2="openarm_right_link6" reason="OpenArm row (finger_pair/link6): meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>
+  <disable_collisions link1="openarm_left_link5" link2="openarm_left_ee_base_link" reason="OpenArm row (link5/link7): wrist housings either side of link6, meshes never closer than 2.9 mm (1500 certified poses, 1st percentile 3.0 mm); fitted primitives overlap in 67%."/>
+  <disable_collisions link1="openarm_right_link5" link2="openarm_right_ee_base_link" reason="OpenArm row (link5/link7): wrist housings either side of link6, meshes never closer than 2.9 mm (1500 certified poses, 1st percentile 3.0 mm); fitted primitives overlap in 69%."/>
+  <disable_collisions link1="lift_flag_link" link2="lift_stop_sensor_l1000_link" reason="Lift-internal: the position flag rides through the 0 mm stop sensor's fork by design (placeholder boxes in contact, 0.0 mm, lift q 0.000-0.024 m); no arm link."/>
+  <disable_collisions link1="lift_flag_link" link2="lift_stop_sensor_l1175_link" reason="Lift-internal: the position flag rides through the 175 mm stop sensor's fork by design (placeholder boxes in contact, 0.0 mm, lift q 0.151-0.199 m); no arm link."/>
+  <disable_collisions link1="lift_flag_link" link2="lift_stop_sensor_l1350_link" reason="Lift-internal: the position flag rides through the 350 mm stop sensor's fork by design (placeholder boxes in contact, 0.0 mm, lift q 0.326-0.350 m); no arm link."/>
+</robot>

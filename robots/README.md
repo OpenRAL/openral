@@ -7,7 +7,7 @@ scenes, the eval registry, the HAL itself) validates against. The
 time and auto-registers each one; `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` is
 looked up first, for out-of-tree manifests.
 
-There are 25 robot directories, each with a `robot.yaml` and most with a
+There are 26 robot directories, each with a `robot.yaml` and most with a
 `README.md` of provenance notes (kinematic source, MJCF wiring, sim-vs-real
 caveats). `hal.real` is the source of truth for real-hardware support:
 `null`/absent means sim-only (no HAL, no HIL tests, no physical rig).
@@ -32,6 +32,7 @@ from it (most arms below), and several embodiments (`aloha_agilex`, `gr1`,
 | `h2` | Unitree H2 humanoid, 31-DoF bipedal floating base (2-DoF head) | `h2`, `unitree_h2`, `humanoid`, `mobile_base` | yes — `H2MujocoHAL` (official `unitree_mujoco` MJCF, fetched pinned via `unitree:h2`) | no (`hal.real` null) | [README.md](h2/README.md) |
 | `makermods_metal` | MakerMods Metal arm: 6 revolute joints + parallel gripper (two coupled prismatic fingers), Damiao CAN motors, no brakes | `makermods_metal`, `makermods` | yes — derived `MujocoArmHAL` (`makermods:metal` URDF/MJCF derived at runtime from a pinned, unlicensed upstream clone; `sim:` block) | no (`hal.real` null) | [README.md](makermods_metal/README.md) |
 | `makermods_metal_station` | Two MakerMods Metal arms + top camera on one plate (spacing and top camera measured from the pen-holder dataset) | `makermods_metal_station`, `makermods`, `bimanual` | yes — derived `MujocoArmHAL` (`makermods:metal_station`; `sim:` block) | no (`hal.real` null) | [README.md](makermods_metal_station/README.md) |
+| `openamrobot_v2` | OpenAMRobot 2.0: differential mobile base + 350 mm DOLD lift + two Enactic OpenArm v2.0 arms (upstream pre-release; composed URDF vendored from `openamr-upperbody-sw`) | `openamrobot`, `openamrobot_v2`, `openarm`, `bimanual`, `mobile_base` | yes — `OpenAMRobotV2MujocoHAL` (MJCF built from the vendored URDF at first use) + Isaac Sim (`isaac_openamrobot_v2_warehouse`) | composed, never run — `ComposedHAL`: `OpenArmRealHAL` (the OpenArm's own) + `PlatformBaseHAL` (platform odometry only; the platform owns the base command) + held lift | [README.md](openamrobot_v2/README.md) |
 | `openarm` | Enactic OpenArm v2 bimanual arms (manifest's own `name:` is `openarm_v2`, directory is `openarm`) | `openarm`, `openarm_v2`, `enactic`, `bimanual` | yes — derived `MujocoArmHAL` (`sim:` block; class form `OpenArmMujocoHAL`) | yes — `OpenArmRealHAL` | [README.md](openarm/README.md) |
 | `panda_mobile` | Franka Panda 7-DoF arm on a 3-DoF holonomic base (RoboCasa's default robot composition; 2-D LiDAR SLAM) | `panda_mobile`, `robocasa`, `franka`, `panda`, `mobile_base` | yes — `PandaMobileHAL` (RoboCasa/robosuite backend) | no (`hal.real` null) | no README |
 | `panda_mobile_vslam` | Lidar-less visual-SLAM twin of `panda_mobile` — localises/maps from two base-mounted RGB cameras via cuVSLAM instead of a `LaserScan` | `panda_mobile`, `robocasa`, `franka`, `panda`, `mobile_base` | yes — `PandaMobileHAL` (RoboCasa/robosuite backend) | no (`hal.real` null) | no README |

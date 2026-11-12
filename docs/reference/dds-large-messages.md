@@ -116,6 +116,27 @@ non-blocking `publish()` on every live-ROS run.
   their consumers.
 - Jazzy only: Fast DDS 3 reads `FASTDDS_DEFAULT_PROFILES_FILE`.
 
+### Service replies
+
+The profile also carries `data_writer` profiles for twenty service reply writers: the
+`change_state` and `get_state` replies of the ten Nav2 nodes the lifecycle manager drives.
+They are named by reply topic (`rr/<service>Reply`), which `rmw_fastrtps` looks a writer
+profile up by. Before sending a service reply, the RMW waits for the client's reply reader
+to be discovered, for at most that writer's `reliability.max_blocking_time` (Fast DDS
+default: 100 ms). If discovery is slower, it drops the reply and logs `failed to send
+response to <service> (timeout): client will not receive response`.
+
+On the ~30-process deploy graph, discovery can be slower than 100 ms. Nav2's lifecycle
+manager waits on `change_state` with no timeout, so one dropped reply left Nav2
+unconfigured for the whole run: `controller_server`, `collision_monitor` and
+`bt_navigator`, on Spark and on a laptop, 2026-11-04/05. These twenty replies may wait 5 s.
+
+The profile names those twenty replies rather than using the catch-all `service`
+profile, because the wait runs on the server's executor thread. The safety kernel serves
+its lifecycle and `estop_reset` services from a single-threaded executor, so a fresh
+client (an operator's `ros2 lifecycle get`) could have held its only thread for up to 5 s.
+`tests/unit/test_fastdds_profile_service_scope.py` holds the profile to the twenty names.
+
 ## Reproduce
 
 ```bash

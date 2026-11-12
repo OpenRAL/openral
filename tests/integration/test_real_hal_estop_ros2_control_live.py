@@ -85,15 +85,24 @@ def _ros2_control_adapters() -> list[str]:
     `robots/*/robot.yaml` with `hal.real` set is built through the production `build_hal`
     seam, and the ones the lifecycle node would drive over ros2_control (`RosControlDrivable`)
     are the ones this file must prove. A new ros2_control robot lands here by existing.
+
+    A ``ComposedHAL`` is not one of them: it is driven by whole-robot or slot-group chunks
+    across non-ros2_control parts (a twist-only base, a held lift), not the flat
+    ros2_control-order chunk this file publishes. Its ros2_control parts are covered on
+    their own (openamrobot_v2's arm part is ``OpenArmRealHAL``, the ``openarm`` case here),
+    and its merged stop by ``tests/sim/test_openamrobot_v2_lift_ros2_control.py`` against a
+    real ``controller_manager``.
     """
     from openral_core import RobotDescription
+    from openral_hal.composed import ComposedHAL
     from openral_hal.ros_control_transport import RosControlDrivable
 
     out: list[str] = []
     for path in sorted(_REPO_ROOT.glob("robots/*/robot.yaml")):
         if not RobotDescription.from_yaml(str(path)).hal.real:
             continue
-        if isinstance(_real_hal(path.parent.name), RosControlDrivable):
+        hal = _real_hal(path.parent.name)
+        if isinstance(hal, RosControlDrivable) and not isinstance(hal, ComposedHAL):
             out.append(path.parent.name)
     return out
 

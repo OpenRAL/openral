@@ -47,7 +47,7 @@ if _VENV_SITE and os.path.isdir(_VENV_SITE):
     site.addsitedir(_VENV_SITE)
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
 from launch import LaunchContext, LaunchDescription
@@ -75,7 +75,7 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from launch import LaunchDescriptionEntity
     from launch.actions import IncludeLaunchDescription
-    from openral_core import RobotDescription, SafetyEnvelope, SensorSpec
+    from openral_core import JointSpec, RobotDescription, SafetyEnvelope, SensorSpec
     from openral_hal.resolver import UrdfJointMap
 from lifecycle_msgs.msg import Transition
 from openral_core import (
@@ -826,6 +826,50 @@ class _ReachModel:
         return float(max(values.max(), score(*self.extremes(best)).max()))
 
 
+def _mjcf_dof_mismatches(
+    model: Any,  # reason: mujoco.MjModel has no type stubs
+    lowered: dict[str, object],
+    joints: list[JointSpec],
+) -> list[str]:
+    """Where an MJCF lowering's ``collision_dof_index`` disagrees with the manifest by name.
+
+    ``lower_collision_params`` numbers links by movable-joint ordinal, one joint per body,
+    because an MJCF's joint names need not match the manifest's (SO-101's ``Rotation`` vs
+    ``shoulder_pan``). That ordinal drifts when a body carries several joints (a planar
+    base: x, y, yaw on one body) or when a movable joint is not a commanded column (a
+    mimic finger): every later link then reads another joint's angle in the kernel's FK.
+    Where an MJCF joint IS named like a manifest joint (its ``sim_joint_name``, the
+    manifest's own name for it in the MJCF, else its ``name``), its link must read that
+    column; a body with several hinge/slide joints cannot be represented at all. Joints
+    with no manifest namesake are not judged (the ordinal mapping is the contract there).
+
+    Returns:
+        One line per disagreement; empty when the lowering is consistent.
+    """
+    import mujoco as mj
+
+    index = {j.sim_joint_name or j.name: i for i, j in enumerate(joints)}
+    dof = cast("list[int]", lowered.get("collision_dof_index", []))
+    movable = (int(mj.mjtJoint.mjJNT_HINGE), int(mj.mjtJoint.mjJNT_SLIDE))
+    by_body: dict[int, list[str]] = {}
+    for ji in range(int(model.njnt)):
+        if int(model.jnt_type[ji]) in movable:
+            name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, ji) or ""
+            by_body.setdefault(int(model.jnt_bodyid[ji]), []).append(name)
+    out: list[str] = []
+    for body, names in sorted(by_body.items()):
+        link = body - 1  # lower_collision_params skips the world body
+        bname = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, body) or f"body_{body}"
+        if len(names) > 1:
+            out.append(f"{bname}: {len(names)} joints {names} on one body (one per link)")
+        elif names[0] in index and 0 <= link < len(dof) and dof[link] != index[names[0]]:
+            out.append(
+                f"{bname}: joint {names[0]} is manifest column {index[names[0]]}, "
+                f"lowered to column {dof[link]}"
+            )
+    return out
+
+
 def _coverage_ball(
     collision_params: dict[str, object],
     position_limits: list[tuple[float, float] | None],
@@ -895,14 +939,22 @@ def _coverage_ball(
     return ball
 
 
-def _octomap_input_bounds(ball: _CoverageBall) -> dict[str, float]:
+def _octomap_input_bounds(ball: _CoverageBall, description: RobotDescription) -> dict[str, float]:
     """``octomap_server``'s input-cloud clip: the robot's reach box plus the margin.
 
     Returns the ``point_cloud_{min,max}_{x,y,z}`` parameters, in the map frame
     (``base_frame``). A return outside it is outside every link's check window, so
     integrating it is pure cost: on Thor the floor 0.7 m below the base and the wall
     3 m out were most of the ZED cloud.
+
+    Empty for a mobile robot: ``octomap_server`` clips in its ``frame_id``, which is
+    then ``odom`` (``_octomap_frames``), so a box about the base would stay at the
+    start pose and drop every return once the robot drove off it (an empty map, so
+    no world voxels near the robot). ``sensor_model.max_range`` still bounds the rays.
     """
+    fixed_frame, base_frame = _octomap_frames(description)
+    if fixed_frame != base_frame:
+        return {}
     return {
         f"point_cloud_{side}_{axis}": value
         for side, corner in (("min", ball.clip_lo), ("max", ball.clip_hi))
@@ -1114,6 +1166,24 @@ def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list[LaunchDesc
             ),
         ),
     ]
+
+
+def _after_hal_active(
+    hal_autostart: ExecuteProcess, entity: LaunchDescriptionEntity
+) -> RegisterEventHandler:
+    """Launch ``entity`` once the HAL's poll-based autostart exits 0 (HAL read ACTIVE).
+
+    A process exit is a local launch event. An ``OnStateTransition`` on the HAL rides
+    its ``transition_event`` topic instead, which a launch subscription that discovery
+    has not matched yet misses: on 2026-11-05 a deploy left the HAL active and Nav2
+    never launched. A non-zero exit (HAL never reached ACTIVE) launches nothing.
+    """
+    return RegisterEventHandler(
+        OnProcessExit(
+            target_action=hal_autostart,
+            on_exit=lambda event, _ctx: [entity] if event.returncode == 0 else [],
+        )
+    )
 
 
 def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProcess:
@@ -2433,11 +2503,13 @@ def _rsp_urdf_joint_map(
     needs a renamed, re-unit copy on ``~/urdf_joint_states`` that robot_state_publisher
     alone reads (``urdf_joint_map``), or no moving link reaches /tf, or the jaw sits at
     the wrong angle (the SO-101's was 21.5 deg off, PickOrange g19). A ros2_control arm's
-    vendor broadcaster publishes the URDF's own names and units: ``None``.
+    vendor broadcaster publishes the URDF's own names and units: ``None``. A composed
+    HAL whose broadcaster covers only the arm (OpenAMRobot v2: no lift or base state there)
+    gets the map, so the lift and everything on it reach /tf.
     """
-    from openral_hal.resolver import ros_control_hal, urdf_joint_map
+    from openral_hal.resolver import urdf_joint_map, vendor_publishes_urdf_joint_states
 
-    if description.assets.urdf is None or ros_control_hal(
+    if description.assets.urdf is None or vendor_publishes_urdf_joint_states(
         description, mode="real" if hal_mode == "real" else "sim"
     ):
         return None
@@ -2445,6 +2517,27 @@ def _rsp_urdf_joint_map(
     if urdf is None:
         return None
     return urdf_joint_map(description, pathlib.Path(urdf).read_text(encoding="utf-8"))
+
+
+def _palette_reseed_cmd(*, lifecycle_node: str, timeout_s: float = 120.0) -> list[str]:
+    """The ``wait_for_action_and_signal_palette.py`` command for ``/navigate_to_pose``.
+
+    Fires ``/openral/skill_registry_changed`` once the action is advertised (and, when
+    ``lifecycle_node`` is given, that node is active), so the reasoner re-seeds its palette
+    with the Nav2 rSkill. ``""`` waits on the action alone (a platform's own Nav2, whose
+    start time OpenRAL does not control: give it a longer ``timeout_s``).
+    """
+    cmd = [
+        sys.executable,
+        str(_REPO_ROOT / "tools" / "wait_for_action_and_signal_palette.py"),
+        "--action",
+        "/navigate_to_pose",
+        "--timeout-s",
+        str(timeout_s),
+    ]
+    if lifecycle_node:
+        cmd += ["--lifecycle-node", lifecycle_node]
+    return cmd
 
 
 def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
@@ -2880,7 +2973,22 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # bimanual openarm) lower to {"self_collision_enabled": False}; using
             # that would silently DISABLE self-collision, so keep the manifest's
             # hand-authored capsules + ACM instead.
-            if mjcf_params.get("self_collision_enabled"):
+            mismatches = (
+                _mjcf_dof_mismatches(model, mjcf_params, list(description.joints))
+                if mjcf_params.get("self_collision_enabled")
+                else []
+            )
+            if mismatches:
+                # A link reading another joint's angle is a wrong safety model, not a
+                # coarser one: keep the manifest's, which indexes joints by name.
+                print(
+                    "[deploy_e2e] MJCF self-collision lowering REFUSED: its joint columns "
+                    "disagree with the manifest; keeping the manifest self-collision model. "
+                    + "; ".join(mismatches[:6])
+                    + (f" (+{len(mismatches) - 6} more)" if len(mismatches) > 6 else ""),
+                    flush=True,
+                )
+            elif mjcf_params.get("self_collision_enabled"):
                 collision_params = mjcf_params
             else:
                 print(
@@ -4069,27 +4177,29 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     hal_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
     from openral_hal.sim_bringup import hal_transition_timeout_s
 
-    autostart.append(
-        ExecuteProcess(
-            cmd=[
-                sys.executable,
-                hal_autostart_path,
-                "--node",
-                f"/{hal_node_name}",
-                "--target",
-                "active",
-                "--service-timeout-s",
-                "60.0",
-                # Derived from the scene, not fixed: a sidecar backend boots
-                # inside ``on_configure`` and a measured cold Isaac Sim boot
-                # runs past the old 300 s literal. See
-                # ``openral_hal.sim_bringup.hal_transition_timeout_s``.
-                "--transition-timeout-s",
-                hal_transition_timeout_s(deploy_config),
-            ],
-            output="log",
-        )
+    hal_autostart = ExecuteProcess(
+        cmd=[
+            sys.executable,
+            hal_autostart_path,
+            "--node",
+            f"/{hal_node_name}",
+            "--target",
+            "active",
+            "--service-timeout-s",
+            "60.0",
+            # Derived from the scene, not fixed: a sidecar backend boots
+            # inside ``on_configure`` and a measured cold Isaac Sim boot
+            # runs past the old 300 s literal. See
+            # ``openral_hal.sim_bringup.hal_transition_timeout_s``.
+            "--transition-timeout-s",
+            hal_transition_timeout_s(deploy_config),
+            # An absent HAL must exit non-zero: a zero exit releases the Nav2 gate
+            # (_after_hal_active), which needs an ACTIVE HAL and its odom TF.
+            "--required",
+        ],
+        output="log",
     )
+    autostart.append(hal_autostart)
 
     # robot_state_publisher: when robot.yaml carries an ``assets.urdf`` ref, launch
     # ``robot_state_publisher`` so the per-link arm + sensor TF chain lands on ``/tf``
@@ -4361,6 +4471,17 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             )
             extra_nodes.append(slam_autostart)
 
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.mobile_base_bridge import platform_owns_navigation
+
+    platform_owned_nav = platform_owns_navigation(description, hal_mode=hal_mode)
+    if platform_owned_nav and (enable_nav2 or enable_slam):
+        # Same refusal as the CLI, for a direct `ros2 launch`: OpenRAL's Nav2 would be a
+        # second /navigate_to_pose server publishing the platform's final /cmd_vel.
+        raise ROSConfigError(
+            f"robot {description.name!r} with hal_mode:=real: its platform owns navigation "
+            "(ADR-0127), so enable_slam / enable_nav2 must be false."
+        )
     if enable_nav2:
         # Nav2's local_costmap needs ``odom -> base_link`` TF to be
         # already on the bus when its ``lifecycle_manager_navigation``
@@ -4369,20 +4490,20 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # base_link to odom" and the lifecycle bond fails. The HAL
         # publishes that TF only after ``on_activate``, which on a
         # robocasa-kitchen boot lags Nav2's autostart by ~10–20 s.
-        # Gate the Nav2 include on the HAL's transition to ACTIVE
-        # so TF is already streaming when Nav2 sub-nodes wake up.
+        # Gate the Nav2 include on the HAL reaching ACTIVE so TF is
+        # already streaming when Nav2 sub-nodes wake up. The gate is the HAL
+        # autostart helper's clean exit (it exits 0 once get_state reads
+        # active), a local process event. An ``OnStateTransition`` on the HAL
+        # rides its ``transition_event`` topic, which a not-yet-discovered
+        # launch subscription misses: on 2026-11-05 a walled-room deploy left
+        # the HAL active and Nav2 never launched.
         extra_nodes.append(
-            RegisterEventHandler(
-                OnStateTransition(
-                    target_lifecycle_node=hal,
-                    goal_state="active",
-                    entities=[
-                        _build_nav2_include(
-                            robot_yaml, use_sim_time=use_sim_time, slam_backend=slam_backend
-                        )
-                    ],
+            _after_hal_active(
+                hal_autostart,
+                _build_nav2_include(
+                    robot_yaml, use_sim_time=use_sim_time, slam_backend=slam_backend
                 ),
-            ),
+            )
         )
         # reasoner_node seeds its rSkill palette at on_configure (~5 s after launch), long
         # before Nav2 finishes its 15-30 s lifecycle bringup. The graph-availability filter
@@ -4392,21 +4513,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # helper that polls the ROS graph for ``/navigate_to_pose`` and fires Empty on
         # ``/openral/skill_registry_changed`` once it appears; the reasoner re-seeds the palette
         # and the Nav2 rSkill becomes dispatchable.
-        palette_reseed_helper = str(_REPO_ROOT / "tools" / "wait_for_action_and_signal_palette.py")
+        extra_nodes.append(
+            ExecuteProcess(cmd=_palette_reseed_cmd(lifecycle_node="/bt_navigator"), output="log")
+        )
+    elif platform_owned_nav:
+        # ADR-0127 Decision 1: on `deploy run` the platform's own Nav2 serves
+        # /navigate_to_pose. Same reseed, so the Nav2 rSkill reaches the palette once that
+        # server is advertised; the platform's node names are not ours to assume, so the
+        # helper waits on the action alone.
         extra_nodes.append(
             ExecuteProcess(
-                cmd=[
-                    sys.executable,
-                    palette_reseed_helper,
-                    "--action",
-                    "/navigate_to_pose",
-                    "--lifecycle-node",
-                    "/bt_navigator",
-                    "--timeout-s",
-                    "120.0",
-                ],
-                output="log",
-            ),
+                cmd=_palette_reseed_cmd(lifecycle_node="", timeout_s=600.0), output="log"
+            )
         )
 
     # Manifest-derived, never the mobile-base literals: see _octomap_frames.
@@ -4551,7 +4669,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # octomap_server at ~2 Hz with multi-second gaps, i.e. a stale map
                     # (2026-10-02).
                     "sensor_model.max_range": 2.0 * coverage.radius,
-                    **_octomap_input_bounds(coverage),
+                    **_octomap_input_bounds(coverage, description),
                     # Keep the map fresh for manipulation: octomap ray-clears
                     # free space, so a grasped/moved object's old cells decay
                     # back to free once re-observed. A slightly higher
@@ -5121,7 +5239,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # SLAM on, slam_toolbox / cuVSLAM owns ``/map`` and we skip the seed to avoid two
     # publishers. The grid stays advisory: the C++ kernel keeps its own ephemeral
     # collision grid; this map never feeds it.
-    if map_path and not enable_slam:
+    # A platform that owns navigation owns /map too (ADR-0127): no OpenRAL map_server.
+    if map_path and not enable_slam and not platform_owned_nav:
         map_server = LifecycleNode(
             package="nav2_map_server",
             executable="map_server",

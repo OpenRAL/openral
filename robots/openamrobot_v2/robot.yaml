@@ -1,0 +1,902 @@
+# RobotDescription — OpenAMRobot 2.0 (open-source mobile base + 350 mm DOLD
+# lift + two Enactic OpenArm v2.0 arms with pinch grippers). Sim-only for now.
+#
+# Source: openAMRobot/openamr-upperbody-sw @ e6ab3d1 (PR #48, 2026-11-11, MIT;
+# CAD-derived geometry CERN-OHL-P-2.0). `openamrobot_v2.urdf` is its
+# `combined_robot.xacro` expanded with the defaults (column=dold_v4_350, roadmap_masses=true,
+# base_plate=bp000, head_pitch=hp30, base_tilt=bt10, arm_package=openarm,
+# hardware_profile=mock), then normalised: the <gazebo>/<ros2_control> blocks and
+# comments dropped, the two drive wheels made fixed (the base is driven as a
+# planar body, not wheel by wheel), and the root base_footprint given a 0.1 kg
+# inertial (Isaac's converter drops a massless root and splits the robot into two
+# articulations). The xacro pins openarm_description@14ff67b and
+# openamr-platform-sw@713574f (#126 masses); the meshes resolve through the pinned clones in
+# openral_hal.ros_package_overlay (OpenArm meshes are byte-identical at our
+# c103041 pin). Regenerate: robots/openamrobot_v2/README.md.
+#
+# UPSTREAM IS PRE-RELEASE (rc.1 2026-11-20, v2.0.0 2026-12-18; nothing is
+# physically accepted yet). Upstream marks these as placeholders: the wrist
+# camera poses (the URDF uses OpenArm's wrist mount instead), the 0.400 m wheel track, the lift's velocity/effort (DOLD
+# catalogue, "provisional") and every acceleration limit. Re-sync at v2.0.0.
+#
+# The MuJoCo twin (`openarm:openamrobot_v2`) is built from this URDF at runtime by
+# openral_hal._openamrobot_v2_assets; its actuators follow `joints` order below.
+
+name: "openamrobot_v2"
+embodiment_kind: "mobile_manipulator"
+# REP-105: base_footprint is the URDF root, on the floor under the drive-axle
+# midpoint. On deploy sim MobileBaseBridge publishes odom -> base_footprint; on deploy run
+# the platform must (ADR-0127; its legacy EKF publishes odom -> base_link until upstream's
+# TF migration to the composed model, see README "TF").
+base_frame: "base_footprint"
+# Nav2 mobile-base properties: upstream's own Nav2 footprint (openamr-platform-sw
+# @ 713574f, openamrobot_nav2/config/nav2_params.yaml, both costmaps; rear edge per
+# the 2026-10-12 chassis decision), an octagon 0.805 x 0.58 m with chamfered
+# corners. It is given in base_link, which sits straight above base_footprint
+# (z offset only), so it carries over unchanged. The radius encloses its corners
+# (farthest: 0.456 m at x 0.415, y ±0.19).
+footprint_radius: 0.46
+footprint_polygon:
+  - [0.415, 0.19]
+  - [0.415, -0.19]
+  - [0.315, -0.29]
+  - [-0.290, -0.29]
+  - [-0.390, -0.19]
+  - [-0.390, 0.19]
+  - [-0.290, 0.29]
+  - [0.315, 0.29]
+base_kinematics: "differential"
+
+assets:
+  urdf:
+    ref: "file:openamrobot_v2.urdf"
+  mjcf: "openarm:openamrobot_v2"
+  # Hand-reviewed ACM exemptions (OpenArm's arm rows, renamed), unioned into the
+  # MJCF lowering - see the SRDF header for the paper trail.
+  srdf: "file:openamrobot_v2.srdf"
+
+# Order is [forward_axis, side_axis, yaw_axis] per the schema. base_y exists for
+# the planar-base contract (and the twin's slide joint); a differential base never
+# commands it: the HAL refuses a BODY_TWIST with non-zero vy.
+base_joints:
+  - "base_x"
+  - "base_y"
+  - "base_yaw"
+
+# Joint order IS the twin's actuator order and the 20-D action vector:
+# 3 base, lift, 7 left arm, left gripper, 7 right arm, right gripper. Arm and
+# gripper joints keep the OpenArm manifest's logical names (robots/openarm), so
+# name-addressed (ADR-0102 slot) commands carry over; `sim_joint_name` is the
+# URDF/MJCF name. Arm velocity_limit 4.0 rad/s and gripper effort 333 N mirror
+# robots/openarm/robot.yaml, not the URDF's motor maxima.
+joints:
+  # ── planar base (virtual: x, y, yaw) ──────────────────────────────
+  - name: "base_x"
+    joint_type: "prismatic"
+    parent_link: "world"
+    child_link: "base_x_link"
+    axis_xyz: [1, 0, 0]
+    position_limits: [-50.0, 50.0]
+    velocity_limit: 0.6
+    effort_limit: 200.0
+    actuator_kind: "bldc"
+    role: "base"
+  - name: "base_y"
+    joint_type: "prismatic"
+    parent_link: "base_x_link"
+    child_link: "base_y_link"
+    axis_xyz: [0, 1, 0]
+    position_limits: [-50.0, 50.0]
+    velocity_limit: 0.6
+    effort_limit: 200.0
+    actuator_kind: "bldc"
+    role: "base"
+  - name: "base_yaw"
+    joint_type: "revolute"
+    parent_link: "base_y_link"
+    child_link: "base_footprint"
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 1.0
+    effort_limit: 200.0
+    actuator_kind: "bldc"
+    role: "base"
+  # ── lift (DOLD v4, 0-0.35 m; provisional datasheet speed 0.018 m/s) ──
+  - name: "lift_joint"
+    origin_xyz: [0, 0, 0.53]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "prismatic"
+    parent_link: "lift_column_base_link"
+    child_link: "lift_carriage_link"
+    position_limits: [0, 0.35]
+    velocity_limit: 0.018
+    effort_limit: 800.0
+    has_torque_sensor: false
+    actuator_kind: "dc"
+    role: "torso"
+    sim_joint_name: "lift_joint"
+  # ── left arm (OpenArm v2.0, 7 revolute + pinch gripper) ──
+  - name: "left_joint1"
+    origin_xyz: [0, 0.0625, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_base_link"
+    child_link: "openarm_left_link1"
+    position_limits: [-3.4907, 1.3963]
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint1"
+  - name: "left_joint2"
+    origin_xyz: [0, 0.06, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [-1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link1"
+    child_link: "openarm_left_link2"
+    position_limits: [-3.3161, 0.17453]
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint2"
+  - name: "left_joint3"
+    origin_xyz: [0, 0, -0.06625]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link2"
+    child_link: "openarm_left_link3"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint3"
+  - name: "left_joint4"
+    origin_xyz: [0, 0, -0.15375]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link3"
+    child_link: "openarm_left_link4"
+    position_limits: [0, 2.4435]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint4"
+  - name: "left_joint5"
+    origin_xyz: [0, 0, -0.0955]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link4"
+    child_link: "openarm_left_link5"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint5"
+  - name: "left_joint6"
+    origin_xyz: [0, 0, -0.1205]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link5"
+    child_link: "openarm_left_link6"
+    position_limits: [-0.7854, 0.7854]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint6"
+  - name: "left_joint7"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link6"
+    child_link: "openarm_left_ee_base_link"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint7"
+  - name: "left_gripper"
+    origin_xyz: [-0.00143, -0.018, -0.068]
+    origin_rpy: [0, -0, 0]
+    axis_xyz: [-1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_ee_base_link"
+    child_link: "openarm_left_ee_link1"
+    position_limits: [0, 0.7854]
+    velocity_limit: 4.0
+    effort_limit: 333.0
+    has_torque_sensor: false
+    actuator_kind: "servo"
+    role: "gripper"
+    sim_joint_name: "openarm_left_finger_joint1"
+  # ── right arm (OpenArm v2.0, 7 revolute + pinch gripper) ──
+  - name: "right_joint1"
+    origin_xyz: [0, -0.0625, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_base_link"
+    child_link: "openarm_right_link1"
+    position_limits: [-1.3963, 3.4907]
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint1"
+  - name: "right_joint2"
+    origin_xyz: [0, -0.06, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [-1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link1"
+    child_link: "openarm_right_link2"
+    position_limits: [-0.17453, 3.3161]
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint2"
+  - name: "right_joint3"
+    origin_xyz: [0, 0, -0.06625]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link2"
+    child_link: "openarm_right_link3"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint3"
+  - name: "right_joint4"
+    origin_xyz: [0, 0, -0.15375]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link3"
+    child_link: "openarm_right_link4"
+    position_limits: [0, 2.4435]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint4"
+  - name: "right_joint5"
+    origin_xyz: [0, 0, -0.0955]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link4"
+    child_link: "openarm_right_link5"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint5"
+  - name: "right_joint6"
+    origin_xyz: [0, 0, -0.1205]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link5"
+    child_link: "openarm_right_link6"
+    position_limits: [-0.7854, 0.7854]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint6"
+  - name: "right_joint7"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link6"
+    child_link: "openarm_right_ee_base_link"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: false
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint7"
+  - name: "right_gripper"
+    origin_xyz: [-0.00143, 0.018, -0.068]
+    origin_rpy: [0, -0, 0]
+    axis_xyz: [-1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_ee_base_link"
+    child_link: "openarm_right_ee_link1"
+    position_limits: [-0.7854, 0]
+    velocity_limit: 4.0
+    effort_limit: 333.0
+    has_torque_sensor: false
+    actuator_kind: "servo"
+    role: "gripper"
+    sim_joint_name: "openarm_right_finger_joint1"
+
+end_effectors:
+  - name: "left_gripper"
+    origin_xyz: [-0.00143, -0.018, -0.068]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [-1, 0, 0]
+    command_convention: "raw_joint_rad"
+    command_range: [0.0, 0.7854]
+    kind: "parallel_gripper"
+    hand: "left"
+    n_dof: 1
+    max_grip_force_n: 333.0
+    max_payload_kg: 2.0
+    workspace_radius_m: 0.7
+  - name: "right_gripper"
+    origin_xyz: [-0.00143, 0.018, -0.068]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [-1, 0, 0]
+    command_convention: "raw_joint_rad"
+    command_range: [-0.7854, 0.0]
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    max_grip_force_n: 333.0
+    max_payload_kg: 2.0
+    workspace_radius_m: 0.7
+
+capabilities:
+  locomotion: ["wheeled"]
+  can_lift_kg: 2.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: true
+  has_audio: false
+  bimanual: true
+  # body_twist drives the planar base (MobileBaseBridge /cmd_vel, or a nav skill);
+  # gripper_position only inside an ADR-0102 slot group, as on the OpenArm.
+  supported_control_modes:
+    - "joint_position"
+    - "gripper_position"
+    - "body_twist"
+  supported_vla_embodiments:
+    - "openamrobot_v2"
+  embodiment_tags:
+    - "openamrobot"
+    - "openamrobot_v2"
+    - "openarm"
+    - "bimanual"
+    - "mobile_base"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 40.0
+  max_torque_nm: 40.0
+  deadman_required: true
+  # provisional: not measured; upstream marks all acceleration limits placeholders.
+  max_ee_accel_m_s2: 1.0
+  contact_force_threshold_n: 30.0
+  self_collision_margin_m: 0.0
+  # BODY_TWIST kernel bounds; nav2.launch.py also clamps Nav2's vx_max/wz_max to them.
+  # Both are upstream's own Nav2 limits (openamr-platform-sw @ 713574f,
+  # openamrobot_nav2/config/nav2_params.yaml: max_vel_x 0.20, max_vel_theta 0.5;
+  # linear also confirmed by the OpenAMRobot project lead, openral#497, 2026-11-07).
+  max_base_linear_speed_m_s: 0.2
+  max_base_angular_speed_rad_s: 0.5
+  # Runner ramp to a skill's starting_pose: the OpenArm manifest's values for the
+  # revolute joints; the prismatic pair covers the lift (DOLD datasheet 0.018 m/s,
+  # halved) and the planar base slides, which a starting pose never moves.
+  starting_pose_max_joint_speed_rad_s: 0.5
+  starting_pose_tolerance_rad: 0.05
+  starting_pose_max_joint_speed_m_s: 0.009
+  starting_pose_tolerance_m: 0.005
+  # Real-path joint-state freshness: the OpenArm's measured window (robots/openarm,
+  # 0.1 s = three 30 Hz periods), since the arm part reads the same 750 Hz bus. The base
+  # part checks its odometry against its own window (PlatformBaseHAL staleness_limit_s).
+  joint_state_staleness_limit_s: 0.1
+
+# MIT / CERN-OHL-P / Apache-2.0 assets and the open `mujoco` package; no
+# closed runtime anywhere in the sim chain.
+sdk_kind: "open"
+
+action_spec:
+  dim: 20
+  representation: "joint_positions"
+  control_freq_hz: 30.0
+
+hal:
+  sim: "openral_hal.openamrobot_v2:OpenAMRobotV2MujocoHAL"
+  # Real hardware is the OpenArm on a platform, so it is composed, not re-implemented:
+  # ComposedHAL routes by joint name to three parts.
+  #  - arm: OpenArmRealHAL built from robots/openarm/robot.yaml, unchanged. It owns the
+  #    16 OpenArm joints by name, and the lifecycle node wires its ros2_control transport
+  #    as on the OpenArm. Upstream's real profile runs the same openarm_hardware over CAN-FD.
+  #  - base: PlatformBaseHAL, odometry-only. The platform's final /cmd_vel is its
+  #    collision_monitor output, after twist_mux, its software stop and its smoother;
+  #    OpenRAL may not publish into that chain, and upstream has not yet defined an
+  #    arbitrated input for it. With no cmd_vel_topic the part refuses any non-zero
+  #    BODY_TWIST before an arm moves. On hardware the platform owns navigation,
+  #    localization, odometry, TF and the final command (README "Command ownership").
+  #  - lift: HeldJointsHAL. The real lift has no ros2_control interface (its firmware
+  #    owns it), so its height is declared, not measured.
+  # NOT YET RUN ON HARDWARE. Open integration items are
+  # in robots/openamrobot_v2/README.md.
+  real: "openral_hal.composed:ComposedHAL"
+  parameters:
+    defaults:
+      # Same as the OpenArm twin: its v2 gains do not hold the arms under gravity.
+      gravity_enabled: false
+      parts:
+        - entry: "openral_hal.openarm_real:OpenArmRealHAL"
+          robot: "openarm"
+          params:
+            left_can_interface: "openarm_left"
+            right_can_interface: "openarm_right"
+        - entry: "openral_hal.platform_base:PlatformBaseHAL"
+          joints: ["base_x", "base_y", "base_yaw"]
+          # No cmd_vel_topic: odometry-only until upstream defines a reviewed, arbitrated
+          # twist input (priority, timeout, stale-message rejection, stop behaviour).
+          params:
+            # The platform's own /odom: on deploy run it owns navigation (ADR-0127).
+            odom_topic: "/odom"
+            # Its own odometry window (the 0.1 s joint-state limit would fail 10 Hz /odom).
+            staleness_limit_s: 0.5
+        - entry: "openral_hal.composed:HeldJointsHAL"
+          joints: ["lift_joint"]
+          # Declared, not measured: L1000 (lift bottom). The safety kernel places the
+          # arms from this value, so it must match the real lift before any motion.
+          params:
+            positions: {lift_joint: 0.0}
+          # A COMMANDED lift, for when upstream exposes it on real hardware: upstream's
+          # mock and Gazebo profiles already drive lift_joint through `lift_controller`
+          # (a position JointTrajectoryController, ros2_control.xacro issue #17); its
+          # real profile declares no interface yet (the lift firmware owns it; its
+          # register LIFT interlock, lift motion only with the arms stowed and the base
+          # stopped, is designed but NOT yet implemented). The permitted destinations
+          # (L1000, L1175, L1350) and the interlocks belong in a command policy, not in
+          # this model, whose continuous lift_joint is for geometry. Replace the entry above with this one, on the arms'
+          # controller_manager; ComposedHAL merges both ros2_control parts onto one
+          # transport and /openral/estop deactivates lift_controller with the arms'.
+          # Live-tested: tests/sim/test_openamrobot_v2_lift_ros2_control.py. Before using it
+          # on hardware: Safety-WG sign-off, measured lift position, the LIFT interlock
+          # implemented in the firmware, and that command policy.
+          #   - entry: "openral_hal.ros_control:RosControlHAL"
+          #     joints: ["lift_joint"]
+          #     params: {controller_name: "lift_controller"}
+
+# Head: a ZED Mini with OpenArm's intrinsics (robots/openarm/robot.yaml `head_zed` and
+# `top`, so the policy raster and field of view match), on upstream's own head mount:
+# `head_camera_link`, on its bracket above the lift carriage, pitched 30 deg down.
+# OpenArm's measured mount, re-expressed from the arm bases, puts the camera inside
+# upstream's Getac tablet (1.5 cm between centres; every depth ray hit the tablet),
+# so it cannot carry over. The view is therefore not OpenArm's: about 13 cm higher
+# and 35 deg shallower than OpenArm's 65.6 deg down-pitch, so an OpenArm rSkill sees
+# its workspace from a different angle than it was trained on.
+# Upstream models the ZED body behind `head_camera_link`'s origin (its front face is
+# at x = 0), so the lens sits 5 mm ahead of it, looking along +x
+# (tests/unit/test_openamrobot_v2_head_zed_matches_openarm.py).
+# Wrists: frames in the URDF at the OpenArm twin's wrist-camera mount (upstream's
+# placeholder poses looked sideways, README step 6); the twin's
+# MJCF carries a camera of each name on the matching optical frame
+# (openral_hal._openamrobot_v2_assets), which Isaac also mounts from.
+sensors:
+  - name: "head_zed"
+    modality: "depth"
+    frame_id: "zed_camera_link"
+    parent_frame: "head_camera_link"
+    static_transform_xyz_rpy: [0.005, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Upstream's CAD mount (placeholder bracket), not measured on a robot.
+    static_transform_calibrated: false
+    rate_hz: 10.0
+    intrinsics:
+      width: 1920
+      height: 1080
+      fx: 960.0
+      fy: 960.0
+      cx: 960.0
+      cy: 540.0
+    encoding: "32FC1"
+    catalog_id: "stereolabs/zed_mini"
+    vendor: "StereoLabs"
+    model: "ZED Mini"
+    sim_placement:
+      parent_body: "head_camera_link"
+      pos: [0.005, 0.0, 0.0]
+      target: [1.005, 0.0, 0.0]
+      up: [0.0, 0.0, 1.0]
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/depth/depth_registered
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 500
+  - name: "top"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 10.0
+    # OpenArm's `top`: the ZED-M left image at the pick-and-place rSkill's training
+    # raster (OpenArm's intrinsics), rendered from head_zed's mount.
+    intrinsics:
+      width: 672
+      height: 376
+      fx: 524.363
+      fy: 521.589
+      cx: 327.639
+      cy: 188.630
+    encoding: "rgb8"
+    # `.top`: the key OpenArm checkpoints read their head camera under.
+    vla_feature_key: "observation.images.top"
+    vendor: "sim"
+    model: "mujoco_top"
+    shares_mount_with: "head_zed"
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/raw/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
+    sim_placement:
+      parent_body: "head_camera_link"
+      pos: [0.005, 0.0, 0.0]
+      target: [1.005, 0.0, 0.0]
+      up: [0.0, 0.0, 1.0]
+  - name: "wrist_left"
+    modality: "rgb"
+    frame_id: "left_wrist_camera_optical_frame"
+    rate_hz: 15.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 457.0
+      fy: 457.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.wrist_left"
+    vendor: "sim"
+    model: "mujoco_wrist"
+    sim_camera_name: "wrist_left"
+  - name: "wrist_right"
+    modality: "rgb"
+    frame_id: "right_wrist_camera_optical_frame"
+    rate_hz: 15.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 457.0
+      fy: 457.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.wrist_right"
+    vendor: "sim"
+    model: "mujoco_wrist"
+    sim_camera_name: "wrist_right"
+  # Base lidar: the RPLIDAR S3 (openamr-platform-sw real_bringup `lidar_model:=s3`,
+  # "OpenAMRobot 2.0"), on lidar_link, published as /scan. The URDF mounts lidar_link
+  # turned by yaw pi; the scan frame rides it unrotated. Range per the Slamtec S3
+  # datasheet (slamtec.com/en/s3/spec): 0.05-40 m at 70 % reflectivity (15 m at 10 %,
+  # 5 m at 2 %); 10 Hz typical. The S3 gives 3200 points per turn at 10 Hz
+  # (0.1125 deg); the sim ray-casts 360 (1 deg), which is what n_channels sizes.
+  # slam_toolbox maps out to its max_laser_range (12 m): a return past that still
+  # clears free space to 12 m, which a fan clipped at 12 m could not (no return).
+  - name: "base_scan"
+    modality: "lidar_2d"
+    frame_id: "base_scan"
+    parent_frame: "lidar_link"
+    static_transform_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    rate_hz: 10.0
+    n_channels: 360
+    range_min_m: 0.05
+    range_max_m: 40.0
+    vendor: "sim"
+    model: "mujoco_ray"
+
+# MuJoCo wiring for the twin: the base joints and lift lead qpos (0..3); each
+# side's passive follower finger (qpos 12 / 21) tracks through an MJCF joint
+# equality and is skipped.
+sim:
+  joint_qpos_addr:
+    base_x: 0
+    base_y: 1
+    base_yaw: 2
+    lift_joint: 3
+    left_joint1: 4
+    left_joint2: 5
+    left_joint3: 6
+    left_joint4: 7
+    left_joint5: 8
+    left_joint6: 9
+    left_joint7: 10
+    left_gripper: 11
+    right_joint1: 13
+    right_joint2: 14
+    right_joint3: 15
+    right_joint4: 16
+    right_joint5: 17
+    right_joint6: 18
+    right_joint7: 19
+    right_gripper: 20
+  grippers:
+    - joint: "left_gripper"
+      ctrl_range: [0.0, 0.7854]
+      qpos_addrs: [11]
+      qpos_scale: 0.7854
+      read_mode: "passthrough"
+      write_mode: "passthrough"
+    - joint: "right_gripper"
+      ctrl_range: [-0.7854, 0.0]
+      qpos_addrs: [20]
+      qpos_scale: 0.7854
+      read_mode: "passthrough"
+      write_mode: "passthrough"
+  seed_ctrl_from_qpos: true
+
+mimic_joints:
+  - name: "openarm_left_finger_joint2"
+    origin_xyz: [-0.00143, 0.018, -0.068]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    parent_link: "openarm_left_ee_base_link"
+    child_link: "openarm_left_ee_link2"
+    mimics: "left_gripper"
+    multiplier: 1.0
+    offset: 0.0
+    joint_type: "revolute"
+    sim_joint_name: "openarm_left_finger_joint2"
+  - name: "openarm_right_finger_joint2"
+    origin_xyz: [-0.00143, -0.018, -0.068]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    parent_link: "openarm_right_ee_base_link"
+    child_link: "openarm_right_ee_link2"
+    mimics: "right_gripper"
+    multiplier: 1.0
+    offset: 0.0
+    joint_type: "revolute"
+    sim_joint_name: "openarm_right_finger_joint2"
+
+# Rigid, zero-DoF links of the collision tree (NOT `joints`: those are the
+# action vector). Every row is the same-named fixed <joint> of openamrobot_v2.urdf,
+# copied verbatim; without them base, column, carriage and arm pedestals are
+# separate trees and the envelope loader refuses the robot. The lowering also
+# cross-checks every row against the MJCF twin (built from the same URDF):
+# a mount that disagrees with it by more than 1e-6 raises.
+fixed_attachments:
+  - name: "base_footprint_joint"
+    parent_link: "base_footprint"
+    child_link: "base_link"
+    origin_xyz: [0, 0, 0.098]
+    origin_rpy: [0, 0, 0]
+  - name: "lift_column_base_joint"
+    parent_link: "base_footprint"
+    child_link: "lift_column_base_link"
+    origin_xyz: [0.06, 0, 0.304]
+    origin_rpy: [0, 0, 0]
+  - name: "second_estop_joint"
+    parent_link: "adapter_plate_link"
+    child_link: "second_estop_link"
+    origin_xyz: [-0.0275, 0, 0.053]
+    origin_rpy: [0, -1.5707963267948966, 0]
+  - name: "lift_stop_sensor_l1000_joint"
+    parent_link: "lift_column_base_link"
+    child_link: "lift_stop_sensor_l1000_link"
+    origin_xyz: [-0.148, 0.024, 0.12]
+    origin_rpy: [0, 0, 0]
+  - name: "lift_stop_sensor_l1175_joint"
+    parent_link: "lift_column_base_link"
+    child_link: "lift_stop_sensor_l1175_link"
+    origin_xyz: [-0.148, 0.024, 0.295]
+    origin_rpy: [0, 0, 0]
+  - name: "lift_stop_sensor_l1350_joint"
+    parent_link: "lift_column_base_link"
+    child_link: "lift_stop_sensor_l1350_link"
+    origin_xyz: [-0.148, 0.024, 0.47]
+    origin_rpy: [0, 0, 0]
+  - name: "adapter_plate_joint"
+    parent_link: "lift_carriage_link"
+    child_link: "adapter_plate_link"
+    origin_xyz: [0.0275, 0, 0.005]
+    origin_rpy: [0, 0, 0]
+  - name: "arm_profile_joint"
+    parent_link: "adapter_plate_link"
+    child_link: "arm_profile_link"
+    origin_xyz: [0.1525, 0, 0.175]
+    origin_rpy: [0, 0, 0]
+  - name: "getac_tablet_joint"
+    parent_link: "arm_profile_link"
+    child_link: "getac_tablet_link"
+    origin_xyz: [0.0688, 0, 0.011]
+    origin_rpy: [0, 0, 0]
+  - name: "head_light_joint"
+    parent_link: "arm_profile_link"
+    child_link: "head_light_link"
+    origin_xyz: [0.07, 0, -0.1245]
+    origin_rpy: [0, 0, 0]
+  - name: "lift_flag_rod_joint"
+    parent_link: "adapter_plate_link"
+    child_link: "lift_flag_rod_link"
+    origin_xyz: [-0.2005, 0.038, -0.005]
+    origin_rpy: [0, 0, 0]
+  - name: "lift_flag_joint"
+    parent_link: "lift_flag_rod_link"
+    child_link: "lift_flag_link"
+    origin_xyz: [0.0125, -0.011, -0.41]
+    origin_rpy: [0, 0, 0]
+  - name: "head_camera_mount_joint"
+    parent_link: "lift_carriage_link"
+    child_link: "head_camera_mount_link"
+    origin_xyz: [0.24, 0, 0.389]
+    origin_rpy: [0, 0, 0]
+  - name: "head_camera_pitch_joint"
+    parent_link: "head_camera_mount_link"
+    child_link: "head_camera_link"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [0, 0.523598775598, 0]
+  - name: "head_camera_bracket_joint"
+    parent_link: "head_camera_mount_link"
+    child_link: "head_camera_bracket_link"
+    origin_xyz: [-0.03, 0, -0.039]
+    origin_rpy: [0, 0, 0]
+  - name: "openarm_left_base_link_mount_joint"
+    parent_link: "lift_carriage_link"
+    child_link: "openarm_left_base_link"
+    origin_xyz: [0.18, 0.031, 0.166]
+    origin_rpy: [0, 0, 0]
+  - name: "openarm_right_base_link_mount_joint"
+    parent_link: "lift_carriage_link"
+    child_link: "openarm_right_base_link"
+    origin_xyz: [0.18, -0.031, 0.166]
+    origin_rpy: [0, 0, 0]
+
+# ARMS: imported from robots/openarm/robot.yaml `collision_geometry` (box + hull per
+# link, fitted to the union of the OpenArm MJCF twin's and openarm_description's
+# meshes; hazard-log Entry 045, PR #324), renamed onto this URDF's links, so a
+# re-lowering of the OpenArm reaches this robot unchanged (CollisionGeometryImport,
+# resolved by RobotDescription.from_yaml). Every arm joint and mimic origin/axis is
+# identical between the two manifests, so the link-frame geometry is valid as is
+# (tests/unit/test_openamrobot_v2_collision_imports.py); the OpenArm torso
+# (openarm_body_link0) is not imported, this robot has none.
+collision_geometry_imports:
+  - robot: "openarm"
+    link_map:
+      openarm_left_link0: "openarm_left_base_link"
+      openarm_left_link1: "openarm_left_link1"
+      openarm_left_link2: "openarm_left_link2"
+      openarm_left_link3: "openarm_left_link3"
+      openarm_left_link4: "openarm_left_link4"
+      openarm_left_link5: "openarm_left_link5"
+      openarm_left_link6: "openarm_left_link6"
+      openarm_left_link7: "openarm_left_ee_base_link"
+      openarm_left_finger_pair: "openarm_left_ee_link1"
+      openarm_left_finger_follower: "openarm_left_ee_link2"
+      openarm_right_link0: "openarm_right_base_link"
+      openarm_right_link1: "openarm_right_link1"
+      openarm_right_link2: "openarm_right_link2"
+      openarm_right_link3: "openarm_right_link3"
+      openarm_right_link4: "openarm_right_link4"
+      openarm_right_link5: "openarm_right_link5"
+      openarm_right_link6: "openarm_right_link6"
+      openarm_right_link7: "openarm_right_ee_base_link"
+      openarm_right_finger_pair: "openarm_right_ee_link1"
+      openarm_right_finger_follower: "openarm_right_ee_link2"
+
+# BODY, hand-assembled, NOT tool-fitted (the acm-only lowering keeps it as is): one
+# box per URDF link, the axis-aligned bound of every geom (collision and visual) of
+# that link's body in the MJCF twin, +1 mm per side, rounded outward to 4 dp.
+# base_link's box bounds the WHOLE chassis subtree (casters, wheels, lidar, cameras,
+# ultrasonic/ToF, IMU), so those links are not separate kernel links (KNOWN_GAPS in
+# tests/unit/test_collision_fleet_static_links.py).
+# tests/unit/test_collision_geometry_enclosure.py holds every twin vertex inside,
+# tests/unit/test_collision_geometry_urdf_enclosure.py every URDF mesh vertex.
+collision_geometry:
+  - link_name: "base_link"
+    shape: { shape: "box", half_extents_m: [0.4139, 0.2921, 0.1500] }
+    origin_xyz_rpy: [0.0112, 0.0000, 0.0481, 0.0000, 0.0000, 0.0000]
+  - link_name: "lift_column_base_link"
+    shape: { shape: "box", half_extents_m: [0.1210, 0.0310, 0.2535] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.2525, 0.0000, 0.0000, 0.0000]
+  - link_name: "second_estop_link"
+    shape: { shape: "box", half_extents_m: [0.0420, 0.0260, 0.0330] }
+    origin_xyz_rpy: [-0.0070, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "lift_stop_sensor_l1000_link"
+    shape: { shape: "box", half_extents_m: [0.0210, 0.0330, 0.0135] }
+    origin_xyz_rpy: [0.0080, -0.0320, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "lift_stop_sensor_l1175_link"
+    shape: { shape: "box", half_extents_m: [0.0210, 0.0330, 0.0135] }
+    origin_xyz_rpy: [0.0080, -0.0320, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "lift_stop_sensor_l1350_link"
+    shape: { shape: "box", half_extents_m: [0.0210, 0.0330, 0.0135] }
+    origin_xyz_rpy: [0.0080, -0.0320, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "adapter_plate_link"
+    shape: { shape: "box", half_extents_m: [0.2135, 0.0510, 0.0060] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "arm_profile_link"
+    shape: { shape: "box", half_extents_m: [0.0610, 0.0310, 0.1711] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "getac_tablet_link"
+    shape: { shape: "box", half_extents_m: [0.0098, 0.0759, 0.1180] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "head_light_link"
+    shape: { shape: "box", half_extents_m: [0.0111, 0.0800, 0.0095] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "lift_flag_rod_link"
+    shape: { shape: "box", half_extents_m: [0.0111, 0.0111, 0.2160] }
+    origin_xyz_rpy: [0.0000, 0.0000, -0.2150, 0.0000, 0.0000, 0.0000]
+  - link_name: "lift_flag_link"
+    shape: { shape: "box", half_extents_m: [0.0235, 0.0020, 0.0110] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "head_camera_link"
+    shape: { shape: "box", half_extents_m: [0.0143, 0.0633, 0.0163] }
+    origin_xyz_rpy: [-0.0130, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "head_camera_bracket_link"
+    shape: { shape: "box", half_extents_m: [0.0161, 0.0160, 0.0206] }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.0195, 0.0000, 0.0000, 0.0000]
+  - link_name: "lift_carriage_link"
+    shape: { shape: "box", half_extents_m: [0.1058, 0.0277, 0.2360] }
+    origin_xyz_rpy: [0.0000, 0.0000, -0.2350, 0.0000, 0.0000, 0.0000]
+
+schema_version: "0.2"
+
+# GENERATED by `openral collision lower` (source: mjcf) — do not hand-edit.
+allowed_collision_pairs:
+  - [adapter_plate_link, arm_profile_link]
+  - [adapter_plate_link, lift_carriage_link]
+  - [adapter_plate_link, lift_flag_rod_link]
+  - [adapter_plate_link, second_estop_link]
+  - [arm_profile_link, getac_tablet_link]
+  - [arm_profile_link, head_camera_bracket_link]
+  - [arm_profile_link, head_light_link]
+  - [arm_profile_link, openarm_left_base_link]
+  - [arm_profile_link, openarm_right_base_link]
+  - [head_camera_bracket_link, head_camera_link]
+  - [lift_carriage_link, lift_column_base_link]
+  - [lift_carriage_link, openarm_left_base_link]
+  - [lift_carriage_link, openarm_right_base_link]
+  - [lift_column_base_link, lift_stop_sensor_l1000_link]
+  - [lift_column_base_link, lift_stop_sensor_l1175_link]
+  - [lift_column_base_link, lift_stop_sensor_l1350_link]
+  - [lift_flag_link, lift_flag_rod_link]
+  - [lift_flag_link, lift_stop_sensor_l1000_link]
+  - [lift_flag_link, lift_stop_sensor_l1175_link]
+  - [lift_flag_link, lift_stop_sensor_l1350_link]
+  - [openarm_left_base_link, openarm_left_link1]
+  - [openarm_left_ee_base_link, openarm_left_ee_link1]
+  - [openarm_left_ee_base_link, openarm_left_ee_link2]
+  - [openarm_left_ee_base_link, openarm_left_link5]
+  - [openarm_left_ee_base_link, openarm_left_link6]
+  - [openarm_left_ee_link1, openarm_left_ee_link2]
+  - [openarm_left_ee_link1, openarm_left_link5]
+  - [openarm_left_ee_link1, openarm_left_link6]
+  - [openarm_left_link1, openarm_left_link2]
+  - [openarm_left_link2, openarm_left_link3]
+  - [openarm_left_link3, openarm_left_link4]
+  - [openarm_left_link4, openarm_left_link5]
+  - [openarm_left_link5, openarm_left_link6]
+  - [openarm_right_base_link, openarm_right_link1]
+  - [openarm_right_ee_base_link, openarm_right_ee_link1]
+  - [openarm_right_ee_base_link, openarm_right_ee_link2]
+  - [openarm_right_ee_base_link, openarm_right_link5]
+  - [openarm_right_ee_base_link, openarm_right_link6]
+  - [openarm_right_ee_link1, openarm_right_ee_link2]
+  - [openarm_right_ee_link1, openarm_right_link5]
+  - [openarm_right_ee_link1, openarm_right_link6]
+  - [openarm_right_link1, openarm_right_link2]
+  - [openarm_right_link2, openarm_right_link3]
+  - [openarm_right_link3, openarm_right_link4]
+  - [openarm_right_link4, openarm_right_link5]
+  - [openarm_right_link5, openarm_right_link6]

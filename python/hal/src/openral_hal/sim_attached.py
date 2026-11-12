@@ -234,6 +234,38 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
 # above this is rejected with ROSConfigError. Mirror of
 # ``openral_hal.panda_mobile._PLANAR_TWIST_EPS``.
 _PLANAR_TWIST_EPS = 1e-6
+
+# How long a /cmd_vel-style BODY_TWIST setpoint keeps driving a kinematic base
+# with no new command: diff_drive_controller's cmd_vel_timeout default (0.5 s), in
+# sim time when the backend has a clock (_twist_hold_clock_ns). A publisher that
+# dies stops the base within this window.
+_BASE_TWIST_HOLD_NS = 500_000_000
+
+
+def _refuse_lateral_twist(description: RobotDescription, *actions: Action) -> None:
+    """Refuse a BODY_TWIST with lateral velocity on a manifest-declared differential base.
+
+    The sim bases integrate any planar twist (the Isaac kinematic base, the MuJoCo
+    qpos write), so a differential robot would slide sideways in sim, which it cannot
+    do on hardware. Raise rather than drop the vy, so the caller sees the command it
+    sent is not executable.
+    """
+    if description.base_kinematics != "differential":
+        return
+    rows = [
+        row
+        for action in actions
+        if action.control_mode is ControlMode.BODY_TWIST
+        for row in action.body_twist or []
+    ]
+    for row in rows:
+        if len(row) > 1 and abs(float(row[1])) > _PLANAR_TWIST_EPS:
+            raise ROSConfigError(
+                f"SimAttachedHAL: '{description.name}' has a differential base; a "
+                f"BODY_TWIST with vy={float(row[1])} cannot be executed."
+            )
+
+
 # Atomic action-group fail-loud bounds: after this many CONSECUTIVE
 # incomplete-group drops send_action raises (the sim has not stepped once —
 # a slot-count contract mismatch or a persistently-rejected slot), and a
@@ -463,6 +495,12 @@ class SimAttachedHAL:
     _last_frame_sim_ns: int | None = None
     # ``release_env`` ran (the kept-alive sidecar was handed over).
     _env_released: bool = False
+    # Velocity setpoint of a kinematic base stepped through env.step (the Isaac
+    # base): an ungrouped BODY_TWIST sets it and every idle step integrates it
+    # until _held_twist_until_ns (see _apply_body_twist_via_env_step). Immutable
+    # defaults; instances rebind them.
+    _held_twist: tuple[float, float, float] | None = None
+    _held_twist_until_ns: int = 0
 
     def __init__(
         self,
@@ -730,6 +768,8 @@ class SimAttachedHAL:
         # along as the next pack's ``prev`` (an absolute-target env would move
         # the arm back to its pre-reset pose on the first base twist).
         self._last_env_action = None
+        # Nor may a held base setpoint drive the new episode.
+        self._held_twist = None
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -990,7 +1030,10 @@ class SimAttachedHAL:
         # a skill is still actively trying to drive, and the idle stepper must
         # not race its env.step. This is the single choke point every real
         # action passes (both _on_safe_action and _on_cmd_vel reach here).
-        self._last_action_ns = time.monotonic_ns()
+        # Except a base velocity setpoint (_is_base_twist_setpoint): it steps
+        # nothing itself, so the idle stepper must keep running to move the base.
+        if not self._is_base_twist_setpoint(action):
+            self._last_action_ns = time.monotonic_ns()
         if not self._connected:
             raise ROSRuntimeError("SimAttachedHAL.send_action called before connect().")
         if self._estop_latched:
@@ -1017,6 +1060,7 @@ class SimAttachedHAL:
                 raise ROSConfigError(
                     "SimAttachedHAL.send_action: empty Action.body_twist for BODY_TWIST."
                 )
+            _refuse_lateral_twist(self.description, action)
             row = list(action.body_twist[0])
             # MuJoCo integrates the base by direct qpos write (skips env.step so the
             # arm dynamics don't churn). A non-MuJoCo backend (Isaac kinematic base)
@@ -1028,10 +1072,6 @@ class SimAttachedHAL:
                 self._apply_body_twist_via_env_step(row, action)
             self._last_applied_action = action
             return
-        # A non-BODY_TWIST action means the base is no longer being
-        # velocity-commanded — clear the latched twist so /odom doesn't
-        # report a stale base velocity through an arm-only step.
-        self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         # Robosuite composite controllers expose part-name
         # → action-slot mapping via ``cc._action_split_indexes``. The
         # legacy ``pack_action_for_env`` hardcoded the PandaMobile+BASIC
@@ -1073,6 +1113,9 @@ class SimAttachedHAL:
                 f"head=[{head}]",
                 flush=True,
             )
+        # A non-BODY_TWIST action leaves the base still, unless a held /cmd_vel
+        # setpoint is live (arm actions suppress the idle stepper that applies it).
+        env_action = self._drive_held_twist(env_action)
         self._step_and_cache(env_action, source="send_action")
         self._last_applied_action = action
 
@@ -1165,9 +1208,7 @@ class SimAttachedHAL:
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
             )
-        actions = list(self._pending_actions)
-        self._pending_actions.clear()
-        self._pending_action_key = None
+        actions = self._take_pending_group()
         if group_step is None:
             self._step_packed_action_group(actions)
             self._commit_group(actions, tick, session)
@@ -1224,6 +1265,17 @@ class SimAttachedHAL:
             )
         except ROSConfigError:
             self._last_applied_action = gripper_targets_action(actions, self.description)
+
+    def _take_pending_group(self) -> list[Action]:
+        """Hand over the complete staged group, refusing a lateral twist on a diff base.
+
+        The check runs before either the env packer or ``step_action_group`` sees it.
+        """
+        actions = list(self._pending_actions)
+        self._pending_actions.clear()
+        self._pending_action_key = None
+        _refuse_lateral_twist(self.description, *actions)
+        return actions
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
@@ -1291,6 +1343,8 @@ class SimAttachedHAL:
                 self._last_env_action = env_action.copy()
         if env_action is None:
             raise ROSConfigError("SimAttachedHAL: packed action group produced no env action.")
+        # A twist-free group keeps a live /cmd_vel setpoint driving.
+        env_action = self._drive_held_twist(env_action, twist_commanded=has_twist)
         self._step_and_cache(env_action, source="send_action_group")
 
     def _step_and_cache(self, env_action: NDArray[np.float32], *, source: str) -> bool:
@@ -1675,9 +1729,11 @@ class SimAttachedHAL:
         zero vector is a HOLD for the sim's velocity/OSC-delta controllers but
         would command "drive every joint to 0 rad" on a real absolute-position
         arm. Does not touch ``_last_env_action`` — an idle HOLD is orthogonal
-        to the last skill command — but zeroes ``_last_body_twist``: the HOLD
-        step leaves the base still, so ``/odom`` must stop reporting the last
-        commanded twist.
+        to the last skill command. A held base setpoint (an ungrouped
+        ``BODY_TWIST`` on a base the env integrates, the Isaac kinematic base) is
+        packed into the twist slots and reported as ``base_twist`` until
+        ``_BASE_TWIST_HOLD_NS`` after its last command; otherwise the base is
+        still and ``base_twist`` is zero.
 
         Caveat: zero is a true HOLD only for velocity/OSC-delta/composite
         controllers. A position-controlled native backend (``so101_box``)
@@ -1733,7 +1789,7 @@ class SimAttachedHAL:
         # which re-renders without stepping), so `_step_and_cache` keeps
         # observation caching identical across command and idle paths.
         idle_action_getter = getattr(self._env, "idle_action", None)
-        idle_action = (
+        idle_action: NDArray[np.float32] = (
             np.asarray(idle_action_getter(), dtype=np.float32).reshape(-1)
             if callable(idle_action_getter)
             else np.zeros(self._env_action_dim, dtype=np.float32)
@@ -1743,9 +1799,13 @@ class SimAttachedHAL:
                 f"SimAttachedHAL.idle_step: backend idle_action width "
                 f"{idle_action.shape[0]} != env_action_dim {self._env_action_dim}."
             )
+        held = self._live_held_twist()
+        if held is not None:  # a held /cmd_vel setpoint keeps driving the base
+            idle_action = self._with_twist(idle_action, held)
         stepped = self._step_and_cache(idle_action, source="idle_step")
         if stepped:
-            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            vx, vy, wz = held if held is not None else (0.0, 0.0, 0.0)
+            self._last_body_twist = (vx, vy, 0.0, 0.0, 0.0, wz)
         return stepped
 
     # ── Per-mode → composite-controller slot mapping ──────────
@@ -2069,17 +2129,89 @@ class SimAttachedHAL:
                 "Does this robot declare a planar base (base_joints)?"
             )
         vx_body, vy_body, _vz, _wx, _wy, wz = row
-        # Latch the commanded twist for the /odom publisher (base_link frame).
+        # A velocity setpoint, as a real base controller takes /cmd_vel: held and
+        # integrated by every idle step (idle_step) until _BASE_TWIST_HOLD_NS after
+        # the last command. Stepping the env once per message instead tied the
+        # distance driven, and the sim clock, to the message rate: at 20 Hz the
+        # base covered 2/3 of the commanded distance per wall second, /odom's twist
+        # flickered to zero on the idle steps between, and Nav2 (on sim time,
+        # whose clock only its own commands advanced) drove past its goals.
+        del action
+        self._held_twist = (float(vx_body), float(vy_body), float(wz))
+        self._held_twist_until_ns = self._twist_hold_clock_ns() + _BASE_TWIST_HOLD_NS
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
+
+    def _drive_held_twist(
+        self, env_action: NDArray[np.float32], *, twist_commanded: bool = False
+    ) -> NDArray[np.float32]:
+        """``env_action`` with a live held setpoint in its twist slots, else the base still.
+
+        Sets ``_last_body_twist`` to what the step drives. A copy when it writes, so the
+        setpoint never latches into the packer's ``prev``. A step that commands its own
+        twist (``twist_commanded``) is returned untouched.
+        """
+        if twist_commanded:
+            # The step's own twist supersedes the setpoint: an older /cmd_vel must not
+            # resume over it (a skill's stop) on the next idle or arm step.
+            self._held_twist = None
+            return env_action
+        held = self._live_held_twist()
+        if held is None:
+            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            return env_action
+        self._last_body_twist = (held[0], held[1], 0.0, 0.0, 0.0, held[2])
+        return self._with_twist(env_action, held)
+
+    def _with_twist(
+        self, env_action: NDArray[np.float32], twist: tuple[float, float, float]
+    ) -> NDArray[np.float32]:
+        """A copy of ``env_action`` with ``(vx, vy, wz)`` in the base twist slots.
+
+        An env that packs by name places it in its own layout; otherwise the default
+        packer's convention holds (the final three slots). Never writes in place, so
+        neither the packer's ``prev`` nor a backend's own hold vector latches it.
+        """
         if self._env_packs:
-            env_action = self._action_packer(
-                action, self.description, self._env_action_dim, self._last_env_action
+            vx, vy, wz = twist
+            return self._env.pack_action(  # type: ignore[attr-defined,no-any-return]  # reason: duck-typed env hook, checked in __init__
+                Action(
+                    control_mode=ControlMode.BODY_TWIST,
+                    body_twist=[(vx, vy, 0.0, 0.0, 0.0, wz)],
+                ),
+                env_action.copy(),
             )
-            self._last_env_action = env_action.copy()
-        else:
-            env_action = np.zeros(self._env_action_dim, dtype=np.float32)
-            env_action[-3:] = (vx_body, vy_body, wz)
-        self._step_and_cache(env_action, source="cmd_vel")
+        out = env_action.copy()
+        out[-3:] = twist
+        return out
+
+    def _live_held_twist(self) -> tuple[float, float, float] | None:
+        """The held base setpoint, or ``None`` once it has timed out (the base stops)."""
+        if (
+            self._held_twist is not None
+            and self._twist_hold_clock_ns() >= self._held_twist_until_ns
+        ):
+            self._held_twist = None
+        return self._held_twist
+
+    def _twist_hold_clock_ns(self) -> int:
+        """The clock the held setpoint expires on: sim time when the backend has one.
+
+        Nav2 publishes /cmd_vel on sim time. Below real time a wall-clock hold lapsed
+        between its commands, so the base stopped and odom's twist dropped to zero
+        between them; on sim time the hold spans the same sim interval as on hardware.
+        A clock-less backend falls back to the monotonic wall clock.
+        """
+        sim_ns = self.sim_time_ns()
+        return time.monotonic_ns() if sim_ns is None else sim_ns
+
+    def _is_base_twist_setpoint(self, action: Action) -> bool:
+        """An ungrouped BODY_TWIST for a base the env integrates (Isaac kinematic base)."""
+        return (
+            action.control_mode is ControlMode.BODY_TWIST
+            and int(action.tick_group_size) <= 1
+            and not callable(getattr(self._env, "step_action_group", None))
+            and self._mujoco_handles() is None
+        )
 
     def _merge_refreshed_obs(self, refreshed: Any) -> None:  # noqa: ANN401  # reason: Observation is dict[str, Any]
         """Merge a post-BODY_TWIST ``refresh_obs`` result into ``_last_obs``.
@@ -2120,6 +2252,8 @@ class SimAttachedHAL:
     def estop(self) -> None:
         """Latch e-stop. Subsequent send_action calls are dropped."""
         self._estop_latched = True
+        self._held_twist = None
+        self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # /odom: the base is stopped
         self._pending_action_key = None
         self._pending_actions.clear()
 
@@ -2373,7 +2507,7 @@ class SimAttachedHAL:
         """Return the 2-D LaserScan range fan, or ``None``.
 
         A non-MuJoCo backend that ray-casts a 2-D lidar (the Isaac scene)
-        surfaces the per-beam ranges (``base_link`` frame, ``angle_min=-π`` →
+        surfaces the per-beam ranges (the lidar's own frame, ``angle_min=-π`` →
         ``angle_max=+π``, the bridge's convention) under the ``"scan"`` obs slot.
         ``SimSensorBridge._compute_scan_ranges`` reads it for ``/scan``. ``None``
         when the backend renders no lidar (MuJoCo backends ray-cast instead).

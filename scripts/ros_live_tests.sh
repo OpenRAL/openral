@@ -70,6 +70,9 @@ TARGETS=(
     # shoulder block is refused as a self hit naming openarm_body_link0, and
     # the rest pose (pedestals inside the torso, SRDF-exempt) is accepted.
     tests/integration/test_safety_kernel_openarm_torso.py
+    tests/integration/test_safety_kernel_openamrobot_v2_body.py
+    # A 16-D OpenArm slot tick on OpenAMRobot reaches the reasoner palette's state subset.
+    tests/integration/test_reasoner_palette_slot_state_subset.py
     # #499 / hazard-log Entry 077: the Metal manifests' folded poses stop the real kernel.
     tests/integration/test_safety_kernel_makermods_metal.py
     # Issue #373: the real kernel's external-torque observer on the MuJoCo OpenArm

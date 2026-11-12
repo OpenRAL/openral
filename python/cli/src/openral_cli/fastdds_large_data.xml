@@ -36,6 +36,82 @@
       <type>UDPv4</type>
     </transport_descriptor>
   </transport_descriptors>
+  <!--
+    Nav2 lifecycle replies. Before sending a service reply, rmw_fastrtps waits for the
+    client's reply reader to be discovered, for at most the reply writer's
+    max_blocking_time (Fast DDS default: 100 ms), and otherwise drops the reply ("failed
+    to send response ... (timeout): client will not receive response"). On a
+    ~30-process deploy graph discovery can take longer. Nav2's lifecycle manager waits
+    on change_state / get_state with no timeout, so one dropped reply left Nav2
+    unconfigured for the whole run (2026-11-04/05: controller_server, collision_monitor
+    and bt_navigator, on Spark and on a laptop). The 5 s wait applies ONLY to the replies
+    of the nodes that manager drives, named by reply topic (rr/<service>Reply, which
+    rmw_fastrtps looks a writer profile up by). It is not the catch-all "service"
+    profile: that wait runs on the server's executor thread, and the safety kernel
+    serves its lifecycle and estop_reset services from a single-threaded executor, so a
+    fresh client (an operator's `ros2 lifecycle get`) could have held its only thread
+    for up to 5 s instead of 100 ms. Every other service keeps the default.
+  -->
+  <data_writer profile_name="rr/behavior_server/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/behavior_server/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/bt_navigator/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/bt_navigator/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/collision_monitor/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/collision_monitor/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/controller_server/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/controller_server/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/docking_server/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/docking_server/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/planner_server/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/planner_server/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/route_server/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/route_server/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/smoother_server/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/smoother_server/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/velocity_smoother/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/velocity_smoother/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/waypoint_follower/change_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
+  <data_writer profile_name="rr/waypoint_follower/get_stateReply">
+    <qos><reliability><max_blocking_time><sec>5</sec><nanosec>0</nanosec></max_blocking_time></reliability></qos>
+  </data_writer>
   <participant profile_name="openral_large_data" is_default_profile="true">
     <rtps>
       <userTransports>
