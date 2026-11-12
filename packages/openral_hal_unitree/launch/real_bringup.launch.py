@@ -51,6 +51,7 @@ run`` does this for you)::
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -59,6 +60,7 @@ import yaml
 
 try:
     from openral_core.exceptions import ROSConfigError
+    from openral_core.ros_security import ENCLAVE_OVERRIDE_ENV as _ENCLAVE_OVERRIDE
     from openral_hal.unitree_s0_policy import (
         load_s0_policy,
         policy_parameters,
@@ -204,6 +206,12 @@ def _launch_setup(context: LaunchContext) -> list[Any]:
             "--strict",
         ],
         output="screen",
+        # It starts after the spawner exits, outside the deploy launch's HAL-enclave
+        # scope, so it pins the enclave it was included under (ADR-0130): only the
+        # HAL enclave may call /controller_manager/* under SROS2.
+        additional_env=(
+            {_ENCLAVE_OVERRIDE: enclave} if (enclave := os.environ.get(_ENCLAVE_OVERRIDE)) else {}
+        ),
     )
 
     def _after_load(event: Any, _ctx: Any) -> list[Any]:  # reason: launch event types are untyped
