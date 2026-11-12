@@ -105,6 +105,30 @@ def test_large_requested_render_size_grows_the_offscreen_buffer() -> None:
     assert model.vis.global_.offheight >= 960
 
 
+def test_camera_offset_moves_and_turns_the_wrist_camera_in_its_own_frame() -> None:
+    from openral_sim.backends.metal_pen_holder._assets import (
+        MetalPenHolderOptions,
+        compose_metal_pen_holder,
+    )
+
+    desc = RobotDescription.from_yaml(
+        str(_ROOT / "robots" / "makermods_metal_station" / "robot.yaml")
+    )
+    moved = compose_metal_pen_holder(desc)  # default offsets: wrist_left is refitted
+    bare = compose_metal_pen_holder(desc, MetalPenHolderOptions(camera_offsets={}))
+    cam = mujoco.mj_name2id(bare, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_left")
+    q0, q1 = bare.cam_quat[cam], moved.cam_quat[cam]
+    q0_inv = np.zeros(4)
+    mujoco.mju_negQuat(q0_inv, q0)
+    rel, shift = np.zeros(4), np.zeros(3)
+    mujoco.mju_mulQuat(rel, q0_inv, q1)
+    mujoco.mju_rotVecQuat(shift, moved.cam_pos[cam] - bare.cam_pos[cam], q0_inv)
+    np.testing.assert_allclose(shift, (0.0007, 0.0154, 0.0076), atol=1e-9)
+    # scipy Rotation.from_euler("xyz", (-3.85, -2.22, -2.25), degrees=True), wxyz.
+    ref = np.array([0.99904271555633, -0.03395861841986, -0.01869788151546, -0.02026953269524])
+    assert min(np.abs(rel - ref).max(), np.abs(rel + ref).max()) < 1e-9
+
+
 @pytest.mark.parametrize("episode", [0, 7, 30])
 def test_replayed_episode_drops_the_pen_into_the_cup(episode: int) -> None:
     hx, hy, hyaw, px, py, pyaw = (float(v) for v in _EPISODES[f"layout_{episode}"])
