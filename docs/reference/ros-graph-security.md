@@ -59,8 +59,9 @@ vendor config lists peers (`CYCLONEDDS_URI` with `<Peers>`, a
 `initialPeersList` or `discoveryServersList`; a file that cannot be read counts too), or
 `ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST`, the deploy
 refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set **and** the
-graph runs under SROS2 in Enforce mode ([below](#sros2-enclaves-adr-0130)), and
-logs `dds_scope.real_robot_graph_networked` as a warning when both hold. An unset
+graph runs under SROS2 in Enforce mode ([below](#sros2-enclaves-adr-0130)); when both
+hold, `deploy_e2e.launch.py` logs one `deploy_e2e.real_robot_graph_networked` warning
+per deploy (hand-run or `deploy run`). An unset
 range still defaults to `LOCALHOST` when only `ROS_STATIC_PEERS` is exported,
 so an opted-in graph reaches the listed peers, not the whole subnet. Opt in
 only on a trusted, isolated network (a robot-only VLAN or a direct cable). `OFF` is refused outright: in Jazzy it hides nodes
@@ -87,6 +88,22 @@ non-reserved `ROS_DOMAIN_ID` first, or set `OPENRAL_ALLOW_NETWORK_ROS=1`.
 it override both variables. The shared decision is
 `openral_core.ros_graph_scope.require_host_confined_ros_scope`; the launch hook
 is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
+
+**So is a hand-run vendor bringup.** Every in-tree `hal.real_bringup` launch
+(`openral_hal_openarm` and `openral_hal_unitree` `real_bringup.launch.py`) applies the
+same decision to its own environment before composing any node, through
+`openral_core.ros_graph_scope.require_host_confined_real_bringup`; a new real bringup
+must call it first too (`tests/integration/test_real_bringup_graph_gate_live.py` runs every
+in-tree manifest bringup on a networked environment and fails when it is not refused). An
+opted-in scope is logged by the bringup on a hand run and by the deploy launch's gate
+under `deploy run`, once either way. An upstream vendor launch named in `hal.real_bringup`
+carries no gate of its own: run it by hand only on a host-confined environment. The
+check imports `openral_core`, so a hand run uses the OpenRAL venv interpreter:
+
+```bash
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+.venv/bin/python "$(command -v ros2)" launch openral_hal_openarm real_bringup.launch.py
+```
 
 **The deadman watchdog and hardware E-stop: parameters fixed once configured.**
 `openral_deadman_watchdog` and `openral_hardware_estop` refuse every

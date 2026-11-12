@@ -389,7 +389,10 @@ must accept `description=` so it binds the loaded manifest. `hal.real` names
 the real-hardware HAL, and its constructor kwargs come from
 `hal.parameters.defaults` (overridable per workcell by a DeployScene `hal:`
 block or `--hal key=value`, all forwarded to the constructor). A vendor
-ros2_control bringup is declared as `hal.real_bringup: "<pkg>:<file>.launch.py"`.
+ros2_control bringup is declared as `hal.real_bringup: "<pkg>:<file>.launch.py"`; an
+in-tree one must call `openral_core.ros_graph_scope.require_host_confined_real_bringup`
+before composing any node, so a hand run cannot join the LAN graph
+([ros-graph-security](../../reference/ros-graph-security.md)).
 
 `openral deploy sim --config <scene.yaml>` / `deploy run --robot my_arm` then
 work with no Python registry entry and no ROS package: the one generic,

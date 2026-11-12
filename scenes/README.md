@@ -387,8 +387,10 @@ environment USD) are named, not spawned, in `backend_options.stage_objects`:
 referenced at `/World/environment`). The prim must carry a rigid body (the boot
 fails otherwise); each reset returns it to its authored pose, and it is a scene
 object for `placement_success` and step `info` like `objects`. A placement region
-may follow one: `relative_to: plate` makes `min_xyz` / `max_xyz` offsets (world
-axes) from the plate's centre at each graded step.
+may follow one: `relative_to: plate` makes `min_xyz` / `max_xyz` a box in the
+plate's frame at each graded step: centred on the plate, on the world axes turned
+by the plate's declared yaw when it rests at its declared pose, and turning and
+tilting with the plate from there (a pen holder the arm turns turns its box).
 
 **Stages from older Isaac releases or other tools** may need two opt-in load
 fixes, both logged at boot: `strip_xform_colliders: true` removes

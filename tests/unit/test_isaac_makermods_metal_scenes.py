@@ -9,6 +9,7 @@ Fixtures: ``scenes/sim/isaac_makermods_metal_pen_holder.yaml``,
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -98,6 +99,88 @@ def test_pen_grades_against_the_cup(
     up, level = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])
     got = scene_mod.placement_grade(cup + np.array(offset), level, up, at, 20.0, spec["grades"])
     assert got == grade
+
+
+@pytest.mark.parametrize(
+    ("yaw_deg", "offset", "grade"),
+    [
+        # 40 mm out along the cup's turned x axis: past its 34.5 mm half width, though a
+        # world-axis box (issue #561) holds the point.
+        (45.0, (0.04 * math.cos(math.pi / 4), 0.04 * math.sin(math.pi / 4), 0.06), "fail"),
+        (45.0, (0.04, 0.0, 0.06), "complete"),  # towards the turned box's corner
+        (45.0, (0.0, 0.045, 0.06), "complete"),
+        (45.0, (0.033, 0.033, 0.06), "fail"),  # world-box corner = the turned box's side, 47 mm
+        (90.0, (0.03, -0.03, 0.06), "complete"),
+        (45.0, (0.0, 0.06, 0.14), "partial"),  # on the turned rim box (45 mm half), 60 mm out
+    ],
+)
+def test_pen_grades_against_a_turned_cup(
+    tools: tuple[ModuleType, ModuleType],
+    yaw_deg: float,
+    offset: tuple[float, float, float],
+    grade: str,
+) -> None:
+    scene_mod, _ = tools
+    spec = _placement_success_spec(_options(_PEN).placement_success, _PEN_PROMPT)
+    assert spec is not None
+    cup = np.array([0.18, 0.0, 0.09])
+    yaw = math.radians(yaw_deg)
+    quat = np.array([math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)])
+    at = scene_mod.placement_boxes_at(
+        spec["placements"][0], {"pen_holder": cup}, {"pen_holder": quat}
+    )
+    up, level = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])
+    got = scene_mod.placement_grade(cup + np.array(offset), level, up, at, 20.0, spec["grades"])
+    assert got == grade
+
+
+def test_pen_grades_against_a_tilted_cup(tools: tuple[ModuleType, ModuleType]) -> None:
+    # The cup leans 30 deg about world x; the pen stands 90 mm up its axis: in the cup,
+    # though 45 mm out along world y (past the world-axis box's 34.5 mm).
+    scene_mod, _ = tools
+    spec = _placement_success_spec(_options(_PEN).placement_success, _PEN_PROMPT)
+    assert spec is not None
+    cup = np.array([0.18, 0.0, 0.09])
+    lean = math.radians(30.0)
+    quat = np.array([math.cos(lean / 2), math.sin(lean / 2), 0.0, 0.0])
+    pen = cup + np.array([0.0, -0.09 * math.sin(lean), 0.09 * math.cos(lean)])
+    at = scene_mod.placement_boxes_at(
+        spec["placements"][0], {"pen_holder": cup}, {"pen_holder": quat}
+    )
+    up, level = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])
+    assert scene_mod.placement_grade(pen, level, up, at, 20.0, spec["grades"]) == "complete"
+
+
+def test_only_unset_urdf_velocities_are_lifted(tools: tuple[ModuleType, ModuleType]) -> None:
+    # SO-101: every joint sets velocity 10 and has a <transmission> naming it; the
+    # transmission's <joint> reference is not a joint of its own.
+    scene_mod, _ = tools
+    urdf = (_REPO / "robots/so101_follower/so101_follower.urdf").read_text(encoding="utf-8")
+    assert scene_mod.urdf_unset_velocity_joints(urdf) == set()
+
+
+def test_recorded_pen_in_a_turned_tilted_cup_grades_complete(
+    tools: tuple[ModuleType, ModuleType],
+) -> None:
+    # Episode 0's resting pen and cup in Isaac (q5090, 2026-11-12): the left arm left the
+    # cup turned -63 deg and leaning 8.8 deg; in the cup's frame the pen is 25 mm out.
+    scene_mod, _ = tools
+    spec = _placement_success_spec(_options(_PEN).placement_success, _PEN_PROMPT)
+    assert spec is not None
+    cup = np.array([0.20190029, -0.02100779, 0.08630169])
+    cup_q = np.array([0.84964603, -0.04911549, 0.05858206, -0.52178299])
+    pen = np.array([0.23456274, -0.00597222, 0.16209197])
+    pen_q = np.array([0.82338262, 0.14358030, -0.51826292, 0.18118894])
+    at = scene_mod.placement_boxes_at(
+        spec["placements"][0], {"pen_holder": cup}, {"pen_holder": cup_q}
+    )
+    up = scene_mod.object_up_axis(0.0, 0.0)
+    assert (
+        scene_mod.placement_grade(
+            pen, pen_q, up, at, float(spec["upright_tol_deg"]), spec["grades"]
+        )
+        == "complete"
+    )
 
 
 @pytest.mark.parametrize(

@@ -42,7 +42,6 @@ import subprocess
 import sys
 from typing import Final
 
-import structlog
 from openral_core.exceptions import ROSConfigError
 from openral_core.ros_graph_scope import (
     ALLOW_NETWORK_ROS_ENV,
@@ -61,7 +60,6 @@ __all__ = [
     "real_domain_id",
 ]
 
-_log = structlog.get_logger(__name__)
 
 #: Escape hatch for **one** of this module's two refusals: the one raised when
 #: the graph could not be *read* at all (``rclpy`` will not import, the probe
@@ -206,7 +204,8 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
     (``openral_core.ros_graph_scope.discovery_range_is_ros_default``).
     A scope that reaches other hosts (``ROS_STATIC_PEERS`` set, or a range other
     than ``LOCALHOST`` / ``OFF``) is refused unless
-    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set, and logged as a warning when it is.
+    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set. An opted-in networked scope is not
+    logged here: ``deploy_e2e.launch.py``'s gate prints it once per deploy.
 
     Args:
         env: The launch environment, mutated in place. The opt-in is read from
@@ -235,15 +234,9 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
     scoped = {**env, "ROS_DOMAIN_ID": domain}
     if defaulted:
         scoped["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
-    scope = require_host_confined_ros_scope(scoped)
-    if scope is not None:
-        _log.warning(
-            "dds_scope.real_robot_graph_networked",
-            scope=scope,
-            robot_id=robot_id,
-            opt_in=ALLOW_NETWORK_ROS_ENV,
-            hazard="every host on this network can command the robot",
-        )
+    # No warning here: the env reaches deploy_e2e.launch.py, whose gate logs the
+    # hazard once per deploy; this runs twice per deploy (orphan reap + launch env, #558).
+    require_host_confined_ros_scope(scoped)
     if defaulted:
         env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
     env["ROS_DOMAIN_ID"] = domain

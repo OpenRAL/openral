@@ -326,3 +326,24 @@ def test_decode_passes_through_string_goal_params_unchanged() -> None:
     )
     assert isinstance(call, ExecuteRskillTool)
     assert call.goal_params_json == raw
+
+
+def test_final_step_is_offered_only_on_skills_whose_success_completes_a_task() -> None:
+    """#562: ``final_step`` only changes how an own-success skill (Nav2) settles its
+    task, so only those per-skill tools carry it; a VLA tool does not."""
+    paths = sorted(_RSKILLS_DIR.glob("*/rskill.yaml"))
+    manifests = [RSkillManifest.from_yaml(str(p)) for p in paths]
+    from openral_core import RobotDescription
+
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"))
+    palette = build_tool_palette(installed_skills=manifests, robot_capabilities=robot.capabilities)
+    opted = {e.rskill_id for e in palette.skills if e.completes_task_on_success}
+    assert opted, "fixture drift: the Nav2 skill no longer opts in"
+    assert len(opted) < len(palette.skills), "fixture drift: no skill without the opt-in"
+    by_name = {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}
+    for entry in palette.skills:
+        schema = by_name[_skill_id_to_tool_name(entry.rskill_id)]["input_schema"]
+        assert isinstance(schema, dict)
+        props = schema["properties"]
+        assert isinstance(props, dict)
+        assert ("final_step" in props) == (entry.rskill_id in opted), entry.rskill_id
