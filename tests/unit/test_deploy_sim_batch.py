@@ -119,6 +119,38 @@ def test_record_is_opt_in_and_bags_exactly_the_replay_topics() -> None:
     assert "/openral/candidate_action" in REPLAY_TOPICS
 
 
+def test_record_topics_repeat_and_are_refused_without_record_or_malformed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A forgotten ``--record`` used to record nothing, silently; a bad regex failed the
+    whole recorder, the kernel's replay topics with it."""
+    tool = _tool()
+    base = [
+        "--scene",
+        "s",
+        "--out",
+        "o",
+        "--sidecar-port",
+        "1",
+        "--rskill-id",
+        "r",
+        "--prompt",
+        "p",
+    ]
+    args = tool.parser().parse_args(
+        [*base, "--record", "--record-topic", "/tf", "--record-topic", "/openral/grasp_events"]
+    )
+    assert args.record_topic == ["/tf", "/openral/grasp_events"]
+    assert tool.parser().parse_args(base).record_topic == []
+    for extra, why in (
+        (["--record-topic", "/tf"], "needs --record"),
+        (["--record", "--record-topic", "/openral/(tracked"], "is not a regex"),
+    ):
+        with pytest.raises(SystemExit) as exit_:
+            tool.main([*base, *extra])
+        assert exit_.value.code == 2 and why in capsys.readouterr().err
+
+
 def test_an_inherited_ignored_sigint_is_caught_again_for_the_children() -> None:
     """Spark 2026-10-25: a background harness SIGKILLed every unfinalized bag recorder."""
     code = (

@@ -41,6 +41,7 @@ import copy
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -580,8 +581,19 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["compare"]:
         return compare(Path(argv[1]), Path(argv[2]))
+    p = parser()
+    args = p.parse_args(argv)
+    if args.record_topic and not args.record:
+        p.error("--record-topic needs --record (without it no bag is recorded at all)")
+    for topic in args.record_topic:
+        # One bad pattern fails the whole recorder, the kernel's replay topics with it. Python's
+        # re stands in for rosbag2's ECMAScript std::regex: it catches the malformed ones.
+        try:
+            re.compile(topic)
+        except re.error as e:
+            p.error(f"--record-topic {topic!r} is not a regex: {e}")
     restore_sigint()
-    return run_batch(parser().parse_args(argv))
+    return run_batch(args)
 
 
 def restore_sigint() -> bool:
@@ -633,8 +645,9 @@ def parser() -> argparse.ArgumentParser:
         default=[],
         metavar="TOPIC_OR_REGEX",
         help="with --record, also bag this topic (a name or a whole-name regex), repeatable, "
-        "e.g. '/openral/cameras/.*' '/openral/tracked_objects' '/openral/grasp_events' "
-        "'/openral/attachment_state.*' '/openral/instance_cells' '/tf' '/tf_static'",
+        "e.g. '/openral/tracked_objects' '/openral/grasp_events' '/openral/attachment_state.*' "
+        "'/openral/instance_cells' '/tf' '/tf_static' and the cameras the run needs "
+        "(openral_core.camera_topic names; raw images make large bags)",
     )
     p.add_argument(
         "--deploy-arg",

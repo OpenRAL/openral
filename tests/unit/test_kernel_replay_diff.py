@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -72,6 +73,15 @@ def test_extra_record_topics_join_the_replay_topics_in_one_anchored_regex() -> N
         assert pattern.fullmatch(topic), topic
     for topic in ("/openral/tracked_objects_debug", "/clockwork", "/openral/safe_actionX"):
         assert not pattern.fullmatch(topic), topic
+
+
+def test_record_cmd_prints_a_shell_safe_command_with_its_extra_topics(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The printed command is pasted into a shell, and the regex holds ``|``, ``(`` and ``$``."""
+    assert krd.main(["record-cmd", "/tmp/run/bag", "--topic", "/openral/tracked_objects"]) == 0
+    printed = shlex.split(capsys.readouterr().out)
+    assert printed == krd.record_command("/tmp/run/bag", ["/openral/tracked_objects"])
 
 
 def test_kernel_b_turns_every_moved_rule_off_and_loads_the_provider() -> None:

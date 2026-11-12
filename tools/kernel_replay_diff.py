@@ -39,6 +39,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -598,6 +599,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     rec = sub.add_parser("record-cmd", help="print the ros2 bag record command")
     rec.add_argument("out_dir")
+    rec.add_argument(
+        "--topic",
+        action="append",
+        default=[],
+        metavar="TOPIC_OR_REGEX",
+        help="also record this topic (a name or a whole-name regex), repeatable",
+    )
     diff = sub.add_parser("diff", help="replay a bag into kernels A and B")
     diff.add_argument("--bag", type=Path, required=True)
     diff.add_argument("--params", type=Path, required=True, help="ros2 param dump of kernel A")
@@ -614,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.cmd == "record-cmd":
-        print(" ".join(record_command(args.out_dir)))
+        print(shlex.join(record_command(args.out_dir, args.topic)))  # the regex holds | ( $
         return 0
     params_a = _kernel_params(yaml.safe_load(args.params.read_text()))
     params_b = provider_params(params_a, args.provider)
