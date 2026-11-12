@@ -59,7 +59,7 @@ def _is_running(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat") as f:
             return f.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):  # reason: reaped mid-read
         return False
 
 
