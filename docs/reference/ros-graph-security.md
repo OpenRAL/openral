@@ -14,7 +14,7 @@ anyone on the same network as the robot host can:
 | publish `ActionChunk` on `/openral/safe_action` | the HAL executes it; the safety kernel is bypassed |
 | call `/openral/estop_reset` | clears a latched E-stop once the cooldown has passed |
 | `ros2 param set` on the safety kernel | relaxed `joint_velocity_max`, `workspace_box_*`, … would apply on the next configure |
-| `ros2 param set /safety_controller blend_ratio` / `max_blend_ratio_speed` (Unitree G1) | blends the S0 locomotion policy in, up to 1.0 at up to 10 /s; see below |
+| `ros2 param set /safety_controller blend_ratio` (Unitree G1) | blends the S0 locomotion policy in, up to 1.0 at ≤ 1 /s (`max_blend_ratio_speed` is refused at runtime since #548); see below |
 | publish `/openral/prompt` | instructs the reasoner |
 | publish `/joint_states`, the deadman heartbeat | the kernel checks against a fake state; a dead operator looks alive |
 
@@ -80,18 +80,22 @@ cannot raise `safe_action_deadline_s` / `first_chunk_deadline_s` on a running
 cell. A set before the first configure still works (nothing is supervised yet);
 see `packages/openral_safety_watchdog/README.md`.
 
-**Unitree G1: the blend parameters stay writable (open risk).** NVIDIA's
-`SafetyController` (`isaac_ros_deploy` f3aa6b89, `deps.repos`) declares
-`blend_ratio` and `max_blend_ratio_speed` with `read_only = false` and applies a
-runtime set immediately: that is how the operator blends the policy in on the
-gantry (`packages/openral_hal_unitree/README.md`). Its
-`out_of_domain_detection.*` parameters already refuse a runtime set, and the rest
-are read at configure. OpenRAL cannot make the blend parameters read-only without
-patching the upstream controller *and* replacing the operator blend-in with
-another path; pinning them at configure would start the policy blended in, which
-is less conservative. Until that is designed (Safety-WG), host confinement is the
-only control on who can set them, and an opted-in network graph (`OPENRAL_ALLOW_NETWORK_ROS=1`)
-must be treated as able to start the G1's locomotion policy.
+**Unitree G1: the blend parameters.** NVIDIA's `SafetyController`
+(`isaac_ros_deploy` f3aa6b89, `deps.repos`) declares `blend_ratio` and
+`max_blend_ratio_speed` with `read_only = false`, applies a runtime set on the next tick
+(range 0–10 /s), and on activation snaps the applied blend to its target with no ramp.
+The G1 bringup runs it as `openral_hal_unitree/GuardedSafetyController` (issue #548),
+which refuses to configure with `max_blend_ratio_speed` outside (0, 1.0] /s, refuses
+every runtime change to it, and resets `blend_ratio` to 0.0 on activation so the
+policy always starts blended out (a refusal there would leave a strict controller swap
+half-done, with the joints unclaimed). Its
+`out_of_domain_detection.*` parameters already refuse a runtime set, and the rest are
+read at configure. `blend_ratio` itself stays writable because it is the operator's
+gantry blend-in: a participant that can reach `/safety_controller`'s parameter services
+can still blend the policy in, at the operator's ≤ 1 /s ramp. Host confinement is the
+control on who that is until SROS2 enclaves land (below); an opted-in network graph
+(`OPENRAL_ALLOW_NETWORK_ROS=1`) must be treated as able to start the G1's locomotion
+policy.
 
 Host confinement limits *discovery*; it is not a firewall. Combine it with a
 host firewall that drops inbound DDS ports (UDP 7400+) on interfaces the robot

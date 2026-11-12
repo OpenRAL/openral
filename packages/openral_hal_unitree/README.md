@@ -31,6 +31,7 @@ controller_manager @ 200 Hz ──────────────┼──�
    inference_controller  (ONNX via Triton, 50 Hz)┤
                                                  ▼
    safety_controller: blend_ratio · velocity clamp · out-of-domain → freeze_controller
+      (NVIDIA's SafetyController through OpenRAL's GuardedSafetyController, see below)
                                                  ▼
    unitree_hg_ros2_control/UnitreeHgSystemInterface: CRC32 · 500 ms state freshness ·
    non-finite refusal · unitree_sdk2 LowCmd over DDS → G1 motors
@@ -42,7 +43,7 @@ controller_manager @ 200 Hz ──────────────┼──�
 | Base velocity (OpenRAL → policy) | `/inference_controller/cmd_vel` | `geometry_msgs/msg/Twist` (`linear.x`, `linear.y`, `angular.z` used) |
 | Joint state | `/joint_states` (`joint_state_broadcaster`) | `sensor_msgs/msg/JointState` |
 | IMU | `/imu_sensor_broadcaster/imu` | `sensor_msgs/msg/Imu` |
-| Policy blend | `/safety_controller` param `blend_ratio` | double, 0.0–1.0 |
+| Policy blend | `/safety_controller` param `blend_ratio` | double, 0.0–1.0 (`max_blend_ratio_speed` is fixed at configure) |
 
 **Base height is not commandable.** OpenRAL's `Action` has no base-height field, and
 upstream's only height-carrying converter (`command/body/velocity_height`, isaac_ros_deploy
@@ -69,6 +70,8 @@ config/g1/policies/gr00t_decoupled_wbc.yaml   GR00T WBC (DEFAULT): inference par
 config/g1/policies/agile_velocity.yaml   WBC-AGILE: inference_controller params + joint split
 launch/real_bringup.launch.py            robot_model:=g1 policy:=gr00t_decoupled_wbc
 ../../tools/build_gr00t_wbc_leapp.py     builds the GR00T LEAPP bundle on the robot host
+include/, src/guarded_safety_controller.cpp   GuardedSafetyController plugin (issue #548)
+test/test_guarded_safety_controller.cpp  its gtest against the real upstream controller
 deps.repos                               isaac_ros_robots + isaac_ros_deploy at full SHAs
 ```
 
@@ -138,6 +141,11 @@ colcon build --packages-up-to unitree_hg_ros2_control unitree_g1_description \
 just ros2-build                                            # this package
 ```
 
+Build this package with the NVIDIA workspace sourced: its `GuardedSafetyController`
+plugin is compiled only when CMake finds `isaac_ros_deploy_ros2_control`. Built without
+it, the bringup fails to load `safety_controller` — it never falls back to NVIDIA's
+unguarded class.
+
 Build-time network fetches you should know about:
 
 * `unitree_hg_ros2_control` FetchContent-downloads `unitree_sdk2` @ `21d0a3b2` and Cyclone
@@ -173,6 +181,25 @@ Build-time network fetches you should know about:
    tick), the operator runs `ros2 param set /safety_controller blend_ratio 1.0` (ramped at
    `max_blend_ratio_speed: 1.0`/s), then lowers the gantry.
 
+### Blend guard (`GuardedSafetyController`, issue #548)
+
+NVIDIA's `SafetyController` (isaac_ros_deploy f3aa6b89) declares `blend_ratio` and
+`max_blend_ratio_speed` writable and applies a runtime set on the next tick, and its
+`on_activate` snaps the applied blend to its target with no ramp. `safety_controller`
+therefore runs as `openral_hal_unitree/GuardedSafetyController`, a subclass that touches
+nothing on the hot path and:
+
+| Step | Guard |
+|---|---|
+| configure | refuses `max_blend_ratio_speed` outside (0, 1.0] /s — faster blends the policy in in under a second, 0 freezes the blend so it can no longer be blended **out** |
+| runtime parameter set | refuses every change to `max_blend_ratio_speed` (edit the YAML and relaunch) |
+| activate | **resets** `blend_ratio` to 0.0 first (WARN in the log), so re-arming the chain after an e-stop with the policy still blended in starts it blended out instead of applying it at once. It never refuses: a strict `switch_controller` whose activation fails keeps its deactivations, so re-arming from `freeze_controller` would leave every joint unclaimed — zero torque. |
+
+`blend_ratio` stays writable: it is the operator's blend-in, and a process that can
+reach `/safety_controller`'s parameter services can still blend the policy in, at the
+same ≤ 1 /s ramp. Who can reach them is a graph-access question — host confinement today,
+SROS2 enclaves next (`docs/reference/ros-graph-security.md`).
+
 ## E-stop, freeze and stale commands
 
 | Event | What happens |
@@ -199,7 +226,7 @@ hardware.
    (joint limits, speed factor, `max_base_linear_speed_m_s: 0.5`,
    `max_base_angular_speed_rad_s: 1.0`, collision) **before** the HAL sees it — unchanged.
 2. The HAL refuses leg targets, non-planar or non-finite twists, wrong dimensions.
-3. NVIDIA `SafetyController` then blends, rate-limits (arms ≤ 1.2 rad/s target motion) and
+3. NVIDIA `SafetyController` (through `GuardedSafetyController`) then blends, rate-limits (arms ≤ 1.2 rad/s target motion) and
    watches for out-of-domain velocities; the hardware interface checks finiteness, CRC and
    state freshness. These are **additional** layers below OpenRAL's — none replaces or
    relaxes the kernel, and no OpenRAL flag disables any of them.

@@ -1,0 +1,10 @@
+<library path="openral_hal_unitree_guarded_safety_controller">
+  <class name="openral_hal_unitree/GuardedSafetyController"
+         type="openral_hal_unitree::GuardedSafetyController"
+         base_class_type="controller_interface::ChainableControllerInterface">
+    <description>
+      NVIDIA isaac_ros_deploy SafetyController with max_blend_ratio_speed capped at
+      1.0 /s and fixed at configure, and blend_ratio reset to 0.0 on every activation.
+    </description>
+  </class>
+</library>
