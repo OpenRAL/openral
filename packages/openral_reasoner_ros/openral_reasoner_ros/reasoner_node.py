@@ -138,6 +138,7 @@ from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MAX_SUBDIVIDE_DEPTH,
+    DEFAULT_MAX_TASK_DISPATCHES,
     MissionState,
     TaskLocateBudget,
     TaskState,
@@ -4360,6 +4361,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().warning(
                 "mission verify: query_task_progress not on graph; active task stays active",
             )
+            if active.attempts >= DEFAULT_MAX_TASK_DISPATCHES:  # no verdict can come: bound it
+                self._apply_mission_verdict(
+                    "abandon",
+                    f"not complete after {active.attempts} dispatch(es), the per-task bound "
+                    "(the reward monitor is not on the graph)",
+                    mission=mission,
+                    active=active,
+                    progress_now=0.0,
+                    success_now=0.0,
+                    traceparent=traceparent,
+                )
             return
         req = QueryTaskProgress.Request()
         # VLM-adjudicated completion amendment — score the whole attempt (start→now), not a trailing

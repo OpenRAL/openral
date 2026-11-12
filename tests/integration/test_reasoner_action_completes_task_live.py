@@ -26,7 +26,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import MissionState
 
 import pytest
 
@@ -99,13 +103,18 @@ def test_nav2_success_reports_its_outcome_and_completes_the_task() -> None:
         rclpy.try_shutdown()
 
 
-def _settle(reasoner: Any, call: Any, *, succeeded: bool) -> None:
+def _settle(
+    reasoner: Any,  # reason: ReasonerNode imports only with ROS sourced
+    call: ExecuteRskillTool,
+    *,
+    succeeded: bool,
+) -> None:
     mission = reasoner._renderer.mission
     mission.record_attempt(rskill_id=call.rskill_id)
     reasoner._maybe_verify_active_mission_task(call, traceparent=None, succeeded=succeeded)
 
 
-def _status(mission: Any) -> str:
+def _status(mission: MissionState) -> str:
     # Read through the summary: mypy keeps the attribute narrowed to "active".
     summary = mission.to_summary()["tasks"]
     assert isinstance(summary, list)
@@ -184,6 +193,32 @@ def test_a_task_that_keeps_succeeding_still_terminates_regression_562() -> None:
             dispatches += 1
             if dispatches < DEFAULT_MAX_TASK_DISPATCHES:
                 assert reasoner._subdivide_offered == set()
+        assert dispatches == DEFAULT_MAX_TASK_DISPATCHES + 1  # bound → offer, then abandon
+        assert _status(mission) == "abandoned"
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_the_dispatch_bound_holds_when_the_reward_monitor_is_off_the_graph() -> None:
+    """A configured reward monitor whose service never comes up gives no verdict; the
+    dispatch bound still ends the task instead of leaving it active forever."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_TASK_DISPATCHES, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True  # configured, but nothing serves it
+        vla = next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        call = ExecuteRskillTool(rskill_id=vla)
+        mission = MissionState.from_prompt("pick up the cube and put it in the bin")
+        reasoner._renderer.set_mission(mission)
+        dispatches = 0
+        while not mission.is_complete():
+            assert dispatches < 2 * DEFAULT_MAX_TASK_DISPATCHES, "unbounded without a verdict"
+            _settle(reasoner, call, succeeded=True)
+            dispatches += 1
         assert dispatches == DEFAULT_MAX_TASK_DISPATCHES + 1  # bound → offer, then abandon
         assert _status(mission) == "abandoned"
     finally:
