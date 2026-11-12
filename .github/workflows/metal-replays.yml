@@ -71,3 +71,27 @@ jobs:
           if ran != 1:
               sys.exit(f"::error::expected 1 replay to run, got {ran} (skipped {s.get('skipped')})")
           PY
+
+  # TEMPORARY (#563 measurement, dropped before merge): one replay of each scene on OSMesa.
+  osmesa-timing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MUJOCO_GL: "osmesa"
+      PYOPENGL_PLATFORM: "osmesa"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-test-env
+      - name: Time replays on OSMesa (bypassing the skip mark)
+        run: |
+          uv run python - <<'PY'
+          import sys, time
+          sys.path.insert(0, "tests/sim")
+          import test_makermods_metal_hal_metal_pick_place as pp
+          import test_makermods_metal_station_hal_metal_pen_holder as ph
+          for name, fn, arg in [("pick_place ep42", pp.test_replaying_a_real_episode_places_the_cube_on_the_marker, 42),
+                                ("pen_holder 7", ph.test_replayed_episode_drops_the_pen_into_the_cup, 7)]:
+              t0 = time.perf_counter(); fn(arg); print(f"OSMESA {name}: passed in {time.perf_counter() - t0:.1f} s", flush=True)
+          PY
