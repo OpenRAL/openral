@@ -434,7 +434,8 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
   }
   if (p.curve_point_first.size() != p.curve_point_count.size() ||
       (!p.curve_point_first.empty() && p.curve_point_first.size() != n) ||
-      p.curve_points.size() % 2 != 0 || !all_finite(p.curve_points)) {
+      p.curve_points.size() % 2 != 0 || !all_finite(p.curve_points) ||
+      (p.curve_point_first.empty() && !p.curve_points.empty())) {
     error = "collision_curve_* arrays disagree with collision_n_links or are non-finite";
     return false;
   }
@@ -445,6 +446,10 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
       const auto first = p.curve_point_first[i];
       const auto count = p.curve_point_count[i];
       if (first < 0) {
+        if (count != 0) {
+          error = "collision_curve_point_count is non-zero on a link without a curve";
+          return false;
+        }
         continue;
       }
       if (count < 2 || static_cast<std::size_t>(2 * (first + count)) > p.curve_points.size()) {
@@ -545,6 +550,9 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
 }
 
 double curve_value(const std::vector<std::pair<double, double>>& curve, double x) noexcept {
+  if (!std::isfinite(x)) {
+    return x;  // the kernel's link_joint_value: an invalid column stays invalid
+  }
   if (x <= curve.front().first) {
     return curve.front().second;
   }

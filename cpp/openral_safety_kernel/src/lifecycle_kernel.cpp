@@ -4186,6 +4186,15 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
     return false;
   }
 
+  // Range before the narrowing copy below, so the re-check sees the values FK uses.
+  for (std::size_t i = 0; i < curve_first.size(); ++i) {
+    if (curve_first[i] < -1 || curve_first[i] > std::numeric_limits<int>::max() ||
+        curve_count[i] < 0 || curve_count[i] > std::numeric_limits<int>::max()) {
+      error = "collision_curve_point_first / _count out of range";
+      return false;
+    }
+  }
+
   CollisionModel m;
   m.n_links = n_links;
   m.parent.resize(n_links);

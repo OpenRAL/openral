@@ -239,6 +239,14 @@ TEST(SelfFilterModel, RefusesACurveTheKernelWouldRefuse) {
   p = chain_with_curve_params();
   p.curve_points[5] = NAN;
   EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_curve_params();
+  p.curve_point_first.clear();  // orphan points: no link reads them
+  p.curve_point_count.clear();
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_curve_params();
+  p.curve_point_count[0] = 2;  // a count on a link without a curve
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  EXPECT_TRUE(std::isnan(bridge::curve_value({{0.0, 0.0}, {1.0, 1.0}}, NAN)));
 }
 
 TEST(SelfFilterModel, RefusesAMimicLinkTheKernelWouldRefuse) {

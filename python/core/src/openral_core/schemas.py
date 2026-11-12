@@ -889,6 +889,8 @@ def _with_scene_urdf_curves(description: RobotDescription, raw: object) -> list[
             joints.append(joint)
             continue
         try:
+            if any(len(p) != _MIN_CURVE_POINTS for p in points):
+                raise ValueError("every point must be a (value, urdf value) pair")
             curve = tuple(sorted((float(p[0]), float(p[1])) for p in points))
             joints.append(JointSpec.model_validate({**dict(joint), "urdf_curve": curve}))
         except (TypeError, ValueError, IndexError) as exc:
@@ -1470,6 +1472,8 @@ def curve_value(points: Sequence[Sequence[float]], x: float) -> float:
         >>> curve_value([(0.0, 0.0), (0.316, 0.42), (0.785, 0.785)], 0.316)
         0.42
     """
+    if math.isnan(x):
+        return x  # an invalid reading stays invalid, as without a curve
     if x <= points[0][0]:
         return float(points[0][1])
     for (x0, y0), (x1, y1) in itertools.pairwise(points):
@@ -1487,6 +1491,8 @@ def curve_slope(points: Sequence[Sequence[float]], x: float) -> float:
         >>> curve_slope([(0.0, 0.0), (1.0, 0.05)], 0.5), curve_slope([(0.0, 0.0), (1.0, 0.05)], 2)
         (0.05, 0.0)
     """
+    if math.isnan(x):
+        return x
     if x < points[0][0] or x > points[-1][0]:
         return 0.0
     for (x0, y0), (x1, y1) in itertools.pairwise(points):

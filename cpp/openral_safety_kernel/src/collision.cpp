@@ -943,7 +943,9 @@ double mimic_gain(const CollisionModel& model, std::size_t i) noexcept {
 }  // namespace
 
 double link_joint_value(const CollisionModel& model, std::size_t i, double q) noexcept {
-  if (has_curve(model, i)) {
+  // A non-finite column stays non-finite: the curve's clamp would turn NaN into its
+  // last point, a finite pose the distance checks would trust.
+  if (has_curve(model, i) && std::isfinite(q)) {
     const double* p =
         model.curve_points.data() + 2 * static_cast<std::size_t>(model.curve_point_first[i]);
     int end = 0;
@@ -966,6 +968,9 @@ double link_joint_value(const CollisionModel& model, std::size_t i, double q) no
 double link_joint_gain(const CollisionModel& model, std::size_t i, double q) noexcept {
   double slope = 1.0;
   if (has_curve(model, i)) {
+    if (!std::isfinite(q)) {
+      return q;  // as link_joint_value: an invalid column stays invalid
+    }
     const double* p =
         model.curve_points.data() + 2 * static_cast<std::size_t>(model.curve_point_first[i]);
     int end = 0;

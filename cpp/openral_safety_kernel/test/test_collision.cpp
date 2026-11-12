@@ -7957,3 +7957,12 @@ TEST(UrdfCurve, TheGainIsTheSegmentSlopeTimesTheMimicMultiplierAndZeroWhereItCla
   EXPECT_EQ(osk::link_joint_gain(m, kMimicLeader, 1.0), 0.0);
   EXPECT_EQ(osk::link_joint_gain(m, 0, 0.3), 1.0) << "an uncurved link keeps unit gain";
 }
+
+TEST(UrdfCurve, ANonFiniteColumnStaysNonFinite) {
+  // The clamp would map NaN to the last point: a finite pose the distance checks trust.
+  const auto m = curved_mimic_model();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isnan(osk::link_joint_value(m, kMimicLeader, nan)));
+  EXPECT_TRUE(std::isnan(osk::link_joint_value(m, kMimicFollower, nan)));
+  EXPECT_TRUE(std::isnan(osk::link_joint_gain(m, kMimicLeader, nan)));
+}

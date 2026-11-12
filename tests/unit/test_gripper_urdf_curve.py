@@ -26,7 +26,7 @@ from openral_core import (
     curve_value,
     sim_scene_description,
 )
-from openral_core.assets import resolve_asset
+from openral_core.assets import AssetFetchError, resolve_asset
 from openral_core.exceptions import ROSConfigError
 from openral_core.kinematics import link_transform
 from openral_hal.lifecycle import urdf_joint_curves, urdf_named_joint_state
@@ -175,7 +175,7 @@ def test_manifest_curves_drive_tf_and_the_kernel_alike(
     assert desc.assets.urdf is not None
     try:
         urdf_file = resolve_asset(desc.assets.urdf.ref, "urdf", manifest_dir=_ROBOTS / robot)
-    except ROSConfigError as exc:  # an `rd:` clone needs network on first use
+    except (AssetFetchError, ROSConfigError) as exc:  # a clone needs network on first use
         pytest.skip(f"{robot} URDF unavailable: {exc}")
     assert urdf_file is not None
     gripper = next(j for j in desc.joints if j.role == "gripper")
@@ -313,3 +313,15 @@ def _manifest_scene_mod() -> object:
     import isaac_manifest_scene
 
     return isaac_manifest_scene
+
+
+def test_a_nan_reading_stays_nan_through_the_curve() -> None:
+    """The clamp must not turn an invalid jaw reading into a finite finger pose."""
+    pts = [(0.0, 0.0), (0.316, 0.42), (0.785, 0.785)]
+    assert np.isnan(curve_value(pts, float("nan")))
+    assert np.isnan(curve_slope(pts, float("nan")))
+    base = RobotDescription.from_yaml(str(_ROBOTS / "openarm" / "robot.yaml"))
+    with pytest.raises(ROSConfigError, match="pair"):
+        sim_scene_description(
+            base, {"gripper_joint_curve": {"left_gripper": [[0, 0, 99], [1, 0.05, 99]]}}
+        )

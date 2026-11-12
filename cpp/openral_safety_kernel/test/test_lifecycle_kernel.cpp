@@ -9582,7 +9582,13 @@ TEST_F(LifecycleKernelTest, MisShapedOrUnsoundCurveParamsFailConfigure) {
     opts.parameter_overrides(std::move(params));
     auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
     rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
-    return node->on_configure(unconf);
+    const auto result = node->on_configure(unconf);
+    if (result == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS) {
+      // Drain what configure started (tracing) before the node is destroyed.
+      rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+      node->on_cleanup(inactive);
+    }
+    return result;
   };
   const auto with = [](const char* key, rclcpp::Parameter value) {
     auto params = curved_kernel_params();
@@ -9642,4 +9648,10 @@ TEST_F(LifecycleKernelTest, MisShapedOrUnsoundCurveParamsFailConfigure) {
                            rclcpp::Parameter("collision_ee_link_index", std::int64_t{1}))),
             CR::FAILURE)
       << "the EE Jacobian cannot predict through a curved link";
+  EXPECT_EQ(configure("kernel_curve_huge_first",
+                      with("collision_curve_point_first",
+                           rclcpp::Parameter("collision_curve_point_first",
+                                             std::vector<std::int64_t>{-1, 4294967296, 0}))),
+            CR::FAILURE)
+      << "an offset past int range must not narrow to a valid one";
 }
