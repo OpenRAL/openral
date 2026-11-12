@@ -212,7 +212,9 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "To act on an object that is out of reach, APPROACH it first: "
     "dispatch the navigation (Nav2-backed) skill to drive the base "
     "to the recalled approach pose (or close enough to interact), then "
-    "continue on a later tick. When the read-only resolve_place tool is "
+    "continue on a later tick; send that approach drive with final_step=false, "
+    "because a drive's success otherwise completes the whole task. "
+    "When the read-only resolve_place tool is "
     "in the palette, use it to turn a place / room / agent reference "
     "(e.g. 'the kitchen', 'where I was standing') into a navigation goal "
     "pose plus a traversable path. Do not dispatch a manipulation skill at "
@@ -1493,10 +1495,16 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             # wire-format ``str`` field before constructing
             # ``ExecuteRskillTool``. Skills without a schema fall
             # through to the freeform string surface (today's behaviour).
-            tool_schema = per_skill_schema
+            # final_step only changes how an own-success skill (Nav2) settles its task;
+            # elsewhere it is ignored, so it is not offered (tokens, and no false promise).
+            tool_schema = (
+                per_skill_schema
+                if entry.completes_task_on_success
+                else _drop_property(per_skill_schema, "final_step")
+            )
             if entry.goal_params_schema is not None:
                 tool_schema = _replace_property_schema(
-                    per_skill_schema,
+                    tool_schema,
                     "goal_params_json",
                     entry.goal_params_schema,
                 )
