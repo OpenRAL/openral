@@ -110,7 +110,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral_safety_kernel/change_state` | `lifecycle_msgs/ChangeState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 | `/openral_safety_kernel/get_state` | `lifecycle_msgs/GetState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 
-## Per-instance services (8)
+## Per-instance services (9)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
@@ -120,6 +120,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/{target}/set_parameters_atomically` | `rcl_interfaces/SetParametersAtomically` | — | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._begin_self_filter_period_handoff) |
 | `{lifecycle_node_name}/get_state` | `lifecycle_msgs/GetState` | — | tools/wait_for_action_and_signal_palette.py (_lifecycle_active) |
 | `{node}/change_state` | `lifecycle_msgs/ChangeState` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._change_state_async) |
+| `{self._controller_manager}/configure_controller` | `controller_manager_msgs/ConfigureController` | — | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | `{self._controller_manager}/list_controllers` | `controller_manager_msgs/ListControllers` | — | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | `{self._controller_manager}/switch_controller` | `controller_manager_msgs/SwitchController` | — | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 

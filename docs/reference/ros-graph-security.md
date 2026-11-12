@@ -33,10 +33,23 @@ ones; every other `robot_id` keeps the domain it had before the reservations
 as `ros scope:` before launch, followed by the `export` line another terminal
 needs: `openral prompt` and `openral estop reset` run `rclpy` on their own
 shell's environment, so they reach the robot only on the same domain and
-range. An exported non-empty value of either variable
-wins; an exported empty value counts as unset. Simulations are unchanged
-(`LOCALHOST`, domain 77). Implementation:
+range. An exported non-empty `ROS_DOMAIN_ID` wins; an exported empty value of
+either variable counts as unset. Simulations get the same range rule, on domain 77
+(`openral_cli._dds_scope.confine_sim_scope`). Implementation:
 `openral_cli._dds_scope.confine_real_scope`.
+
+**An exported `SUBNET` is ROS's default, not a choice.** `source
+/opt/ros/jazzy/setup.bash` exports `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`
+whenever it is unset (`ros_environment`'s `1.ros_discovery.dsv` is
+`set-if-unset;ROS_AUTOMATIC_DISCOVERY_RANGE;SUBNET`), so every freshly sourced
+shell carries it. Until 2026-11-12 the deploy read it as an operator's choice:
+`deploy sim` ran on the LAN and the host confinement of #227 never applied, and
+`deploy run` refused a real robot as networked unless `LOCALHOST` was exported
+by hand. Both now treat `SUBNET` like an unset range — replaced by `LOCALHOST` —
+unless `OPENRAL_ALLOW_NETWORK_ROS=1` says the LAN is wanted. Any other exported
+range (`LOCALHOST`, `OFF`, `SYSTEM_DEFAULT`) is one ROS never sets, so it is the
+operator's and wins as before. The decision is
+`openral_core.ros_graph_scope.discovery_range_is_ros_default`.
 
 **Networked graphs need an explicit opt-in.** If `ROS_STATIC_PEERS` or a Fast DDS
 `ROS_DISCOVERY_SERVER` is set, `RMW_IMPLEMENTATION=rmw_zenoh_cpp` (Zenoh reads
@@ -66,7 +79,9 @@ above; a hand-run
 defaults but applies the same decision to the environment it was started with,
 and refuses with `ROSConfigError` when the graph would reach other hosts —
 including when `ROS_AUTOMATIC_DISCOVERY_RANGE` is unset, which ROS reads as
-`SUBNET`. Export `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a non-zero,
+`SUBNET`, and when it is the `SUBNET` that `setup.bash` exports. The launch
+checks rather than defaults: its own ROS node and every node it starts inherit
+the environment `ros2 launch` was started with. Export `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a non-zero,
 non-reserved `ROS_DOMAIN_ID` first, or set `OPENRAL_ALLOW_NETWORK_ROS=1`.
 `ROS_LOCALHOST_ONLY=1` (deprecated) also counts as host-confined, since rcl lets
 it override both variables. The shared decision is
@@ -122,6 +137,8 @@ export ROS_DOMAIN_ID=23                     # same value everywhere; not 0 or a 
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET # or LOCALHOST + ROS_STATIC_PEERS=<ip>
 export ROS_SECURITY_ENABLE=true ROS_SECURITY_STRATEGY=Enforce ROS_SECURITY_KEYSTORE=<keystore>
 export OPENRAL_ALLOW_NETWORK_ROS=1          # on the host running `openral deploy run`
+                                            # (without it, deploy run/sim replace SUBNET
+                                            # with LOCALHOST: setup.bash exports SUBNET)
 ```
 
 A same-host driver started by hand in another terminal (not from the scene's

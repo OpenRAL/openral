@@ -61,11 +61,29 @@ class TestConfineSimScope:
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
         assert env["ROS_DOMAIN_ID"] == _dds_scope.SIM_DOMAIN_ID
 
-    def test_an_explicit_operator_scope_wins(self) -> None:
-        """Attaching a dashboard from another host has to stay possible."""
-        env = {"ROS_DOMAIN_ID": "5", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+    def test_a_sourced_shells_subnet_is_confined(self) -> None:
+        """``source /opt/ros/jazzy/setup.bash`` exports SUBNET whenever the range is
+        unset, so an exported SUBNET is ROS's default, not a choice. Observed
+        2026-11-12: ``deploy sim`` ran on SUBNET in every freshly sourced shell."""
+        env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
         _dds_scope.confine_sim_scope(env)
-        assert env == {"ROS_DOMAIN_ID": "5", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+
+    def test_the_opt_in_keeps_an_operators_subnet(self) -> None:
+        """Attaching a dashboard from another host has to stay possible."""
+        env = {
+            "ROS_DOMAIN_ID": "5",
+            "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",
+            _dds_scope.ALLOW_NETWORK_ROS_ENV: "1",
+        }
+        _dds_scope.confine_sim_scope(env)
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "SUBNET"
+        assert env["ROS_DOMAIN_ID"] == "5"
+
+    def test_a_range_ros_never_exports_is_an_operator_choice(self) -> None:
+        env = {"ROS_DOMAIN_ID": "5", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SYSTEM_DEFAULT"}
+        _dds_scope.confine_sim_scope(env)
+        assert env == {"ROS_DOMAIN_ID": "5", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SYSTEM_DEFAULT"}
 
 
 class TestConfineRealScope:
@@ -120,12 +138,20 @@ class TestConfineRealScope:
         _dds_scope.confine_real_scope(env, robot_id="openarm")
         assert env == {"ROS_DOMAIN_ID": "42", "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
 
+    @pytest.mark.parametrize("subnet", ["SUBNET", "subnet", " SUBNET "])
+    def test_a_sourced_shells_subnet_is_confined_not_refused(self, subnet: str) -> None:
+        """setup.bash exports SUBNET when unset: without the opt-in it is ROS's
+        default, so ``deploy run`` confines it rather than refusing every stock shell."""
+        env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": subnet}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
     @pytest.mark.parametrize(
         "scope",
         [
-            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"},
-            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "subnet"},
             {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SYSTEM_DEFAULT"},
+            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", "ROS_STATIC_PEERS": "10.0.0.2"},
             {"ROS_STATIC_PEERS": "192.168.1.20"},
             {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_STATIC_PEERS": "10.0.0.2"},
         ],
@@ -210,14 +236,15 @@ class TestConfineRealScope:
         assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
 
     def test_localhost_only_zero_does_not_confine(self) -> None:
-        env = {"ROS_LOCALHOST_ONLY": "0", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+        env = {"ROS_LOCALHOST_ONLY": "0", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SYSTEM_DEFAULT"}
         with pytest.raises(ROSConfigError):
             _dds_scope.confine_real_scope(env, robot_id="openarm")
 
     def test_an_opt_in_other_than_one_does_not_count(self) -> None:
+        """Without the exact opt-in, SUBNET stays ROS's default and is confined."""
         env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", _dds_scope.ALLOW_NETWORK_ROS_ENV: "true"}
-        with pytest.raises(ROSConfigError):
-            _dds_scope.confine_real_scope(env, robot_id="openarm")
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
 
     def test_the_opt_in_keeps_the_networked_scope_and_still_leaves_domain_zero(
         self, sros2_env: Callable[[str], dict[str, str]]
@@ -359,9 +386,24 @@ class TestDeployRunAppliesTheRealScope:
         from openral_cli import deploy_sim
 
         monkeypatch.delenv(_dds_scope.ALLOW_NETWORK_ROS_ENV, raising=False)
-        monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET")
+        monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SYSTEM_DEFAULT")
         with pytest.raises(ROSConfigError):
             deploy_sim._prepare_launch_env(hal_mode="real", robot_id="openarm")
+
+    @pytest.mark.parametrize("hal_mode", ["sim", "real"])
+    def test_a_freshly_sourced_shell_is_confined(
+        self, monkeypatch: pytest.MonkeyPatch, hal_mode: str
+    ) -> None:
+        """The 2026-11-12 regression: ``setup.bash`` exported SUBNET, so ``deploy sim``
+        ran on the LAN and ``deploy run`` refused a real robot as networked."""
+        from openral_cli import deploy_sim
+
+        for name in ("ROS_DOMAIN_ID", "ROS_LOCALHOST_ONLY", "ROS_STATIC_PEERS"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_NETWORK_ROS_ENV, raising=False)
+        monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET")
+        env = deploy_sim._prepare_launch_env(hal_mode=hal_mode, robot_id="so101_follower")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
 
 
 class TestGraphOccupancyGuard:

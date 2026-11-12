@@ -44,7 +44,11 @@ from typing import Final
 
 import structlog
 from openral_core.exceptions import ROSConfigError
-from openral_core.ros_graph_scope import ALLOW_NETWORK_ROS_ENV, require_host_confined_ros_scope
+from openral_core.ros_graph_scope import (
+    ALLOW_NETWORK_ROS_ENV,
+    discovery_range_is_ros_default,
+    require_host_confined_ros_scope,
+)
 
 __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
@@ -143,17 +147,21 @@ _HARDWARE_SIGNATURES: Final[tuple[str, ...]] = (
 def confine_sim_scope(env: dict[str, str]) -> None:
     """Pin a simulation to its own host and its own DDS domain, in place.
 
-    Both settings are skipped when the caller has already exported a non-empty
-    one (an empty one is unset to ROS: SUBNET, domain 0), so an
-    operator who wants a shared graph keeps it by saying so — the same posture
-    ``packages/openral_safety_watchdog/test/conftest.py`` takes for
-    ``ROS_DOMAIN_ID``.
+    An operator's own choice wins, so a shared graph stays possible by saying so
+    — the same posture ``packages/openral_safety_watchdog/test/conftest.py``
+    takes for ``ROS_DOMAIN_ID``. A non-empty ``ROS_DOMAIN_ID`` is a choice. For
+    the range, ``SUBNET`` is not: ROS's ``setup.bash`` exports it into every
+    sourced shell, so it is confined like an unset range unless
+    ``OPENRAL_ALLOW_NETWORK_ROS=1`` says the LAN is wanted
+    (``openral_core.ros_graph_scope.discovery_range_is_ros_default``). An empty
+    value is unset to ROS: SUBNET, domain 0.
 
     Args:
         env: The launch environment, mutated in place.
     """
-    # Not setdefault: an exported-but-empty value is unset to ROS (SUBNET, domain 0).
-    if not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip():
+    # Not setdefault: an exported-but-empty value is unset to ROS (SUBNET, domain 0),
+    # and an exported SUBNET is what setup.bash leaves in every sourced shell.
+    if discovery_range_is_ros_default(env):
         env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
     if not env.get("ROS_DOMAIN_ID", "").strip():
         env["ROS_DOMAIN_ID"] = SIM_DOMAIN_ID
@@ -190,8 +198,12 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
     """Keep a real robot's ROS graph on its own host and off domain 0, in place.
 
     Defaults ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` and
-    ``ROS_DOMAIN_ID=real_domain_id(robot_id)``; an exported non-empty value of
-    either wins (an empty one is what ROS reads as unset: SUBNET, domain 0).
+    ``ROS_DOMAIN_ID=real_domain_id(robot_id)``; an exported non-empty domain wins,
+    and so does an exported range other than ROS's default (an empty one is what
+    ROS reads as unset: SUBNET, domain 0). ``SUBNET`` is that default — ROS's
+    ``setup.bash`` exports it into every sourced shell — so it is replaced by
+    ``LOCALHOST`` unless ``OPENRAL_ALLOW_NETWORK_ROS=1`` says the LAN is wanted
+    (``openral_core.ros_graph_scope.discovery_range_is_ros_default``).
     A scope that reaches other hosts (``ROS_STATIC_PEERS`` set, or a range other
     than ``LOCALHOST`` / ``OFF``) is refused unless
     ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set, and logged as a warning when it is.
@@ -214,10 +226,11 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
     localhost_only = env.get("ROS_LOCALHOST_ONLY", "").strip() == "1"
     # Static peers do not replace the range: unset is still SUBNET to ROS, so the
     # LOCALHOST default applies with or without them (LOCALHOST + one peer).
-    defaulted = not localhost_only and not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip()
+    defaulted = not localhost_only and discovery_range_is_ros_default(env)
     # The defaults first, on a copy, so a refusal leaves `env` untouched. Not
-    # setdefault: an exported-but-empty value means SUBNET / domain 0 to ROS. The
-    # domain is in the copy because a secured graph's keystore is checked against it.
+    # setdefault: an exported-but-empty value means SUBNET / domain 0 to ROS, and an
+    # exported SUBNET is what setup.bash leaves in every sourced shell. The domain is
+    # in the copy because a secured graph's keystore is checked against it.
     domain = env.get("ROS_DOMAIN_ID", "").strip() or real_domain_id(robot_id)
     scoped = {**env, "ROS_DOMAIN_ID": domain}
     if defaulted:

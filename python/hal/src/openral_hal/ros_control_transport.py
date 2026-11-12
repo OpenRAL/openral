@@ -270,6 +270,7 @@ class RosControlTransport:
         # of `node` (see module docstring). Same context, so the same graph.
         import rclpy  # noqa: PLC0415  # reason: ROS-only dep
         from controller_manager_msgs.srv import (  # noqa: PLC0415  # reason: ROS-only dep
+            ConfigureController,
             ListControllers,
             SwitchController,
         )
@@ -280,6 +281,7 @@ class RosControlTransport:
         self._rclpy = rclpy
         self._switch_type: Any = SwitchController
         self._list_type: Any = ListControllers
+        self._configure_type: Any = ConfigureController
         self._helper = _Node(f"{node.get_name()}_controller_stop", context=node.context)
         self._executor = SingleThreadedExecutor(context=node.context)
         self._executor.add_node(self._helper)
@@ -288,6 +290,9 @@ class RosControlTransport:
         )
         self._list_client = self._helper.create_client(
             ListControllers, f"{self._controller_manager}/list_controllers"
+        )
+        self._configure_client = self._helper.create_client(
+            ConfigureController, f"{self._controller_manager}/configure_controller"
         )
         self._trigger_clients: dict[str, Any] = {
             service: self._helper.create_client(Trigger, service) for service in trigger_services
@@ -548,6 +553,26 @@ class RosControlTransport:
                 f"{sorted(self._empty_pubs)}"
             )
         publisher.publish(self._empty_type())
+
+    def configure_controller(self, name: str, *, timeout_s: float) -> bool:
+        """Configure one loaded controller (`configure_controller`); True when the manager says ok.
+
+        Part of `ControllerSwapSeam`: a swap is requested BEST_EFFORT, and the manager drops
+        the activation of a controller that is not `inactive` while still applying the
+        swap's deactivations, so a HAL configures its holding controller before swapping.
+        """
+        deadline = time.monotonic() + timeout_s
+        if not self._configure_client.wait_for_service(timeout_sec=timeout_s):
+            return False
+        request = self._configure_type.Request()
+        request.name = name
+        future = self._configure_client.call_async(request)
+        self._rclpy.spin_until_future_complete(
+            self._helper, future, executor=self._executor, timeout_sec=_left(deadline)
+        )
+        if not future.done() or future.exception() is not None:
+            return False
+        return bool(future.result().ok)
 
     def controller_states(self, *, timeout_s: float) -> dict[str, str]:
         """Return `{name: state}` from `list_controllers`; empty if the manager did not answer."""
