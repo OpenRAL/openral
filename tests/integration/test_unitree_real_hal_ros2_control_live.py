@@ -346,3 +346,51 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
         cm_log = (tmp_path / "controller_manager.log").read_text(errors="replace")
         assert "blend_ratio was 1 at activation; reset to 0.0" in cm_log, cm_log[-2000:]
         transport.close()
+
+
+def test_estop_configures_an_unconfigured_freeze_controller_before_the_swap(
+    s0_graph: None,
+) -> None:
+    """#566: the swap is BEST_EFFORT, so a real `controller_manager` drops the activation of
+    an unconfigured `freeze_controller` while still deactivating the chain — every joint
+    unclaimed (zero torque on the hg hardware). The HAL configures it first."""
+    from openral_core import RobotDescription
+    from openral_core.exceptions import ROSEStopRequested
+    from openral_hal import build_hal
+    from openral_hal.ros_control_transport import RosControlTransport
+    from openral_hal.unitree_real import UnitreeHgRealHAL
+
+    cleanup = _run(["ros2", "control", "cleanup_controller", "freeze_controller"])
+    assert cleanup.returncode == 0, cleanup.stdout + cleanup.stderr
+
+    desc = RobotDescription.from_yaml(str(_G1_YAML))
+    hal = build_hal(desc, mode="real")
+    assert isinstance(hal, UnitreeHgRealHAL)
+    with driver_node("unitree_hal_live_566") as (node, spin):
+        bindings = hal.command_bindings()
+        transport = RosControlTransport(
+            node,
+            command_topics=list(bindings),
+            joint_names=hal.ros2_control_joint_names(),
+            joint_state_topic=hal.joint_state_topic,
+            command_kinds=bindings,
+            controller_names=hal.controller_names(),
+        )
+        hal.attach_transport(transport.publish, transport.state, transport.last_arrival)
+        hal.attach_controller_stop(transport)
+        assert wait_until(spin, lambda: not transport.missing_joints(), 20.0), (
+            f"/joint_states never carried {transport.missing_joints()}"
+        )
+        assert transport.controller_states(timeout_s=5.0).get("freeze_controller") == (
+            "unconfigured"
+        )
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="acknowledged"):
+            hal.estop()
+        report = hal.last_stop_report
+        assert report is not None and report.stopped, report
+        states = transport.controller_states(timeout_s=5.0)
+        assert states.get("freeze_controller") == "active", states
+        for controller in hal.controller_names():
+            assert states.get(controller) == "inactive", states
+        transport.close()

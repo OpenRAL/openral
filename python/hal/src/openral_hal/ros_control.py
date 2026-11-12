@@ -224,9 +224,13 @@ class ControllerSwapSeam(Protocol):
     (zero torque) for an unclaimed joint, so deactivating a standing humanoid's
     controllers drops it. Such a robot must hand its joints to a holding
     controller in the same request that releases them, so no control cycle
-    runs with the joints unclaimed. ``RosControlTransport`` and
-    ``SimTransport`` both implement this; a HAL that needs it refuses a seam
-    without it at ``attach_controller_stop`` time.
+    runs with the joints unclaimed. A swap is requested BEST_EFFORT, and the
+    manager keeps a swap's deactivations even when an activation is dropped
+    (a controller not ``inactive``) or fails (its ``on_activate`` errors), so
+    the seam also lists states, configures a controller, and activates one
+    alone — the pre-check and the retry ``UnitreeHgRealHAL`` runs (#566).
+    ``RosControlTransport`` and ``SimTransport`` both implement this; a HAL that
+    needs it refuses a seam without it at ``attach_controller_stop`` time.
     """
 
     def swap_controllers(
@@ -237,6 +241,20 @@ class ControllerSwapSeam(Protocol):
         timeout_s: float,
     ) -> ControllerSwitchReport:
         """Deactivate ``deactivate`` and activate ``activate`` in one switch, then confirm."""
+        ...
+
+    def activate_controllers(
+        self, names: Sequence[str], *, timeout_s: float
+    ) -> ControllerSwitchReport:
+        """Activate every named controller and confirm each reads ``active``."""
+        ...
+
+    def controller_states(self, *, timeout_s: float) -> dict[str, str]:
+        """``{name: state}`` for every loaded controller; empty if the manager did not answer."""
+        ...
+
+    def configure_controller(self, name: str, *, timeout_s: float) -> bool:
+        """Configure one loaded controller; ``True`` when the manager acknowledged it."""
         ...
 
 
