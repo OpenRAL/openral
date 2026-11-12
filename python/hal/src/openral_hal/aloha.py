@@ -64,6 +64,7 @@ Example:
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Sequence
 from typing import Protocol, runtime_checkable
@@ -549,9 +550,15 @@ class AlohaHAL(HALBase):
                 f"(follower_left/follower_right); got {list(arm_namespaces)!r}."
             )
         self.description: RobotDescription = description or ALOHA_REAL_DESCRIPTION
-        if isinstance(gripper_cmd_range, str) or len(gripper_cmd_range) != 2:  # noqa: PLR2004
+        if (
+            isinstance(gripper_cmd_range, str)
+            or len(gripper_cmd_range) != 2  # noqa: PLR2004
+            or not all(math.isfinite(float(v)) for v in gripper_cmd_range)
+            or float(gripper_cmd_range[0]) == float(gripper_cmd_range[1])
+        ):
             raise ROSConfigError(
-                f"AlohaHAL gripper_cmd_range must be (closed, open); got {gripper_cmd_range!r}."
+                "AlohaHAL gripper_cmd_range must be two distinct finite values (closed, open); "
+                f"got {gripper_cmd_range!r}."
             )
         self._arm_group = arm_group
         self._gripper_name = gripper_name
@@ -669,7 +676,8 @@ class AlohaHAL(HALBase):
         Raises:
             ROSRuntimeError: If not connected.
             ROSConfigError: If ``action.control_mode`` is not
-                ``JOINT_POSITION`` or the joint count is wrong.
+                ``JOINT_POSITION``, the joint count is wrong or the sent step
+                is not finite. The gripper value is clamped to ``[0, 1]``.
         """
         self._require_connected("send_action")
         if action.control_mode != ControlMode.JOINT_POSITION:
@@ -688,6 +696,8 @@ class AlohaHAL(HALBase):
 
         # Index layout — see class docstring.
         step = action.joint_targets[0]
+        if not all(math.isfinite(v) for v in step):
+            raise ROSConfigError(f"AlohaHAL.send_action got a non-finite target: {list(step)!r}.")
         span = self._gripper_open - self._gripper_closed
         publish = self._publish_fn
         assert publish is not None  # connect() refuses without one
@@ -696,7 +706,11 @@ class AlohaHAL(HALBase):
             publish(f"/{ns}/commands/joint_group", {"name": self._arm_group, "cmd": list(arm)})
             publish(
                 f"/{ns}/commands/joint_single",
-                {"name": self._gripper_name, "cmd": self._gripper_closed + grip * span},
+                # Clamped: an overshoot past [0, 1] must not drive past the calibrated stops.
+                {
+                    "name": self._gripper_name,
+                    "cmd": self._gripper_closed + min(max(grip, 0.0), 1.0) * span,
+                },
             )
         log.debug(
             "hal.send_action",
