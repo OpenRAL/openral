@@ -15427,6 +15427,9 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
     # The 9B of the same family (``ollama pull qwen3.5:9b``, Q4_K_M, 6.6 GB), same
     # rig on Ollama 0.40.16: so101_follower 20/20 (median 18.8 s, 12% of the model
     # offloaded to CPU), franka_panda's full palette 20/20 (16.3 s), frames 2/2.
+    # On the bootstrap's pinned Ollama 0.32.14 (RTX 5090, #559): so101_follower
+    # 18, 17 and 20 /20 over three runs (~3.2 s), franka_panda 20/20 (3.8 s); the
+    # "eraser on the square" frame 7/10, as on 0.40.16 (7/10, 6/10).
     "qwen3.5-9b": ReasonerModel(
         id="qwen3.5-9b",
         display_name="Qwen 3.5 9B (Ollama, on the robot)",
