@@ -20,6 +20,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
+import structlog
+
 from openral_core.exceptions import ROSConfigError
 from openral_core.ros_security import require_secure_ros_graph, ros_security_enabled
 
@@ -27,6 +29,7 @@ __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
     "discovery_range_is_ros_default",
     "networked_ros_scope",
+    "require_host_confined_real_bringup",
     "require_host_confined_ros_scope",
 ]
 
@@ -212,3 +215,39 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
             f"and ROS_SECURITY_KEYSTORE on every host."
         )
     return scope
+
+
+def require_host_confined_real_bringup(
+    launch: str, env: Mapping[str, str], *, included_by_deploy: bool
+) -> None:
+    """The gate every in-tree vendor ``real_bringup`` launch runs before composing any node.
+
+    Applies ``require_host_confined_ros_scope`` to ``env`` (the launch's own
+    ``os.environ``: its nodes inherit it). An opted-in networked scope is logged
+    (``ros_graph_scope.real_bringup_networked``) only on a hand run: under
+    ``deploy_e2e.launch.py`` its own gate is the one emitter per deploy (#558).
+
+    Args:
+        launch: The bringup's package name, logged with the hazard.
+        env: The environment the bringup's nodes run under.
+        included_by_deploy: Whether ``deploy_e2e.launch.py`` included the bringup
+            (its ``hal_mode`` launch configuration is set).
+
+    Raises:
+        ROSConfigError: Whatever ``require_host_confined_ros_scope`` refuses.
+
+    Example:
+        >>> require_host_confined_real_bringup(
+        ...     "openral_hal_openarm",
+        ...     {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"},
+        ...     included_by_deploy=False,
+        ... )
+    """
+    scope = require_host_confined_ros_scope(env)
+    if scope is not None and not included_by_deploy:
+        structlog.get_logger(__name__).warning(
+            "ros_graph_scope.real_bringup_networked",
+            launch=launch,
+            scope=scope,
+            hazard="every host on this network can command the robot",
+        )

@@ -89,13 +89,15 @@ it override both variables. The shared decision is
 `openral_core.ros_graph_scope.require_host_confined_ros_scope`; the launch hook
 is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
 
-**So is a hand-run vendor bringup.** Every `hal.real_bringup` launch
+**So is a hand-run vendor bringup.** Every in-tree `hal.real_bringup` launch
 (`openral_hal_openarm` and `openral_hal_unitree` `real_bringup.launch.py`) applies the
 same decision to its own environment before composing any node, through
-`openral_core.ros_graph_scope.require_host_confined_ros_scope`; a new real bringup
+`openral_core.ros_graph_scope.require_host_confined_real_bringup`; a new real bringup
 must call it first too (`tests/integration/test_real_bringup_graph_gate_live.py` runs every
-in-tree manifest bringup on a networked environment and fails when it is not refused). A
-bringup only refuses; an opted-in scope is logged once, by the deploy launch's gate. The
+in-tree manifest bringup on a networked environment and fails when it is not refused). An
+opted-in scope is logged by the bringup on a hand run and by the deploy launch's gate
+under `deploy run`, once either way. An upstream vendor launch named in `hal.real_bringup`
+carries no gate of its own: run it by hand only on a host-confined environment. The
 check imports `openral_core`, so a hand run uses the OpenRAL venv interpreter:
 
 ```bash
