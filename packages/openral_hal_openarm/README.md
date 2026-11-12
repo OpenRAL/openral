@@ -80,10 +80,15 @@ a second copy puts a second `/joint_states` publisher on the graph, and
 `openral_cli._dds_scope`, #227).
 
 To bring the controllers up on their own — verifying the CAN wiring before
-involving the rest of the stack — the launch file is still directly runnable:
+involving the rest of the stack — the launch file is still directly runnable, under the
+OpenRAL venv interpreter and on a host-confined graph. It refuses an unset or `SUBNET`
+`ROS_AUTOMATIC_DISCOVERY_RANGE` (the one `setup.bash` exports) unless
+`OPENRAL_ALLOW_NETWORK_ROS=1`, so it never joins the LAN graph by default
+([ros-graph-security](../../docs/reference/ros-graph-security.md)):
 
 ```bash
-ros2 launch openral_hal_openarm real_bringup.launch.py
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+.venv/bin/python "$(command -v ros2)" launch openral_hal_openarm real_bringup.launch.py
 ```
 
 Verify before trusting `/joint_states`. CAN traffic and controller "active"
