@@ -253,6 +253,18 @@ class TestConfineRealScope:
         with pytest.raises(ROSConfigError, match="ROS_SECURITY_STRATEGY=Enforce"):
             _dds_scope.confine_real_scope(env, robot_id="openarm")
 
+    def test_a_networked_zenoh_graph_is_refused_even_with_a_keystore(
+        self, sros2_env: Callable[[str], dict[str, str]]
+    ) -> None:
+        """Zenoh's access control is its own config; the DDS keystore secures nothing there."""
+        env = {
+            **sros2_env(_dds_scope.real_domain_id("openarm")),
+            "RMW_IMPLEMENTATION": "rmw_zenoh_cpp",
+            _dds_scope.ALLOW_NETWORK_ROS_ENV: "1",
+        }
+        with pytest.raises(ROSConfigError, match="SROS2 enclaves secure DDS only"):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+
     def test_a_keystore_for_another_domain_is_refused(
         self, sros2_env: Callable[[str], dict[str, str]]
     ) -> None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import os
+import shlex
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -201,15 +202,29 @@ def security_init_command(
     except ROSConfigError as exc:
         typer.echo(f"openral security init: {exc}", err=True)
         raise typer.Exit(code=1) from exc
-    if path.exists():
-        shutil.rmtree(path)
-    staging.rename(path)
     exports = {
         "ROS_DOMAIN_ID": domain,
         "ROS_SECURITY_KEYSTORE": str(path),
         "ROS_SECURITY_ENABLE": "true",
         "ROS_SECURITY_STRATEGY": "Enforce",
     }
-    require_secure_ros_graph(exports)
+    try:
+        require_secure_ros_graph({**exports, "ROS_SECURITY_KEYSTORE": str(staging)})
+    except ROSConfigError as exc:
+        shutil.rmtree(staging)
+        typer.echo(f"openral security init: the new keystore is unusable: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    # The old keystore stays restorable until the new one is in place.
+    previous = path.with_name(f".{path.name}.old")
+    shutil.rmtree(previous, ignore_errors=True)
+    if path.exists():
+        path.rename(previous)
+    try:
+        staging.rename(path)
+    except OSError:
+        if previous.exists():
+            previous.rename(path)
+        raise
+    shutil.rmtree(previous, ignore_errors=True)
     typer.echo(f"openral security init: keystore for {robot_id} (domain {domain}) at {path}")
-    typer.echo("export " + " ".join(f"{k}={v}" for k, v in exports.items()))
+    typer.echo("export " + " ".join(f"{k}={shlex.quote(v)}" for k, v in exports.items()))

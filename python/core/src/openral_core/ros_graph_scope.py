@@ -155,6 +155,14 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
             f"(`openral security init <robot_id>`) and export the same ROS_DOMAIN_ID on "
             f"every host.",
         )
+    if env.get("RMW_IMPLEMENTATION", "").strip() == _ZENOH_RMW:
+        # ADR-0130: Zenoh's access control is its own session/router config, not the
+        # DDS keystore, so a valid keystore says nothing about who may join a Zenoh graph.
+        raise ROSConfigError(
+            f"refusing to start a real robot on a networked {_ZENOH_RMW} graph: SROS2 "
+            f"enclaves secure DDS only. Use rmw_cyclonedds_cpp or rmw_fastrtps_cpp with "
+            f"`openral security init`, or keep the Zenoh graph on this host."
+        )
     if not ros_security_enabled(env):
         # ADR-0130: the opt-in alone is not enough; there is no unsecured networked cell.
         raise ROSConfigError(

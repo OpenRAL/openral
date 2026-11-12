@@ -137,7 +137,10 @@ real launch also require `ROS_SECURITY_ENABLE=true`, `ROS_SECURITY_STRATEGY=Enfo
 and a keystore that holds the five OpenRAL enclaves for the graph's
 `ROS_DOMAIN_ID`. There is no flag around it. A host-confined cell and a sim may
 run secured too; whenever `ROS_SECURITY_ENABLE=true` is exported the keystore is
-checked before launch (`openral_core.ros_security.require_secure_ros_graph`).
+checked before launch (`openral_core.ros_security.require_secure_ros_graph`): every
+enclave present, the signed governance admits the domain, and the signed permissions
+really deny the protected surfaces (an allow-everything keystore made with plain
+`ros2 security create_enclave` is refused).
 
 ### Set it up
 

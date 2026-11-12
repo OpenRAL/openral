@@ -56,6 +56,28 @@ _SURFACES: list[tuple[str, str]] = [
     ("act", "/arm_controller/follow_joint_trajectory"),
 ]
 
+#: The interface each surface really carries, so the probes create the deployed endpoints.
+_TYPES: dict[str, str] = {
+    "/openral/safe_action": "openral_msgs.msg:ActionChunk",
+    "/openral/estop_cleared": "std_msgs.msg:Empty",
+    "/franka_arm_controller/joint_trajectory": "trajectory_msgs.msg:JointTrajectory",
+    "/scaled_joint_trajectory_controller/joint_trajectory": "trajectory_msgs.msg:JointTrajectory",
+    "/forward_position_controller/commands": "std_msgs.msg:Float64MultiArray",
+    "/joint_states": "sensor_msgs.msg:JointState",
+    "/openral_hal_franka_panda/joint_states": "sensor_msgs.msg:JointState",
+    "/openral/estop": "std_msgs.msg:Empty",
+    "/openral/prompt": "openral_msgs.msg:PromptStamped",
+    "/openral/estop_reset": "std_srvs.srv:Trigger",
+    "/openral_safety_kernel/change_state": "lifecycle_msgs.srv:ChangeState",
+    "/openral_safety_kernel/set_parameters": "rcl_interfaces.srv:SetParameters",
+    "/openral_hal_franka_panda/change_state": "lifecycle_msgs.srv:ChangeState",
+    "/openral_deadman_watchdog/set_parameters": "rcl_interfaces.srv:SetParameters",
+    "/safety_controller/set_parameters": "rcl_interfaces.srv:SetParameters",
+    "/controller_manager/switch_controller": "controller_manager_msgs.srv:SwitchController",
+    "/openral_segmenter/change_state": "lifecycle_msgs.srv:ChangeState",
+    "/arm_controller/follow_joint_trajectory": "control_msgs.action:FollowJointTrajectory",
+}
+
 _ALL = {name for _, name in _SURFACES}
 _COMMANDS = {
     "/openral/safe_action",
@@ -102,28 +124,30 @@ _NOT_SERVED: dict[str, set[str]] = {
 }
 
 _CREATE_PROBE = """
-import json, sys, rclpy
+import importlib, json, sys, rclpy
 from rclpy.action import ActionClient, ActionServer
-from std_msgs.msg import String
-from std_srvs.srv import Trigger
-from control_msgs.action import FollowJointTrajectory
+types = json.loads(sys.argv[2])
+def kind_of(name):
+    module, cls = types[name].split(":")
+    return getattr(importlib.import_module(module), cls)
 rclpy.init()
 node = rclpy.create_node("openral_sros2_probe")
 result = {}
 for kind, name in json.loads(sys.argv[1]):
+    interface = kind_of(name)
     try:
         if kind == "pub":
-            node.create_publisher(String, name, 10)
+            node.create_publisher(interface, name, 10)
         elif kind == "sub":
-            node.create_subscription(String, name, lambda _m: None, 10)
+            node.create_subscription(interface, name, lambda _m: None, 10)
         elif kind == "cli":
-            node.create_client(Trigger, name)
+            node.create_client(interface, name)
         elif kind == "srv":
-            node.create_service(Trigger, name, lambda _req, res: res)
+            node.create_service(interface, name, lambda _req, res: res)
         elif kind == "exe":
-            ActionServer(node, FollowJointTrajectory, name, lambda _goal: None)
+            ActionServer(node, interface, name, lambda _goal: None)
         else:
-            ActionClient(node, FollowJointTrajectory, name)
+            ActionClient(node, interface, name)
         result[kind + " " + name] = True
     except Exception:  # rclpy raises RCLError when the access-control plugin refuses
         result[kind + " " + name] = False
@@ -165,6 +189,8 @@ def secured_env(
     pytest.importorskip("rclpy")
     pytest.importorskip("control_msgs.action")
     pytest.importorskip("openral_msgs.msg")
+    pytest.importorskip("controller_manager_msgs.srv")
+    pytest.importorskip("trajectory_msgs.msg")
     if shutil.which("ros2") is None:
         pytest.skip("needs a sourced ROS 2 with sros2")
     keystore = tmp_path_factory.mktemp("sros2") / "franka_panda"
@@ -219,7 +245,9 @@ def _run(env: dict[str, str], enclave: str | None, code: str, *args: str) -> str
 
 @pytest.mark.parametrize("enclave", sorted(_ALLOWED))
 def test_each_enclave_gets_exactly_its_surfaces(secured_env: dict[str, str], enclave: str) -> None:
-    created = json.loads(_run(secured_env, enclave, _CREATE_PROBE, json.dumps(_SURFACES)))
+    created = json.loads(
+        _run(secured_env, enclave, _CREATE_PROBE, json.dumps(_SURFACES), json.dumps(_TYPES))
+    )
     assert {key.split(" ", 1)[1] for key, ok in created.items() if ok} == _ALLOWED[enclave]
 
 
@@ -235,7 +263,9 @@ def test_every_enclave_still_reads_and_serves_the_protected_surfaces(
     probes = [("sub", name) for kind, name in _SURFACES if kind == "pub"]
     probes += [("srv", name) for kind, name in _SURFACES if kind == "cli"]
     probes += [("exe", name) for kind, name in _SURFACES if kind == "act"]
-    created = json.loads(_run(secured_env, enclave, _CREATE_PROBE, json.dumps(probes)))
+    created = json.loads(
+        _run(secured_env, enclave, _CREATE_PROBE, json.dumps(probes), json.dumps(_TYPES))
+    )
     refused = {key.split(" ", 1)[1] for key, ok in created.items() if not ok}
     assert refused == _NOT_SERVED[enclave]
 
@@ -274,6 +304,8 @@ def test_kernel_chunks_reach_the_hal_and_no_keyless_participant(
     hal = start("/openral/hal", "sub")
     intruder = start(None, "pub")
     out, err = hal.communicate(timeout=60)
-    intruder.communicate(timeout=60)
+    intruder_out, intruder_err = intruder.communicate(timeout=60)
+    # The intruder must have published for real: a crashed publisher would also deliver 0.
+    assert intruder.returncode == 0, intruder_out + intruder_err
     assert hal.returncode == 0, out + err
     assert int(out.strip().splitlines()[-1]) == 0

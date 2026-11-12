@@ -9,7 +9,8 @@ where one is needed (``sros2_env``, skipped without a sourced ROS 2).
 
 from __future__ import annotations
 
-import shutil
+import os
+import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
@@ -26,6 +27,8 @@ from openral_core.ros_security import (
     render_sros2_policy,
     require_secure_ros_graph,
 )
+
+from tests.unit.conftest import skip_without_sros2
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -109,8 +112,7 @@ def test_force_regenerates_and_a_refused_init_keeps_the_keystore(tmp_path: Path)
     from openral_cli.main import app
     from typer.testing import CliRunner
 
-    if shutil.which("ros2") is None:
-        pytest.skip("SROS2 keystore needs a sourced ROS 2 install (`ros2` not on PATH)")
+    skip_without_sros2()
     keystore = tmp_path / "openarm"
     runner = CliRunner()
     args = ["security", "init", "openarm", "--keystore", str(keystore), "--domain-id", "43"]
@@ -134,3 +136,51 @@ def test_force_regenerates_and_a_refused_init_keeps_the_keystore(tmp_path: Path)
             "ROS_DOMAIN_ID": "43",
         }
     )
+
+
+def _secured(keystore: Path, domain: str) -> dict[str, str]:
+    return {
+        "ROS_SECURITY_ENABLE": "true",
+        "ROS_SECURITY_STRATEGY": "Enforce",
+        "ROS_SECURITY_KEYSTORE": str(keystore),
+        "ROS_DOMAIN_ID": domain,
+    }
+
+
+def test_the_domain_is_read_from_the_signed_governance(
+    sros2_env: Callable[[str], dict[str, str]],
+) -> None:
+    """DDS loads governance.p7s; an edited governance.xml must not change the answer."""
+    env = sros2_env("31")
+    keystore = Path(env["ROS_SECURITY_KEYSTORE"])
+    unsigned = keystore / "enclaves" / "governance.xml"
+    original = unsigned.read_text()
+    unsigned.write_text(original.replace("<id>31</id>", "<id>32</id>"))
+    try:
+        with pytest.raises(ROSConfigError, match="not ROS_DOMAIN_ID=32"):
+            require_secure_ros_graph(_secured(keystore, "32"))
+        require_secure_ros_graph(_secured(keystore, "31"))
+    finally:
+        unsigned.write_text(original)
+
+
+def test_an_allow_everything_keystore_is_refused(tmp_path: Path) -> None:
+    """`ros2 security create_enclave` signs allow-all permissions: valid, but not a policy."""
+    skip_without_sros2()
+    keystore = tmp_path / "plain"
+    env = {**os.environ, "ROS_DOMAIN_ID": "33"}
+    subprocess.run(
+        ["ros2", "security", "create_keystore", str(keystore)],
+        env=env,
+        capture_output=True,
+        check=True,
+    )
+    for enclave in OPENRAL_ENCLAVES:
+        subprocess.run(
+            ["ros2", "security", "create_enclave", str(keystore), enclave],
+            env=env,
+            capture_output=True,
+            check=True,
+        )
+    with pytest.raises(ROSConfigError, match="not an OpenRAL policy"):
+        require_secure_ros_graph(_secured(keystore, "33"))

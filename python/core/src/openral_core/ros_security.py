@@ -16,6 +16,8 @@ See ``docs/reference/ros-graph-security.md``.
 
 from __future__ import annotations
 
+import email
+import email.message
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
@@ -82,10 +84,45 @@ def ros_security_enabled(env: Mapping[str, str]) -> bool:
     return env.get("ROS_SECURITY_ENABLE") == "true"
 
 
-def _governance_domains(governance: Path) -> set[int]:
-    """The domain ids a keystore's ``governance.xml`` admits (``<id>`` and ``<id_range>``)."""
+#: Writes every enclave but the kernel's must be denied in its *signed* permissions, so a
+#: hand-made allow-everything keystore (``ros2 security create_enclave``) is refused.
+_REQUIRED_DENIALS: Final[dict[str, frozenset[str]]] = {
+    enclave: frozenset(
+        {"rt/openral/safe_action"}
+        | (
+            {"rq/openral/estop_resetRequest", "rq/openral_safety_kernel/change_stateRequest"}
+            if enclave == DEFAULT_ENCLAVE
+            else set()
+        )
+    )
+    for enclave in OPENRAL_ENCLAVES
+    if enclave != KERNEL_ENCLAVE
+}
+
+
+def _signed_xml(p7s: Path) -> ET.Element:
+    """The XML a signed keystore document carries: what DDS loads, not the unsigned copy.
+
+    sros2 and ``openssl smime -sign -text`` write S/MIME ``multipart/signed``; the
+    first part is the document. The signature itself is checked by DDS against the
+    keystore's CA at participant creation.
+    """
+    message = email.message_from_bytes(p7s.read_bytes())
+    if not message.is_multipart():
+        raise ValueError("not an S/MIME multipart/signed document")
+    part = message.get_payload(0)
+    if not isinstance(part, email.message.Message):
+        raise ValueError("signed document has no first part")
+    body = part.get_payload(decode=True)
+    if not isinstance(body, bytes):
+        raise ValueError("signed part has no body")
+    return ET.fromstring(body)
+
+
+def _governance_domains(governance: ET.Element) -> set[int]:
+    """The domain ids a governance document admits (``<id>`` and ``<id_range>``)."""
     domains: set[int] = set()
-    for rule in ET.parse(governance).getroot().iter("domains"):
+    for rule in governance.iter("domains"):
         for child in rule:
             if child.tag == "id" and child.text:
                 domains.add(int(child.text))
@@ -99,9 +136,12 @@ def require_secure_ros_graph(env: Mapping[str, str]) -> Path:
     """Refuse unless ``env`` runs the graph under SROS2 Enforce with a usable OpenRAL keystore.
 
     Usable: ``ROS_SECURITY_KEYSTORE`` holds every enclave in ``OPENRAL_ENCLAVES``
-    with its keys and signed files, and its governance admits ``ROS_DOMAIN_ID``
-    (unset = 0). rcl would otherwise fail one node at a time, or a node in a
-    missing enclave would silently not join.
+    with its keys and signed files, its signed governance admits ``ROS_DOMAIN_ID``
+    (unset = 0), and every enclave but the kernel's has signed permissions that
+    deny publishing ``/openral/safe_action`` (the default enclave also the E-stop
+    reset and the kernel's ``change_state``). rcl would otherwise fail one node at
+    a time, a node in a missing enclave would silently not join, or an
+    allow-everything keystore would pass for a policy.
 
     Returns:
         The keystore path.
@@ -137,11 +177,21 @@ def require_secure_ros_graph(env: Mapping[str, str]) -> Path:
                 f"keystore {keystore} has no usable enclave {enclave!r} "
                 f"(missing {', '.join(missing)} in {directory}). {remedy}"
             )
-    governance = enclaves / "governance.xml"
+    governance = enclaves / "governance.p7s"
     try:
-        domains = _governance_domains(governance)
+        domains = _governance_domains(_signed_xml(governance))
+        for enclave, required in _REQUIRED_DENIALS.items():
+            signed = enclaves / enclave.lstrip("/") / "permissions.p7s"
+            denied = {
+                t.text for t in _signed_xml(signed).iterfind(".//deny_rule/publish/topics/topic")
+            }
+            if missing_denials := sorted(required - denied):
+                raise ROSConfigError(
+                    f"keystore {keystore}: enclave {enclave!r}'s signed permissions do not "
+                    f"deny {missing_denials}; it is not an OpenRAL policy. {remedy}"
+                )
     except (OSError, ET.ParseError, ValueError) as exc:
-        raise ROSConfigError(f"cannot read {governance}: {exc}. {remedy}") from exc
+        raise ROSConfigError(f"cannot read keystore {keystore}: {exc}. {remedy}") from exc
     raw_domain = env.get("ROS_DOMAIN_ID", "").strip() or "0"
     if not raw_domain.isdigit():
         raise ROSConfigError(f"ROS_DOMAIN_ID={raw_domain!r} is not a domain number.")

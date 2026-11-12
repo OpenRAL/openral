@@ -693,17 +693,17 @@ _Whether a process's ROS graph reaches beyond this host — the one decision sha
 ### `python/core/src/openral_core/ros_security.py`
 _SROS2 (DDS-Security) enclaves for an OpenRAL graph (ADR-0130): the enclave names, the per-robot policy and the keystore check shared by the scope gate, `openral deploy`, the deploy launch and the operator CLIs. Threat model and the enclave table: `docs/reference/ros-graph-security.md`._
 
-- const `ENCLAVE_OVERRIDE_ENV: Final[str]` — `"ROS_SECURITY_ENCLAVE_OVERRIDE"`; rcl reads it before `--enclave`, so it pins one process's enclave. (L41)
-- const `DEFAULT_ENCLAVE: Final[str]` — `"/"`: every process the launch does not name, and any peer given the default key. (L44)
-- const `KERNEL_ENCLAVE: Final[str]` — `"/openral/safety_kernel"`: the C++ kernel, the only enclave allowed to publish `/openral/safe_action`. (L46)
-- const `HAL_ENCLAVE: Final[str]` — `"/openral/hal"`: the HAL plus the vendor `ros2_control` bringup and scene drivers. (L48)
-- const `LAUNCH_ENCLAVE: Final[str]` — `"/openral/launch"`: `ros2 launch` and `tools/lifecycle_autostart.py`, the only enclaves besides the kernel's allowed `change_state` on protected nodes. (L50)
-- const `OPERATOR_ENCLAVE: Final[str]` — `"/openral/operator"`: the dashboard, `openral estop reset`, `openral prompt`. (L52)
-- const `OPENRAL_ENCLAVES: Final[tuple[str, ...]]` — all five; a keystore must hold each. (L54)
-- `ros_security_enabled(env: Mapping[str, str]) -> bool` — `ROS_SECURITY_ENABLE` is exactly `"true"`, as rcl reads it. (L73)
-- `require_secure_ros_graph(env: Mapping[str, str]) -> Path` — Raises `ROSConfigError` unless `ROS_SECURITY_ENABLE=true`, `ROS_SECURITY_STRATEGY=Enforce`, `ROS_SECURITY_KEYSTORE` holds every enclave in `OPENRAL_ENCLAVES` with its keys and signed files, and the keystore's `governance.xml` admits `ROS_DOMAIN_ID` (unset = 0); returns the keystore path. (L98)
-- `default_operator_enclave(env: MutableMapping[str, str]) -> None` — When security is on, defaults `ROS_SECURITY_ENCLAVE_OVERRIDE` to `OPERATOR_ENCLAVE` in place (an exported one wins); called by `openral estop reset`, `openral prompt` and `openral dashboard`. (L158)
-- `render_sros2_policy(onboard_compute: Mapping[str, object]) -> str` — The sros2 0.2.0 policy for one robot: per enclave, deny rules for the protected surfaces it does not need (command topics incl. the manifest's `command_topic` / `gripper_command_topic`, state topics incl. `joint_state_topic`, `/openral/estop_reset`, `/controller_manager/*`, the trajectory action, and `change_state` / `set_parameters*` on the kernel, HAL, E-stop producers, compliance recorder and `safety_controller`), then allow `/*`. The operator keeps `/safety_controller` parameters (the G1 blend-in). (L215)
+- const `ENCLAVE_OVERRIDE_ENV: Final[str]` — `"ROS_SECURITY_ENCLAVE_OVERRIDE"`; rcl reads it before `--enclave`, so it pins one process's enclave. (L43)
+- const `DEFAULT_ENCLAVE: Final[str]` — `"/"`: every process the launch does not name, and any peer given the default key. (L46)
+- const `KERNEL_ENCLAVE: Final[str]` — `"/openral/safety_kernel"`: the C++ kernel, the only enclave allowed to publish `/openral/safe_action`. (L48)
+- const `HAL_ENCLAVE: Final[str]` — `"/openral/hal"`: the HAL plus the vendor `ros2_control` bringup and scene drivers. (L50)
+- const `LAUNCH_ENCLAVE: Final[str]` — `"/openral/launch"`: `ros2 launch` and `tools/lifecycle_autostart.py`, the only enclaves besides the kernel's allowed `change_state` on protected nodes. (L52)
+- const `OPERATOR_ENCLAVE: Final[str]` — `"/openral/operator"`: the dashboard, `openral estop reset`, `openral prompt`. (L54)
+- const `OPENRAL_ENCLAVES: Final[tuple[str, ...]]` — all five; a keystore must hold each. (L56)
+- `ros_security_enabled(env: Mapping[str, str]) -> bool` — `ROS_SECURITY_ENABLE` is exactly `"true"`, as rcl reads it. (L75)
+- `require_secure_ros_graph(env: Mapping[str, str]) -> Path` — Raises `ROSConfigError` unless `ROS_SECURITY_ENABLE=true`, `ROS_SECURITY_STRATEGY=Enforce`, `ROS_SECURITY_KEYSTORE` holds every enclave in `OPENRAL_ENCLAVES` with its keys and signed files, the *signed* governance (`governance.p7s`, what DDS loads) admits `ROS_DOMAIN_ID` (unset = 0, non-numeric refused), and every enclave but the kernel's has signed permissions denying `/openral/safe_action` publication (the default enclave also `estop_reset` and the kernel's `change_state`), so an allow-everything keystore is refused; returns the keystore path. (L135)
+- `default_operator_enclave(env: MutableMapping[str, str]) -> None` — When security is on, defaults `ROS_SECURITY_ENCLAVE_OVERRIDE` to `OPERATOR_ENCLAVE` in place (an exported one wins); called by `openral estop reset`, `openral prompt` and `openral dashboard`. (L208)
+- `render_sros2_policy(onboard_compute: Mapping[str, object]) -> str` — The sros2 0.2.0 policy for one robot: per enclave, deny rules for the protected surfaces it does not need (command topics incl. the manifest's `command_topic` / `gripper_command_topic`, state topics incl. `joint_state_topic`, `/openral/estop_reset`, `/controller_manager/*`, the trajectory action, and `change_state` / `set_parameters*` on the kernel, HAL, E-stop producers, compliance recorder and `safety_controller`), then allow `/*`. The operator keeps `/safety_controller` parameters (the G1 blend-in). (L265)
 
 ### `python/core/src/openral_core/can.py`
 _Robot-agnostic SocketCAN transport discovery — a CAN-bus robot is invisible to USB/serial discovery, so this is the one place that reads the kernel's view of CAN links. Linux-only, dependency-free, needs no root, and never perturbs a running robot._
