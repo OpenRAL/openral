@@ -152,10 +152,12 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
             activation.
 
     Example:
+        >>> rclpy.init()
         >>> node = DeadmanWatchdogNode(node_name="deadman_doctest")
         >>> node.get_parameter("arm_status_topic").get_parameter_value().string_value
         ''
         >>> node.destroy_node()
+        >>> rclpy.shutdown()
     """
 
     def __init__(self, node_name: str = "openral_deadman_watchdog") -> None:
