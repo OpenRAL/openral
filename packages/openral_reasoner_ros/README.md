@@ -481,6 +481,16 @@ just bootstrap-ollama            # installs Ollama, pulls qwen3.5:4b, serves a 3
 export OPENRAL_REASONER_MODEL=qwen3.5-4b
 ```
 
+The bootstrap reads its tags from `REASONER_MODELS`, so it needs a Python that
+imports `openral_core` (the repo's `.venv` after `just sync`, or
+`OPENRAL_PYTHON`). On Linux it installs Ollama v0.32.14 from the GitHub
+release tarballs, each checked against a sha256 pinned in
+`scripts/bootstrap_ollama.sh` before anything is extracted, and registers the
+systemd unit under the default `/usr/local` prefix. `OLLAMA_PREFIX` installs
+elsewhere (files only), and `OLLAMA_PORT` serves on another port (the script
+then prints the endpoint URL to export). It always talks to the local daemon,
+whatever a client `OLLAMA_HOST` says.
+
 **The context window is the one setting that matters.** The reasoner's prompt
 is 9–26K tokens (system prompt plus one tool per skill); Ollama loads a model
 with a 4096-token window on a GPU under 24 GiB
@@ -508,11 +518,23 @@ The 4B, measured through the real client (Ollama 0.32.14, RTX 5070 Laptop 8 GB,
 | `so101_follower` + query tools | 3 | 9,229 | 18/20 | 9.2 s |
 | `franka_panda` + query tools, full palette | 14 | 20,379 | 20/20 | 9.7 s |
 
-The 9B, Ollama 0.40.16, same laptop (12% of the model on the CPU):
-`so101_follower` 20/20 (18.8 s), `franka_panda` full palette 20/20 (16.3 s),
-frames 2/2.
+The 9B was first measured on Ollama 0.40.16 (same laptop, 12% of the model on
+the CPU): `so101_follower` 20/20 (18.8 s), `franka_panda` full palette 20/20
+(16.3 s), frames 2/2. Re-measured on the pinned 0.32.14 (#559), both models on
+an RTX 5090 (32 GB, all on the GPU), same harness:
 
-`describe_image` answered both SO-101 eraser frames correctly (2/2). Re-run on
+| model | Ollama | `so101_follower` (9,286 tokens) | `franka_panda` full palette (20,436 tokens) | frames |
+|---|---|---|---|---|
+| `qwen3.5-4b` | 0.32.14 | 19/20 (2.5 s) | 18/20 (2.6 s) | 2/2 |
+| `qwen3.5-9b` | 0.32.14 | 18, 17, 20 /20 (3.1–3.3 s) | 20/20 (3.8 s) | 4/6 |
+| `qwen3.5-9b` | 0.40.16 | 19, 18, 19 /20 (3.0–3.2 s) | — | 6/6 |
+
+The pin holds the 9B to the bar (55/60 vs 56/60 on 0.40.16). Its frames are
+not a version effect: asked 10 times each, the "eraser on the square" frame was
+right 7/10 on 0.32.14 and 7/10 and 6/10 on 0.40.16 (the 4B 10/10 on 0.32.14);
+the "not on it" frame was 10/10 everywhere.
+
+On the laptop the 4B's `describe_image` answered both SO-101 eraser frames (2/2). Re-run on
 Ollama 0.40.16: `so101_follower` 18/20 again, frames 2/2 (ticks slower there
 because a CI job held 3.4 GB of the same GPU). With
 thinking off (`reasoning_effort: none`) ticks drop to ~2 s but validity to
@@ -539,8 +561,8 @@ model id, endpoint, and dialect are explicit; the factory and `openral doctor`
 warn that robotics tool-calling reliability is unverified.
 
 ```bash
-# Linux: runs ollama's release-tag install.sh only when its sha256 matches
-# OLLAMA_INSTALL_SH_SHA256 (scripts/bootstrap_ollama.sh); refuses otherwise.
+# Linux: installs ollama's release tarballs only when each one's sha256 matches
+# its pin in scripts/bootstrap_ollama.sh; refuses otherwise.
 just bootstrap-ollama --model qwen3:8b
 export OPENRAL_REASONER_MODEL=qwen3:8b
 export OPENRAL_REASONER_ENDPOINT=ollama

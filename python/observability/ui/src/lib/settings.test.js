@@ -35,7 +35,12 @@ test("a model that runs on the robot needs no key", () => {
   const onRobot = { id: "cosmos3-edge", label: "NVIDIA Cosmos 3 Edge", needs: null };
   const withLocal = { ...SETTINGS, OPENRAL_REASONER_MODEL: { ...SETTINGS.OPENRAL_REASONER_MODEL, options: [...SETTINGS.OPENRAL_REASONER_MODEL.options, onRobot] } };
   const d = (values) => ({ scope: "org", canWrite: true, settings: withLocal, values });
-  assert.equal(modelProblem(d({})), "");
+  // No keys and no model: the on-robot model is usable, but none is chosen yet (#559).
+  assert.match(modelProblem(d({})), /Choose a model/);
+  // Someone who can't write the scope is told who can.
+  assert.match(modelProblem({ ...d({}), canWrite: false }), /an admin must choose one/);
+  // On the robot, no model means "use the account's".
+  assert.equal(modelProblem({ ...d({}), scope: "robot" }), "");
   assert.equal(modelProblem(d({ OPENRAL_REASONER_MODEL: { set: true, value: "cosmos3-edge" } })), "");
   assert.match(modelProblem(d({ OPENRAL_REASONER_MODEL: { set: true, value: "gpt-5.5" } })), /GPT-5.5 needs the OpenAI API key/);
 });

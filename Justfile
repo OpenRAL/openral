@@ -77,7 +77,8 @@ install-hooks:
 install-cli:
     @python3 scripts/install_cli.py
 
-# Install Ollama + pull the local reasoner baseline model (qwen3:8b).
+# Install Ollama (sha256-pinned release tarballs on Linux) + pull the
+# curated Ollama reasoner with the smallest GPU floor in REASONER_MODELS.
 # Opt-in: deliberately not part of `just bootstrap` because the model
 # pull is several GB (CLAUDE.md §1.4 — no hidden network I/O).
 bootstrap-ollama *args:
