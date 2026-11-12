@@ -142,9 +142,23 @@ def _run(argv: list[str], timeout_s: float = 60.0) -> subprocess.CompletedProces
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
 
 
+def _ros2_param(argv: list[str], within_s: float = 20.0) -> subprocess.CompletedProcess[str]:
+    """`ros2 param …`, retried while the node is not yet discovered.
+
+    Right after a switch, the CLI's discovery (daemon or not) can miss the freshly
+    activated controller's node and answer "Node not found" (seen on q5090, Jazzy).
+    """
+    deadline = time.monotonic() + within_s
+    while True:
+        out = _run(["ros2", "param", *argv])
+        if "Node not found" not in out.stderr or time.monotonic() > deadline:
+            return out
+        time.sleep(0.5)
+
+
 def _param(node: str, name: str) -> float:
     """A double parameter via `ros2 param get` ("Double value is: <v>")."""
-    got = _run(["ros2", "param", "get", node, name])
+    got = _ros2_param(["get", node, name])
     prefix = "Double value is:"
     assert got.stdout.startswith(prefix), got.stdout + got.stderr
     return float(got.stdout.removeprefix(prefix))
@@ -231,7 +245,7 @@ def s0_graph(tmp_path: Path) -> Iterator[None]:
         )
         assert switch.returncode == 0, switch.stdout + switch.stderr
         # The policy starts blended out; the operator's step, done here by the test.
-        blend = _run(["ros2", "param", "set", "/safety_controller", "blend_ratio", "1.0"])
+        blend = _ros2_param(["set", "/safety_controller", "blend_ratio", "1.0"])
         assert blend.returncode == 0, blend.stdout + blend.stderr
         yield
     finally:
@@ -271,9 +285,7 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
         hal.connect()
 
         # Issue #548: the blend speed is fixed at configure, over the real parameter service.
-        speed = _run(
-            ["ros2", "param", "set", "/safety_controller", "max_blend_ratio_speed", "10.0"]
-        )
+        speed = _ros2_param(["set", "/safety_controller", "max_blend_ratio_speed", "10.0"])
         # `ros2 param set` exits 0 on a refusal and reports it on stderr.
         assert "Setting parameter failed" in speed.stderr, speed.stdout + speed.stderr
         assert _param("/safety_controller", "max_blend_ratio_speed") == 1.0
