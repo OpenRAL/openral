@@ -266,22 +266,41 @@ def object_up_axis(roll: float, pitch: float) -> NDArray[np.float64]:
 
 
 def _in_box(p: NDArray[np.float64], box: dict[str, Any]) -> bool:
+    """Whether ``p`` (world) lies in ``box``: world ``min``/``max``, or local ones under a
+    ``world_from_box`` pose (``placement_boxes_at``)."""
+    if "world_from_box" in box:
+        pose = np.asarray(box["world_from_box"], dtype=np.float64)
+        p = pose[:3, :3].T @ (np.asarray(p, dtype=np.float64) - pose[:3, 3])
     return all(lo <= v <= hi for v, lo, hi in zip(p, box["min"], box["max"], strict=True))
 
 
 def placement_boxes_at(
-    placement: dict[str, Any], positions: Mapping[str, Sequence[float]]
+    placement: dict[str, Any],
+    positions: Mapping[str, Sequence[float]],
+    orientations: Mapping[str, Sequence[float]] | None = None,
 ) -> dict[str, Any]:
-    """``placement`` with each ``relative_to`` box moved to its reference object's centre.
+    """``placement`` with each ``relative_to`` box posed at its reference object now.
 
-    A box carrying ``relative_to`` (``IsaacPlacementRegion.relative_to``) holds offsets
-    from that object; ``positions`` maps object names to their world centres now. World
-    boxes pass through. Pure.
+    A box carrying ``relative_to`` (``IsaacPlacementRegion.relative_to``) is authored in
+    that object's frame; ``positions`` maps object names to their world centres now and
+    ``orientations`` to their ``(w, x, y, z)`` world orientations. With an orientation the
+    box keeps its local ``min``/``max`` and gains ``world_from_box`` (4x4 rows), so a turned
+    holder turns its box; without one it is translated (world axes). World boxes pass
+    through. Pure.
 
     Example:
         >>> on_plate = {"min": [-0.1, -0.1, -0.07], "max": [0.1, 0.1, 0.07], "relative_to": "plate"}
         >>> placement_boxes_at({"target": on_plate}, {"plate": [2.0, 1.0, 0.9]})["target"]["max"]
         [2.1, 1.1, 0.97]
+        >>> slot = {"min": [-0.1, -0.01, 0.0], "max": [0.1, 0.01, 0.1], "relative_to": "rack"}
+        >>> turned = placement_boxes_at(
+        ...     {"target": slot}, {"rack": [0.0, 0.0, 0.0]}, {"rack": _yaw_quat(np.pi / 2)}
+        ... )["target"]
+        >>> (
+        ...     _in_box(np.array([0.0, 0.05, 0.05]), turned),
+        ...     _in_box(np.array([0.05, 0.0, 0.05]), turned),
+        ... )
+        (True, False)
     """
 
     def at(box: dict[str, Any]) -> dict[str, Any]:
@@ -289,6 +308,12 @@ def placement_boxes_at(
         if not ref:
             return box
         c = [float(v) for v in positions[ref]]
+        if orientations is not None and ref in orientations:
+            return {
+                "min": list(box["min"]),
+                "max": list(box["max"]),
+                "world_from_box": pose_matrix(c, orientations[ref]).tolist(),
+            }
         return {
             "min": [round(o + lo, 12) for o, lo in zip(c, box["min"], strict=True)],
             "max": [round(o + hi, 12) for o, hi in zip(c, box["max"], strict=True)],
@@ -631,6 +656,20 @@ def oriented_box(
         "rotation": [[round(float(v), 9) for v in row] for row in linear / scale],
         "half_extents_m": [round(float(v), 6) for v in (hi - lo) / 2.0 * scale],
     }
+
+
+def _base_box(
+    base_from_world: NDArray[np.float64], box: dict[str, Any]
+) -> dict[str, list[float] | list[list[float]]]:
+    """A graded region (``placement_boxes_at``) as an ``oriented_box`` in the base frame.
+
+    Example:
+        >>> box = {"min": [-1, -1, 0], "max": [1, 1, 1], "world_from_box": np.eye(4).tolist()}
+        >>> _base_box(np.eye(4), box)["center_m"]
+        [0.0, 0.0, 0.5]
+    """
+    world_from_box = np.asarray(box.get("world_from_box", np.eye(4)), dtype=np.float64)
+    return oriented_box(base_from_world @ world_from_box, box["min"], box["max"])
 
 
 def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
@@ -1020,6 +1059,48 @@ def follower_velocity_caps(
 
 #: The velocity cap a joint whose URDF leaves the velocity unset gets (no cap in practice).
 _UNSET_VELOCITY_CAP = 1.0e6
+
+
+def urdf_unset_velocity_joints(urdf_text: str) -> set[str]:
+    """Movable URDF joints whose velocity limit is unset: no ``<limit>``, no ``velocity``, or 0.
+
+    The SolidWorks exporter writes ``velocity="0"`` for "unset" (the Metal's fingers);
+    these are the only joints ``_uncap_zero_velocity_limits`` may lift.
+
+    Example:
+        >>> urdf = (
+        ...     '<robot name="r">'
+        ...     '<joint name="a" type="revolute"><limit velocity="0" effort="1"/></joint>'
+        ...     '<joint name="b" type="prismatic"><limit velocity="2.0" effort="1"/></joint>'
+        ...     '<joint name="c" type="continuous"/>'
+        ...     '<joint name="d" type="fixed"/></robot>'
+        ... )
+        >>> sorted(urdf_unset_velocity_joints(urdf))
+        ['a', 'c']
+    """
+    import xml.etree.ElementTree as ET
+
+    out = set()
+    for joint in ET.fromstring(urdf_text).iter("joint"):
+        if joint.attrib.get("type") in ("fixed", "floating", "planar"):
+            continue
+        limit = joint.find("limit")
+        if limit is None or float(limit.attrib.get("velocity", "0") or 0.0) == 0.0:
+            out.add(str(joint.attrib.get("name")))
+    return out
+
+
+def _deinstance(root: Any) -> None:
+    """Make every instance under ``root`` editable (instance proxies cannot be edited).
+
+    ``root`` is a ``pxr.Usd.Prim``; nested instances surface once their parent is
+    de-instanced, hence the loop.
+    """
+    from pxr import Usd
+
+    while instances := [p for p in Usd.PrimRange(root) if p.IsInstance()]:
+        for inst in instances:
+            inst.SetInstanceable(False)
 
 
 def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
@@ -2604,21 +2685,32 @@ class IsaacManifestScene(IsaacSceneBase):
         return prim_path
 
     def _uncap_zero_velocity_limits(self, stage: Any, prim_path: str) -> None:
-        """Lift a joint velocity cap of 0: the URDF left the velocity unset.
+        """Lift a joint velocity cap of 0 where the URDF left the velocity unset.
 
         The converter writes a missing or ``velocity="0"`` URDF limit (the SolidWorks
         exporter's "unset", on the Metal's fingers) as ``newton:velocityLimit = 0``, and
         PhysX then crawls the joint at ~0.6 mm/s (q5090 gripper probe, 2026-11-07: 1.7 of
-        105 stroke in 45 ticks). Such a joint gets ``_UNSET_VELOCITY_CAP`` (no cap in
-        practice); the drive's ``maxForce`` still bounds it.
+        105 stroke in 45 ticks). Only a joint the source URDF really leaves unset
+        (``urdf_unset_velocity_joints``) gets ``_UNSET_VELOCITY_CAP`` (no cap in practice);
+        the drive's ``maxForce`` still bounds it. A 0 cap on any other joint is left as
+        imported and reported. Every change is logged.
         """
         from pxr import Sdf, Usd, UsdPhysics
 
+        with open(str(self._spec["urdf_path"]), encoding="utf-8") as f:
+            unset = urdf_unset_velocity_joints(f.read())
         for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)):
             if not prim.IsA(UsdPhysics.Joint):
                 continue
             attr = prim.GetAttribute("newton:velocityLimit")
             if not (attr and attr.HasAuthoredValue() and attr.Get() == 0.0):
+                continue
+            if prim.GetName() not in unset:
+                print(
+                    f"[isaac_manifest_scene] joint {prim.GetName()} velocity cap 0 but the URDF "
+                    "sets one: left as imported",
+                    flush=True,
+                )
                 continue
             for name in ("physxJoint:maxJointVelocity", "newton:velocityLimit"):
                 prim.CreateAttribute(name, Sdf.ValueTypeNames.Float).Set(_UNSET_VELOCITY_CAP)
@@ -2669,9 +2761,7 @@ class IsaacManifestScene(IsaacSceneBase):
         ]
         for link in links:
             token = next(v for pat, v in patterns.items() if re.fullmatch(pat, link.GetName()))
-            while instances := [p for p in Usd.PrimRange(link) if p.IsInstance()]:
-                for inst in instances:
-                    inst.SetInstanceable(False)
+            _deinstance(link)
             n = 0
             for prim in Usd.PrimRange(link):
                 if prim.HasAPI(UsdPhysics.CollisionAPI) and prim.GetTypeName() == "Mesh":
@@ -2705,9 +2795,7 @@ class IsaacManifestScene(IsaacSceneBase):
             raise RuntimeError(f"link_box_colliders names no robot link: {missing}")
         for name, box in boxes.items():
             link = links[name]
-            while instances := [p for p in Usd.PrimRange(link) if p.IsInstance()]:
-                for inst in instances:
-                    inst.SetInstanceable(False)
+            _deinstance(link)
             n = 0
             it = iter(Usd.PrimRange(link))
             for prim in it:
@@ -3300,14 +3388,16 @@ class IsaacManifestScene(IsaacSceneBase):
         return touched
 
     def _placement_now(self, placement: dict[str, Any]) -> dict[str, Any]:
-        """``placement`` with its ``relative_to`` boxes at their reference objects' poses now."""
+        """``placement`` with its ``relative_to`` boxes at their reference objects' full poses now."""
         refs = {
             str(b["relative_to"])
             for b in (placement["target"], *placement.get("adjacent", []))
             if b.get("relative_to")
         }
-        positions = {r: self._object_prims[r].get_world_pose()[0] for r in refs}
-        return placement_boxes_at(placement, positions)
+        poses = {r: self._object_prims[r].get_world_pose() for r in refs}
+        return placement_boxes_at(
+            placement, {r: p[0] for r, p in poses.items()}, {r: p[1] for r, p in poses.items()}
+        )
 
     def _reward_terminated(self) -> tuple[float, bool]:
         """Graded placement success (``placement_success``), else no task reward.
@@ -3528,10 +3618,8 @@ class IsaacManifestScene(IsaacSceneBase):
         placements = [
             {
                 "object": str(p["object"]),
-                "target": oriented_box(base_from_world, p["target"]["min"], p["target"]["max"]),
-                "adjacent": [
-                    oriented_box(base_from_world, a["min"], a["max"]) for a in p.get("adjacent", [])
-                ],
+                "target": _base_box(base_from_world, p["target"]),
+                "adjacent": [_base_box(base_from_world, a) for a in p.get("adjacent", [])],
             }
             for p in map(self._placement_now, (self._placement_success or {}).get("placements", []))
         ]
