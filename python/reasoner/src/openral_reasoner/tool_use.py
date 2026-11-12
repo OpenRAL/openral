@@ -767,8 +767,10 @@ _MAX_CHARS_PER_PROMPT_TOKEN: float = 4.0
 _OLLAMA_FINGERPRINT: str = "fp_ollama"
 
 
-def _check_prompt_not_truncated(response: object, request: list[object], *, model_id: str) -> None:
-    """Raise when an Ollama server read far fewer prompt tokens than the request holds.
+def _truncation_error(
+    response: object, request: list[object], *, model_id: str
+) -> ROSPlanningError | None:
+    """The error for an Ollama server that read far fewer prompt tokens than ``request`` holds.
 
     Ollama cuts a prompt longer than the model's loaded context window down to
     fit, silently, and its OpenAI-compatible endpoint has no field to raise that
@@ -776,35 +778,12 @@ def _check_prompt_not_truncated(response: object, request: list[object], *, mode
     prompt is 9-26K tokens, so on a default ``ollama serve`` the model never sees
     most of its tools or the system prompt's rules — and still answers. Other
     servers refuse an over-long prompt with a 400, so only a reply carrying
-    Ollama's ``system_fingerprint`` is checked.
+    Ollama's ``system_fingerprint`` is checked. Returned, not raised, so a caller
+    inside a broad SDK ``try`` raises it unwrapped.
 
-    Raises:
-        ROSPlanningError: When the reply's prompt tokens are under one per
-            ``_MAX_CHARS_PER_PROMPT_TOKEN`` characters of ``request``.
-
-    Example:
-        >>> from types import SimpleNamespace as NS
-        >>> def reply(n, fp="fp_ollama"):
-        ...     return NS(system_fingerprint=fp, usage=NS(prompt_tokens=n))
-        >>> _check_prompt_not_truncated(reply(9000), ["x" * 30000], model_id="m")
-        >>> _check_prompt_not_truncated(reply(2051, fp=None), ["x" * 30000], model_id="m")
-        >>> try:
-        ...     _check_prompt_not_truncated(reply(4096), ["x" * 30000], model_id="m")
-        ... except ROSPlanningError as exc:
-        ...     print("cut the prompt" in str(exc))
-        True
-    """
-    error = _truncation_error(response, request, model_id=model_id)
-    if error is not None:
-        raise error
-
-
-def _truncation_error(
-    response: object, request: list[object], *, model_id: str
-) -> ROSPlanningError | None:
-    """The error ``_check_prompt_not_truncated`` raises, or ``None``.
-
-    Returned, not raised, so a caller inside a broad SDK ``try`` raises it unwrapped.
+    Returns:
+        A ``ROSPlanningError`` when the reply's prompt tokens are under one per
+        ``_MAX_CHARS_PER_PROMPT_TOKEN`` characters of ``request``, else ``None``.
     """
     prompt_tokens = _prompt_tokens(response)
     if getattr(response, "system_fingerprint", None) != _OLLAMA_FINGERPRINT or not prompt_tokens:
@@ -813,7 +792,7 @@ def _truncation_error(
     if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
         return None
     return ROSPlanningError(
-        f"the endpoint read {prompt_tokens} prompt tokens of a ~{chars // 4}-token request to "
+        f"the endpoint read {prompt_tokens} prompt tokens of a {chars}-character request to "
         f"{model_id!r}: it cut the prompt to fit the model's context window. On Ollama, start "
         "the server with OLLAMA_CONTEXT_LENGTH=32768 (or more) so the reasoner's tools fit."
     )
@@ -1054,12 +1033,16 @@ def _reasoner_timeout_s(hosting: str) -> float:
     """Per-call timeout: env override, else a hosting-aware default.
 
     ``managed_local`` gets 120 s (an on-device model's first inference after
-    server boot compiles kernels); cloud/byo get the tight 10 s default.
+    server boot compiles kernels); ``byo_local`` (a curated model on an
+    operator-run server such as Ollama, at any URL) gets the local endpoints'
+    60 s cold start; cloud gets the tight 10 s default.
     """
     env = _env_float(REASONER_TIMEOUT_ENV)
     if env is not None:
         return env
-    return 120.0 if hosting == "managed_local" else 10.0
+    if hosting == "managed_local":
+        return 120.0
+    return 60.0 if hosting == "byo_local" else 10.0
 
 
 def _reasoner_max_tokens(entry: ReasonerModel) -> int | None:
@@ -1250,10 +1233,11 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
             f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r}."
         )
     env_timeout = _env_float(REASONER_TIMEOUT_ENV)
+    # An uncurated bare URL could be anything: it keeps the tight default.
     timeout_s = (
         env_timeout
         if env_timeout is not None
-        else (preset.timeout_s if preset is not None else _reasoner_timeout_s("byo_local"))
+        else (preset.timeout_s if preset is not None else _reasoner_timeout_s("cloud"))
     )
     max_tokens = _env_int(REASONER_MAX_TOKENS_ENV)
     if dialect == "anthropic":

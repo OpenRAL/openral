@@ -474,8 +474,10 @@ is 9–26K tokens (system prompt plus one tool per skill); Ollama loads a model
 with a 4096-token window on a GPU under 24 GiB
 ([docs](https://docs.ollama.com/context-length)) and **silently truncates** a
 longer prompt, and its OpenAI-compatible API has no field to raise it. Start
-the daemon with `OLLAMA_CONTEXT_LENGTH=32768` (a systemd install:
-`sudo systemctl edit ollama` → `Environment=OLLAMA_CONTEXT_LENGTH=32768`). The
+the daemon with `OLLAMA_CONTEXT_LENGTH=32768` (`just bootstrap-ollama` sets it on
+the daemon it starts and on the systemd unit of an Ollama it installs; an
+existing systemd install: `sudo systemctl edit ollama` →
+`Environment=OLLAMA_CONTEXT_LENGTH=32768`). The
 client compares the prompt tokens Ollama reports with the request it sent and
 fails the tick (`ROSPlanningError: … cut the prompt to fit`) rather than act
 on a truncated prompt.

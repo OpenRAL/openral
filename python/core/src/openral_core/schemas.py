@@ -15090,10 +15090,13 @@ class ReasonerModel(BaseModel):
             near-identical skill tools (Cosmos 3 Edge: 0/20 valid ticks with 14
             franka skills, 19/20 with 4; #494). ``None`` offers every
             capability-matched skill.
-        min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.
-            ``None`` for ``cloud`` models (not a local-compute question).
+        min_gpu_vram_gb: VRAM floor for a comfortable local fit at the precision
+            the model is served in (BF16 for ``cosmos3-edge``, the Q4_K_M tag
+            for the Ollama entries). ``None`` for ``cloud`` models (not a
+            local-compute question).
         required_dtype: Dtype the local runtime must support, matched against
-            ``ComputeSpec.gpu_supported_dtypes``. ``None`` for cloud models.
+            ``ComputeSpec.gpu_supported_dtypes``. ``None`` for cloud models and
+            for a model on an operator-run server (Ollama) that picks its own.
         weights_license: Informational weights-license posture for local models
             (§1.9), e.g. ``"OpenMDW-1.1"``. ``None`` for cloud API models
             (OpenRAL never holds their weights).

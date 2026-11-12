@@ -21,8 +21,9 @@ set -euo pipefail
 #
 # The reasoner's prompt is 9-26K tokens; Ollama's default window on a GPU
 # under 24 GiB is 4096, and it truncates silently (the client refuses that).
-# A daemon this script starts gets OLLAMA_CONTEXT_LENGTH=32768; a systemd one
-# needs `Environment=OLLAMA_CONTEXT_LENGTH=32768` (`sudo systemctl edit ollama`).
+# A daemon this script starts, or the systemd unit its install registers, gets
+# OLLAMA_CONTEXT_LENGTH=32768; an Ollama already installed keeps its own setting
+# (`sudo systemctl edit ollama`: `Environment=OLLAMA_CONTEXT_LENGTH=32768`).
 #
 # Flags:
 #   --no-pull           Skip the `ollama pull` step (binary install only).
@@ -83,6 +84,17 @@ else
         "https://raw.githubusercontent.com/ollama/ollama/v${OLLAMA_VERSION}/scripts/install.sh"
       echo "${OLLAMA_INSTALL_SH_SHA256}  ${installer}" | sha256sum -c -
       OLLAMA_VERSION="${OLLAMA_VERSION}" sh "${installer}"
+      # The installer registers and starts a systemd `ollama` unit on Ollama's
+      # 4096-token default; the unit this script installed gets the 32K window.
+      if command -v systemctl >/dev/null 2>&1 && systemctl cat ollama.service >/dev/null 2>&1; then
+        echo "==> setting OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-32768} on the ollama systemd unit"
+        sudo mkdir -p /etc/systemd/system/ollama.service.d
+        printf '[Service]\nEnvironment=OLLAMA_CONTEXT_LENGTH=%s\n' "${OLLAMA_CONTEXT_LENGTH:-32768}" |
+          sudo tee /etc/systemd/system/ollama.service.d/openral-context.conf >/dev/null
+        sudo systemctl daemon-reload
+        sudo systemctl restart ollama
+        OLLAMA_UNIT_SET=1
+      fi
       ;;
     Darwin)
       if command -v brew >/dev/null 2>&1; then
@@ -120,7 +132,14 @@ sys.exit(0)
 PY
 }
 
-if probe_port localhost 11434; then
+if [[ "${OLLAMA_UNIT_SET:-0}" -eq 1 ]]; then
+  # The unit was just restarted: wait for it, never race it with a second serve.
+  for _ in $(seq 20); do probe_port localhost 11434 && break; sleep 0.5; done
+fi
+
+if [[ "${OLLAMA_UNIT_SET:-0}" -eq 1 ]] && probe_port localhost 11434; then
+  echo "==> ollama systemd unit serving on localhost:11434 with the 32K window"
+elif probe_port localhost 11434; then
   echo "==> ollama daemon already serving on localhost:11434"
   # Not started here (e.g. the systemd unit Ollama's installer registers), so it
   # runs Ollama's 4096-token default unless its owner raised it.

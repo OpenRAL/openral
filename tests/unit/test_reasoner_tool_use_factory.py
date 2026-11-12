@@ -28,6 +28,8 @@ from openral_reasoner.tool_use import (
     build_tool_use_client_from_env,
 )
 
+from tests.unit.fakes.fake_llm_http import FakeLLMServer, openai_tool_call
+
 _ENV_VARS = (
     "OPENRAL_REASONER_MODEL",
     "OPENRAL_REASONER_ENDPOINT",
@@ -471,40 +473,41 @@ def test_ollama_endpoint_sends_auto_tool_choice(monkeypatch: pytest.MonkeyPatch)
     assert client._tool_choice == "auto"
 
 
-@pytest.mark.parametrize(
-    ("prompt_tokens", "fingerprint", "cut"),
-    [
-        (9229, "fp_ollama", False),  # the whole so101_follower prompt
-        (8192, "fp_ollama", False),  # an 8K window: a <15% cut is the known ceiling
-        (5000, "fp_ollama", True),
-        (4096, "fp_ollama", True),  # Ollama's default window
-        (4096, None, False),  # not Ollama: other servers 400 on an over-long prompt
-    ],
-)
-def test_an_ollama_reply_that_read_a_cut_prompt_is_refused(
-    prompt_tokens: int, fingerprint: str | None, cut: bool
+def test_a_curated_ollama_model_at_an_explicit_url_keeps_the_local_timeout(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A ~9.2K-token request (~31K characters) read as fewer tokens was truncated."""
-    from types import SimpleNamespace
+    """An explicit URL (a trailing slash, a remote GPU box) is no named preset.
 
-    from openral_core.exceptions import ROSPlanningError
-    from openral_reasoner.tool_use import _check_prompt_not_truncated
+    The 9B's median tick is 18.8 s, so the 10 s cloud default would time out
+    every tick; ``byo_local`` gets the local endpoints' 60 s cold start.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3.5-9b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://localhost:11434/v1/")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client._timeout_s, client._tool_choice) == (60.0, "auto")
 
-    reply = SimpleNamespace(
-        system_fingerprint=fingerprint, usage=SimpleNamespace(prompt_tokens=prompt_tokens)
+
+def test_an_inferred_preset_never_overrides_the_entry_tool_choice() -> None:
+    """A registry default that matches a preset's URL brings its timeout, not its tool_choice.
+
+    A local entry on vLLM's default URL that runs ``auto`` keeps ``auto``; only a
+    named ``OPENRAL_REASONER_ENDPOINT`` applies the preset's ``required``.
+    """
+    from openral_reasoner.tool_use import _build_curated_model
+
+    entry = REASONER_MODELS["qwen3.5-4b"].model_copy(update={"default_endpoint": VLLM_BASE_URL})
+    client = _build_curated_model(entry)
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client._base_url, client._timeout_s, client._tool_choice) == (
+        VLLM_BASE_URL,
+        60.0,
+        "auto",
     )
-    request: list[object] = ["x" * 31_000]
-    if cut:
-        with pytest.raises(ROSPlanningError, match="cut the prompt"):
-            _check_prompt_not_truncated(reply, request, model_id="qwen3.5:4b")
-    else:
-        _check_prompt_not_truncated(reply, request, model_id="qwen3.5:4b")
 
 
 def test_an_inferred_preset_never_overrides_a_cloud_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """gpt-5.5's default URL is OpenRouter's, but its own tool_choice stays in charge."""
-    from openral_reasoner.tool_use import build_tool_use_client_from_env
-
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
     monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
     monkeypatch.delenv("OPENRAL_REASONER_ENDPOINT", raising=False)
@@ -512,13 +515,40 @@ def test_an_inferred_preset_never_overrides_a_cloud_entry(monkeypatch: pytest.Mo
     assert client._tool_choice == "required"  # type: ignore[attr-defined]  # reason: client-private
 
 
-def test_non_ascii_text_is_not_counted_as_escapes() -> None:
-    """A full read of dense non-ASCII text (6-char JSON escapes each) is not a cut."""
-    from types import SimpleNamespace
+def _ollama_reply(prompt_tokens: int, fingerprint: str | None) -> tuple[int, dict[str, object]]:
+    """A ``wait`` tool call as Ollama's OpenAI endpoint sends it, reading ``prompt_tokens``."""
+    status, body = openai_tool_call("wait", {"rationale": "ok"})
+    body["system_fingerprint"] = fingerprint
+    body["usage"] = {"prompt_tokens": prompt_tokens, "completion_tokens": 7, "total_tokens": 0}
+    return status, body
 
-    from openral_reasoner.tool_use import _check_prompt_not_truncated
 
-    reply = SimpleNamespace(
-        system_fingerprint="fp_ollama", usage=SimpleNamespace(prompt_tokens=10_000)
-    )
-    _check_prompt_not_truncated(reply, ["机器人" * 10_000], model_id="qwen3.5:4b")
+@pytest.mark.parametrize(
+    ("context", "prompt_tokens", "fingerprint", "cut"),
+    [
+        ("x" * 31_000, 100_000, "fp_ollama", False),  # the whole prompt read
+        ("x" * 31_000, 4096, "fp_ollama", True),  # Ollama's default window
+        ("x" * 31_000, 4096, None, False),  # not Ollama: others 400 on an over-long prompt
+        # Dense non-ASCII text: counted as characters, not as 6-char JSON escapes.
+        ("机器人" * 10_000, 15_000, "fp_ollama", False),
+    ],
+)
+def test_an_ollama_reply_that_read_a_cut_prompt_is_refused(
+    context: str, prompt_tokens: int, fingerprint: str | None, cut: bool
+) -> None:
+    """The real client refuses an Ollama reply that read far fewer tokens than it sent."""
+    from openral_core import WaitTool
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    with FakeLLMServer([_ollama_reply(prompt_tokens, fingerprint)]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3.5:4b", base_url=server.openai_base_url, tool_choice="auto"
+        )
+        if cut:
+            with pytest.raises(ROSPlanningError, match="cut the prompt"):
+                client.select_tool(context_text=context, palette=ToolPalette(skills=()))
+        else:
+            tool = client.select_tool(context_text=context, palette=ToolPalette(skills=()))
+            assert isinstance(tool, WaitTool)
+    assert len(server.requests) == 1  # a cut prompt is never nudged and re-sent
