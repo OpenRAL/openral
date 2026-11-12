@@ -684,7 +684,10 @@ The command prints the domain it used first (`ros scope: ROS_DOMAIN_ID=39
 (robot 'so101_follower') …`). Without `--robot` it runs on the shell's own scope,
 which reaches a real deploy only if the deploy's `export` line was copied. An
 exported `ROS_DOMAIN_ID` still wins over `--robot`, as it does for the deploy;
-when it differs from the robot's domain the line says so.
+when it differs from the robot's domain the line says so. With `--robot` the
+command acts only if that robot's HAL node (`openral_hal_so101_follower`) is on
+the graph it joined, and exits 3 otherwise: robot ids share the derived domains,
+so a typo or a stale export could otherwise reach another robot.
 
 A prompt arriving mid-mission is **conversational context** by default (an
 answer to a reasoner question, or a hint) and does *not* rebuild the task

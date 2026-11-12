@@ -125,10 +125,12 @@ def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
 
 def _derive_hal_spec(robot_id: str, deploy_scene: DeployScene | None) -> _HalSpec:
     """Build the ``_HalSpec`` for ``robot_id`` — see ``_HalSpec`` for the rule."""
+    from openral_cli._dds_scope import hal_node_name  # reason: deferred
+
     return _HalSpec(
         package=_GENERIC_HAL_PACKAGE,
         executable="lifecycle_node.py",
-        node_name=f"openral_hal_{robot_id}",
+        node_name=hal_node_name(robot_id),
         bare_twin_sim=_scene_builds_bare_twin(deploy_scene),
     )
 
@@ -2331,13 +2333,17 @@ _ROS_SCOPE_VARS: Final[tuple[str, ...]] = (
 )
 
 
-def _print_ros_scope(env: Mapping[str, str]) -> None:
+def _print_ros_scope(env: Mapping[str, str], *, hal_mode: str = "sim", robot_id: str = "") -> None:
     """Print the launch's ROS scope and what another terminal must export to join it.
 
     ``openral prompt`` / ``openral estop reset`` run ``rclpy`` on their own shell's
     environment, so on a confined graph they reach the robot only with the same
-    ``ROS_DOMAIN_ID`` and discovery range.
+    ``ROS_DOMAIN_ID`` and discovery range. A real robot on its derived domain can
+    be reached with ``--robot <robot_id>`` instead (#557); that hint is printed
+    only then, since from a fresh shell ``--robot`` lands on the derived domain.
     """
+    from openral_cli._dds_scope import real_domain_id  # reason: deferred
+
     scope = {k: env[k].strip() for k in _ROS_SCOPE_VARS if env.get(k, "").strip()}
     shown = {"ROS_DOMAIN_ID": "0 (unset)", **scope}
     if scope.get("ROS_LOCALHOST_ONLY") != "1":  # it overrides the range, as in rcl
@@ -2345,10 +2351,14 @@ def _print_ros_scope(env: Mapping[str, str]) -> None:
     _console.print("  ros scope: " + " ".join(f"{k}={v}" for k, v in shown.items()))
     if scope:
         exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in scope.items())
-        _console.print(
-            f"  other terminals (openral prompt / estop reset): export {exports}"
-            " — or, for a real robot, pass them --robot <id>"
-        )
+        _console.print(f"  other terminals (openral prompt / estop reset): export {exports}")
+    if (
+        hal_mode == "real"
+        and robot_id
+        and scope.get("ROS_DOMAIN_ID") == real_domain_id(robot_id)
+        and scope.get("ROS_AUTOMATIC_DISCOVERY_RANGE") == "LOCALHOST"
+    ):
+        _console.print(f"  or pass them --robot {robot_id} instead of exporting")
 
 
 def _prepare_launch_env(*, hal_mode: str = "sim", robot_id: str = "") -> dict[str, str]:
@@ -2492,7 +2502,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         except ROSConfigError as exc:
             _console.print(f"[red]refusing to launch:[/red] {exc}")
             raise typer.Exit(code=1) from exc
-        _print_ros_scope(venv_env)
+        _print_ros_scope(venv_env, hal_mode=invocation.hal_mode, robot_id=invocation.robot_id)
         # Both directions, one rule: a sim must not start beside a robot and a
         # robot must not start beside a sim (#227). Checked against the scope
         # actually about to be used, so a confined sim sees the empty graph it
@@ -4301,7 +4311,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         except ROSConfigError as exc:
             _console.print(f"[red]refusing to launch:[/red] {exc}")
             raise typer.Exit(code=1) from exc
-        _print_ros_scope(venv_env)
+        _print_ros_scope(venv_env, hal_mode=invocation.hal_mode, robot_id=invocation.robot_id)
         # Both directions, one rule — see the twin call in
         # ``run_launch_invocation``. Runs against ``venv_env`` because that is
         # the scope the launch will actually use (#227).

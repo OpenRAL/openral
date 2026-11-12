@@ -11,9 +11,16 @@ serves the C++ kernel's ``/openral/estop_reset`` contract, a subscriber on
 the real CLI as a subprocess from that fresh environment:
 
 1. without ``--robot`` (the old behaviour) neither reaches the graph;
-2. with ``--robot`` the prompt arrives, the kernel clears and the clear is broadcast;
+2. with ``--robot`` but no ``openral_hal_<robot_id>`` on the graph, both refuse
+   (exit 3): the derived domain names a graph, not a robot, and ids collide;
 3. an exported ``ROS_DOMAIN_ID`` still wins over ``--robot`` and is reported as
-   overriding the robot's domain.
+   overriding the robot's domain;
+4. with ``--robot`` and the robot's HAL node up, the prompt arrives, the kernel
+   clears and the clear is broadcast.
+
+The HAL is represented by its graph identity only: a node named
+``openral_hal_<robot_id>`` (what the deploy names it), which also carries the
+test's subscribers. Nothing here actuates.
 
 The "wrong" shell domain is ``_OTHER_DOMAIN`` on LOCALHOST rather than a truly
 fresh shell's domain 0 on SUBNET: on a shared host (and its LAN) domain 0 is
@@ -26,13 +33,12 @@ Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from collections.abc import Callable
 
 import pytest
 
@@ -50,7 +56,7 @@ _ROBOT_ID = "ur5e"
 _OTHER_DOMAIN = "31"
 
 
-def _wait_until(predicate: Any, *, timeout_s: float = 10.0) -> bool:
+def _wait_until(predicate: Callable[[], object], *, timeout_s: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if predicate():
@@ -66,8 +72,14 @@ def _terminal_env(domain: str | None) -> dict[str, str]:
     ``SUBNET``, what ``setup.bash`` exports; the CLI confines it under ``--robot``.
     """
     env = os.environ.copy()
-    env.pop("ROS_DOMAIN_ID", None)
-    env.pop("ROS_LOCALHOST_ONLY", None)
+    for name in (
+        "ROS_DOMAIN_ID",
+        "ROS_LOCALHOST_ONLY",
+        "ROS_STATIC_PEERS",
+        "ROS_DISCOVERY_SERVER",
+        "OPENRAL_ALLOW_NETWORK_ROS",
+    ):
+        env.pop(name, None)
     env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "SUBNET"
     if domain is not None:
         env["ROS_DOMAIN_ID"] = domain
@@ -87,13 +99,35 @@ def _openral(*args: str, domain: str | None = None) -> subprocess.CompletedProce
     )
 
 
+def _nodes_on(domain: str) -> list[str]:
+    """Every node already on ``domain`` (LOCALHOST), seen from a throwaway context."""
+    import rclpy
+    from rclpy.executors import SingleThreadedExecutor
+
+    context = rclpy.Context()
+    rclpy.init(context=context, domain_id=int(domain))
+    try:
+        probe = rclpy.create_node("openral_issue557_probe", context=context)
+        executor = SingleThreadedExecutor(context=context)
+        executor.add_node(probe)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.1)
+        names = [n for n, _ns in probe.get_node_names_and_namespaces() if n != probe.get_name()]
+        executor.shutdown()
+        probe.destroy_node()
+        return names
+    finally:
+        rclpy.try_shutdown(context=context)
+
+
 def test_prompt_and_estop_reset_join_the_robots_derived_domain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("std_srvs.srv")
     pytest.importorskip("openral_msgs.msg")
-    from openral_cli._dds_scope import real_domain_id
+    from openral_cli._dds_scope import hal_node_name, real_domain_id
     from openral_msgs.msg import PromptStamped
     from openral_safety.supervisor_node import SafetyPassthroughNode
     from rclpy.executors import MultiThreadedExecutor
@@ -105,7 +139,13 @@ def test_prompt_and_estop_reset_join_the_robots_derived_domain(
     # The deploy's graph: the derived domain, host-confined (confine_real_scope).
     monkeypatch.setenv("ROS_DOMAIN_ID", domain)
     monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
-    monkeypatch.delenv("ROS_LOCALHOST_ONLY", raising=False)
+    for name in ("ROS_LOCALHOST_ONLY", "ROS_STATIC_PEERS", "ROS_DISCOVERY_SERVER"):
+        monkeypatch.delenv(name, raising=False)
+    # A real ur5e deploy or a concurrent run of this test on this host would be
+    # reset by the CLI below; never act on a graph this test did not build.
+    for probed in (domain, _OTHER_DOMAIN):
+        if occupants := _nodes_on(probed):
+            pytest.skip(f"ROS_DOMAIN_ID={probed} is in use on this host: {occupants}")
 
     rclpy.init()
     safety = SafetyPassthroughNode(node_name="openral_issue557_kernel")
@@ -139,6 +179,7 @@ def test_prompt_and_estop_reset_join_the_robots_derived_domain(
 
     spinner = threading.Thread(target=_spin, daemon=True)
     spinner.start()
+    hal = None
     try:
         assert safety.trigger_configure() == TransitionCallbackReturn.SUCCESS
         assert safety.trigger_activate() == TransitionCallbackReturn.SUCCESS
@@ -157,21 +198,34 @@ def test_prompt_and_estop_reset_join_the_robots_derived_domain(
             domain=_OTHER_DOMAIN,
         )  # fmt: skip
         assert unreached.returncode == 3, unreached.stdout + unreached.stderr
-        time.sleep(0.5)
-        assert prompts == [] and cleared == [] and safety._estopped is True
 
-        # 3 (before 2, while the kernel is latched). An exported domain wins over
-        # --robot, as it does for the deploy, and the override is said out loud.
+        # 2. --robot on the right domain, but the robot's HAL is not on it: refused.
+        for args in (
+            ("prompt", "--robot", _ROBOT_ID, "--discovery-wait-s", "2", "no hal"),
+            ("estop", "reset", "--robot", _ROBOT_ID, "--discovery-wait-s", "2"),
+        ):
+            refused = _openral(*args)
+            assert refused.returncode == 3, refused.stdout + refused.stderr
+            assert f"{hal_node_name(_ROBOT_ID)} is not on ROS_DOMAIN_ID={domain}" in (
+                refused.stderr
+            )
+
+        # 3. An exported domain wins over --robot, as it does for the deploy, and
+        # the override is said out loud; the robot's HAL is not there, so: refused.
         overridden = _openral(
-            "estop", "reset", "--robot", _ROBOT_ID, "--service-timeout-s", "3",
-            "--discovery-wait-s", "1", domain=_OTHER_DOMAIN,
+            "estop", "reset", "--robot", _ROBOT_ID, "--discovery-wait-s", "1",
+            domain=_OTHER_DOMAIN,
         )  # fmt: skip
         assert overridden.returncode == 3, overridden.stdout + overridden.stderr
         assert f"ROS_DOMAIN_ID={_OTHER_DOMAIN} (exported, overrides robot" in overridden.stderr
         assert f"'s {domain}" in overridden.stderr, overridden.stderr
-        assert safety._estopped is True and cleared == []
 
-        # 2. With --robot: the deploy's own derivation, no export needed.
+        time.sleep(0.5)  # anything sent above would have landed by now
+        assert prompts == [] and cleared == [] and safety._estopped is True
+
+        # 4. With --robot and the robot's HAL up: no export needed.
+        hal = rclpy.create_node(hal_node_name(_ROBOT_ID))
+        executor.add_node(hal)
         sent = _openral("prompt", "--robot", _ROBOT_ID, "--wait-s", "0.5", "pick the red cube")
         assert sent.returncode == 0, sent.stdout + sent.stderr
         assert f"ROS_DOMAIN_ID={domain} (robot '{_ROBOT_ID}')" in sent.stderr, sent.stderr
@@ -186,10 +240,8 @@ def test_prompt_and_estop_reset_join_the_robots_derived_domain(
     finally:
         stop.set()
         spinner.join(timeout=5.0)
-        with contextlib.suppress(Exception):
-            safety.trigger_deactivate()
-            safety.trigger_cleanup()
         executor.shutdown()
-        helper.destroy_node()
-        safety.destroy_node()
+        for node in (hal, helper, safety):
+            if node is not None:
+                node.destroy_node()
         rclpy.try_shutdown()

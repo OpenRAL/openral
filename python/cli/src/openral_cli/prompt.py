@@ -21,9 +21,16 @@ sub-second when ROS is not sourced.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import typer
+
+from openral_cli._dds_scope import (
+    ROBOT_OPTION_HELP,
+    join_robot_scope_or_exit,
+    require_robot_on_graph,
+)
 
 __all__ = ["prompt_command"]
 
@@ -60,32 +67,21 @@ def prompt_command(
             "a hint) and does NOT rebuild the task queue."
         ),
     ),
-    robot: str | None = typer.Option(
-        None,
-        "--robot",
-        help=(
-            "The robot id the deploy runs (`openral deploy run --robot ID`): join its ROS "
-            "graph — the per-robot ROS_DOMAIN_ID and LOCALHOST discovery — without exporting "
-            "them. An exported ROS_DOMAIN_ID still wins, and is reported when it differs."
-        ),
-    ),
+    robot: str | None = typer.Option(None, "--robot", help=ROBOT_OPTION_HELP),
 ) -> None:
     """Publish a one-shot PromptStamped on the prompt-router CLI input topic.
 
     Requires a sourced ROS 2 install. Exits 0 on success, 2 when
     ``rclpy`` / ``openral_msgs`` are not importable (after pointing
     the user at ``just ros2-build`` + ``source install/setup.bash``) or the
-    ROS scope is networked without the opt-in. Prints the ROS domain and
-    range it used first.
+    ROS scope is networked without the opt-in, 3 when ``--robot``'s HAL node
+    is not on the graph (nothing published). Prints the ROS domain and range
+    it used first.
 
     Example::
 
         openral prompt --robot openarm "pick the red cube"
     """
-    from openral_cli._dds_scope import (  # noqa: PLC0415  # reason: lazy CLI import
-        join_robot_scope_or_exit,
-    )
-
     join_robot_scope_or_exit("openral prompt", robot_id=robot)  # before rclpy.init() (#557)
     try:
         import rclpy  # noqa: PLC0415  # reason: heavy ROS dep deferred
@@ -109,6 +105,7 @@ def prompt_command(
     rclpy.init()
     try:
         node = rclpy.create_node("openral_cli_prompt")
+        require_robot_on_graph("openral prompt", node, robot_id=robot, timeout_s=discovery_wait_s)
         qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=10,
@@ -136,8 +133,9 @@ def prompt_command(
         if n_subs == 0:
             typer.echo(
                 f"openral prompt: no subscriber on {topic} after {discovery_wait_s:.1f} s; "
-                "is the launch up, on this ROS domain "
-                f"({'--robot ' + robot if robot else 'pass --robot <id> for a real deploy'})?",
+                "is the launch up on ROS_DOMAIN_ID="
+                f"{os.environ.get('ROS_DOMAIN_ID', '').strip() or '0'}"
+                f"{'' if robot else ' (a real deploy: pass --robot <id>)'}?",
                 err=True,
             )
         pub.publish(msg)

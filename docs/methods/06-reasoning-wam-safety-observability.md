@@ -711,7 +711,7 @@ _Single lifecycle node that fans in operator prompts from any external source in
 ### `python/cli/src/openral_cli/prompt.py`
 _`openral prompt "do X"` CLI adapter. Publishes a one-shot `PromptStamped` onto `/openral/prompt_in/cli` for the prompt-router to fan out. `rclpy` lazy-imported so `openral --help` stays sub-second._
 
-- `prompt_command(text, topic="/openral/prompt_in/cli", wait_s=1.0, discovery_wait_s=5.0, new_goal=False, robot=None)` (L31) — `robot` joins that real deploy's ROS scope first (`openral_cli._dds_scope.join_robot_scope_or_exit`, #557). Initialise rclpy, publish one PromptStamped with `metadata_json={"source_cli": true}` plus `"new_goal": true` under `--new-goal`, wait briefly for the subscriber to be discovered, then shut down. Exits 2 if rclpy / openral_msgs are not importable (with a hint at `just ros2-build`). The prompt-router preserves the mission-replacement flag when stamping `source`/`priority`.
+- `prompt_command(text, topic="/openral/prompt_in/cli", wait_s=1.0, discovery_wait_s=5.0, new_goal=False, robot=None)` (L38) — `robot` joins that real deploy's ROS scope first (`openral_cli._dds_scope.join_robot_scope_or_exit`, #557). Initialise rclpy, publish one PromptStamped with `metadata_json={"source_cli": true}` plus `"new_goal": true` under `--new-goal`, wait briefly for the subscriber to be discovered, then shut down. Exits 2 if rclpy / openral_msgs are not importable (with a hint at `just ros2-build`). The prompt-router preserves the mission-replacement flag when stamping `source`/`priority`.
 
 ### Observability (Layer 6 — fully shipped)
 
