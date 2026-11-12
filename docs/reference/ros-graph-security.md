@@ -58,8 +58,9 @@ vendor config lists peers (`CYCLONEDDS_URI` with `<Peers>`, a
 `FASTRTPS_DEFAULT_PROFILES_FILE` / `FASTDDS_DEFAULT_PROFILES_FILE` with
 `initialPeersList` or `discoveryServersList`; a file that cannot be read counts too), or
 `ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST`, the deploy
-refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set, and
-logs `dds_scope.real_robot_graph_networked` as a warning when it is. An unset
+refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set; when it
+is, `deploy_e2e.launch.py` prints one `WARNING: real robot on a networked ROS graph`
+line per deploy (hand-run or `deploy run`). An unset
 range still defaults to `LOCALHOST` when only `ROS_STATIC_PEERS` is exported,
 so an opted-in graph reaches the listed peers, not the whole subnet. Opt in
 only on a trusted, isolated network (a robot-only VLAN or a direct cable). `OFF` is refused outright: in Jazzy it hides nodes

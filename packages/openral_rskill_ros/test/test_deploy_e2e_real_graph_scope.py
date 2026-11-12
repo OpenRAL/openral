@@ -19,6 +19,7 @@ import pytest
 from openral_core.exceptions import ROSConfigError
 
 _LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture(scope="module")
@@ -104,9 +105,67 @@ def test_a_sim_is_not_checked(launch_module: ModuleType) -> None:
     )
 
 
-def test_the_gate_runs_before_any_node_is_composed(launch_module: ModuleType) -> None:
-    """Wired right after ``hal_mode`` resolves in ``compose_runtime_graph``."""
-    source = _LAUNCH_FILE.read_text()
-    resolve = source.index('hal_mode = LaunchConfiguration("hal_mode").perform(context)')
-    gate = source.index("_require_host_confined_real_graph(hal_mode, os.environ)")
-    assert 0 < gate - resolve < 200
+def _walk_real_deploy(launch_module: ModuleType, started: list[object]) -> None:
+    """Walk the whole ``deploy_e2e`` description for a ``hal_mode:=real`` franka_panda deploy.
+
+    Nothing is spawned (``walk_launch``), so this is safe on a host with hardware.
+    """
+    pytest.importorskip("openral_safety")
+    pytest.importorskip("mujoco")
+    from _launch_test_common import walk_launch
+    from launch import LaunchContext
+
+    context = LaunchContext()
+    context.launch_configurations.update(
+        {
+            "robot_yaml": str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"),
+            "hal_package": "openral_hal_node",
+            "hal_executable": "lifecycle_node.py",
+            "hal_node_name": "openral_hal_scope_test",
+            "hal_params_file": "/tmp/openral-test-hal-params.yaml",
+            "hal_mode": "real",
+            "enable_dashboard": "false",
+        }
+    )
+    walk_launch(launch_module.generate_launch_description(), context, started)
+
+
+_SCOPE_VARS = (
+    "ROS_LOCALHOST_ONLY",
+    "ROS_STATIC_PEERS",
+    "ROS_DISCOVERY_SERVER",
+    "RMW_IMPLEMENTATION",
+    "CYCLONEDDS_URI",
+    "FASTRTPS_DEFAULT_PROFILES_FILE",
+    "FASTDDS_DEFAULT_PROFILES_FILE",
+    "OPENRAL_ALLOW_NETWORK_ROS",
+)
+
+
+def test_a_refused_launch_starts_no_process(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole launch, not the gate alone: a refused scope reaches no node or process (#558).
+
+    Fails if the gate moves after anything that starts a process — later in the
+    returned graph, into a timer or event handler, or out of the launch.
+    """
+    for name in _SCOPE_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET")
+    started: list[object] = []
+    with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_NETWORK_ROS"):
+        _walk_real_deploy(launch_module, started)
+    assert started == []
+
+
+def test_the_same_launch_host_confined_starts_the_graph(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control for the test above: the walk does reach the graph once the scope is confined."""
+    for name in _SCOPE_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
+    started: list[object] = []
+    _walk_real_deploy(launch_module, started)
+    assert len(started) > 10
