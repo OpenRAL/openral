@@ -22,6 +22,7 @@ convention = "google"
 "python/cli/src/openral_cli/deploy_sim.py" = ["B008", "PLC0415"]  # typer.Option() in defaults; SceneEnvironment + openral_rskill.loader are deferred so `openral --help` stays sub-second
 "python/cli/src/openral_cli/collision.py" = ["B008", "PLC0415"]  # typer.Option() in defaults; lower_robot (yourdfpy/trimesh) is deferred inside the commands so `openral --help` stays fast
 "python/cli/src/openral_cli/check.py" = ["B008"]  # typer.Option() in defaults is the typer pattern
+"python/cli/src/openral_cli/security.py" = ["B008", "PLC0415"]  # typer.Option() in defaults; ROS/manifest imports are deferred so `openral --help` stays fast
 "python/cli/src/openral_cli/_rskill_readme.py" = ["D301"]  # module docstring's \\n escapes are doctest source (a raw docstring would change what the doctest executes)
 "python/cli/src/openral_cli/robot.py" = ["PLC0415"]  # robot_descriptions/xacrodoc/yourdfpy are deferred inside vendor_urdf so `openral --help` stays fast
 "python/sensors/**" = ["RUF001", "RUF002", "RUF003"]  # Unicode FOV / range symbols (×, –, °) in docstrings are intentional and match vendor data sheets

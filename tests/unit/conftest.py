@@ -301,3 +301,48 @@ def expand_dependency_group() -> Callable[..., list[str]]:
         return result
 
     return _expand
+
+
+# ── SROS2 keystores (ADR-0130) ──────────────────────────────────────────────
+
+
+def skip_without_sros2() -> None:
+    """Skip unless a sourced ROS 2 ships ``ros2 security`` and ``openssl`` is present."""
+    import shutil
+    import subprocess
+
+    ros2 = shutil.which("ros2")
+    if ros2 is None or shutil.which("openssl") is None:
+        pytest.skip("SROS2 keystore needs a sourced ROS 2 install and `openssl` on PATH")
+    probe = subprocess.run([ros2, "security", "--help"], capture_output=True, check=False)
+    if probe.returncode != 0:
+        pytest.skip("this ROS 2 install has no `ros2 security` (sros2 not installed)")
+
+
+@pytest.fixture(scope="session")
+def sros2_env(tmp_path_factory: pytest.TempPathFactory) -> Callable[[str], dict[str, str]]:
+    """``domain -> env`` running a graph under SROS2 Enforce with a real OpenRAL keystore.
+
+    The keystore is what ``openral security init`` writes (the real policy, the
+    real ``ros2 security generate_artifacts``), one per domain per session.
+    Skips without a sourced ROS 2 that ships sros2.
+    """
+    from openral_cli.security import generate_keystore
+    from openral_core.ros_security import render_sros2_policy
+
+    skip_without_sros2()
+    made: dict[str, dict[str, str]] = {}
+
+    def _env(domain: str) -> dict[str, str]:
+        if domain not in made:
+            keystore = tmp_path_factory.mktemp("sros2") / f"domain_{domain}"
+            generate_keystore(render_sros2_policy({}), keystore, domain=domain)
+            made[domain] = {
+                "ROS_DOMAIN_ID": domain,
+                "ROS_SECURITY_ENABLE": "true",
+                "ROS_SECURITY_STRATEGY": "Enforce",
+                "ROS_SECURITY_KEYSTORE": str(keystore),
+            }
+        return dict(made[domain])
+
+    return _env

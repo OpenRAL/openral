@@ -20,11 +20,15 @@ success, non-zero if the FSM state never advances. An absent ``change_state``
 service is informational by default (many callers autostart optional nodes);
 ``--required`` makes it an error instead, for a node whose absence must fail
 the graph rather than pass quietly.
+
+Under SROS2 it joins as ``LAUNCH_ENCLAVE`` (ADR-0130): every other enclave is
+refused ``change_state`` on the kernel, the HAL and the E-stop producers.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import Any
@@ -32,6 +36,7 @@ from typing import Any
 import rclpy
 from lifecycle_msgs.msg import Transition
 from lifecycle_msgs.srv import ChangeState, GetState
+from openral_core.ros_security import ENCLAVE_OVERRIDE_ENV, LAUNCH_ENCLAVE, ros_security_enabled
 
 _STATE_TO_TRANSITION = {
     "inactive": [Transition.TRANSITION_CONFIGURE],
@@ -181,6 +186,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if ros_security_enabled(os.environ):
+        os.environ[ENCLAVE_OVERRIDE_ENV] = LAUNCH_ENCLAVE
     rclpy.init()
     node = rclpy.create_node("openral_lifecycle_autostart")
     try:
