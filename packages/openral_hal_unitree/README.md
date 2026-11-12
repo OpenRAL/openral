@@ -209,7 +209,7 @@ SROS2 enclaves next (`docs/reference/ros-graph-security.md`).
 
 | Event | What happens |
 |---|---|
-| `/openral/estop` | `UnitreeHgRealHAL.estop()` swaps `safety_controller`, `inference_controller`, `upper_body_forward_joint_command_controller` **out** and `freeze_controller` **in**, in **one** `switch_controller` request (BEST_EFFORT, confirmed via `list_controllers`; outcome in `/diagnostics` `downstream_stop`). Recovery: `RESTART_REQUIRED`. |
+| `/openral/estop` | `UnitreeHgRealHAL.estop()` swaps `safety_controller`, `inference_controller`, `upper_body_forward_joint_command_controller` **out** and `freeze_controller` **in**, in **one** `switch_controller` request (BEST_EFFORT, confirmed via `list_controllers`; outcome in `/diagnostics` `downstream_stop`). `freeze_controller` cannot come in *before* the chain goes out — they claim the same command interfaces and `controller_manager` refuses it — and the manager keeps a swap's deactivations when the activation is dropped or fails, which would leave every joint at zero torque (#566). So the HAL first configures an `unconfigured` freeze controller (pre-check, ≤ 0.2 s), and if the swap does not confirm it active, activates it alone at once (CRITICAL `hal.estop.freeze_retry`). Recovery: `RESTART_REQUIRED`. |
 | Joint velocity out of domain | NVIDIA `SafetyController` (mean > 10 rad/s or max > 35 rad/s) performs the same swap itself. |
 | OpenRAL stops publishing (crash, stall) | After 500 ms (`topic_input_timeout_ms`) the policy's output is invalidated and `SafetyController` holds the measured pose. Arms hold their last trajectory end. |
 | Robot state stale > 500 ms | `UnitreeHgSystemInterface` read/write return ERROR → the hardware component leaves `active`. |

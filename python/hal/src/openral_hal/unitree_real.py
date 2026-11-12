@@ -117,6 +117,24 @@ _SAFETY_CONTROLLER = "safety_controller"
 _INFERENCE_CONTROLLER = "inference_controller"
 _UPPER_BODY_CONTROLLER = "upper_body_forward_joint_command_controller"
 _FREEZE_CONTROLLER = "freeze_controller"
+
+#: Budget for the e-stop's pre-swap listing: it must never hold the stop back long. A
+#: listing that does not answer in time goes straight to the swap.
+_PRECHECK_TIMEOUT_S = 0.2
+
+
+def _with_notes(report: ControllerSwitchReport, notes: list[str]) -> ControllerSwitchReport:
+    """``report`` with ``notes`` prepended to its detail."""
+    if not notes:
+        return report
+    return ControllerSwitchReport(
+        ok=report.ok,
+        controllers=report.controllers,
+        states=report.states,
+        detail="; ".join([*notes, report.detail]),
+    )
+
+
 #: `joint_command_trajectory_topic: "~/joint_commands_trajectory"` in that file.
 _UPPER_BODY_TOPIC_SUFFIX = "joint_commands_trajectory"
 
@@ -336,11 +354,51 @@ class UnitreeHgRealHAL(RosControlHAL):
     def _stop_switch(
         self, seam: ControllerStopSeam, names: tuple[str, ...]
     ) -> ControllerSwitchReport:
-        """Swap the S0 chain for ``freeze_controller`` in one ``switch_controller`` request."""
+        """Swap the S0 chain for ``freeze_controller``: pre-check, one swap, retry (#566).
+
+        ``freeze_controller`` cannot be activated *before* the chain lets go — the two
+        claim the same command interfaces and ``controller_manager`` refuses the
+        activation — so the single swap request is the tightest hand-over. Around it:
+
+        * **pre-check** — the swap is BEST_EFFORT and the manager drops the activation
+          of a controller that is not ``inactive`` while still applying the
+          deactivations, so an ``unconfigured`` freeze controller is configured first.
+          Bounded by ``_PRECHECK_TIMEOUT_S`` so it never holds the stop back long; an
+          unanswered listing goes straight to the swap.
+        * **retry** — if the swap did not confirm ``freeze_controller`` active (its
+          ``on_activate`` failed, or it was dropped), the chain is already out, so it
+          is activated alone at once; nothing conflicts any more.
+        """
         if not isinstance(seam, ControllerSwapSeam):  # attach_controller_stop refuses these
             raise ROSConfigError(f"{type(seam).__name__} cannot swap controllers")
-        return seam.swap_controllers(
-            deactivate=names, activate=(self._freeze_controller,), timeout_s=self._stop_timeout_s
+        freeze = self._freeze_controller
+        timeout = self._stop_timeout_s
+        notes: list[str] = []
+        before = seam.controller_states(timeout_s=min(timeout, _PRECHECK_TIMEOUT_S)).get(freeze)
+        if before == "unconfigured":
+            configured = seam.configure_controller(freeze, timeout_s=timeout)
+            log.critical(
+                "hal.estop.freeze_configured",
+                robot=self.description.name,
+                controller=freeze,
+                ok=configured,
+            )
+            notes.append(f"{freeze} was unconfigured; configure {'ok' if configured else 'FAILED'}")
+        swap = seam.swap_controllers(deactivate=names, activate=(freeze,), timeout_s=timeout)
+        if swap.ok or swap.states.get(freeze) == "active":
+            return _with_notes(swap, notes)
+        log.critical(
+            "hal.estop.freeze_retry",
+            robot=self.description.name,
+            controller=freeze,
+            swap_detail=swap.detail,
+        )
+        retry = seam.activate_controllers((freeze,), timeout_s=timeout)
+        states = {**swap.states, **retry.states}
+        held = retry.ok and all(states.get(n) == "inactive" for n in names)
+        notes.append(f"swap: {swap.detail}; {freeze} activated alone: {retry.detail}")
+        return ControllerSwitchReport(
+            ok=held, controllers=swap.controllers, states=states, detail="; ".join(notes)
         )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────

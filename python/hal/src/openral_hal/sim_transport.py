@@ -84,6 +84,12 @@ class SimTransport:
             rclpy-shaped fault (executor or context shut down, a dead
             client handle) a real ``controller_manager`` call can die with.
             The HAL must contain it in its stop report.
+        initial_states: Per-controller starting state overriding ``active``
+            (e.g. ``{"freeze_controller": "unconfigured"}``).
+        activation_faults: Per-controller number of activations whose
+            ``on_activate`` fails before one succeeds. A failed activation in a
+            swap keeps the swap's deactivations, as a real ``controller_manager``
+            does (verified on Jazzy 4.48, #566).
 
     Example:
         >>> transport = SimTransport(n_joints=2)
@@ -113,6 +119,8 @@ class SimTransport:
         trigger_responses: Mapping[str, tuple[bool, str]] | None = None,
         switch_faults: Mapping[str, Exception] | None = None,
         joint_names: Sequence[str] | None = None,
+        initial_states: Mapping[str, str] | None = None,
+        activation_faults: Mapping[str, int] | None = None,
     ) -> None:
         """Initialise zeroed joint state for *n_joints* joints."""
         if joint_names is not None and len(joint_names) != n_joints:
@@ -130,6 +138,8 @@ class SimTransport:
         self._dropped: list[tuple[str, dict[str, object]]] = []
         self._strict = controllers is not None
         self._controller_states: dict[str, str] = {name: "active" for name in controllers or ()}
+        self._controller_states.update(initial_states or {})
+        self._activation_faults: dict[str, int] = dict(activation_faults or {})
         self._switches: list[tuple[str, tuple[str, ...]]] = []
         self._trigger_responses = dict(trigger_responses or {})
         self._switch_faults = dict(switch_faults or {})
@@ -209,12 +219,15 @@ class SimTransport:
         activate: Sequence[str],
         timeout_s: float,
     ) -> ControllerSwitchReport:
-        """One-request hand-over (``ControllerSwapSeam``): all or nothing, like a single switch.
+        """One-request hand-over (``ControllerSwapSeam``) with ``controller_manager``'s semantics.
 
         Recorded as one ``("swap", deactivate + activate)`` entry in
         ``switch_calls``, so a test can prove no separate deactivate-then-
-        activate pair (which would leave the joints unclaimed between the two)
-        was issued. A name not in a STRICT table refuses the whole swap.
+        activate pair was issued. A name not in a STRICT table refuses the whole
+        swap. Otherwise, as a real BEST_EFFORT switch: an activation of a
+        controller that is not ``inactive`` is dropped and an activation whose
+        ``on_activate`` fails (``activation_faults``) fails — and in both cases
+        the deactivations still happen.
         """
         off, on = tuple(deactivate), tuple(activate)
         wanted = off + on
@@ -233,14 +246,27 @@ class SimTransport:
             )
         for n in off:
             self._controller_states[n] = "inactive"
-        for n in on:
-            self._controller_states[n] = "active"
+        problems = [p for n in on if (p := self._activate_one(n))]
+        states = {n: self._controller_states[n] for n in wanted}
         return ControllerSwitchReport(
-            ok=True,
+            ok=not problems,
             controllers=wanted,
-            states={n: self._controller_states[n] for n in wanted},
-            detail=f"swapped {list(off)} -> {list(on)}",
+            states=states,
+            detail="; ".join(problems) or f"swapped {list(off)} -> {list(on)}",
         )
+
+    def controller_states(self, *, timeout_s: float) -> dict[str, str]:
+        """``{name: state}`` of the controller table."""
+        return dict(self._controller_states)
+
+    def configure_controller(self, name: str, *, timeout_s: float) -> bool:
+        """``unconfigured`` → ``inactive``; ``False`` for an unloaded controller."""
+        state = self._state_of(name)
+        if state == "unloaded":
+            return False
+        if state == "unconfigured":
+            self._controller_states[name] = "inactive"
+        return True
 
     def call_trigger(self, service: str, *, timeout_s: float) -> TriggerReport:
         """Record the call and answer from ``trigger_responses`` (default: success)."""
@@ -319,6 +345,14 @@ class SimTransport:
                 states={n: self._state_of(n) for n in wanted},
                 detail=f"controller(s) not loaded: {unknown}",
             )
+        if op == "activate":
+            problems = [p for n in wanted if (p := self._activate_one(n))]
+            return ControllerSwitchReport(
+                ok=not problems,
+                controllers=wanted,
+                states={n: self._controller_states[n] for n in wanted},
+                detail="; ".join(problems) or f"activated {list(wanted)}",
+            )
         for n in wanted:
             self._controller_states[n] = target
         return ControllerSwitchReport(
@@ -327,6 +361,19 @@ class SimTransport:
             states={n: target for n in wanted},
             detail=f"{op}d {list(wanted)}",
         )
+
+    def _activate_one(self, name: str) -> str:
+        """Activate one controller; return why it did not, or ``""``."""
+        state = self._controller_states[name]
+        if state == "active":
+            return ""
+        if state not in ("inactive",):
+            return f"{name} is {state}, cannot activate"
+        if self._activation_faults.get(name, 0) > 0:
+            self._activation_faults[name] -= 1
+            return f"{name} on_activate failed"
+        self._controller_states[name] = "active"
+        return ""
 
 
 class SimTorqueSeam:

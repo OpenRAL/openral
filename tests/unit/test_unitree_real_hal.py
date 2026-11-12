@@ -24,6 +24,7 @@ import math
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_core import RobotDescription
@@ -63,7 +64,7 @@ def _names() -> tuple[str, ...]:
     return tuple(j.name for j in _desc().joints)
 
 
-def _wired() -> tuple[UnitreeHgRealHAL, SimTransport]:
+def _wired(**transport_kwargs: Any) -> tuple[UnitreeHgRealHAL, SimTransport]:
     """Real-mode HAL from the manifest, wired to a STRICT simulated controller table."""
     desc = _desc()
     hal = build_hal(desc, mode="real")
@@ -73,9 +74,11 @@ def _wired() -> tuple[UnitreeHgRealHAL, SimTransport]:
         n_joints=len(names),
         joint_names=names,
         controllers=[*_CHAIN, "freeze_controller"],
+        **transport_kwargs,
     )
-    # freeze_controller is loaded inactive by the bringup.
-    transport.deactivate_controllers(["freeze_controller"], timeout_s=1.0)
+    # freeze_controller is loaded inactive by the bringup (unless the test says otherwise).
+    if transport.controller_state("freeze_controller") == "active":
+        transport.deactivate_controllers(["freeze_controller"], timeout_s=1.0)
     # SimTransport's state is current at every read, so "now" is its true arrival stamp.
     hal.attach_transport(transport.publish, transport.state, time.monotonic)
     hal.attach_controller_stop(transport)
@@ -311,6 +314,45 @@ def test_estop_swaps_the_s0_chain_for_freeze_in_one_request() -> None:
     # A late command after the stop never reaches the wire (and the HAL refuses it).
     transport.publish(_TWIST_TOPIC, {"twist": [1.0, 0, 0, 0, 0, 0]})
     assert transport.dropped_calls[-1][0] == _TWIST_TOPIC
+
+
+def test_an_unconfigured_freeze_controller_is_configured_before_the_swap() -> None:
+    """#566: the swap is BEST_EFFORT, so an unconfigured freeze would be dropped while the
+    chain is still deactivated — every joint unclaimed, zero torque on the hg hardware."""
+    hal, transport = _wired(initial_states={"freeze_controller": "unconfigured"})
+    with pytest.raises(ROSEStopRequested, match="acknowledged"):
+        hal.estop()
+    assert transport.controller_state("freeze_controller") == "active"
+    assert all(transport.controller_state(c) == "inactive" for c in _CHAIN)
+    report = hal.last_stop_report
+    assert report is not None and report.stopped
+    assert "was unconfigured; configure ok" in report.detail
+
+
+def test_a_failed_freeze_activation_is_retried_alone_at_once() -> None:
+    """#566: a failed activation inside the swap keeps the swap's deactivations; the HAL
+    activates freeze_controller alone straight away (nothing conflicts any more)."""
+    hal, transport = _wired(activation_faults={"freeze_controller": 1})
+    switches_before = list(transport.switch_calls)
+    with pytest.raises(ROSEStopRequested, match="acknowledged"):
+        hal.estop()
+    new = transport.switch_calls[len(switches_before) :]
+    assert new == [("swap", (*_CHAIN, "freeze_controller")), ("activate", ("freeze_controller",))]
+    assert transport.controller_state("freeze_controller") == "active"
+    report = hal.last_stop_report
+    assert report is not None and report.stopped
+    assert "on_activate failed" in report.detail and "activated alone" in report.detail
+
+
+def test_a_freeze_that_will_not_activate_is_reported_unacknowledged() -> None:
+    """The retry fails too: the report must say the joints are not held, never `stopped`."""
+    hal, transport = _wired(activation_faults={"freeze_controller": 2})
+    with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+        hal.estop()
+    assert transport.controller_state("freeze_controller") == "inactive"
+    report = hal.last_stop_report
+    assert report is not None and not report.stopped
+    assert report.controller_states["freeze_controller"] == "inactive"
 
 
 def test_a_failing_swap_is_reported_unacknowledged_and_still_raises() -> None:
