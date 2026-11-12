@@ -15,6 +15,9 @@ export function modelProblem(data) {
   // A model that needs no key (one that runs on the robot) is always usable.
   if (!s.options.some((o) => !o.needs || isSet(o.needs))) return "Set an Anthropic or OpenAI API key to choose a model.";
   if (v?.set && !chosen) return `"${v.value}" isn't a model robots run: pick one.`;
+  // On the robot no model is a choice (a deploy uses the account's); elsewhere a robot
+  // has no reasoner until one is chosen (no library default, ADR-0088).
+  if (!v?.set && data.scope !== "robot") return "Choose a model: robots have no reasoner until one is chosen.";
   if (chosen?.needs && !isSet(chosen.needs)) return `${chosen.label} needs the ${label(chosen.needs)}.`;
   return "";
 }
