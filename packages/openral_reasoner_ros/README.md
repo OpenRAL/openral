@@ -469,6 +469,16 @@ just bootstrap-ollama            # installs Ollama, pulls qwen3.5:4b, serves a 3
 export OPENRAL_REASONER_MODEL=qwen3.5-4b
 ```
 
+The bootstrap reads its tags from `REASONER_MODELS`, so it needs a Python that
+imports `openral_core` (the repo's `.venv` after `just sync`, or
+`OPENRAL_PYTHON`). On Linux it installs Ollama v0.32.14 from the GitHub
+release tarballs, each checked against a sha256 pinned in
+`scripts/bootstrap_ollama.sh` before anything is extracted, and registers the
+systemd unit under the default `/usr/local` prefix. `OLLAMA_PREFIX` installs
+elsewhere (files only), and `OLLAMA_PORT` serves on another port (the script
+then prints the endpoint URL to export). It always talks to the local daemon,
+whatever a client `OLLAMA_HOST` says.
+
 **The context window is the one setting that matters.** The reasoner's prompt
 is 9–26K tokens (system prompt plus one tool per skill); Ollama loads a model
 with a 4096-token window on a GPU under 24 GiB

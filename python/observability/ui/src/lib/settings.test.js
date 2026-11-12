@@ -37,6 +37,8 @@ test("a model that runs on the robot needs no key", () => {
   const d = (values) => ({ scope: "org", canWrite: true, settings: withLocal, values });
   // No keys and no model: the on-robot model is usable, but none is chosen yet (#559).
   assert.match(modelProblem(d({})), /Choose a model/);
+  // Someone who can't write the scope is told who can.
+  assert.match(modelProblem({ ...d({}), canWrite: false }), /an admin must choose one/);
   // On the robot, no model means "use the account's".
   assert.equal(modelProblem({ ...d({}), scope: "robot" }), "");
   assert.equal(modelProblem(d({ OPENRAL_REASONER_MODEL: { set: true, value: "cosmos3-edge" } })), "");

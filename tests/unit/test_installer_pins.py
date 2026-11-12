@@ -75,13 +75,15 @@ def test_bootstrap_offers_exactly_the_curated_ollama_models() -> None:
         text=True,
         check=True,
     ).stdout
-    curated = sorted(
-        (m for m in REASONER_MODELS.values() if m.default_endpoint == OLLAMA_BASE_URL),
-        key=lambda m: m.min_gpu_vram_gb or 0.0,
-    )
+    curated = [m for m in REASONER_MODELS.values() if m.default_endpoint == OLLAMA_BASE_URL]
     assert curated
-    for m in curated:
-        assert f"  {m.served_model_id} {m.id}\n" in out
-    # The default is the curated model with the smallest GPU floor.
-    assert f"(default: {curated[0].served_model_id})" in out
-    assert f"OPENRAL_REASONER_MODEL={curated[0].id}\n" in out
+    listed = out.split("(openral_core.REASONER_MODELS, <tag> <model id>):\n", 1)[1]
+    listed = listed.split("\n\n", 1)[0]
+    assert sorted(listed.split("\n")) == sorted(f"  {m.served_model_id} {m.id}" for m in curated)
+    # The default is a curated model with the smallest recorded GPU floor.
+    default = re.search(r"\(default: (\S+)\)", out)
+    assert default is not None
+    chosen = next(m for m in curated if m.served_model_id == default[1])
+    floors = [m.min_gpu_vram_gb for m in curated if m.min_gpu_vram_gb is not None]
+    assert chosen.min_gpu_vram_gb == min(floors)
+    assert f"OPENRAL_REASONER_MODEL={chosen.id}\n" in out

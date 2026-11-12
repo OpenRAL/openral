@@ -17,7 +17,10 @@ export function modelProblem(data) {
   if (v?.set && !chosen) return `"${v.value}" isn't a model robots run: pick one.`;
   // On the robot no model is a choice (a deploy uses the account's); elsewhere a robot
   // has no reasoner until one is chosen (no library default, ADR-0088).
-  if (!v?.set && data.scope !== "robot") return "Choose a model: robots have no reasoner until one is chosen.";
+  if (!v?.set && data.scope !== "robot")
+    return data.canWrite
+      ? "Choose a model: robots have no reasoner until one is chosen."
+      : "No model is chosen, so robots have no reasoner: an admin must choose one.";
   if (chosen?.needs && !isSet(chosen.needs)) return `${chosen.label} needs the ${label(chosen.needs)}.`;
   return "";
 }

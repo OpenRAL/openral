@@ -30,10 +30,12 @@ set -euo pipefail
 #
 # Environment:
 #   OLLAMA_PREFIX       Install prefix (default /usr/local, which also registers
-#                       the systemd unit; any other prefix installs the files only).
-#   OLLAMA_HOST         host:port the daemon serves on (default 127.0.0.1:11434).
+#                       the systemd unit; any other prefix installs the files only,
+#                       and only an ollama under it counts as installed).
+#   OLLAMA_PORT         Port the local daemon serves on (default 11434). The script
+#                       always talks to 127.0.0.1:<port>, whatever OLLAMA_HOST says.
 #   OPENRAL_PYTHON      A Python that imports openral_core (default: the repo's
-#                       .venv, else python3).
+#                       .venv after `just sync`, else python3).
 
 # Linux install pins: the exact release artifacts, by sha256 (the digests GitHub
 # lists for the v0.32.14 release assets, re-checked by download on 2026-11-12).
@@ -52,12 +54,13 @@ ollama_sha256() {
     *) echo "" ;;
   esac
 }
+PREFIX_GIVEN="${OLLAMA_PREFIX:+1}"
 OLLAMA_PREFIX="${OLLAMA_PREFIX:-/usr/local}"
-OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
-OLLAMA_HOST="${OLLAMA_HOST#http://}"
-export OLLAMA_HOST # `ollama serve` and `ollama pull` read it
-OLLAMA_PORT="${OLLAMA_HOST##*:}"
-OLLAMA_ADDR="${OLLAMA_HOST%:*}"
+OLLAMA_PREFIX="${OLLAMA_PREFIX%/}"
+OLLAMA_PORT="${OLLAMA_PORT:-11434}"
+# The local daemon only: a client OLLAMA_HOST pointing at another machine must not
+# send the serve, the probe or the pull there. `ollama serve` / `pull` read this.
+export OLLAMA_HOST="127.0.0.1:${OLLAMA_PORT}"
 
 # The curated Ollama models, read from the registry (the single source of truth):
 # one "<ollama tag> <reasoner model id>" line each, smallest GPU floor first.
@@ -70,7 +73,8 @@ CURATED="$("${OPENRAL_PYTHON}" - <<'PY' || true
 from openral_core import OLLAMA_BASE_URL, REASONER_MODELS
 
 ollama = [m for m in REASONER_MODELS.values() if m.default_endpoint == OLLAMA_BASE_URL]
-for m in sorted(ollama, key=lambda m: m.min_gpu_vram_gb or 0.0):
+# An entry with no recorded GPU floor sorts last, never as the default.
+for m in sorted(ollama, key=lambda m: m.min_gpu_vram_gb or float("inf")):
     print(m.served_model_id, m.id)
 PY
 )"
@@ -140,7 +144,8 @@ install_ollama_linux() {
   fi
   command -v zstd >/dev/null 2>&1 || { echo "zstd is required: sudo apt-get install zstd" >&2; exit 1; }
 
-  dl="$(mktemp -d)"
+  # On disk, not /tmp: /tmp is RAM-backed on many distros and the tarballs are 1.4-1.8 GB.
+  dl="$(mktemp -d "${TMPDIR:-/var/tmp}/ollama-dl.XXXXXX")"
   # Expanded now: `dl` is local, gone by the time the EXIT trap runs.
   # shellcheck disable=SC2064
   trap "rm -rf '${dl}'" EXIT
@@ -160,7 +165,7 @@ install_ollama_linux() {
   done
 
   mkdir -p "${OLLAMA_PREFIX}" 2>/dev/null || true
-  if [[ ! -w "${OLLAMA_PREFIX}" ]]; then sudo=sudo; fi
+  if [[ ! -w "${OLLAMA_PREFIX}" && "${EUID}" -ne 0 ]]; then sudo=sudo; fi
   echo "==> installing ollama v${OLLAMA_VERSION} into ${OLLAMA_PREFIX} (sha256-verified)"
   ${sudo} rm -rf "${OLLAMA_PREFIX}/lib/ollama"
   ${sudo} install -d -m755 "${OLLAMA_PREFIX}/bin" "${OLLAMA_PREFIX}/lib/ollama"
@@ -173,12 +178,12 @@ install_ollama_linux() {
   if [[ "${OLLAMA_PREFIX}" == /usr/local ]] && command -v systemctl >/dev/null 2>&1 \
     && [[ "$(systemctl is-system-running 2>/dev/null || true)" =~ ^(running|degraded)$ ]]; then
     echo "==> registering the ollama systemd unit with OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-32768}"
-    id ollama >/dev/null 2>&1 || sudo useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama
+    id ollama >/dev/null 2>&1 || ${sudo} useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama
     for g in render video; do
-      if getent group "${g}" >/dev/null 2>&1; then sudo usermod -a -G "${g}" ollama; fi
+      if getent group "${g}" >/dev/null 2>&1; then ${sudo} usermod -a -G "${g}" ollama; fi
     done
-    sudo usermod -a -G ollama "$(whoami)"
-    sudo tee /etc/systemd/system/ollama.service >/dev/null <<EOF
+    ${sudo} usermod -a -G ollama "$(whoami)"
+    ${sudo} tee /etc/systemd/system/ollama.service >/dev/null <<EOF
 [Unit]
 Description=Ollama Service
 After=network-online.target
@@ -196,19 +201,25 @@ Environment="OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-32768}"
 [Install]
 WantedBy=default.target
 EOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable ollama
-    sudo systemctl restart ollama
+    ${sudo} systemctl daemon-reload
+    ${sudo} systemctl enable ollama
+    ${sudo} systemctl restart ollama
     OLLAMA_UNIT_SET=1
   fi
 }
 
-# 1. Install the ollama binary if missing.
-if OLLAMA_BIN="$(command -v ollama)"; then
-  echo "==> ollama already installed: ${OLLAMA_BIN}"
-elif [[ -x "${OLLAMA_PREFIX}/bin/ollama" ]]; then
+# 1. Install the ollama binary if missing (with OLLAMA_PREFIX given, only one under it counts).
+OLLAMA_BIN=""
+if [[ -x "${OLLAMA_PREFIX}/bin/ollama" ]]; then
   OLLAMA_BIN="${OLLAMA_PREFIX}/bin/ollama"
+elif [[ -z "${PREFIX_GIVEN}" ]]; then
+  OLLAMA_BIN="$(command -v ollama || true)"
+fi
+if [[ -n "${OLLAMA_BIN}" ]]; then
   echo "==> ollama already installed: ${OLLAMA_BIN}"
+  if ! "${OLLAMA_BIN}" --version 2>/dev/null | grep -qF "${OLLAMA_VERSION}"; then
+    echo "WARNING: that is not the pinned v${OLLAMA_VERSION} the curated models were measured on" >&2
+  fi
 else
   case "${OS}" in
     Linux) install_ollama_linux ;;
@@ -216,7 +227,7 @@ else
       if command -v brew >/dev/null 2>&1; then
         echo "==> installing ollama via brew"
         brew install ollama
-        OLLAMA_BIN="$(command -v ollama)"
+        OLLAMA_BIN="$(command -v ollama)" || { echo "brew installed ollama, but it is not on PATH" >&2; exit 1; }
       else
         echo "Homebrew not found. Install from https://ollama.com/download/mac" >&2
         exit 1
@@ -234,7 +245,7 @@ fi
 #    (the unit above), on macOS it's started by the menu-bar app. We
 #    only background a `serve` if no listener answers on OLLAMA_HOST.
 probe_port() {
-  python3 - "${OLLAMA_ADDR}" "${OLLAMA_PORT}" <<'PY'
+  python3 - 127.0.0.1 "${OLLAMA_PORT}" <<'PY'
 import socket, sys
 host, port = sys.argv[1], int(sys.argv[2])
 s = socket.socket()
@@ -291,13 +302,16 @@ if [[ "${DO_PULL}" -eq 1 ]]; then
 fi
 
 MODEL_ID="$(curated_id "${MODEL}")"
+# The named `ollama` endpoint is localhost:11434; another port needs its URL.
+ENDPOINT=ollama
+if [[ "${OLLAMA_PORT}" != 11434 ]]; then ENDPOINT="http://localhost:${OLLAMA_PORT}/v1"; fi
 if [[ -n "${MODEL_ID}" ]]; then
   cat <<EOF
 
 ==> Local reasoner ready. Select the curated model (ADR-0088):
 
     export OPENRAL_REASONER_MODEL=${MODEL_ID}
-    export OPENRAL_REASONER_ENDPOINT=ollama   # overrides an endpoint set for another model
+    export OPENRAL_REASONER_ENDPOINT=${ENDPOINT}   # overrides an endpoint set for another model
 EOF
 else
   cat <<EOF
@@ -307,6 +321,7 @@ else
     supplies the URL and dialect:
 
     export OPENRAL_REASONER_MODEL=${MODEL}
-    export OPENRAL_REASONER_ENDPOINT=ollama
+    export OPENRAL_REASONER_ENDPOINT=${ENDPOINT}
 EOF
+  if [[ "${ENDPOINT}" != ollama ]]; then echo "    export OPENRAL_REASONER_DIALECT=openai"; fi
 fi
