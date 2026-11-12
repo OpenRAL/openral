@@ -262,6 +262,15 @@ thing that notices a test drifting out of it.
 The rest of `tests/sim/` is manual by declared policy
 (`.github/workflows/test-selective.yml`).
 
+**The MakerMods Metal episode replays run nightly.** The seven replays in
+`tests/sim/test_makermods_metal_hal_metal_pick_place.py` and
+`tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py` render every step, which is
+too slow for the per-PR OSMesa shards, so those skip them with a reason naming
+[`metal-replays.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/metal-replays.yml).
+That workflow runs each replay in its own GitHub-hosted job on Mesa's EGL software renderer,
+nightly and on `workflow_dispatch` (no `pull_request` trigger, no self-hosted runner). Locally:
+`MUJOCO_GL=egl pytest tests/sim/test_makermods_metal_hal_metal_pick_place.py tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py -k replay`.
+
 ### Sim evals (closed-loop, opt-in — needs HF weights ± GPU)
 
 ```bash

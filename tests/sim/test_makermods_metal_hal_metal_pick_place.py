@@ -125,11 +125,20 @@ def test_leader_arm_never_adds_actuators(leader: str) -> None:
 _REPLAYS = {0: "A", 42: "B", 62: "C", 91: "D"}
 
 
-# Each step renders the manifest cameras; one replay took 594 s under software OSMesa (16-core
-# host) against ~4 s on EGL, so four of them outlast the 15-min CI shard.
+# Each step renders the manifest cameras. With the default 6 x 6 grid of shadow-casting lights
+# (4096 px shadow maps) one replay took 594 s on a software renderer (OSMesa, 16-core host)
+# against ~4 s on EGL. The replay grades physics only, never pixels, so it renders with one
+# unshadowed light (the shadowed path stays covered by the camera tests above); that still
+# leaves ~25 s per replay on a 20-thread software renderer, too slow for the CI shard (#563).
+_REPLAY_LIGHTS: dict[str, Any] = {"light_grid": 1, "light_castshadow": False}
+
+
 @pytest.mark.skipif(
     os.environ.get("MUJOCO_GL") == "osmesa",
-    reason="replays render every step: too slow on OSMesa; runs with a hardware renderer",
+    reason=(
+        "Metal replay renders every step: too slow for the OSMesa CI shard (#563); "
+        "runs nightly in .github/workflows/metal-replays.yml, or locally with MUJOCO_GL=egl"
+    ),
 )
 @pytest.mark.parametrize("episode", sorted(_REPLAYS), ids=lambda e: f"ep{e:02d}-{_REPLAYS[e]}")
 def test_replaying_a_real_episode_places_the_cube_on_the_marker(episode: int) -> None:
@@ -145,6 +154,7 @@ def test_replaying_a_real_episode_places_the_cube_on_the_marker(episode: int) ->
         leader_arm="hidden",
         top_background="render",
         initial_joint_positions=[float(v) for v in ep["state"][0]],
+        **_REPLAY_LIGHTS,
     )
     try:
         r.reset(seed=0)

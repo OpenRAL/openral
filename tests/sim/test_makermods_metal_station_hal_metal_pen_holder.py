@@ -56,12 +56,16 @@ def _assets_available() -> None:
         pytest.skip(f"pinned MakerMods Metal clone not fetchable on this host: {exc}")
 
 
-def _rollout(**opts: Any) -> Any:
+def _rollout(size: tuple[int, int] = (640, 480), **opts: Any) -> Any:
     from openral_sim.factory import make_env
 
     sc = SimScene.from_yaml(str(_ROOT / "scenes" / "sim" / "makermods_metal_pen_holder.yaml"))
     scene = sc.scene.model_copy(
-        update={"backend_options": {**(sc.scene.backend_options or {}), **opts}}
+        update={
+            "backend_options": {**(sc.scene.backend_options or {}), **opts},
+            "observation_width": size[0],
+            "observation_height": size[1],
+        }
     )
     return make_env(
         SimEnvironment(
@@ -129,17 +133,29 @@ def test_camera_offset_moves_and_turns_the_wrist_camera_in_its_own_frame() -> No
     assert min(np.abs(rel - ref).max(), np.abs(rel + ref).max()) < 1e-9
 
 
-# Each step renders three 640x480 views; a ~700-step replay outlasts the 15-min CI shard
-# under software OSMesa (one episode did not finish in 15 min on a 16-core host). The GPU
-# (EGL) run takes seconds, so the replays run wherever a hardware renderer exists.
+# Each step renders three views. At 640x480 under the default 6 x 6 grid of shadow-casting
+# lights (4096 px shadow maps) a ~700-step replay did not finish in 15 min on a software
+# renderer (OSMesa, 16-core host). The replay grades physics only, never pixels, so it renders
+# small views with one unshadowed light (the full-size shadowed path stays covered by the
+# camera tests above); the 205k-face meshes still cost ~100 s per replay on a 20-thread
+# software renderer, too slow for the CI shard (#563).
 @pytest.mark.skipif(
     os.environ.get("MUJOCO_GL") == "osmesa",
-    reason="replays render 3 views per step: too slow on OSMesa; runs with a hardware renderer",
+    reason=(
+        "Metal replay renders every step: too slow for the OSMesa CI shard (#563); "
+        "runs nightly in .github/workflows/metal-replays.yml, or locally with MUJOCO_GL=egl"
+    ),
 )
 @pytest.mark.parametrize("episode", [0, 7, 30])
 def test_replayed_episode_drops_the_pen_into_the_cup(episode: int) -> None:
     hx, hy, hyaw, px, py, pyaw = (float(v) for v in _EPISODES[f"layout_{episode}"])
-    env = _rollout(holder_start=[hx, hy, hyaw], pen_start=[px, py, pyaw])
+    env = _rollout(
+        size=(64, 48),
+        holder_start=[hx, hy, hyaw],
+        pen_start=[px, py, pyaw],
+        light_grid=1,
+        light_castshadow=False,
+    )
     try:
         env.reset(seed=0)
         z0 = float(env._data.xpos[env._holder_body][2])
