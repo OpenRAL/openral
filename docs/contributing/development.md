@@ -265,10 +265,10 @@ The rest of `tests/sim/` is manual by declared policy
 **The MakerMods Metal episode replays run nightly.** The seven replays in
 `tests/sim/test_makermods_metal_hal_metal_pick_place.py` and
 `tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py` render every step. The
-pick-place ones (~20 s each on OSMesa) also run in the per-PR core shards; the pen-holder ones
-(~110 s each) skip there with a reason naming
+pick-place ones (~20 s each on OSMesa) also run in the per-PR core shards whenever the
+selector picks their file; the pen-holder ones (~100 s each) skip there with a reason naming
 [`metal-replays.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/metal-replays.yml).
-That workflow runs each of the seven in its own GitHub-hosted job on Mesa's EGL software
+That workflow runs both files' replays, one GitHub-hosted job per file, on Mesa's EGL software
 renderer, nightly and on `workflow_dispatch` (no `pull_request` trigger, no self-hosted
 runner). Locally:
 `MUJOCO_GL=egl pytest tests/sim/test_makermods_metal_hal_metal_pick_place.py tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py -k replay`.

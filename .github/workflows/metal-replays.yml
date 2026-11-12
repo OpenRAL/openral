@@ -1,10 +1,11 @@
 name: metal-replays
 # The seven MakerMods Metal episode replays (#563): recorded real actions stepped through the
 # MuJoCo pick-place and pen-holder scenes, graded on physics. Every step renders the scene's
-# cameras. The pick-place replays (~20 s each on OSMesa) also run in the per-PR core shards;
-# the pen-holder ones (~110 s each) skip there with a reason that names this workflow. Here
-# each replay gets its own GitHub-hosted job and renders through Mesa's EGL software device
-# (llvmpipe; the hosted runner has no GPU).
+# cameras. The pick-place replays (~20 s each on OSMesa) also run in the per-PR core shards
+# whenever the selector picks their file; the pen-holder ones (~100 s each) skip there with a
+# reason that names this workflow. Here each file's replays get their own GitHub-hosted job and
+# render through Mesa's EGL software device (llvmpipe; the hosted runner has no GPU). A failed
+# nightly reaches whoever last edited the cron line by GitHub's default e-mail only.
 #
 # Nightly and on demand only: no pull_request trigger, no self-hosted runner, no secrets, a
 # read-only token. A fork PR can neither start this nor choose where it runs.
@@ -19,28 +20,25 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # a manual dispatch must not cancel the nightly run, nor the nightly a manual one
+  cancel-in-progress: false
 
 jobs:
   replay:
     runs-on: ubuntu-24.04
-    # Measured on this runner: 12-17 s per pick-place replay, 88-91 s per pen-holder replay,
-    # 3-5 min per job including setup.
-    timeout-minutes: 45
+    # Measured on this runner: 12-17 s per pick-place replay, 88-91 s per pen-holder replay
+    # (before the pen-holder top view stopped compositing the plate), ~3 min of setup.
+    timeout-minutes: 30
     env:
       MUJOCO_GL: "egl"
       PYOPENGL_PLATFORM: "egl"
     strategy:
       fail-fast: false
       matrix:
-        test:
-          - "tests/sim/test_makermods_metal_hal_metal_pick_place.py::test_replaying_a_real_episode_places_the_cube_on_the_marker[ep00-A]"
-          - "tests/sim/test_makermods_metal_hal_metal_pick_place.py::test_replaying_a_real_episode_places_the_cube_on_the_marker[ep42-B]"
-          - "tests/sim/test_makermods_metal_hal_metal_pick_place.py::test_replaying_a_real_episode_places_the_cube_on_the_marker[ep62-C]"
-          - "tests/sim/test_makermods_metal_hal_metal_pick_place.py::test_replaying_a_real_episode_places_the_cube_on_the_marker[ep91-D]"
-          - "tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py::test_replayed_episode_drops_the_pen_into_the_cup[0]"
-          - "tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py::test_replayed_episode_drops_the_pen_into_the_cup[7]"
-          - "tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py::test_replayed_episode_drops_the_pen_into_the_cup[30]"
+        # Whole files with `-k replay`, so a replay added to either file runs here too.
+        file:
+          - tests/sim/test_makermods_metal_hal_metal_pick_place.py
+          - tests/sim/test_makermods_metal_station_hal_metal_pen_holder.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -48,26 +46,30 @@ jobs:
       - uses: ./.github/actions/setup-test-env
 
       - name: Install Mesa EGL
-        run: sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1-mesa-dri
+        run: |
+          sudo apt-get update -qq || echo "::warning::apt-get update reported errors; the install is the gate"
+          sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1-mesa-dri
 
       - name: Show the EGL renderer
         run: |
           uv run python -c "from mujoco.egl import GLContext; c = GLContext(8, 8); c.make_current(); \
           from OpenGL import GL; print(GL.glGetString(GL.GL_RENDERER).decode())"
 
-      # A skip would pass pytest; every replay here must run, so the junit report is checked.
+      # A skip would pass pytest; every selected replay here must run, so the junit report is
+      # checked: at least one replay, none skipped.
       - name: Replay
         env:
-          TEST: ${{ matrix.test }}
+          FILE: ${{ matrix.file }}
         run: |
-          uv run pytest "$TEST" -q -rs --durations=1 -p no:launch_testing -p no:launch_ros \
+          uv run pytest "$FILE" -k replay -q -rs --durations=5 -p no:launch_testing -p no:launch_ros \
             --junit-xml="$RUNNER_TEMP/replay.xml"
           python3 - "$RUNNER_TEMP/replay.xml" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
 
           s = next(ET.parse(sys.argv[1]).getroot().iter("testsuite"))
-          ran = int(s.get("tests", 0)) - int(s.get("skipped", 0))
-          if ran != 1:
-              sys.exit(f"::error::expected 1 replay to run, got {ran} (skipped {s.get('skipped')})")
+          tests, skipped = int(s.get("tests", 0)), int(s.get("skipped", 0))
+          if tests == 0 or skipped:
+              sys.exit(f"::error::replays must run: {tests} collected, {skipped} skipped")
+          print(f"{tests} replays ran")
           PY

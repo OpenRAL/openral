@@ -13,8 +13,9 @@ that ``makermods:metal_station`` derives from the pinned upstream URDF, and chec
 * the world render carries the cup's rim outline that the top observation does not.
 
 Fixture: ``tests/unit/fixtures/metal_pen_holder_episodes.npz`` (see its SOURCE.txt). No
-mocks (CLAUDE.md §1.11): skips only when ``mujoco`` / a GL renderer is missing or the pinned
-MakerMods clone cannot be fetched.
+mocks (CLAUDE.md §1.11): skips when ``mujoco`` / a GL renderer is missing or the pinned
+MakerMods clone cannot be fetched; the replays also skip under ``MUJOCO_GL=osmesa`` (the per-PR
+CI shards) and run nightly in ``.github/workflows/metal-replays.yml`` instead (#563).
 """
 
 from __future__ import annotations
@@ -56,17 +57,14 @@ def _assets_available() -> None:
         pytest.skip(f"pinned MakerMods Metal clone not fetchable on this host: {exc}")
 
 
-def _rollout(size: tuple[int, int] = (640, 480), **opts: Any) -> Any:
+def _rollout(size: tuple[int, int] | None = None, **opts: Any) -> Any:
     from openral_sim.factory import make_env
 
     sc = SimScene.from_yaml(str(_ROOT / "scenes" / "sim" / "makermods_metal_pen_holder.yaml"))
-    scene = sc.scene.model_copy(
-        update={
-            "backend_options": {**(sc.scene.backend_options or {}), **opts},
-            "observation_width": size[0],
-            "observation_height": size[1],
-        }
-    )
+    update: dict[str, Any] = {"backend_options": {**(sc.scene.backend_options or {}), **opts}}
+    if size is not None:
+        update |= {"observation_width": size[0], "observation_height": size[1]}
+    scene = sc.scene.model_copy(update=update)
     return make_env(
         SimEnvironment(
             robot_id="makermods_metal_station",
@@ -94,6 +92,8 @@ def test_cameras_render_and_the_top_view_is_the_plate_behind_the_robot() -> None
         assert np.array_equal(obs["images"]["top"][:60], plate[:60])
         world = env.render()
         assert world is not None and not np.array_equal(world, obs["images"]["top"])
+        # the wrist views' grid of shadow-casting lights (the replays below render without it)
+        assert int(env._model.light_castshadow.sum()) == env.options.light_grid**2 > 1
     finally:
         env.close()
 
@@ -136,9 +136,10 @@ def test_camera_offset_moves_and_turns_the_wrist_camera_in_its_own_frame() -> No
 # Each step renders three views. At 640x480 under the default 6 x 6 grid of shadow-casting
 # lights (4096 px shadow maps) a ~700-step replay did not finish in 15 min on a software
 # renderer (OSMesa, 16-core host). The replay grades physics only, never pixels, so it renders
-# small views with one unshadowed light (the full-size shadowed path stays covered by the
-# camera tests above); the 205k-face meshes still cost 108 s per replay on OSMesa on a
-# GitHub-hosted runner, too much for the shared 15-min CI shard (#563).
+# small views with one unshadowed light and a rendered (not plate-composited) top view; the
+# full-size shadowed path stays covered by the camera test above. The 205k-face meshes still
+# cost ~100 s per replay on OSMesa on a GitHub-hosted runner, too much for the shared 15-min
+# CI shard (#563).
 @pytest.mark.skipif(
     os.environ.get("MUJOCO_GL") == "osmesa",
     reason=(
@@ -155,6 +156,7 @@ def test_replayed_episode_drops_the_pen_into_the_cup(episode: int) -> None:
         pen_start=[px, py, pyaw],
         light_grid=1,
         light_castshadow=False,
+        top_background="render",
     )
     try:
         env.reset(seed=0)

@@ -35,6 +35,7 @@ change), §1.11 (real components, no mocks) and §2 ("Tests").
 | `quality.yml` | PR to `master`, `workflow_dispatch` | `uv lock --check`, ruff, `tools/run_mypy.sh`, schema / ROS-topic-graph / rSkill `SKILL.md` drift, `openral check`, `mkdocs build --strict`. No tests. | `quality` (required) |
 | `dco.yml` | PR (`opened` / `synchronize` / `reopened`) | `Signed-off-by:` on every commit. | `Verify Signed-off-by` (required) |
 | `test-ros2.yml` | PR to `master`, `workflow_dispatch` | `colcon build` + `colcon test` in `ros:jazzy-ros-base`; `packages` defaults to `openral_safety_kernel openral_octomap_bridge`. | `colcon build + ctest — Jazzy` |
+| `metal-replays.yml` | nightly `schedule`, `workflow_dispatch` | The MakerMods Metal episode replays (`-k replay` in the pick-place and pen-holder files), one job per file on Mesa's EGL software renderer; fails if a replay skips. The pen-holder ones skip on OSMesa per PR. | none |
 | `docker-build.yml` | push to `master` (path-filtered), `workflow_dispatch` | Builds `openral:x86`, its smoke tests and the live-ROS suite (the only CI surface with ROS 2 and the colcon overlay for pytest). | none |
 
 `pages.yml`, `release-please.yml` and `release-pypi.yml` run no tests.
