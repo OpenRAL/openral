@@ -17,8 +17,10 @@
 # * Success (placement_success): the MuJoCo twin grades the cube's footprint overlap with
 #   the 39 mm marker (complete >= 50 %, partial > 0). Isaac grades the cube's centre in a
 #   box, so complete = centre within 12 mm of the marker's centre (about half the cube's
-#   footprint on the sticker), partial = within 31 mm (any overlap), both resting on the
-#   desk, released. The twin's semi grade (lifted, then put down off the marker) is a
+#   footprint on the sticker), partial = within 22.5 mm per axis, the largest box whose
+#   every centre overlaps the sticker at any yaw (centre within 12.5 + 19.5 = 32 mm of it),
+#   so partial never scores a cube beside the sticker; an edge-on overlap 23-32 mm out
+#   along an axis grades fail here. Both resting on the desk, released. The twin's semi grade (lifted, then put down off the marker) is a
 #   fail here.
 #
 # Requirements: NVIDIA RTX GPU, Isaac Sim 6.1 (binary install via
@@ -85,8 +87,8 @@ scene:
           min_xyz: [0.266, 0.064, 0.003]
           max_xyz: [0.290, 0.088, 0.03]
         touching_marker:
-          min_xyz: [0.247, 0.045, 0.003]
-          max_xyz: [0.309, 0.107, 0.03]
+          min_xyz: [0.2555, 0.0535, 0.003]
+          max_xyz: [0.3005, 0.0985, 0.03]
       grades:
         - {name: complete, score: 1.0, region: target}
         - {name: partial, score: 0.5, region: adjacent}

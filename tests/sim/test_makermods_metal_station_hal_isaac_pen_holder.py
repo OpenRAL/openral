@@ -48,7 +48,15 @@ _SHELF_TOP_Z, _PEN_RADIUS = 0.09, 0.01
 def test_replayed_episode_drops_the_pen_into_the_cup(episode: int) -> None:
     import openral_sim.backends  # noqa: F401 — registers the isaac_sim scene factory
     from openral_core import SimEnvironment, SimScene, VLASpec, load_scene_strict
+    from openral_core.schemas import RobotDescription, RSkillManifest
+    from openral_rskill._policy_io import PolicyIOCodec
     from openral_sim.factory import make_env
+
+    # The rSkill's own codec (degrees -> rad, stroke / gripper_scale), not a copy of it.
+    codec = PolicyIOCodec.from_manifest(
+        RSkillManifest.from_yaml(str(_repo_root() / "rskills/act-pen-holder-bi/rskill.yaml")),
+        RobotDescription.from_yaml(str(_repo_root() / "robots/makermods_metal_station/robot.yaml")),
+    )
 
     hx, hy, hyaw, px, py, pyaw = (float(v) for v in _EPISODES[f"layout_{episode}"])
     scene = load_scene_strict(
@@ -65,30 +73,31 @@ def test_replayed_episode_drops_the_pen_into_the_cup(episode: int) -> None:
             scene=scene.scene,
             task=scene.task,
             base_pose=scene.base_pose,
-            vla=VLASpec(id="zero", weights_uri="placeholder"),
+            vla=VLASpec(id="zero", weights_uri="zero"),
         )
     )
-    frames = []
+    out = os.environ.get("OPENRAL_TEST_ARTIFACT_DIR")
+    frames = []  # kept only when a video is asked for (~1 GB per episode)
     try:
         env.reset(seed=0)
         result = None
         for a in _EPISODES[f"action_{episode}"].astype(np.float64):
-            robot = np.radians(a)
-            robot[[6, 13]] = np.clip(a[[6, 13]] / 100.0, 0.0, 1.0)  # stroke -> [0, 1]
+            robot = codec.to_robot_action(a)
+            robot[[6, 13]] = np.clip(robot[[6, 13]], 0.0, 1.0)  # an open stroke past 100
             result = env.step(robot.astype(np.float32))
-            im = result.observation["images"]
-            wrists = np.concatenate([im["wrist_left"], im["wrist_right"]], axis=1)[::2, ::2]
-            frames.append(np.concatenate([im["top"], wrists], axis=0).astype(np.uint8))
+            if out:
+                im = result.observation["images"]
+                wrists = np.concatenate([im["wrist_left"], im["wrist_right"]], axis=1)[::2, ::2]
+                frames.append(np.concatenate([im["top"], wrists], axis=0).astype(np.uint8))
             if result.terminated:
                 break
         assert result is not None
         assert result.info["placement_grade"] == "complete", result.info["object_positions"]
         assert result.terminated and result.reward == 1.0
     finally:
-        out = os.environ.get("OPENRAL_TEST_ARTIFACT_DIR")
+        env.close()  # before the export, so a failed write never strands the sidecar
         if out and frames and importlib.util.find_spec("imageio") is not None:
             import imageio.v2 as imageio
 
             Path(out).mkdir(parents=True, exist_ok=True)
             imageio.mimwrite(Path(out) / f"isaac_pen_holder_replay_ep{episode}.mp4", frames, fps=30)
-        env.close()

@@ -1008,7 +1008,7 @@ class IsaacLinkBox(BaseModel):
         0.054
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     xyz: tuple[float, float, float]
     half_extents: tuple[float, float, float]

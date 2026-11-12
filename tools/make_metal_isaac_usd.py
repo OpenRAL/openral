@@ -38,7 +38,6 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -55,7 +54,10 @@ from openral_sim.backends.metal_pen_holder._assets import (  # noqa: E402
     holder_collider_boxes,
     holder_visual_mesh,
 )
-from openral_sim.backends.metal_pick_place._assets import MetalPickPlaceOptions  # noqa: E402
+from openral_sim.backends.metal_pick_place._assets import (  # noqa: E402
+    ClutterItem,
+    MetalPickPlaceOptions,
+)
 
 PEN_DIR = _REPO / "scenes/sim/assets/makermods_metal_pen_holder"
 CUBE_DIR = _REPO / "scenes/sim/assets/makermods_metal_pick_place"
@@ -272,7 +274,7 @@ def _static(root: str, friction: float, children: str) -> str:
     return _header(root) + body.replace("{ROOT}", f"/{root}")
 
 
-def _clutter(items: tuple[Any, ...]) -> str:
+def _clutter(items: tuple[ClutterItem, ...]) -> str:
     """The twin's contact-free props (``ClutterItem``: drawer unit, wall pipes), visual only."""
     out = ""
     for k, c in enumerate(items):
