@@ -141,8 +141,6 @@ def test_the_blend_ramp_is_within_the_guards_cap() -> None:
     """GuardedSafetyController refuses to configure outside (0, 1.0] /s (issue #548)."""
     speed = _params(_yaml(_CONTROLLER_MANAGER), "safety_controller")["max_blend_ratio_speed"]
     assert 0.0 < speed <= 1.0
-    header = _PKG / "include" / "openral_hal_unitree" / "guarded_safety_controller.hpp"
-    assert "constexpr double kMaxBlendRatioSpeed = 1.0;" in header.read_text(encoding="utf-8")
 
 
 def test_the_guarded_plugin_is_exported_under_the_configured_name() -> None:

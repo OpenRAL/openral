@@ -10,8 +10,16 @@ find_package(ament_cmake REQUIRED)
 # GuardedSafetyController (issue #548) subclasses NVIDIA's SafetyController, which is
 # provisioned out-of-tree (deps.repos + the Isaac ROS apt repository). Without it the
 # plugin is not built, and a bringup that names it fails to load the controller — it
-# never falls back to the unguarded upstream class.
-find_package(isaac_ros_deploy_ros2_control QUIET)
+# never falls back to the unguarded upstream class. A robot host passes
+# -DOPENRAL_REQUIRE_GUARDED_SAFETY_CONTROLLER=ON so a missing (or not-yet-built, e.g. colcon
+# ordered it later) NVIDIA package fails the build instead of the bringup.
+option(OPENRAL_REQUIRE_GUARDED_SAFETY_CONTROLLER
+  "Fail the build when isaac_ros_deploy_ros2_control is missing" OFF)
+if(OPENRAL_REQUIRE_GUARDED_SAFETY_CONTROLLER)
+  find_package(isaac_ros_deploy_ros2_control REQUIRED)
+else()
+  find_package(isaac_ros_deploy_ros2_control QUIET)
+endif()
 if(isaac_ros_deploy_ros2_control_FOUND)
   set(CMAKE_CXX_STANDARD 20)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)

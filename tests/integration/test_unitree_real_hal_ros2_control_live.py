@@ -142,6 +142,14 @@ def _run(argv: list[str], timeout_s: float = 60.0) -> subprocess.CompletedProces
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
 
 
+def _param(node: str, name: str) -> float:
+    """A double parameter via `ros2 param get` ("Double value is: <v>")."""
+    got = _run(["ros2", "param", "get", node, name])
+    prefix = "Double value is:"
+    assert got.stdout.startswith(prefix), got.stdout + got.stderr
+    return float(got.stdout.removeprefix(prefix))
+
+
 @pytest.fixture
 def s0_graph(tmp_path: Path) -> Iterator[None]:
     from openral_core import RobotDescription
@@ -268,8 +276,7 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
         )
         # `ros2 param set` exits 0 on a refusal and reports it on stderr.
         assert "Setting parameter failed" in speed.stderr, speed.stdout + speed.stderr
-        got = _run(["ros2", "param", "get", "/safety_controller", "max_blend_ratio_speed"])
-        assert "1.0" in got.stdout, got.stdout + got.stderr
+        assert _param("/safety_controller", "max_blend_ratio_speed") == 1.0
 
         left = [n for n in hal.upper_body_joints() if n.startswith("left_")]
         row = [0.3 if n == "left_elbow_joint" else 0.0 for n in names]
@@ -323,8 +330,7 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
         states = transport.controller_states(timeout_s=5.0)
         for controller in hal.controller_names():
             assert states.get(controller) == "active", states
-        blend = _run(["ros2", "param", "get", "/safety_controller", "blend_ratio"])
-        assert "0.0" in blend.stdout, blend.stdout + blend.stderr
+        assert _param("/safety_controller", "blend_ratio") == 0.0
         cm_log = (tmp_path / "controller_manager.log").read_text(errors="replace")
         assert "blend_ratio was 1 at activation; reset to 0.0" in cm_log, cm_log[-2000:]
         transport.close()

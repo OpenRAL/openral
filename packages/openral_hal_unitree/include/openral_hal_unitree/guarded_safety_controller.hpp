@@ -23,6 +23,7 @@
 #ifndef OPENRAL_HAL_UNITREE__GUARDED_SAFETY_CONTROLLER_HPP_
 #define OPENRAL_HAL_UNITREE__GUARDED_SAFETY_CONTROLLER_HPP_
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <vector>
@@ -41,7 +42,11 @@ constexpr double kMaxBlendRatioSpeed = 1.0;
 std::optional<std::string> blend_speed_refusal(double speed);
 
 /// Why a runtime parameter set is refused, or nullopt when every parameter may change.
-std::optional<std::string> runtime_set_refusal(const std::vector<rclcpp::Parameter>& parameters);
+/// While `activating`, a non-zero `blend_ratio` is refused too: upstream's on_activate
+/// copies the target into the applied blend with no ramp, and the parameter service runs
+/// on another executor thread.
+std::optional<std::string> runtime_set_refusal(const std::vector<rclcpp::Parameter>& parameters,
+                                               bool activating);
 
 class GuardedSafetyController
     : public isaac_ros_deploy_ros2_control::controllers::SafetyController {
@@ -53,6 +58,7 @@ public:
 
 private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr guard_handle_;
+  std::atomic<bool> activating_{false};
 };
 
 }  // namespace openral_hal_unitree

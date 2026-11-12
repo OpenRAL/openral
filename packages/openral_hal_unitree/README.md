@@ -144,7 +144,12 @@ just ros2-build                                            # this package
 Build this package with the NVIDIA workspace sourced: its `GuardedSafetyController`
 plugin is compiled only when CMake finds `isaac_ros_deploy_ros2_control`. Built without
 it, the bringup fails to load `safety_controller` — it never falls back to NVIDIA's
-unguarded class.
+unguarded class. On a robot host make that a build error instead:
+
+```bash
+colcon build --packages-select openral_hal_unitree \
+    --cmake-args -DOPENRAL_REQUIRE_GUARDED_SAFETY_CONTROLLER=ON
+```
 
 Build-time network fetches you should know about:
 

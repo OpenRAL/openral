@@ -30,12 +30,18 @@ std::optional<std::string> blend_speed_refusal(double speed) {
   return reason.str();
 }
 
-std::optional<std::string> runtime_set_refusal(const std::vector<rclcpp::Parameter>& parameters) {
+std::optional<std::string> runtime_set_refusal(const std::vector<rclcpp::Parameter>& parameters,
+                                               bool activating) {
   for (const auto& param : parameters) {
     if (param.get_name() == kMaxBlendRatioSpeedParam) {
       return std::string(kMaxBlendRatioSpeedParam) +
              " is fixed at configure on a real robot; edit the controller config and "
              "relaunch";
+    }
+    if (activating && param.get_name() == kBlendRatioParam &&
+        param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE && param.as_double() != 0.0) {
+      return std::string(kBlendRatioParam) +
+             " cannot be raised while the controller activates; set it again once active";
     }
   }
   return std::nullopt;
@@ -58,10 +64,10 @@ GuardedSafetyController::on_configure(const rclcpp_lifecycle::State& previous_st
   if (result != controller_interface::CallbackReturn::SUCCESS) {
     return result;
   }
-  guard_handle_ =
-      node->add_on_set_parameters_callback([](const std::vector<rclcpp::Parameter>& parameters) {
+  guard_handle_ = node->add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter>& parameters) {
         rcl_interfaces::msg::SetParametersResult out;
-        const auto refusal = runtime_set_refusal(parameters);
+        const auto refusal = runtime_set_refusal(parameters, activating_.load());
         out.successful = !refusal.has_value();
         out.reason = refusal.value_or("");
         return out;
@@ -76,6 +82,9 @@ GuardedSafetyController::on_activate(const rclcpp_lifecycle::State& previous_sta
   // `ros2 param get` shows it. Refusing to activate instead is NOT safe: a strict
   // switch_controller that fails an activation keeps its deactivations, so re-arming from
   // freeze_controller would leave every joint unclaimed — zero torque on the hg hardware.
+  // From here until upstream has copied the target into the applied blend, the guard refuses
+  // any non-zero blend_ratio, so a set racing in from the executor cannot be snapped in.
+  activating_.store(true);
   const auto node = get_node();
   const double blend_ratio = node->get_parameter(kBlendRatioParam).as_double();
   if (blend_ratio != 0.0) {
@@ -84,6 +93,7 @@ GuardedSafetyController::on_activate(const rclcpp_lifecycle::State& previous_sta
       // Unreachable with the in-tree callbacks (upstream and ours both accept 0.0).
       RCLCPP_ERROR(node->get_logger(), "Refusing to activate: could not reset %s to 0.0: %s",
                    kBlendRatioParam, reset.reason.c_str());
+      activating_.store(false);
       return controller_interface::CallbackReturn::ERROR;
     }
     RCLCPP_WARN(node->get_logger(),
@@ -91,7 +101,9 @@ GuardedSafetyController::on_activate(const rclcpp_lifecycle::State& previous_sta
                 "Raise it again to blend the policy in at max_blend_ratio_speed",
                 kBlendRatioParam, blend_ratio);
   }
-  return SafetyController::on_activate(previous_state);
+  const auto result = SafetyController::on_activate(previous_state);
+  activating_.store(false);
+  return result;
 }
 
 }  // namespace openral_hal_unitree

@@ -57,11 +57,23 @@ TEST(BlendSpeedRefusal, AllowsOnlyAPositiveRampAtMostOnePerSecond) {
 }
 
 TEST(RuntimeSetRefusal, RefusesTheBlendSpeedEvenInsideABatch) {
-  EXPECT_FALSE(openral_hal_unitree::runtime_set_refusal({rclcpp::Parameter("blend_ratio", 1.0)})
-                   .has_value());
+  EXPECT_FALSE(
+      openral_hal_unitree::runtime_set_refusal({rclcpp::Parameter("blend_ratio", 1.0)}, false)
+          .has_value());
   EXPECT_TRUE(
       openral_hal_unitree::runtime_set_refusal(
-          {rclcpp::Parameter("blend_ratio", 1.0), rclcpp::Parameter("max_blend_ratio_speed", 0.5)})
+          {rclcpp::Parameter("blend_ratio", 1.0), rclcpp::Parameter("max_blend_ratio_speed", 0.5)},
+          false)
+          .has_value());
+}
+
+TEST(RuntimeSetRefusal, RefusesRaisingTheBlendWhileActivating) {
+  // The window between the guard's reset and upstream's no-ramp copy of the target.
+  EXPECT_TRUE(
+      openral_hal_unitree::runtime_set_refusal({rclcpp::Parameter("blend_ratio", 1.0)}, true)
+          .has_value());
+  EXPECT_FALSE(
+      openral_hal_unitree::runtime_set_refusal({rclcpp::Parameter("blend_ratio", 0.0)}, true)
           .has_value());
 }
 
@@ -166,7 +178,8 @@ TEST_F(GuardedSafetyControllerTest, ActivationStartsBlendedOutEvenIfTheTargetWas
   EXPECT_EQ(SafetyControllerTestAccess::applied_blend_ratio(controller_), 0.0);
   EXPECT_EQ(SafetyControllerTestAccess::target_blend_ratio(controller_), 0.0);
   EXPECT_EQ(controller_.get_node()->get_parameter("blend_ratio").as_double(), 0.0);
-  // The operator can blend in again; it goes through the ramp.
+  // The operator can blend in again once active (the activation window is closed); it
+  // goes through the ramp.
   EXPECT_TRUE(set("blend_ratio", 1.0));
   EXPECT_EQ(SafetyControllerTestAccess::target_blend_ratio(controller_), 1.0);
   EXPECT_EQ(SafetyControllerTestAccess::applied_blend_ratio(controller_), 0.0);
