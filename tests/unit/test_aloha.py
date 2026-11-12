@@ -303,7 +303,13 @@ class TestSendActionSplit:
 
     def test_single_namespace_rejected(self) -> None:
         """One namespace would collide both arms onto one command topic."""
-        for bad in (["follower_left"], ["follower_left", "follower_left"], [], "lr"):
+        for bad in (
+            ["follower_left"],
+            ["follower_left", "follower_left"],
+            [],
+            "lr",
+            ["", "/"],
+        ):
             with pytest.raises(ROSConfigError, match="two distinct"):
                 AlohaHAL(arm_namespaces=bad)
 

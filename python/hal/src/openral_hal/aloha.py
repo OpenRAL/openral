@@ -540,10 +540,12 @@ class AlohaHAL(HALBase):
         # different targets to the same /<ns>/commands/joint_group topic and
         # the later publish would silently replace the earlier.
         # A bare str is a Sequence[str] too: "lr" would pass as two namespaces.
+        namespaces = [] if isinstance(arm_namespaces, str) else [str(ns) for ns in arm_namespaces]
         if (
             isinstance(arm_namespaces, str)
-            or len(arm_namespaces) != _ALOHA_ARM_COUNT
-            or len(set(arm_namespaces)) != _ALOHA_ARM_COUNT
+            or len(namespaces) != _ALOHA_ARM_COUNT
+            or len(set(namespaces)) != _ALOHA_ARM_COUNT
+            or not all(ns.strip("/") for ns in namespaces)
         ):
             raise ROSConfigError(
                 "AlohaHAL needs exactly two distinct arm namespaces "
@@ -564,7 +566,7 @@ class AlohaHAL(HALBase):
         self._gripper_name = gripper_name
         self._gripper_closed, self._gripper_open = (float(v) for v in gripper_cmd_range)
         self._joint_state_topic = joint_state_topic
-        self._arm_namespaces = [str(ns) for ns in arm_namespaces]
+        self._arm_namespaces = namespaces
         self._publish_fn: _PublishFn | None = publish_fn
         self._state_fn: _StateFn | None = state_fn
         self._staleness_limit_s = resolve_staleness_limit_s(self.description, staleness_limit_s)
