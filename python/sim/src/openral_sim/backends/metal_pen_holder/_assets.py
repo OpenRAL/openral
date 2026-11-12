@@ -923,7 +923,8 @@ def _add_cameras(
     ``(dx, dy, dz)`` metres and turns it by ``(rx, ry, rz)`` degrees (XYZ), both in its own
     frame (MuJoCo: x right, y up, looking down -z).
     """
-    from scipy.spatial.transform import Rotation
+    import mujoco as mj
+    import numpy as np
 
     offsets = offsets or {}
     bodies = {b.name: b for b in spec.bodies}
@@ -939,16 +940,19 @@ def _add_cameras(
             )
         cam = bodies[sp.parent_body].add_camera()
         cam.name = s.name
-        w, x, y, z = look_at_quat_wxyz(sp.pos, sp.target, up=sp.up)
-        rot = Rotation.from_quat([x, y, z, w])
-        pos = list(sp.pos)
+        quat = look_at_quat_wxyz(sp.pos, sp.target, up=sp.up)
+        pos = [float(v) for v in sp.pos]
         if s.name in offsets:
             o = offsets[s.name]
-            pos = [float(v) for v in sp.pos + rot.apply(o[:3])]
-            rot = rot * Rotation.from_euler("xyz", o[3:], degrees=True)
-        qx, qy, qz, qw = rot.as_quat()
+            shift = np.zeros(3)
+            mj.mju_rotVecQuat(shift, np.asarray(o[:3], dtype=float), np.asarray(quat))
+            pos = [p + float(d) for p, d in zip(pos, shift, strict=True)]
+            turn = np.zeros(4)
+            # MuJoCo upper-case "XYZ" is the fixed-axis sequence (scipy's "xyz").
+            mj.mju_euler2Quat(turn, np.radians(o[3:]), "XYZ")
+            quat = _quat_mul(quat, tuple(float(v) for v in turn))
         cam.pos = pos
-        cam.quat = [qw, qx, qy, qz]
+        cam.quat = list(quat)
         sx, sy = width / k.width, height / k.height
         cam.resolution = [width, height]
         cam.sensor_size = [width * pixel_m, height * pixel_m]
