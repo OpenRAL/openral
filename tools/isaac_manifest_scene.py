@@ -2685,7 +2685,8 @@ class IsaacManifestScene(IsaacSceneBase):
     def _set_link_box_colliders(self, stage: Any, prim_path: str) -> None:
         """Replace each named link's colliders with one box (``link_box_colliders``).
 
-        The link's own collision prims are disabled (their visuals stay), and an invisible
+        The link's own collision prims are disabled (their visuals stay; a child link nested
+        under it in the converted stage keeps its colliders), and an invisible
         ``guide`` cube at the link-frame ``xyz`` with the given half extents takes their
         place. The converter's colliders are instanceable, so the link is de-instanced first.
         """
@@ -2708,7 +2709,11 @@ class IsaacManifestScene(IsaacSceneBase):
                 for inst in instances:
                     inst.SetInstanceable(False)
             n = 0
-            for prim in Usd.PrimRange(link):
+            it = iter(Usd.PrimRange(link))
+            for prim in it:
+                if prim != link and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    it.PruneChildren()  # a nested child link keeps its own colliders
+                    continue
                 if prim.HasAPI(UsdPhysics.CollisionAPI):
                     UsdPhysics.CollisionAPI(prim).CreateCollisionEnabledAttr().Set(False)
                     n += 1
