@@ -246,6 +246,11 @@ class FeetechTorqueWatcher:
         log.info("hal.torque_watcher.armed", port=port, servo_ids=list(servo_ids), pid=proc.pid)
         return cls(proc)
 
+    @property
+    def alive(self) -> bool:
+        """``True`` while the watcher process has not exited (a non-blocking ``poll``)."""
+        return self.proc.poll() is None
+
     def stop(self, *, clean: bool, timeout_s: float = 5.0) -> int | None:
         """Stop the watcher; returns its exit code (``None`` if it had to be killed).
 

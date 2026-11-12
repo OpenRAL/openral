@@ -630,6 +630,28 @@ class SO100FollowerHAL(HALBase):
         self._stop_torque_watcher(clean=torque_cut)
         log.info("hal.disconnect", robot="so100_follower", port=self._port)
 
+    def _require_torque_watcher(self) -> None:
+        """E-stop before a bus write if the armed torque watcher has died (Entry 081).
+
+        Without it a later HAL crash would leave the servos energized, so a
+        dead watcher is treated like any other loss of a safety function:
+        torque off on every servo, then ``ROSEStopRequested``. No-op when no
+        watcher was armed (an injected robot has no serial bus).
+
+        Raises:
+            ROSEStopRequested: The watcher exited.
+        """
+        watcher = self._torque_watcher
+        if watcher is None or watcher.alive:
+            return
+        log.critical(
+            "hal.torque_watcher.lost",
+            robot=self.description.name,
+            port=self._port,
+            exit_code=watcher.proc.returncode,
+        )
+        self.estop()
+
     def _stop_torque_watcher(self, *, clean: bool) -> None:
         """Retire the torque watcher; ``clean=False`` makes it cut torque first."""
         watcher, self._torque_watcher = self._torque_watcher, None
@@ -682,6 +704,7 @@ class SO100FollowerHAL(HALBase):
             ROSConfigError: If the action cannot be converted.
         """
         self._require_connected("send_action")
+        self._require_torque_watcher()
         lerobot_action = self._action_to_lerobot(action)
         assert self._robot is not None
         try:
@@ -758,6 +781,7 @@ class SO100FollowerHAL(HALBase):
         for i in range(1, steps + 1):
             alpha = i / steps
             waypoint = [c + d * alpha for c, d in zip(current, deltas, strict=True)]
+            self._require_torque_watcher()
             try:
                 self._robot.send_action(_joint_values_to_lerobot(waypoint))
             except Exception as exc:

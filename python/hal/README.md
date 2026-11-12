@@ -211,6 +211,7 @@ it). It waits on the HAL's `pidfd` and on a stdin pipe from the HAL:
 | HAL process dies (any signal, OOM) | open the port (the kernel closed the HAL's fd), `Torque_Enable=0` per servo with 5 tries each, read back, log `hal.torque_watcher.torque_off` (or `..._unproven`), exit 0 only if every servo reads 0 |
 | `disconnect()` / `estop()` proved torque off | HAL sends `q`: the watcher exits without touching the bus (`hal.torque_watcher.clean_exit`) |
 | `disconnect()` raised, or `estop()` was unacknowledged | HAL closes the pipe without `q`: the watcher runs its own torque-off pass (fail closed) |
+| The watcher itself exits while the HAL runs | the HAL checks it before every bus write (`send_action`, each `reset_to_pose` waypoint) and e-stops (`hal.torque_watcher.lost`, torque off, `ROSEStopRequested`) |
 
 The watcher writes nothing but `Torque_Enable=0`. Measured on the bench
 SO-101 (`tests/hil/test_so101_torque_watcher_live.py`, 2026-11-12, all six

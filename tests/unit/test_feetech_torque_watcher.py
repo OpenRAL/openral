@@ -147,3 +147,21 @@ def test_hal_disconnect_retires_its_watcher_cleanly(bus: FakeFeetechSerial) -> N
     assert hal._torque_watcher is None
     assert watcher.proc.poll() == 0  # exited, reaped: no watcher left running
     assert bus.writes == []
+
+
+def test_a_dead_watcher_estops_the_hal_before_the_next_write(bus: FakeFeetechSerial) -> None:
+    from openral_core.exceptions import ROSEStopRequested
+    from openral_core.schemas import Action, ControlMode
+
+    hal = SO100FollowerHAL(robot=SO100DigitalTwin(SO100DigitalTwinConfig()))
+    hal.connect()
+    watcher = FeetechTorqueWatcher.spawn(bus.path, _IDS, _BAUD)
+    hal._torque_watcher = watcher
+    action = Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0] * 6])
+    hal.send_action(action)  # watcher alive: the write goes through
+    watcher.proc.kill()
+    watcher.proc.wait()
+    with pytest.raises(ROSEStopRequested):
+        hal.send_action(action)
+    assert not hal._connected
+    assert hal._torque_watcher is None
