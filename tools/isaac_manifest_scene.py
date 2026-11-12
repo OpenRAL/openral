@@ -274,19 +274,47 @@ def _in_box(p: NDArray[np.float64], box: dict[str, Any]) -> bool:
     return all(lo <= v <= hi for v, lo, hi in zip(p, box["min"], box["max"], strict=True))
 
 
+def region_frame_quat(
+    q_now: Sequence[float] | NDArray[np.float64],
+    q_nominal: Sequence[float] | NDArray[np.float64],
+    declared_yaw: float,
+) -> NDArray[np.float64]:
+    """The ``(w, x, y, z)`` frame a ``relative_to`` region turns with: ``q_now ⊗ q_nominal⁻¹ ⊗
+    yaw(declared_yaw)``.
+
+    ``q_nominal`` is the reference body's orientation at its declared pose (asset-internal
+    rotations and a declared roll/pitch included), so at that pose the region sits at the
+    declared yaw about world z and then follows every turn and tilt of the object since.
+    A stage object declares no yaw (0): its region starts on the world axes.
+
+    Example:
+        >>> lying = _rpy_quat(np.pi / 2, 0.0, 0.3)  # authored lying down, declared yaw 0.3
+        >>> np.round(region_frame_quat(lying, lying, 0.3), 6).tolist() == np.round(
+        ...     _yaw_quat(0.3), 6
+        ... ).tolist()
+        True
+        >>> turned = _quat_mul(_yaw_quat(0.5), lying)  # then turned 0.5 rad about world z
+        >>> round(_quat_angle(region_frame_quat(turned, lying, 0.3), _yaw_quat(0.8)), 6)
+        0.0
+    """
+    qn = np.asarray(q_nominal, dtype=np.float64)
+    qn = np.array([qn[0], -qn[1], -qn[2], -qn[3]]) / float(np.dot(qn, qn))
+    return _quat_mul(_quat_mul(np.asarray(q_now, dtype=np.float64), qn), _yaw_quat(declared_yaw))
+
+
 def placement_boxes_at(
     placement: dict[str, Any],
     positions: Mapping[str, Sequence[float]],
-    orientations: Mapping[str, Sequence[float]] | None = None,
+    orientations: Mapping[str, Sequence[float] | NDArray[np.float64]] | None = None,
 ) -> dict[str, Any]:
     """``placement`` with each ``relative_to`` box posed at its reference object now.
 
     A box carrying ``relative_to`` (``IsaacPlacementRegion.relative_to``) is authored in
     that object's frame; ``positions`` maps object names to their world centres now and
-    ``orientations`` to their ``(w, x, y, z)`` world orientations. With an orientation the
-    box keeps its local ``min``/``max`` and gains ``world_from_box`` (4x4 rows), so a turned
-    holder turns its box; without one it is translated (world axes). World boxes pass
-    through. Pure.
+    ``orientations`` (when given, for every reference) to the ``(w, x, y, z)`` orientation
+    of the box frame (``region_frame_quat``). With orientations a box keeps its local
+    ``min``/``max`` and gains ``world_from_box`` (4x4 rows), so a turned holder turns its
+    box; without them it is translated (world axes). World boxes pass through. Pure.
 
     Example:
         >>> on_plate = {"min": [-0.1, -0.1, -0.07], "max": [0.1, 0.1, 0.07], "relative_to": "plate"}
@@ -308,7 +336,7 @@ def placement_boxes_at(
         if not ref:
             return box
         c = [float(v) for v in positions[ref]]
-        if orientations is not None and ref in orientations:
+        if orientations is not None:
             return {
                 "min": list(box["min"]),
                 "max": list(box["max"]),
@@ -359,7 +387,8 @@ def placement_grade(
     """Grade one resting object against a placement by the scene's rubric.
 
     ``placement`` is one entry of the spec's ``placements``: ``target`` and
-    ``adjacent`` boxes (``{"min": xyz, "max": xyz}``, world frame). ``grades`` is the
+    ``adjacent`` boxes (``{"min": xyz, "max": xyz}``, world frame, or box-frame ones under
+    a ``world_from_box`` pose: ``placement_boxes_at``). ``grades`` is the
     rubric (``IsaacPlacementSuccess.grades``: ``name``, ``score``, ``region`` =
     ``target`` / ``adjacent``, ``requires_upright``), tried in order; the object is
     upright when ``up_axis`` (``object_up_axis``) is within ``upright_tol_deg`` of
@@ -1073,7 +1102,8 @@ def urdf_unset_velocity_joints(urdf_text: str) -> set[str]:
         ...     '<joint name="a" type="revolute"><limit velocity="0" effort="1"/></joint>'
         ...     '<joint name="b" type="prismatic"><limit velocity="2.0" effort="1"/></joint>'
         ...     '<joint name="c" type="continuous"/>'
-        ...     '<joint name="d" type="fixed"/></robot>'
+        ...     '<joint name="d" type="fixed"/>'
+        ...     '<transmission name="t"><joint name="b"/></transmission></robot>'
         ... )
         >>> sorted(urdf_unset_velocity_joints(urdf))
         ['a', 'c']
@@ -1081,7 +1111,7 @@ def urdf_unset_velocity_joints(urdf_text: str) -> set[str]:
     import xml.etree.ElementTree as ET
 
     out = set()
-    for joint in ET.fromstring(urdf_text).iter("joint"):
+    for joint in ET.fromstring(urdf_text).findall("joint"):  # not <transmission><joint>
         if joint.attrib.get("type") in ("fixed", "floating", "planar"):
             continue
         limit = joint.find("limit")
@@ -2692,8 +2722,9 @@ class IsaacManifestScene(IsaacSceneBase):
         PhysX then crawls the joint at ~0.6 mm/s (q5090 gripper probe, 2026-11-07: 1.7 of
         105 stroke in 45 ticks). Only a joint the source URDF really leaves unset
         (``urdf_unset_velocity_joints``) gets ``_UNSET_VELOCITY_CAP`` (no cap in practice);
-        the drive's ``maxForce`` still bounds it. A 0 cap on any other joint is left as
-        imported and reported. Every change is logged.
+        the drive's ``maxForce`` still bounds it. A 0 cap on any other joint (the URDF sets a
+        velocity, or the prim name does not match the URDF's) is a ``RuntimeError``: left
+        alone it would freeze the joint. Every change is logged.
         """
         from pxr import Sdf, Usd, UsdPhysics
 
@@ -2706,12 +2737,12 @@ class IsaacManifestScene(IsaacSceneBase):
             if not (attr and attr.HasAuthoredValue() and attr.Get() == 0.0):
                 continue
             if prim.GetName() not in unset:
-                print(
-                    f"[isaac_manifest_scene] joint {prim.GetName()} velocity cap 0 but the URDF "
-                    "sets one: left as imported",
-                    flush=True,
+                # A 0 cap freezes the joint (~0.6 mm/s); refuse rather than run a robot
+                # whose joint silently cannot move.
+                raise RuntimeError(
+                    f"joint {prim.GetName()}: the converter wrote velocity cap 0 but the URDF "
+                    f"sets a velocity (URDF joints with it unset: {sorted(unset)})"
                 )
-                continue
             for name in ("physxJoint:maxJointVelocity", "newton:velocityLimit"):
                 prim.CreateAttribute(name, Sdf.ValueTypeNames.Float).Set(_UNSET_VELOCITY_CAP)
             print(
@@ -3395,8 +3426,19 @@ class IsaacManifestScene(IsaacSceneBase):
             if b.get("relative_to")
         }
         poses = {r: self._object_prims[r].get_world_pose() for r in refs}
-        return placement_boxes_at(
-            placement, {r: p[0] for r, p in poses.items()}, {r: p[1] for r, p in poses.items()}
+        declared = {str(o["name"]): float(o.get("yaw", 0.0)) for o in self._objects}
+        frames = {
+            r: region_frame_quat(p[1], self._nominal_quat(r), declared.get(r, 0.0))
+            for r, p in poses.items()
+        }
+        return placement_boxes_at(placement, {r: p[0] for r, p in poses.items()}, frames)
+
+    def _nominal_quat(self, name: str) -> NDArray[np.float64]:
+        """``name``'s registered body orientation at its declared pose (before any jitter)."""
+        if name in self._object_nominal:  # pose_noise moved the default state; this is the original
+            return self._object_nominal[name][1]
+        return np.asarray(
+            self._object_prims[name].get_default_state().orientation, dtype=np.float64
         )
 
     def _reward_terminated(self) -> tuple[float, bool]:
@@ -3577,8 +3619,8 @@ class IsaacManifestScene(IsaacSceneBase):
 
         ``objects``: each declared object's USD bound as it lies now (``BBoxCache``,
         every purpose, a superset of its collider). ``placements``: the active rubric's
-        (``set_task``) object, its target region (``target``, the axis-aligned world
-        box, expressed in ``base_frame``) and the regions the rubric grades as adjacent
+        (``set_task``) object, its target region (``target``, the graded box posed in
+        its region frame, expressed in ``base_frame``) and the regions the rubric grades as adjacent
         (``adjacent``: where the hand works beside the target). The sidecar ``scene_ground_truth`` endpoint;
         ``tools/derive_scene_inputs.py`` derives a deploy scene's grasp ``search_box`` /
         ``workspace_box`` from it. Sim ground truth: a real cell grounds the same boxes

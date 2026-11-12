@@ -134,6 +134,31 @@ def test_pen_grades_against_a_turned_cup(
     assert got == grade
 
 
+def test_pen_grades_against_a_tilted_cup(tools: tuple[ModuleType, ModuleType]) -> None:
+    # The cup leans 30 deg about world x; the pen stands 90 mm up its axis: in the cup,
+    # though 45 mm out along world y (past the world-axis box's 34.5 mm).
+    scene_mod, _ = tools
+    spec = _placement_success_spec(_options(_PEN).placement_success, _PEN_PROMPT)
+    assert spec is not None
+    cup = np.array([0.18, 0.0, 0.09])
+    lean = math.radians(30.0)
+    quat = np.array([math.cos(lean / 2), math.sin(lean / 2), 0.0, 0.0])
+    pen = cup + np.array([0.0, -0.09 * math.sin(lean), 0.09 * math.cos(lean)])
+    at = scene_mod.placement_boxes_at(
+        spec["placements"][0], {"pen_holder": cup}, {"pen_holder": quat}
+    )
+    up, level = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])
+    assert scene_mod.placement_grade(pen, level, up, at, 20.0, spec["grades"]) == "complete"
+
+
+def test_only_unset_urdf_velocities_are_lifted(tools: tuple[ModuleType, ModuleType]) -> None:
+    # SO-101: every joint sets velocity 10 and has a <transmission> naming it; the
+    # transmission's <joint> reference is not a joint of its own.
+    scene_mod, _ = tools
+    urdf = (_REPO / "robots/so101_follower/so101_follower.urdf").read_text(encoding="utf-8")
+    assert scene_mod.urdf_unset_velocity_joints(urdf) == set()
+
+
 def test_recorded_pen_in_a_turned_tilted_cup_grades_complete(
     tools: tuple[ModuleType, ModuleType],
 ) -> None:

@@ -1140,8 +1140,9 @@ class IsaacPlacementRegion(BaseModel):
     """A box a placed object's centre must rest inside (``placement_success``).
 
     World frame, unless ``relative_to`` names a scene object (``objects`` or
-    ``stage_objects``): the box is then in that object's frame (its origin and axes) as
-    it is at each graded step, so a region on a plate follows the plate and turns with it.
+    ``stage_objects``): the box is then in that object's frame at each graded step,
+    centred on it and on the world axes turned by its declared yaw at its declared pose,
+    so a region on a plate follows the plate and turns and tilts with it.
 
     Example:
         >>> IsaacPlacementRegion(min_xyz=(0.1, 0.2, 0.4), max_xyz=(0.5, 0.35, 0.55)).max_xyz
