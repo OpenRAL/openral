@@ -149,8 +149,9 @@ def test_committed_assets_are_the_generators_output(tools: tuple[ModuleType, Mod
 
 
 def test_new_scene_options_refuse_bad_values() -> None:
-    with pytest.raises(ValidationError, match="carb setting paths"):
-        IsaacSimOptions(rtx_settings={"rtx/post/aa/op": 2})
+    for path in ("rtx/post/aa/op", "/physics/timeStepsPerSecond", "/app/runLoops/main/rate"):
+        with pytest.raises(ValidationError, match="carb setting paths"):
+            IsaacSimOptions(rtx_settings={path: 2})
     with pytest.raises(ValidationError, match="half_extents"):
         IsaacLinkBox(xyz=(0.0, 0.0, 0.0), half_extents=(0.01, 0.0, 0.01))
     for bad in (float("nan"), float("inf")):
@@ -190,3 +191,29 @@ def test_station_fingers_follow_the_driven_joint8() -> None:
         assert g["leader"] == f"{side}_joint8"
         # joint8 = -joint7 in the URDF, so joint7 = -joint8 follows the driven joint8.
         assert g["followers"] == [{"dof": f"{side}_joint7", "multiplier": -1.0, "offset": -0.0}]
+
+
+def test_link_box_colliders_leave_a_nested_child_link_colliding(
+    tools: tuple[ModuleType, ModuleType],
+) -> None:
+    """Isaac 6 nests link bodies: boxing a parent link must not disable its child's colliders."""
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    scene_mod, _ = tools
+    stage = Usd.Stage.CreateInMemory()
+    for path in ("/robot/gripper_base", "/robot/gripper_base/link7"):
+        UsdPhysics.RigidBodyAPI.Apply(UsdGeom.Xform.Define(stage, path).GetPrim())
+        UsdPhysics.CollisionAPI.Apply(UsdGeom.Cube.Define(stage, f"{path}/collision").GetPrim())
+    box = {"xyz": [0.0, 0.0, 0.01], "half_extents": [0.01, 0.01, 0.01]}
+    sidecar = scene_mod.IsaacManifestScene.__new__(scene_mod.IsaacManifestScene)
+    sidecar._spec = {"link_box_colliders": {"gripper_base": box}}
+    sidecar._set_link_box_colliders(stage, "/robot")
+
+    def enabled(path: str) -> bool:
+        attr = UsdPhysics.CollisionAPI(stage.GetPrimAtPath(path)).GetCollisionEnabledAttr()
+        return bool(attr.Get()) if attr.HasAuthoredValue() else True
+
+    assert not enabled("/robot/gripper_base/collision")
+    assert enabled("/robot/gripper_base/link7/collision")
+    assert enabled("/robot/gripper_base/openral_box_collider")

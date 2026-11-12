@@ -316,18 +316,24 @@ def _sleeve(o: MetalPenHolderOptions) -> tuple[list[float], list[float], list[in
     """The printed sleeve just outside the barrel (the MuJoCo twin's ``pen_sleeve``)."""
     half_l, r = o.pen_length_m / 2.0, o.pen_diameter_m / 2.0 * 1.01
     x_hi, x_lo = (half_l - f * o.pen_length_m for f in _PEN_SLEEVE_SPAN)
-    n = 32
+    # RTX ignores wrap: repeat, so each wrap is its own [0, 1] run of u: a whole number of
+    # strips per wrap, and every strip has its own vertices so u never steps back across
+    # a strip (a shared vertex at u 0.94 -> 0.03 would draw a squeezed, mirrored label).
+    per_wrap = 11
+    wraps = round(_PEN_SLEEVE_WRAPS)
+    assert wraps == _PEN_SLEEVE_WRAPS, "the sleeve label needs a whole number of wraps"
+    n = per_wrap * wraps
     v: list[float] = []
     uv: list[float] = []
     f: list[int] = []
-    for i in range(n + 1):
-        a = 2.0 * math.pi * i / n
-        for x, vv in ((x_hi, 0.0), (x_lo, 1.0)):
-            v.extend((x, r * math.cos(a), r * math.sin(a)))
-            uv.extend((_PEN_SLEEVE_WRAPS * i / n % 1.0 if i < n else 1.0, 1.0 - vv))
     for i in range(n):
-        a, b = 2 * i, 2 * i + 2
-        f.extend((a, a + 1, b + 1, a, b + 1, b))
+        u0 = (i % per_wrap) / per_wrap
+        for a, u in ((2.0 * math.pi * i / n, u0), (2.0 * math.pi * (i + 1) / n, u0 + 1 / per_wrap)):
+            for x, vv in ((x_hi, 0.0), (x_lo, 1.0)):
+                v.extend((x, r * math.cos(a), r * math.sin(a)))
+                uv.extend((u, 1.0 - vv))
+        a0 = 4 * i
+        f.extend((a0, a0 + 1, a0 + 3, a0, a0 + 3, a0 + 2))
     return v, uv, f
 
 

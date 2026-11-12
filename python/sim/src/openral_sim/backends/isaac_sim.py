@@ -1420,9 +1420,10 @@ class IsaacSimOptions(BaseModel):
     sim_sensors: list[SensorSpec] = Field(default_factory=list)
     # USD assets do not carry these process-level RTX settings.
     translucent_materials: bool = False
-    # Raw carb settings (path -> value), applied after the presets above and so winning
-    # over them. E.g. {"/rtx/post/aa/op": 2}: FXAA instead of DLSS, whose upscaler smears
-    # a 640x480 camera's fine texture (the Metal pen-holder desk).
+    # Raw carb render settings (path under /rtx/ or /rtx-transient/ -> value), applied after
+    # the presets above and so winning over them. E.g. {"/rtx/post/aa/op": 2}: FXAA instead
+    # of DLSS, whose upscaler smears a 640x480 camera's fine texture (the Metal pen-holder
+    # desk).
     rtx_settings: dict[str, bool | int | float | str] = Field(default_factory=dict)
     exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
     # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
@@ -1508,9 +1509,13 @@ class IsaacSimOptions(BaseModel):
     def _rtx_setting_paths(
         cls, value: dict[str, bool | int | float | str]
     ) -> dict[str, bool | int | float | str]:
-        bad = [k for k in value if not k.startswith("/")]
+        # Render settings only: a /physics/ or /app/ path here would override typed options
+        # (physx_scene, ...) without being reviewed as the physics change it is.
+        bad = [k for k in value if not k.startswith(("/rtx/", "/rtx-transient/"))]
         if bad:
-            raise ValueError(f"rtx_settings keys are carb setting paths starting '/': {bad}")
+            raise ValueError(
+                f"rtx_settings keys are carb setting paths under /rtx/ or /rtx-transient/: {bad}"
+            )
         return value
 
     @field_validator("collision_approximation")
