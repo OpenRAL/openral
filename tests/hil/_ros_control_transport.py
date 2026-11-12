@@ -52,9 +52,9 @@ _CONTROL_QOS = QoSProfile(
 def _make_trajectory_publisher(node: Node, command_topic: str) -> Publisher:
     """Create a ``trajectory_msgs/JointTrajectory`` publisher with the HIL QoS.
 
-    Shared with ``tests.hil._openarm_ros_transport`` so the bimanual bridge's
-    per-controller publishers use the same QoS profile as the single-controller
-    bridge.
+    Shared with ``tests.hil._aloha_ros_transport`` so the per-arm and
+    per-gripper publishers in the bimanual bridge use the same QoS profile
+    as the single-controller bridge.
     """
     return node.create_publisher(JointTrajectory, command_topic, _CONTROL_QOS)
 
@@ -87,10 +87,9 @@ class _JointStateCache:
 class _PolledJointStateMixin(_JointStateCache):
     """Adds the single-``rclpy.spin_once``-poll ``_on_joint_state``/``wait_for_first_state`` pair.
 
-    Shared by ``RosControlHILTransport`` and ``AlohaHILTransport`` (which
-    relabels each ``xs_sdk`` namespace's names first), whose merge-by-name
-    callback and "has anything arrived yet" poll are byte-identical.
-    ``OpenArmHILTransport`` keeps its own
+    Shared by ``RosControlHILTransport`` and ``AlohaHILTransport``, whose
+    ``/joint_states`` merge-by-name callback and "has anything arrived yet"
+    poll are byte-identical. ``OpenArmHILTransport`` keeps its own
     ``_on_joint_state``/``spin_once`` (it drives its own ``rclpy.Context``-bound
     executor and polls ``wait_for_every_joint`` — all 16, not just one
     message) so it inherits only ``_JointStateCache``.

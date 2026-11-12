@@ -8,10 +8,8 @@ and asserts:
    reflects the latest message.
 2. The same bridge publishes ``trajectory_msgs/JointTrajectory`` on the command topic when
    ``publish()`` is called.
-3. ``AlohaHILTransport`` turns ``AlohaHAL``'s ``{name, cmd}`` payloads into
-   ``interbotix_xs_msgs`` ``JointGroupCommand`` / ``JointSingleCommand`` messages, and merges
-   the two per-namespace ``xs_sdk`` joint-state streams into manifest order (skips without
-   ``interbotix_xs_msgs``).
+3. ``AlohaHILTransport`` dispatches arm and gripper publishes to the matching topic with the
+   right joint layout.
 
 These guard against regressions in the bridge wiring itself; per-robot HIL tests assume the
 bridge already works. Skips if ``ROS_DISTRO`` is not set (matches
@@ -138,32 +136,9 @@ def test_ros_control_bridge_publishes_joint_trajectory() -> None:
             node.destroy_node()
 
 
-_needs_interbotix = pytest.mark.skipif(
-    importlib.util.find_spec("interbotix_xs_msgs") is None,
-    reason="interbotix_xs_msgs not installed — the ALOHA bridge speaks the xs_sdk messages.",
-)
-
-_ALOHA_JOINTS = [
-    f"{side}_{j}"
-    for side in ("left", "right")
-    for j in (
-        "waist",
-        "shoulder",
-        "elbow",
-        "forearm_roll",
-        "wrist_angle",
-        "wrist_rotate",
-        "gripper",
-    )
-]
-
-
-@_needs_interbotix
-def test_aloha_bridge_publishes_xs_sdk_messages_and_merges_state() -> None:
-    """Arm -> ``JointGroupCommand``, gripper -> ``JointSingleCommand``; state merged by side."""
-    from interbotix_xs_msgs.msg import JointGroupCommand, JointSingleCommand
-    from rclpy.qos import QoSProfile, QoSReliabilityPolicy
-    from sensor_msgs.msg import JointState as RosJointState
+def test_aloha_bridge_dispatches_arm_and_gripper() -> None:
+    """``AlohaHILTransport.publish`` must route by topic to the right publisher."""
+    from trajectory_msgs.msg import JointTrajectory
 
     from tests.hil._aloha_ros_transport import AlohaHILTransport
 
@@ -171,59 +146,78 @@ def test_aloha_bridge_publishes_xs_sdk_messages_and_merges_state() -> None:
         node = rclpy.create_node("openral_hil_aloha_bridge_test")
         helper = rclpy.create_node("openral_hil_aloha_bridge_test_helper")
         try:
+            joint_names = [
+                "left_waist",
+                "left_shoulder",
+                "left_elbow",
+                "left_forearm_roll",
+                "left_wrist_angle",
+                "left_wrist_rotate",
+                "left_gripper",
+                "right_waist",
+                "right_shoulder",
+                "right_elbow",
+                "right_forearm_roll",
+                "right_wrist_angle",
+                "right_wrist_rotate",
+                "right_gripper",
+            ]
             transport = AlohaHILTransport(
                 node,
-                _ALOHA_JOINTS,
-                arm_namespaces=("t_left", "t_right"),
-                gripper_cmd_range=(1.0, 2.0),
+                joint_names=joint_names,
+                left_arm_command_topic="/test/left_arm/joint_trajectory",
+                right_arm_command_topic="/test/right_arm/joint_trajectory",
+                left_gripper_command_topic="/test/left_gripper/command",
+                right_gripper_command_topic="/test/right_gripper/command",
+                joint_state_topic="/test/aloha_states",
             )
+            from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+
             qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
-            groups: list[Any] = []
-            singles: list[Any] = []
+            arm_msgs: list[Any] = []
+            gripper_msgs: list[Any] = []
             helper.create_subscription(
-                JointGroupCommand, "/t_left/commands/joint_group", groups.append, qos
+                JointTrajectory,
+                "/test/left_arm/joint_trajectory",
+                arm_msgs.append,
+                qos,
             )
             helper.create_subscription(
-                JointSingleCommand, "/t_left/commands/joint_single", singles.append, qos
+                JointTrajectory,
+                "/test/left_gripper/command",
+                gripper_msgs.append,
+                qos,
             )
-            state_pubs = {
-                ns: helper.create_publisher(RosJointState, f"/{ns}/joint_states", qos)
-                for ns in ("t_left", "t_right")
-            }
-            arm = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+
+            arm_chunk = [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]]
             deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline and not (
-                groups and singles and {"left_gripper", "right_gripper"} <= transport._latest.keys()
-            ):
-                transport.publish("/t_left/commands/joint_group", {"name": "arm", "cmd": arm})
-                transport.publish("/t_left/commands/joint_single", {"name": "gripper", "cmd": 1.5})
-                for offset, pub in enumerate(state_pubs.values()):
-                    msg = RosJointState()
-                    msg.name = ["waist", "gripper"]
-                    msg.position = [float(offset), 1.25 + offset * 0.5]
-                    pub.publish(msg)
+            while time.monotonic() < deadline and (not arm_msgs or not gripper_msgs):
+                transport.publish(
+                    "/test/left_arm/joint_trajectory",
+                    {"joint_targets": arm_chunk},
+                )
+                transport.publish(
+                    "/test/left_gripper/command",
+                    {"position": 0.025, "stamp_ns": time.time_ns()},
+                )
                 rclpy.spin_once(helper, timeout_sec=0.05)
                 transport.spin_once(timeout_sec=0.05)
-                transport.spin_once(timeout_sec=0.05)
 
-            assert groups and singles, "xs_sdk command messages never received"
-            assert groups[-1].name == "arm"
-            assert list(groups[-1].cmd) == pytest.approx(arm)
-            assert singles[-1].name == "gripper"
-            assert singles[-1].cmd == pytest.approx(1.5)
+            assert arm_msgs, "left-arm JointTrajectory never received"
+            assert gripper_msgs, "left-gripper JointTrajectory never received"
 
-            position = transport.state()["position"]
-            assert isinstance(position, list)
-            by_name = dict(zip(_ALOHA_JOINTS, position, strict=True))
-            assert by_name["right_waist"] == pytest.approx(1.0)
-            assert by_name["left_gripper"] == pytest.approx(0.25)  # (1.25 - 1) / (2 - 1)
-            assert by_name["right_gripper"] == pytest.approx(0.75)
+            arm_traj = arm_msgs[-1]
+            assert list(arm_traj.joint_names) == joint_names[0:6]
+            assert list(arm_traj.points[0].positions) == arm_chunk[0]
+
+            grip_traj = gripper_msgs[-1]
+            assert list(grip_traj.joint_names) == [joint_names[6]]
+            assert list(grip_traj.points[0].positions) == [0.025]
         finally:
             helper.destroy_node()
             node.destroy_node()
 
 
-@_needs_interbotix
 def test_aloha_bridge_rejects_unknown_topic() -> None:
     """An unknown topic must raise ``ValueError`` so HAL drift fails loudly."""
     from tests.hil._aloha_ros_transport import AlohaHILTransport
@@ -231,13 +225,17 @@ def test_aloha_bridge_rejects_unknown_topic() -> None:
     with _rclpy_session() as rclpy:
         node = rclpy.create_node("openral_hil_aloha_bridge_unknown_topic")
         try:
+            joint_names = [f"j{i}" for i in range(14)]
             transport = AlohaHILTransport(
                 node,
-                _ALOHA_JOINTS,
-                arm_namespaces=("t_left", "t_right"),
-                gripper_cmd_range=(1.0, 2.0),
+                joint_names=joint_names,
+                left_arm_command_topic="/test/left_arm/joint_trajectory",
+                right_arm_command_topic="/test/right_arm/joint_trajectory",
+                left_gripper_command_topic="/test/left_gripper/command",
+                right_gripper_command_topic="/test/right_gripper/command",
+                joint_state_topic="/test/aloha_states",
             )
             with pytest.raises(ValueError, match="unknown topic"):
-                transport.publish("/t_left/commands/joint_trajectory", {"name": "arm", "cmd": []})
+                transport.publish("/test/bogus", {"joint_targets": [[0.0] * 6]})
         finally:
             node.destroy_node()

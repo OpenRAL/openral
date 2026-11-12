@@ -85,7 +85,7 @@ No self-hosted runner is registered, so every HIL gate runs by hand on the cell
 | File | Hardware |
 | --- | --- |
 | `test_ur5e.py`, `test_ur10e.py`, `test_franka_panda.py`, `test_sawyer.py` | Vendor ROS 2 drivers through the `_ros_control_transport.py` bridge. None has met a physical arm. |
-| `test_aloha.py` | Trossen ALOHA through `_aloha_ros_transport.py`, which speaks the `xs_sdk` contract `AlohaHAL` emits (`interbotix_xs_msgs` `JointGroupCommand` / `JointSingleCommand`, per-namespace `joint_states`; #250). Needs `interbotix_xs_msgs`; never run against a rig. |
+| `test_aloha.py` | Trossen ALOHA through `_aloha_ros_transport.py`. The bridge mirrors `AlohaHAL`'s topics, which a real ALOHA (`xs_sdk`) does not expose. |
 | `test_so101_serial_live.py` | SO-101 on USB serial, non-motion (`just hil-so101`). |
 | `test_openarm_can_live.py`, `test_openarm_deploy.py` | OpenArm v2 over CAN; `test_openarm_deploy.py` attaches to a running graph (`just hil-openarm-deploy`). |
 | `test_openarm_bringup_agreement.py`, `test_openarm_ros_transport.py` | OpenArm HAL/bringup config agreement and the HIL transport, checked without the cell. |

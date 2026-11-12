@@ -92,9 +92,9 @@ since it energizes the arm; attended only.
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 
-- `_make_trajectory_publisher(node, command_topic) -> Publisher` — Module-private helper that creates a `trajectory_msgs/JointTrajectory` publisher with the shared HIL QoS profile. (L52)
-- `RosControlHILTransport(node, joint_names, *, command_topic, joint_state_topic)` — Subscribes to `joint_state_topic`, exposes `publish(_topic, msg)` for the HAL's outgoing trajectories and `state()` for the cached joint state. Helpers: `spin_once`, `wait_for_first_state`, `last_stamp`. (L131)
-- `make_hil_transport(node_name, joint_names, *, command_topic, joint_state_topic) -> tuple[Node, RosControlHILTransport, Callable[[], None]]` — Factory that initialises rclpy, creates the node, and returns a teardown callable. (L202)
+- `_make_trajectory_publisher(node, command_topic) -> Publisher` — Module-private helper that creates a `trajectory_msgs/JointTrajectory` publisher with the shared HIL QoS profile. Reused by `_aloha_ros_transport.py`. (L52)
+- `RosControlHILTransport(node, joint_names, *, command_topic, joint_state_topic)` — Subscribes to `joint_state_topic`, exposes `publish(_topic, msg)` for the HAL's outgoing trajectories and `state()` for the cached joint state. Helpers: `spin_once`, `wait_for_first_state`, `last_stamp`. (L130)
+- `make_hil_transport(node_name, joint_names, *, command_topic, joint_state_topic) -> tuple[Node, RosControlHILTransport, Callable[[], None]]` — Factory that initialises rclpy, creates the node, and returns a teardown callable. (L201)
 
 ### `tests/hil/_openarm_ros_transport.py`
 _4-way fan-out bridge for the bimanual OpenArm v2 HAL — the only thing between `OpenArmRealHAL` and a physical arm._
@@ -121,10 +121,10 @@ _The one test in the tree that commands a real OpenArm to move._
 - Cases run gripper-first (1-DoF, lowest inertia, and the actuator ADR-0102 exists for) then the most distal arm joint, and each restores the measured pose before returning, so the suite is idempotent.
 
 ### `tests/hil/_aloha_ros_transport.py`
-_`xs_sdk` bridge for the bimanual ALOHA HAL (#250); needs `interbotix_xs_msgs`, not yet run against a rig._
+_4-way fan-out bridge for the bimanual ALOHA HAL._
 
-- `AlohaHILTransport(node, joint_names, *, arm_namespaces, gripper_cmd_range)` — Per follower namespace, a `JointGroupCommand` publisher on `/<ns>/commands/joint_group`, a `JointSingleCommand` publisher on `/<ns>/commands/joint_single`, and a `JointState` subscriber on `/<ns>/joint_states`. `publish(topic, msg)` turns `AlohaHAL`'s `{name, cmd}` payloads into those messages (unknown topics raise `ValueError`); state callbacks prefix the unprefixed `xs_sdk` names with `left_` / `right_` and normalise the gripper read-back with `gripper_cmd_range` (inverse of the HAL's command map) before the by-name merge. (L54)
-- `make_aloha_hil_transport(node_name, *, arm_namespaces) -> tuple[Node, AlohaHILTransport, Callable[[], None]]` — Factory; joint names and `gripper_cmd_range` come from the public `ALOHA_REAL_DESCRIPTION` so the bridge stays in lock-step with the HAL manifest. (L132)
+- `AlohaHILTransport(node, joint_names, *, left_arm_command_topic, right_arm_command_topic, left_gripper_command_topic, right_gripper_command_topic, joint_state_topic)` — Owns four `JointTrajectory` publishers (two arms 6-DOF + two grippers 1-DOF) and one aggregated `JointState` subscriber. Mirrors `AlohaHAL`'s current wire contract, which issue #250 established is not the rig's: `xs_sdk` takes `interbotix_xs_msgs/JointGroupCommand` on `/<ns>/commands/joint_group` and publishes per-namespace joint states, with no aggregated topic. Retargeted with the HAL. `publish(topic, msg)` dispatches by topic match; unknown topics raise `ValueError`. (L62)
+- `make_aloha_hil_transport(node_name, *, left/right arm + gripper command topics, joint_state_topic) -> tuple[Node, AlohaHILTransport, Callable[[], None]]` — Factory; derives the canonical 14 joint names from the public `ALOHA_REAL_DESCRIPTION.joints` so the bridge stays in lock-step with the HAL manifest. (L186)
 
 ### Downstream e-stop gates (issue #295)
 _One attended test per real HAL, last in its file (`test_zz_estop_*`): it stops the vendor controller and leaves the robot needing an operator restart._
