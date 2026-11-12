@@ -29,6 +29,7 @@ from openral_hal.so100_follower import (
     SO100_DESCRIPTION,
     SO100FollowerHAL,
     _deg_to_rad,
+    _hold_pose_on_torque_enable,
     _rad_to_deg,
 )
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
@@ -727,3 +728,31 @@ def test_so100_envelope_requires_a_deadman_like_its_manifests() -> None:
     from openral_hal.so100_follower import SO100_DESCRIPTION
 
     assert SO100_DESCRIPTION.safety.deadman_required is True
+
+
+class TestHoldPoseOnTorqueEnable:
+    """Torque-on holds the current pose instead of driving to a stale goal (#545 follow-up)."""
+
+    def test_goal_is_synced_to_present_before_every_torque_on(self) -> None:
+        bus = FakeFeetechBus(torque=dict.fromkeys(SO_FOLLOWER_MOTORS, 0))
+        _hold_pose_on_torque_enable(bus)
+        bus.enable_torque()  # what lerobot's configure() calls on leaving torque_disabled()
+        assert bus.goal_at_enable == bus.present
+        assert set(bus.torque.values()) == {1}
+
+    def test_a_single_motor_enable_syncs_only_that_motor(self) -> None:
+        bus = FakeFeetechBus(torque=dict.fromkeys(SO_FOLLOWER_MOTORS, 0))
+        _hold_pose_on_torque_enable(bus)
+        bus.enable_torque("gripper")
+        assert bus.goal_at_enable == {"gripper": bus.present["gripper"]}
+        assert bus.goal["shoulder_pan"] == 0
+
+    def test_a_goal_that_does_not_take_refuses_torque_on(self) -> None:
+        bus = FakeFeetechBus(
+            torque=dict.fromkeys(SO_FOLLOWER_MOTORS, 0), stuck_goal=frozenset({"elbow_flex"})
+        )
+        _hold_pose_on_torque_enable(bus)
+        with pytest.raises(ROSRuntimeError, match="elbow_flex"):
+            bus.enable_torque()
+        assert bus.torque["elbow_flex"] == 0
+        assert ("Torque_Enable", "elbow_flex", 1) not in bus.writes

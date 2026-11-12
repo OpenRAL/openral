@@ -61,6 +61,15 @@ class FakeFeetechBus:
     torque: dict[str, int] = field(default_factory=lambda: dict.fromkeys(SO_FOLLOWER_MOTORS, 1))
     writes: list[tuple[str, str, int]] = field(default_factory=list)
     reads: list[tuple[str, str]] = field(default_factory=list)
+    #: Raw encoder ticks; the power-up ``Goal_Position`` of a real STS3215 is 0.
+    present: dict[str, int] = field(
+        default_factory=lambda: {m: 2048 + 100 * i for i, m in enumerate(SO_FOLLOWER_MOTORS)}
+    )
+    goal: dict[str, int] = field(default_factory=lambda: dict.fromkeys(SO_FOLLOWER_MOTORS, 0))
+    #: Servos whose ``Goal_Position`` write is acknowledged but does not take.
+    stuck_goal: frozenset[str] = frozenset()
+    #: ``Goal_Position`` of each servo at the moment its torque was enabled.
+    goal_at_enable: dict[str, int] = field(default_factory=dict)
 
     @property
     def motors(self) -> dict[str, int]:
@@ -90,6 +99,17 @@ class FakeFeetechBus:
         self.writes.append((data_name, motor, int(value)))
         if data_name == "Torque_Enable" and motor not in self.stuck_torque:
             self.torque[motor] = int(value)
+        if data_name == "Goal_Position" and motor not in self.stuck_goal:
+            self.goal[motor] = int(value)
+
+    def enable_torque(self, motors: str | list[str] | None = None, num_retry: int = 0) -> None:
+        """lerobot's torque-on: ``Torque_Enable=1`` per motor (records the goal it drives to)."""
+        names = (
+            list(self.motors) if motors is None else [motors] if isinstance(motors, str) else motors
+        )
+        for motor in names:
+            self.goal_at_enable[motor] = self.goal[motor]
+            self.write("Torque_Enable", motor, 1, normalize=False, num_retry=num_retry)
 
     def read(
         self,
@@ -104,6 +124,8 @@ class FakeFeetechBus:
         if motor in self.dark or motor in self.unreadable:
             raise ConnectionError(f"[TxRxResult] There is no status packet! ({motor})")
         self.reads.append((data_name, motor))
-        if data_name != "Torque_Enable":
+        registers = {"Torque_Enable": self.torque, "Present_Position": self.present}
+        registers["Goal_Position"] = self.goal
+        if data_name not in registers:
             raise KeyError(data_name)
-        return self.torque[motor]
+        return registers[data_name][motor]

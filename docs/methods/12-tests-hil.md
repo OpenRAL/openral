@@ -75,8 +75,8 @@ supply off leaves `/dev/ttyACM0` looking healthy and the bus completely
 silent — a skip, not a failure. **No position commands by construction:** the
 powered tier never calls `send_action()` or `reset_to_pose()`. Its terminal
 E-stop assertion disconnects the motor bus, so run it attended with the
-physical power switch within reach. `connect()` can re-enable torque, so a
-stale servo goal can still cause a twitch. Driven by `just hil-so101`, run by
+physical power switch within reach. `connect()` re-enables torque, holding
+the current pose (`Goal_Position := Present_Position` first). Driven by `just hil-so101`, run by
 hand on the bench host (no CI workflow; no self-hosted runner is registered).
 
 ### `tests/hil/_ros_control_transport.py`

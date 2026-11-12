@@ -195,6 +195,14 @@ after `reset_estop()` succeeds; `RESTART_REQUIRED` adapters reject
 `/openral/estop_cleared` and need a fresh lifecycle start and alignment — the
 procedure is in each `robots/<robot>/README.md` under "E-stop and recovery".
 
+### SO-100/SO-101: torque-on holds the current pose
+
+An STS3215 enabling torque drives to its
+`Goal_Position` register, which reads 0 after power-up (bench SO-101: Present
+947-3170). `connect()` wraps the bus's `enable_torque` so each servo first gets
+`Goal_Position := Present_Position`, read back, and refuses the torque-on on a
+mismatch.
+
 ## Pairing with the ROS 2 lifecycle node
 
 Every HAL adapter runs inside the one manifest-driven ROS 2 lifecycle node,

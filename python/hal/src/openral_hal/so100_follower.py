@@ -321,6 +321,47 @@ def _rad_to_deg(rad: float) -> float:
     return rad * 180.0 / math.pi
 
 
+def _hold_pose_on_torque_enable(bus: object) -> None:
+    """Make every torque-on of ``bus`` hold the current pose: ``Goal := Present`` first.
+
+    An STS3215 enabling torque drives to its ``Goal_Position`` register, which
+    reads ``0`` after power-up (measured on the bench SO-101, firmware 3.10,
+    while ``Present_Position`` read 947-3170). lerobot's ``connect()`` ends in
+    ``configure()``, whose ``torque_disabled()`` block re-enables torque with
+    whatever goal the servo holds, so a stale or power-up goal was a full-speed
+    jump at connect. This wraps ``bus.enable_torque`` (the one call that path,
+    and every lerobot torque-on, goes through) so each motor first gets
+    ``Goal_Position := Present_Position``, read back, before its torque-on.
+
+    Raises:
+        ROSRuntimeError: (from the wrapped call) when a goal does not read
+            back as written; torque is then never enabled.
+    """
+    enable = bus.enable_torque  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+    read = bus.read  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+    write = bus.write  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+
+    def enable_holding_pose(motors: object = None, num_retry: int = 0) -> None:
+        if motors is None:
+            names: list[object] = list(bus.motors)  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+        elif isinstance(motors, (str, int)):
+            names = [motors]
+        else:
+            names = list(motors)  # type: ignore[call-overload]  # reason: Sequence[str]
+        for motor in names:
+            present = read("Present_Position", motor, normalize=False, num_retry=num_retry)
+            write("Goal_Position", motor, present, normalize=False, num_retry=num_retry)
+            goal = read("Goal_Position", motor, normalize=False, num_retry=num_retry)
+            if int(goal) != int(present):
+                raise ROSRuntimeError(
+                    f"{motor}: Goal_Position reads back {goal} after writing {present}; "
+                    "refusing to enable torque"
+                )
+        enable(motors, num_retry=num_retry)
+
+    bus.enable_torque = enable_holding_pose  # type: ignore[attr-defined]  # reason: instance seam
+
+
 # ── SO100FollowerHAL ────────────────────────────────────────────────────────────────
 
 
@@ -492,6 +533,7 @@ class SO100FollowerHAL(HALBase):
                     f"SO-100 serial port {self._port!r} does not exist. "
                     "Connect the arm via USB, or pass --port /dev/ttyUSBn."
                 )
+            _hold_pose_on_torque_enable(robot.bus)
             try:
                 robot.connect(calibrate=self._calibrate_on_connect)
             except Exception as exc:
