@@ -62,6 +62,18 @@ def test_the_recorder_records_every_kernel_input() -> None:
         assert topic in cmd
 
 
+def test_extra_record_topics_join_the_replay_topics_in_one_anchored_regex() -> None:
+    """Cameras and tracker beside the kernel's inputs (pro#51: master bags had neither)."""
+    cmd = krd.record_command("/tmp/run/bag", ["/openral/cameras/.*", "/openral/tracked_objects"])
+    assert cmd.count("--regex") == 1 and not set(krd.REPLAY_TOPICS) & set(cmd)
+    pattern = re.compile(cmd[cmd.index("--regex") + 1])
+    for topic in (*krd.REPLAY_TOPICS, "/openral/cameras/head_zed/depth/image",
+                  "/openral/tracked_objects"):  # fmt: skip
+        assert pattern.fullmatch(topic), topic
+    for topic in ("/openral/tracked_objects_debug", "/clockwork", "/openral/safe_actionX"):
+        assert not pattern.fullmatch(topic), topic
+
+
 def test_kernel_b_turns_every_moved_rule_off_and_loads_the_provider() -> None:
     b = krd.provider_params(_A, _P)
     for key in ("workspace_contact_enabled", "workspace_contact_brake_enabled"):

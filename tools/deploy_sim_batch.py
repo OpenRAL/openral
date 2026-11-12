@@ -456,7 +456,7 @@ def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode lo
                 )
 
                 recorder = subprocess.Popen(
-                    record_command(str(ep / "bag")),
+                    record_command(str(ep / "bag"), args.record_topic),
                     stdout=(ep / "record.log").open("wb"),
                     stderr=subprocess.STDOUT,
                     env=env,
@@ -626,6 +626,15 @@ def parser() -> argparse.ArgumentParser:
         "--record",
         action="store_true",
         help="bag the kernel's replay topics and dump its parameters per episode (ADR-0121)",
+    )
+    p.add_argument(
+        "--record-topic",
+        action="append",
+        default=[],
+        metavar="TOPIC_OR_REGEX",
+        help="with --record, also bag this topic (a name or a whole-name regex), repeatable, "
+        "e.g. '/openral/cameras/.*' '/openral/tracked_objects' '/openral/grasp_events' "
+        "'/openral/attachment_state.*' '/openral/instance_cells' '/tf' '/tf_static'",
     )
     p.add_argument(
         "--deploy-arg",
