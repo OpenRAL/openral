@@ -149,9 +149,9 @@ grade differently. The episode takes its worst object's grade. Reaching the firs
 grade terminates the episode with `success`; otherwise the episode's
 `total_reward` is its final grade's score, and every step's
 `info["placement_grade"]` reports the grade so far. Without the block an Isaac
-scene has no task reward. A region with `relative_to: <object>` is an offset box
-around that scene object's centre as it is at each graded step (a plate's
-surface), and a graded object may be one the environment USD already holds
+scene has no task reward. A region with `relative_to: <object>` is a box in
+that scene object's frame as it is at each graded step (a plate's surface; it
+turns and tilts with the object, starting from the declared yaw), and a graded object may be one the environment USD already holds
 (`backend_options.stage_objects`, see [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot)).
 
 Under `openral deploy sim` the scene is task-less (`<scene>/_hal_deploy_noop`, empty
