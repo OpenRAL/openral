@@ -76,7 +76,7 @@ def _why_not() -> str | None:
         prefix = Path(get_package_share_directory("openral_hal_unitree")).parents[1]
     except (PackageNotFoundError, ValueError):
         return "openral_hal_unitree not installed — build it with the NVIDIA workspace sourced"
-    if not (prefix / "lib" / "libopenral_hal_unitree_guarded_safety_controller.so").exists():
+    if not (prefix / "lib" / "libopenral_hal_unitree_guarded_controllers.so").exists():
         return (
             "openral_hal_unitree was built without isaac_ros_deploy_ros2_control, so "
             "GuardedSafetyController is missing — rebuild it with the NVIDIA workspace sourced"

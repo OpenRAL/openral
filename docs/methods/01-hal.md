@@ -859,16 +859,19 @@ _Real-hardware adapter for the Unitree hg humanoids (G1 now; H2 shares the stack
 ### `python/hal/src/openral_hal/unitree_s0_policy.py`
 _One typed reader of `packages/openral_hal_unitree/config/<model>/policies/<policy>.yaml` for both `UnitreeHgRealHAL` (joint split) and `real_bringup.launch.py` (controller parameters), so the split the HAL enforces is the one the C++ graph runs._
 
-- `class S0PolicyMeta(BaseModel)` — `name`, `status` (`ready`/`placeholder`), `data_package` | `bundle_dir`, `leapp_config`, `velocity_command_topic`, `velocity_command_type`, `s0_joints`. `extra="forbid"`. (L56)
-- `class S0PolicyFile(BaseModel)` — `openral_policy` + `controllers` (ROS param blocks). (L83)
-  - **(property)** `upper_body_joints -> list[str]` — The upper-body controller's `joints`; `ROSConfigError` when absent. (L97)
-- module const `UNITREE_BRINGUP_PACKAGE = "openral_hal_unitree"` (L47)
-- module const `UPPER_BODY_CONTROLLER = "upper_body_forward_joint_command_controller"` (L49)
-- module const `INFERENCE_CONTROLLER = "inference_controller"` (L51)
-- `s0_policy_path(robot_model, policy) -> Path` — `$OPENRAL_UNITREE_CONFIG_DIR`, then the installed `openral_hal_unitree` share, then the repo checkout. (L109)
-- `load_s0_policy(path, *, require_ready=True) -> S0PolicyFile` — `ROSConfigError` on a missing/malformed/placeholder file. (L146)
-- `resolve_leapp_config(policy, override, package_share=None) -> Path` — override › `share/<data_package>/data/` › `bundle_dir`; names `tools/build_gr00t_wbc_leapp.py` when a built bundle is missing. (L170)
-- `policy_parameters(policy, leapp_config) -> dict` — A copy of `controllers` with `inference_controller.config_path` filled. (L219)
+- `class S0PolicyMeta(BaseModel)` — `name`, `status` (`ready`/`placeholder`), `data_package` | `bundle_dir`, `leapp_config`, `velocity_command_topic`, `velocity_command_type`, `s0_joints`. `extra="forbid"`. (L61)
+- `class S0PolicyFile(BaseModel)` — `openral_policy` + `controllers` (ROS param blocks). (L88)
+  - **(property)** `upper_body_joints -> list[str]` — The upper-body controller's `joints`; `ROSConfigError` when absent. (L102)
+- module const `UNITREE_BRINGUP_PACKAGE = "openral_hal_unitree"` (L48)
+- module const `UPPER_BODY_CONTROLLER = "upper_body_forward_joint_command_controller"` (L50)
+- module const `INFERENCE_CONTROLLER = "inference_controller"` (L52)
+- module const `GUARDED_INFERENCE_CONTROLLER = "openral_hal_unitree/GuardedInferenceController"` — the only `inference_controller` type that enforces `WATCHDOG_KEYS` on the pinned (v4.6) isaac_ros_deploy (#565). (L54)
+- module const `WATCHDOG_KEYS = ("topic_input_timeout_ms", "topic_input_sources")` — isaac_ros_deploy v5.0's stale-input watchdog keys. (L56)
+- `require_watchdog_enforced(policy, base_params) -> None` — `ROSConfigError` when the policy sets a `WATCHDOG_KEYS` key and the effective `inference_controller` type (the policy's own `controller_manager` override, else `base_params`') is not `GUARDED_INFERENCE_CONTROLLER`: v4.6 would silently ignore it. Called by `real_bringup.launch.py`. (L224)
+- `s0_policy_path(robot_model, policy) -> Path` — `$OPENRAL_UNITREE_CONFIG_DIR`, then the installed `openral_hal_unitree` share, then the repo checkout. (L114)
+- `load_s0_policy(path, *, require_ready=True) -> S0PolicyFile` — `ROSConfigError` on a missing/malformed/placeholder file. (L151)
+- `resolve_leapp_config(policy, override, package_share=None) -> Path` — override › `share/<data_package>/data/` › `bundle_dir`; names `tools/build_gr00t_wbc_leapp.py` when a built bundle is missing. (L175)
+- `policy_parameters(policy, leapp_config) -> dict` — A copy of `controllers` with `inference_controller.config_path` filled. (L256)
 
 
 ### `python/hal/src/openral_hal/interbotix_transport.py`

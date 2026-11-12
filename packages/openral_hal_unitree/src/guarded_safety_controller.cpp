@@ -12,11 +12,62 @@
 
 #include "pluginlib/class_list_macros.hpp"
 
+namespace isaac_ros_deploy_ros2_control::controllers {
+
+controller_interface::return_type
+SafetyControllerTestAccess::update_holding(SafetyController& c, const rclcpp::Time& time,
+                                           const rclcpp::Duration& period,
+                                           std::vector<double>& hold, bool& hold_active) {
+  // Upstream v4.6-0 SafetyController::update_and_write_commands, line for line, plus the
+  // two input overrides v5.0 applies while its stale-position hold is active.
+  if (!c.safety_controller_) {
+    return controller_interface::return_type::ERROR;
+  }
+  const int64_t timestamp_ns = time.nanoseconds();
+  c.populate_inputs_from_interfaces(period, timestamp_ns);
+
+  const size_t joints = c.joint_names_.size();
+  if (!hold_active) {
+    const auto measured = c.inputs_[1].tensor.accessor<float, 2>();
+    for (size_t i = 0; i < joints; ++i) {
+      hold[i] = static_cast<double>(measured[0][i]);
+    }
+    hold_active = true;
+    RCLCPP_WARN(c.get_node()->get_logger(),
+                "Position reference became invalid; holding measured positions captured at "
+                "stale entry");
+  }
+  auto command = c.inputs_[0].tensor.accessor<float, 2>();
+  for (size_t i = 0; i < joints; ++i) {
+    command[0][i] = static_cast<float>(hold[i]);
+  }
+  c.inputs_[2].tensor.accessor<float, 2>()[0][0] = 1.0F;
+
+  auto result = c.safety_controller_->advance(timestamp_ns, c.inputs_, c.outputs_);
+  if (!result.has_value()) {
+    const auto error_message = std::string(result.error().message);
+    if (c.velocity_threshold_enabled_ &&
+        result.error().code == isaac_deploy_core::Error::Code::kFailedPrecondition) {
+      c.latch_emergency(error_message);
+      return controller_interface::return_type::OK;
+    }
+    RCLCPP_ERROR(c.get_node()->get_logger(), "Safety controller advance failed: %s",
+                 error_message.c_str());
+    return controller_interface::return_type::ERROR;
+  }
+  c.write_outputs_to_interfaces();
+  return controller_interface::return_type::OK;
+}
+
+}  // namespace isaac_ros_deploy_ros2_control::controllers
+
 namespace openral_hal_unitree {
 
 namespace {
 constexpr char kBlendRatioParam[] = "blend_ratio";
 constexpr char kMaxBlendRatioSpeedParam[] = "max_blend_ratio_speed";
+// Upstream's reference layout per joint: position, velocity, effort, kp, kd.
+constexpr size_t kReferencesPerJoint = 5;
 }  // namespace
 
 std::optional<std::string> blend_speed_refusal(double speed) {
@@ -103,7 +154,30 @@ GuardedSafetyController::on_activate(const rclcpp_lifecycle::State& previous_sta
   }
   const auto result = SafetyController::on_activate(previous_state);
   activating_.store(false);
+  hold_.assign(reference_interfaces_.size() / kReferencesPerJoint, 0.0);
+  hold_active_ = false;
   return result;
+}
+
+controller_interface::return_type
+GuardedSafetyController::update_and_write_commands(const rclcpp::Time& time,
+                                                   const rclcpp::Duration& period) {
+  bool invalid = false;
+  for (size_t i = 0; i < hold_.size(); ++i) {
+    if (std::isnan(reference_interfaces_[i * kReferencesPerJoint])) {
+      invalid = true;
+      break;
+    }
+  }
+  if (invalid) {
+    return isaac_ros_deploy_ros2_control::controllers::SafetyControllerTestAccess::update_holding(
+        *this, time, period, hold_, hold_active_);
+  }
+  if (hold_active_) {
+    hold_active_ = false;
+    RCLCPP_INFO(get_node()->get_logger(), "Position reference recovered; resuming normal blending");
+  }
+  return SafetyController::update_and_write_commands(time, period);
 }
 
 }  // namespace openral_hal_unitree

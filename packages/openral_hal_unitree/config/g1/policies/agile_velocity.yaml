@@ -69,10 +69,13 @@ controllers:
       source_message_type:
         command/body/velocity: geometry_msgs/msg/Twist
       # OpenRAL addition (upstream leaves 0 = never stale). A velocity command older than
-      # this invalidates the policy's output and SafetyController holds the measured pose:
-      # a crashed or stalled Python side then stops the robot walking instead of leaving
-      # it on its last command forever. The HAL re-publishes the twist on every tick
-      # (zero when the tick carries none), so a live runner keeps it fresh.
+      # this — or none since activation — invalidates the policy's output, and
+      # safety_controller holds the measured pose captured at stale entry: a crashed or
+      # stalled Python side then stops the robot walking instead of leaving it on its last
+      # command forever. The HAL re-publishes the twist on every tick (zero when the tick
+      # carries none), so a live runner keeps it fresh. Enforced by
+      # openral_hal_unitree/GuardedInferenceController (the pinned Jazzy isaac_ros_deploy,
+      # v4.6, has no watchdog of its own); the launch refuses these keys on any other type.
       topic_input_timeout_ms: 500.0
 
   upper_body_forward_joint_command_controller:

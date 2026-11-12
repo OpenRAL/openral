@@ -10,7 +10,10 @@ Starts NVIDIA's S0 graph — the C++ half of the split ``UnitreeHgRealHAL``
 * ``joint_state_broadcaster`` + ``imu_sensor_broadcaster``;
 * the S0 chain from isaac_ros_deploy: ``safety_controller`` ←
   ``inference_controller`` (the whole-body ONNX policy; legs) +
-  ``upper_body_forward_joint_command_controller`` (what OpenRAL commands);
+  ``upper_body_forward_joint_command_controller`` (what OpenRAL commands); the first two
+  run through OpenRAL's guards (``GuardedSafetyController``, ``GuardedInferenceController``).
+  A policy file that sets the stale-input watchdog (``topic_input_timeout_ms``) on any other
+  inference controller type is refused: the pinned Jazzy release would silently ignore it;
 * ``freeze_controller``, loaded inactive: what the safety controller's out-of-domain
   detector and OpenRAL's ``/openral/estop`` both hand every joint to.
 
@@ -62,6 +65,7 @@ try:
     from openral_hal.unitree_s0_policy import (
         load_s0_policy,
         policy_parameters,
+        require_watchdog_enforced,
         resolve_leapp_config,
     )
 except ImportError as exc:  # pragma: no cover - only under a non-venv interpreter
@@ -131,6 +135,7 @@ def _launch_setup(context: LaunchContext) -> list[Any]:
     share = Path(get_package_share_directory(_PACKAGE))
     base_params = share / "config" / robot_model / "controller_manager.yaml"
     policy = load_s0_policy(share / "config" / robot_model / "policies" / f"{policy_name}.yaml")
+    require_watchdog_enforced(policy, yaml.safe_load(base_params.read_text(encoding="utf-8")))
     leapp = resolve_leapp_config(policy, override, get_package_share_directory)
     with tempfile.NamedTemporaryFile(
         "w", prefix=f"openral_{robot_model}_{policy_name}_", suffix=".yaml", delete=False

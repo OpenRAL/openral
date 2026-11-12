@@ -20,22 +20,34 @@
 
 #include <rclcpp/rclcpp.hpp>
 
-// Upstream befriends this name for its own tests; reading the applied values is the
-// only way to prove a refused set never reached the controller.
-namespace isaac_ros_deploy_ros2_control::controllers {
-class SafetyControllerTestAccess {
-public:
-  static double max_blend_ratio_speed(const SafetyController& c) {
-    return c.max_blend_ratio_speed_.load();
-  }
-  static double target_blend_ratio(const SafetyController& c) {
-    return c.target_blend_ratio_.load();
-  }
-  static double applied_blend_ratio(const SafetyController& c) { return c.current_blend_ratio_; }
-};
-}  // namespace isaac_ros_deploy_ros2_control::controllers
-
 namespace {
+
+// SafetyControllerTestAccess (guarded_safety_controller.hpp) reads the applied values:
+// the only way to prove a refused set never reached the controller.
+
+/// The guard, with the upstream policy's side of the chain reachable: what
+/// inference_controller writes into the reference interfaces.
+class ChainedGuard : public openral_hal_unitree::GuardedSafetyController {
+public:
+  void set_position_references(double value) {
+    for (size_t i = 0; i < reference_interfaces_.size(); i += 5) {
+      reference_interfaces_[i] = value;
+    }
+  }
+  void set_position_reference(size_t joint, double value) {
+    reference_interfaces_[joint * 5] = value;
+  }
+};
+
+::testing::AssertionResult all_near(const std::vector<double>& values, double expected) {
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (!(std::abs(values[i] - expected) <= 1e-6)) {
+      return ::testing::AssertionFailure()
+             << "joint " << i << " commanded " << values[i] << ", expected " << expected;
+    }
+  }
+  return ::testing::AssertionSuccess();
+}
 
 using isaac_ros_deploy_ros2_control::controllers::SafetyControllerTestAccess;
 using openral_hal_unitree::GuardedSafetyController;
@@ -117,7 +129,22 @@ protected:
     controller_.assign_interfaces(std::move(loaned_command), std::move(loaned_state));
   }
 
-  GuardedSafetyController controller_;
+  /// One control tick; returns the position each joint is commanded to.
+  std::vector<double> tick(double period_s = 0.005) {
+    EXPECT_EQ(controller_.update_and_write_commands(rclcpp::Time(0, 0),
+                                                    rclcpp::Duration::from_seconds(period_s)),
+              controller_interface::return_type::OK);
+    std::vector<double> out;
+    for (size_t i = 0; i < kJoints.size(); ++i) {
+      out.push_back(command_values_[i * kInterfacesPerJoint]);
+    }
+    return out;
+  }
+
+  // In place: the state interfaces point into this buffer.
+  void set_measured(double value) { std::fill(state_values_.begin(), state_values_.end(), value); }
+
+  ChainedGuard controller_;
   std::vector<double> state_values_;
   std::vector<double> command_values_;
   std::vector<hardware_interface::StateInterface::SharedPtr> state_interfaces_;
@@ -190,6 +217,64 @@ TEST_F(GuardedSafetyControllerTest, ActivatesBlendedOut) {
   assign_interfaces();
   EXPECT_EQ(controller_.on_activate(rclcpp_lifecycle::State()), CallbackReturn::SUCCESS);
   EXPECT_EQ(SafetyControllerTestAccess::applied_blend_ratio(controller_), 0.0);
+}
+
+// Issue #565: the stale-input hold (isaac_ros_deploy v5.0 semantics on the v4.6 base).
+
+TEST_F(GuardedSafetyControllerTest, AStaleReferenceHoldsThePoseCapturedAtOnsetNotTheSaggingOne) {
+  ASSERT_EQ(init_and_configure(1.0), CallbackReturn::SUCCESS);
+  assign_interfaces();
+  ASSERT_EQ(controller_.on_activate(rclcpp_lifecycle::State()), CallbackReturn::SUCCESS);
+  ASSERT_TRUE(set("blend_ratio", 1.0));
+  tick(1.0);  // one 1 s tick ramps the blend fully in at 1.0 /s
+  ASSERT_EQ(SafetyControllerTestAccess::applied_blend_ratio(controller_), 1.0);
+
+  // The policy tracks: the robot follows its references.
+  set_measured(0.3);
+  controller_.set_position_references(0.3);
+  EXPECT_TRUE(all_near(tick(), 0.3));
+
+  // The policy's input goes stale: GuardedInferenceController writes NaN.
+  controller_.set_position_references(std::nan(""));
+  EXPECT_TRUE(all_near(tick(), 0.3));
+  // The robot sags. v4.6 alone commands the measured pose every tick (0.0 here): no
+  // restoring force. The hold keeps commanding the pose captured at stale entry.
+  set_measured(0.0);
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_TRUE(all_near(tick(), 0.3)) << i;
+  }
+
+  // Fresh again: the policy's references drive the joints, and a later stale spell
+  // captures the pose of that moment, not the old one.
+  controller_.set_position_references(0.25);
+  EXPECT_TRUE(all_near(tick(), 0.25));
+  controller_.set_position_references(std::nan(""));
+  EXPECT_TRUE(all_near(tick(), 0.0));
+}
+
+TEST_F(GuardedSafetyControllerTest, AStaleReferenceHoldsFullyWeightedEvenBlendedOut) {
+  // v5.0 feeds the hold at blend 1.0: the robot stays where it was at stale entry rather
+  // than moving toward the activation pose a partial blend would interpolate to.
+  ASSERT_EQ(init_and_configure(1.0), CallbackReturn::SUCCESS);
+  assign_interfaces();
+  ASSERT_EQ(controller_.on_activate(rclcpp_lifecycle::State()), CallbackReturn::SUCCESS);
+  EXPECT_TRUE(all_near(tick(), 0.1));  // activation pose
+  set_measured(0.4);
+  controller_.set_position_references(std::nan(""));
+  EXPECT_TRUE(all_near(tick(), 0.4));
+  EXPECT_EQ(SafetyControllerTestAccess::applied_blend_ratio(controller_), 0.0);  // untouched
+}
+
+TEST_F(GuardedSafetyControllerTest, OneStaleJointHoldsEveryJoint) {
+  ASSERT_EQ(init_and_configure(1.0), CallbackReturn::SUCCESS);
+  assign_interfaces();
+  ASSERT_EQ(controller_.on_activate(rclcpp_lifecycle::State()), CallbackReturn::SUCCESS);
+  ASSERT_TRUE(set("blend_ratio", 1.0));
+  tick(1.0);
+  set_measured(0.2);
+  controller_.set_position_references(0.5);
+  controller_.set_position_reference(0, std::nan(""));
+  EXPECT_TRUE(all_near(tick(), 0.2));
 }
 
 }  // namespace

@@ -39,6 +39,7 @@ __all__ = [
     "S0PolicyMeta",
     "load_s0_policy",
     "policy_parameters",
+    "require_watchdog_enforced",
     "resolve_leapp_config",
     "s0_policy_path",
 ]
@@ -49,6 +50,10 @@ UNITREE_BRINGUP_PACKAGE = "openral_hal_unitree"
 UPPER_BODY_CONTROLLER = "upper_body_forward_joint_command_controller"
 #: The S0 policy controller.
 INFERENCE_CONTROLLER = "inference_controller"
+#: The only inference controller type that enforces ``WATCHDOG_KEYS`` (issue #565).
+GUARDED_INFERENCE_CONTROLLER = "openral_hal_unitree/GuardedInferenceController"
+#: Stale-input watchdog parameters: isaac_ros_deploy v5.0 names, absent from v4.6.
+WATCHDOG_KEYS = ("topic_input_timeout_ms", "topic_input_sources")
 #: Repo-checkout location of the configs (``python/hal/src/openral_hal/`` → repo root).
 _REPO_CONFIG = Path(__file__).resolve().parents[4] / "packages" / UNITREE_BRINGUP_PACKAGE / "config"
 
@@ -214,6 +219,38 @@ def resolve_leapp_config(
             )
         )
     return path
+
+
+def require_watchdog_enforced(policy: S0PolicyFile, base_params: dict[str, Any]) -> None:
+    """Refuse a policy whose stale-input watchdog the loaded controller would ignore.
+
+    The pinned Jazzy ``isaac_ros_deploy`` (v4.6) has no ``topic_input_timeout_ms`` /
+    ``topic_input_sources``: its ``InferenceController`` accepts them without a word and
+    keeps running the policy on its last velocity command (issue #565). Only
+    ``GuardedInferenceController`` enforces them. The effective type is the policy file's
+    ``controller_manager`` override if it has one (it loads last), else ``base_params``'s
+    (``controller_manager.yaml``).
+
+    Raises:
+        ROSConfigError: The policy sets a watchdog key and the type is any other.
+    """
+    inference = policy.controllers[INFERENCE_CONTROLLER].get("ros__parameters", {})
+    keys = sorted(k for k in WATCHDOG_KEYS if k in inference)
+    if not keys:
+        return
+    controller_type = None
+    for doc in (policy.controllers, base_params):
+        manager = doc.get("controller_manager", {}).get("ros__parameters", {})
+        controller_type = manager.get(INFERENCE_CONTROLLER, {}).get("type")
+        if controller_type is not None:
+            break
+    if controller_type != GUARDED_INFERENCE_CONTROLLER:
+        raise ROSConfigError(
+            f"S0 policy {policy.openral_policy.name!r} sets {INFERENCE_CONTROLLER}.{keys}, but "
+            f"{INFERENCE_CONTROLLER} is {controller_type!r}, which does not enforce them on the "
+            f"pinned isaac_ros_deploy: a stale velocity command would keep the robot walking. "
+            f"Use type {GUARDED_INFERENCE_CONTROLLER!r}."
+        )
 
 
 def policy_parameters(policy: S0PolicyFile, leapp_config: Path) -> dict[str, Any]:

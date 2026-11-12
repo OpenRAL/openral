@@ -47,7 +47,7 @@ controller_manager @ 200 Hz ──────────────┼──�
 
 **Base height is not commandable.** OpenRAL's `Action` has no base-height field, and
 upstream's only height-carrying converter (`command/body/velocity_height`, isaac_ros_deploy
-f3aa6b89) hardcodes 0.7 m; the GR00T bundle fixes GR00T's height input at its runner's 0.74 m.
+v4.6-0 3e84f85a) hardcodes 0.7 m; the GR00T bundle fixes GR00T's height input at its runner's 0.74 m.
 Both policies take the planar twist (vx, vy, wz) only.
 
 **Joint ownership** is the selected policy's, read from its policy file by the HAL
@@ -129,9 +129,16 @@ repos — check it before redistributing a deployment image.
 
 ## Install
 
-Host: ROS 2 **Jazzy** (upstream also targets Lyrical; the hardware-interface CMake and
-package manifests carry both), a CUDA GPU (Jetson Thor/Orin or x86 + NVIDIA dGPU), and the
-**Isaac ROS apt repository** (release 5.0, per isaac_ros_robots' 2026-09-21 note).
+Host: ROS 2 **Jazzy**, a CUDA GPU (Jetson Thor/Orin or x86 + NVIDIA dGPU), and the
+**Isaac ROS apt repository, release 4** (its `ros-jazzy-*` builds; release 5.0 ships only
+`ros-lyrical-*`).
+
+`deps.repos` pins `isaac_ros_deploy` to tag **v4.6-0** (`3e84f85a`, the source of the
+release-4 `ros-jazzy-isaac-ros-deploy-*` 4.6.0 debs), not its HEAD: v5.0-0 (`f3aa6b89`)
+needs ROS 2 Lyrical (`cuda_buffer` from `rosidl_buffer_backends`, `urdf/model.hpp`) and does
+not build on Jazzy (issue #565). v4.6 lacks v5.0's stale-input watchdog; OpenRAL's guarded
+controllers (below) restore it. `isaac_ros_robots` stays at `520aa94f` — release-4 has no
+`unitree_hg_ros2_control`.
 
 ```bash
 vcs import ros2_ws/src < packages/openral_hal_unitree/deps.repos
@@ -141,15 +148,27 @@ colcon build --packages-up-to unitree_hg_ros2_control unitree_g1_description \
 just ros2-build                                            # this package
 ```
 
-Build this package with the NVIDIA workspace sourced: its `GuardedSafetyController`
-plugin is compiled only when CMake finds `isaac_ros_deploy_ros2_control`. Built without
-it, the bringup fails to load `safety_controller` — it never falls back to NVIDIA's
-unguarded class. On a robot host make that a build error instead:
+Build this package with the NVIDIA workspace sourced: its `GuardedSafetyController` and
+`GuardedInferenceController` plugins are compiled only when CMake finds
+`isaac_ros_deploy_ros2_control`. Built without it, the bringup fails to load
+`safety_controller` / `inference_controller` — it never falls back to NVIDIA's unguarded
+classes. On a robot host make that a build error instead:
 
 ```bash
 colcon build --packages-select openral_hal_unitree \
     --cmake-args -DOPENRAL_REQUIRE_GUARDED_SAFETY_CONTROLLER=ON
 ```
+
+`isaac_deploy_core`'s exported CMake config fetches a Triton tarball whenever a dependent
+package configures. On aarch64 that is the public `tritonserver2.60.0-agx.tar`; on x86_64
+the default URL is NVIDIA-internal, so pass the tarball you built `isaac_deploy_core` with:
+`-DTRITON_SERVER_TARBALL_URL=file:///path/to/tritonserver.tar.gz`.
+
+The guards' gtests (`colcon test --packages-select openral_hal_unitree`) run NVIDIA's real
+controllers; the policy tests also need the GR00T bundle
+(`OPENRAL_G1_LEAPP_CONFIG=<bundle_dir>/gr00t_wbc_g1.yaml`) and Triton's ONNX Runtime backend
+(`TRITON_BACKEND_DIRECTORY`, from the `triton-server` deb's tarball), and skip without the
+bundle.
 
 Build-time network fetches you should know about:
 
@@ -188,7 +207,7 @@ Build-time network fetches you should know about:
 
 ### Blend guard (`GuardedSafetyController`, issue #548)
 
-NVIDIA's `SafetyController` (isaac_ros_deploy f3aa6b89) declares `blend_ratio` and
+NVIDIA's `SafetyController` (isaac_ros_deploy v4.6-0 `3e84f85a`) declares `blend_ratio` and
 `max_blend_ratio_speed` writable and applies a runtime set on the next tick, and its
 `on_activate` snaps the applied blend to its target with no ramp. `safety_controller`
 therefore runs as `openral_hal_unitree/GuardedSafetyController`, a subclass that touches
@@ -205,13 +224,32 @@ reach `/safety_controller`'s parameter services can still blend the policy in, a
 same ≤ 1 /s ramp. Who can reach them is a graph-access question — host confinement today,
 SROS2 enclaves next (`docs/reference/ros-graph-security.md`).
 
+### Stale-input watchdog (`GuardedInferenceController` + hold, issue #565)
+
+isaac_ros_deploy grew a stale-input watchdog in v5.0 (`topic_input_timeout_ms`,
+`topic_input_sources`); the pinned Jazzy release, v4.6, has none, and accepts those keys
+in a policy file without a word — a crashed OpenRAL side would leave the G1 walking on its
+last `cmd_vel`. On a NaN position reference v4.6's `SafetyController` also re-reads the
+measured pose every tick, so a blended-in joint has no restoring force. OpenRAL restores
+v5.0's behaviour:
+
+| Piece | What it does |
+|---|---|
+| `inference_controller` runs as `openral_hal_unitree/GuardedInferenceController` | declares both keys. Refuses to configure on a negative, non-finite or non-double timeout, or a `topic_input_sources` entry v4.6 does not read from a topic. With a timeout, a topic input with no message since activation, or none within the timeout (measured on the controller manager's clock), sets **every** policy command interface to NaN and skips the policy step. |
+| `safety_controller`'s hold (`GuardedSafetyController`) | while **any** position reference is NaN, commands every joint to the measured pose captured at the first invalid tick, fully weighted (blend input 1.0) — v5.0's `stale_position_hold`. Released as soon as every reference is finite again. |
+| launch | `require_watchdog_enforced` refuses a policy file that sets either key while `inference_controller` is any other type — nothing is silently ignored. |
+
+Measured against NVIDIA's real v4.6 controllers and the GR00T bundle (gtests): upstream
+v4.6 keeps commanding the policy 1000 ms after the last velocity command (timeout 200 ms in
+the test); the guarded controller invalidates it 201 ms after.
+
 ## E-stop, freeze and stale commands
 
 | Event | What happens |
 |---|---|
 | `/openral/estop` | `UnitreeHgRealHAL.estop()` swaps `safety_controller`, `inference_controller`, `upper_body_forward_joint_command_controller` **out** and `freeze_controller` **in**, in **one** `switch_controller` request (BEST_EFFORT, confirmed via `list_controllers`; outcome in `/diagnostics` `downstream_stop`). `freeze_controller` cannot come in *before* the chain goes out — they claim the same command interfaces and `controller_manager` refuses it — and the manager keeps a swap's deactivations when the activation is dropped or fails, which would leave every joint at zero torque (#566). So the HAL first configures an `unconfigured` freeze controller (pre-check, ≤ 0.2 s), and if the swap does not confirm it active, activates it alone at once (CRITICAL `hal.estop.freeze_retry`). Recovery: `RESTART_REQUIRED`. |
 | Joint velocity out of domain | NVIDIA `SafetyController` (mean > 10 rad/s or max > 35 rad/s) performs the same swap itself. |
-| OpenRAL stops publishing (crash, stall) | After 500 ms (`topic_input_timeout_ms`) the policy's output is invalidated and `SafetyController` holds the measured pose. Arms hold their last trajectory end. |
+| OpenRAL stops publishing (crash, stall) | After 500 ms (`topic_input_timeout_ms`, enforced by `GuardedInferenceController`) the policy's output is invalidated and `safety_controller` holds every joint at the measured pose captured at that moment (also before the first velocity command after activation). |
 | Robot state stale > 500 ms | `UnitreeHgSystemInterface` read/write return ERROR → the hardware component leaves `active`. |
 
 Why a swap and not OpenRAL's usual "deactivate the controllers": the Unitree hg hardware
@@ -258,8 +296,8 @@ it is unvalidated and not done here. The 200 Hz loop is still C++ and bounded (�
 |---|---|---|
 | This package, `openral_hal.unitree_real` | Apache-2.0 | |
 | `isaac_ros_robots` @ 520aa94f | Apache-2.0 | hardware interface, G1 description |
-| `isaac_ros_deploy` @ f3aa6b89 | Apache-2.0 | controllers, interfaces |
-| Isaac ROS apt deps (`isaac_ros_triton`, `isaac_ros_tensor_msgs`, `cuda_buffer`, …) | Apache-2.0 | from the Isaac ROS apt repo |
+| `isaac_ros_deploy` @ v4.6-0 (3e84f85a) | Apache-2.0 | controllers, interfaces |
+| Isaac ROS apt deps (`isaac_ros_tensor_list_interfaces`, …) | Apache-2.0 | from the Isaac ROS apt repo, release 4 |
 | `unitree_sdk2` @ 21d0a3b2 (fetched by CMake) | BSD-3-Clause wrapper, **prebuilt closed core** (`libunitree_sdk2.a`) | why the manifest is `sdk_kind: closed_with_api` |
 | Cyclone DDS 0.10.2 (fetched by CMake) | EPL-2.0 OR EDL-1.0 | dynamically linked runtime |
 | Triton Inference Server (`triton-server` rosdep key) | BSD-3-Clause | ONNX runtime for the policy |
