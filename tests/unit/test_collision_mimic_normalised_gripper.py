@@ -3,10 +3,11 @@
 The Metal's ``gripper`` channel is a [0, 1] fraction; ``sim.grippers[]``
 (``write_mode: normalised``) maps it onto joint8's [0, 0.05] m, and the MJCF
 couples ``joint7 = -joint8``. Both fingers are ``mimic_joints`` rows posed from
-the fraction (``joint7 = -0.05 f``, ``joint8 = +0.05 f``), one of them on the
-MJCF's DRIVEN joint itself. The check must compare in the fraction's units —
-through the actuator the twin really drives — and must still refuse a wrong
-multiplier, a wrong offset or an actuator that does not drive the leader.
+the gripper's URDF value ``u = 0.05 f`` (its ``urdf_curve``; ``joint7 = -u``,
+``joint8 = +u``), one of them on the MJCF's DRIVEN joint itself. The check must
+compare in the fraction's units — through the curve and the actuator the twin
+really drives — and must still refuse a wrong multiplier, a wrong offset, a wrong
+curve or an actuator that does not drive the leader.
 Real manifests and the real derived MJCF only (CLAUDE.md §1.11).
 """
 
@@ -61,12 +62,12 @@ def test_both_fingers_are_accepted_in_the_fraction_units(
 @pytest.mark.parametrize(
     ("name", "update"),
     [
-        ("joint7", {"multiplier": -1.0}),  # the MJCF's metre relation, read as a fraction
-        ("joint7", {"multiplier": -0.04}),  # 10 mm short of the real stroke
-        ("joint7", {"multiplier": 0.05}),  # wrong direction
+        ("joint7", {"multiplier": -20.0}),  # the URDF metres read as a fraction
+        ("joint7", {"multiplier": -0.8}),  # 10 mm short of the real stroke
+        ("joint7", {"multiplier": 1.0}),  # wrong direction
         ("joint7", {"offset": 0.01}),
-        ("joint8", {"multiplier": 0.04}),  # the driven joint itself, wrong scale
-        ("joint8", {"multiplier": -0.05}),
+        ("joint8", {"multiplier": 0.8}),  # the driven joint itself, wrong scale
+        ("joint8", {"multiplier": -1.0}),
         ("joint8", {"offset": -0.01}),
     ],
 )
@@ -77,6 +78,21 @@ def test_a_wrong_relation_is_still_refused(
     with pytest.raises(ROSConfigError, match="disagree with the MJCF equality"):
         _declared_mimic_followers(
             _with_mimic(robot, name, **update), model, mjcf_coupled_joints(model)
+        )
+
+
+def test_a_curve_that_disagrees_with_the_mjcf_stroke_is_refused(
+    metal: tuple[RobotDescription, object],
+) -> None:
+    """The rows read the gripper's urdf_curve: a curve off the twin's stroke fails (#533)."""
+    robot, model = metal
+    joints = [
+        j.model_copy(update={"urdf_curve": ((0.0, 0.0), (1.0, 0.04))}) if j.name == "gripper" else j
+        for j in robot.joints
+    ]
+    with pytest.raises(ROSConfigError, match="disagree with the MJCF equality"):
+        _declared_mimic_followers(
+            robot.model_copy(update={"joints": joints}), model, mjcf_coupled_joints(model)
         )
 
 

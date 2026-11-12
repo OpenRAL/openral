@@ -46,7 +46,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _DIR = _REPO / "robots" / "droid_franka_robotiq"
 _URDF = str(_DIR / "droid_franka_robotiq.urdf")
 _SCENE = _REPO / "scenes" / "deploy" / "isaac_arena_droid_banana_in_bowl.yaml"
-_CLOSED_RAD = math.pi / 4  # gripper_joint_curve [[0, pi/4], [1, 0]]
+_CLOSED_RAD = math.pi / 4  # finger_joint.urdf_curve [[0, pi/4], [1, 0]]
 _START = (0.0, -math.pi / 5, 0.0, -4 * math.pi / 5, 0.0, 3 * math.pi / 5, 0.0)
 
 
@@ -69,15 +69,18 @@ def test_every_geometry_entry_is_the_fitters_output(robot: RobotDescription) -> 
     assert _render(list(robot.collision_geometry)) == _render(expected)
 
 
-def test_the_rows_compose_the_deploy_scenes_curve(robot: RobotDescription) -> None:
-    curve = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))["scene"]["backend_options"][
-        "gripper_joint_curve"
-    ]["finger_joint"]
-    assert sorted(map(tuple, curve)) == [(0.0, pytest.approx(_CLOSED_RAD)), (1.0, 0.0)]
+def test_the_rows_read_the_manifest_curve(robot: RobotDescription) -> None:
+    """finger_joint.urdf_curve maps the fraction; the scenes no longer carry their own (#533)."""
+    options = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))["scene"]["backend_options"]
+    assert "gripper_joint_curve" not in options
+    leader = next(j for j in robot.joints if j.name == "finger_joint")
+    assert leader.urdf_curve is not None
+    assert [list(p) for p in leader.urdf_curve] == [[0.0, pytest.approx(_CLOSED_RAD)], [1.0, 0.0]]
     for m in robot.mimic_joints:
         sign = 1.0 if "distal" in m.child_link else -1.0  # URDF <mimic> multiplier -1 / +1
-        assert m.value_at(0.0) == pytest.approx(-sign * _CLOSED_RAD, abs=1e-7)
-        assert m.value_at(1.0) == pytest.approx(0.0, abs=1e-7)
+        assert m.multiplier == -sign
+        assert m.value_at(leader.urdf_value(0.0)) == pytest.approx(-sign * _CLOSED_RAD, abs=1e-7)
+        assert m.value_at(leader.urdf_value(1.0)) == pytest.approx(0.0, abs=1e-7)
 
 
 @pytest.mark.parametrize("fraction", [0.0, 0.25, 0.5, 0.75, 1.0])

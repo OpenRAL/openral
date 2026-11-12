@@ -2166,11 +2166,12 @@ def _declared_mimic_followers(
 
     Each declared mimic must be an equality follower of its ``mimics`` joint in
     the MJCF — or that leader's MJCF joint itself (the identity relation) — with
-    the SAME ``multiplier`` / ``offset`` (the kernel poses the follower from the
-    manifest's numbers, the fit from the MJCF's; a disagreement would put the
-    kernel's finger at the wrong opening). The comparison is in the units of
-    the manifest channel the kernel reads: for a ``write_mode: normalised``
-    gripper (the MakerMods Metal's [0, 1] fraction) the MJCF leader is
+    the SAME relation (the kernel poses the follower from the manifest's
+    ``multiplier`` / ``offset`` through the leader's ``urdf_curve``, the fit from the
+    MJCF's; a disagreement would put the kernel's finger at the wrong opening).
+    The comparison is in the units of the manifest channel the kernel reads: for
+    a ``write_mode: normalised`` gripper (the MakerMods Metal's [0, 1] fraction)
+    the MJCF leader is
     ``lo + (hi - lo) · v`` over ``sim.grippers[].ctrl_range``
     (``_manifest_to_mjcf_affine``).
 
@@ -2208,11 +2209,18 @@ def _declared_mimic_followers(
         c0, c1 = relation
         a, b = _manifest_to_mjcf_affine(robot, model, mim.mimics, lj)
         mult, off = c1 * b, c0 + c1 * a  # the MJCF relation in the manifest channel's units
-        if abs(off - mim.offset) > 1e-9 or abs(mult - mim.multiplier) > 1e-9:
+        # The kernel poses the follower at multiplier * u + offset, u the leader's value
+        # through its urdf_curve: compare at the curve's breakpoints (both maps are
+        # piecewise linear in the channel value), or at 0 and 1 without a curve.
+        leader = next(j for j in robot.joints if j.name == mim.mimics)
+        samples = [p[0] for p in leader.urdf_curve] if leader.urdf_curve else [0.0, 1.0]
+        worst = max(abs(mim.value_at(leader.urdf_value(v)) - (mult * v + off)) for v in samples)
+        if worst > 1e-9:
             raise ROSConfigError(
                 f"mimic_joints[{mim.name!r}]: multiplier/offset ({mim.multiplier}, {mim.offset}) "
-                f"disagree with the MJCF equality ({mult}, {off} in the {mim.mimics!r} "
-                "channel's units); the kernel would pose the follower at the wrong opening"
+                f"through {mim.mimics!r}'s urdf_curve disagree with the MJCF equality "
+                f"({mult}, {off} in the {mim.mimics!r} channel's units) by up to {worst:.3g}; "
+                "the kernel would pose the follower at the wrong opening"
             )
         declared.add(fj)
     return declared

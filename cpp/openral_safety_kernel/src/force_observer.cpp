@@ -31,14 +31,6 @@ bool prismatic(JointKind kind) noexcept {
   return kind == JointKind::kPrismatic || kind == JointKind::kMimicPrismatic;
 }
 
-/// d(link joint value)/d(its dof column): the mimic multiplier, else 1.
-double column_gain(const CollisionModel& model, std::size_t i) noexcept {
-  if (is_mimic(model.joint_kind[i]) && i < model.mimic_multiplier.size()) {
-    return model.mimic_multiplier[i];
-  }
-  return 1.0;
-}
-
 }  // namespace
 
 void init_force_observer(const CollisionModel& model, std::size_t n_dof,
@@ -99,7 +91,7 @@ void rnea(const CollisionModel& model, const ForceObserverModel& dyn, const doub
     const JointKind kind = model.joint_kind[i];
     const Vec3 z = mul(xf.r, model.axis[i]);  // the motion leaves the axis fixed
     if (dof >= 0 && static_cast<std::size_t>(dof) < n_dof && kind != JointKind::kFixed) {
-      const double g = column_gain(model, i);
+      const double g = link_joint_gain(model, i, q[dof]);
       const double v = g * qd[dof];
       const double a = g * qdd[dof];
       if (revolute(kind)) {
@@ -131,7 +123,7 @@ void rnea(const CollisionModel& model, const ForceObserverModel& dyn, const doub
     const int dof = model.dof_index[k];
     const JointKind kind = model.joint_kind[k];
     if (dof >= 0 && static_cast<std::size_t>(dof) < n_dof && kind != JointKind::kFixed) {
-      const double g = column_gain(model, k);
+      const double g = link_joint_gain(model, k, q[dof]);
       const Vec3& z = state.joint_axis[k];
       tau[dof] += g * (revolute(kind) ? dot(z, m) : dot(z, f));
       if (!is_mimic(kind)) {

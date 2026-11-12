@@ -432,7 +432,40 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
     error = "collision_mimic_* arrays disagree with collision_n_links or are non-finite";
     return false;
   }
+  if (p.curve_point_first.size() != p.curve_point_count.size() ||
+      (!p.curve_point_first.empty() && p.curve_point_first.size() != n) ||
+      p.curve_points.size() % 2 != 0 || !all_finite(p.curve_points) ||
+      (p.curve_point_first.empty() && !p.curve_points.empty())) {
+    error = "collision_curve_* arrays disagree with collision_n_links or are non-finite";
+    return false;
+  }
   SelfModel m;
+  if (!p.curve_point_first.empty()) {
+    m.curves.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto first = p.curve_point_first[i];
+      const auto count = p.curve_point_count[i];
+      if (first < 0) {
+        if (count != 0) {
+          error = "collision_curve_point_count is non-zero on a link without a curve";
+          return false;
+        }
+        continue;
+      }
+      if (count < 2 || static_cast<std::size_t>(2 * (first + count)) > p.curve_points.size()) {
+        error = "a collision curve needs at least 2 points inside collision_curve_points";
+        return false;
+      }
+      for (std::int64_t k = 0; k < count; ++k) {
+        const double x = p.curve_points[static_cast<std::size_t>(2 * (first + k))];
+        if (k > 0 && !(x > m.curves[i].back().first)) {
+          error = "a collision curve must have strictly increasing values";
+          return false;
+        }
+        m.curves[i].emplace_back(x, p.curve_points[static_cast<std::size_t>(2 * (first + k) + 1)]);
+      }
+    }
+  }
   m.link_names = p.link_names;
   m.parent.resize(n);
   m.joint_kind.resize(n);
@@ -516,6 +549,23 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
   return true;
 }
 
+double curve_value(const std::vector<std::pair<double, double>>& curve, double x) noexcept {
+  if (!std::isfinite(x)) {
+    return x;  // the kernel's link_joint_value: an invalid column stays invalid
+  }
+  if (x <= curve.front().first) {
+    return curve.front().second;
+  }
+  for (std::size_t k = 1; k < curve.size(); ++k) {
+    if (x <= curve[k].first) {
+      const auto& [x0, y0] = curve[k - 1];
+      const auto& [x1, y1] = curve[k];
+      return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+    }
+  }
+  return curve.back().second;
+}
+
 void self_forward_kinematics(const SelfModel& model, const double* q, std::size_t n_dof,
                              std::vector<tf2::Transform>& link_world) {
   const std::size_t n = model.n_links();
@@ -526,6 +576,9 @@ void self_forward_kinematics(const SelfModel& model, const double* q, std::size_
     if (dof >= 0 && static_cast<std::size_t>(dof) < n_dof) {
       const SelfJointKind kind = model.joint_kind[i];
       double angle = q[static_cast<std::size_t>(dof)];
+      if (i < model.curves.size() && !model.curves[i].empty()) {
+        angle = curve_value(model.curves[i], angle);  // the kernel's link_joint_value
+      }
       const bool mimic =
           kind == SelfJointKind::kMimicRevolute || kind == SelfJointKind::kMimicPrismatic;
       if (mimic && i < model.mimic_multiplier.size() && i < model.mimic_offset.size()) {

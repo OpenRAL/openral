@@ -250,9 +250,11 @@ class UrdfJointMap(BaseModel):
     """What ``robot_state_publisher`` is sent per manifest joint: name and URDF-unit value.
 
     Parallel to ``RobotDescription.joints``: the URDF joint ``names[i]`` (``""`` = none)
-    is sent ``scales[i] * q_i + offsets[i]`` of manifest joint ``i``'s position — the
-    manifest's own kinematic map for a gripper whose channel is a fraction, so ``/tf``
-    poses the jaw where the kernel's collision model does (``urdf_joint_map``).
+    is sent ``scales[i] * u_i + offsets[i]``, ``u_i`` manifest joint ``i``'s position
+    through its calibration curve ``curves[i]`` (``JointSpec.urdf_curve``; ``None`` or an
+    empty ``curves`` = the position itself) — the manifest's own kinematic map for a
+    gripper whose channel is not its URDF finger, so ``/tf`` poses the jaw where the
+    kernel's collision model does (``urdf_joint_map``).
 
     Example:
         >>> UrdfJointMap(names=("a", "jaw"), scales=(1.0, 1.74533), offsets=(0.0, 0.0)).names
@@ -264,15 +266,42 @@ class UrdfJointMap(BaseModel):
     names: tuple[str, ...]
     scales: tuple[float, ...]
     offsets: tuple[float, ...]
+    curves: tuple[tuple[tuple[float, float], ...] | None, ...] = ()
 
     @model_validator(mode="after")
     def _parallel(self) -> UrdfJointMap:
-        if not len(self.names) == len(self.scales) == len(self.offsets):
+        if not len(self.names) == len(self.scales) == len(self.offsets) or (
+            self.curves and len(self.curves) != len(self.names)
+        ):
             raise ValueError(
-                f"names / scales / offsets have {len(self.names)} / {len(self.scales)} / "
-                f"{len(self.offsets)} entries; they are parallel to the manifest joints"
+                f"names / scales / offsets / curves have {len(self.names)} / "
+                f"{len(self.scales)} / {len(self.offsets)} / {len(self.curves)} entries; they "
+                "are parallel to the manifest joints (curves may be empty)"
             )
         return self
+
+    def curves_param(self) -> list[float]:
+        """``curves`` as the HAL's flat ``urdf_joint_curves`` parameter.
+
+        Per joint ``[n, x0, u0, …, x(n-1), u(n-1)]``, ``n = 0`` for no curve; ``[]`` when no
+        joint has one (``openral_hal.lifecycle.urdf_joint_curves`` reads it back).
+
+        Example:
+            >>> UrdfJointMap(
+            ...     names=("a", "jaw"),
+            ...     scales=(1.0, 1.0),
+            ...     offsets=(0.0, 0.0),
+            ...     curves=(None, ((0.0, 0.8), (1.0, 0.0))),
+            ... ).curves_param()
+            [0.0, 2.0, 0.0, 0.8, 1.0, 0.0]
+        """
+        if not any(self.curves):
+            return []
+        out: list[float] = []
+        for curve in self.curves:
+            out.append(float(len(curve or ())))
+            out.extend(float(v) for point in curve or () for v in point)
+        return out
 
 
 def urdf_joint_map(description: RobotDescription, urdf_xml: str) -> UrdfJointMap | None:
@@ -286,9 +315,11 @@ def urdf_joint_map(description: RobotDescription, urdf_xml: str) -> UrdfJointMap
     ``mimic_joints`` row driven by manifest joint ``J`` poses the very link a URDF joint
     ``U`` moves (``U``'s ``<child>``), and ``U`` is not itself a URDF ``<mimic>`` (whose
     value ``robot_state_publisher`` derives from its leader), ``J``'s state is sent to
-    ``U`` as ``multiplier * q + offset`` — the manifest's map, the one the safety kernel
-    and the self-filter pose that link with. ``None`` when every joint maps to itself
-    with unit scale (``robot_state_publisher`` can read ``/joint_states`` as is).
+    ``U`` as ``multiplier * u + offset`` — the manifest's map, the one the safety kernel
+    and the self-filter pose that link with. ``u`` is ``J``'s state through its
+    ``JointSpec.urdf_curve`` when it has one (``curves``; issue #533), else the state
+    itself. ``None`` when every joint maps to itself with unit scale and no curve
+    (``robot_state_publisher`` can read ``/joint_states`` as is).
 
     Raises:
         ROSConfigError: ``urdf_xml`` is not parseable XML.
@@ -327,11 +358,19 @@ def urdf_joint_map(description: RobotDescription, urdf_xml: str) -> UrdfJointMap
         names[leader] = urdf_joint
         scales[leader] = float(mimic.multiplier)
         offsets[leader] = float(mimic.offset)
-    if names == [j.name for j in description.joints] and all(
-        s == 1.0 and o == 0.0 for s, o in zip(scales, offsets, strict=True)
+    curves = tuple(j.urdf_curve for j in description.joints)
+    if (
+        names == [j.name for j in description.joints]
+        and all(s == 1.0 and o == 0.0 for s, o in zip(scales, offsets, strict=True))
+        and not any(curves)
     ):
         return None
-    return UrdfJointMap(names=tuple(names), scales=tuple(scales), offsets=tuple(offsets))
+    return UrdfJointMap(
+        names=tuple(names),
+        scales=tuple(scales),
+        offsets=tuple(offsets),
+        curves=curves if any(curves) else (),
+    )
 
 
 def urdf_joint_names(description: RobotDescription, urdf_xml: str) -> list[str]:

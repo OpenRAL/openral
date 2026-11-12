@@ -100,6 +100,7 @@ def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, npt.N
     # outside the chain (UR's `ur5e_base_link`) names that same frame.
     root = robot.base_frame if robot.base_frame in roots or len(roots) != 1 else roots.pop()
     poses: dict[str, npt.NDArray[np.float64]] = {root: np.eye(4)}
+    joints = {j.name: j for j in robot.joints}
     pending = (
         [
             (a.parent_link, a.child_link, _tf(a.origin_xyz, a.origin_rpy))
@@ -110,7 +111,7 @@ def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, npt.N
                 j.parent_link,
                 j.child_link,
                 _tf(j.origin_xyz, j.origin_rpy)
-                @ _joint_motion(j.joint_type, j.axis_xyz, q[j.name]),
+                @ _joint_motion(j.joint_type, j.axis_xyz, j.urdf_value(q[j.name])),
             )
             for j in robot.joints
         ]
@@ -119,7 +120,9 @@ def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, npt.N
                 m.parent_link,
                 m.child_link,
                 _tf(m.origin_xyz, m.origin_rpy)
-                @ _joint_motion(m.joint_type, m.axis_xyz, m.value_at(q[m.mimics])),
+                @ _joint_motion(
+                    m.joint_type, m.axis_xyz, m.value_at(joints[m.mimics].urdf_value(q[m.mimics]))
+                ),
             )
             for m in robot.mimic_joints
         ]
