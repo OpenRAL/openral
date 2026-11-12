@@ -237,11 +237,20 @@ v5.0's behaviour:
 |---|---|
 | `inference_controller` runs as `openral_hal_unitree/GuardedInferenceController` | declares both keys. Refuses to configure on a negative, non-finite or non-double timeout, or a `topic_input_sources` entry v4.6 does not read from a topic. With a timeout, a topic input with no message since activation, or none within the timeout (measured on the controller manager's clock), sets **every** policy command interface to NaN and skips the policy step. |
 | `safety_controller`'s hold (`GuardedSafetyController`) | while **any** position reference is NaN, commands every joint to the measured pose captured at the first invalid tick, fully weighted (blend input 1.0) — v5.0's `stale_position_hold`. Released as soon as every reference is finite again. |
-| launch | `require_watchdog_enforced` refuses a policy file that sets either key while `inference_controller` is any other type — nothing is silently ignored. |
+| launch | `require_watchdog_enforced` refuses a policy file without a positive float `topic_input_timeout_ms`, and any `type` for `inference_controller` other than the guarded one, wherever a params file sets it (the manager's block, the controller's own block, namespaced or `/**` keys) — nothing is silently ignored. |
 
 Measured against NVIDIA's real v4.6 controllers and the GR00T bundle (gtests): upstream
 v4.6 keeps commanding the policy 1000 ms after the last velocity command (timeout 200 ms in
 the test); the guarded controller invalidates it 201 ms after.
+
+Same as v5.0, and worth knowing before a free-standing run: the hold covers **every**
+joint when any reference is NaN (a bad arm reference holds the legs too), leaving it steps
+straight back to the blended policy target (legs have no `interpolate_max_velocity`), and
+the policy resumes on the history it had at stale entry. **The heartbeat is per
+`send_action`:** the HAL publishes `cmd_vel` only when an action arrives, so with no skill
+running for 500 ms the policy is invalidated and the robot is held stiff, not balanced.
+Whether an idle-but-alive OpenRAL should keep a zero-twist heartbeat is an open
+Safety-WG decision (hazard log Entry 090).
 
 ## E-stop, freeze and stale commands
 

@@ -867,11 +867,11 @@ _One typed reader of `packages/openral_hal_unitree/config/<model>/policies/<poli
 - module const `INFERENCE_CONTROLLER = "inference_controller"` (L52)
 - module const `GUARDED_INFERENCE_CONTROLLER = "openral_hal_unitree/GuardedInferenceController"` — the only `inference_controller` type that enforces `WATCHDOG_KEYS` on the pinned (v4.6) isaac_ros_deploy (#565). (L54)
 - module const `WATCHDOG_KEYS = ("topic_input_timeout_ms", "topic_input_sources")` — isaac_ros_deploy v5.0's stale-input watchdog keys. (L56)
-- `require_watchdog_enforced(policy, base_params) -> None` — `ROSConfigError` when the policy sets a `WATCHDOG_KEYS` key and the effective `inference_controller` type (the policy's own `controller_manager` override, else `base_params`') is not `GUARDED_INFERENCE_CONTROLLER`: v4.6 would silently ignore it. Called by `real_bringup.launch.py`. (L224)
+- `require_watchdog_enforced(policy, base_params) -> None` — `ROSConfigError` unless the policy sets a positive float `topic_input_timeout_ms` and every `type` either document gives `inference_controller` (manager block, the controller's own block, namespaced / `/**` keys; at least one) is `GUARDED_INFERENCE_CONTROLLER`: any other type ignores the timeout on v4.6. Called by `real_bringup.launch.py`. (L245)
 - `s0_policy_path(robot_model, policy) -> Path` — `$OPENRAL_UNITREE_CONFIG_DIR`, then the installed `openral_hal_unitree` share, then the repo checkout. (L114)
 - `load_s0_policy(path, *, require_ready=True) -> S0PolicyFile` — `ROSConfigError` on a missing/malformed/placeholder file. (L151)
 - `resolve_leapp_config(policy, override, package_share=None) -> Path` — override › `share/<data_package>/data/` › `bundle_dir`; names `tools/build_gr00t_wbc_leapp.py` when a built bundle is missing. (L175)
-- `policy_parameters(policy, leapp_config) -> dict` — A copy of `controllers` with `inference_controller.config_path` filled. (L256)
+- `policy_parameters(policy, leapp_config) -> dict` — A copy of `controllers` with `inference_controller.config_path` filled. (L282)
 
 
 ### `python/hal/src/openral_hal/interbotix_transport.py`

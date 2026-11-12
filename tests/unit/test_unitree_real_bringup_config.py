@@ -292,27 +292,62 @@ def test_the_watchdog_keys_on_upstreams_inference_controller_are_refused() -> No
         "isaac_ros_deploy_ros2_control/InferenceController"
     )
     policy = load_s0_policy(_G1_CONFIG / "policies" / "gr00t_decoupled_wbc.yaml")
-    with pytest.raises(ROSConfigError, match="topic_input_timeout_ms"):
+    with pytest.raises(ROSConfigError, match="typed"):
         require_watchdog_enforced(policy, base)
 
 
-def test_a_policy_files_own_type_override_is_the_one_checked(tmp_path: Path) -> None:
-    """The policy file loads after controller_manager.yaml, so its override wins."""
+_UPSTREAM_TYPE = "isaac_ros_deploy_ros2_control/InferenceController"
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        # controller_manager's block in the policy file (it loads last)
+        {
+            "controller_manager": {
+                "ros__parameters": {"inference_controller": {"type": _UPSTREAM_TYPE}}
+            }
+        },
+        # the controller's own block: Jazzy's spawner sets the type from it too
+        {"inference_controller": {"ros__parameters": {"type": _UPSTREAM_TYPE}}},
+        # namespaced / wildcard keys
+        {"/inference_controller": {"ros__parameters": {"type": _UPSTREAM_TYPE}}},
+        {"/**": {"ros__parameters": {"inference_controller": {"type": _UPSTREAM_TYPE}}}},
+    ],
+    ids=["manager-block", "own-block", "namespaced", "wildcard"],
+)
+def test_any_other_type_anywhere_in_the_policy_file_is_refused(
+    tmp_path: Path, override: dict[str, Any]
+) -> None:
     doc = _yaml(_G1_CONFIG / "policies" / "agile_velocity.yaml")
-    doc["controllers"]["controller_manager"] = {
-        "ros__parameters": {
-            "inference_controller": {"type": "isaac_ros_deploy_ros2_control/InferenceController"}
-        }
-    }
+    for key, block in override.items():
+        if key in doc["controllers"]:
+            doc["controllers"][key]["ros__parameters"].update(block["ros__parameters"])
+        else:
+            doc["controllers"][key] = block
     path = tmp_path / "override.yaml"
     path.write_text(yaml.safe_dump(doc), encoding="utf-8")
-    with pytest.raises(ROSConfigError, match="does not enforce"):
+    with pytest.raises(ROSConfigError, match="typed"):
         require_watchdog_enforced(load_s0_policy(path), _yaml(_CONTROLLER_MANAGER))
-    # Without the keys there is nothing to enforce.
-    del doc["controllers"]["inference_controller"]["ros__parameters"]["topic_input_timeout_ms"]
-    del doc["controllers"]["inference_controller"]["ros__parameters"]["topic_input_sources"]
+
+
+@pytest.mark.parametrize(
+    "timeout", [None, 0.0, -1.0, 500], ids=["missing", "zero", "negative", "int"]
+)
+def test_a_policy_without_a_positive_float_timeout_is_refused(
+    tmp_path: Path, timeout: float | None
+) -> None:
+    """No watchdog on a real robot is refused, not silently accepted."""
+    doc = _yaml(_G1_CONFIG / "policies" / "gr00t_decoupled_wbc.yaml")
+    params = doc["controllers"]["inference_controller"]["ros__parameters"]
+    if timeout is None:
+        del params["topic_input_timeout_ms"]
+    else:
+        params["topic_input_timeout_ms"] = timeout
+    path = tmp_path / "timeout.yaml"
     path.write_text(yaml.safe_dump(doc), encoding="utf-8")
-    require_watchdog_enforced(load_s0_policy(path), _yaml(_CONTROLLER_MANAGER))
+    with pytest.raises(ROSConfigError, match="topic_input_timeout_ms is"):
+        require_watchdog_enforced(load_s0_policy(path), _yaml(_CONTROLLER_MANAGER))
 
 
 # ── launch file (pure helpers; no ROS) ────────────────────────────────────────

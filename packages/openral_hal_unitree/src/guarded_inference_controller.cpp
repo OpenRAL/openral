@@ -78,12 +78,15 @@ std::optional<std::map<std::string, std::string>> topic_input_kinds(const std::s
 }  // namespace
 
 std::optional<std::string> topic_input_timeout_refusal(double timeout_ms) {
-  if (std::isfinite(timeout_ms) && timeout_ms >= 0.0) {
+  // Bounded both ways so the nanosecond conversion can neither round a set timeout to 0
+  // nor overflow (either would disarm the watchdog while the log says it is armed).
+  if (timeout_ms == 0.0 ||
+      (timeout_ms >= kMinTopicInputTimeoutMs && timeout_ms <= kMaxTopicInputTimeoutMs)) {
     return std::nullopt;
   }
   std::ostringstream reason;
-  reason << kTimeoutParam << " is " << timeout_ms
-         << "; it must be a finite number of milliseconds >= 0 (0 = no watchdog)";
+  reason << kTimeoutParam << " is " << timeout_ms << "; it must be 0 (no watchdog) or within ["
+         << kMinTopicInputTimeoutMs << ", " << kMaxTopicInputTimeoutMs << "] ms";
   return reason.str();
 }
 
@@ -128,7 +131,7 @@ GuardedInferenceController::on_configure(const rclcpp_lifecycle::State& previous
   try {
     timeout_ms = node->get_parameter(kTimeoutParam).as_double();
     listed = node->get_parameter(kSourcesParam).as_string_array();
-  } catch (const rclcpp::exceptions::InvalidParameterTypeException& e) {
+  } catch (const rclcpp::ParameterTypeException& e) {
     RCLCPP_ERROR(node->get_logger(),
                  "Refusing to configure: %s must be a double (ms) and %s a string array: %s",
                  kTimeoutParam, kSourcesParam, e.what());
@@ -172,8 +175,17 @@ GuardedInferenceController::on_configure(const rclcpp_lifecycle::State& previous
                      source.c_str(), kind.c_str());
         return CallbackReturn::ERROR;
       }
-      type_by_topic.emplace(string_param(node, "source_to_topic." + source, source),
-                            converter->get_message_type());
+      const auto topic = string_param(node, "source_to_topic." + source, source);
+      const auto [it, inserted] = type_by_topic.emplace(topic, converter->get_message_type());
+      if (!inserted && it->second != converter->get_message_type()) {
+        // Upstream logs this and skips the second source, which then runs on zeros.
+        RCLCPP_ERROR(node->get_logger(),
+                     "Refusing to configure: topic '%s' carries both '%s' and '%s' (source "
+                     "'%s'); v4.6 would feed that source zeros",
+                     topic.c_str(), it->second.c_str(), converter->get_message_type().c_str(),
+                     source.c_str());
+        return CallbackReturn::ERROR;
+      }
     }
   }
 
@@ -186,10 +198,12 @@ GuardedInferenceController::on_configure(const rclcpp_lifecycle::State& previous
   for (const auto& [topic, type] : type_by_topic) {
     auto watched = std::make_unique<WatchedTopic>();
     watched->topic = topic;
-    WatchedTopic* raw = watched.get();
+    // Shared, not raw: a callback still running on the executor after a re-configure or an
+    // unload freed `watched` keeps its counter alive.
     watched->subscription = node->create_generic_subscription(
-        topic, type, rclcpp::QoS(10), [raw](std::shared_ptr<rclcpp::SerializedMessage>) {
-          raw->received.fetch_add(1, std::memory_order_relaxed);
+        topic, type, rclcpp::QoS(10),
+        [received = watched->received](std::shared_ptr<rclcpp::SerializedMessage>) {
+          received->fetch_add(1, std::memory_order_relaxed);
         });
     watched_.push_back(std::move(watched));
     RCLCPP_INFO(node->get_logger(), "Watching '%s' [%s]: stale after %.1f ms", topic.c_str(),
@@ -202,7 +216,7 @@ CallbackReturn
 GuardedInferenceController::on_activate(const rclcpp_lifecycle::State& previous_state) {
   // A message from before this activation never counts: every topic must deliver anew.
   for (auto& watched : watched_) {
-    watched->seen = watched->received.load(std::memory_order_relaxed);
+    watched->seen = watched->received->load(std::memory_order_relaxed);
     watched->fresh_at_ns.reset();
   }
   return InferenceController::on_activate(previous_state);
@@ -211,12 +225,15 @@ GuardedInferenceController::on_activate(const rclcpp_lifecycle::State& previous_
 bool GuardedInferenceController::topic_inputs_are_fresh(int64_t now_ns) {
   bool fresh = true;
   for (auto& watched : watched_) {
-    const uint64_t received = watched->received.load(std::memory_order_relaxed);
+    const uint64_t received = watched->received->load(std::memory_order_relaxed);
     if (received != watched->seen) {
       watched->seen = received;
       watched->fresh_at_ns = now_ns;
     }
-    if (!watched->fresh_at_ns.has_value() || now_ns - *watched->fresh_at_ns > timeout_ns_) {
+    // A message first seen on THIS tick does not count yet: the base controller's own
+    // subscription may not have stored it, and the policy would step on the one before.
+    if (!watched->fresh_at_ns.has_value() || *watched->fresh_at_ns >= now_ns ||
+        now_ns - *watched->fresh_at_ns > timeout_ns_) {
       fresh = false;
     }
   }
@@ -226,8 +243,14 @@ bool GuardedInferenceController::topic_inputs_are_fresh(int64_t now_ns) {
 controller_interface::return_type
 GuardedInferenceController::update(const rclcpp::Time& time, const rclcpp::Duration& period) {
   if (timeout_ns_ > 0 && !topic_inputs_are_fresh(time.nanoseconds())) {
+    bool all_written = true;
     for (auto& command : command_interfaces_) {
-      (void)command.set_value(std::numeric_limits<double>::quiet_NaN());
+      all_written = command.set_value(std::numeric_limits<double>::quiet_NaN()) && all_written;
+    }
+    if (!all_written) {
+      // Retried next tick; the reference keeps its last value for this one.
+      RCLCPP_ERROR_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
+                            "Could not invalidate every policy command interface this tick");
     }
     RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
                          "A topic input is stale (none within %s); invalidating the policy's "

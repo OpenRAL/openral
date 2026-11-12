@@ -210,10 +210,12 @@ protected:
   static void TearDownTestSuite() { rclcpp::shutdown(); }
 };
 
-TEST(TopicInputTimeoutRefusal, AllowsOnlyAFiniteNonNegativeTimeout) {
+TEST(TopicInputTimeoutRefusal, AllowsZeroOrABoundedTimeout) {
   EXPECT_FALSE(openral_hal_unitree::topic_input_timeout_refusal(0.0).has_value());
   EXPECT_FALSE(openral_hal_unitree::topic_input_timeout_refusal(500.0).has_value());
-  for (const double bad : {-1.0, std::nan(""), std::numeric_limits<double>::infinity()}) {
+  // 1e-7 ms rounds to 0 ns and 1e13 ms overflows int64 ns: both would disarm it silently.
+  for (const double bad :
+       {-1.0, 1e-7, 1e13, std::nan(""), std::numeric_limits<double>::infinity()}) {
     EXPECT_TRUE(openral_hal_unitree::topic_input_timeout_refusal(bad).has_value()) << bad;
   }
 }
@@ -303,16 +305,16 @@ TEST_F(InferenceWatchdogTest, AMessageFromBeforeActivationDoesNotCount) {
 }
 
 TEST_F(InferenceWatchdogTest, RefusesToConfigureAWatchdogItCannotEnforce) {
-  // Timeout values are checked before the policy is loaded; no bundle needed for these.
-  const std::string config = bundle().empty() ? "/nonexistent/gr00t_wbc_g1.yaml" : bundle();
+  // With a readable policy, so only the guard can be what refuses (the base would accept).
+  REQUIRE_BUNDLE();
   for (const auto& bad : {rclcpp::Parameter("topic_input_timeout_ms", -1.0),
                           rclcpp::Parameter("topic_input_timeout_ms", std::nan("")),
-                          rclcpp::Parameter("topic_input_timeout_ms", 500),  // int, not ms
+                          rclcpp::Parameter("topic_input_timeout_ms", 1e-7),  // rounds to 0 ns
+                          rclcpp::Parameter("topic_input_timeout_ms", 500),   // int, not ms
                           rclcpp::Parameter("topic_input_timeout_ms", "500")}) {
     Rig<GuardedInferenceController> rig;
-    EXPECT_FALSE(rig.configure(with(policy_params(config), bad))) << bad.value_to_string();
+    EXPECT_FALSE(rig.configure(with(policy_params(bundle()), bad))) << bad.value_to_string();
   }
-  REQUIRE_BUNDLE();
   for (const auto& sources : std::vector<std::vector<std::string>>{
            {kVelocitySource, "state/joint/position"},  // v4.6 reads it from hardware
            {"command/body/does_not_exist"}}) {

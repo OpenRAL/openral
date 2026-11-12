@@ -43,6 +43,11 @@
 
 namespace openral_hal_unitree {
 
+/// A non-zero `topic_input_timeout_ms` must lie in [kMin, kMax] ms: below, it rounds to
+/// 0 ns (no watchdog); far above, the ns conversion overflows.
+constexpr double kMinTopicInputTimeoutMs = 1.0;
+constexpr double kMaxTopicInputTimeoutMs = 3.6e6;  // one hour
+
 /// Why a `topic_input_timeout_ms` value is refused, or nullopt when it is allowed.
 std::optional<std::string> topic_input_timeout_refusal(double timeout_ms);
 
@@ -66,7 +71,8 @@ private:
   struct WatchedTopic {
     std::string topic;
     rclcpp::GenericSubscription::SharedPtr subscription;
-    std::atomic<uint64_t> received{0};   // bumped by the subscription (executor thread)
+    // Bumped by the subscription (executor thread), which co-owns it.
+    std::shared_ptr<std::atomic<uint64_t>> received = std::make_shared<std::atomic<uint64_t>>(0);
     uint64_t seen{0};                    // update thread only
     std::optional<int64_t> fresh_at_ns;  // update thread only: last tick a new message was seen
   };

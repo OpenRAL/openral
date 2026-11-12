@@ -221,35 +221,61 @@ def resolve_leapp_config(
     return path
 
 
+def _inference_controller_types(doc: dict[str, Any]) -> list[Any]:
+    """Every ``type`` a ROS params document gives ``inference_controller``.
+
+    Both forms the spawner or ``controller_manager`` reads:
+    ``<manager key>.ros__parameters.inference_controller.type`` and
+    ``<key ending in inference_controller>.ros__parameters.type`` — namespaced and wildcard
+    keys such as ``/**`` included.
+    """
+    found: list[Any] = []
+    for key, block in doc.items():
+        params = block.get("ros__parameters") if isinstance(block, dict) else None
+        if not isinstance(params, dict):
+            continue
+        if str(key).rstrip("/").endswith(INFERENCE_CONTROLLER) and "type" in params:
+            found.append(params["type"])
+        nested = params.get(INFERENCE_CONTROLLER)
+        if isinstance(nested, dict) and "type" in nested:
+            found.append(nested["type"])
+    return found
+
+
 def require_watchdog_enforced(policy: S0PolicyFile, base_params: dict[str, Any]) -> None:
-    """Refuse a policy whose stale-input watchdog the loaded controller would ignore.
+    """Refuse a policy whose stale-input watchdog would not be enforced.
 
     The pinned Jazzy ``isaac_ros_deploy`` (v4.6) has no ``topic_input_timeout_ms`` /
     ``topic_input_sources``: its ``InferenceController`` accepts them without a word and
     keeps running the policy on its last velocity command (issue #565). Only
-    ``GuardedInferenceController`` enforces them. The effective type is the policy file's
-    ``controller_manager`` override if it has one (it loads last), else ``base_params``'s
-    (``controller_manager.yaml``).
+    ``GuardedInferenceController`` enforces them, and only with a positive timeout. So the
+    policy must set ``topic_input_timeout_ms > 0``, and every ``type`` that ``base_params``
+    (``controller_manager.yaml``) or the policy file gives ``inference_controller`` — in the
+    manager's block or the controller's own, under any key — must be the guarded one.
 
     Raises:
-        ROSConfigError: The policy sets a watchdog key and the type is any other.
+        ROSConfigError: No positive timeout, no type, or any type other than the guarded one.
     """
+    name = policy.openral_policy.name
     inference = policy.controllers[INFERENCE_CONTROLLER].get("ros__parameters", {})
-    keys = sorted(k for k in WATCHDOG_KEYS if k in inference)
-    if not keys:
-        return
-    controller_type = None
-    for doc in (policy.controllers, base_params):
-        manager = doc.get("controller_manager", {}).get("ros__parameters", {})
-        controller_type = manager.get(INFERENCE_CONTROLLER, {}).get("type")
-        if controller_type is not None:
-            break
-    if controller_type != GUARDED_INFERENCE_CONTROLLER:
+    timeout = inference.get("topic_input_timeout_ms")
+    # A float: ROS types the parameter from the YAML literal, and the controller refuses an int.
+    if not isinstance(timeout, float) or not timeout > 0:
         raise ROSConfigError(
-            f"S0 policy {policy.openral_policy.name!r} sets {INFERENCE_CONTROLLER}.{keys}, but "
-            f"{INFERENCE_CONTROLLER} is {controller_type!r}, which does not enforce them on the "
-            f"pinned isaac_ros_deploy: a stale velocity command would keep the robot walking. "
-            f"Use type {GUARDED_INFERENCE_CONTROLLER!r}."
+            f"S0 policy {name!r}: {INFERENCE_CONTROLLER}.topic_input_timeout_ms is {timeout!r}; "
+            "a real robot needs a positive stale-input timeout in ms, written as a float "
+            "(500.0), or a dead OpenRAL side leaves it walking on its last velocity command."
+        )
+    types = _inference_controller_types(base_params) + _inference_controller_types(
+        policy.controllers
+    )
+    wrong = [t for t in types if t != GUARDED_INFERENCE_CONTROLLER]
+    if not types or wrong:
+        raise ROSConfigError(
+            f"S0 policy {name!r} sets {INFERENCE_CONTROLLER}.topic_input_timeout_ms, but "
+            f"{INFERENCE_CONTROLLER} is typed {types!r}; only {GUARDED_INFERENCE_CONTROLLER!r} "
+            "enforces it on the pinned isaac_ros_deploy — any other type ignores it and a stale "
+            "velocity command keeps the robot walking."
         )
 
 
