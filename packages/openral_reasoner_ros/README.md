@@ -93,10 +93,17 @@ reward / VLM verdict. A wrapped ROS action rSkill whose manifest sets
 `navigate_to_pose` skill; the setting is read when the goal is dispatched)
 completes the active task when its goal succeeds —
 Nav2 SUCCEEDED means "within the goal tolerance", so the reasoner must not
-re-drive a 0.2 m residual. With no reward monitor, the per-task attempt cap
-(`DEFAULT_MAX_ATTEMPTS`, 3) still applies: the task is abandoned through the
-usual abandon path (one subdivision offer, then hand-off). Both decisions log
-`mission: <complete|abandon> task <id> after '<rskill_id>' …`.
+re-drive a 0.2 m residual. A goal the LLM sends with `final_step: false`
+(the drive is one step of "drive to the kitchen and pick up the cup")
+completes only its step: the task stays active for the rest. With no reward
+monitor, the per-task attempt cap (`DEFAULT_MAX_ATTEMPTS`, 3) counts *failed*
+dispatches (aborted, or cancelled on patience): a success nobody can judge is
+not a failure, so a multi-skill task whose steps all work is not abandoned
+after three of them. Every task, verifier or not, is also bounded by
+`DEFAULT_MAX_TASK_DISPATCHES` (10) dispatches of any outcome, so one that
+keeps succeeding without ever completing still ends. Either bound abandons
+through the usual abandon path (one subdivision offer, then hand-off). The
+decisions log `mission: <complete|step|abandon> task <id> after '<rskill_id>' …`.
 
 **What a success says.** The `## EXECUTION` line for a successful goal carries
 the runner's `ExecuteRskill.Result.outcome_summary` before the trace id. For a

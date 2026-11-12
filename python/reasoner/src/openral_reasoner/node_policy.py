@@ -14,7 +14,11 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, MissionState
+from openral_reasoner.mission import (
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_TASK_DISPATCHES,
+    MissionState,
+)
 
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
@@ -101,17 +105,26 @@ def task_step_without_verifier(
     completes_task_on_success: bool,
     reward_available: bool,
     attempts: int,
+    failures: int = 0,
+    final_step: bool = True,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
-) -> tuple[Literal["complete", "abandon"], str] | None:
+    max_dispatches: int = DEFAULT_MAX_TASK_DISPATCHES,
+) -> tuple[Literal["complete", "step", "abandon"], str] | None:
     """Settle the active task after a dispatch returns, where no reward verdict decides it.
 
-    * ``complete`` — the skill succeeded and its manifest opts in
-      (``RosIntegration.completes_task_on_success``): the action's own success
-      is the task's success, reward monitor or not.
-    * ``abandon`` — no reward monitor is available and the task has used its
-      ``max_attempts`` dispatches: the same cap the reward gate enforces, so a
-      task nobody can verify is still bounded (the node's abandon path offers
-      subdivision first, then hands off).
+    * ``complete`` — the skill succeeded, its manifest opts in
+      (``RosIntegration.completes_task_on_success``) and the goal was the task's
+      ``final_step``: the action's own success is the task's success, reward
+      monitor or not.
+    * ``abandon`` — the task used ``max_dispatches`` dispatches of any outcome
+      (the hard bound: a task that keeps succeeding but never completes still
+      terminates), or no reward monitor is available and ``failures`` reached
+      ``max_attempts``. A success nobody can judge is not a failure, so a
+      multi-skill task whose steps all succeed is not abandoned by the attempt
+      cap (#562). The node's abandon path offers subdivision first, then hands off.
+    * ``step`` — an opted-in skill succeeded as one step of a longer task
+      (``final_step=False``): the step is done, the task stays active and no
+      reward verdict is asked of a half-done task.
     * ``None`` — the reward gate (when available) or the LLM decides.
 
     Example:
@@ -120,18 +133,43 @@ def task_step_without_verifier(
         ... )[0]
         'complete'
         >>> task_step_without_verifier(
+        ...     succeeded=True,
+        ...     completes_task_on_success=True,
+        ...     reward_available=False,
+        ...     attempts=1,
+        ...     final_step=False,
+        ... )[0]
+        'step'
+        >>> task_step_without_verifier(  # three successes: not three failures
         ...     succeeded=True, completes_task_on_success=False, reward_available=False, attempts=3
+        ... ) is None
+        True
+        >>> task_step_without_verifier(
+        ...     succeeded=False,
+        ...     completes_task_on_success=False,
+        ...     reward_available=False,
+        ...     attempts=3,
+        ...     failures=3,
         ... )[0]
         'abandon'
         >>> task_step_without_verifier(
-        ...     succeeded=False, completes_task_on_success=True, reward_available=False, attempts=1
-        ... ) is None
-        True
+        ...     succeeded=True, completes_task_on_success=False, reward_available=False, attempts=10
+        ... )[0]
+        'abandon'
     """
-    if succeeded and completes_task_on_success:
+    if succeeded and completes_task_on_success and final_step:
         return "complete", "the skill's own success completes the task (completes_task_on_success)"
-    if not reward_available and attempts >= max_attempts:
+    if attempts >= max_dispatches:
         return "abandon", (
-            f"unverified after {attempts} attempt(s): no reward monitor can judge the task"
+            f"not complete after {attempts} dispatch(es), the per-task bound ({failures} failed)"
+        )
+    if not reward_available and failures >= max_attempts:
+        return "abandon", (
+            f"{failures} of {attempts} attempt(s) failed; no reward monitor can judge the task"
+        )
+    if succeeded and completes_task_on_success:
+        return "step", (
+            "the skill's own success completes only this step (final_step=false); "
+            "the task stays active"
         )
     return None

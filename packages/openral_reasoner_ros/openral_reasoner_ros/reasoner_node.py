@@ -4272,8 +4272,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         Before that, ``task_step_without_verifier`` settles what no reward verdict
         has to: a ``succeeded`` skill whose manifest sets
-        ``completes_task_on_success`` completes the task, and with no reward
-        monitor the per-task attempt cap still abandons it.
+        ``completes_task_on_success`` completes the task (only its step when the
+        goal was not the task's ``final_step``), a task past its dispatch bound is
+        abandoned, and with no reward monitor so is one whose *failed* attempts
+        reach the cap (a success is not a failure, #562).
 
         ``dispatch_task_id`` / ``dispatch_mission_generation`` name the task the
         returning goal was dispatched for; when given and no longer the active task
@@ -4304,11 +4306,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
             entry = self._palette.skill(call.rskill_id)
             dispatch_completes_task = entry is not None and entry.completes_task_on_success
+        active.failures += int(not succeeded)  # the no-verifier cap counts these (#562)
+        self._persist_ladder_state()
         step = task_step_without_verifier(
             succeeded=succeeded,
             completes_task_on_success=dispatch_completes_task,
             reward_available=self._task_progress_available,
             attempts=active.attempts,
+            failures=active.failures,
+            final_step=call.final_step,
         )
         if step is not None:
             action, verdict = step
@@ -4316,6 +4322,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"mission: {action} task {active.task_id} after {call.rskill_id!r} "
                 f"(attempt {active.attempts}) — {verdict}",
             )
+            if action == "step":
+                return
             self._apply_mission_verdict(
                 action,
                 verdict,
