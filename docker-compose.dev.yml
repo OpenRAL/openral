@@ -39,6 +39,7 @@ services:
       # host shares the host's loopback, so LOCALHOST discovery still reaches
       # host-side nodes.
       - ROS_DOMAIN_ID
+      - ROS_LOCALHOST_ONLY
       - ROS_AUTOMATIC_DISCOVERY_RANGE
       - ROS_STATIC_PEERS
       - OPENRAL_ALLOW_NETWORK_ROS

@@ -43,7 +43,7 @@ wins; an exported empty value counts as unset. Simulations are unchanged
 neither discovery variable and its router listens on every interface), a DDS
 vendor config lists peers (`CYCLONEDDS_URI` with `<Peers>`, a
 `FASTRTPS_DEFAULT_PROFILES_FILE` / `FASTDDS_DEFAULT_PROFILES_FILE` with
-`initialPeersList`; a file that cannot be read counts too), or
+`initialPeersList` or `discoveryServersList`; a file that cannot be read counts too), or
 `ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST`, the deploy
 refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set, and
 logs `dds_scope.real_robot_graph_networked` as a warning when it is. An unset

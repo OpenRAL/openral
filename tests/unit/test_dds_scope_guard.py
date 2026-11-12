@@ -157,11 +157,21 @@ class TestConfineRealScope:
             "<builtin><initialPeersList><locator><udpv4><address>10.0.0.7</address>"
             "</udpv4></locator></initialPeersList></builtin></rtps></participant></profiles>"
         )
+        server = tmp_path / "client.xml"
+        server.write_text(
+            "<profiles><participant profile_name='c' is_default_profile='true'><rtps><builtin>"
+            "<discovery_config><discoveryProtocol>CLIENT</discoveryProtocol>"
+            "<discoveryServersList><RemoteServer prefix='44.53.00.5f.45.50.52.4f.53.49.4d.41'>"
+            "<metatrafficUnicastLocatorList><locator><udpv4><address>10.0.0.9</address>"
+            "</udpv4></locator></metatrafficUnicastLocatorList></RemoteServer>"
+            "</discoveryServersList></discovery_config></builtin></rtps></participant></profiles>"
+        )
         for scope in (
             {"CYCLONEDDS_URI": "<Discovery><Peers><Peer address='10.0.0.7'/></Peers></Discovery>"},
             {"CYCLONEDDS_URI": f"file://{profile.parent / 'missing.xml'}"},
             {"FASTRTPS_DEFAULT_PROFILES_FILE": str(profile)},
             {"FASTDDS_DEFAULT_PROFILES_FILE": str(profile), "ROS_LOCALHOST_ONLY": "1"},
+            {"FASTRTPS_DEFAULT_PROFILES_FILE": str(server)},
         ):
             with pytest.raises(ROSConfigError, match=_dds_scope.ALLOW_NETWORK_ROS_ENV):
                 _dds_scope.confine_real_scope(dict(scope), robot_id="openarm")

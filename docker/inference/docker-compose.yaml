@@ -23,6 +23,7 @@ services:
       # The ROS graph scope, passed through from the host (empty = `deploy run`'s
       # host-confined default; see the note under `volumes`).
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-}
+      ROS_LOCALHOST_ONLY: ${ROS_LOCALHOST_ONLY:-}
       ROS_AUTOMATIC_DISCOVERY_RANGE: ${ROS_AUTOMATIC_DISCOVERY_RANGE:-}
       ROS_STATIC_PEERS: ${ROS_STATIC_PEERS:-}
       OPENRAL_ALLOW_NETWORK_ROS: ${OPENRAL_ALLOW_NETWORK_ROS:-}

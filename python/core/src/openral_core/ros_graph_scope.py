@@ -32,11 +32,13 @@ _HOST_CONFINED_RANGES: Final[frozenset[str]] = frozenset({"LOCALHOST", "OFF"})
 #: Zenoh ignores both discovery variables and its router listens on every interface.
 _ZENOH_RMW: Final[str] = "rmw_zenoh_cpp"
 #: Vendor XML that adds remote peers on top of the ROS_* variables (lower-cased
-#: markers): Cyclone's ``<Peers>`` / ``<Peer>``, Fast DDS's ``initialPeersList``.
-_VENDOR_PEER_MARKERS: Final[dict[str, str]] = {
-    "CYCLONEDDS_URI": "<peer",
-    "FASTRTPS_DEFAULT_PROFILES_FILE": "initialpeerslist",
-    "FASTDDS_DEFAULT_PROFILES_FILE": "initialpeerslist",
+#: markers): Cyclone's ``<Peers>`` / ``<Peer>``, Fast DDS's ``initialPeersList``
+#: or ``discoveryServersList`` (a discovery server, as ``ROS_DISCOVERY_SERVER``).
+_FASTDDS_PEER_MARKERS: Final[tuple[str, ...]] = ("initialpeerslist", "discoveryserverslist")
+_VENDOR_PEER_MARKERS: Final[dict[str, tuple[str, ...]]] = {
+    "CYCLONEDDS_URI": ("<peer",),
+    "FASTRTPS_DEFAULT_PROFILES_FILE": _FASTDDS_PEER_MARKERS,
+    "FASTDDS_DEFAULT_PROFILES_FILE": _FASTDDS_PEER_MARKERS,
 }
 
 
@@ -47,7 +49,7 @@ def _vendor_peers(env: Mapping[str, str]) -> str | None:
     paths; the Fast DDS variables name one profiles file. An unreadable file is
     reported too: what it adds is unknown, so it is not called host-confined.
     """
-    for var, marker in _VENDOR_PEER_MARKERS.items():
+    for var, markers in _VENDOR_PEER_MARKERS.items():
         value = env.get(var, "").strip()
         if not value:
             continue
@@ -59,7 +61,7 @@ def _vendor_peers(env: Mapping[str, str]) -> str | None:
                 )
             except OSError:
                 return f"{var}={value} (unreadable, so the peers it adds are unknown)"
-            if marker in text.lower():
+            if any(m in text.lower() for m in markers):
                 return f"{var}={value} (its XML lists remote peers)"
     return None
 
@@ -74,7 +76,8 @@ def networked_ros_scope(env: Mapping[str, str]) -> str | None:
     ``ROS_DISCOVERY_SERVER``, ``RMW_IMPLEMENTATION=rmw_zenoh_cpp`` (which reads
     neither variable; its router listens on every interface), or a vendor XML
     config that lists peers (``CYCLONEDDS_URI`` ``<Peers>``, a Fast DDS profiles
-    file's ``initialPeersList``; an unreadable one counts too) reaches other hosts.
+    file's ``initialPeersList`` or ``discoveryServersList``; an unreadable one
+    counts too) reaches other hosts.
 
     Example:
         >>> networked_ros_scope({"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}) is None
