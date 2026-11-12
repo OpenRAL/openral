@@ -71,7 +71,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import itertools
 import json
 import math
 import os
@@ -88,6 +87,7 @@ from openral_core import (
     IntrinsicsPinhole,
     SensorSpec,
     TaskSpec,
+    check_urdf_curve,
     scale_intrinsics_to,
     sim_scene_description,
 )
@@ -1091,7 +1091,6 @@ _RENDER_HEIGHT_RANGE_PX = (16, 4096)
 
 
 _LUT_SIZE = 256
-_GRIPPER_CURVE_MIN_POINTS = 2
 
 
 class IsaacCameraImagePost(BaseModel):
@@ -1472,7 +1471,10 @@ class IsaacSimOptions(BaseModel):
     # piecewise linear, applied to commands (manifest -> finger) and joint states (finger ->
     # manifest). For a jaw whose reading is not its URDF finger angle: OpenArm's real jaw
     # reads 0.28 rad on a 6 cm carton where the URDF finger touches it at 0.69, while the
-    # open end must stay where the sim's approach works. Unlisted grippers stay linear.
+    # open end must stay where the sim's approach works. Each entry replaces that joint's
+    # manifest `JointSpec.urdf_curve` for this twin; unlisted grippers keep the manifest's
+    # (none = linear). `openral_core.sim_scene_description` applies the same override, so
+    # the kernel, the self-filter and /tf pose the finger the sim drives (issue #533).
     gripper_joint_curve: dict[str, list[tuple[float, float]]] = Field(default_factory=dict)
     # Fingers that share one motor (OpenArm's jaw): no finger may close more than this many
     # radians past its partner's mirrored position, so the pair stops together on the
@@ -1548,18 +1550,8 @@ class IsaacSimOptions(BaseModel):
         cls, value: dict[str, list[tuple[float, float]]]
     ) -> dict[str, list[tuple[float, float]]]:
         for name, points in value.items():
-            if len(points) < _GRIPPER_CURVE_MIN_POINTS:
-                raise ValueError(f"gripper_joint_curve[{name!r}] needs at least 2 points")
-            pts = sorted(points)
-            m = [p[0] for p in pts]
-            u = [p[1] for p in pts]
-            rising = all(b > a for a, b in itertools.pairwise(u))
-            falling = all(b < a for a, b in itertools.pairwise(u))
-            if len(set(m)) != len(m) or not (rising or falling):
-                raise ValueError(
-                    f"gripper_joint_curve[{name!r}] must be strictly monotonic "
-                    "(distinct manifest values, URDF values all rising or all falling)"
-                )
+            # The manifest field's rule (`JointSpec.urdf_curve`), in any point order.
+            check_urdf_curve(sorted(points), f"gripper_joint_curve[{name!r}]")
         return value
 
     # The pose each reset starts the robot in: manifest joint name -> value in the
@@ -2003,7 +1995,7 @@ def _gripper_spec(
             for u in urdf.values()
             if u.mimic is not None and u.mimic[0] == src and u.name != leader.name
         ]
-    return {
+    spec: dict[str, Any] = {
         "name": j.name,
         "leader": leader.name,
         "closed": closed,
@@ -2014,6 +2006,12 @@ def _gripper_spec(
         "command_open": cmd_open,
         "followers": followers,
     }
+    if j.urdf_curve:
+        # The manifest's calibration curve (`JointSpec.urdf_curve`), the one the kernel,
+        # the self-filter and /tf pose the finger with; a scene may replace it
+        # (`_curve_gripper_specs`).
+        spec["curve"] = [[float(x), float(u)] for x, u in j.urdf_curve]
+    return spec
 
 
 def _fetch_public_package(pkg: str) -> Path | None:
@@ -2711,6 +2709,8 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
+    # The scene's curves replace the manifest's (`_gripper_spec`) for this twin, as
+    # `sim_scene_description` does for the kernel, the self-filter and /tf (issue #533).
     _curve_gripper_specs(spec, gripper_joint_curve or {})
     spec["gripper_finger_coupling_rad"] = gripper_finger_coupling_rad
     spec["gripper_followers_track"] = gripper_followers_track

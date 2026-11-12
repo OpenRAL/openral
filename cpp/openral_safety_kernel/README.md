@@ -1834,6 +1834,22 @@ without a dof column, a non-finite or zero multiplier, mis-shaped mimic arrays a
 an unknown kind code. Design, measurements and the owed ADR / hazard row:
 [`finger-mimic-geometry.md`](../../docs/reference/finger-mimic-geometry.md).
 
+## Gripper calibration curves (issue #533)
+
+A `role: gripper` joint whose reported value is not its URDF finger value declares
+`JointSpec.urdf_curve` (a sim scene may replace it via
+`backend_options.gripper_joint_curve`). `with_joint_curves` lowers it to the per-link
+`collision_curve_point_first` (`-1` = none) / `collision_curve_point_count` arrays
+indexing flat `(value, urdf value)` pairs in `collision_curve_points` (all empty = no
+curve). `link_joint_value` reads a curved link's column through the curve, clamped at
+its ends, before any mimic relation, so `forward_kinematics` poses the finger where
+the sim drives it and `/tf` shows it; `link_joint_gain` (segment slope × mimic
+multiplier) carries it into the force observer. Configure logs the curved-link count
+and refuses mis-shaped arrays, fewer than two points, points past the array, values
+not strictly increasing, URDF values not strictly monotonic, non-finite points, a
+curve on a link no column moves, and a curved link on the EE chain. Design:
+[`finger-mimic-geometry.md` §8](../../docs/reference/finger-mimic-geometry.md).
+
 ## The same stages for a carried payload (issue #266)
 
 `check_attached_voxel_collision` runs the identical staged path for a payload

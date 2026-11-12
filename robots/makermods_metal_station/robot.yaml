@@ -135,6 +135,7 @@ joints:
   effort_limit: 3.0
   actuator_kind: bldc
   role: gripper
+  urdf_curve: [[0.0, 0.0], [1.0, 0.05]]
   has_torque_sensor: false
 - name: right_joint1
   origin_xyz: [0, 0, 0.06675]
@@ -227,6 +228,7 @@ joints:
   effort_limit: 3.0
   actuator_kind: bldc
   role: gripper
+  urdf_curve: [[0.0, 0.0], [1.0, 0.05]]
   has_torque_sensor: false
 fixed_attachments:
 - name: left_mount
@@ -258,7 +260,7 @@ mimic_joints:
   parent_link: left_gripper_base
   child_link: left_link7
   mimics: left_gripper
-  multiplier: -0.05
+  multiplier: -1.0
   offset: 0.0
   joint_type: prismatic
 - name: left_joint8
@@ -268,7 +270,7 @@ mimic_joints:
   parent_link: left_gripper_base
   child_link: left_link8
   mimics: left_gripper
-  multiplier: 0.05
+  multiplier: 1.0
   offset: 0.0
   joint_type: prismatic
 - name: right_joint7
@@ -278,7 +280,7 @@ mimic_joints:
   parent_link: right_gripper_base
   child_link: right_link7
   mimics: right_gripper
-  multiplier: -0.05
+  multiplier: -1.0
   offset: 0.0
   joint_type: prismatic
 - name: right_joint8
@@ -288,7 +290,7 @@ mimic_joints:
   parent_link: right_gripper_base
   child_link: right_link8
   mimics: right_gripper
-  multiplier: 0.05
+  multiplier: 1.0
   offset: 0.0
   joint_type: prismatic
 end_effectors:

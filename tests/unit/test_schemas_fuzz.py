@@ -215,6 +215,32 @@ _joint_spec_st = st.builds(
     fixed_jaw_link=st.none(),
 )
 
+
+@st.composite
+def _urdf_curve_st(draw: st.DrawFn) -> tuple[tuple[float, float], ...]:
+    """A valid ``JointSpec.urdf_curve``: values strictly increasing, URDF values monotonic."""
+    n = draw(st.integers(min_value=2, max_value=5))
+    steps = st.floats(min_value=1e-3, max_value=0.5)
+    x0 = draw(st.floats(min_value=-1.0, max_value=1.0))
+    u0 = draw(st.floats(min_value=-1.0, max_value=1.0))
+    sign = draw(st.sampled_from([1.0, -1.0]))
+    xs, us = [x0], [u0]
+    for _ in range(n - 1):
+        xs.append(xs[-1] + draw(steps))
+        us.append(us[-1] + sign * draw(steps))
+    return tuple(zip(xs, us, strict=True))
+
+
+_curved_gripper_st = st.builds(
+    JointSpec,
+    name=_name,
+    joint_type=st.sampled_from([JointType.REVOLUTE, JointType.PRISMATIC]),
+    parent_link=_name,
+    child_link=_name,
+    role=st.just("gripper"),
+    urdf_curve=_urdf_curve_st(),
+)
+
 _end_effector_st = st.builds(
     EndEffectorSpec,
     name=_name,
@@ -666,6 +692,16 @@ def test_fuzz_sensor_bundle(instance: SensorBundle) -> None:
 def test_fuzz_joint_spec(instance: JointSpec) -> None:
     """JointSpec round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(JointSpec, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_curved_gripper_st, st.floats(min_value=-3.0, max_value=3.0))
+def test_fuzz_curved_gripper_joint_spec(instance: JointSpec, value: float) -> None:
+    """A curved gripper round-trips, and its URDF value stays inside the curve's range."""
+    _round_trip_and_validate(JointSpec, instance)
+    assert instance.urdf_curve is not None
+    us = [u for _, u in instance.urdf_curve]
+    assert min(us) - 1e-12 <= instance.urdf_value(value) <= max(us) + 1e-12
 
 
 @_FUZZ_SETTINGS

@@ -34,8 +34,9 @@ the file's header:
 - **Gripper**: the leader `finger_joint` (0 = open … 0.8 rad = closed) with five
   `<mimic>` followers. Its `<limit>` effort 16.5 / velocity 5.0 are Arena's Robotiq
   drive (USD `maxForce`, `droid.py` gripper `velocity_limit`). The manifest's
-  `finger_joint` carries OpenRAL's normalised `[0 = closed, 1 = open]` jaw; the
-  Isaac scenes map it onto Arena's 0 … π/4 travel (`gripper_joint_curve`).
+  `finger_joint` carries OpenRAL's normalised `[0 = closed, 1 = open]` jaw; its
+  `urdf_curve` `[[0, π/4], [1, 0]]` maps it onto Arena's 0 … π/4 travel for every
+  consumer (the kernel, the self-filter, `/tf`, the Isaac sidecar).
 - **Meshes** are `rd:<robot_descriptions module>:<relpath>` refs into the pinned
   `panda_description` (example-robot-data) and `robotiq_2f85_v4_description` clones,
   fetched on first use — the form every vendored URDF here uses, so the collision
@@ -102,8 +103,9 @@ same fitter (`urdf_lowering.lower_link_geometry`). The outer and inner knuckles 
 the inner fingers hang on `mimic_joints` rows. The bars are `fixed_attachments` rows
 on the outer knuckles. Origins and axes are the URDF joints'.
 
-The rows compose the Isaac scenes' `gripper_joint_curve` `[[0, π/4], [1, 0]]` with
-each URDF `<mimic>` multiplier:
+`finger_joint.urdf_curve` `[[0, π/4], [1, 0]]` gives the URDF `finger_joint` value
+`u = π/4 (1 − f)`. A mimic row reads its leader's URDF value, so each row is its URDF
+`<mimic>` multiplier:
 
 | Links | URDF multiplier | Angle at fraction `f` |
 | --- | --- | --- |

@@ -1053,7 +1053,51 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
         params["collision_allowed_pairs"] = allowed_pairs
     if robot.force_observer is not None:
         params.update(_force_observer_params(robot, robot.force_observer, ordered, edge_of_child))
-    return params
+    return with_joint_curves(params, robot)
+
+
+def with_joint_curves(params: Mapping[str, object], robot: RobotDescription) -> dict[str, object]:
+    """``params`` plus the ``collision_curve_*`` arrays for the robot's ``urdf_curve`` joints.
+
+    Each link whose ``collision_dof_index`` column is a joint with a
+    ``JointSpec.urdf_curve`` gets that curve: the kernel and the self-filter pose it at
+    ``curve(q)`` (a mimic link at ``multiplier * curve(q) + offset``), the URDF value the
+    HAL publishes to /tf and the sim drives (issue #533). Per link:
+    ``collision_curve_point_first`` (``-1`` = none) and ``collision_curve_point_count``
+    index ``collision_curve_points``, flat ``(value, urdf value)`` pairs sorted by
+    value. Any stale curve arrays are dropped first; none are emitted when no joint has a
+    curve, so such a robot's params are unchanged. Works on either lowering's params
+    (manifest or MJCF): both number columns by ``robot.joints``.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/droid_franka_robotiq/robot.yaml")
+        >>> p = collision_params_from_description(d)
+        >>> p["collision_curve_points"][:4]
+        [0.0, 0.7853982, 1.0, 0.0]
+    """
+    out = {k: v for k, v in params.items() if not k.startswith("collision_curve_")}
+    curves = [j.urdf_curve for j in robot.joints]
+    if not any(curves):
+        return out
+    dof_index = [int(v) for v in cast("list[int]", params.get("collision_dof_index", []))]
+    first: list[int] = []
+    count: list[int] = []
+    points: list[float] = []
+    for dof in dof_index:
+        curve = curves[dof] if 0 <= dof < len(curves) else None
+        if curve is None:
+            first.append(-1)
+            count.append(0)
+            continue
+        first.append(len(points) // 2)
+        count.append(len(curve))
+        points.extend(float(v) for point in curve for v in point)
+    if points:
+        out["collision_curve_point_first"] = first
+        out["collision_curve_point_count"] = count
+        out["collision_curve_points"] = points
+    return out
 
 
 def _force_observer_params(
@@ -1174,15 +1218,18 @@ def ee_link_index_from_collision_params(params: Mapping[str, object]) -> int:
     A link with a mimic joint (``_MIMIC_KIND_CODE``) on its chain is never picked:
     the Jacobian has no column for a mimic joint, and the kernel refuses such an
     EE at configure. A gripper's follower finger hangs one level below its leader,
-    so without this it would win the depth contest.
+    so without this it would win the depth contest. Nor is a link with a curved
+    (``collision_curve_*``, ``JointSpec.urdf_curve``) joint on its chain: the Jacobian
+    takes each column at unit gain, and the kernel refuses that EE too.
 
     Returns:
-        The deepest collision-link index whose chain has no mimic joint, or ``-1``
+        The deepest collision-link index whose chain has no mimic or curved joint, or ``-1``
         when there is no collision model (predictive Cartesian stays disabled —
         reactive check only).
     """
     parent = cast("list[int]", params.get("collision_parent") or [])
     kinds = cast("list[int]", params.get("collision_joint_kind") or [])
+    curved = cast("list[int]", params.get("collision_curve_point_first") or [])
     mimic_codes = set(_MIMIC_KIND_CODE.values())
     n = len(parent)
     if n == 0:
@@ -1193,10 +1240,14 @@ def ee_link_index_from_collision_params(params: Mapping[str, object]) -> int:
         depth = 0
         p = parent[i]
         guard = 0
-        mimic = i < len(kinds) and kinds[i] in mimic_codes
+        mimic = (i < len(kinds) and kinds[i] in mimic_codes) or (i < len(curved) and curved[i] >= 0)
         while p is not None and p >= 0 and guard <= n:
             depth += 1
-            mimic = mimic or (p < len(kinds) and kinds[p] in mimic_codes)
+            mimic = (
+                mimic
+                or (p < len(kinds) and kinds[p] in mimic_codes)
+                or (p < len(curved) and curved[p] >= 0)
+            )
             p = parent[p]
             guard += 1
         if mimic:

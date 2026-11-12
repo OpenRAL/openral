@@ -67,6 +67,8 @@ from contextlib import contextmanager
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
+from openral_core import check_urdf_curve, curve_slope, curve_value
+
 from openral_hal.mobile_base_bridge import describes_mobile_base, platform_owns_navigation
 
 if TYPE_CHECKING:
@@ -209,6 +211,7 @@ def urdf_named_joint_state(
     urdf_names: Sequence[str],
     scales: Sequence[float] = (),
     offsets: Sequence[float] = (),
+    curves: Sequence[Sequence[Sequence[float]] | None] = (),
 ) -> Any:  # noqa: ANN401  # reason: as above
     """A copy of a manifest-named ``JointState`` under the URDF's joint names and units.
 
@@ -218,8 +221,11 @@ def urdf_named_joint_state(
     HAL always publishes all its joints, in manifest order). ``scales`` / ``offsets``
     (parallel too; empty = identity) put each position in its URDF joint's unit —
     ``scale * q + offset``, the manifest's mimic map for a fraction-unit gripper — and
-    each velocity times ``scale``; effort is passed through. ``msg`` is not modified:
-    ``/joint_states`` keeps the manifest units every other consumer reads.
+    each velocity times ``scale``; effort is passed through. ``curves`` (parallel; empty
+    or ``None`` = none) is each joint's ``JointSpec.urdf_curve``, applied first:
+    ``scale * curve(q) + offset``, velocity ``scale * curve'(q) * qd`` (issue #533).
+    ``msg`` is not modified: ``/joint_states`` keeps the manifest units every other
+    consumer reads.
 
     Example:
         >>> from types import SimpleNamespace as NS
@@ -232,14 +238,27 @@ def urdf_named_joint_state(
     keep = [i for i, name in enumerate(urdf_names) if name and i < len(msg.name)]
     scale = list(scales) or [1.0] * len(urdf_names)
     offset = list(offsets) or [0.0] * len(urdf_names)
+    curve = list(curves) or [None] * len(urdf_names)
+    has_q = len(msg.position) == len(msg.name)
+
+    def _u(i: int, q: float) -> float:
+        points = curve[i]
+        return q if not points else curve_value(points, q)
+
+    def _gain(i: int) -> float:
+        points = curve[i]
+        if not points:
+            return scale[i]
+        # A curved jaw's rate needs its position; none published = no rate.
+        return scale[i] * curve_slope(points, msg.position[i]) if has_q else math.nan
 
     def _pick(values: Sequence[float], *, affine: bool, rate: bool = False) -> list[float]:
         if len(values) != len(msg.name):
             return []
         if affine:
-            return [scale[i] * values[i] + offset[i] for i in keep]
+            return [scale[i] * _u(i, values[i]) + offset[i] for i in keep]
         if rate:
-            return [scale[i] * values[i] for i in keep]
+            return [_gain(i) * values[i] for i in keep]
         return [values[i] for i in keep]
 
     out.name = [urdf_names[i] for i in keep]
@@ -283,6 +302,47 @@ def urdf_joint_units(
             f"{len(out_offsets)} entries; urdf_joint_names has {n_joints}."
         )
     return out_scales, out_offsets
+
+
+def urdf_joint_curves(
+    n_joints: int, flat: Sequence[float]
+) -> list[tuple[tuple[float, float], ...] | None]:
+    """Each joint's calibration curve from the HAL's ``urdf_joint_curves`` parameter.
+
+    ``flat`` is ``URDF_JOINT_UNITS_UNSET`` / empty (no curves: ``[]``) or
+    ``UrdfJointMap.curves_param``'s layout: per joint ``[n, x0, u0, …]``, ``n = 0`` for none.
+
+    Raises:
+        ROSConfigError: The layout does not cover exactly ``n_joints`` joints, or a curve
+            ``JointSpec.urdf_curve`` would refuse.
+
+    Example:
+        >>> urdf_joint_curves(2, [0.0, 2.0, 0.0, 0.8, 1.0, 0.0])
+        [None, ((0.0, 0.8), (1.0, 0.0))]
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if not flat or (len(flat) == 1 and math.isnan(flat[0])):
+        return []
+    out: list[tuple[tuple[float, float], ...] | None] = []
+    k = 0
+    try:
+        while k < len(flat):
+            n = int(flat[k])
+            if n != flat[k] or n < 0 or k + 1 + 2 * n > len(flat):
+                raise ValueError(f"bad point count {flat[k]!r} at index {k}")
+            pts = tuple((float(flat[k + 1 + 2 * p]), float(flat[k + 2 + 2 * p])) for p in range(n))
+            if pts:
+                check_urdf_curve(pts, f"urdf_joint_curves[{len(out)}]")
+            out.append(pts or None)
+            k += 1 + 2 * n
+    except ValueError as exc:
+        raise ROSConfigError(f"urdf_joint_curves is invalid: {exc}") from exc
+    if len(out) != n_joints:
+        raise ROSConfigError(
+            f"urdf_joint_curves covers {len(out)} joints; urdf_joint_names has {n_joints}."
+        )
+    return out
 
 
 def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) -> bool:
@@ -780,9 +840,13 @@ if _ROS2_AVAILABLE:
             # (``URDF_JOINT_UNITS_UNSET``, ``urdf_joint_units``).
             self.declare_parameter("urdf_joint_scales", list(URDF_JOINT_UNITS_UNSET))
             self.declare_parameter("urdf_joint_offsets", list(URDF_JOINT_UNITS_UNSET))
+            # Gripper calibration curves (``JointSpec.urdf_curve``, issue #533), applied
+            # before the scale / offset: ``UrdfJointMap.curves_param``'s flat layout.
+            self.declare_parameter("urdf_joint_curves", list(URDF_JOINT_UNITS_UNSET))
             self._urdf_joint_names: list[str] = []
             self._urdf_joint_scales: list[float] = []
             self._urdf_joint_offsets: list[float] = []
+            self._urdf_joint_curves: list[tuple[tuple[float, float], ...] | None] = []
             self._urdf_joint_state_pub: Any = None
             # The rate joint states are read (and fed to the grasp trigger) at,
             # resolved on activate; ``None`` until then.
@@ -1108,6 +1172,9 @@ if _ROS2_AVAILABLE:
                 len(urdf_names),
                 gp("urdf_joint_scales").get_parameter_value().double_array_value,
                 gp("urdf_joint_offsets").get_parameter_value().double_array_value,
+            )
+            self._urdf_joint_curves = urdf_joint_curves(
+                len(urdf_names), gp("urdf_joint_curves").get_parameter_value().double_array_value
             )
             self._urdf_joint_state_pub = self.create_publisher(msg_type, "~/urdf_joint_states", qos)
 
@@ -1593,6 +1660,7 @@ if _ROS2_AVAILABLE:
                         self._urdf_joint_names,
                         self._urdf_joint_scales,
                         self._urdf_joint_offsets,
+                        self._urdf_joint_curves,
                     )
                 )
             self._publish_policy_state()

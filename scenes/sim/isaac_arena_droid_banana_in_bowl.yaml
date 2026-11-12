@@ -118,8 +118,6 @@ scene:
       # error vs mimic p95 17.1 -> 0.75 deg, max 22.7 -> 4.8 deg (was up to 39 deg).
       "(right_finger_joint|.*_phalanx_joint)": [5729.578, 0.011459]
     gripper_followers_track: measured
-    gripper_joint_curve:
-      finger_joint: [[0.0, 0.7853982], [1.0, 0.0]]
     camera_mounts:
       exterior:
         link: panda_link0

@@ -72,7 +72,8 @@ where a rigid follower is what MoveIt and cuRobo do.
   compares in those units: the MJCF leader is `lo + (hi - lo) · v` over `ctrl_range`, accepted only
   when the gripper's actuator is a gear-1 joint transmission on that leader
   (`_manifest_to_mjcf_affine`). A mimic row may sit on the leader's own MJCF joint (identity
-  relation): the Metal poses both fingers, `joint7 = -0.05 f` and `joint8 = +0.05 f`, as mimic rows,
+  relation): the Metal poses both fingers, `joint7 = -u` and `joint8 = +u` (`u = 0.05 f`, its
+  `urdf_curve`; §8), as mimic rows,
   because the logical `finger_pair` child would be slid by the fraction read as metres. That row
   owns the body — `finger_pair` gets no primitive — and it stands in as the leader jaw for the
   jaw-against-jaw exemption.
@@ -190,3 +191,37 @@ measured-state dependency. `robots/openarm/robot.yaml` is ~5600 lines shorter th
   swept hull: the rigid leader's hull may no longer overlap them (the follower's does not).
 - **Isaac deploy-sim validation** on the pick-and-place policy: the stop count and the PhysX
   ground truth against the 24-stop baseline.
+
+## 8. Gripper calibration curves (`JointSpec.urdf_curve`, issue #533)
+
+A gripper channel is not always its URDF finger angle: the Robotiq's jaw fraction `f` is the URDF
+`finger_joint` at `pi/4 (1 - f)`, the Metal's at a `0.05 f` m stroke, and the OpenArm Isaac restock
+twin's jaw reads 0.316 rad where its URDF finger is at 0.42. A `role: gripper` joint declares the
+map as `urdf_curve`, piecewise-linear `(value, urdf value)` points (values strictly increasing, URDF
+values strictly monotonic, clamped at the ends). A sim scene's `backend_options.gripper_joint_curve`
+replaces it for that twin through `sim_scene_description`, which every deploy-sim consumer calls.
+
+Before #533 only the Isaac sidecar applied a scene curve, so `/tf`, the kernel and the self-filter
+posed the OpenArm twin's finger at the reported value: up to ~0.07-0.1 rad more closed than the sim
+mid-grip (0.222 reported, 0.295 real). One curve now reaches every consumer:
+
+| Consumer | Where |
+| --- | --- |
+| Safety kernel | `collision_curve_point_first` / `_count` / `collision_curve_points` (`with_joint_curves`), `link_joint_value` before the mimic relation; `link_joint_gain` in the force observer |
+| Self-filter | the same params, `curve_value` in `self_forward_kinematics` |
+| `/tf` | `UrdfJointMap.curves` → the HAL's `urdf_joint_curves` param → `~/urdf_joint_states` |
+| Isaac sidecar | the gripper spec's `curve` (`_gripper_spec`, a scene's via `_curve_gripper_specs`) |
+| Python FK | `openral_core.kinematics.link_transform`, `ReleaseWindow.clearance_m` |
+
+A `MimicJoint` reads its leader's URDF value, so the DROID rows are the URDF `<mimic>` multipliers
+(±1) and the Metal's ±1. The kernel refuses a curved link on the EE chain (the Jacobian takes unit
+gain) and `ee_link_index_from_collision_params` never picks one. Without a curve nothing changes:
+the real OpenArm and its MuJoCo twin declare none. `tests/unit/test_gripper_urdf_curve.py` holds
+the HAL, the kernel params, core FK and the sidecar to one finger angle on the real manifests;
+`test_collision` / `test_lifecycle_kernel` (`UrdfCurve.*`, `ACurvedGripper*`, `*CurveParams*`) and
+`test_self_filter` (`ACurvedLink*`, `RefusesACurve*`) cover the C++.
+
+Hazard log Entry 087 (private `OpenRAL/management`), Safety-WG ACCEPTED 2026-11-12: the kernel
+checks a curved finger where the sim puts it (for the OpenArm twin, more open than before
+mid-grip). Still owed: the real OpenArm jaw's own calibration is unmeasured; it keeps no curve
+until measured.
