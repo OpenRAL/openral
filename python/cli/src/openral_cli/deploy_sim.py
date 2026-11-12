@@ -2345,7 +2345,10 @@ def _print_ros_scope(env: Mapping[str, str]) -> None:
     _console.print("  ros scope: " + " ".join(f"{k}={v}" for k, v in shown.items()))
     if scope:
         exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in scope.items())
-        _console.print(f"  other terminals (openral prompt / estop reset): export {exports}")
+        _console.print(
+            f"  other terminals (openral prompt / estop reset): export {exports}"
+            " — or, for a real robot, pass them --robot <id>"
+        )
 
 
 def _prepare_launch_env(*, hal_mode: str = "sim", robot_id: str = "") -> dict[str, str]:

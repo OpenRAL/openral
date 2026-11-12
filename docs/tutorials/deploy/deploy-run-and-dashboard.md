@@ -672,19 +672,26 @@ active task passes the reward gate.
 **While it runs**, from another terminal:
 
 ```bash
-openral prompt "put the pen back in the cup"
+openral prompt --robot so101_follower "put the pen back in the cup"
 ```
 
 This publishes one `PromptStamped` on `/openral/prompt_in/cli`; the
 prompt-router fans it out to `/openral/prompt` for the reasoner. It needs a
-sourced ROS 2 install.
+sourced ROS 2 install. `--robot` is the deploy's robot id: a real deploy runs
+on a per-robot `ROS_DOMAIN_ID` with LOCALHOST discovery, and `--robot` derives
+the same scope with the deploy's own function, so nothing has to be exported.
+The command prints the domain it used first (`ros scope: ROS_DOMAIN_ID=39
+(robot 'so101_follower') …`). Without `--robot` it runs on the shell's own scope,
+which reaches a real deploy only if the deploy's `export` line was copied. An
+exported `ROS_DOMAIN_ID` still wins over `--robot`, as it does for the deploy;
+when it differs from the robot's domain the line says so.
 
 A prompt arriving mid-mission is **conversational context** by default (an
 answer to a reasoner question, or a hint) and does *not* rebuild the task
 queue. To replace the current mission:
 
 ```bash
-openral prompt --new-goal "stop that, clear the table instead"
+openral prompt --robot so101_follower --new-goal "stop that, clear the table instead"
 ```
 
 On a cold-booted graph the router may not have discovered the publisher yet;
@@ -697,7 +704,7 @@ as the CLI.
 **After an e-stop**, clear it from the CLI with:
 
 ```bash
-openral estop reset
+openral estop reset --robot so101_follower
 ```
 
 Like the dashboard's reset button, it calls the safety kernel's

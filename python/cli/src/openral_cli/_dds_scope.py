@@ -40,6 +40,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import MutableMapping
 from typing import Final
 
 import structlog
@@ -58,6 +59,8 @@ __all__ = [
     "assert_graph_unoccupied",
     "confine_real_scope",
     "confine_sim_scope",
+    "join_robot_scope",
+    "join_robot_scope_or_exit",
     "real_domain_id",
 ]
 
@@ -382,3 +385,86 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         f"are launching, do not start it by hand — deploy_e2e.launch.py starts "
         f"it under hal_mode:=real (the manifest's hal.real_bringup).",
     )
+
+
+def join_robot_scope(env: MutableMapping[str, str], *, robot_id: str | None) -> str:
+    """Put an operator command on the graph of ``openral deploy run --robot ROBOT_ID``, in place.
+
+    ``openral prompt`` and ``openral estop reset`` run ``rclpy`` on their own
+    shell's environment. A real deploy runs on ``real_domain_id(robot_id)`` with
+    LOCALHOST discovery (``confine_real_scope``), so from a fresh terminal they
+    used to land on domain 0 and silently reach nothing (#557). With
+    ``robot_id`` this applies ``confine_real_scope`` itself — the deploy's
+    function, so the two cannot drift. An exported non-empty ``ROS_DOMAIN_ID``
+    still wins, as it does for the deploy: it is the documented way to separate
+    two robots of one model, and the deploy started with it is on it too. When
+    it differs from the robot's derived domain the returned line says so.
+    Without ``robot_id`` ``env`` is left as it is (the dashboard runs
+    ``openral prompt`` inside the deploy's environment).
+
+    Args:
+        env: The command's environment (``os.environ``), mutated in place
+            before ``rclpy.init()``.
+        robot_id: The deploy's ``--robot``; ``None`` keeps the shell's scope.
+
+    Returns:
+        One line naming the domain and range used and where the domain came from.
+
+    Raises:
+        ROSConfigError: A networked scope without the opt-in
+            (``confine_real_scope``) — the deploy refuses that scope as well.
+
+    Example:
+        >>> env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+        >>> line = join_robot_scope(env, robot_id="openarm")
+        >>> env["ROS_DOMAIN_ID"], env["ROS_AUTOMATIC_DISCOVERY_RANGE"]
+        ('43', 'LOCALHOST')
+        >>> "robot 'openarm'" in line
+        True
+    """
+    exported = env.get("ROS_DOMAIN_ID", "").strip()
+    if robot_id:
+        scoped = dict(env)
+        confine_real_scope(scoped, robot_id=robot_id)
+        env.update({k: v for k, v in scoped.items() if env.get(k) != v})
+        derived = real_domain_id(robot_id)
+        if not exported:
+            origin = f"robot {robot_id!r}"
+        elif exported == derived:
+            origin = f"exported, = robot {robot_id!r}"
+        else:
+            origin = (
+                f"exported, overrides robot {robot_id!r}'s {derived}: a deploy started "
+                f"without this export is on {derived}"
+            )
+    else:
+        origin = "exported" if exported else "unset; pass --robot <id> to reach a real deploy"
+    domain = env.get("ROS_DOMAIN_ID", "").strip() or "0"
+    if env.get("ROS_LOCALHOST_ONLY", "").strip() == "1":
+        reach = "ROS_LOCALHOST_ONLY=1"
+    else:
+        reach = "ROS_AUTOMATIC_DISCOVERY_RANGE=" + (
+            env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip() or "SUBNET (unset)"
+        )
+    return f"ros scope: ROS_DOMAIN_ID={domain} ({origin}) {reach}"
+
+
+def join_robot_scope_or_exit(command: str, *, robot_id: str | None) -> None:
+    """``join_robot_scope`` on ``os.environ`` for a CLI command: print the scope, exit 2 on refusal.
+
+    Call before ``rclpy.init()``: rcl reads the domain and range from the environment.
+
+    Args:
+        command: The command's name, prefixed to what it prints.
+        robot_id: The command's ``--robot``.
+
+    Raises:
+        typer.Exit: Code 2 when ``join_robot_scope`` refuses the scope.
+    """
+    import typer  # noqa: PLC0415  # reason: only the CLI commands need it
+
+    try:
+        typer.echo(f"{command}: {join_robot_scope(os.environ, robot_id=robot_id)}", err=True)
+    except ROSConfigError as exc:
+        typer.echo(f"{command}: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
