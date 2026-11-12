@@ -64,13 +64,20 @@ def test_a_real_hal_on_a_networked_graph_is_refused(
     [
         {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"},
         {"ROS_LOCALHOST_ONLY": "1", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"},
-        {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", "OPENRAL_ALLOW_NETWORK_ROS": "1"},
     ],
 )
-def test_a_host_confined_or_opted_in_real_hal_launches(
-    launch_module: ModuleType, env: dict[str, str]
-) -> None:
+def test_a_host_confined_real_hal_launches(launch_module: ModuleType, env: dict[str, str]) -> None:
     launch_module._require_host_confined_real_graph("real", env)
+
+
+def test_an_opted_in_networked_real_hal_without_sros2_is_refused(
+    launch_module: ModuleType,
+) -> None:
+    """ADR-0130: the opt-in acknowledges the network; only SROS2 Enforce secures it."""
+    with pytest.raises(ROSConfigError, match="without SROS2"):
+        launch_module._require_host_confined_real_graph(
+            "real", {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", "OPENRAL_ALLOW_NETWORK_ROS": "1"}
+        )
 
 
 def test_a_freshly_sourced_shell_is_refused_and_told_why(launch_module: ModuleType) -> None:
@@ -110,3 +117,53 @@ def test_the_gate_runs_before_any_node_is_composed(launch_module: ModuleType) ->
     resolve = source.index('hal_mode = LaunchConfiguration("hal_mode").perform(context)')
     gate = source.index("_require_host_confined_real_graph(hal_mode, os.environ)")
     assert 0 < gate - resolve < 200
+
+
+def test_without_sros2_no_process_is_given_an_enclave(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security off: the hand-off changes nothing, so an unsecured deploy is untouched."""
+    from launch import LaunchContext
+
+    monkeypatch.delenv("ROS_SECURITY_ENABLE", raising=False)
+    monkeypatch.delenv("ROS_SECURITY_ENCLAVE_OVERRIDE", raising=False)
+    enclave_env = launch_module._hand_off_enclaves(LaunchContext())
+    assert enclave_env("/openral/safety_kernel") == {}
+    assert "ROS_SECURITY_ENCLAVE_OVERRIDE" not in os.environ
+
+
+def test_a_secured_launch_refuses_a_broken_keystore(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """In every hal_mode, before any node is composed (ADR-0130)."""
+    from launch import LaunchContext
+
+    monkeypatch.setenv("ROS_SECURITY_ENABLE", "true")
+    monkeypatch.setenv("ROS_SECURITY_STRATEGY", "Enforce")
+    monkeypatch.setenv("ROS_SECURITY_KEYSTORE", str(tmp_path))
+    with pytest.raises(ROSConfigError, match="no usable enclave"):
+        launch_module._hand_off_enclaves(LaunchContext())
+
+
+def test_a_secured_launch_outside_the_launch_enclave_is_refused(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Any other enclave is denied the kernel's change_state: the graph would never come up."""
+    from launch import LaunchContext
+
+    security = pytest.importorskip("openral_cli.security")
+    from openral_core.ros_security import render_sros2_policy
+
+    if security.shutil.which("ros2") is None:
+        pytest.skip("SROS2 keystore needs `ros2` on PATH")
+    security.generate_keystore(render_sros2_policy({}), tmp_path / "ks", domain="77")
+    for name, value in {
+        "ROS_DOMAIN_ID": "77",
+        "ROS_SECURITY_ENABLE": "true",
+        "ROS_SECURITY_STRATEGY": "Enforce",
+        "ROS_SECURITY_KEYSTORE": str(tmp_path / "ks"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("ROS_SECURITY_ENCLAVE_OVERRIDE", raising=False)
+    with pytest.raises(ROSConfigError, match="/openral/launch enclave"):
+        launch_module._hand_off_enclaves(LaunchContext())
