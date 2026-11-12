@@ -20,13 +20,24 @@ const SETTINGS = {
 const data = (values) => ({ scope: "org", canWrite: true, settings: SETTINGS, values });
 
 test("the model needs a key, a curated id, and its own provider's key", () => {
-  assert.match(modelProblem(data({})), /Set an Anthropic or OpenAI API key/);
+  // Only cloud models offered: one of their keys is needed first.
+  const cloudOnly = { ...SETTINGS, OPENRAL_REASONER_MODEL: { ...SETTINGS.OPENRAL_REASONER_MODEL, options: SETTINGS.OPENRAL_REASONER_MODEL.options.filter((o) => o.needs) } };
+  assert.match(modelProblem({ scope: "org", canWrite: true, settings: cloudOnly, values: {} }), /Set an Anthropic or OpenAI API key/);
   const anth = { ANTHROPIC_API_KEY: { set: true, hint: "…abcd" } };
   assert.equal(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "claude-sonnet-5-5" } })), "");
   assert.match(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "gpt-5.5" } })), /GPT-5.5 needs the OpenAI API key/);
   assert.match(modelProblem(data({ ...anth, OPENRAL_REASONER_MODEL: { set: true, value: "llama" } })), /isn't a model robots run/);
   // An on-device model needs no cloud key.
   assert.equal(modelProblem(data({ OPENRAL_REASONER_MODEL: { set: true, value: "cosmos3-edge" } })), "");
+});
+
+test("a model that runs on the robot needs no key", () => {
+  const onRobot = { id: "cosmos3-edge", label: "NVIDIA Cosmos 3 Edge", needs: null };
+  const withLocal = { ...SETTINGS, OPENRAL_REASONER_MODEL: { ...SETTINGS.OPENRAL_REASONER_MODEL, options: [...SETTINGS.OPENRAL_REASONER_MODEL.options, onRobot] } };
+  const d = (values) => ({ scope: "org", canWrite: true, settings: withLocal, values });
+  assert.equal(modelProblem(d({})), "");
+  assert.equal(modelProblem(d({ OPENRAL_REASONER_MODEL: { set: true, value: "cosmos3-edge" } })), "");
+  assert.match(modelProblem(d({ OPENRAL_REASONER_MODEL: { set: true, value: "gpt-5.5" } })), /GPT-5.5 needs the OpenAI API key/);
 });
 
 test("a secret only ever shows as set with its last four characters", () => {

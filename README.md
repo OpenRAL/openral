@@ -401,7 +401,7 @@ The reasoner is the slow half of the dual-system architecture: an event-driven L
 
 - **Model-first** — `OPENRAL_REASONER_MODEL` picks a tested robotics
   tool-calling model (`claude-opus-4-8`, `claude-opus-5-5`, `claude-sonnet-5-5`,
-  `claude-haiku-5-5`, `gpt-5.5`, `gpt-5.6`, `cosmos3-edge`).
+  `claude-haiku-5-5`, `gpt-5.5`, `gpt-5.6`, `cosmos3-edge`, `qwen3.5-4b`, `qwen3.5-9b`).
   Endpoint and auth come from the curated registry and stay overrideable; an
   uncurated model needs an explicit endpoint + dialect and logs a warning. No
   cloud lock-in, no hidden library default.

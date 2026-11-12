@@ -15090,10 +15090,13 @@ class ReasonerModel(BaseModel):
             near-identical skill tools (Cosmos 3 Edge: 0/20 valid ticks with 14
             franka skills, 19/20 with 4; #494). ``None`` offers every
             capability-matched skill.
-        min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.
-            ``None`` for ``cloud`` models (not a local-compute question).
+        min_gpu_vram_gb: VRAM floor for a comfortable local fit at the precision
+            the model is served in (BF16 for ``cosmos3-edge``, the Q4_K_M tag
+            for the Ollama entries). ``None`` for ``cloud`` models (not a
+            local-compute question).
         required_dtype: Dtype the local runtime must support, matched against
-            ``ComputeSpec.gpu_supported_dtypes``. ``None`` for cloud models.
+            ``ComputeSpec.gpu_supported_dtypes``. ``None`` for cloud models and
+            for a model on an operator-run server (Ollama) that picks its own.
         weights_license: Informational weights-license posture for local models
             (§1.9), e.g. ``"OpenMDW-1.1"``. ``None`` for cloud API models
             (OpenRAL never holds their weights).
@@ -15127,6 +15130,10 @@ class ReasonerModel(BaseModel):
         """True for ``managed_local`` / ``byo_local`` (needs local compute)."""
         return self.hosting != "cloud"
 
+
+# A local ``ollama serve``: its OpenAI-compatible API on :11434, no auth. The
+# default endpoint of the curated Ollama models below, and the ``ollama`` preset.
+OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
 
 # OpenRouter's OpenAI-compatible endpoint — the default gateway for the curated
 # GPT-5.x entries (a metered router, hence the max_tokens caps below).
@@ -15229,6 +15236,42 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         required_dtype=QuantizationDtype.BF16,
         weights_license="OpenMDW-1.1",
     ),
+    # Ollama on the robot (``ollama pull qwen3.5:4b``, the Q4_K_M tag; vision +
+    # tools + thinking). Measured on an RTX 5070 Laptop (8 GB) through the real
+    # client, Ollama 0.32.14, 32K window, thinking on: so101_follower 18/20 valid
+    # ticks (median 9.2 s), franka_panda's full 14-skill palette (20.4K tokens)
+    # 20/20 (9.7 s), the eraser-on-square frames 2/2. With thinking off
+    # (``reasoning_effort="none"``) 16/20 at 1.9 s, under the #494 bar of 17/20.
+    # The server must load a window that fits the prompt: Ollama's default on a
+    # GPU under 24 GiB is 4096 tokens, which the client refuses as a truncation.
+    "qwen3.5-4b": ReasonerModel(
+        id="qwen3.5-4b",
+        display_name="Qwen 3.5 4B (Ollama, on the robot)",
+        dialect="openai",
+        hosting="byo_local",
+        served_model_id="qwen3.5:4b",
+        default_endpoint=OLLAMA_BASE_URL,
+        auth_required=False,
+        # Ollama ignores tool_choice; the endpoint preset sends ``auto``.
+        tool_choice="auto",
+        min_gpu_vram_gb=8.0,
+        weights_license="Apache-2.0",
+    ),
+    # The 9B of the same family (``ollama pull qwen3.5:9b``, Q4_K_M, 6.6 GB), same
+    # rig on Ollama 0.40.16: so101_follower 20/20 (median 18.8 s, 12% of the model
+    # offloaded to CPU), franka_panda's full palette 20/20 (16.3 s), frames 2/2.
+    "qwen3.5-9b": ReasonerModel(
+        id="qwen3.5-9b",
+        display_name="Qwen 3.5 9B (Ollama, on the robot)",
+        dialect="openai",
+        hosting="byo_local",
+        served_model_id="qwen3.5:9b",
+        default_endpoint=OLLAMA_BASE_URL,
+        auth_required=False,
+        tool_choice="auto",
+        min_gpu_vram_gb=12.0,
+        weights_license="Apache-2.0",
+    ),
 }
 
 
@@ -15285,10 +15328,9 @@ OPENAI_BASE_URL: str = "https://api.openai.com/v1"
 # passed. Spelled out so the ``anthropic`` endpoint preset can carry a real URL
 # instead of ``None`` (see ``ReasonerEndpointPreset.url``).
 ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
-# Ollama and vLLM are loopback daemons that enforce no auth unless fronted by a
-# gateway (or started with ``vllm serve --api-key``); ``vllm serve`` listens on
-# :8000, Ollama on :11434.
-OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
+# vLLM, like Ollama (``OLLAMA_BASE_URL`` above), is a loopback daemon that enforces
+# no auth unless fronted by a gateway or started with ``vllm serve --api-key``;
+# ``vllm serve`` listens on :8000.
 VLLM_BASE_URL: str = "http://localhost:8000/v1"
 # Google / xAI / DeepSeek's own OpenAI-compatible endpoints. Gemini's
 # OpenAI-compat shim lives under a ``/v1beta/openai/`` path.
@@ -15377,8 +15419,10 @@ REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
     # The HF router 400s on tool_choice="required" (INVALID_TOOL_CHOICE).
     "huggingface": ReasonerEndpointPreset(HUGGINGFACE_BASE_URL, "openai", True, 60.0, "auto"),
     # Loopback daemons enforce no auth unless fronted by a gateway, so an
-    # API key stays optional rather than required.
-    "ollama": ReasonerEndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "required"),
+    # API key stays optional rather than required. Ollama ignores ``tool_choice``
+    # (docs.ollama.com/api/openai-compatibility), so ``required`` forced nothing
+    # and only skipped the client's one nudge on a prose reply.
+    "ollama": ReasonerEndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "auto"),
     "vllm": ReasonerEndpointPreset(VLLM_BASE_URL, "openai", False, 60.0, "required"),
 }
 
