@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from openral_core.exceptions import ROSConfigError
 from openral_sim._deps import _RLDX_SIDECAR_REPO_SHA, _rldx_sidecar_setup_plan
 from openral_sim._sidecar_common import (
     checkout_head,
@@ -22,6 +23,7 @@ from openral_sim._sidecar_common import (
     run_sidecar,
     sidecar_env,
 )
+from openral_sim.backends import robotwin
 from openral_sim.backends.robotwin import _ensure_robotwin_checkout
 
 # Only the fetch tests need git; the environment-policy tests run everywhere.
@@ -85,7 +87,7 @@ def test_refuses_a_pin_that_is_not_a_full_sha(tmp_path: Path, pin: str) -> None:
 
 @_needs_git
 def test_require_pinned_head_refuses_a_directory_that_is_not_a_checkout(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="no git commit"):
+    with pytest.raises(SystemExit, match="no git checkout"):
         require_pinned_head("t", tmp_path, "0" * 40)
 
 
@@ -101,12 +103,38 @@ def test_robotwin_checkout_is_verified_on_reuse_not_only_on_clone(tmp_path: Path
     # The provisioned root moved off the pin (a pull, an operator's checkout): refused.
     _git("fetch", "-q", "--depth", "1", "origin", tip, cwd=root)
     _git("checkout", "-q", "FETCH_HEAD", cwd=root)
-    with pytest.raises(SystemExit, match="not the pinned"):
+    with pytest.raises(ROSConfigError, match="not the pinned"):
         _ensure_robotwin_checkout(home, url, first)
     # Not a git checkout at all (a copied tree): refused too.
     shutil.rmtree(root / ".git")
-    with pytest.raises(SystemExit, match="no git commit"):
+    with pytest.raises(ROSConfigError, match="no git checkout"):
         _ensure_robotwin_checkout(home, url, first)
+
+
+@_needs_git
+def test_every_launch_verifies_the_provisioned_robotwin_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_robotwin_root`` hands the checkout to the sidecar, which imports its code:
+    the provisioned root is pin-checked there too, also when named through
+    OPENRAL_ROBOTWIN_ROOT; an operator's own checkout elsewhere is theirs."""
+    url, first, tip = _upstream(tmp_path)
+    home = tmp_path / "home"
+    root = _ensure_robotwin_checkout(home, url, tip)  # provisioned, but not at the pin
+    (root / "assets" / "objects" / "objaverse").mkdir(parents=True)
+    (root / "assets" / "objects" / "objaverse" / "list.json").write_text("[]")
+    monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", home)
+    monkeypatch.setattr(robotwin, "_ROBOTWIN_SHA", first)
+    monkeypatch.delenv(robotwin._ROBOTWIN_ROOT_ENV, raising=False)
+    with pytest.raises(ROSConfigError, match="not the pinned"):
+        robotwin._robotwin_root()
+    monkeypatch.setenv(robotwin._ROBOTWIN_ROOT_ENV, str(root))
+    with pytest.raises(ROSConfigError, match="not the pinned"):
+        robotwin._robotwin_root()
+    own = tmp_path / "operator"
+    shutil.copytree(root, own)
+    monkeypatch.setenv(robotwin._ROBOTWIN_ROOT_ENV, str(own))
+    assert robotwin._robotwin_root() == own.resolve()
 
 
 def test_rldx_install_plan_fetches_the_pin_and_verifies_head() -> None:

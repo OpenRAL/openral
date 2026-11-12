@@ -204,13 +204,20 @@ def require_pinned_head(label: str, source: Path, sha: str) -> None:
     """Fail closed (``SystemExit``) unless the git checkout ``source`` is at commit ``sha``.
 
     The check every reuse of a pinned third-party checkout goes through, also after
-    it was moved out of ``ensure_source``'s ``<work>/source``. A directory that is
-    not a git checkout fails too.
+    it was moved out of ``ensure_source``'s ``<work>/source``. A directory without
+    its own ``.git`` fails (an enclosing repository's ``HEAD`` is never read), and so
+    does a ``git`` that cannot answer, with git's own reason (e.g. dubious ownership).
     """
-    try:
-        head = checkout_head(source)
-    except subprocess.CalledProcessError:
-        head = "no git commit"
+    if not (source / ".git").exists():
+        head = "no git checkout"
+    else:
+        try:
+            head = checkout_head(source)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            reason = (getattr(exc, "stderr", None) or str(exc)).strip()
+            raise SystemExit(
+                f"[{label}] cannot read the commit of {source} ({reason}): refusing to run it."
+            ) from exc
     if head != sha:
         raise SystemExit(
             f"[{label}] {source} is at {head}, not the pinned {sha}: refusing to run it. "
