@@ -137,8 +137,8 @@ def test_camera_offset_moves_and_turns_the_wrist_camera_in_its_own_frame() -> No
 # lights (4096 px shadow maps) a ~700-step replay did not finish in 15 min on a software
 # renderer (OSMesa, 16-core host). The replay grades physics only, never pixels, so it renders
 # small views with one unshadowed light (the full-size shadowed path stays covered by the
-# camera tests above); the 205k-face meshes still cost ~100 s per replay on a 20-thread
-# software renderer, too slow for the CI shard (#563).
+# camera tests above); the 205k-face meshes still cost 108 s per replay on OSMesa on a
+# GitHub-hosted runner, too much for the shared 15-min CI shard (#563).
 @pytest.mark.skipif(
     os.environ.get("MUJOCO_GL") == "osmesa",
     reason=(

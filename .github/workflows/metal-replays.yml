@@ -1,9 +1,10 @@
 name: metal-replays
 # The seven MakerMods Metal episode replays (#563): recorded real actions stepped through the
 # MuJoCo pick-place and pen-holder scenes, graded on physics. Every step renders the scene's
-# cameras, so the per-PR core shards (MUJOCO_GL=osmesa, 15 min) skip them with a reason that
-# names this workflow. Here each replay gets its own GitHub-hosted job and renders through
-# Mesa's EGL software device (llvmpipe; the hosted runner has no GPU).
+# cameras. The pick-place replays (~20 s each on OSMesa) also run in the per-PR core shards;
+# the pen-holder ones (~110 s each) skip there with a reason that names this workflow. Here
+# each replay gets its own GitHub-hosted job and renders through Mesa's EGL software device
+# (llvmpipe; the hosted runner has no GPU).
 #
 # Nightly and on demand only: no pull_request trigger, no self-hosted runner, no secrets, a
 # read-only token. A fork PR can neither start this nor choose where it runs.
@@ -12,8 +13,6 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
-  push:  # TEMPORARY proof run for #563 (this branch only); removed before merge
-    branches: [ci/563-metal-replays-gpu]
 
 permissions:
   contents: read
@@ -25,7 +24,8 @@ concurrency:
 jobs:
   replay:
     runs-on: ubuntu-24.04
-    # Sized from the dispatch run's per-replay times (see the PR for #563) plus ~5 min setup.
+    # Measured on this runner: 12-17 s per pick-place replay, 88-91 s per pen-holder replay,
+    # 3-5 min per job including setup.
     timeout-minutes: 45
     env:
       MUJOCO_GL: "egl"
@@ -70,28 +70,4 @@ jobs:
           ran = int(s.get("tests", 0)) - int(s.get("skipped", 0))
           if ran != 1:
               sys.exit(f"::error::expected 1 replay to run, got {ran} (skipped {s.get('skipped')})")
-          PY
-
-  # TEMPORARY (#563 measurement, dropped before merge): one replay of each scene on OSMesa.
-  osmesa-timing:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      MUJOCO_GL: "osmesa"
-      PYOPENGL_PLATFORM: "osmesa"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-test-env
-      - name: Time replays on OSMesa (bypassing the skip mark)
-        run: |
-          uv run python - <<'PY'
-          import sys, time
-          sys.path.insert(0, "tests/sim")
-          import test_makermods_metal_hal_metal_pick_place as pp
-          import test_makermods_metal_station_hal_metal_pen_holder as ph
-          for name, fn, arg in [("pick_place ep42", pp.test_replaying_a_real_episode_places_the_cube_on_the_marker, 42),
-                                ("pen_holder 7", ph.test_replayed_episode_drops_the_pen_into_the_cup, 7)]:
-              t0 = time.perf_counter(); fn(arg); print(f"OSMESA {name}: passed in {time.perf_counter() - t0:.1f} s", flush=True)
           PY
