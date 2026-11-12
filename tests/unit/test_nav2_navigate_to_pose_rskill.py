@@ -98,3 +98,16 @@ def test_readme_documents_result_only_mode_and_safety_caveat() -> None:
     assert "Result-only mode" in readme
     assert "the OpenRAL safety supervisor does NOT" in readme
     assert "navigate_to_pose" in readme
+
+
+def test_navigation_success_completes_the_reasoner_task() -> None:
+    """Nav2 SUCCEEDED (inside its goal tolerance) IS the task, so the manifest opts in.
+
+    A MoveIt planner's success only means "a plan exists" and stays on the default.
+    """
+    ri = load_rskill_manifest(_URI).ros_integration
+    assert ri is not None
+    assert ri.completes_task_on_success is True
+    moveit = load_rskill_manifest("rskills/rskill-moveit-joints").ros_integration
+    assert moveit is not None
+    assert moveit.completes_task_on_success is False

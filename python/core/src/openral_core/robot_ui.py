@@ -36,7 +36,14 @@ from pathlib import Path
 from typing import Any, Literal  # Any: JSON Schema dicts are untyped by nature
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
@@ -47,17 +54,22 @@ from openral_core.schemas import (
     RobotDescription,
     RSkillManifest,
     SensorModality,
+    SensorSpec,
 )
 
 __all__ = [
     "ENROLMENT_PATH_ENV",
     "REMOTE_CONTROL_ENV",
+    "TRUSTED_ISSUERS",
+    "TRUSTED_ISSUERS_ENV",
     "WRITE_CONTROLS_ENV",
+    "CameraPosition",
     "ManifestAction",
     "ManifestPanel",
     "RobotEnrolment",
     "RobotManifest",
     "build_robot_manifest",
+    "camera_position",
     "enrolment_path",
     "parse_robot_link_code",
     "rskill_matches_robot",
@@ -69,6 +81,12 @@ REMOTE_CONTROL_ENV = "OPENRAL_DASHBOARD_REMOTE_CONTROL"
 """``=1`` allows reset, prompt and skills over the tunnel listener (E-STOP always is)."""
 ENROLMENT_PATH_ENV = "OPENRAL_ROBOT_ENROLMENT"
 """Overrides where the robot enrolment lives (default ``~/.config/openral/robot.json``)."""
+TRUSTED_ISSUERS: tuple[str, ...] = ("https://www.openral.com", "https://dev.openral.com")
+"""The origins a link code's ``iss`` may name: openral.com's production and dev sites."""
+TRUSTED_ISSUERS_ENV = "OPENRAL_TRUSTED_ISSUERS"
+"""Comma-separated origins that REPLACE ``TRUSTED_ISSUERS`` (self-hosted issuer, tests).
+
+An origin listed here may also serve the ``jwks`` of an issuer on another origin."""
 
 PanelType = Literal[
     "identity",
@@ -106,6 +124,42 @@ _PROMPT_SCHEMA: dict[str, Any] = {
 }
 
 
+CameraPosition = Literal["left", "center", "right"]
+
+_SIDE_TOKEN = re.compile(r"(?:^|[^a-z])(left|right)(?:[^a-z]|$)")
+_HAND_TOKEN = re.compile(r"(?:^|[^a-z])(wrist|hand|gripper|eef)(?:[^a-z]|$)")
+
+
+def camera_position(sensor: SensorSpec) -> CameraPosition:
+    """Where a camera sits in the console's camera row (left to right).
+
+    Decided by what the sensor's ``name``, ``frame_id`` and ``parent_frame`` say:
+
+    1. ``left`` / ``right`` when one names a side (``left_wrist``, ``cam_right``).
+    2. ``left`` when one says wrist, hand, gripper or eef (a single arm's hand camera).
+    3. ``center`` otherwise: overhead, head, torso, base and world cameras.
+
+    Args:
+        sensor: The camera's sensor spec.
+
+    Returns:
+        ``"left"``, ``"center"`` or ``"right"``.
+
+    Example:
+        >>> robot = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> {s.name: camera_position(s) for s in robot.sensors if s.name in ("top", "wrist")}
+        {'top': 'center', 'wrist': 'left'}
+    """
+    texts = [t.lower() for t in (sensor.name, sensor.frame_id, sensor.parent_frame) if t]
+    for text in texts:
+        m = _SIDE_TOKEN.search(text)
+        if m:
+            return "left" if m.group(1) == "left" else "right"
+    if any(_HAND_TOKEN.search(text) for text in texts):
+        return "left"
+    return "center"
+
+
 class ManifestPanel(BaseModel):
     """One panel the robot UI draws.
 
@@ -114,6 +168,8 @@ class ManifestPanel(BaseModel):
         type: Which renderer; the UI ignores a type it does not know.
         title: Heading shown on the panel.
         source: The sensor name, for ``camera`` panels.
+        position: Where a ``camera`` panel sits in the console's camera row
+            (``left``, ``center`` or ``right``; see ``camera_position``), else ``None``.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -122,6 +178,7 @@ class ManifestPanel(BaseModel):
     type: PanelType
     title: str
     source: str | None = None
+    position: CameraPosition | None = None
 
 
 class ManifestAction(BaseModel):
@@ -241,7 +298,13 @@ def build_robot_manifest(
     """
     panels = [ManifestPanel(id="identity", type="identity", title="Robot")]
     panels += [
-        ManifestPanel(id=f"cam:{s.name}", type="camera", title=s.name, source=s.name)
+        ManifestPanel(
+            id=f"cam:{s.name}",
+            type="camera",
+            title=s.name,
+            source=s.name,
+            position=camera_position(s),
+        )
         for s in robot.sensors
         if s.modality in _IMAGE_MODALITIES
     ]
@@ -334,8 +397,10 @@ class RobotEnrolment(BaseModel):
         robot: The website's robot id (the token's ``robot`` claim).
         aud: This robot's own origin, ``https://r-<id>.openral.com`` (the token's ``aud``).
         org: The owning org's slug, ``""`` for a free robot.
-        iss: The token issuer, ``https://www.openral.com/api/auth``.
-        jwks: Where the issuer's signing keys are (``<iss>/jwks``).
+        iss: The token issuer, ``https://www.openral.com/api/auth``; its origin must be
+            in ``TRUSTED_ISSUERS`` (or ``$OPENRAL_TRUSTED_ISSUERS``, which replaces it).
+        jwks: Where the issuer's signing keys are (``<iss>/jwks``), on ``iss``'s origin
+            unless ``$OPENRAL_TRUSTED_ISSUERS`` lists its origin.
         serial: The unit's serial, entered when the robot was added on openral.com; a
             deploy uses it when neither ``$OPENRAL_UNIT_SERIAL`` nor the unit file sets one.
     """
@@ -360,6 +425,48 @@ class RobotEnrolment(BaseModel):
     def _https_or_loopback(cls, value: str) -> str:
         return _origin_url(value, allow_loopback_http=True)
 
+    @model_validator(mode="after")
+    def _trusted_issuer(self) -> RobotEnrolment:
+        # The robot trusts tokens signed by `jwks` and derives its account-settings URL
+        # from `iss`: a code naming any other site hands that site the robot.
+        override = _trusted_issuers_override()
+        trusted = override if override is not None else TRUSTED_ISSUERS
+        iss, jwks = _origin(self.iss), _origin(self.jwks)
+        if iss not in trusted:
+            raise ValueError(
+                f"iss {self.iss!r} is not a trusted issuer ({', '.join(trusted)}); "
+                f"set {TRUSTED_ISSUERS_ENV} for a self-hosted one"
+            )
+        if jwks != iss and jwks not in (override or ()):
+            raise ValueError(
+                f"jwks {self.jwks!r} is not on the issuer's origin {iss}; "
+                f"list it in {TRUSTED_ISSUERS_ENV} to allow that"
+            )
+        return self
+
+
+def _origin(url: str) -> str:
+    """``scheme://host[:port]`` lowercased, a default port (443 / 80) dropped (RFC 6454).
+
+    Example:
+        >>> _origin("https://WWW.openral.com:443/api/auth"), _origin("http://127.0.0.1:8080/x")
+        ('https://www.openral.com', 'http://127.0.0.1:8080')
+    """
+    parts = urlsplit(url)
+    scheme, host = parts.scheme.lower(), (parts.hostname or "").lower()
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    port = parts.port
+    default = {"https": 443, "http": 80}.get(scheme)
+    return f"{scheme}://{host}" if port in (None, default) else f"{scheme}://{host}:{port}"
+
+
+def _trusted_issuers_override() -> tuple[str, ...] | None:
+    raw = os.environ.get(TRUSTED_ISSUERS_ENV)
+    if not raw:
+        return None
+    return tuple(_origin(o.strip()) for o in raw.split(",") if o.strip())
+
 
 def enrolment_path() -> Path:
     """``$OPENRAL_ROBOT_ENROLMENT``, else ``~/.config/openral/robot.json``."""
@@ -376,7 +483,10 @@ def parse_robot_link_code(code: str) -> tuple[RobotEnrolment, str, str | None]:
     (``ors_…``); codes from before it carry none.
 
     Raises:
-        ROSConfigError: Not base64url JSON, a field missing or malformed, or no tunnel token.
+        ROSConfigError: Not base64url JSON, a field missing or malformed, no tunnel
+            token, or an ``iss`` / ``jwks`` outside ``TRUSTED_ISSUERS`` (or
+            ``$OPENRAL_TRUSTED_ISSUERS``; ``RobotEnrolment`` checks it, so a stored
+            enrolment is refused the same way when loaded).
 
     Example:
         >>> import base64, json

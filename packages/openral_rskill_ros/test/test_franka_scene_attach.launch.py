@@ -104,14 +104,14 @@ def test_franka_tabletop_push_joint_states() -> None:
 
     rclpy.init()
     try:
-        node = _ManifestHALLifecycleNode("openral_hal_franka")
-        node.set_parameters(
-            [
+        node = _ManifestHALLifecycleNode(
+            "openral_hal_franka",
+            parameter_overrides=[
                 Parameter("robot_yaml", Parameter.Type.STRING, _ROBOT_YAML),
                 Parameter("hal_mode", Parameter.Type.STRING, "sim"),
                 Parameter("sim_env_yaml", Parameter.Type.STRING, _TABLETOP_YAML),
                 Parameter("viewer_enabled", Parameter.Type.BOOL, True),
-            ]
+            ],
         )
 
         executor = rclpy.executors.SingleThreadedExecutor()
@@ -213,14 +213,14 @@ def test_franka_libero_object_camera_image() -> None:
 
     rclpy.init()
     try:
-        node = _ManifestHALLifecycleNode("openral_hal_franka_libero")
-        node.set_parameters(
-            [
+        node = _ManifestHALLifecycleNode(
+            "openral_hal_franka_libero",
+            parameter_overrides=[
                 Parameter("robot_yaml", Parameter.Type.STRING, _ROBOT_YAML),
                 Parameter("hal_mode", Parameter.Type.STRING, "sim"),
                 Parameter("sim_env_yaml", Parameter.Type.STRING, _LIBERO_OBJECT_YAML),
                 Parameter("viewer_enabled", Parameter.Type.BOOL, True),
-            ]
+            ],
         )
 
         executor = rclpy.executors.SingleThreadedExecutor()

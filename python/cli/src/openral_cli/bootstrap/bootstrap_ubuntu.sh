@@ -154,16 +154,37 @@ else
   echo "(no NVIDIA GPU or non-jazzy distro — skipping Isaac ROS cuMotion; MoveIt uses OMPL)"
 fi
 
-# uv
+# uv and just: pinned releases, each archive checked against the checksum its
+# release publishes (uv: <asset>.sha256, just: SHA256SUMS) before anything is
+# unpacked. No remote install script is piped into a shell. Same pins as
+# Dockerfile.dev / scripts/install.sh.
+UV_VERSION="${OPENRAL_UV_VERSION:-0.12.5}"
+JUST_VERSION="${OPENRAL_JUST_VERSION:-1.58.0}"
+arch="$(uname -m)"
+fetch() { curl --proto '=https' --tlsv1.2 -fsSL -o "$1" "$2"; }
+
 if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  tmp="$(mktemp -d)"
+  uv="uv-${arch}-unknown-linux-gnu"
+  fetch "${tmp}/${uv}.tar.gz" "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${uv}.tar.gz"
+  fetch "${tmp}/${uv}.tar.gz.sha256" "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${uv}.tar.gz.sha256"
+  (cd "${tmp}" && echo "$(cut -d' ' -f1 "${uv}.tar.gz.sha256")  ${uv}.tar.gz" | sha256sum -c -)
+  tar -xzf "${tmp}/${uv}.tar.gz" -C "${tmp}"
+  mkdir -p "${HOME}/.local/bin"
+  install -m 0755 "${tmp}/${uv}/uv" "${tmp}/${uv}/uvx" "${HOME}/.local/bin/"
+  rm -rf "${tmp}"
 fi
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> "${HOME}/.bashrc"
 
-# just
 if ! command -v just >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-    | sudo bash -s -- --to /usr/local/bin
+  tmp="$(mktemp -d)"
+  just="just-${JUST_VERSION}-${arch}-unknown-linux-musl.tar.gz"
+  fetch "${tmp}/${just}" "https://github.com/casey/just/releases/download/${JUST_VERSION}/${just}"
+  fetch "${tmp}/SHA256SUMS" "https://github.com/casey/just/releases/download/${JUST_VERSION}/SHA256SUMS"
+  (cd "${tmp}" && grep -E "^[0-9a-f]{64} [ *]?${just}\$" SHA256SUMS | sed 's/ \*/  /' | sha256sum -c -)
+  tar -xzf "${tmp}/${just}" -C "${tmp}" just
+  sudo install -m 0755 "${tmp}/just" /usr/local/bin/
+  rm -rf "${tmp}"
 fi
 
 echo ""

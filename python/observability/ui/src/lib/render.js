@@ -40,6 +40,11 @@ export function b64Blob(b64, type) {
   return new Blob([u8], { type });
 }
 
+// A polled camera frame as a JPEG blob. The type is ours, never the response's
+// Content-Type: a robot answering text/html would otherwise get an HTML blob: URL
+// that runs in the console's origin when opened.
+export const jpegBlob = (bytes) => new Blob([bytes], { type: "image/jpeg" });
+
 // ── SLAM map ──────────────────────────────────────────────────────────────
 // The bridge rasterises the OccupancyGrid with a vertical flip (PIL top-left
 // vs grid bottom-left), so pixel-y is mirrored.

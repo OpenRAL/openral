@@ -30,6 +30,7 @@ from openral_core import (
     rskill_matches_robot,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.robot_ui import TRUSTED_ISSUERS, TRUSTED_ISSUERS_ENV
 from openral_reasoner.palette import build_tool_palette
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -64,6 +65,12 @@ def test_fixed_arm_manifest() -> None:
     assert not {"map", "pointcloud", "reward", "viz3d"} & set(panels)  # off on this deploy
     cam = manifest.panels[1]
     assert (cam.type, cam.source) == ("camera", "top")
+    # Overhead camera in the middle, the gripper-mounted one on the left.
+    assert [(p.source, p.position) for p in manifest.panels[1:3]] == [
+        ("top", "center"),
+        ("wrist", "left"),
+    ]
+    assert all(p.position is None for p in manifest.panels if p.type != "camera")
     actions = {a.id: a for a in manifest.actions}
     assert manifest.actions[0].id == "estop"
     assert (actions["estop"].min_role, actions["estop"].remote) == ("viewer", True)
@@ -99,12 +106,43 @@ def test_mobile_manipulator_manifest() -> None:
         "front_depth",
     }
     assert {"map", "pointcloud", "reward", "viz3d"} <= set(panels)
+    # Named sides win; a hand camera goes left; base-fixed ones are centered.
+    assert {p.source: p.position for p in manifest.panels if p.type == "camera"} == {
+        "head": "center",
+        "shoulder_left": "left",
+        "shoulder_right": "right",
+        "wrist": "left",
+        "front_depth": "center",
+    }
     nav = next(a for a in manifest.actions if a.id == f"skill:{_NAV2}")
     nav_manifest = RSkillManifest.from_yaml(
         str(_REPO / "rskills/rskill-nav2-navigate-to-pose/rskill.yaml")
     )
     assert nav.args_schema == nav_manifest.goal_params_schema
     assert all(a.remote for a in manifest.actions)  # remote control on
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "expected"),
+    [
+        # A head camera on a torso link is centered, not a wrist camera (it moves with the robot).
+        ("g1", {"head": "center"}),
+        ("openarm", {"head_zed": "center", "wrist_left": "left", "wrist_right": "right"}),
+        ("r1pro", {"head": "center", "left_wrist": "left", "right_wrist": "right"}),
+        ("droid_franka_robotiq", {"exterior": "center", "wrist": "left"}),
+    ],
+)
+def test_camera_positions_on_real_robots(robot_id: str, expected: dict[str, str]) -> None:
+    manifest = build_robot_manifest(
+        _robot(robot_id),
+        DeployRuntime(),
+        _installed(),
+        bridge_on=False,
+        write_controls=False,
+        remote_control=False,
+    )
+    got = {p.source: p.position for p in manifest.panels if p.type == "camera"}
+    assert {k: got[k] for k in expected} == expected
 
 
 def test_skills_stay_out_without_write_controls_and_prompt_without_a_reasoner() -> None:
@@ -166,6 +204,7 @@ _panel_st = st.builds(
     type=st.sampled_from(["identity", "camera", "joints", "viz3d", "events"]),
     title=st.text(max_size=20),
     source=st.none() | _id,
+    position=st.none() | st.sampled_from(["left", "center", "right"]),
 )
 _action_st = st.builds(
     ManifestAction,
@@ -190,14 +229,18 @@ _manifest_st = st.builds(
 _https = st.from_regex(
     r"https://[a-z][a-z0-9-]{0,20}\.openral\.com(/[a-z]{1,8}){0,2}", fullmatch=True
 )
-_enrolment_st = st.builds(
-    RobotEnrolment,
-    v=st.just(1),
-    robot=_id,
-    aud=_https,
-    org=st.text(max_size=12),
-    iss=_https,
-    jwks=_https,
+_path = st.from_regex(r"(/[a-z]{1,8}){0,2}", fullmatch=True)
+# iss on a trusted origin; jwks on the same one (TRUSTED_ISSUERS).
+_enrolment_st = st.sampled_from(TRUSTED_ISSUERS).flatmap(
+    lambda origin: st.builds(
+        RobotEnrolment,
+        v=st.just(1),
+        robot=_id,
+        aud=_https,
+        org=st.text(max_size=12),
+        iss=_path.map(lambda p: origin + p),
+        jwks=_path.map(lambda p: origin + p),
+    )
 )
 
 
@@ -279,3 +322,66 @@ def test_link_code_parses(pad: bool) -> None:
 def test_bad_link_codes_are_refused(bad: str) -> None:
     with pytest.raises(ROSConfigError):
         parse_robot_link_code(bad)
+
+
+# A crafted code naming another site would make the robot trust that site's tokens
+# and fetch its account settings from there.
+_FOREIGN_ISSUER = [
+    {"iss": "https://evil.example/api/auth", "jwks": "https://evil.example/api/auth/jwks"},
+    {
+        "iss": "https://openral.com.evil.example/api/auth",
+        "jwks": "https://openral.com.evil.example/api/auth/jwks",
+    },
+    {"iss": "https://www.openral.com/api/auth", "jwks": "https://evil.example/jwks"},
+    {"iss": "https://www.openral.com/api/auth", "jwks": "http://127.0.0.1:8080/jwks"},
+    {"iss": "https://www.openral.com/api/auth", "jwks": "https://dev.openral.com/api/auth/jwks"},
+]
+
+
+@pytest.mark.parametrize("fields", _FOREIGN_ISSUER)
+def test_a_link_code_naming_an_untrusted_issuer_is_refused(
+    fields: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from openral_observability.dashboard.remote_auth import load_enrolment
+
+    monkeypatch.delenv(TRUSTED_ISSUERS_ENV, raising=False)
+    with pytest.raises(ROSConfigError, match=r"trusted issuer|issuer's origin"):
+        parse_robot_link_code(_code({**_LINK, **fields}))
+    # A stored enrolment written before this check is refused the same way.
+    stored = tmp_path / "robot.json"
+    stored.write_text(
+        json.dumps({k: v for k, v in {**_LINK, **fields}.items() if k not in ("tunnel", "secret")})
+    )
+    with pytest.raises(ValueError, match=r"trusted issuer|issuer's origin"):
+        load_enrolment(stored)
+
+
+def test_both_openral_sites_are_trusted_issuers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(TRUSTED_ISSUERS_ENV, raising=False)
+    for origin in ("https://www.openral.com", "https://dev.openral.com"):
+        fields = {"iss": f"{origin}/api/auth", "jwks": f"{origin}/api/auth/jwks"}
+        assert parse_robot_link_code(_code({**_LINK, **fields}))[0].iss == fields["iss"]
+
+
+def test_an_explicit_default_port_is_the_same_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``https://www.openral.com:443`` is the trusted origin (RFC 6454 effective port)."""
+    monkeypatch.delenv(TRUSTED_ISSUERS_ENV, raising=False)
+    fields = {
+        "iss": "https://www.openral.com:443/api/auth",
+        "jwks": "https://WWW.openral.com/api/auth/jwks",
+    }
+    assert parse_robot_link_code(_code({**_LINK, **fields}))[0].iss == fields["iss"]
+    other_port = {**fields, "iss": "https://www.openral.com:8443/api/auth"}
+    with pytest.raises(ROSConfigError, match="trusted issuer"):
+        parse_robot_link_code(_code({**_LINK, **other_port}))
+
+
+def test_the_override_replaces_the_trusted_issuers(monkeypatch: pytest.MonkeyPatch) -> None:
+    self_hosted = {
+        "iss": "https://auth.acme.example/api/auth",
+        "jwks": "https://keys.acme.example/jwks",
+    }
+    monkeypatch.setenv(TRUSTED_ISSUERS_ENV, "https://auth.acme.example, https://keys.acme.example")
+    assert parse_robot_link_code(_code({**_LINK, **self_hosted}))[0].jwks == self_hosted["jwks"]
+    with pytest.raises(ROSConfigError, match="trusted issuer"):
+        parse_robot_link_code(_code(_LINK))  # openral.com is no longer listed

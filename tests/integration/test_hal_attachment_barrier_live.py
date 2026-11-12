@@ -155,15 +155,15 @@ def test_place_witness_revision_releases_the_deferred_action_tick() -> None:
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
 
     rclpy.init()
-    node: Any = ManifestHALLifecycleNode("test_attachment_barrier_live")
-    node.set_parameters(
-        [
+    node: Any = ManifestHALLifecycleNode(
+        "test_attachment_barrier_live",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(_ROBOT_YAML)),
             Parameter("hal_mode", value="sim"),
             Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
             Parameter("publish_rate_hz", value=20.0),
             Parameter("viewer_enabled", value=False),
-        ]
+        ],
     )
     peer = Node("test_attachment_barrier_peer")
     executor = SingleThreadedExecutor()
@@ -373,9 +373,9 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path
     segment_service = "/openral/perception/segment_in_view_barrier_itest"
 
     rclpy.init()
-    node: Any = ManifestHALLifecycleNode("test_attachment_barrier_vision_live")
-    node.set_parameters(
-        [
+    node: Any = ManifestHALLifecycleNode(
+        "test_attachment_barrier_vision_live",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(robot_yaml)),
             Parameter("hal_mode", value="sim"),
             Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
@@ -393,7 +393,7 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path
             # and margin + resolution; these are the real-cell derivations.
             Parameter("vision_attachment_grid_max_age_s", value=1.0),
             Parameter("vision_attachment_release_clear_m", value=0.04),
-        ]
+        ],
     )
     peer = Node("test_attachment_barrier_vision_peer")
     # Offered so the client is ready, and NEVER spun, so no reply arrives and
@@ -621,9 +621,9 @@ def test_the_vision_leg_refuses_to_activate_without_the_kernels_bounds(unset: st
     bounds = {"vision_attachment_grid_max_age_s": 1.0, "vision_attachment_release_clear_m": 0.04}
     bounds.pop(unset)
     rclpy.init()
-    node: Any = ManifestHALLifecycleNode("test_vision_leg_requires_kernel_bounds")
-    node.set_parameters(
-        [
+    node: Any = ManifestHALLifecycleNode(
+        "test_vision_leg_requires_kernel_bounds",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(_ROBOT_YAML)),
             Parameter("hal_mode", value="sim"),
             Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
@@ -631,7 +631,7 @@ def test_the_vision_leg_refuses_to_activate_without_the_kernels_bounds(unset: st
             Parameter("vision_attachment_enabled", value=True),
             Parameter("vision_attachment_camera", value=_VISION_CAMERA),
             *(Parameter(name, value=value) for name, value in bounds.items()),
-        ]
+        ],
     )
     try:
         assert str(node.trigger_configure()).endswith("SUCCESS"), "configure failed"
@@ -713,9 +713,9 @@ def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears
     robot_yaml = _calibrated_so101(tmp_path)
     description = RobotDescription.from_yaml(str(robot_yaml))
     rclpy.init()
-    node: Any = ManifestHALLifecycleNode("test_sim_attached_slot_group_trigger")
-    node.set_parameters(
-        [
+    node: Any = ManifestHALLifecycleNode(
+        "test_sim_attached_slot_group_trigger",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(robot_yaml)),
             Parameter("hal_mode", value="sim"),
             Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
@@ -725,7 +725,7 @@ def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears
             Parameter("vision_attachment_camera", value=_VISION_CAMERA),
             Parameter("vision_attachment_grid_max_age_s", value=1.0),
             Parameter("vision_attachment_release_clear_m", value=0.04),
-        ]
+        ],
     )
     try:
         assert str(node.trigger_configure()).endswith("SUCCESS"), "configure failed"

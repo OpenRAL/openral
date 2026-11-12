@@ -45,7 +45,11 @@ Heartbeat ticks that see no new event since the last successful tick
 are short-circuited inside `ReasonerCore` with
 `suppressed_reason="heartbeat_idle"` — **except while an
 `execute_rskill` goal is in flight**, when the heartbeat stays live so
-the reasoner can poll `query_task_progress` mid-execution. The retry
+the reasoner can poll `query_task_progress` mid-execution. A *result-only*
+skill (a wrapped ROS action with no `result_trajectory_field`, e.g. Nav2
+`NavigateToPose`) has no progress to poll, so it does not keep the heartbeat
+live unless a reward monitor (`query_task_progress`) is wired; its terminal result, prompts and safety events still wake the next tick.
+The retry
 cap is keyed on the **identical tool call** (same tool + same
 arguments): a healthy navigate → pick → place sequence never trips it,
 a verbatim repeat does, and after a capped streak further
@@ -60,7 +64,7 @@ The effect/actuation variants:
 |---|---|---|
 | `ExecuteRskillTool` | action goal on `/openral/execute_rskill` (F1) | ✅ `rclpy.action.ActionClient` — sends a goal with `deadline_s`, streams feedback to the warning log, emits a `FailureTrigger` on `/openral/failure/rskill` with `KIND_CONTROLLER` (rejection / abort / server-unavailable) or `KIND_TIMEOUT` (deadline_s expired). One goal at a time: while a goal is in flight a second dispatch is refused with feedback and the context carries an `in_flight:` line |
 | `LifecycleTransitionTool` | service call on `<node>/change_state` | ✅ generic `lifecycle_msgs/srv/ChangeState` client — `configure` / `activate` / `deactivate` / `cleanup` only (`shutdown` reserved for the safety supervisor, CLAUDE.md §3); `node` must be one of the palette's `node_ids` (the deployment's lifecycle peers) — the decoder rejects any other as `ROSReasonerInvalidPlan` and the dispatcher re-checks it, so the deadman or kernel can never be targeted |
-| `EmitPromptTool` | publish on `target_topic` | ✅ publishes on the call's `target_topic` (per-topic publisher cache; `/openral/prompt` reuses the cascade publisher); stamps the active OTel `traceparent` into `metadata_json` |
+| `EmitPromptTool` | publish on `target_topic` | ✅ publishes on the call's `target_topic`, which must be one of `EMIT_PROMPT_TOPICS` (`/openral/prompt`, `/openral/prompt_in/auto`) — validated in the schema and re-checked at dispatch, so the LLM can never open a publisher on another topic or speak as a human-priority router source (per-topic publisher cache; `/openral/prompt` reuses the cascade publisher); stamps the active OTel `traceparent` into `metadata_json` |
 | `WaitTool` | none (deliberate no-op) | ✅ the forced tool choice needs an explicit "observe and wait" option — logged with its rationale, no ROS traffic |
 | `ReloadGstPipelineTool` | service call on `/openral/sensors/<id>/reload_pipeline` | ⚠️ log-and-acknowledge stub — F6 sensor-package service IDL is not yet on disk (tracked in [GH-126](https://github.com/OpenRAL/openral/issues/126)) |
 
@@ -75,6 +79,37 @@ carries `{"new_goal": true}` (`openral prompt --new-goal "..."` stamps it).
 The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
 `scene_vlm` / `reward_monitor` / `memory` / `mission` frame_ids) never rebuild
 the mission and never reset the search budgets or retry-cap streak.
+One more case rebuilds mid-flight: the active task's last dispatch *succeeded*
+and no reward monitor can verify it (`mission: task … succeeded with no
+verifier` in the log) and no task is queued after it — the operator's next
+prompt is then a new goal, not an aside after which the finished task resumes.
+Queued tasks are never dropped this way, and once the reasoner prompts the
+operator (`emit_prompt`, e.g. a clarification question) the next operator prompt
+is a reply again.
+
+**Task completion without a verifier.** A task normally completes only on a
+reward / VLM verdict. A wrapped ROS action rSkill whose manifest sets
+`ros_integration.completes_task_on_success: true` (the in-tree Nav2
+`navigate_to_pose` skill; the setting is read when the goal is dispatched)
+completes the active task when its goal succeeds —
+Nav2 SUCCEEDED means "within the goal tolerance", so the reasoner must not
+re-drive a 0.2 m residual. With no reward monitor, the per-task attempt cap
+(`DEFAULT_MAX_ATTEMPTS`, 3) still applies: the task is abandoned through the
+usual abandon path (one subdivision offer, then hand-off). Both decisions log
+`mission: <complete|abandon> task <id> after '<rskill_id>' …`.
+
+**What a success says.** The `## EXECUTION` line for a successful goal carries
+the runner's `ExecuteRskill.Result.outcome_summary` before the trace id. For a
+result-only wrapped action that is the terminal status, the result's scalar
+fields and the goal that was sent, bounded to 400 characters:
+
+```
+[ok] skill=OpenRAL/rskill-nav2-mobile_base-navigate_to_pose: wrapped result-only action completed: status=STATUS_SUCCEEDED result{error_code=0} goal{pose.header.frame_id=map pose.pose.position.x=4 pose.pose.position.y=0 pose.pose.position.z=0 pose.pose.orientation.x=0 pose.pose.orientation.y=0 pose.pose.orientation.z=0 pose.pose.orientation.w=1} trace=1a2b3c4d
+```
+
+A failure carries the same `status=… result{…} goal{…}` line in its
+`failure_reason`; the result's `error*` fields come first and its `header.*`
+fields are dropped, so a MoveIt abort's error code survives the bound.
 
 For direct `locate_in_view` tool calls, a missing service, failed request, or nonempty
 `LocateInView.failure_reason` produces a bounded detector failure prompt that says
@@ -427,6 +462,8 @@ model id, endpoint, and dialect are explicit; the factory and `openral doctor`
 warn that robotics tool-calling reliability is unverified.
 
 ```bash
+# Linux: runs ollama's release-tag install.sh only when its sha256 matches
+# OLLAMA_INSTALL_SH_SHA256 (scripts/bootstrap_ollama.sh); refuses otherwise.
 just bootstrap-ollama
 export OPENRAL_REASONER_MODEL=qwen3:8b
 export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1

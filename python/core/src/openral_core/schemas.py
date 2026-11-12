@@ -49,6 +49,7 @@ from pydantic import (
 # ROSConfigError lives in the sibling `exceptions` module and is the
 # canonical exception family for any configuration-level failure (see
 # CLAUDE.md §5).
+from openral_core.code_refs import check_code_ref, check_ros_interface_package
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSObjectNotInMemory
 from openral_core.time_base import scene_control_rate_hz
 
@@ -2246,6 +2247,8 @@ class SceneComposition(BaseModel):
     composed MJCF XML and the mesh directory it references (the node writes the
     XML next to ``meshdir`` so relative mesh paths resolve). Today's only
     composer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.
+    The composer must live in an ``openral_*`` package (``check_code_ref``), checked
+    here and again before the import.
 
     Attributes:
         composer: ``"module.path:function"`` returning ``(xml, meshdir)``.
@@ -2254,7 +2257,7 @@ class SceneComposition(BaseModel):
 
     Example:
         >>> sc = SceneComposition(
-        ...     composer="pkg.scenes:compose_tabletop",
+        ...     composer="openral_sim.scenes:compose_tabletop",
         ...     params={"robot_lift_z": 0.36, "white_background": True},
         ... )
         >>> sc.params["robot_lift_z"]
@@ -2265,6 +2268,16 @@ class SceneComposition(BaseModel):
 
     composer: str
     params: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("composer")
+    @classmethod
+    def _composer_is_openral_code(cls, value: str) -> str:
+        # ValueError, not ROSConfigError: pydantic wraps only ValueError into a
+        # ValidationError, which every "skip an unloadable file" loop catches.
+        try:
+            return check_code_ref(value, setting="composition.composer")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class SceneDefaults(BaseModel):
@@ -3110,6 +3123,16 @@ class HalEntrypoints(BaseModel):
     real_bringup: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9_]+:[A-Za-z0-9_.\-]+\.launch\.py$"
     )
+
+    @field_validator("sim", "real")
+    @classmethod
+    def _entrypoint_is_openral_code(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        try:  # ValueError so pydantic raises a ValidationError (see SceneComposition)
+            return check_code_ref(value, setting=f"hal.{info.field_name}")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class RobotDescription(BaseModel):
@@ -8936,6 +8959,13 @@ class RosIntegration(BaseModel):
             ``"ros-${ROS_DISTRO}-moveit"``). Surfaced by ``ral skill check``
             and quoted in ``ROSConfigError``
             messages when the action client fails to connect.
+        completes_task_on_success: Opt-in: the wrapped action's own success is
+            the task's success, so the reasoner completes its active mission
+            task when this skill's goal succeeds — no reward model or VLM
+            verdict needed. Set it only for actions whose success criterion
+            *is* the task (Nav2 ``NavigateToPose``: SUCCEEDED means "within the
+            goal tolerance of the pose"), never for a planner whose success only
+            means "a plan exists". Default ``False`` keeps the reward / VLM gate.
 
     Example:
         >>> ri = RosIntegration(
@@ -8958,6 +8988,7 @@ class RosIntegration(BaseModel):
     result_trajectory_field: str | None = Field(default=None, max_length=200)
     default_goal_json: str = Field(min_length=2, max_length=10_000)
     ros_dependencies: list[str] = Field(default_factory=list)
+    completes_task_on_success: bool = False
     goal_builder: Literal["joint", "pose", "look_at"] | None = None
     """Optional goal-lowering adapter over the shared
     ``ROSActionRskill`` MoveGroup engine. ``None`` (the default) sends
@@ -8975,6 +9006,15 @@ class RosIntegration(BaseModel):
       same pose-constraint lowering, with the gaze pose computed from the
       camera's live TF pose (``LookAtRskill``,
       a specialisation of the ``pose`` builder)."""
+
+    @field_validator("package")
+    @classmethod
+    def _check_package_is_ros_interface(cls, v: str) -> str:
+        """``package`` is imported, so it must name a rosidl IDL package."""
+        try:  # ValueError so pydantic raises a ValidationError (see SceneComposition)
+            return check_ros_interface_package(v, setting="ros_integration.package")
+        except ROSConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("interface_name")
     @classmethod
@@ -15192,6 +15232,43 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
 }
 
 
+#: The account-setting key each provider's models need (openral.com's Account →
+#: Settings and the robot console's settings pane hold these two).
+ANTHROPIC_KEY_SETTING = "ANTHROPIC_API_KEY"
+OPENAI_KEY_SETTING = "OPENAI_API_KEY"
+
+
+def reasoner_model_options() -> list[dict[str, str | None]]:
+    """The curated models a settings form offers: ``[{id, label, needs}]``, registry order.
+
+    ``needs`` is the key setting a model reads: ``ANTHROPIC_API_KEY`` for an
+    Anthropic-dialect model, ``OPENAI_API_KEY`` for an OpenAI model (sent to OpenAI's own
+    API), ``None`` for one that runs on the robot. A cloud model of a provider neither key
+    serves (Gemini, xAI, ...) is left out.
+
+    Example:
+        >>> opts = {o["id"]: o for o in reasoner_model_options()}
+        >>> claude, gpt, cosmos = (opts[k] for k in ("claude-opus-4-8", "gpt-5.5", "cosmos3-edge"))
+        >>> claude.get("needs"), gpt.get("label"), cosmos.get("needs") is None
+        ('ANTHROPIC_API_KEY', 'GPT-5.5', True)
+    """
+    out: list[dict[str, str | None]] = []
+    for model in REASONER_MODELS.values():
+        needs: str | None
+        if not model.auth_required:
+            needs = None
+        elif model.dialect == "anthropic":
+            needs = ANTHROPIC_KEY_SETTING
+        elif model.served_model_id.startswith("openai/"):
+            needs = OPENAI_KEY_SETTING
+        else:
+            continue
+        # The provider rides in the key it needs: "(Anthropic)", "(via OpenRouter)" would mislead.
+        label = re.sub(r"\s*\((?:Anthropic|via OpenRouter|OpenAI)\)$", "", model.display_name)
+        out.append({"id": model.id, "label": label, "needs": needs})
+    return out
+
+
 # Base URLs for the named endpoints ``OPENRAL_REASONER_ENDPOINT`` accepts.
 # Exported so a deployment can reference the same constant the factory does
 # instead of retyping a URL; the properties each one implies (dialect, auth,
@@ -15656,18 +15733,29 @@ class LifecycleTransitionTool(_ReasonerToolBase):
     )
 
 
-class EmitPromptTool(_ReasonerToolBase):
-    """Tool variant — republish a ``PromptStamped`` onto another topic.
+EMIT_PROMPT_TOPICS: tuple[str, ...] = ("/openral/prompt", "/openral/prompt_in/auto")
+"""The only topics an LLM-chosen ``EmitPromptTool`` may publish on.
 
-    Dispatch: publish on ``target_topic`` (typically ``/openral/prompt``
-    for self-cascading, but any ``PromptStamped`` topic is valid).
-    Lets the reasoner stage multi-step plans, talk to a peer reasoner,
-    or feed a downstream prompt-aware skill without going through an
-    ExecuteRskill goal.
+``/openral/prompt`` (self-cascade) and the prompt router's machine-priority
+``auto`` input. Never a human-priority router input (``cli`` / ``dashboard``),
+which would let the model impersonate the operator, and never an arbitrary
+topic: the target is LLM output, and a ``PromptStamped`` publisher on any
+other name is a write into whatever node listens there.
+"""
+
+
+class EmitPromptTool(_ReasonerToolBase):
+    """Tool variant — republish a ``PromptStamped`` onto a prompt topic.
+
+    Dispatch: publish on ``target_topic``, one of ``EMIT_PROMPT_TOPICS``
+    (``/openral/prompt`` for self-cascading, or the prompt router's
+    machine-priority ``/openral/prompt_in/auto``). Lets the reasoner stage
+    multi-step plans without going through an ExecuteRskill goal.
 
     Attributes:
         tool: Discriminator (always ``"emit_prompt"``).
-        target_topic: Absolute ROS topic name (must start with ``"/"``).
+        target_topic: One of ``EMIT_PROMPT_TOPICS``; anything else fails
+            validation, and the reasoner node refuses it again at dispatch.
             The reasoner's own subscription on ``/openral/prompt`` plus
             the prompt-router's FIFO queue handle the
             cascade.
@@ -15679,10 +15767,9 @@ class EmitPromptTool(_ReasonerToolBase):
     """
 
     tool: Literal["emit_prompt"] = "emit_prompt"
-    target_topic: str = Field(
-        min_length=2,
-        pattern=r"^/",
-        description="Absolute topic to publish on, e.g. '/openral/prompt'.",
+    target_topic: Literal["/openral/prompt", "/openral/prompt_in/auto"] = Field(
+        description="Prompt topic to publish on: '/openral/prompt' (self-cascade) or "
+        "'/openral/prompt_in/auto' (the prompt router's machine-priority input).",
     )
     text: str = Field(min_length=1, description="Prompt text to publish.")
     metadata_json: str = Field(

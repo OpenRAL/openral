@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 import rclpy
 from openral_core import (
+    EMIT_PROMPT_TOPICS,
     POLICY_KINDS,
     ROS_WRAPPER_KINDS,
     SIM_EXECUTABLE_CONTROL_MODES,
@@ -145,6 +146,7 @@ from openral_reasoner.mission import (
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
     should_rebuild_mission,
+    task_step_without_verifier,
 )
 from openral_reasoner.palette import (
     ToolPalette,
@@ -1210,6 +1212,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # A spent object-query recovery budget stays stopped across ticks and restarts
         # until a genuine operator goal replaces the mission.
         self._object_query_blocked_task_id: str | None = None
+        # (mission generation, task id) whose last dispatch SUCCEEDED with no reward
+        # monitor to judge it: an operator prompt then starts a new goal instead of
+        # being an aside the finished task resumes after. Cleared by the next dispatch.
+        self._unverified_success: tuple[int, str] | None = None
+        # The dispatched skill's completes_task_on_success, captured at dispatch so a
+        # palette refresh while the goal runs cannot change how its result settles.
+        self._active_dispatch_completes_task: bool | None = None
         self._object_query_recovery_pending: bool = False
         self._active_object_query_invocation_id: str | None = None
         self._execute_rskill_client: Any = None  # rclpy.action.ActionClient
@@ -2229,7 +2238,23 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # reply to a reasoner question must not discard the in-flight queue; it reaches the
         # LLM via the PROMPTS section instead). Policy is pure + single-sourced in
         # `openral_reasoner.node_policy` (unit-tested without rclpy).
-        if should_rebuild_mission(source, msg.metadata_json, self._renderer.mission):
+        current = self._renderer.mission
+        current_active = current.active() if current is not None else None
+        succeeded_unverified = current_active is not None and self._unverified_success == (
+            self._mission_generation,
+            current_active.task_id,
+        )
+        if should_rebuild_mission(
+            source,
+            msg.metadata_json,
+            current,
+            active_succeeded_unverified=succeeded_unverified,
+        ):
+            if succeeded_unverified and current_active is not None:
+                self.get_logger().info(
+                    f"mission: task {current_active.task_id} succeeded with no verifier; "
+                    "the new operator prompt replaces the mission",
+                )
             mission = MissionState.from_prompt(msg.text)
             if not mission.is_empty():
                 self._mission_generation += 1
@@ -3473,13 +3498,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def _emit_prompt_publisher(self, target_topic: str) -> Any:
         """The ``PromptStamped`` publisher for ``target_topic`` (cached per topic).
 
-        ``/openral/prompt`` reuses the standing cascade publisher; any other
-        topic the LLM targets gets its own publisher created on first use and
-        cached — the schema and system prompt document emit_prompt as
-        "publish onto another topic", and silently rerouting every call to
-        ``/openral/prompt`` (the pre-fix behaviour) dropped cross-topic
-        cascades on the floor while the log claimed delivery.
+        Raises ``ValueError`` for a topic outside ``EMIT_PROMPT_TOPICS``: the
+        schema already refuses one, and this re-check holds even for a call
+        built without validation (``model_construct``) — the target is LLM
+        output, and a publisher is never created on a name it picked freely.
+        ``/openral/prompt`` reuses the standing cascade publisher; the other
+        allowlisted topic gets its own publisher created on first use and
+        cached (silently rerouting every call to ``/openral/prompt``, the
+        pre-fix behaviour, dropped cross-topic cascades while the log claimed
+        delivery).
         """
+        if target_topic not in EMIT_PROMPT_TOPICS:
+            raise ValueError(f"not an emit_prompt topic (allowed: {EMIT_PROMPT_TOPICS})")
         if target_topic == "/openral/prompt":
             return self._prompt_pub
         pub = self._emit_prompt_pubs.get(target_topic)
@@ -3503,6 +3533,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         span that produced it.
         """
         assert self._prompt_pub is not None
+        # Once the reasoner speaks to the operator, the next operator prompt is a reply
+        # (e.g. to a clarification question), not a new goal replacing the mission.
+        self._unverified_success = None
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "openral_reasoner"
@@ -4218,8 +4251,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
     # ── §2 — automatic reward-gated task verification ──────────────
 
-    def _maybe_verify_active_mission_task(
-        self, call: ExecuteRskillTool, *, traceparent: str | None
+    def _maybe_verify_active_mission_task(  # noqa: PLR0911  # reason: linear guard clauses before the reward query
+        self,
+        call: ExecuteRskillTool,
+        *,
+        traceparent: str | None,
+        succeeded: bool = False,
+        dispatch_task_id: str | None = None,
+        dispatch_mission_generation: int | None = None,
+        dispatch_completes_task: bool | None = None,
     ) -> None:
         """Verify the active mission task against the reward signal after a skill returns.
 
@@ -4229,6 +4269,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         drives — never an auto-complete on deadline alone (no fake success). Issues
         a windowed ``query_task_progress`` for the active task; the gate runs in
         ``_on_mission_verify_response``.
+
+        Before that, ``task_step_without_verifier`` settles what no reward verdict
+        has to: a ``succeeded`` skill whose manifest sets
+        ``completes_task_on_success`` completes the task, and with no reward
+        monitor the per-task attempt cap still abandons it.
+
+        ``dispatch_task_id`` / ``dispatch_mission_generation`` name the task the
+        returning goal was dispatched for; when given and no longer the active task
+        (a new goal rebuilt the mission, or a decompose replaced the task, while the
+        goal ran) the result is stale and settles nothing.
         """
         mission = self._renderer.mission
         if mission is None:
@@ -4236,10 +4286,53 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         active = mission.active()
         if active is None:
             return
-        if not self._task_progress_available:
-            return
         # Only verify the skill that was dispatched for this task.
         if active.last_rskill_id is not None and active.last_rskill_id != call.rskill_id:
+            return
+        if dispatch_mission_generation is not None and not object_query_task_is_current(
+            dispatch_task_id=dispatch_task_id,
+            dispatch_mission_generation=dispatch_mission_generation,
+            current_task_id=active.task_id,
+            current_mission_generation=self._mission_generation,
+        ):
+            self.get_logger().info(
+                f"mission: stale {call.rskill_id!r} result for task {dispatch_task_id} "
+                f"(generation {dispatch_mission_generation}) does not settle active task "
+                f"{active.task_id} (generation {self._mission_generation})",
+            )
+            return
+        if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
+            entry = self._palette.skill(call.rskill_id)
+            dispatch_completes_task = entry is not None and entry.completes_task_on_success
+        step = task_step_without_verifier(
+            succeeded=succeeded,
+            completes_task_on_success=dispatch_completes_task,
+            reward_available=self._task_progress_available,
+            attempts=active.attempts,
+        )
+        if step is not None:
+            action, verdict = step
+            self.get_logger().info(
+                f"mission: {action} task {active.task_id} after {call.rskill_id!r} "
+                f"(attempt {active.attempts}) — {verdict}",
+            )
+            self._apply_mission_verdict(
+                action,
+                verdict,
+                mission=mission,
+                active=active,
+                progress_now=0.0,
+                success_now=0.0,
+                traceparent=traceparent,
+            )
+            return
+        if not self._task_progress_available:
+            if succeeded:
+                self._unverified_success = (self._mission_generation, active.task_id)
+                self.get_logger().info(
+                    f"mission: task {active.task_id} attempt {active.attempts} succeeded but "
+                    "no reward monitor can verify it; it stays active for the LLM",
+                )
             return
         mission.mark_verifying()
         try:
@@ -5120,6 +5213,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         mission = self._renderer.mission
         if mission is not None and mission.active() is not None:
             mission.record_attempt(rskill_id=call.rskill_id, trace_id=traceparent)
+            self._unverified_success = None
             # VLM-adjudicated completion amendment — an execute dispatch is real progress on the
             # active task, so the per-task locate budget resets (locate cycles only
             # count toward abandonment while no skill has been dispatched).
@@ -5138,6 +5232,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._active_dispatch_task_id = active.task_id if active is not None else None
         self._active_dispatch_attempts = active.attempts if active is not None else None
         self._active_dispatch_mission_generation = self._mission_generation
+        dispatched_entry = self._palette.skill(call.rskill_id)
+        self._active_dispatch_completes_task = (
+            dispatched_entry is not None and dispatched_entry.completes_task_on_success
+        )
         self._dispatch_generation += 1
         generation = self._dispatch_generation
         self._active_dispatch_generation = generation
@@ -5755,7 +5853,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"object_query cancel_goal_async failed after accept: {type(exc).__name__}: {exc}",
             )
 
-    def _on_execute_rskill_result(
+    def _on_execute_rskill_result(  # noqa: PLR0915  # reason: one terminal-result handler — snapshot the dispatch, then route success / cancel / failure
         self,
         call: ExecuteRskillTool,
         generation: int,
@@ -5783,6 +5881,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         dispatch_task_id = self._active_dispatch_task_id
         dispatch_attempts = self._active_dispatch_attempts
         dispatch_mission_generation = self._active_dispatch_mission_generation
+        dispatch_completes_task = self._active_dispatch_completes_task
+        self._active_dispatch_completes_task = None
         self._active_dispatch_task_id = None
         self._active_dispatch_attempts = None
         self._active_dispatch_mission_generation = None
@@ -5838,11 +5938,21 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # Reasoner playbooks §2.2 — surface SUCCESS to the LLM (Inner Monologue). The
             # failure path already reaches the FAILURES buffer; success used to
             # pass through silently, leaving the reasoner blind to "it worked".
+            # ``outcome_summary`` says what it did (a wrapped action's status, result
+            # and goal); "" from a skill without one or an older runner.
             self._renderer.append_execution(
                 ExecutionEventRecord(
                     rskill_id=call.rskill_id,
                     outcome="ok",
-                    summary=f"trace={result.trace_id[:8] if result.trace_id else '-'}",
+                    summary=" ".join(
+                        part
+                        for part in (
+                            # Bounded here too: any ExecuteRskill producer may fill it.
+                            str(getattr(result, "outcome_summary", "") or "")[:480],
+                            f"trace={result.trace_id[:8] if result.trace_id else '-'}",
+                        )
+                        if part
+                    ),
                     reflection=None,
                     stamp_ns=now_ns,
                 )
@@ -5850,7 +5960,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # Reward-gated task verification §2 — runner "success" for a VLA means "ran to its
             # deadline without a controller fault", NOT "task accomplished". Verify the active
             # mission task against the reward signal before advancing.
-            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
+            self._maybe_verify_active_mission_task(
+                call,
+                traceparent=traceparent,
+                succeeded=True,
+                dispatch_task_id=dispatch_task_id,
+                dispatch_mission_generation=dispatch_mission_generation,
+                dispatch_completes_task=dispatch_completes_task,
+            )
             return
         # VLM-adjudicated completion §2 — a reasoner-driven cancel (status 5, reason "reward" from
         # the reward-watcher wake, or "patience" from the patience-ceiling
@@ -5865,7 +5982,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
                 "— verifying",
             )
-            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
+            self._maybe_verify_active_mission_task(
+                call,
+                traceparent=traceparent,
+                dispatch_task_id=dispatch_task_id,
+                dispatch_mission_generation=dispatch_mission_generation,
+            )
             return
         # Typed classification for the replanning ladder — the uint8
         # ``failure_kind`` the runner stamped from the caught exception type,
@@ -5920,7 +6042,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # by the attempt cap (abandon → hand off) rather than looping forever. Canceled (status 5)
         # is operator-driven, not an attempt.
         if status == 6:
-            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
+            self._maybe_verify_active_mission_task(
+                call,
+                traceparent=traceparent,
+                dispatch_task_id=dispatch_task_id,
+                dispatch_mission_generation=dispatch_mission_generation,
+            )
 
     def _on_execute_rskill_deadline(
         self,

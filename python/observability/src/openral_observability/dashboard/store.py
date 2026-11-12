@@ -473,6 +473,10 @@ class TelemetryStore:
             # latest tool decision; the Event Log carries the full
             # history.
             "reasoner": {},
+            # Last lifecycle transition per node, from `deploy.bringup` spans
+            # (`log_lifecycle_errors`): {node: {transition, result, ts_unix}}. The
+            # prompt bar reads the reasoner's entry to say why prompting cannot work.
+            "lifecycle": {},
             "trace": {},  # latest_trace_id
         }
         # The latest robot manifest (ADR-0129 Interface A), from its OTLP log record.
@@ -1254,6 +1258,16 @@ class TelemetryStore:
                 self._counters["openral.event.safety_violation"] += 1
         elif span_name == "reasoner.tick":
             self._record_reasoner_tick(attrs, ts_unix, duration_ms)
+        elif span_name == semconv.SPAN_DEPLOY_BRINGUP:
+            node = attrs.get(semconv.BRINGUP_NODE)
+            prev = self._topics["lifecycle"].get(node) if isinstance(node, str) else None
+            # Newest by span time: a late-delivered older SUCCESS never hides a newer FAILURE.
+            if isinstance(node, str) and (prev is None or ts_unix >= prev["ts_unix"]):
+                self._topics["lifecycle"][node] = {
+                    "transition": attrs.get(semconv.BRINGUP_TRANSITION),
+                    "result": attrs.get(semconv.BRINGUP_RESULT),
+                    "ts_unix": ts_unix,
+                }
 
     def _record_reasoner_tick(
         self, attrs: dict[str, Any], ts_unix: float, duration_ms: float

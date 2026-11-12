@@ -38,6 +38,8 @@ TARGETS=(
     tests/integration/test_reasoner_lifecycle_peers_without_seed.py
     # A blank query_task_progress task is the active mission task; stale replies drop.
     tests/integration/test_reasoner_task_progress_live.py
+    # A completes_task_on_success action settles its task; a stale result does not.
+    tests/integration/test_reasoner_action_completes_task_live.py
     # #494: OPENRAL_REASONER_MAX_SKILL_TOOLS reaches ReasonerCore through on_configure;
     # a real tick offers the fake LLM only the top-k skills of the seeded franka palette.
     tests/integration/test_reasoner_skill_cap_live.py

@@ -68,19 +68,28 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The write token is never written to .git/config: the tool talks to the
+          # REST API only, and the install below must not see a credential.
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           enable-cache: false
 
+      # The tool needs pydantic only. Install it from uv.lock (hash-checked, wheels
+      # only, no build backend) in a step that holds no token, so a compromised
+      # package can never read the write-scoped GITHUB_TOKEN at install time.
+      - name: Install pinned dependencies (no token)
+        run: uv sync --frozen --package openral-core --no-default-groups --no-install-workspace --no-build --python 3.12
+
       - name: Dispatch heavy lanes on ready PRs
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # this step only
           REPO: ${{ github.repository }}
           PR: ${{ github.event.inputs.pr }}
         run: |
           set -euo pipefail
           args=(--repo "$REPO")
           if [ -n "${PR:-}" ]; then args+=(--pr "$PR"); fi
-          uv run --isolated --with pydantic --python 3.12 \
-            python tools/heavy_lanes_trigger.py "${args[@]}"
+          .venv/bin/python tools/heavy_lanes_trigger.py "${args[@]}"

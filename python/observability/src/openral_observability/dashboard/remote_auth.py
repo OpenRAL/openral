@@ -57,6 +57,7 @@ _MAX_LIFETIME_S = 300
 _JWKS_COOLDOWN_S = 60.0
 _JWKS_MAX_AGE_S = 3600.0
 _REQUIRED_CLAIMS = ("sub", "jti", "org", "role", "robot")
+_MAX_SPENT_JTIS = 4096
 
 _ASGIApp = Callable[
     [
@@ -193,6 +194,26 @@ class TokenVerifier:
         """Bind to this robot's enrolment and its issuer's keys."""
         self.enrolment = enrolment
         self._jwks = jwks
+        self._spent: dict[str, float] = {}  # jti -> when it may be forgotten (exp + leeway)
+
+    def spend(self, principal: Principal) -> bool:
+        """Record a write made with ``principal``'s token; ``False`` if its ``jti`` made one.
+
+        A token authorises any number of reads in its 5-minute life (the console polls
+        with it) but one write: a token lifted from a log or a proxy cannot replay a
+        prompt or a skill. A ``jti`` is held until its token could no longer verify.
+        Full of live tokens, it refuses rather than forget one (fail closed).
+        """
+        if principal.jti is None or principal.jti in self._spent:
+            return False
+        now = time.time()
+        if len(self._spent) >= _MAX_SPENT_JTIS:
+            self._spent = {j: t for j, t in self._spent.items() if t > now}
+            if len(self._spent) >= _MAX_SPENT_JTIS:
+                _logger.warning("dashboard.jti_cache_full", size=len(self._spent))
+                return False
+        self._spent[principal.jti] = (principal.exp or now) + _LEEWAY_S
+        return True
 
     async def verify(self, token: str) -> Principal | str:  # noqa: PLR0911  # reason: one return per Interface B check, in its order
         """The principal ``token`` authenticates, or why it does not (never the token)."""
@@ -253,32 +274,45 @@ class VizTickets:
 
     A WebSocket and an iframe URL cannot carry a bearer token, and a JWT never goes in
     a URL (RFC 9700 §4.3.2), so the robot issues its own: bound to the caller's
-    ``sub``/role, reusable for Lichtblick's reconnects until it expires.
+    ``sub``/role, reusable for Lichtblick's reconnects until it expires, and never past
+    the ``exp`` of the token that minted it. Each mode (``local``, ``lan``, ``remote``)
+    has its own pool, so a ticket works only on the listener that minted it and a LAN
+    host minting in a loop evicts only LAN tickets.
     """
 
     TTL_S = 900
     MAX = 256
-    """Outstanding tickets kept; past it the oldest go (each viewer needs one at a time)."""
+    """Outstanding tickets kept per mode; past it the oldest go (one per viewer at a time)."""
 
     def __init__(self) -> None:
         """No tickets yet."""
-        self._tickets: dict[str, _Ticket] = {}
+        self._pools: dict[str, dict[str, _Ticket]] = {}
 
     def issue(self, principal: Principal) -> str:
-        """A new ticket for ``principal``, valid ``TTL_S`` seconds."""
+        """A new ticket for ``principal``, valid ``TTL_S`` seconds or until its token's ``exp``."""
         now = time.time()
-        if len(self._tickets) >= self.MAX:
-            self._tickets = {t: v for t, v in self._tickets.items() if v.expires_at > now}
-            while len(self._tickets) >= self.MAX:  # dicts keep issue order: oldest first
-                del self._tickets[next(iter(self._tickets))]
+        pool = self._pools.setdefault(principal.mode, {})
+        if len(pool) >= self.MAX:
+            live = {t: v for t, v in pool.items() if v.expires_at > now}
+            pool.clear()
+            pool.update(live)
+            while len(pool) >= self.MAX:  # dicts keep issue order: oldest first
+                del pool[next(iter(pool))]
         ticket = secrets.token_urlsafe(32)
-        self._tickets[ticket] = _Ticket(principal.sub, principal.role, now + self.TTL_S)
+        expires_at = now + self.TTL_S
+        if principal.exp is not None:
+            expires_at = min(expires_at, principal.exp)
+        pool[ticket] = _Ticket(principal.sub, principal.role, expires_at)
         return ticket
 
-    def expires_at(self, ticket: str | None) -> float | None:
-        """When ``ticket`` expires, or ``None`` if it is unknown or expired."""
-        found = self._tickets.get(ticket or "")
-        return found.expires_at if found is not None and found.expires_at > time.time() else None
+    def expires_at(self, ticket: str | None, *, remote: bool) -> float | None:
+        """When ``ticket`` expires on this listener, or ``None`` if unknown there or expired."""
+        modes = ("remote",) if remote else ("local", "lan")
+        for mode in modes:
+            found = self._pools.get(mode, {}).get(ticket or "")
+            if found is not None:
+                return found.expires_at if found.expires_at > time.time() else None
+        return None
 
 
 def jwks_cache_file() -> Path:

@@ -62,6 +62,7 @@ from openral_sim._sidecar_common import (
     default_expandable_segments,
     ensure_pip_venv,
     run_cmd,
+    scrub_environ,
     venv_torch_version,
 )
 from pydantic import TypeAdapter, ValidationError
@@ -449,6 +450,9 @@ def build_serve_argv(
 
 
 def main() -> int:
+    # Allowlist the environment before any install or the exec: the reasoner's
+    # own cloud API keys never reach vLLM. HF_TOKEN stays (gated NVIDIA weights).
+    scrub_environ()
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

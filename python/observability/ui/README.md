@@ -54,20 +54,51 @@ npm run preview        # serve dist/ with the same proxy
 
 ## Layout
 
-- `src/main.jsx`: mode detection, manifest/config polling, the SSE stream, and the page.
+The page is an operator console ([plan](../../../docs/roadmap/robot-console.md)) that fills one
+screen without page scroll: a left pane (closed by default, an icon rail; at the top whose
+workspace it is: the org's logo or first letter and its name, from the site's `/api/dashboard` on
+openral.com or the robot's enrolment on the robot; sections to come; at the bottom the viewer,
+with a ⋯ menu that opens the Settings pane: the reasoner's Anthropic/OpenAI keys and model,
+read and written through the site's `/api/settings` on openral.com, and where they come from on
+the robot); the header (robot, safety, Layout, **E-STOP**); the prompt bar
+(the manifest's `prompt` action; it says why when prompting is unavailable, including when the
+reasoner's last lifecycle transition failed); a fixed-height
+row of cameras ordered left → center → right by their manifest `position` (only cameras that
+stream viewable frames, then the 2D occupancy map when the robot has a `map` panel); the 3D
+scene filling the rest; and a right pane that shows one tab at a time, scrolls on its own and
+can be dragged wider. The 3D view is pinned to the world frame (`map`, else `odom`) when the
+robot has one, with a **Follow robot** toggle at its top right; its layers include the
+lidar scan and each depth camera's thinned cloud. Layout choices (tabs shown, order,
+default tab, pane width, 3D layers, follow, cameras, light/dark/system theme) are saved per
+robot in the browser.
+
+- `src/main.jsx`: mode detection, manifest/config polling, the SSE stream, and the header.
+- `src/Console.jsx`: the camera strip, the right pane and its tabs, the reasoner trace, the Layout sheet.
+- `src/Scene3D.jsx`: the 3D scene in three.js (lazy-loaded): URDF with `package://` meshes through the
+  bridge's `assets` capability (plain links when unreachable), TF, occupancy grid, point cloud,
+  collision and payload markers, world-state objects. Links are posed from `/tf`
+  (joint states only when no link has a TF frame). Draws only when something changed. It sits in its
+  own error boundary: no WebGL or a failed load leaves the header and E-STOP in place.
 - `src/ActionBar.jsx`: manifest actions filtered by role and remote policy, with a minimal JSON-schema form.
 - `src/panels.jsx`: one renderer per panel type. Unknown types are ignored.
 - `src/lib/`: pure modules with no DOM or React, each with a `*.test.js`:
   - `sse.js`: the SSE parser and reconnect loop;
   - `auth.js`: the token cache and API client;
   - `actions.js`: action filtering, the schema form, and the action call (the website's fleet view can reuse it);
-  - `viz.js`: the Lichtblick URLs;
+  - `viz.js`: the bridge WebSocket URLs (same-origin `/ws`, with a viz ticket from the LAN; the tunnel's with a ticket) and the local Lichtblick URL;
+  - `safety.js`: the header safety pill's verdict (never green on a stale or missing status);
+  - `layout.js`: camera order, the right pane's tabs, the saved layout settings, the theme;
+  - `scene.js`: TF math and ROS message → drawable data (occupancy grid, point cloud, markers, objects), and which topics each layer needs;
+  - `decode.js`: CDR decoding from the bridge's advertised `ros2msg` schemas;
+  - `bridge.js`: the Foxglove WebSocket client: subscribes only to the layers that are on, keeps the newest message of snapshot topics (no browser backlog), downloads meshes three at a time;
+  - `trace.js`: the reasoner trace kept from successive `reasoner.tick` snapshots;
   - `render.js`: formats and the map, overlay and sparkline math.
 
 ## Rules
 
 - Robot data is rendered as text through React only: no `dangerouslySetInnerHTML`, no robot-supplied HTML.
 - No service workers and no `crypto.randomUUID`: a LAN page is not a secure context.
+- The 3D view needs no `eval` or workers: it fits both the robot's and the website's CSP (`connect-src` already allows the tunnel's `wss:`).
 - Images arrive as `blob:` URLs (camera snapshots, the map and pointcloud PNGs), never `data:`, to fit the website's CSP.
 
 ## Release

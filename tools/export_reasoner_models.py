@@ -12,11 +12,10 @@ Usage: python tools/export_reasoner_models.py > reasoner-models.json
 from __future__ import annotations
 
 import json
-import re
 import sys
 from typing import Any
 
-from openral_core import REASONER_MODELS
+from openral_core import reasoner_model_options
 
 
 def export() -> list[dict[str, Any]]:
@@ -28,20 +27,7 @@ def export() -> list[dict[str, Any]]:
         >>> next(m for m in export() if m["id"] == "gpt-5.5")["label"]
         'GPT-5.5'
     """
-    out = []
-    for model in REASONER_MODELS.values():
-        if not model.auth_required:
-            needs = None
-        elif model.dialect == "anthropic":
-            needs = "ANTHROPIC_API_KEY"
-        elif model.served_model_id.startswith("openai/"):
-            needs = "OPENAI_API_KEY"
-        else:  # a provider the website has no key for (Gemini, xAI, ...): not offered there
-            continue
-        # The provider rides in the key it needs: "(Anthropic)", "(via OpenRouter)" would mislead.
-        label = re.sub(r"\s*\((?:Anthropic|via OpenRouter|OpenAI)\)$", "", model.display_name)
-        out.append({"id": model.id, "label": label, "needs": needs})
-    return out
+    return reasoner_model_options()
 
 
 if __name__ == "__main__":

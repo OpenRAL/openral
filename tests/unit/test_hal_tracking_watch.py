@@ -214,16 +214,16 @@ def test_the_hal_node_raises_estop_on_a_fault() -> None:
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
     from std_msgs.msg import Empty
 
-    node = _ManifestHALLifecycleNode("t_tracking_watch")
+    node = _ManifestHALLifecycleNode(
+        "t_tracking_watch",
+        parameter_overrides=[
+            Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml")),
+            Parameter("hal_mode", value="sim"),
+            Parameter("tracking_fault_window_s", value=0.2),
+        ],
+    )
     listener = rclpy.create_node("t_tracking_listener")
     try:
-        node.set_parameters(
-            [
-                Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml")),
-                Parameter("hal_mode", value="sim"),
-                Parameter("tracking_fault_window_s", value=0.2),
-            ]
-        )
         node._hal = node._create_hal()
         qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -259,15 +259,15 @@ def test_the_hal_node_refuses_a_bad_tracking_window(window: float) -> None:
     from rclpy.parameter import Parameter
     from rclpy.qos import QoSProfile
 
-    node = _ManifestHALLifecycleNode("t_tracking_bad_window")
+    node = _ManifestHALLifecycleNode(
+        "t_tracking_bad_window",
+        parameter_overrides=[
+            Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml")),
+            Parameter("hal_mode", value="sim"),
+            Parameter("tracking_fault_window_s", value=window),
+        ],
+    )
     try:
-        node.set_parameters(
-            [
-                Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml")),
-                Parameter("hal_mode", value="sim"),
-                Parameter("tracking_fault_window_s", value=window),
-            ]
-        )
         node._hal = node._create_hal()
         with pytest.raises(ROSConfigError, match="tracking_fault_window_s"):
             node._arm_tracking_watch(QoSProfile(depth=10))

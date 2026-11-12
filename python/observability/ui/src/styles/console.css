@@ -1,0 +1,951 @@
+/* Operator console: cameras over the 3D scene, a tabbed right pane, and a
+   light theme. Dark is the website's tokens (tokens.css); light swaps them for
+   a warm, soft neutral set. Status colours keep their meaning in both. */
+
+:root {
+  --scene-bg: #121419;
+  --scene-grid: #2c313b;
+  --scene-accent: #8fb3ff;
+  --scene-depth: #7fc8a9;
+  --scene-scan: #ff7a59;
+  --map-free: #1c1f26;
+  --map-occupied: #e8e9ed;
+  --glass: rgba(22, 24, 30, 0.82);
+  --ok: #4fb58b;
+  --ok-soft: rgba(79, 181, 139, 0.14);
+  --bad-soft: rgba(217, 138, 142, 0.16);
+  --warn: #f2b880;
+  --warn-soft: rgba(242, 184, 128, 0.16);
+  --on-accent: #0b0c10;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #eeede8;
+  --bg-2: #f5f4f0;
+  --surface: #ffffff;
+  --surface-2: #f5f4f0;
+  --hair: #e2e0da;
+  --hair-2: #c9c6be;
+  --text: #1c1d1f;
+  --text-2: #4f535a;
+  --muted: #5f636a;
+  --accent: #1c1d1f;
+  --accent-tint: rgba(28, 29, 31, 0.82);
+  --accent-soft: rgba(28, 29, 31, 0.07);
+  --accent-line: rgba(28, 29, 31, 0.22);
+  --red: #c93a2e;
+  --live: #2f9e6b;
+  --scene-bg: #f4f3ef;
+  --scene-grid: #d8d5cc;
+  --scene-accent: #2f5fc4;
+  --scene-depth: #2e8a63;
+  --scene-scan: #d9480f;
+  --map-free: #e6e4dd;
+  --map-occupied: #2a2c30;
+  --glass: rgba(255, 255, 255, 0.84);
+  --ok: #1d6b48;
+  --ok-soft: #e3f2ea;
+  --bad-soft: #fbe7e4;
+  --warn: #8a4e0f;
+  --warn-soft: #fbf0e3;
+  --on-accent: #ffffff;
+  color-scheme: light;
+}
+:root[data-theme="light"] .top {
+  background: rgba(238, 237, 232, 0.92);
+}
+:root[data-theme="light"] .btn.estop {
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(201, 58, 46, 0.28);
+}
+:root[data-theme="light"] .btn.estop:hover {
+  background: #b23125;
+}
+:root[data-theme="light"] .chip[aria-pressed="true"] {
+  color: var(--on-accent);
+}
+
+/* ── header additions ── */
+.pill.safety.ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: transparent;
+}
+.pill.safety.warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: var(--warn);
+  font-weight: 700;
+}
+.pill.safety.unknown {
+  border-style: dashed;
+}
+.pill.safety.bad {
+  color: var(--red);
+  background: var(--bad-soft);
+  border-color: var(--red);
+  font-weight: 700;
+}
+
+/* ── page: one screen, no page scroll. The header is fixed in height, the console
+   takes the rest, and only the right pane's body scrolls. Below 1000px the page
+   stacks and scrolls like a normal document. ── */
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  overflow: hidden;
+}
+#root {
+  display: flex;
+  flex-direction: column;
+}
+.top {
+  position: static;
+  flex: none;
+}
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  overflow: hidden;
+}
+main > .banner,
+main > .waiting {
+  flex: none;
+}
+
+/* ── left pane: an icon rail that opens into a side pane ── */
+.app {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.app-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.rail {
+  flex: none;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--hair);
+  background: var(--bg-2);
+  transition: width 160ms var(--ease, ease);
+}
+.rail.open {
+  width: 240px;
+}
+.rail-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 12px 10px 16px;
+  flex-wrap: wrap;
+}
+.rail-org {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: grid;
+  place-items: center;
+  font: 600 14px var(--body);
+  color: var(--on-accent);
+  background: var(--text);
+}
+.rail-brand {
+  font: 600 15px var(--body);
+  color: var(--text);
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-toggle {
+  font: 500 16px var(--body);
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+}
+.rail:not(.open) .rail-toggle {
+  margin: 4px 0 0 -2px;
+}
+.rail-toggle:hover,
+.rail-toggle:focus-visible {
+  border-color: var(--hair-2);
+  color: var(--text);
+}
+.rail-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.rail-profile {
+  position: relative;
+  padding: 10px 8px 12px;
+  border-top: 1px solid var(--hair);
+}
+.rail-me {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  color: var(--text);
+}
+.rail-who {
+  flex: 1 1 auto;
+}
+.rail-more {
+  flex: none;
+  font: 600 16px var(--body);
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}
+.rail-more:hover,
+.rail-more[aria-expanded="true"],
+.rail-more:focus-visible {
+  border-color: var(--hair-2);
+  color: var(--text);
+  background: var(--surface);
+}
+.rail-avatar {
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font: 600 11px var(--body);
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.rail-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.rail-name,
+.rail-detail {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-name {
+  font: 500 13px var(--body);
+}
+.rail-detail {
+  font: 400 11px var(--mono);
+  color: var(--muted);
+}
+.rail-menu {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% - 4px);
+  min-width: 200px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--hair-2);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+.rail-menu > * {
+  font: 500 13px var(--body);
+  color: var(--text);
+  text-decoration: none;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.rail-menu > *:hover:not(:disabled),
+.rail-menu > *:focus-visible {
+  background: var(--bg-2);
+}
+.rail-menu > :disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* settings: a pane between the rail and the console, opened from the ⋯ menu */
+.settings-pane {
+  flex: none;
+  width: min(380px, 80vw);
+  overflow-y: auto;
+  border-right: 1px solid var(--hair);
+  background: var(--surface);
+  padding: 14px 18px 24px;
+  outline: none;
+}
+.settings-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-hd h2 {
+  font: 600 17px var(--body);
+  margin: 0;
+}
+.settings-sub {
+  font: 600 11px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 18px 0 6px;
+}
+.set-scope {
+  border-top: 1px solid var(--hair);
+  padding: 12px 0 4px;
+}
+.set-scope h3 {
+  font: 600 14px var(--body);
+  margin: 0 0 4px;
+}
+.set-note {
+  font: 400 12px var(--body);
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.set-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+.set-label {
+  font: 500 13px var(--body);
+}
+.set-value {
+  font: 400 12px var(--mono);
+  color: var(--muted);
+  margin-left: 6px;
+}
+.set-edit {
+  display: flex;
+  gap: 6px;
+}
+.set-edit input,
+.set-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 400 13px var(--body);
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+.set-err,
+.set-msg.err {
+  color: var(--red);
+  font: 400 12px var(--body);
+}
+.set-msg.ok {
+  color: var(--ok);
+  font: 400 12px var(--body);
+}
+
+/* ── console grid: stage | drag handle | pane ── */
+.console {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 8px min(var(--pane-w, 440px), 60vw);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 4px;
+}
+.stage {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto; /* a viewport too short for the scene's floor scrolls, never clips */
+}
+.pane {
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pane-resizer {
+  cursor: col-resize;
+  border-radius: 4px;
+  position: relative;
+  touch-action: none;
+}
+.pane-resizer::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: calc(50% - 20px);
+  width: 2px;
+  height: 40px;
+  border-radius: 2px;
+  background: var(--hair-2);
+}
+.pane-resizer:hover::after,
+.pane-resizer:focus-visible::after {
+  background: var(--text-2);
+}
+@media (max-width: 1000px) {
+  body {
+    overflow: auto;
+  }
+  html,
+  body,
+  #root {
+    height: auto;
+  }
+  main {
+    overflow: visible;
+  }
+  .console {
+    display: flex;
+    flex-direction: column;
+  }
+  .pane-resizer {
+    display: none;
+  }
+  .pane {
+    max-height: 80vh;
+  }
+}
+
+/* ── prompt bar: the first thing in the stage ── */
+.prompt-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+  padding: 6px 6px 6px 14px;
+}
+.prompt-bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 400 15px var(--body);
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  min-height: 40px;
+}
+.prompt-bar input::placeholder {
+  color: var(--muted);
+}
+.prompt-bar input:disabled {
+  cursor: not-allowed;
+}
+.prompt-bar input:focus-visible {
+  outline: none;
+}
+.prompt-bar:focus-within {
+  border-color: var(--accent-line);
+}
+.prompt-send {
+  flex: none;
+  min-height: 40px;
+  padding: 0 16px;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  border-radius: 10px;
+  font-weight: 600;
+}
+.prompt-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.prompt-note {
+  flex: none;
+  max-width: 40%;
+  font: 400 12px var(--mono);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── cameras: one row of a fixed height, centered. Up to three tiles take a third
+   of the row each; more share it equally (--cams is the number shown). A tile never
+   changes height: the picture fills what the header and a one-line caption leave. ── */
+.cams {
+  flex: none;
+  height: clamp(170px, 27vh, 300px);
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+.cam-slot {
+  flex: 0 1 calc((100% - (max(var(--cams, 3), 3) - 1) * 10px) / max(var(--cams, 3), 3));
+  min-width: 0;
+  height: 100%;
+}
+.cam-slot > .card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cam-slot .card-hd {
+  flex: none;
+  flex-wrap: nowrap;
+  padding: 7px 12px;
+}
+.cam-slot .card-hd h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cam-slot .card-bd {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cam-slot .cam,
+.cam-slot .map-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  aspect-ratio: auto !important;
+  width: 100% !important;
+}
+.cam-slot .cam img,
+.cam-slot .map-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.cam-slot .meta {
+  flex: none;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.cam-slot .meta > span {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cam-slot .meta > span:first-child {
+  flex: none;
+}
+/* The occupancy tile is a camera-sized card: cells and resolution only (origin,
+   frame, source and pose stay on the World tab's full map card). */
+.map-slot .meta > span:nth-child(n + 3) {
+  display: none;
+}
+.cam-slot .empty {
+  margin: auto;
+}
+
+/* ── 3D scene: on the desktop it fills what the prompt bar and the camera row leave;
+   below 1000px (one scrolling column) it keeps a fixed height. ── */
+.scene {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 280px;
+  border: 1px solid var(--hair);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--scene-bg);
+}
+@media (max-width: 1000px) {
+  .scene {
+    flex: none;
+    height: clamp(460px, 62vh, 820px);
+  }
+}
+.scene-canvas,
+.scene-canvas canvas {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+.scene-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.scene-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font: 500 11.5px/1 var(--mono);
+  color: var(--text);
+  background: var(--glass);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+.scene-label.stale {
+  color: var(--muted);
+  border-style: dashed;
+}
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+.glass-hd {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 2px 4px 6px;
+}
+.scene-layers {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  min-width: 190px;
+}
+.layer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.layer:hover {
+  background: var(--accent-soft);
+}
+.layer.off span:first-of-type {
+  color: var(--muted);
+}
+.layer-na {
+  margin-left: auto;
+  font: 400 10.5px var(--mono);
+  color: var(--muted);
+}
+.layer input {
+  accent-color: var(--scene-accent);
+}
+.scene-views {
+  position: absolute;
+  right: 12px;
+  /* never under the layer list (left: 12px, ~200px wide): when the 3D view is narrow
+     (the settings pane open) the buttons wrap onto a second row instead of overlapping */
+  left: 232px;
+  top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-content: flex-start;
+  gap: 6px;
+  pointer-events: none;
+}
+.scene-views > * {
+  pointer-events: auto;
+}
+.glass-btn {
+  font: 500 12px var(--body);
+  color: var(--text);
+  background: var(--glass);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 7px 11px;
+  min-height: 34px;
+  cursor: pointer;
+}
+.glass-btn:hover {
+  border-color: var(--hair-2);
+}
+.glass-btn.on {
+  color: var(--bg);
+  background: var(--text);
+  border-color: var(--text);
+}
+.scene-status {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  right: 12px;
+  font: 400 11px var(--mono);
+  color: var(--muted);
+  pointer-events: none;
+}
+@media (max-width: 640px) {
+  .scene-layers {
+    position: static;
+    margin: 8px;
+  }
+  .scene-views {
+    left: auto;
+  }
+}
+
+/* ── right pane ── */
+.tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 6px;
+  border-bottom: 1px solid var(--hair);
+}
+.tab {
+  flex: 1 1 0;
+  min-width: 0;
+  font: 500 12.5px var(--body);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 2px;
+  min-height: 36px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.on {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.pane-body .card {
+  border-radius: 12px;
+}
+.pane-actions {
+  flex: none;
+  border-top: 1px solid var(--hair);
+  padding: 10px;
+}
+.pane-actions .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pane-sub {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 2px;
+}
+
+/* reasoner trace */
+.trace ol {
+  list-style: none;
+  display: grid;
+}
+.trace-row {
+  display: grid;
+  grid-template-columns: 62px 12px minmax(0, 1fr);
+  gap: 8px;
+  padding-bottom: 10px;
+  position: relative;
+}
+.trace-t {
+  font: 400 11px var(--mono);
+  color: var(--muted);
+  padding-top: 1px;
+}
+.trace-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-top: 4px;
+  background: var(--muted);
+}
+.k-act .trace-dot {
+  background: var(--scene-accent);
+}
+.k-plan .trace-dot,
+.k-prompt .trace-dot {
+  background: var(--text);
+}
+.k-error .trace-dot {
+  background: var(--red);
+}
+.k-wait .trace-dot,
+.k-think .trace-dot {
+  background: transparent;
+  border: 1.5px solid var(--hair-2);
+}
+.trace-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.trace-kind {
+  font: 600 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.k-error .trace-kind {
+  color: var(--red);
+}
+.trace-text {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* layout sheet */
+.sheet {
+  padding: 14px;
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+}
+.sheet-hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.sheet-hd h2 {
+  font-size: 15px;
+}
+.sheet-hd .chip {
+  margin-left: auto;
+}
+.sheet-hd .muted {
+  font-size: 12px;
+}
+.sheet-list {
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+.sheet-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-top: 1px solid var(--hair);
+  font-size: 13px;
+}
+.sheet-list li > label:first-child {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sheet-default {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--hair);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.seg {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  padding: 3px;
+  justify-self: start;
+}
+.seg label {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.seg label.on {
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.seg input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+/* The radio itself is invisible: show keyboard focus on its label. */
+.seg label:has(input:focus-visible) {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
+}
+
+/* header: one row, E-STOP on the right (wraps under on narrow screens) */
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+.top > .brand {
+  flex: 1 1 520px;
+}
+.top > .actions {
+  margin-left: auto;
+}
+
+/* In the row the tile header already carries the live dot and age. */
+.cam-slot .cam-pills {
+  display: none;
+}

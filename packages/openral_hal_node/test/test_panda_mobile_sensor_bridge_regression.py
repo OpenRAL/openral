@@ -246,9 +246,9 @@ def test_panda_mobile_robocasa_sensor_bridge_regression() -> None:
     # ── Bring up the lifecycle node ───────────────────────────────────────────
     rclpy.init()
     try:
-        node = ManifestHALLifecycleNode("openral_hal_panda_mobile")
-        node.set_parameters(
-            [
+        node = ManifestHALLifecycleNode(
+            "openral_hal_panda_mobile",
+            parameter_overrides=[
                 Parameter(
                     "robot_yaml",
                     Parameter.Type.STRING,
@@ -260,7 +260,7 @@ def test_panda_mobile_robocasa_sensor_bridge_regression() -> None:
                 # build_hal → build_sim_env_from_yaml.
                 Parameter("sim_env_yaml", Parameter.Type.STRING, _SCENE_YAML),
                 Parameter("viewer_enabled", Parameter.Type.BOOL, False),  # headless
-            ]
+            ],
         )
 
         executor = rclpy.executors.SingleThreadedExecutor()

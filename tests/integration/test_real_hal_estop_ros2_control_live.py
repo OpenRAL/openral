@@ -177,14 +177,14 @@ class _Harness:
         from std_msgs.msg import Empty
 
         rclpy.init()
-        self.node: Any = ManifestHALLifecycleNode(f"openral_hal_{robot}_estop_live")
-        self.node.set_parameters(
-            [
+        self.node: Any = ManifestHALLifecycleNode(
+            f"openral_hal_{robot}_estop_live",
+            parameter_overrides=[
                 Parameter("robot_yaml", value=str(manifest)),
                 Parameter("hal_mode", value="real"),
                 Parameter("publish_rate_hz", value=30.0),
                 Parameter("viewer_enabled", value=False),
-            ]
+            ],
         )
         self.helper: Any = rclpy.create_node(f"openral_hal_{robot}_estop_observer")
         self.joint_states: list[Any] = []

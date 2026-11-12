@@ -50,6 +50,7 @@ _spec.loader.exec_module(_common)
 ensure_pip_venv: Callable[..., Path] = _common.ensure_pip_venv
 run_cmd: Callable[..., None] = _common.run_cmd
 torch_backend: Callable[[], str] = _common.torch_backend
+scrub_environ: Callable[..., None] = _common.scrub_environ
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "da3-depth-sidecar"
 _VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"
@@ -219,6 +220,9 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
 
 
 def main() -> int:
+    # DA3 weights are public: no operator credential, not even HF_TOKEN, reaches
+    # the venv installs or the server.
+    scrub_environ(hf_token=False)
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

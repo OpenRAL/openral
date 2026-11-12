@@ -80,13 +80,13 @@ def _skip_if_assets_undownloadable(robot_id: str) -> None:
 
 def _manifest_node(robot_id: str) -> ManifestHALLifecycleNode:
     """The node ``lifecycle_node.py`` spins, parameterised as ``deploy sim`` does."""
-    node = ManifestHALLifecycleNode(f"openral_hal_{robot_id}")
-    node.set_parameters(
-        [
+    node = ManifestHALLifecycleNode(
+        f"openral_hal_{robot_id}",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(_ROBOTS_DIR / robot_id / "robot.yaml")),
             Parameter("hal_mode", value="sim"),
             Parameter("viewer_enabled", value=False),
-        ]
+        ],
     )
     return node
 

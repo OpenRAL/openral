@@ -206,13 +206,13 @@ _Lazy auto-install helpers for sim backends with bespoke install chains that go 
 - `const _ROBOCASA_GR1_RUNTIME_DEPS` — `_ROBOCASA_RUNTIME_DEPS` minus `robosuite.examples` (the GR1 fork ships no examples package). (L193)
 - `const _ROBOSUITE_PIN = '5ce6643f3092639d08f7b0f90ed1c6a84f50552c'` — Pinned robosuite fork commit for the RoboCasa plans. (L635)
 - `const _SIMPLER_ENV_GIT_URL` — `pip`-installable git spec for the SimplerEnv maniskill3 branch. (L1164)
-- `const _VLABENCH_RRT_STUB_SYMBOLS` — `(module, symbol)` pairs VLABench's motion-planning stub must provide when the real RRT deps are absent. (L1685)
+- `const _VLABENCH_RRT_STUB_SYMBOLS` — `(module, symbol)` pairs VLABench's motion-planning stub must provide when the real RRT deps are absent. (L1701)
 - `const _RLDX_SIDECAR_REPO_URL = 'https://github.com/RLWRLD/RLDX-1.git'` (L1412)
-- `const _RLDX_SIDECAR_HOME = _DEFAULT_CACHE_HOME / 'rldx-sidecar'` (L1413)
-- `const _PLANS: dict[str, Callable[[], BackendInstallPlan]]` — Backend id → lazy plan-builder registry (`robocasa_kitchen`, `robocasa_gr1`, …). (L1864)
-- `get_plan(backend_id) -> BackendInstallPlan` — Resolve a backend id to its install plan, building lazily. (L1883)
-- `remediation(manual_hint) -> str` — Return `manual_hint`, plus a runnable equivalent when `just` is absent. (L1948)
-- `ensure_backend_deps(backend_id) -> None` — Install `backend_id` deps if missing, after the user confirms. (L2009)
+- `const _RLDX_SIDECAR_HOME = _DEFAULT_CACHE_HOME / 'rldx-sidecar'` (L1417)
+- `const _PLANS: dict[str, Callable[[], BackendInstallPlan]]` — Backend id → lazy plan-builder registry (`robocasa_kitchen`, `robocasa_gr1`, …). (L1880)
+- `get_plan(backend_id) -> BackendInstallPlan` — Resolve a backend id to its install plan, building lazily. (L1899)
+- `remediation(manual_hint) -> str` — Return `manual_hint`, plus a runnable equivalent when `just` is absent. (L1964)
+- `ensure_backend_deps(backend_id) -> None` — Install `backend_id` deps if missing, after the user confirms. (L2025)
 
 ### Eval adapters
 
@@ -344,13 +344,13 @@ _Canonical openral-side out-of-process sidecar transport — ZMQ REQ/REP + a num
   - `SidecarClient.require(reply, key) -> Any` — `require_key` bound to this client's `name` for error text. (L369)
   - `SidecarClient.close() -> None` — Idempotent teardown: socket first (so child exit can't race a recv). (L373)
   - `SidecarClient.detach() -> int | None` — Close the socket but leave the sidecar running (a spawned child leaves the process-exit reaper); returns its pid, `None` when adopted. A later `connect` with a matching ping identity adopts it. (L381)
-- `class SidecarSimRollout` — Shared `SimRollout` base for sidecar-backed scene adapters (Isaac Sim, RoboTwin): owns the client/state fields (incl. `_sim_dt_per_tick_s`, initially the ping-reported sim seconds per step, `None` when the protocol lacks it) and reset/step/render/close/sim_time_ns methods. `reset` invokes a backend metadata hook before wrapping the observation; Isaac replaces nominal ping cadence with observed reset cadence, while other sidecars keep their existing behavior. `_wrap_obs` raises `NotImplementedError` — each backend subclass implements it and its own `action_dim`. (L572)
-  - `SidecarSimRollout.reset(seed=None) -> Observation` — Reset the sidecar env and return its first wrapped observation. (L596)
-  - `SidecarSimRollout.step(action) -> StepResult` — Apply one action over the wire and return the wrapped transition. (L603)
+- `class SidecarSimRollout` — Shared `SimRollout` base for sidecar-backed scene adapters (Isaac Sim, RoboTwin): owns the client/state fields (incl. `_sim_dt_per_tick_s`, initially the ping-reported sim seconds per step, `None` when the protocol lacks it) and reset/step/render/close/sim_time_ns methods. `reset` invokes a backend metadata hook before wrapping the observation; Isaac replaces nominal ping cadence with observed reset cadence, while other sidecars keep their existing behavior. `_wrap_obs` raises `NotImplementedError` — each backend subclass implements it and its own `action_dim`. (L578)
+  - `SidecarSimRollout.reset(seed=None) -> Observation` — Reset the sidecar env and return its first wrapped observation. (L602)
+  - `SidecarSimRollout.step(action) -> StepResult` — Apply one action over the wire and return the wrapped transition. (L609)
   - `SidecarSimRollout._step_options() -> dict[str, Any]` — Extra `step` request fields beside the action; default none (`_IsaacSimSidecar` sends its one-shot `frames` mode).
-  - `SidecarSimRollout.sim_time_ns() -> int | None` — Elapsed simulation time in ns from the last sidecar reply, or `None`. (L619)
-  - `SidecarSimRollout.render() -> NDArray[np.uint8] | None` — Return the last cached RGB frame, or `None` before the first step. (L629)
-  - `SidecarSimRollout.close() -> None` — Idempotent teardown: best-effort sidecar-side close, then the client. (L633)
+  - `SidecarSimRollout.sim_time_ns() -> int | None` — Elapsed simulation time in ns from the last sidecar reply, or `None`. (L625)
+  - `SidecarSimRollout.render() -> NDArray[np.uint8] | None` — Return the last cached RGB frame, or `None` before the first step. (L635)
+  - `SidecarSimRollout.close() -> None` — Idempotent teardown: best-effort sidecar-side close, then the client. (L639)
 
 #### `python/sim/src/openral_sim/backends/isaac_sim.py`
 _NVIDIA Isaac Sim (Omniverse + PhysX + RTX) free-axis scene adapter. Drives an Isaac Sim env in a separate py3.11 sidecar venv (Isaac ships per-interpreter wheels; the openral workspace is py3.12) over the shared `SidecarClient`. The heavy `isaacsim`/`isaaclab` install is an externally-provisioned venv (Omniverse Kit is proprietary, never vendored). Scene id `isaac_sim`; task id `isaac_sim/<name>`._
@@ -466,9 +466,9 @@ _RoboTwin 2.0 dual-arm SAPIEN scene adapter, fixed to the `aloha_agilex` embodim
 - `_scene_default_port(task_id, robot_id) -> int` — deterministic per-scene ZMQ port in `[_SIDECAR_PORT_MIN, _SIDECAR_PORT_MAX)` (SHA-256 digest, not the salted builtin `hash`), so distinct tasks never share a sidecar endpoint; an explicit `backend_options.port` still wins.
 - `_robotwin_task_name(task_id) -> str` — strips the `robotwin/` namespace to the bare upstream task name the LeRobot env wants.
 - `_provision_robotwin_venv() -> Path` / `_sidecar_python() -> Path` / `_locate_sidecar_script() -> Path` — opt-in (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1`) provisioning of the py3.10 venv (lerobot from git `main` + SAPIEN + wire — the RoboTwin task package + multi-GB assets remain a manual step), interpreter resolution (env override → cache default → opt-in provision → typed `ROSConfigError` carrying the full conda recipe), and `tools/robotwin_sidecar.py` location (env override → walk-up).
-- `_download_assets_script(root: Path) -> str` (L318) — Path of RoboTwin's asset download script relative to the checkout; accepts the pre-2026 `script/` and current `scripts/` layouts.
+- `_download_assets_script(root: Path) -> str` (L323) — Path of RoboTwin's asset download script relative to the checkout; accepts the pre-2026 `script/` and current `scripts/` layouts.
 - `_build_robotwin_scene(env_cfg) -> _RoboTwinSimSidecar` — factory: builds the launch argv (`--task`, `--cameras`, `--episode-length`, obs h/w, host/port), connects a `SidecarClient(name="robotwin", expected_identity={"env": "robotwin", "task": <name>})`.
-- `provision_robotwin() -> None` — Pre-launch provisioner: `ensure_backend_deps("robotwin_client")` + `_sidecar_python()` (opt-in multi-GB LeRobot + SAPIEN venv under `OPENRAL_ROBOTWIN_AUTO_PROVISION=1`, else the manual recipe). Registered as `provision=`; keeps the venv build out of the HAL's 300 s `on_configure`. Note this covers **provisioning only** — the sidecar *boot* still happens inside `on_configure` via `_build_robotwin_scene`'s `connect()`, and this backend's `_DEFAULT_BOOT_TIMEOUT_S = 600.0` exceeds that bound (latent: no in-tree deploy scene selects `robotwin`). (L415)
+- `provision_robotwin() -> None` — Pre-launch provisioner: `ensure_backend_deps("robotwin_client")` + `_sidecar_python()` (opt-in multi-GB LeRobot + SAPIEN venv under `OPENRAL_ROBOTWIN_AUTO_PROVISION=1`, else the manual recipe). Registered as `provision=`; keeps the venv build out of the HAL's 300 s `on_configure`. Note this covers **provisioning only** — the sidecar *boot* still happens inside `on_configure` via `_build_robotwin_scene`'s `connect()`, and this backend's `_DEFAULT_BOOT_TIMEOUT_S = 600.0` exceeds that bound (latent: no in-tree deploy scene selects `robotwin`). (L420)
 - Module side effect: `SCENES.register("robotwin", fixed_robot="aloha_agilex", provision=provision_robotwin, sim_clock=True)(_build_robotwin_scene)` at import.
 - `const _ROBOTWIN_SCENE_ID = 'robotwin'` (L73)
 - `const _ROBOTWIN_ROBOT_ID = 'aloha_agilex'` (L74)
@@ -482,15 +482,15 @@ _RoboTwin 2.0 dual-arm SAPIEN scene adapter, fixed to the `aloha_agilex` embodim
 - `const _ROBOTWIN_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'robotwin-sidecar'` (L90)
 - `const _ROBOTWIN_PYTHON = '3.12'` (L91)
 - `const _ROBOTWIN_REPO = 'https://github.com/RoboTwin-Platform/RoboTwin.git'` (L92)
-- `const _ROBOTWIN_BASE_DEPS` — Pinned `lerobot==0.6.0` + `sapien==3.0.3` + CUDA/Open3D/h5py sidecar install spec. (L95)
-- `const _ROBOTWIN_MPLIB_DEPS = ('mplib==0.2.1',)` (L109)
-- `const _DEFAULT_HOST = '127.0.0.1'` (L111)
-- `const _SIDECAR_PORT_MIN = 20000` (L117)
-- `const _SIDECAR_PORT_MAX = 40000` (L118)
-- `const _DEFAULT_TIMEOUT_MS = 120000` (L122)
-- `const _DEFAULT_BOOT_TIMEOUT_S = 600.0` (L124)
-- `const _DEFAULT_MAX_STEPS = 1000000` (L126)
-- `const _FALLBACK_SIM_DT_S = 1.0 / 30.0` (L130)
+- `const _ROBOTWIN_BASE_DEPS` — Pinned `lerobot==0.6.0` + `sapien==3.0.3` + CUDA/Open3D/h5py sidecar install spec. (L98)
+- `const _ROBOTWIN_MPLIB_DEPS = ('mplib==0.2.1',)` (L112)
+- `const _DEFAULT_HOST = '127.0.0.1'` (L114)
+- `const _SIDECAR_PORT_MIN = 20000` (L120)
+- `const _SIDECAR_PORT_MAX = 40000` (L121)
+- `const _DEFAULT_TIMEOUT_MS = 120000` (L125)
+- `const _DEFAULT_BOOT_TIMEOUT_S = 600.0` (L127)
+- `const _DEFAULT_MAX_STEPS = 1000000` (L129)
+- `const _FALLBACK_SIM_DT_S = 1.0 / 30.0` (L133)
 
 #### `tools/robotwin_sidecar.py`
 _RoboTwin-side sidecar (runs under the py3.10 lerobot-main + RoboTwin + SAPIEN venv only). Constructs LeRobot's native `robotwin` gym env and serves a ZMQ REP loop matching the openral wire framing, re-keying the env's native cameras to `camera1`/`camera2`/`camera3` and including `sim_time_ns`. Not imported by the openral venv._
@@ -914,27 +914,30 @@ A `--variant {v2,v1}` switch selects the model family end-to-end. **v1** (LingBo
 
 #### `python/sim/src/openral_sim/_sidecar_common.py`
 _Shared boot scaffolding for the out-of-process `rldx` VLA sidecar (a GR00T-N1.5 finetune, hence the `_Gr00tFamilySidecarAdapter` class name — GR00T N1.7 itself now runs in-process): clone, venv, install, env isolation, exec — plus the sidecar identity registry._
-- `const _SIDECAR_REGISTRY_DIR = Path.home() / '.cache' / 'openral' / 'sidecars'` — Root of the per-port sidecar identity registry. (L90)
-- `run_sidecar(*, label, family, repo_url, args, install_deps, make_wrapper) -> int` — orchestrates a boot (uv → clone → install → wrapper → exec). Writes the identity record (`write_sidecar_identity`) just before `exec_server` so every sidecar this repo starts — auto-spawned or operator-launched — is identifiable. (L478)
-- `sidecar_identity_path(port) -> Path` — the per-port identity record path under `~/.cache/openral/sidecars/port-<port>.json`. (L93)
-- `write_sidecar_identity(*, port, family, model, embodiment_tag, quantization) -> None` — Record which checkpoint a sidecar is about to serve on `port`. (L98)
-- `read_sidecar_identity(port) -> dict[str,str] | None` — Read the identity record back; the adapter uses it in `_verify_existing_identity` to refuse reusing a sidecar serving a different checkpoint. `None` = no record (unverifiable, not a mismatch). (L121)
-- `ensure_pip_venv(*, label, home, python, install, override=None, override_env=None, sentinel_name=".deps-installed", spec=None) -> Path` — Creates/reuses/repairs the `<home>/.venv` of a pip-installable sidecar. `spec` (the dependency spec `install` applies) is hashed into the completion sentinel via `spec_marker`, so correcting a pin invalidates the sentinel and re-runs `install` instead of the venv staying frozen at whatever it first resolved. `spec=None` keeps the historical opaque marker. (L188)
-- `spec_marker(spec) -> str` — the sentinel content for a dependency spec: a NUL-separated sha256 digest, or `"ok\n"` for `None`. (L172)
-- `opt_num(opts, key, default, cast) -> int|float` — Coerces a `scene.backend_options` value via `cast`, ignoring `bool` and swallowing `ValueError`/`TypeError` (returns `default`, never raises). Shared by `backends.isaac_sim` and `backends.robotwin`. (L44)
-- `ensure_uv() -> str` — Return the path to `uv` or exit with an install hint. (L150)
-- `ensure_source(label, work, repo_url) -> Path` — Shallow-clone `repo_url` into `<work>/source` if absent; return it. (L161)
-- `make_isolated_env(venv) -> dict[str, str]` — Builds the scrubbed environment for the sidecar interpreter; also `setdefault`s `TRITON_PTXAS_PATH` to a venv-local CUDA 12.9 `ptxas` when installed, since triton 3.5.1's bundled `ptxas` can't target `sm_121` (GB10/Jetson Thor) until redirected. (L261)
-- `exec_server(venv, wrapper, env) -> None` — Replace this process with the sidecar venv's python running `wrapper` (`os.execvpe`). (L436)
-- `build_parser(*, description, default_home, default_embodiment_tag, model_help, quant_help) -> argparse.ArgumentParser` — Construct the shared sidecar CLI (`--model/--port/--quantization/--embodiment-tag/--home`). (L446)
-- `run_cmd(label, cmd, *, cwd=None, env=None) -> None` — Run `cmd` (echoed with a `[label]` prefix) and raise on non-zero exit. (L142)
-- `venv_ptxas(venv) -> Path | None` — the pip-installed CUDA `ptxas` inside `venv` (`nvidia-cuda-nvcc` 13.x `nvidia/cu13/bin/ptxas`, preferred, else `nvidia-cuda-nvcc-cu12` `nvidia/cuda_nvcc/bin/ptxas`), or `None` when neither wheel is installed (the normal case on x86_64). Split out of `make_isolated_env` so a sidecar execing by another route, or a test, can ask the same question. (L416)
-- `venv_torch_version(venv) -> str | None` — Return the torch version installed in `venv`, or `None` if absent. (L379)
-- `torch_backend(machine=None) -> str` — the `uv pip install --torch-backend` value for a sidecar venv: `cu130` on aarch64 (Jetson Thor is `sm_110`, which the `cu128` wheels have no kernels for), `cu128` elsewhere; `None` reads `platform.machine()`. Used by the internvla_n1 / da3 / rldx / lingbot v2 / qwen_vlm / locateanything boot helpers (the last two also pick their `*-aarch64.lock` by it); XR-1 stays on `cu128` (flash-attn wheel gap). (L395)
-- `sidecar_port_for_key(key, *, port_min=20_000, port_max=40_000, algorithm="sha256") -> int` — Deterministic port in `[port_min, port_max)` from a `hashlib` digest of `key` (not the builtin `hash`, which is `PYTHONHASHSEED`-salted), so a sidecar's spawn port matches what a later client probes for the same identity. `algorithm="sha1"` reproduces the `rldx` policy's original derivation exactly. Shared by `backends.robotwin`/`rlbench`/`isaac_sim` and `policies.rldx`/`lingbot_vla2`. (L62)
-- `alloc_conf_var(torch_version) -> str` — Return the allocator-config env var name (`PYTORCH_ALLOC_CONF` on torch ≥2.9, else `PYTORCH_CUDA_ALLOC_CONF`) that `torch_version` reads. (L310)
-- `installed_alloc_conf_var() -> str` — `alloc_conf_var` for the torch installed in *this* interpreter. (L336)
-- `default_expandable_segments(env=None, *, var=None) -> None` — The one place OpenRAL turns the CUDA allocator's `expandable_segments:True` on: in this process (`env=None`, before the first CUDA allocation) or in a child's `env` dict, under `var` (default: this torch's name). Keeps an operator value; no-op on a Jetson (`openral_core.gpu.is_tegra_host`), where torch's NVML fabric query crashes. Used by the TOPReward/MolmoAct2/OpenVLA loaders, the sidecar env builders and launchers, `deploy` and the validation matrix; isolated-venv sidecar scripts repeat the gate inline. (L350)
+- `const _SIDECAR_REGISTRY_DIR = Path.home() / '.cache' / 'openral' / 'sidecars'` — Root of the per-port sidecar identity registry. (L91)
+- `run_sidecar(*, label, family, repo_url, repo_sha, args, install_deps, make_wrapper) -> int` — orchestrates a boot (`scrub_environ` → uv → pinned clone → install → wrapper → exec), so neither the clone's build code nor the server sees an operator credential. Writes the identity record (`write_sidecar_identity`) just before `exec_server` so every sidecar this repo starts — auto-spawned or operator-launched — is identifiable. (L615)
+- `sidecar_identity_path(port) -> Path` — the per-port identity record path under `~/.cache/openral/sidecars/port-<port>.json`. (L94)
+- `write_sidecar_identity(*, port, family, model, embodiment_tag, quantization) -> None` — Record which checkpoint a sidecar is about to serve on `port`. (L99)
+- `read_sidecar_identity(port) -> dict[str,str] | None` — Read the identity record back; the adapter uses it in `_verify_existing_identity` to refuse reusing a sidecar serving a different checkpoint. `None` = no record (unverifiable, not a mismatch). (L122)
+- `ensure_pip_venv(*, label, home, python, install, override=None, override_env=None, sentinel_name=".deps-installed", spec=None) -> Path` — Creates/reuses/repairs the `<home>/.venv` of a pip-installable sidecar. `spec` (the dependency spec `install` applies) is hashed into the completion sentinel via `spec_marker`, so correcting a pin invalidates the sentinel and re-runs `install` instead of the venv staying frozen at whatever it first resolved. `spec=None` keeps the historical opaque marker. (L323)
+- `spec_marker(spec) -> str` — the sentinel content for a dependency spec: a NUL-separated sha256 digest, or `"ok\n"` for `None`. (L307)
+- `opt_num(opts, key, default, cast) -> int|float` — Coerces a `scene.backend_options` value via `cast`, ignoring `bool` and swallowing `ValueError`/`TypeError` (returns `default`, never raises). Shared by `backends.isaac_sim` and `backends.robotwin`. (L45)
+- `ensure_uv() -> str` — Return the path to `uv` or exit with an install hint. (L151)
+- `ensure_source(label, work, repo_url, sha) -> Path` — Shallow-fetch `repo_url` at exactly commit `sha` (a full 40-hex id, else `SystemExit`) into `<work>/source`; fails closed when the checkout's `HEAD` is not `sha`, after the fetch or on reuse of an existing checkout. Used by the rldx / internvla_n1 sidecars and the RoboTwin asset clone. (L173)
+- `checkout_head(source) -> str` — The full commit SHA `HEAD` resolves to in a git checkout (`git rev-parse HEAD`). (L165)
+- `sidecar_env(environ, *, extra=(), hf_token=True) -> dict[str, str]` — The allowlisted subset of `environ` a sidecar child may inherit (runtime basics, `CUDA_*`/`NVIDIA_*`, `HF_*`, `PYTHON*`, `ROS_*`, `OPENRAL_*`, `UV_*`, …); any name carrying a credential marker (`API_KEY`, `KEY`, `SECRET`, `TOKEN`, … — so `OPENRAL_ACTOR_KEY` too) is dropped even under an allowed prefix, as is any value holding a URL with userinfo (a private `UV_INDEX_URL`), `HF_TOKEN` excepted (gated weight downloads) unless `hf_token=False`. `VLLM_*`/`FLASHINFER_*` kept for the Cosmos 3 vLLM server; `RLDX_*`, `TRANSFORMERS_*`, `LIBGL_*`, `__GL_*`, `JAX_*`, `XLA_*` for server overrides (`RLDX_ATTN_IMPL`). Applied by `make_isolated_env` and `sidecar.SidecarProcess._spawn`. (L258)
+- `scrub_environ(*, hf_token=True) -> None` — Restricts this process's `os.environ` to `sidecar_env` in place; called first in `main()` of `tools/da3_depth_sidecar.py` (`hf_token=False`), `qwen_vlm_sidecar.py`, `locateanything_sidecar.py` and `cosmos3_reasoner_sidecar.py`, and by `run_sidecar` (RLDX, InternVLA-N1), so their venv installs and exec'd servers never see operator API keys. (L294)
+- `make_isolated_env(venv) -> dict[str, str]` — Builds the scrubbed (`sidecar_env`-allowlisted) environment for the sidecar interpreter; also `setdefault`s `TRITON_PTXAS_PATH` to a venv-local CUDA 12.9 `ptxas` when installed, since triton 3.5.1's bundled `ptxas` can't target `sm_121` (GB10/Jetson Thor) until redirected. (L396)
+- `exec_server(venv, wrapper, env) -> None` — Replace this process with the sidecar venv's python running `wrapper` (`os.execvpe`). (L573)
+- `build_parser(*, description, default_home, default_embodiment_tag, model_help, quant_help) -> argparse.ArgumentParser` — Construct the shared sidecar CLI (`--model/--port/--quantization/--embodiment-tag/--home`). (L583)
+- `run_cmd(label, cmd, *, cwd=None, env=None) -> None` — Run `cmd` (echoed with a `[label]` prefix) and raise on non-zero exit. (L143)
+- `venv_ptxas(venv) -> Path | None` — the pip-installed CUDA `ptxas` inside `venv` (`nvidia-cuda-nvcc` 13.x `nvidia/cu13/bin/ptxas`, preferred, else `nvidia-cuda-nvcc-cu12` `nvidia/cuda_nvcc/bin/ptxas`), or `None` when neither wheel is installed (the normal case on x86_64). Split out of `make_isolated_env` so a sidecar execing by another route, or a test, can ask the same question. (L553)
+- `venv_torch_version(venv) -> str | None` — Return the torch version installed in `venv`, or `None` if absent. (L516)
+- `torch_backend(machine=None) -> str` — the `uv pip install --torch-backend` value for a sidecar venv: `cu130` on aarch64 (Jetson Thor is `sm_110`, which the `cu128` wheels have no kernels for), `cu128` elsewhere; `None` reads `platform.machine()`. Used by the internvla_n1 / da3 / rldx / lingbot v2 / qwen_vlm / locateanything boot helpers (the last two also pick their `*-aarch64.lock` by it); XR-1 stays on `cu128` (flash-attn wheel gap). (L532)
+- `sidecar_port_for_key(key, *, port_min=20_000, port_max=40_000, algorithm="sha256") -> int` — Deterministic port in `[port_min, port_max)` from a `hashlib` digest of `key` (not the builtin `hash`, which is `PYTHONHASHSEED`-salted), so a sidecar's spawn port matches what a later client probes for the same identity. `algorithm="sha1"` reproduces the `rldx` policy's original derivation exactly. Shared by `backends.robotwin`/`rlbench`/`isaac_sim` and `policies.rldx`/`lingbot_vla2`. (L63)
+- `alloc_conf_var(torch_version) -> str` — Return the allocator-config env var name (`PYTORCH_ALLOC_CONF` on torch ≥2.9, else `PYTORCH_CUDA_ALLOC_CONF`) that `torch_version` reads. (L447)
+- `installed_alloc_conf_var() -> str` — `alloc_conf_var` for the torch installed in *this* interpreter. (L473)
+- `default_expandable_segments(env=None, *, var=None) -> None` — The one place OpenRAL turns the CUDA allocator's `expandable_segments:True` on: in this process (`env=None`, before the first CUDA allocation) or in a child's `env` dict, under `var` (default: this torch's name). Keeps an operator value; no-op on a Jetson (`openral_core.gpu.is_tegra_host`), where torch's NVML fabric query crashes. Used by the TOPReward/MolmoAct2/OpenVLA loaders, the sidecar env builders and launchers, `deploy` and the validation matrix; isolated-venv sidecar scripts repeat the gate inline. (L487)
 
 #### `python/sim/src/openral_sim/policies/internvla_n1.py`
 _InternVLA-N1 / DualVLN vision-language navigation policy adapter (InternRobotics; weights CC-BY-NC-SA-4.0 noncommercial, code MIT). Proxies `tools/internvla_n1_sidecar.py` over the shared `SidecarClient`; the 8.3B dual-system model runs in an auto-provisioned py3.12 venv. `step()` sends RGB + DA3 monocular depth to the sidecar and maps the returned `twist=[v_forward, w_yaw]` into a 6-D `BODY_TWIST` row, latching to zero twist on the model's STOP until `reset()`. `OPENRAL_INTERNVLA_N1_DEPTH=none` sends a unit-depth placeholder for depth-agnostic checkpoints (e.g. DualVLN's `nextdit_async`)._

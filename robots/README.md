@@ -46,6 +46,18 @@ from it (most arms below), and several embodiments (`aloha_agilex`, `gr1`,
 | `ur5e` | 6-DoF collaborative arm (Universal Robots UR5e), no gripper | `ur5e`, `ur` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `UR5eHAL`) | yes — `UR5eRealHAL` | [README.md](ur5e/README.md) |
 | `widowx` | Trossen WidowX-250s 6-DoF arm (BridgeData V2 / SimplerEnv embodiment) | `widowx`, `widowx_250s`, `bridge`, `bridgedata_v2`, `oxe` | yes — `fixed_robot="widowx"` SimplerEnv/ManiSkill3 scene adapter (`scenes/benchmark/widowx_carrot_on_plate.yaml`) | no (`hal.real` null) | [README.md](widowx/README.md) |
 
+## Robot manifests name code — load them from trusted sources only
+
+`hal.sim` and `hal.real` are `"module.path:Attribute"` strings that
+`openral_hal.build_hal` imports and calls with the manifest's HAL parameters, so a
+manifest is code, not just data. Only OpenRAL's own packages are admitted
+(top-level module `openral_*`, which includes OpenRAL Pro's `openral_pro_*`),
+checked when the manifest loads and again before the import
+(`openral_core.code_refs`); anything else is a `ROSConfigError` naming the field.
+`OPENRAL_ALLOW_EXTERNAL_PLUGINS=1` admits another module with a warning on every
+use. Load a manifest (including one from `$OPENRAL_ROBOTS_DIR` or the Hub) only from
+a source you trust.
+
 ## Add a new robot
 
 ```bash

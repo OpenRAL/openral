@@ -119,7 +119,13 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     )
     from openral_observability.dashboard.ui_assets import ensure_ui_assets
 
-    enrolment = load_enrolment()
+    try:
+        enrolment = load_enrolment()
+    except ValueError as exc:  # never gate the local dashboard (or its E-STOP) on it
+        if remote_port is not None:
+            raise
+        _LOG.error("dashboard.enrolment_refused remote listener off: %s", exc)
+        enrolment = None
     if remote_port is not None and enrolment is None:
         msg = "--remote-port needs a linked robot: run `openral robot link <code>` first"
         raise ValueError(msg)

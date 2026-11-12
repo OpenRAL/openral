@@ -90,6 +90,9 @@ _AUTO_PROVISION_ENV = "OPENRAL_ROBOTWIN_AUTO_PROVISION"
 _ROBOTWIN_SIDECAR_HOME = Path.home() / ".cache" / "openral" / "robotwin-sidecar"
 _ROBOTWIN_PYTHON = "3.12"
 _ROBOTWIN_REPO = "https://github.com/RoboTwin-Platform/RoboTwin.git"
+# Pinned upstream commit for a fresh clone (``ensure_source``; its asset script
+# runs on the host): "Merge pull request #502", 2026-09-22.
+_ROBOTWIN_SHA = "ee3d076fb61c4542e9be6c16f3af5ecd67d4a6f7"
 # LeRobot 0.6.0 ships `lerobot.envs.robotwin` and supports the workspace's Python
 # 3.12. The RoboTwin checkout is still needed as task package + asset root.
 _ROBOTWIN_BASE_DEPS = (
@@ -306,7 +309,9 @@ def _provision_robotwin_venv() -> Path:
     )
     root = _ROBOTWIN_SIDECAR_HOME / "RoboTwin"
     if not root.is_dir():
-        source = ensure_source("robotwin-assets", _ROBOTWIN_SIDECAR_HOME, _ROBOTWIN_REPO)
+        source = ensure_source(
+            "robotwin-assets", _ROBOTWIN_SIDECAR_HOME, _ROBOTWIN_REPO, _ROBOTWIN_SHA
+        )
         source.rename(root)
     _patch_robotwin_checkout(root)
     assets = root / "assets" / "objects" / "objaverse" / "list.json"

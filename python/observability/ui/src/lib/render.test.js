@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coverMap, footprintToPixels, overlayColor, overlayFade, sparkGeometry, sevBucket, worldToPixel } from "./render.js";
+import { coverMap, jpegBlob, footprintToPixels, overlayColor, overlayFade, sparkGeometry, sevBucket, worldToPixel } from "./render.js";
 
 test("map: world → flipped pixel, footprint rotates with yaw", () => {
   assert.deepEqual(worldToPixel(1, 0, 0, 0, 0.5, 10), { px: 2, py: 9 });
@@ -30,4 +30,10 @@ test("sparkline: threshold widens the domain and flags a breach", () => {
 
 test("severity buckets", () => {
   assert.deepEqual(["debug", "INFO", "warn", "fatal", undefined].map(sevBucket), ["debug", "info", "warn", "error", "info"]);
+});
+
+test("a polled camera frame is always image/jpeg, whatever the robot claimed", () => {
+  const b = jpegBlob(new Uint8Array([0xff, 0xd8]).buffer);
+  assert.equal(b.type, "image/jpeg");
+  assert.equal(b.size, 2);
 });

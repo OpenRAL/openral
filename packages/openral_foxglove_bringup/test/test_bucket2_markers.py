@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import re
 from pathlib import Path
 from types import ModuleType
 from typing import Any, TypeAlias
@@ -42,6 +43,12 @@ def _load_bucket2() -> ModuleType:
 
 
 _b2 = _load_bucket2()
+_topics_spec = importlib.util.spec_from_file_location(
+    "_bucket2_topics", _PKG_DIR / "openral_foxglove_bringup" / "topics.py"
+)
+assert _topics_spec is not None and _topics_spec.loader is not None
+_topics = importlib.util.module_from_spec(_topics_spec)
+_topics_spec.loader.exec_module(_topics)
 occupied_voxel_centers = _b2.occupied_voxel_centers
 
 
@@ -600,3 +607,69 @@ def test_stops_are_red_spheres_with_labels() -> None:
     sphere, label = array.markers
     assert sphere.pose.position.x == pytest.approx(0.1) and sphere.color.r == 1.0
     assert sphere.color.g == 0.0 and label.text == "STOP openarm_left_link7"
+
+
+def test_a_full_resolution_depth_cloud_is_thinned_for_viewers() -> None:
+    """A 1080p ZED cloud (2 073 600 points, 33 MB) reaches a viewer as <= 40 000 points.
+
+    Every field of a kept point is kept (the rgb a sim cloud carries), points with no
+    return (NaN x) are dropped, and the kept points spread over the whole cloud.
+    """
+    import numpy as np
+
+    n = 1920 * 1080
+    pts = np.zeros((n, 4), dtype=np.float32)
+    pts[:, 0] = np.arange(n, dtype=np.float32)
+    pts[::3, 0] = np.nan  # a third of the pixels have no return
+    pts[:, 3] = np.frombuffer(np.full(n, 0x00FF8800, dtype="<u4").tobytes(), dtype=np.float32)
+    data, count = _b2.decimate_cloud(pts.tobytes(), 16, 0, _b2.VIZ_CLOUD_MAX_POINTS)
+    kept = np.frombuffer(data, dtype=np.float32).reshape(-1, 4)
+    assert count == len(kept) <= _b2.VIZ_CLOUD_MAX_POINTS
+    assert count > _b2.VIZ_CLOUD_MAX_POINTS * 0.9
+    assert np.isfinite(kept[:, 0]).all()
+    assert kept[-1, 0] > n * 0.99  # spread to the end, not the first 40 000 pixels
+    assert (kept[:, 3].view("<u4") == 0x00FF8800).all()
+    assert _b2.decimate_cloud(b"", 16, 0, 10) == (b"", 0)
+
+
+def test_padded_cloud_rows_are_skipped_when_thinning() -> None:
+    """A cloud whose rows carry padding (row_step > width * point_step) stays aligned."""
+    import numpy as np
+
+    width, height, pad = 3, 2, 8
+    pts = np.arange(width * height * 4, dtype=np.float32).reshape(height, width * 4)
+    padded = np.concatenate([pts.view(np.uint8), np.full((height, pad), 0xFF, np.uint8)], axis=1)
+    data, count = _b2.decimate_cloud(
+        padded.tobytes(), 16, 0, 100, width=width, row_step=width * 16 + pad
+    )
+    assert count == width * height
+    xs = np.frombuffer(data, dtype=np.float32).reshape(-1, 4)[:, 0].tolist()
+    assert xs == list(range(0, 24, 4))
+
+
+def test_the_viewer_copy_of_a_camera_cloud_has_its_own_topic() -> None:
+    assert _b2.viz_cloud_topic("/openral/cameras/head_zed/points") == (
+        "/openral/viz/cameras/head_zed/points"
+    )
+    # A pinned driver topic lands among the per-camera clouds a viewer lists.
+    assert re.fullmatch(
+        r"/openral/viz/cameras/[^/]+/points",
+        _b2.viz_cloud_topic("/zed/zed_node/point_cloud/cloud_registered"),
+    )
+    # The self-filtered colour cloud's viewer copy is on the bridge allowlist.
+    assert any(
+        re.fullmatch(p, _b2.viz_cloud_topic("/openral/world_cloud/self_filtered_rgb"))
+        for p in _topics.BUCKET2_TOPICS
+    )
+
+
+def test_decimate_cloud_reads_an_rclpy_uint8_array_without_copying_it_first() -> None:
+    """rclpy hands ``uint8[]`` as ``array.array('B')``; a memoryview of it is accepted."""
+    import array
+
+    import numpy as np
+
+    pts = np.array([[0, 0, 0, 1], [np.nan, 0, 0, 1], [2, 0, 0, 1]], dtype=np.float32)
+    out, n = _b2.decimate_cloud(memoryview(array.array("B", pts.tobytes())), 16, 0, 10)
+    assert n == 2
+    assert np.frombuffer(out, dtype=np.float32).reshape(-1, 4)[:, 0].tolist() == [0.0, 2.0]

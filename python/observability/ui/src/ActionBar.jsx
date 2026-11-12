@@ -92,9 +92,12 @@ function ActionForm({ api, action }) {
 // The action bar, in two parts: `estop` (E-STOP, always present, in the
 // sticky header so it never scrolls away) and `rest` (whatever the manifest
 // allows this role over this connection).
-export function ActionBar({ api, cfg, actions, latched, part }) {
-  const { shown, hidden, blocked } = visibleActions(actions, cfg.role, cfg.mode === "remote");
-  const mine = shown.filter((a) => (a.kind === "estop") === (part === "estop"));
+// `skipKinds`: action kinds drawn elsewhere on the page (the prompt bar).
+export function ActionBar({ api, cfg, actions, latched, part, skipKinds = [] }) {
+  const all = visibleActions(actions, cfg.role, cfg.mode === "remote");
+  const { hidden } = all;
+  const blocked = all.blocked.filter((a) => !skipKinds.includes(a.kind));
+  const mine = all.shown.filter((a) => (a.kind === "estop") === (part === "estop") && !skipKinds.includes(a.kind));
   if (part === "estop") {
     return (
       <section className="actions" aria-label="Emergency stop">

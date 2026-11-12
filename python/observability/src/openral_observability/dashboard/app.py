@@ -16,7 +16,7 @@ One ASGI app, served by up to two listeners (``remote_auth``):
   ticketed proxy to ``foxglove_bridge`` on loopback.
 * ``POST /api/transcribe`` — operator speech to text, on the host.
 * ``/v1/traces``, ``/v1/metrics``, ``/v1/logs`` — the OTLP/HTTP receiver, on the local
-  listener only (loopback or LAN).
+  listener only: loopback, plus LAN hosts with ``$OPENRAL_DASHBOARD_LAN_INGEST=1``.
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ import shutil
 import socket
 import time
 import zlib
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import jsonschema
@@ -70,6 +70,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
 
+from openral_observability.dashboard.bridge_relay import BridgeRelay
 from openral_observability.dashboard.remote_auth import (
     ROLE_RANK,
     Principal,
@@ -79,10 +80,19 @@ from openral_observability.dashboard.remote_auth import (
     bearer,
     is_remote,
 )
+from openral_observability.dashboard.robot_settings import (
+    SETTINGS,
+    load_settings,
+    save_setting,
+    shown,
+)
 from openral_observability.dashboard.store import TelemetryStore
 from openral_observability.dashboard.ui_assets import ui_dir
 
-__all__ = ["create_app"]
+if TYPE_CHECKING:
+    from websockets.asyncio.client import ClientConnection
+
+__all__ = ["LAN_INGEST_ENV", "create_app"]
 
 _logger = structlog.get_logger(__name__)
 
@@ -99,15 +109,25 @@ def _remote_control_enabled() -> bool:
     return os.environ.get(REMOTE_CONTROL_ENV, "") == "1"
 
 
+LAN_INGEST_ENV = "OPENRAL_DASHBOARD_LAN_INGEST"
+"""Opt-in for OTLP ingest on ``/v1/*`` from LAN hosts; loopback always may (ADR-0017)."""
+
+
+def _lan_ingest_enabled() -> bool:
+    """Whether other hosts may export OTLP here (``$OPENRAL_DASHBOARD_LAN_INGEST=1``)."""
+    return os.environ.get(LAN_INGEST_ENV, "") == "1"
+
+
 # Request-body budget, raw AND gzip-decoded (OTLP batches carry camera
 # thumbnails, so this is generous; it exists to stop a gzip bomb, not to tune).
 _MAX_BODY_BYTES = 64 * 1024 * 1024
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # The only writes a LAN client (non-loopback, local listener) may make: E-STOP, a ticket
-# to watch the 3D view, and OTLP ingest on /v1/* (a robot computer exporting to a
-# dashboard on the LAN, ADR-0017). The UI and the other actions are read-only from the
-# LAN (ADR-0129 §3); only the remote (tunnel) listener refuses /v1/*.
+# to watch the 3D view, and — only with $OPENRAL_DASHBOARD_LAN_INGEST=1 — OTLP ingest on
+# /v1/* (a robot computer exporting to a dashboard on the LAN, ADR-0017): off by default,
+# so a LAN host cannot fill the event log or fake safety telemetry. The UI and the other
+# actions are read-only from the LAN (ADR-0129 §3); the remote listener refuses /v1/*.
 _LAN_WRITES = frozenset({"/api/actions/estop", "/api/viz/ticket"})
 _DEFAULT_BRIDGE_URL = "ws://127.0.0.1:8765"
 _WS_POLICY_VIOLATION = 1008
@@ -119,6 +139,19 @@ _ESTOP = ManifestAction(id="estop", kind="estop", label="E-STOP", min_role="view
 _TRANSCRIBE = ManifestAction(
     id="transcribe", kind="prompt", label="Transcribe", min_role="operator", remote=False
 )
+
+
+# Headers Cloudflare's edge adds to every request it forwards. The tunnel targets the
+# remote listener only; one of them on the local listener means a tunnel (or another
+# proxy) was pointed at it, and such a request must never be the local operator.
+_TUNNEL_HEADERS = ("cf-ray", "cf-connecting-ip", "cf-warp-tag-id", "cf-ipcountry", "cf-visitor")
+
+
+def _via_tunnel(headers: Mapping[str, str]) -> bool:
+    """Whether a local-listener request carries Cloudflare-forwarded headers."""
+    return any(h in headers for h in _TUNNEL_HEADERS) or (
+        "cloudflare" in headers.get("cdn-loop", "").lower()
+    )
 
 
 def _is_loopback(host: str) -> bool:
@@ -397,9 +430,10 @@ async def _prompt_response(text: str) -> JSONResponse:
     proc = await asyncio.create_subprocess_exec(
         openral,
         "prompt",
-        text,
         "--topic",
         "/openral/prompt_in/dashboard",
+        "--",  # the operator's text is never an option, even when it starts with "-"
+        text,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -833,14 +867,29 @@ def _served_manifest(manifest: RobotManifest, principal: Principal) -> dict[str,
     return served.model_dump(mode="json", by_alias=True)
 
 
+def _settings_body(principal: Principal) -> dict[str, object]:
+    """``GET /api/settings``: openral.com's settings shape, for this robot's own file."""
+    operator = principal.mode == "local" and ROLE_RANK[principal.role] >= ROLE_RANK["operator"]
+    return {
+        "scope": "robot",
+        "canWrite": operator,
+        "settings": SETTINGS,
+        # Key hints only for the operator at the robot, never for a LAN viewer.
+        "values": shown(load_settings(), hints=operator),
+    }
+
+
 def _action_refusal(action: ManifestAction, principal: Principal) -> str | None:
     """Why ``principal`` may not run ``action`` (ADR-0129 §6), or ``None``."""
     if action.kind == "estop":
         return None  # every role, every listener: a stop is never refused
     if principal.mode == "lan":
         return "a LAN client may only press E-STOP"
-    if ROLE_RANK[principal.role] < ROLE_RANK[action.min_role]:
-        return f"role {principal.role!r} may not run {action.id!r} (needs {action.min_role})"
+    # The manifest may raise an action's role, never lower it under operator: only a stop
+    # is a viewer's (a manifest is runtime data, and a viewer must not drive the robot).
+    needed = max(action.min_role, "operator", key=ROLE_RANK.__getitem__)
+    if ROLE_RANK[principal.role] < ROLE_RANK[needed]:
+        return f"role {principal.role!r} may not run {action.id!r} (needs {needed})"
     if principal.mode == "remote" and not _remote_control_enabled():
         return f"remote control is off on this robot (set {REMOTE_CONTROL_ENV}=1 to allow it)"
     if action.kind == "skill" and not _write_controls_enabled():
@@ -918,20 +967,24 @@ def _without_images(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 # The robot UI and the fallback page: their own scripts only, styles may be inline (React
 # sets element styles), images from blob: snapshots, the API and the /ws bridge on this
-# origin, the 3D view framed from /viz/; framed only here and by openral.com.
+# origin only ('self' covers ws:/wss: to the same host, CSP Level 3); the page draws the
+# 3D scene itself from /ws; /viz/ is Lichtblick, opened in its own tab; framed only here
+# and by openral.com.
 _UI_CSP = (
     "default-src 'self'; script-src 'self'{inline}; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; "
+    "img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'; "
     "font-src 'self'; object-src 'none'; base-uri 'self'; "
     "frame-ancestors 'self' https://www.openral.com https://dev.openral.com"
 )
 # Lichtblick: WebAssembly ('wasm-unsafe-eval'), eval ('unsafe-eval': v1.30 refuses to start
 # without `new Function` — canRenderApp.ts — and protobufjs decodes by generated code), blob:
 # workers, and the one inline script of its index.html, allowed by hash; framed by the UI.
+# connect-src is this origin only: a crafted ``?ds.url=wss://elsewhere`` link cannot point
+# the viewer at a foreign bridge (or fetch a foreign file), only at this robot's /ws.
 _VIZ_CSP = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'{inline}; "
     "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
-    "img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; "
+    "img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; "
     "base-uri 'self'; form-action 'none'; frame-ancestors 'self'"
 )
 _INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>")
@@ -1004,7 +1057,13 @@ async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Respo
     if is_remote(request.scope):
         return await _gate_remote(request, call_next)
     client = request.client.host if request.client else ""
-    loopback = _is_loopback(client)
+    forwarded = _via_tunnel(request.headers)
+    if forwarded:
+        _logger.warning("dashboard.tunnel_headers_on_local_listener", path=request.url.path)
+        # A stop is never refused: it goes through as a LAN viewer's would.
+        if request.url.path != "/api/actions/estop":
+            return _error(403, "a forwarded request on the local listener (tunnel misrouted?)")
+    loopback = not forwarded and _is_loopback(client)
     if loopback and not _local_host(request.headers.get("host", ""), request.app.state.local_hosts):
         _logger.warning("dashboard.host_refused", host=request.headers.get("host"))
         return _error(403, "unexpected Host header (DNS rebinding?)")
@@ -1016,11 +1075,18 @@ async def _gate(request: Request, call_next: Callable[[Request], Awaitable[Respo
     if request.method not in _SAFE_METHODS:
         # CSRF: a page on another site driving a local operator's browser. ponytail:
         # Origin check only — a DNS-rebinding page is same-origin by construction.
+        # A forwarded stop from the console (its Origin is an openral.com origin, its
+        # Host the rewritten local one) is still a stop: never refused for that.
+        console_stop = forwarded and request.headers.get("origin") in allowed_origins()
         refusal = (
             "cross-origin request refused"
-            if _cross_origin(request)
+            if _cross_origin(request) and not console_stop
             else None
-            if loopback or request.url.path in _LAN_WRITES or request.url.path.startswith("/v1/")
+            if loopback
+            or request.url.path in _LAN_WRITES
+            or (request.url.path.startswith("/v1/") and _lan_ingest_enabled())
+            else f"OTLP ingest from the LAN is off (set {LAN_INGEST_ENV}=1)"
+            if request.url.path.startswith("/v1/")
             else "read-only from the LAN: only E-STOP"
         )
         if refusal is not None:
@@ -1069,6 +1135,16 @@ async def _gate_remote(
         result = "Authorization: Bearer <token> required"
     else:
         result = await verifier.verify(token)
+    # One write per token (a stop is never refused): a replayed token cannot prompt,
+    # reset, run a skill or mint a 3D ticket twice. 401 makes the console mint afresh.
+    if (
+        not isinstance(result, str)
+        and verifier is not None
+        and request.method not in _SAFE_METHODS
+        and path != "/api/actions/estop"
+        and not verifier.spend(result)
+    ):
+        result = "token already used for a write"
     if isinstance(result, str):
         _logger.warning("dashboard.remote_auth_refused", path=path, reason=result)
         return _error(401, result, {**cors, "WWW-Authenticate": 'Bearer error="invalid_token"'})
@@ -1079,6 +1155,54 @@ async def _gate_remote(
 def _with_headers(resp: Response, headers: dict[str, str]) -> Response:
     resp.headers.update(headers)
     return resp
+
+
+async def _relay_to_browser(
+    upstream: ClientConnection, websocket: WebSocket, relay: BridgeRelay
+) -> None:
+    """Read the bridge into ``relay`` and send what it releases while the browser keeps up.
+
+    While a send is in flight the reader keeps going, so newer snapshot frames replace
+    older unsent ones. Ordered frames are bounded: when the relay is ``full()`` the reader
+    waits for the browser, which hands the backpressure back to ``foxglove_bridge``.
+    """
+    ready = asyncio.Event()
+    sent = asyncio.Event()
+
+    async def read_bridge() -> None:
+        async for message in upstream:
+            relay.from_bridge(message)
+            ready.set()
+            while relay.full():
+                sent.clear()
+                await sent.wait()
+
+    reader = asyncio.create_task(read_bridge())
+    try:
+        while True:
+            waiter = asyncio.create_task(ready.wait())
+            try:
+                await asyncio.wait({reader, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+            ready.clear()
+            for frame in relay.drain():
+                if isinstance(frame, bytes):
+                    await websocket.send_bytes(frame)
+                else:
+                    await websocket.send_text(frame)
+            relay.sent()  # the bound covers a batch until it is actually out
+            sent.set()
+            if reader.done() and not relay.pending():
+                reader.result()  # re-raise a bridge error
+                return
+    finally:
+        reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)
+        if relay.dropped:
+            # Explicit, not silent: how many stale snapshot frames this viewer never got.
+            _logger.info("dashboard.bridge_relay_coalesced", dropped=relay.dropped)
 
 
 async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None) -> None:
@@ -1097,12 +1221,12 @@ async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None
         await websocket.close(code=_WS_UNAVAILABLE, reason="foxglove_bridge is not running")
         return
 
+    # Latest-wins for snapshot topics: a slow browser link (the tunnel) gets the
+    # newest image / cloud / map instead of a growing backlog (bridge_relay).
+    relay = BridgeRelay()
+
     async def downstream() -> None:
-        async for message in upstream:
-            if isinstance(message, bytes):
-                await websocket.send_bytes(message)
-            else:
-                await websocket.send_text(message)
+        await _relay_to_browser(upstream, websocket, relay)
 
     async def upstream_pump() -> None:
         while True:
@@ -1111,6 +1235,7 @@ async def _proxy_bridge(websocket: WebSocket, url: str, expires_at: float | None
                 return
             data = message.get("bytes") if message.get("bytes") is not None else message.get("text")
             if data is not None:
+                relay.from_browser(data)
                 await upstream.send(data)
 
     async with upstream:
@@ -1283,6 +1408,46 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
             }
         )
 
+    @app.get("/api/settings")
+    async def get_settings(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # The reasoner settings kept on this robot (robot_settings): never over the tunnel
+        # (openral.com has its own), secrets only as "set ...abcd".
+        principal: Principal = request.state.principal
+        if principal.mode == "remote":
+            return _error(403, "this robot's own settings are set at the robot")
+        return JSONResponse(_settings_body(principal))
+
+    @app.put("/api/settings")
+    async def put_setting(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        principal: Principal = request.state.principal
+        if principal.mode != "local" or ROLE_RANK[principal.role] < ROLE_RANK["operator"]:
+            _logger.warning(
+                "dashboard_write_attempt",
+                operation="settings",
+                outcome="denied",
+                reason="settings are set by the local operator",
+                mode=principal.mode,
+                role=principal.role,
+            )
+            return _error(403, "only the operator at the robot can change its settings")
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "expected JSON {name, value}")
+        name = body.get("name") if isinstance(body, dict) else None
+        value = body.get("value", "") if isinstance(body, dict) else None
+        if not isinstance(name, str) or not isinstance(value, str):
+            return _error(400, "expected JSON {name, value}")
+        try:
+            save_setting(name, value)
+        except ValueError as exc:
+            return _error(400, str(exc))
+        except OSError as exc:
+            return _error(500, f"could not save the setting: {exc.strerror or exc}")
+        # Audited without the value.
+        _logger.info("dashboard.setting_written", name=name, cleared=not value.strip())
+        return JSONResponse(_settings_body(principal))
+
     @app.get("/api/config")
     async def get_config(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         # Who the caller is and what this robot allows (ADR-0129 Interface A).
@@ -1301,6 +1466,9 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
                 "mode": principal.mode,
                 "role": principal.role,
                 "robot_id": robot_id,
+                # The owning org's slug from the robot's enrolment ("" for a free or
+                # unlinked robot): the console's left pane names whose robot this is.
+                "org": verifier_.enrolment.org if verifier_ is not None else "",
                 "write_controls": _write_controls_enabled(),
                 "remote_control": _remote_control_enabled(),
                 "jaeger_ui_url": os.environ.get("OPENRAL_JAEGER_UI_URL", "").rstrip("/"),
@@ -1356,7 +1524,15 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
     async def post_viz_ticket(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         tickets: VizTickets = request.app.state.viz_tickets
         ticket = tickets.issue(request.state.principal)
-        return JSONResponse({"ticket": ticket, "expires_in": VizTickets.TTL_S})
+        expires_at = tickets.expires_at(ticket, remote=is_remote(request.scope))
+        if expires_at is None:
+            # A token inside its exp leeway would mint a ticket already dead: re-mint first.
+            return _error(
+                401,
+                "the token has expired; mint a new one",
+                {"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            )
+        return JSONResponse({"ticket": ticket, "expires_in": int(expires_at - time.time())})
 
     @app.websocket("/ws")
     async def ws_proxy(  # pyright: ignore[reportUnusedFunction]
@@ -1365,6 +1541,9 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
         # The 3D view's link to foxglove_bridge (loopback, read-only). The remote
         # listener and LAN clients need a viz ticket; loopback may omit it.
         remote = is_remote(websocket.scope)
+        if not remote and _via_tunnel(websocket.headers):
+            await websocket.close(code=_WS_POLICY_VIOLATION)
+            return
         origin = websocket.headers.get("origin")
         if origin is not None and (
             origin not in allowed_origins()
@@ -1374,7 +1553,7 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
             await websocket.close(code=_WS_POLICY_VIOLATION)
             return
         tickets: VizTickets = websocket.app.state.viz_tickets
-        expires_at = tickets.expires_at(ticket)
+        expires_at = tickets.expires_at(ticket, remote=remote)
         client = websocket.client.host if websocket.client else ""
         if expires_at is None and (
             remote

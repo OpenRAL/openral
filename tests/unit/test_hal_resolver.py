@@ -22,6 +22,7 @@ import pytest
 from openral_core import HalEntrypoints, RobotDescription
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_hal import build_hal
+from pydantic import ValidationError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -130,11 +131,9 @@ class TestBadEntrypoint:
             build_hal(desc, mode="real")
 
     def test_malformed_entry_no_colon(self) -> None:
-        desc = _load("ur5e").model_copy(
-            update={"hal": HalEntrypoints(real="openral_hal.ur_real.UR5eRealHAL")}
-        )
-        with pytest.raises(ROSConfigError, match="malformed"):
-            build_hal(desc, mode="real")
+        # Refused when the manifest loads (check_code_ref), before any build_hal.
+        with pytest.raises(ValidationError, match="malformed"):
+            HalEntrypoints(real="openral_hal.ur_real.UR5eRealHAL")
 
 
 class TestHalJointStatesTopic:

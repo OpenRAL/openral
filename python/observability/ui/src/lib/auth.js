@@ -8,27 +8,38 @@ export function renewDelayS(expiresIn, cap = Infinity) {
   return Math.max(e / 2, Math.min(cap, e - 60));
 }
 
-// Lazy token cache: a call after ~240 s (or a forced one, after a 401) mints a
-// fresh token; concurrent callers share one request.
+// Lazy token cache: a call after ~240 s mints a fresh token and concurrent
+// callers share that one request. A forced call (a write, or a retry after a 401)
+// always mints its own: the robot takes one write per token, so two writes must
+// never share one. `valid()` is the cached token while it has not expired (a 10 s
+// margin, a quarter of a shorter life: always past the renewal mark, so `get()`
+// never holds a token `valid()` has given up), for E-STOP, which must not wait on
+// openral.com while it holds one.
 export function createTokenClient({ mint, now = Date.now }) {
   let token = null;
   let renewAt = 0;
+  let expAt = 0;
   let inflight = null;
+  async function fresh() {
+    const r = await mint();
+    if (!r || typeof r.access_token !== "string") throw new Error("token response has no access_token");
+    const e = Number(r.expires_in) > 0 ? Number(r.expires_in) : 300;
+    token = r.access_token;
+    renewAt = now() + renewDelayS(e, 240) * 1000;
+    expAt = now() + (e - Math.min(10, e / 4)) * 1000;
+    return token;
+  }
   return {
     get(force = false) {
-      if (!force && token && now() < renewAt) return Promise.resolve(token);
-      inflight ??= (async () => {
-        try {
-          const r = await mint();
-          if (!r || typeof r.access_token !== "string") throw new Error("token response has no access_token");
-          token = r.access_token;
-          renewAt = now() + renewDelayS(r.expires_in, 240) * 1000;
-          return token;
-        } finally {
-          inflight = null;
-        }
-      })();
+      if (force) return fresh();
+      if (token && now() < renewAt) return Promise.resolve(token);
+      inflight ??= fresh().finally(() => {
+        inflight = null;
+      });
       return inflight;
+    },
+    valid() {
+      return token && now() < expAt ? token : null;
     },
   };
 }
@@ -49,12 +60,22 @@ export function websiteMinter(resource, f = globalThis.fetch) {
 
 // Robot API client. Local mode: base "" and no auth (same origin). Remote:
 // base is the robot's origin and every call carries the Bearer token; a 401 is
-// retried once with a freshly minted token.
+// retried once with a freshly minted token. The robot takes one write per token
+// (replay protection) but any number of reads, so every write except E-STOP goes
+// out with its own fresh token. E-STOP (exempt from the one-write rule) never waits
+// on openral.com while a cached token is still valid: it is sent with that token and
+// the renewal runs on its own; only with no valid token left does it mint first.
 export function createApi({ base = "", auth = null, fetch: f = (...a) => globalThis.fetch(...a) } = {}) {
   async function call(path, init = {}) {
+    const estop = path === "/api/actions/estop";
+    const write = !["GET", "HEAD"].includes((init.method || "GET").toUpperCase()) && !estop;
     for (let attempt = 0; ; attempt++) {
       const headers = new Headers(init.headers);
-      if (auth) headers.set("Authorization", `Bearer ${await auth.get(attempt > 0)}`);
+      if (auth) {
+        const held = estop && attempt === 0 ? auth.valid?.() : null;
+        if (held) auth.get().catch(() => {}); // renew in the background if due
+        headers.set("Authorization", `Bearer ${held || (await auth.get(write || attempt > 0))}`);
+      }
       const res = await f(base + path, { ...init, headers });
       if (res.status !== 401 || !auth || attempt > 0) return res;
     }

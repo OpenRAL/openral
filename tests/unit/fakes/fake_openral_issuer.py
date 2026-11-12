@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,10 +24,12 @@ from typing import Any
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
+from openral_core.robot_ui import TRUSTED_ISSUERS_ENV
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.typing import Subprotocol
 
-ISSUER = "https://www.openral.com/api/auth"
+ISSUER_ORIGIN = "https://www.openral.com"
+ISSUER = f"{ISSUER_ORIGIN}/api/auth"
 ROBOT = "k3x9"
 AUD = f"https://r-{ROBOT}.openral.com"
 ORG = "acme"
@@ -67,17 +71,29 @@ class FakeIssuer:
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.url = f"http://127.0.0.1:{server.server_address[1]}/api/auth/jwks"
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        self.url = f"{origin}/api/auth/jwks"
+        # The JWKS is served off the issuer's origin, so it is trusted the way a
+        # self-hosted deployment would trust it: listed in OPENRAL_TRUSTED_ISSUERS.
+        previous = os.environ.get(TRUSTED_ISSUERS_ENV)
+        os.environ[TRUSTED_ISSUERS_ENV] = f"{ISSUER_ORIGIN},{origin}"
         try:
             yield self
         finally:
+            if previous is None:
+                os.environ.pop(TRUSTED_ISSUERS_ENV, None)
+            else:
+                os.environ[TRUSTED_ISSUERS_ENV] = previous
             server.shutdown()
             server.server_close()
 
     def mint(
         self, *, header: dict[str, Any] | None = None, lifetime_s: int = 300, **claims: Any
     ) -> str:
-        """A robot token for ``k3x9`` of org ``acme``; keyword args override claims."""
+        """A robot token for ``k3x9`` of org ``acme``; keyword args override claims.
+
+        Each token gets its own ``jti``, as openral.com's do.
+        """
         now = int(time.time())
         payload: dict[str, Any] = {
             "iss": ISSUER,
@@ -87,7 +103,7 @@ class FakeIssuer:
             "org": ORG,
             "role": "operator",
             "robot": ROBOT,
-            "jti": "tok-91",
+            "jti": f"tok-{uuid.uuid4().hex[:12]}",
             "iat": now,
             "exp": now + lifetime_s,
         }

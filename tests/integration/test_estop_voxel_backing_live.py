@@ -115,15 +115,15 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
     from std_msgs.msg import Empty
 
     rclpy.init()
-    node: Any = ManifestHALLifecycleNode("test_estop_voxel_backing_live")
-    node.set_parameters(
-        [
+    node: Any = ManifestHALLifecycleNode(
+        "test_estop_voxel_backing_live",
+        parameter_overrides=[
             Parameter("robot_yaml", value=str(_ROBOT_YAML)),
             Parameter("hal_mode", value="sim"),
             Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
             Parameter("publish_rate_hz", value=20.0),
             Parameter("viewer_enabled", value=False),
-        ]
+        ],
     )
     peer = Node("test_estop_voxel_backing_peer")
     executor = SingleThreadedExecutor()

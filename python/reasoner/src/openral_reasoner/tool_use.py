@@ -297,8 +297,9 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "The palette always also includes: reload_gst_pipeline (swap a "
     "sensor's GStreamer pipeline at runtime), lifecycle_transition "
     "(drive a peer ROS node through configure / activate / deactivate / "
-    "cleanup), emit_prompt (publish a PromptStamped onto another "
-    "topic — used to message the operator or trigger a cascade), and "
+    "cleanup), emit_prompt (publish a PromptStamped onto /openral/prompt "
+    "or /openral/prompt_in/auto, the only two topics it accepts — used to "
+    "message the operator or trigger a cascade), and "
     "wait (deliberately do nothing this tick). "
     # ── When the right action is no action ────────────────────────────
     "When the snapshot shows a dispatched skill still in flight and "

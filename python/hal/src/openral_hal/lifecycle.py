@@ -684,9 +684,19 @@ if _ROS2_AVAILABLE:
         See the module docstring for the full lifecycle contract.
         """
 
-        def __init__(self, node_name: str) -> None:
-            """Declare the standard ``publish_rate_hz`` parameter; opens no resources."""
-            super().__init__(node_name)
+        def __init__(
+            self,
+            node_name: str,
+            *,
+            parameter_overrides: list[Any] | None = None,
+        ) -> None:
+            """Declare the standard ``publish_rate_hz`` parameter; opens no resources.
+
+            Every HAL node parameter is read-only (see ``declare_parameters``): its
+            value comes from the launch (``--ros-args`` params file) or, in-process,
+            from ``parameter_overrides`` — never from a later ``set_parameters``.
+            """
+            super().__init__(node_name, parameter_overrides=parameter_overrides)
             # The effective name: a launch `__node:=` remap renames the node,
             # and the remapped `openral_hal_<robot_id>` is what diagnostics key on.
             self._node_name = self.get_name()
@@ -790,6 +800,37 @@ if _ROS2_AVAILABLE:
             self._tracking_estop_pub: Any = None
             self._init_self_filter_period_handoff()
             self.get_logger().info(f"{node_name} HAL node initialised.")
+
+        def declare_parameters(
+            self,
+            namespace: str,
+            parameters: list[tuple[Any, ...]],
+            ignore_override: bool = False,
+        ) -> list[Any]:
+            """Declare every HAL node parameter read-only.
+
+            The HAL's parameters select code (``robot_yaml``, ``scene_composition_json``
+            name composers and HAL classes), files, hardware addresses (``port``,
+            ``robot_ip``, ``fci_ip``), the sim/real mode and safety tuning, and
+            ``on_configure`` re-reads them. Writable, any DDS peer on the domain could
+            change them through ``~/set_parameters`` and have the next configure
+            load its choice. None needs a runtime change, so all are fixed at
+            construction (launch params / ``parameter_overrides``) and a later set
+            is refused by rclpy. ``declare_parameter`` routes through here.
+            """
+            from rcl_interfaces.msg import ParameterDescriptor
+
+            locked: list[tuple[Any, ...]] = []
+            for name, *rest in parameters:
+                value = rest[0] if rest else None
+                # A copy, so a caller's shared descriptor is not locked for other nodes; a
+                # name-only declaration keeps rclpy's dynamic typing (its 1-tuple path).
+                descriptor = (
+                    copy.copy(rest[1]) if rest[1:] else ParameterDescriptor(dynamic_typing=not rest)
+                )
+                descriptor.read_only = True
+                locked.append((name, value, descriptor))
+            return list(super().declare_parameters(namespace, locked, ignore_override))
 
         # ── Subclass hooks ────────────────────────────────────────────────
 
@@ -2154,8 +2195,14 @@ if _ROS2_AVAILABLE:
         invoked by ``_create_hal``.
         """
 
-        def __init__(self, node_name: str, hal_factory: HALFactory) -> None:
-            super().__init__(node_name)
+        def __init__(
+            self,
+            node_name: str,
+            hal_factory: HALFactory,
+            *,
+            parameter_overrides: list[Any] | None = None,
+        ) -> None:
+            super().__init__(node_name, parameter_overrides=parameter_overrides)
             self._hal_factory = hal_factory
 
         def _create_hal(self) -> HAL:
@@ -2176,9 +2223,18 @@ if _ROS2_AVAILABLE:
         into (issue #191).
         """
 
-        def __init__(self, node_name: str) -> None:
-            """Declare the manifest-driven params (``robot_yaml`` + ``hal_mode`` + sensor knobs)."""
-            super().__init__(node_name)
+        def __init__(
+            self,
+            node_name: str,
+            *,
+            parameter_overrides: list[Any] | None = None,
+        ) -> None:
+            """Declare the manifest-driven params (``robot_yaml`` + ``hal_mode`` + sensor knobs).
+
+            All read-only (``HALLifecycleNodeBase.declare_parameters``): set them at
+            launch or via ``parameter_overrides``.
+            """
+            super().__init__(node_name, parameter_overrides=parameter_overrides)
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("hal_mode", "sim")
             self.declare_parameter("sim_env_yaml", "")
@@ -2435,11 +2491,14 @@ if _ROS2_AVAILABLE:
             the path is threaded into the HAL as ``mjcf_path``. Issue #191 Phase 3b
             replaces openarm's bespoke ``_create_hal`` scene splicing.
             """
-            import importlib
+            from openral_core.code_refs import import_code_ref
 
-            module_path, _, fn_name = composition.composer.partition(":")  # type: ignore[attr-defined]
-            composer = getattr(importlib.import_module(module_path), fn_name)
-            xml, meshdir = composer(**composition.params)  # type: ignore[attr-defined]
+            # Re-checked although SceneComposition validated it: openral_* only.
+            composer = import_code_ref(
+                composition.composer,  # type: ignore[attr-defined]  # reason: composition is untyped (manifest or scene JSON model)
+                setting="composition.composer",
+            )
+            xml, meshdir = composer(**composition.params)  # type: ignore[attr-defined,operator]  # reason: import_code_ref returns object; the composer contract is (xml, meshdir)
             scene_path = meshdir.parent / f"{description.name}_composed_scene.xml"
             scene_path.write_text(xml)
             self.get_logger().info(

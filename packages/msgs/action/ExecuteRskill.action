@@ -69,6 +69,15 @@ uint8 failure_kind
 #   FAILURE_OBJECT_NOT_FOUND  ObjectQueryEvidence (the exhausted query)
 # Additive (CLAUDE.md §1.6): an older producer's Result decodes as "".
 string evidence_json
+
+# outcome_summary — what a successful goal actually did, in one bounded line (<=480
+# chars): the skill's ROSRskillGoalSatisfied text, e.g. a wrapped result-only action's
+# "wrapped result-only action completed: status=STATUS_SUCCEEDED result{...} goal{...}".
+# Empty on failure (failure_reason carries the cause) and for skills that end without
+# one. Rendered on the reasoner's `## EXECUTION` [ok] line. Producer:
+# `rskill_runner_node._run_until_done_or_deadline`.
+# Additive (CLAUDE.md §1.6): an older producer's Result decodes as "".
+string outcome_summary
 ---
 # Feedback
 float32 progress           # 0..1

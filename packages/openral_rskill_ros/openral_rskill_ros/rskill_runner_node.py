@@ -100,6 +100,10 @@ SkillResolver = Callable[..., "rSkillBase"]
 # 100 ms cancel drain (F1 design).
 _CANCEL_DRAIN_S = 0.1
 
+# Bound on ExecuteRskill.Result.outcome_summary (a skill's ROSRskillGoalSatisfied
+# text, e.g. a wrapped result-only action's status + result + goal line).
+_OUTCOME_SUMMARY_MAX_CHARS = 480
+
 # Runaway guard for the MoveIt approach replay; real MoveGroup
 # trajectories are far smaller (hundreds of points).
 _MAX_APPROACH_WAYPOINTS = 100_000
@@ -540,6 +544,8 @@ if _ROS2_AVAILABLE:
             self._safety_evidence: dict[int, tuple[float, str]] = {}
             self._safety_evidence_cv = threading.Condition()
             self._goal_evidence: tuple[int, str] | None = None
+            # ROSRskillGoalSatisfied text of the current goal -> Result.outcome_summary.
+            self._goal_outcome_summary = ""
             self._goal_started_monotonic = 0.0
             self._safety_failure_sub: Any = None
             self._episode_pub: Any = None
@@ -1423,6 +1429,7 @@ if _ROS2_AVAILABLE:
                 self._last_deadline_miss = None
                 self._goal_evidence = None
                 self._explained_drop = None
+                self._goal_outcome_summary = ""
                 self._goal_started_monotonic = time.monotonic()
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
@@ -1669,6 +1676,7 @@ if _ROS2_AVAILABLE:
                     result.success = True
                     result.failure_reason = ""
                     result.failure_kind = ExecuteRskill.Result.FAILURE_NONE
+                    result.outcome_summary = self._goal_outcome_summary
                     self._finalize_goal(goal_handle, "succeed")
                     self._reset_active_goal()
                     return result
@@ -2081,8 +2089,10 @@ if _ROS2_AVAILABLE:
                         # success=True. Logged so traces show why the loop
                         # exited.
                         self.get_logger().info(
-                            f"rskill_runner.rskill_goal_satisfied: {completion!s}"
+                            f"rskill_runner.rskill_goal_satisfied "
+                            f"rskill={self._active_skill_id}: {completion!s}"
                         )
+                        self._goal_outcome_summary = str(completion)[:_OUTCOME_SUMMARY_MAX_CHARS]
                         inf_span.set_attribute("rskill.completion", "goal_satisfied")
                         return "completed"
                     # ``step()`` may return a single ``Action``
