@@ -44,7 +44,6 @@ import time
 from collections.abc import MutableMapping
 from typing import Final
 
-import structlog
 from openral_core.exceptions import ROSConfigError
 from openral_core.ros_graph_scope import (
     ALLOW_NETWORK_ROS_ENV,
@@ -68,7 +67,6 @@ __all__ = [
     "require_robot_on_graph",
 ]
 
-_log = structlog.get_logger(__name__)
 
 #: Escape hatch for **one** of this module's two refusals: the one raised when
 #: the graph could not be *read* at all (``rclpy`` will not import, the probe
@@ -213,7 +211,8 @@ def confine_real_scope(env: MutableMapping[str, str], *, robot_id: str) -> None:
     (``openral_core.ros_graph_scope.discovery_range_is_ros_default``).
     A scope that reaches other hosts (``ROS_STATIC_PEERS`` set, or a range other
     than ``LOCALHOST`` / ``OFF``) is refused unless
-    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set, and logged as a warning when it is.
+    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set. An opted-in networked scope is not
+    logged here: ``deploy_e2e.launch.py``'s gate prints it once per deploy.
 
     Args:
         env: The launch environment, mutated in place. The opt-in is read from
@@ -221,7 +220,8 @@ def confine_real_scope(env: MutableMapping[str, str], *, robot_id: str) -> None:
         robot_id: Seeds the default domain.
 
     Raises:
-        ROSConfigError: A networked scope without the opt-in.
+        ROSConfigError: A networked scope without the opt-in and SROS2, or a
+            secured graph whose keystore does not fit (``require_host_confined_ros_scope``).
 
     Example:
         >>> env: dict[str, str] = {}
@@ -233,23 +233,20 @@ def confine_real_scope(env: MutableMapping[str, str], *, robot_id: str) -> None:
     # Static peers do not replace the range: unset is still SUBNET to ROS, so the
     # LOCALHOST default applies with or without them (LOCALHOST + one peer).
     defaulted = not localhost_only and discovery_range_is_ros_default(env)
-    # The default first, on a copy, so a refusal leaves `env` untouched. Not
-    # setdefault: an exported-but-empty value means SUBNET to ROS, and an exported
-    # SUBNET is what setup.bash leaves in every sourced shell.
-    scoped = {**env, "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"} if defaulted else env
-    scope = require_host_confined_ros_scope(scoped)
-    if scope is not None:
-        _log.warning(
-            "dds_scope.real_robot_graph_networked",
-            scope=scope,
-            robot_id=robot_id,
-            opt_in=ALLOW_NETWORK_ROS_ENV,
-            hazard="every host on this network can command the robot",
-        )
+    # The defaults first, on a copy, so a refusal leaves `env` untouched. Not
+    # setdefault: an exported-but-empty value means SUBNET / domain 0 to ROS, and an
+    # exported SUBNET is what setup.bash leaves in every sourced shell. The domain is
+    # in the copy because a secured graph's keystore is checked against it.
+    domain = env.get("ROS_DOMAIN_ID", "").strip() or real_domain_id(robot_id)
+    scoped = {**env, "ROS_DOMAIN_ID": domain}
+    if defaulted:
+        scoped["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+    # No warning here: the env reaches deploy_e2e.launch.py, whose gate logs the
+    # hazard once per deploy; this runs twice per deploy (orphan reap + launch env, #558).
+    require_host_confined_ros_scope(scoped)
     if defaulted:
         env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
-    if not env.get("ROS_DOMAIN_ID", "").strip():
-        env["ROS_DOMAIN_ID"] = real_domain_id(robot_id)
+    env["ROS_DOMAIN_ID"] = domain
 
 
 def _probe_source() -> str:

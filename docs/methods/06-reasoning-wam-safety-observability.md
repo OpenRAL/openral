@@ -667,7 +667,7 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_free_vram_peers_then_send(call, peers, generation, traceparent)` — Deactivate each GPU lifecycle peer and send the goal only once every deactivation response returns, so a peer's VRAM is released before the runner loads the policy. Peers whose service is absent are skipped; a late deactivation from an invalidated generation is immediately reactivated instead of sending a stale goal.
   - `_reactivate_vram_peers()` — Reactivate the peers deactivated for the last dispatch (idempotent). Called on terminal result and on goal reject/error, not on a deadline (the policy may still be resident).
   - `_on_reactivate_result(peer, future)` — Best-effort log of a reactivation `change_state` outcome.
-  - `_change_state_async(node, transition) -> future | None` — Shared helper: lazily cache a `ChangeState` client per peer node and call it asynchronously; `None` if the service isn't on the graph. Used by both lifecycle dispatch and VRAM eviction.
+  - `_change_state_async(node, transition) -> future | None` — Shared helper: lazily cache a `ChangeState` client per peer node and call it asynchronously; `None` if the service isn't on the graph or SROS2 refuses this enclave the client (ADR-0130: the reasoner may not cycle the kernel, HAL or E-stop producers; logged as a refusal, never raised). Used by both lifecycle dispatch and VRAM eviction.
   - `_dispatch_lifecycle_transition(call)` — Refuses (error log, no call) a `call.node` outside `self._palette.node_ids`; else drives `<call.node>/change_state` via `_change_state_async`; on success attach `_on_lifecycle_response`, on an absent service log + skip.
   - module constant `_FEEDBACK_LOG_PERIOD_S: float = 1.0` (L536) — WARNING-log throttle period for per-chunk action feedback.
   - `_on_execute_skill_feedback(rskill_id, feedback_msg)` — Forward action feedback to the operator log, throttled to one WARNING per `_FEEDBACK_LOG_PERIOD_S` (a VLA goal streams one feedback per chunk); suppressed lines go to DEBUG.
@@ -685,11 +685,11 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_on_lifecycle_response(call, future)` — Log the `ChangeState` result; lifecycle failures surface in the target node's own logs (no `FailureTrigger` re-emission).
   - `_publish_skill_failure(*, kind, rskill_id, evidence, traceparent, trace_id=None)` — Build + publish a `FailureTrigger` on `/openral/failure/rskill`, then mirror it onto the OTLP span path via `_emit_skill_failure_event` so the OTLP-only dashboard can tally it.
   - `_emit_skill_failure_event(*, kind, rskill_id, evidence)` — Stamp an `openral.event.skill_failure` span event carrying the failure state, on the active tick span when recording or a transient span otherwise. Drives the dashboard "skill failures" counter.
-  - `renderer(self) -> ContextRenderer` (L6286) — Direct read access for tests asserting buffer state.
-  - `dispatched_calls(self) -> tuple[Any, ...]` (L6291) — Snapshot of tool calls the reasoner has dispatched (in order).
-  - `set_palette(self, palette) -> None` (L6295) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
+  - `renderer(self) -> ContextRenderer` (L6297) — Direct read access for tests asserting buffer state.
+  - `dispatched_calls(self) -> tuple[Any, ...]` (L6302) — Snapshot of tool calls the reasoner has dispatched (in order).
+  - `set_palette(self, palette) -> None` (L6306) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
 - `_QOS_REGISTRY_CHANGED` (L261) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
-- `main(args=None) -> int` (L6300) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
+- `main(args=None) -> int` (L6311) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
 
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack are out of scope._

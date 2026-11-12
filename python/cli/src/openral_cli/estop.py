@@ -97,6 +97,12 @@ def estop_reset_command(
         )
         raise typer.Exit(code=2) from exc
 
+    from openral_core.ros_security import (  # noqa: PLC0415  # reason: lazy CLI import
+        default_operator_enclave,
+    )
+
+    # Under SROS2 only the operator enclave may make this call (ADR-0130).
+    default_operator_enclave(os.environ)
     rclpy.init()
     try:
         node = rclpy.create_node("openral_cli_estop_reset")

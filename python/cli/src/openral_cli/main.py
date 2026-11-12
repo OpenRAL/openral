@@ -73,6 +73,7 @@ from openral_cli.deploy_sim import deploy_sim_command
 from openral_cli.estop import estop_app
 from openral_cli.install import install_app
 from openral_cli.prompt import prompt_command
+from openral_cli.security import security_app
 
 if TYPE_CHECKING:
     from openral_core import (
@@ -3897,6 +3898,7 @@ app.command(
 # `openral estop reset` clears the kernel latch, then (only on success) every
 # HAL/runner latch via /openral/estop_cleared — the dashboard's reset sequence.
 app.add_typer(estop_app, name="estop")
+app.add_typer(security_app, name="security")
 
 # `openral compliance` — the on-robot compliance log (issue #469).
 app.add_typer(compliance_app, name="compliance")
@@ -3977,7 +3979,11 @@ def dashboard(
     """Serve the OpenRAL live dashboard."""
     import shlex
 
+    from openral_core.ros_security import default_operator_enclave
     from openral_observability.dashboard import run_dashboard
+
+    # Its E-STOP reset and its `ros2` subprocesses act as the operator (ADR-0130).
+    default_operator_enclave(os.environ)
 
     inprocess_cmd = shlex.split(inprocess) if inprocess else None
     try:

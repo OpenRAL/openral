@@ -10,15 +10,16 @@ under.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+import structlog
 from openral_core.exceptions import ROSConfigError
 
 _LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture(scope="module")
@@ -29,12 +30,9 @@ def launch_module() -> ModuleType:
     pytest.importorskip("openral_foxglove_bringup.topics")
     if not os.environ.get("ROS_DISTRO"):
         pytest.skip("ROS_DISTRO not set — launch_ros requires a sourced ROS 2 install.")
-    spec = importlib.util.spec_from_file_location("openral_deploy_e2e_scope", _LAUNCH_FILE)
-    if spec is None or spec.loader is None:
-        pytest.fail(f"failed to build module spec for {_LAUNCH_FILE}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    from _launch_test_common import import_launch_module
+
+    return import_launch_module(_LAUNCH_FILE)
 
 
 @pytest.mark.parametrize(
@@ -64,13 +62,20 @@ def test_a_real_hal_on_a_networked_graph_is_refused(
     [
         {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"},
         {"ROS_LOCALHOST_ONLY": "1", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"},
-        {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", "OPENRAL_ALLOW_NETWORK_ROS": "1"},
     ],
 )
-def test_a_host_confined_or_opted_in_real_hal_launches(
-    launch_module: ModuleType, env: dict[str, str]
-) -> None:
+def test_a_host_confined_real_hal_launches(launch_module: ModuleType, env: dict[str, str]) -> None:
     launch_module._require_host_confined_real_graph("real", env)
+
+
+def test_an_opted_in_networked_real_hal_without_sros2_is_refused(
+    launch_module: ModuleType,
+) -> None:
+    """ADR-0130: the opt-in acknowledges the network; only SROS2 Enforce secures it."""
+    with pytest.raises(ROSConfigError, match="without SROS2"):
+        launch_module._require_host_confined_real_graph(
+            "real", {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", "OPENRAL_ALLOW_NETWORK_ROS": "1"}
+        )
 
 
 def test_a_freshly_sourced_shell_is_refused_and_told_why(launch_module: ModuleType) -> None:
@@ -104,9 +109,184 @@ def test_a_sim_is_not_checked(launch_module: ModuleType) -> None:
     )
 
 
-def test_the_gate_runs_before_any_node_is_composed(launch_module: ModuleType) -> None:
-    """Wired right after ``hal_mode`` resolves in ``compose_runtime_graph``."""
-    source = _LAUNCH_FILE.read_text()
-    resolve = source.index('hal_mode = LaunchConfiguration("hal_mode").perform(context)')
-    gate = source.index("_require_host_confined_real_graph(hal_mode, os.environ)")
-    assert 0 < gate - resolve < 200
+_HAL_NODE = "openral_hal_scope_test"
+
+
+def _walk_real_deploy(
+    launch_module: ModuleType, started: list[object], *, robot_yaml: Path, hal_params: Path
+) -> None:
+    """Walk the whole ``deploy_e2e`` description for a ``hal_mode:=real`` deploy.
+
+    Nothing is spawned (``walk_launch``), so this is safe on a host with hardware.
+    """
+    pytest.importorskip("openral_safety")
+    from _launch_test_common import walk_launch
+    from launch import LaunchContext
+
+    hal_params.write_text("{}\n")
+    context = LaunchContext()
+    context.launch_configurations.update(
+        {
+            "robot_yaml": str(robot_yaml),
+            "hal_package": "openral_hal_node",
+            "hal_executable": "lifecycle_node.py",
+            "hal_node_name": _HAL_NODE,
+            "hal_params_file": str(hal_params),
+            "hal_mode": "real",
+            "enable_dashboard": "false",
+        }
+    )
+    walk_launch(launch_module.generate_launch_description(), context, started)
+
+
+_FRANKA = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+_SCOPE_VARS = (
+    "ROS_LOCALHOST_ONLY",
+    "ROS_STATIC_PEERS",
+    "ROS_DISCOVERY_SERVER",
+    "RMW_IMPLEMENTATION",
+    "CYCLONEDDS_URI",
+    "FASTRTPS_DEFAULT_PROFILES_FILE",
+    "FASTDDS_DEFAULT_PROFILES_FILE",
+    "OPENRAL_ALLOW_NETWORK_ROS",
+)
+
+
+@pytest.fixture
+def scope_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """No inherited variable that widens or narrows the ROS scope."""
+    for name in _SCOPE_VARS:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+def test_a_refused_launch_starts_no_process(
+    launch_module: ModuleType, scope_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The whole launch, not the gate alone: a refused scope reaches no node or process (#558).
+
+    Fails if the gate moves after anything that starts a process — later in the
+    returned graph, into a timer, or out of the launch.
+    """
+    scope_env.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET")
+    started: list[object] = []
+    with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_NETWORK_ROS"):
+        _walk_real_deploy(
+            launch_module, started, robot_yaml=_FRANKA, hal_params=tmp_path / "hal.yaml"
+        )
+    assert started == []
+
+
+def test_a_refused_launch_reads_no_manifest(
+    launch_module: ModuleType, scope_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The refusal comes before any composition work, so it is what the operator sees.
+
+    A launch whose manifest does not exist still answers with the scope refusal: the
+    gate runs before ``robot.yaml`` is read, let alone a node composed. Moved later in
+    ``compose_runtime_graph``, the manifest (or a missing vendor bringup) fails first
+    and hides the security refusal.
+    """
+    scope_env.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET")
+    started: list[object] = []
+    with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_NETWORK_ROS"):
+        _walk_real_deploy(
+            launch_module,
+            started,
+            robot_yaml=tmp_path / "absent" / "robot.yaml",
+            hal_params=tmp_path / "hal.yaml",
+        )
+    assert started == []
+
+
+def test_the_same_launch_host_confined_starts_the_graph(
+    launch_module: ModuleType, scope_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Control for the tests above: confined, the same walk reaches the HAL."""
+    pytest.importorskip("mujoco")
+    scope_env.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
+    started: list[object] = []
+    _walk_real_deploy(launch_module, started, robot_yaml=_FRANKA, hal_params=tmp_path / "hal.yaml")
+    assert _HAL_NODE in {str(getattr(entity, "_Node__node_name", "")) for entity in started}
+
+
+def test_an_opted_in_networked_graph_is_logged_once(
+    launch_module: ModuleType, tmp_path: Path
+) -> None:
+    """#558: the launch gate is the one emitter; ``deploy run``'s scoping logs nothing.
+
+    An opted-in networked graph runs only under SROS2 Enforce (ADR-0130), so this
+    builds a real keystore.
+    """
+    dds_scope = pytest.importorskip("openral_cli._dds_scope")
+    security = pytest.importorskip("openral_cli.security")
+    from openral_core.ros_security import render_sros2_policy
+
+    if security.shutil.which("ros2") is None:
+        pytest.skip("SROS2 keystore needs `ros2` on PATH")
+    security.generate_keystore(render_sros2_policy({}), tmp_path / "ks", domain="77")
+    env = {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",
+        "OPENRAL_ALLOW_NETWORK_ROS": "1",
+        "ROS_DOMAIN_ID": "77",
+        "ROS_SECURITY_ENABLE": "true",
+        "ROS_SECURITY_STRATEGY": "Enforce",
+        "ROS_SECURITY_KEYSTORE": str(tmp_path / "ks"),
+    }
+    with structlog.testing.capture_logs() as logs:
+        for _ in range(2):  # orphan reap + launch env, as one deploy run does
+            dds_scope.confine_real_scope(dict(env), robot_id="openarm")
+        launch_module._require_host_confined_real_graph("real", env)
+    warnings = [log for log in logs if log["log_level"] == "warning"]
+    assert [log["event"] for log in warnings] == ["deploy_e2e.real_robot_graph_networked"]
+    assert "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET" in warnings[0]["scope"]
+
+
+def test_without_sros2_no_process_is_given_an_enclave(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security off: the hand-off changes nothing, so an unsecured deploy is untouched."""
+    from launch import LaunchContext
+
+    monkeypatch.delenv("ROS_SECURITY_ENABLE", raising=False)
+    monkeypatch.delenv("ROS_SECURITY_ENCLAVE_OVERRIDE", raising=False)
+    enclave_env = launch_module._hand_off_enclaves(LaunchContext())
+    assert enclave_env("/openral/safety_kernel") == {}
+    assert "ROS_SECURITY_ENCLAVE_OVERRIDE" not in os.environ
+
+
+def test_a_secured_launch_refuses_a_broken_keystore(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """In every hal_mode, before any node is composed (ADR-0130)."""
+    from launch import LaunchContext
+
+    monkeypatch.setenv("ROS_SECURITY_ENABLE", "true")
+    monkeypatch.setenv("ROS_SECURITY_STRATEGY", "Enforce")
+    monkeypatch.setenv("ROS_SECURITY_KEYSTORE", str(tmp_path))
+    with pytest.raises(ROSConfigError, match="no usable enclave"):
+        launch_module._hand_off_enclaves(LaunchContext())
+
+
+def test_a_secured_launch_outside_the_launch_enclave_is_refused(
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Any other enclave is denied the kernel's change_state: the graph would never come up."""
+    from launch import LaunchContext
+
+    security = pytest.importorskip("openral_cli.security")
+    from openral_core.ros_security import render_sros2_policy
+
+    if security.shutil.which("ros2") is None:
+        pytest.skip("SROS2 keystore needs `ros2` on PATH")
+    security.generate_keystore(render_sros2_policy({}), tmp_path / "ks", domain="77")
+    for name, value in {
+        "ROS_DOMAIN_ID": "77",
+        "ROS_SECURITY_ENABLE": "true",
+        "ROS_SECURITY_STRATEGY": "Enforce",
+        "ROS_SECURITY_KEYSTORE": str(tmp_path / "ks"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("ROS_SECURITY_ENCLAVE_OVERRIDE", raising=False)
+    with pytest.raises(ROSConfigError, match="/openral/launch enclave"):
+        launch_module._hand_off_enclaves(LaunchContext())

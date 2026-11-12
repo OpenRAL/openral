@@ -45,8 +45,9 @@ brakes, so a real HAL waits on a safety-WG-reviewed stop behaviour.
 `deploy run` confines the robot's ROS graph to the deploy host
 (`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) on a per-robot `ROS_DOMAIN_ID`, and
 prints the result as `ros scope:`. A graph that must reach another computer
-(a remote driver, `rviz2` on a laptop) needs `OPENRAL_ALLOW_NETWORK_ROS=1`
-plus the same exported domain on every host; otherwise the deploy refuses. The
+(a remote driver, `rviz2` on a laptop) needs `OPENRAL_ALLOW_NETWORK_ROS=1`,
+SROS2 in Enforce mode (`openral security init <robot_id>`) and the same exported
+domain on every host; otherwise the deploy refuses. The
 Foxglove bridge and the dashboard are unaffected. Why, and the opt-in recipe:
 [ROS graph security](../../reference/ros-graph-security.md).
 
