@@ -18,9 +18,11 @@ from openral_sim._sidecar_common import (
     checkout_head,
     ensure_source,
     make_isolated_env,
+    require_pinned_head,
     run_sidecar,
     sidecar_env,
 )
+from openral_sim.backends.robotwin import _ensure_robotwin_checkout
 
 # Only the fetch tests need git; the environment-policy tests run everywhere.
 _needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
@@ -79,6 +81,32 @@ def test_refuses_a_pin_that_is_not_a_full_sha(tmp_path: Path, pin: str) -> None:
     with pytest.raises(SystemExit, match="not a full SHA"):
         ensure_source("t", tmp_path / "work", url, pin)
     assert not (tmp_path / "work" / "source").exists()
+
+
+@_needs_git
+def test_require_pinned_head_refuses_a_directory_that_is_not_a_checkout(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="no git commit"):
+        require_pinned_head("t", tmp_path, "0" * 40)
+
+
+@_needs_git
+def test_robotwin_checkout_is_verified_on_reuse_not_only_on_clone(tmp_path: Path) -> None:
+    """``ensure_source`` hands RoboTwin over and it is renamed out of ``source/``:
+    the pin must still hold on every later provisioning run (#560)."""
+    url, first, tip = _upstream(tmp_path)
+    home = tmp_path / "home"
+    root = _ensure_robotwin_checkout(home, url, first)
+    assert root == home / "RoboTwin" and checkout_head(root) == first
+    assert _ensure_robotwin_checkout(home, url, first) == root  # reuse at the pin
+    # The provisioned root moved off the pin (a pull, an operator's checkout): refused.
+    _git("fetch", "-q", "--depth", "1", "origin", tip, cwd=root)
+    _git("checkout", "-q", "FETCH_HEAD", cwd=root)
+    with pytest.raises(SystemExit, match="not the pinned"):
+        _ensure_robotwin_checkout(home, url, first)
+    # Not a git checkout at all (a copied tree): refused too.
+    shutil.rmtree(root / ".git")
+    with pytest.raises(SystemExit, match="no git commit"):
+        _ensure_robotwin_checkout(home, url, first)
 
 
 def test_rldx_install_plan_fetches_the_pin_and_verifies_head() -> None:
