@@ -138,6 +138,7 @@ from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MAX_SUBDIVIDE_DEPTH,
+    DEFAULT_MAX_TASK_DISPATCHES,
     MissionState,
     TaskLocateBudget,
     TaskState,
@@ -4251,7 +4252,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
     # ── §2 — automatic reward-gated task verification ──────────────
 
-    def _maybe_verify_active_mission_task(  # noqa: PLR0911  # reason: linear guard clauses before the reward query
+    def _maybe_verify_active_mission_task(  # noqa: PLR0911, PLR0912  # reason: linear guard clauses before the reward query
         self,
         call: ExecuteRskillTool,
         *,
@@ -4272,8 +4273,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
         Before that, ``task_step_without_verifier`` settles what no reward verdict
         has to: a ``succeeded`` skill whose manifest sets
-        ``completes_task_on_success`` completes the task, and with no reward
-        monitor the per-task attempt cap still abandons it.
+        ``completes_task_on_success`` completes the task (only its step when the
+        goal was not the task's ``final_step``), a task past its dispatch bound is
+        abandoned, and with no reward monitor so is one whose *failed* attempts
+        reach the cap (a success is not a failure, #562).
 
         ``dispatch_task_id`` / ``dispatch_mission_generation`` name the task the
         returning goal was dispatched for; when given and no longer the active task
@@ -4304,11 +4307,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
             entry = self._palette.skill(call.rskill_id)
             dispatch_completes_task = entry is not None and entry.completes_task_on_success
+        if not succeeded:
+            active.failures += 1  # the no-verifier cap counts these (#562)
+            self._persist_ladder_state()
         step = task_step_without_verifier(
             succeeded=succeeded,
             completes_task_on_success=dispatch_completes_task,
             reward_available=self._task_progress_available,
             attempts=active.attempts,
+            failures=active.failures,
+            final_step=call.final_step,
         )
         if step is not None:
             action, verdict = step
@@ -4316,6 +4324,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"mission: {action} task {active.task_id} after {call.rskill_id!r} "
                 f"(attempt {active.attempts}) — {verdict}",
             )
+            if action == "step":
+                self._on_tick(force=True, tier="C")  # the next step, now
+                return
             self._apply_mission_verdict(
                 action,
                 verdict,
@@ -4350,6 +4361,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().warning(
                 "mission verify: query_task_progress not on graph; active task stays active",
             )
+            if active.attempts >= DEFAULT_MAX_TASK_DISPATCHES:  # no verdict can come: bound it
+                self._apply_mission_verdict(
+                    "abandon",
+                    f"not complete after {active.attempts} dispatch(es), the per-task bound "
+                    "(the reward monitor is not on the graph)",
+                    mission=mission,
+                    active=active,
+                    progress_now=0.0,
+                    success_now=0.0,
+                    traceparent=traceparent,
+                )
             return
         req = QueryTaskProgress.Request()
         # VLM-adjudicated completion amendment — score the whole attempt (start→now), not a trailing

@@ -8,9 +8,12 @@ second prompt ran as an aside after which the first task resumed. Covers:
 
 1. The success's ``ExecuteRskill.Result.outcome_summary`` reaches the ``## EXECUTION`` line,
    and the Nav2 skill's ``completes_task_on_success`` completes the task.
-2. With no reward monitor, the per-task attempt cap still abandons a task (after its one
-   subdivision offer).
+2. With no reward monitor, the per-task attempt cap counts *failed* attempts (after its one
+   subdivision offer it abandons); successes do not trip it, and the hard dispatch bound
+   still terminates a task that keeps succeeding without ever completing (#562).
 3. A success nobody can verify lets the next operator prompt replace the mission.
+4. A Nav2 success that is one step of a longer task (``final_step=False``) completes only
+   its step (#562).
 
 Real reasoner node, real ``openral_msgs`` result types, the real in-tree Nav2 / VLA
 manifests and ``panda_mobile`` robot manifest (CLAUDE.md §1.11); the only double is the
@@ -23,7 +26,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import MissionState
 
 import pytest
 
@@ -96,6 +103,24 @@ def test_nav2_success_reports_its_outcome_and_completes_the_task() -> None:
         rclpy.try_shutdown()
 
 
+def _settle(
+    reasoner: Any,  # reason: ReasonerNode imports only with ROS sourced
+    call: ExecuteRskillTool,
+    *,
+    succeeded: bool,
+) -> None:
+    mission = reasoner._renderer.mission
+    mission.record_attempt(rskill_id=call.rskill_id)
+    reasoner._maybe_verify_active_mission_task(call, traceparent=None, succeeded=succeeded)
+
+
+def _status(mission: MissionState) -> str:
+    # Read through the summary: mypy keeps the attribute narrowed to "active".
+    summary = mission.to_summary()["tasks"]
+    assert isinstance(summary, list)
+    return str(summary[0]["status"])
+
+
 def test_attempt_cap_abandons_a_task_no_reward_monitor_can_verify() -> None:
     rclpy = pytest.importorskip("rclpy")
     from openral_core import ExecuteRskillTool
@@ -109,21 +134,130 @@ def test_attempt_cap_abandons_a_task_no_reward_monitor_can_verify() -> None:
         mission = MissionState.from_prompt("pick up the cube")
         reasoner._renderer.set_mission(mission)
         for _ in range(DEFAULT_MAX_ATTEMPTS - 1):
-            mission.record_attempt(rskill_id=vla)
-            reasoner._maybe_verify_active_mission_task(call, traceparent=None, succeeded=True)
+            _settle(reasoner, call, succeeded=False)
             assert mission.tasks[0].status == "active", "below the cap the LLM decides"
-        mission.record_attempt(rskill_id=vla)
-        reasoner._maybe_verify_active_mission_task(call, traceparent=None, succeeded=True)
+        _settle(reasoner, call, succeeded=False)
         # At the cap: one subdivision offer first (the existing abandon path) ...
         assert mission.tasks[0].task_id in reasoner._subdivide_offered
         assert mission.tasks[0].status == "active"
-        # ... then the next unverified attempt abandons it.
-        mission.record_attempt(rskill_id=vla)
-        reasoner._maybe_verify_active_mission_task(call, traceparent=None, succeeded=True)
-        # Read through the summary: mypy keeps the attribute narrowed to "active".
-        summary = mission.to_summary()["tasks"]
-        assert isinstance(summary, list)
-        assert summary[0]["status"] == "abandoned"
+        # ... then the next failed attempt abandons it.
+        _settle(reasoner, call, succeeded=False)
+        assert _status(mission) == "abandoned"
+        assert mission.is_complete()
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_successful_steps_do_not_abandon_a_multi_skill_task_regression_562() -> None:
+    """#562: with no reward monitor, three successful dispatches (pick, carry, place)
+    used to hit the attempt cap: subdivision offer, then abandonment of a task whose
+    every step had worked. The task now stays active for the LLM."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        vla = next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        call = ExecuteRskillTool(rskill_id=vla)
+        mission = MissionState.from_prompt("pick up the cube and put it in the bin")
+        reasoner._renderer.set_mission(mission)
+        for _ in range(DEFAULT_MAX_ATTEMPTS + 1):
+            _settle(reasoner, call, succeeded=True)
+        assert reasoner._subdivide_offered == set(), "a success is not a failed attempt"
+        assert _status(mission) == "active"
+        assert reasoner._unverified_success is not None, "the operator's next prompt is a goal"
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_task_that_keeps_succeeding_still_terminates_regression_562() -> None:
+    """The ladder stays bounded: successes nobody can judge, sent forever, end in the
+    abandon path at ``DEFAULT_MAX_TASK_DISPATCHES`` (one subdivision offer first)."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_TASK_DISPATCHES, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        vla = next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        call = ExecuteRskillTool(rskill_id=vla)
+        mission = MissionState.from_prompt("pick up the cube and put it in the bin")
+        reasoner._renderer.set_mission(mission)
+        dispatches = 0
+        while not mission.is_complete():
+            assert dispatches < 4 * DEFAULT_MAX_TASK_DISPATCHES, "unbounded success loop"
+            _settle(reasoner, call, succeeded=True)
+            dispatches += 1
+            if dispatches < DEFAULT_MAX_TASK_DISPATCHES:
+                assert reasoner._subdivide_offered == set()
+        assert dispatches == DEFAULT_MAX_TASK_DISPATCHES + 1  # bound → offer, then abandon
+        assert _status(mission) == "abandoned"
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_the_dispatch_bound_holds_when_the_reward_monitor_is_off_the_graph() -> None:
+    """A configured reward monitor whose service never comes up gives no verdict; the
+    dispatch bound still ends the task instead of leaving it active forever."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_TASK_DISPATCHES, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True  # configured, but nothing serves it
+        vla = next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        call = ExecuteRskillTool(rskill_id=vla)
+        mission = MissionState.from_prompt("pick up the cube and put it in the bin")
+        reasoner._renderer.set_mission(mission)
+        dispatches = 0
+        while not mission.is_complete():
+            assert dispatches < 2 * DEFAULT_MAX_TASK_DISPATCHES, "unbounded without a verdict"
+            _settle(reasoner, call, succeeded=True)
+            dispatches += 1
+        assert dispatches == DEFAULT_MAX_TASK_DISPATCHES + 1  # bound → offer, then abandon
+        assert _status(mission) == "abandoned"
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_nav2_success_as_one_step_completes_only_that_step_regression_562() -> None:
+    """#562: "drive to the kitchen and pick the cup" — Nav2's success used to complete the
+    whole task, so the pick never ran. Sent as a step (``final_step=False``) it completes
+    only its step; the task stays active for the pick, the operator's next prompt is not
+    taken for a new goal, and the final step's success still completes the task."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_msgs.action import ExecuteRskill
+    from openral_reasoner.mission import MissionState
+    from rclpy.task import Future
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        mission = MissionState.from_prompt("drive to the kitchen and pick up the cup")
+        reasoner._renderer.set_mission(mission)
+        mission.record_attempt(rskill_id=_NAV)
+        reasoner._active_dispatch_generation = 9
+        reasoner._active_dispatch_completes_task = True  # captured from the manifest
+        wrapped = ExecuteRskill.Impl.GetResultService.Response()
+        wrapped.status = 4  # STATUS_SUCCEEDED
+        wrapped.result.success = True
+        future = Future()
+        future.set_result(wrapped)
+        reasoner._on_execute_rskill_result(
+            ExecuteRskillTool(rskill_id=_NAV, final_step=False), 9, b"\x00" * 16, future, None
+        )
+        assert _status(mission) == "active", "a navigation step completed the whole task"
+        assert reasoner._unverified_success is None
+        assert reasoner._renderer.executions[-1].outcome == "ok"
+        # The task's last step (here another drive, the only skill this robot has with an
+        # own-success opt-in) still completes it.
+        _settle(reasoner, ExecuteRskillTool(rskill_id=_NAV), succeeded=True)
         assert mission.is_complete()
     finally:
         rclpy.try_shutdown()
