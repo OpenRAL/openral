@@ -183,3 +183,19 @@ TEST_F(ExemptionProviderKernelTest, TheProvidersHandsCarryTheExtraFixedJaws) {
   ASSERT_TRUE(node->exemption_provider_loaded()) << node->exemption_provider_status();
   EXPECT_EQ(node->exemption_provider_extra_jaws(), 1U);
 }
+
+// The parameter guard (real-robot DDS confinement) refuses changes once the node has left
+// UNCONFIGURED. The real state machine runs on_configure in CONFIGURING, which is where a
+// provider declares its own parameters: a declaration adds a parameter, it cannot relax one, and
+// refusing it silently unloaded the provider ("refused: initialize threw").
+TEST_F(ExemptionProviderKernelTest, AProviderDeclaresItsParametersUnderTheRealStateMachine) {
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(
+      "osk_prov_declares", options(cls("DeclaresAParameter"), "sim", {"link1"}));
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  EXPECT_TRUE(node->exemption_provider_loaded()) << node->exemption_provider_status();
+  ASSERT_TRUE(node->has_parameter("declares_a_parameter.gain"));
+  // Declared is not mutable: changing it afterwards is refused like any other parameter.
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("declares_a_parameter.gain", 9.0)).successful);
+  EXPECT_DOUBLE_EQ(node->get_parameter("declares_a_parameter.gain").as_double(), 1.0);
+  node->shutdown();
+}

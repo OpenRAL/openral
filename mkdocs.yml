@@ -104,6 +104,7 @@ nav:
     - Telemetry (spans, metrics, logs): reference/telemetry.md
     - The on-robot compliance log: reference/compliance-log.md
     - DDS transport for large messages: reference/dds-large-messages.md
+    - ROS graph security on a real robot: reference/ros-graph-security.md
     - Collision-stack validation evidence: reference/collision-validation-evidence.md
     - Collision-primitive study (OBB vs sphere-swept box): reference/collision-primitive-study.md
     - Collision primitives, in pictures: reference/collision-primitive-images.md

@@ -27,6 +27,7 @@
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <openral_msgs/msg/attached_collision_primitive.hpp>
 #include <rclcpp/qos.hpp>
 
@@ -646,10 +647,51 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<double>("collision_predict_lambda", 0.05);
   this->declare_parameter<double>("collision_predict_margin_growth_m", 0.01);
   this->declare_parameter<std::int64_t>("collision_predict_max_steps", 0);
+
+  // Registered after every declaration (declare_parameter runs these callbacks,
+  // and launch overrides arrive through it). Refuses any change to an existing
+  // parameter once the node has left UNCONFIGURED, or ever after a cleanup: a
+  // limit loaded from the manifest must not be relaxable over the ROS graph.
+  param_guard_ =
+      this->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        // A declaration adds a parameter and cannot relax one: rclcpp runs this callback before
+        // the parameter exists, so `has_parameter` is false. The exemption provider declares its
+        // own in `initialize`, which the real state machine runs in CONFIGURING.
+        const bool declarations_only =
+            std::none_of(params.begin(), params.end(), [this](const rclcpp::Parameter& p) {
+              return this->has_parameter(p.get_name());
+            });
+        result.successful =
+            declarations_only ||
+            (!params_locked_ && this->get_current_state().id() ==
+                                    lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+        if (!result.successful) {
+          result.reason =
+              "openral_safety_kernel parameters are fixed after configure; relaunch with new "
+              "values instead";
+          RCLCPP_WARN(this->get_logger(), "refused runtime change of %zu parameter(s)%s%s",
+                      params.size(), params.empty() ? "" : ", first: ",
+                      params.empty() ? "" : params.front().get_name().c_str());
+        }
+        return result;
+      });
 }
 
 SafetyKernelLifecycleNode::CallbackReturn
-SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
+SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& state) {
+  const CallbackReturn result = configure_from_params(state);
+  // A configure that does not succeed leaves the node UNCONFIGURED without running
+  // on_cleanup, where the parameter guard would admit sets again: latch, so a peer
+  // cannot relax a limit for the retry. New values need a relaunch.
+  if (result != CallbackReturn::SUCCESS) {
+    params_locked_ = true;
+  }
+  return result;
+}
+
+SafetyKernelLifecycleNode::CallbackReturn
+SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& /*state*/) {
   estop_reset_cooldown_s_ = this->get_parameter("estop_reset_cooldown_s").as_double();
 
   // Stand up the OTel TracerProvider before we start handling chunks so
@@ -1208,6 +1250,7 @@ SafetyKernelLifecycleNode::on_deactivate(const rclcpp_lifecycle::State& state) {
 
 SafetyKernelLifecycleNode::CallbackReturn
 SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
+  params_locked_ = true;
   diagnostics_timer_.reset();
   voxel_grid_.provider_gate = ProviderGate{};
   provider_replaces_region_ = false;

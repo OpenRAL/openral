@@ -300,8 +300,27 @@ void Recorder::on_reset(osk::ResetReason why) noexcept {
   log.last_reset = static_cast<int>(why);
 }
 
+/// Declares its own parameter in `initialize`, as the contract invites and as OpenRAL Pro's
+/// provider does. Under the real state machine this runs in CONFIGURING, so the kernel's
+/// parameter guard must let a declaration through.
+class DeclaresAParameter : public Base {
+public:
+  std::uint32_t api_version() const noexcept override { return osk::kExemptionProviderApiVersion; }
+  const char* name() const noexcept override { return "declares-a-parameter/1"; }
+  bool initialize(const osk::CollisionModel& /*model*/,
+                  rclcpp::node_interfaces::NodeParametersInterface::SharedPtr params,
+                  const rclcpp::Logger& /*logger*/) override {
+    if (!params->has_parameter("declares_a_parameter.gain")) {
+      params->declare_parameter("declares_a_parameter.gain", rclcpp::ParameterValue(1.0));
+    }
+    return true;
+  }
+};
+
 }  // namespace openral_safety_kernel_test
 
+PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::DeclaresAParameter,
+                       openral_safety_kernel::ExemptionProvider)
 PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::Recorder,
                        openral_safety_kernel::ExemptionProvider)
 PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::Holder, openral_safety_kernel::ExemptionProvider)

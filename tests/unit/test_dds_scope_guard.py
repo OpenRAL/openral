@@ -22,9 +22,13 @@ boundary to a DDS network) is a substituted seam.
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from openral_cli import _dds_scope
 from openral_core.exceptions import ROSConfigError
 
@@ -48,11 +52,221 @@ class TestConfineSimScope:
         _dds_scope.confine_sim_scope(env)
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] != "OFF"
 
+    def test_an_exported_but_empty_scope_is_treated_as_unset(self) -> None:
+        """ROS reads an empty value as the default (SUBNET, domain 0): a compose file
+        passing ``VAR=${VAR:-}`` must not leave the sim on the LAN."""
+        env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "", "ROS_DOMAIN_ID": " "}
+        _dds_scope.confine_sim_scope(env)
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.SIM_DOMAIN_ID
+
     def test_an_explicit_operator_scope_wins(self) -> None:
         """Attaching a dashboard from another host has to stay possible."""
         env = {"ROS_DOMAIN_ID": "5", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
         _dds_scope.confine_sim_scope(env)
         assert env == {"ROS_DOMAIN_ID": "5", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+
+
+class TestConfineRealScope:
+    """A real robot's graph stays on its host: every peer can command the arm."""
+
+    def test_an_unset_scope_is_confined_to_this_host_and_off_domain_zero(self) -> None:
+        env: dict[str, str] = {}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+        assert env["ROS_DOMAIN_ID"] not in {"0", _dds_scope.SIM_DOMAIN_ID}
+
+    def test_an_exported_but_empty_scope_is_treated_as_unset(self) -> None:
+        """ROS reads an empty value as the default — SUBNET, domain 0."""
+        env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "", "ROS_DOMAIN_ID": ""}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
+    def test_the_domain_is_stable_and_in_the_safe_range_for_every_robot(self) -> None:
+        for robot_id in ("openarm", "so101_follower", "franka_panda", "rizon4", ""):
+            domain = _dds_scope.real_domain_id(robot_id)
+            assert domain == _dds_scope.real_domain_id(robot_id)
+            assert 10 <= int(domain) <= 101
+            assert domain != _dds_scope.SIM_DOMAIN_ID
+
+    @settings(max_examples=2000, deadline=None)
+    @given(robot_id=st.text())
+    def test_no_robot_id_lands_on_a_reserved_domain(self, robot_id: str) -> None:
+        """42 by explicit request, plus every domain a sim, test or lab harness uses."""
+        domain = int(_dds_scope.real_domain_id(robot_id))
+        assert 10 <= domain <= 101
+        assert domain not in _dds_scope.RESERVED_DOMAINS
+        assert domain != 42
+
+    @settings(max_examples=2000, deadline=None)
+    @given(robot_id=st.text())
+    def test_ids_that_never_hit_a_reserved_domain_keep_their_domain(self, robot_id: str) -> None:
+        """The reservations moved only ids whose old hash was reserved (documented)."""
+        digest = int.from_bytes(hashlib.sha256(robot_id.encode()).digest()[:8], "big")
+        before = tuple(d for d in range(10, 102) if d != 77)[digest % 91]
+        if before not in _dds_scope.RESERVED_DOMAINS:
+            assert _dds_scope.real_domain_id(robot_id) == str(before)
+
+    def test_known_robot_domains_are_pinned(self) -> None:
+        """openarm kept 43; so101_follower used to hash onto 52 (a test domain), now 39."""
+        assert _dds_scope.real_domain_id("openarm") == "43"
+        assert _dds_scope.real_domain_id("so101_follower") == "39"
+
+    def test_an_explicit_host_confined_scope_wins(self) -> None:
+        env = {"ROS_DOMAIN_ID": "42", "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env == {"ROS_DOMAIN_ID": "42", "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
+
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"},
+            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "subnet"},
+            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SYSTEM_DEFAULT"},
+            {"ROS_STATIC_PEERS": "192.168.1.20"},
+            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_STATIC_PEERS": "10.0.0.2"},
+        ],
+    )
+    def test_a_networked_scope_without_the_opt_in_is_refused(self, scope: dict[str, str]) -> None:
+        env = dict(scope)
+        with pytest.raises(ROSConfigError) as excinfo:
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert _dds_scope.ALLOW_NETWORK_ROS_ENV in str(excinfo.value)
+        assert "/openral/safe_action" in str(excinfo.value)
+        assert env == scope, "a refusal must leave the env untouched"
+
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            {"ROS_DISCOVERY_SERVER": "10.0.0.9:11811"},
+            {"RMW_IMPLEMENTATION": "rmw_zenoh_cpp"},
+        ],
+    )
+    def test_a_discovery_server_or_zenoh_needs_the_opt_in(self, scope: dict[str, str]) -> None:
+        """Neither is confined by the discovery range the default sets."""
+        with pytest.raises(ROSConfigError, match=_dds_scope.ALLOW_NETWORK_ROS_ENV):
+            _dds_scope.confine_real_scope(dict(scope), robot_id="openarm")
+
+    def test_a_vendor_config_that_lists_peers_needs_the_opt_in(self, tmp_path: Path) -> None:
+        """DDS XML peers reach other hosts whatever the ROS_* variables say."""
+        profile = tmp_path / "fastdds.xml"
+        profile.write_text(
+            "<profiles><participant profile_name='p' is_default_profile='true'><rtps>"
+            "<builtin><initialPeersList><locator><udpv4><address>10.0.0.7</address>"
+            "</udpv4></locator></initialPeersList></builtin></rtps></participant></profiles>"
+        )
+        server = tmp_path / "client.xml"
+        server.write_text(
+            "<profiles><participant profile_name='c' is_default_profile='true'><rtps><builtin>"
+            "<discovery_config><discoveryProtocol>CLIENT</discoveryProtocol>"
+            "<discoveryServersList><RemoteServer prefix='44.53.00.5f.45.50.52.4f.53.49.4d.41'>"
+            "<metatrafficUnicastLocatorList><locator><udpv4><address>10.0.0.9</address>"
+            "</udpv4></locator></metatrafficUnicastLocatorList></RemoteServer>"
+            "</discoveryServersList></discovery_config></builtin></rtps></participant></profiles>"
+        )
+        for scope in (
+            {"CYCLONEDDS_URI": "<Discovery><Peers><Peer address='10.0.0.7'/></Peers></Discovery>"},
+            {"CYCLONEDDS_URI": f"file://{profile.parent / 'missing.xml'}"},
+            {"FASTRTPS_DEFAULT_PROFILES_FILE": str(profile)},
+            {"FASTDDS_DEFAULT_PROFILES_FILE": str(profile), "ROS_LOCALHOST_ONLY": "1"},
+            {"FASTRTPS_DEFAULT_PROFILES_FILE": str(server)},
+        ):
+            with pytest.raises(ROSConfigError, match=_dds_scope.ALLOW_NETWORK_ROS_ENV):
+                _dds_scope.confine_real_scope(dict(scope), robot_id="openarm")
+
+    def test_a_vendor_config_without_peers_stays_host_confined(self) -> None:
+        """The deploy's own large-data Fast DDS profile lists no peers."""
+        from openral_cli.deploy_sim import FASTDDS_LARGE_DATA_PROFILE
+
+        env = {"FASTRTPS_DEFAULT_PROFILES_FILE": str(FASTDDS_LARGE_DATA_PROFILE)}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+
+    def test_opted_in_static_peers_still_default_the_range_to_localhost(self) -> None:
+        """Peers alone leave the range unset, which ROS reads as SUBNET (the whole LAN)."""
+        env = {"ROS_STATIC_PEERS": "10.0.0.5", _dds_scope.ALLOW_NETWORK_ROS_ENV: "1"}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_STATIC_PEERS"] == "10.0.0.5"
+
+    def test_the_legacy_localhost_only_flag_is_host_confined(self) -> None:
+        """rcl (Jazzy) lets ROS_LOCALHOST_ONLY=1 override the range and the static
+        peers ("will be ignored"), so the graph is host-confined: no refusal."""
+        env = {
+            "ROS_LOCALHOST_ONLY": "1",
+            "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",
+            "ROS_STATIC_PEERS": "10.0.0.2",
+        }
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
+    def test_localhost_only_zero_does_not_confine(self) -> None:
+        env = {"ROS_LOCALHOST_ONLY": "0", "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+        with pytest.raises(ROSConfigError):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+
+    def test_an_opt_in_other_than_one_does_not_count(self) -> None:
+        env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", _dds_scope.ALLOW_NETWORK_ROS_ENV: "true"}
+        with pytest.raises(ROSConfigError):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+
+    def test_the_opt_in_keeps_the_networked_scope_and_still_leaves_domain_zero(self) -> None:
+        env = {
+            "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",
+            _dds_scope.ALLOW_NETWORK_ROS_ENV: "1",
+        }
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "SUBNET"
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
+    def test_a_sim_is_unchanged(self) -> None:
+        """The sim keeps its fixed domain; only real robots hash."""
+        env: dict[str, str] = {}
+        _dds_scope.confine_sim_scope(env)
+        assert env == {
+            "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+            "ROS_DOMAIN_ID": _dds_scope.SIM_DOMAIN_ID,
+        }
+
+
+class TestDeployRunAppliesTheRealScope:
+    """``deploy run`` builds its launch env through the confinement, not around it."""
+
+    def test_the_launch_env_is_confined_for_a_real_robot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openral_cli import deploy_sim
+
+        for name in ("ROS_DOMAIN_ID", "ROS_AUTOMATIC_DISCOVERY_RANGE", "ROS_STATIC_PEERS"):
+            monkeypatch.delenv(name, raising=False)
+        env = deploy_sim._prepare_launch_env(hal_mode="real", robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+        assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
+    def test_the_printed_scope_matches_a_localhost_only_graph(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """ROS_LOCALHOST_ONLY=1 overrides the range: never reported as SUBNET, and exported."""
+        from openral_cli import deploy_sim
+
+        deploy_sim._print_ros_scope(
+            {"ROS_DOMAIN_ID": "43", "ROS_LOCALHOST_ONLY": "1", "ROS_STATIC_PEERS": "10.0.0.2"}
+        )
+        out = capsys.readouterr().out
+        assert "SUBNET" not in out
+        assert "export ROS_DOMAIN_ID=43 ROS_LOCALHOST_ONLY=1 ROS_STATIC_PEERS=10.0.0.2" in out
+
+    def test_the_launch_env_refuses_a_networked_real_robot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openral_cli import deploy_sim
+
+        monkeypatch.delenv(_dds_scope.ALLOW_NETWORK_ROS_ENV, raising=False)
+        monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET")
+        with pytest.raises(ROSConfigError):
+            deploy_sim._prepare_launch_env(hal_mode="real", robot_id="openarm")
 
 
 class TestGraphOccupancyGuard:

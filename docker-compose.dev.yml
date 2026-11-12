@@ -33,7 +33,16 @@ services:
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface
     environment:
       - DISPLAY=${DISPLAY:-:0}
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      # Bare names: passed through only when set on the host, otherwise unset
+      # in the container (never 0, never empty), so `openral deploy` picks a
+      # confined domain (docs/reference/ros-graph-security.md). network_mode:
+      # host shares the host's loopback, so LOCALHOST discovery still reaches
+      # host-side nodes.
+      - ROS_DOMAIN_ID
+      - ROS_LOCALHOST_ONLY
+      - ROS_AUTOMATIC_DISCOVERY_RANGE
+      - ROS_STATIC_PEERS
+      - OPENRAL_ALLOW_NETWORK_ROS
       # otelcol fans out: traces -> jaeger, metrics -> prometheus.
       # Jaeger alone returns StatusCode.UNIMPLEMENTED on /v1/metrics,
       # so we point the SDK at the collector by default.

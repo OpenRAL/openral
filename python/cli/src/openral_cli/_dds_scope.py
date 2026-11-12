@@ -16,6 +16,11 @@ Two controls:
   domain. Measured against a live OpenArm: `ROS_AUTOMATIC_DISCOVERY_RANGE=
   SUBNET` (default) makes its nodes visible, `LOCALHOST` hides them without
   affecting same-host discovery; `OFF` would also hide the sim's own nodes.
+* ``confine_real_scope`` — the same prevention for a real robot. Left on
+  domain 0 with subnet discovery, anyone on the LAN could publish
+  ``/openral/safe_action`` (the HAL obeys it), call ``/openral/estop_reset``
+  or spoof ``/joint_states`` and the deadman heartbeat. A real graph that
+  must span hosts opts in with ``OPENRAL_ALLOW_NETWORK_ROS=1``.
 * ``assert_graph_unoccupied`` — detection: covers a real-robot launch
   joining an existing sim graph, or two runs on one host in the same domain.
 
@@ -30,20 +35,29 @@ Signature: a `/joint_states` publisher — every robot has exactly one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 from typing import Final
 
+import structlog
 from openral_core.exceptions import ROSConfigError
+from openral_core.ros_graph_scope import ALLOW_NETWORK_ROS_ENV, require_host_confined_ros_scope
 
 __all__ = [
+    "ALLOW_NETWORK_ROS_ENV",
     "ALLOW_UNVERIFIED_GRAPH_ENV",
+    "RESERVED_DOMAINS",
     "SIM_DOMAIN_ID",
     "assert_graph_unoccupied",
+    "confine_real_scope",
     "confine_sim_scope",
+    "real_domain_id",
 ]
+
+_log = structlog.get_logger(__name__)
 
 #: Escape hatch for **one** of this module's two refusals: the one raised when
 #: the graph could not be *read* at all (``rclpy`` will not import, the probe
@@ -67,6 +81,34 @@ ALLOW_UNVERIFIED_GRAPH_ENV: Final[str] = "OPENRAL_ALLOW_UNVERIFIED_GRAPH"
 #: The domain a confined sim runs on. Any fixed value would do — what matters is
 #: that it is not 0, which is where an unconfigured robot host lands.
 SIM_DOMAIN_ID: Final[str] = "77"
+
+#: Domains the hash table spans. Upper bound 101: on Linux, domains 102-232
+#: collide with the default ephemeral port range (ROS 2 "The ROS_DOMAIN_ID"
+#: concept page; RTPS port = 7400 + 250 * domain + offsets). Below 10 is skipped
+#: (0 = unset, small values are what people pick by hand). The sim's domain was
+#: excluded from the start; this table is kept as-is so a robot id that never
+#: landed on a reserved value keeps the domain it had.
+_HASH_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in range(10, 102) if d != int(SIM_DOMAIN_ID))
+
+#: Domains something else on a robot host already uses, so a real robot is never
+#: hashed onto them (a twin, a test or a lab harness on the robot's own domain
+#: is on the robot's graph):
+#:
+#: * ``0`` — the unset default; ``42`` — ``tools/_demo_env.sh``'s default, and
+#:   never a robot's by explicit request; ``77`` — ``SIM_DOMAIN_ID``;
+#: * ``50-99`` — per-PID test domains (``50 + pid % 50`` in the safety-kernel
+#:   launch tests and ``tests/sim/safety``, ``60 + pid % 40`` in the OTel test),
+#:   which also cover the lab harnesses' fixed domains (76, 80-89, 85, 87, 88 in
+#:   ``docs/reference/dds-large-messages.md``, 90, 91, 92);
+#: * ``100-101`` — the bottom of the package test conftests' ``100 + pid % 100``.
+#:
+#: Exporting ``ROS_DOMAIN_ID`` still wins over all of this.
+RESERVED_DOMAINS: Final[frozenset[int]] = frozenset({0, 42, int(SIM_DOMAIN_ID)}) | frozenset(
+    range(50, 102)
+)
+
+#: Where a robot id whose hash lands on a reserved domain is re-hashed to.
+_FREE_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in _HASH_DOMAINS if d not in RESERVED_DOMAINS)
 
 #: How long the probe listens before deciding the graph is empty. DDS discovery
 #: is asynchronous: a participant that exists is not necessarily *known* the
@@ -101,7 +143,8 @@ _HARDWARE_SIGNATURES: Final[tuple[str, ...]] = (
 def confine_sim_scope(env: dict[str, str]) -> None:
     """Pin a simulation to its own host and its own DDS domain, in place.
 
-    Both settings are skipped when the caller has already exported one, so an
+    Both settings are skipped when the caller has already exported a non-empty
+    one (an empty one is unset to ROS: SUBNET, domain 0), so an
     operator who wants a shared graph keeps it by saying so — the same posture
     ``packages/openral_safety_watchdog/test/conftest.py`` takes for
     ``ROS_DOMAIN_ID``.
@@ -109,8 +152,84 @@ def confine_sim_scope(env: dict[str, str]) -> None:
     Args:
         env: The launch environment, mutated in place.
     """
-    env.setdefault("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
-    env.setdefault("ROS_DOMAIN_ID", SIM_DOMAIN_ID)
+    # Not setdefault: an exported-but-empty value is unset to ROS (SUBNET, domain 0).
+    if not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip():
+        env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+    if not env.get("ROS_DOMAIN_ID", "").strip():
+        env["ROS_DOMAIN_ID"] = SIM_DOMAIN_ID
+
+
+def real_domain_id(robot_id: str) -> str:
+    """The ``ROS_DOMAIN_ID`` a real robot runs on when the operator sets none.
+
+    Stable per ``robot_id`` (SHA-256, not ``hash()``, which is salted per
+    process), in 10-101 and never in ``RESERVED_DOMAINS``. A hash that lands
+    on a reserved domain is re-hashed into the free ones (deterministic, and
+    spread rather than piled onto the next free value); every other id keeps
+    the domain it had before the reservations, so only ids that used to land on
+    a reserved domain moved. Two robots of the same model on one host hash
+    alike; they are told apart by the occupancy guard, and an operator
+    separates them by exporting ``ROS_DOMAIN_ID``.
+
+    Example:
+        >>> real_domain_id("openarm") == real_domain_id("openarm")
+        True
+        >>> 10 <= int(real_domain_id("openarm")) <= 101
+        True
+        >>> int(real_domain_id("openarm")) in RESERVED_DOMAINS
+        False
+    """
+    digest = int.from_bytes(hashlib.sha256(robot_id.encode()).digest()[:8], "big")
+    domain = _HASH_DOMAINS[digest % len(_HASH_DOMAINS)]
+    if domain in RESERVED_DOMAINS:
+        domain = _FREE_DOMAINS[digest % len(_FREE_DOMAINS)]
+    return str(domain)
+
+
+def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
+    """Keep a real robot's ROS graph on its own host and off domain 0, in place.
+
+    Defaults ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` and
+    ``ROS_DOMAIN_ID=real_domain_id(robot_id)``; an exported non-empty value of
+    either wins (an empty one is what ROS reads as unset: SUBNET, domain 0).
+    A scope that reaches other hosts (``ROS_STATIC_PEERS`` set, or a range other
+    than ``LOCALHOST`` / ``OFF``) is refused unless
+    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set, and logged as a warning when it is.
+
+    Args:
+        env: The launch environment, mutated in place. The opt-in is read from
+            it too, so the decision depends on nothing else.
+        robot_id: Seeds the default domain.
+
+    Raises:
+        ROSConfigError: A networked scope without the opt-in.
+
+    Example:
+        >>> env: dict[str, str] = {}
+        >>> confine_real_scope(env, robot_id="openarm")
+        >>> env["ROS_AUTOMATIC_DISCOVERY_RANGE"]
+        'LOCALHOST'
+    """
+    localhost_only = env.get("ROS_LOCALHOST_ONLY", "").strip() == "1"
+    # Static peers do not replace the range: unset is still SUBNET to ROS, so the
+    # LOCALHOST default applies with or without them (LOCALHOST + one peer).
+    defaulted = not localhost_only and not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip()
+    # The default first, on a copy, so a refusal leaves `env` untouched. Not
+    # setdefault: an exported-but-empty value means SUBNET to ROS.
+    scoped = {**env, "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"} if defaulted else env
+    scope = require_host_confined_ros_scope(scoped)
+    if scope is not None:
+        _log.warning(
+            "dds_scope.real_robot_graph_networked",
+            scope=scope,
+            robot_id=robot_id,
+            opt_in=ALLOW_NETWORK_ROS_ENV,
+            hazard="every host on this network can command the robot",
+        )
+    if defaulted:
+        env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+    if not env.get("ROS_DOMAIN_ID", "").strip():
+        env["ROS_DOMAIN_ID"] = real_domain_id(robot_id)
 
 
 def _probe_source() -> str:

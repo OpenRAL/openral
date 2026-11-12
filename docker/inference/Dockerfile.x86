@@ -484,9 +484,12 @@ ENV PATH=/workspace/.venv/bin:$PATH \
     # with pydantic v2's Rust core (rclpy.init()/Node() SIGSEGV after pydantic
     # has run in the same process). Cyclone uses its own DDS impl and is
     # unaffected. Override at run-time with -e RMW_IMPLEMENTATION=...
-    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
-    # Default ROS_DOMAIN_ID=0; override at run-time with -e ROS_DOMAIN_ID=N.
-    ROS_DOMAIN_ID=0
+    # No ROS_DOMAIN_ID here: an image-level value counts as operator-exported,
+    # and domain 0 + subnet discovery puts the robot's graph on the LAN.
+    # `openral deploy run` derives a per-robot domain and confines discovery
+    # to the host (docs/reference/ros-graph-security.md); pass
+    # -e ROS_DOMAIN_ID=N only to pin one.
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 # ── Final stage ──────────────────────────────────────────────────────
 #
