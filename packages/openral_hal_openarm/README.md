@@ -83,7 +83,7 @@ To bring the controllers up on their own — verifying the CAN wiring before
 involving the rest of the stack — the launch file is still directly runnable, under the
 OpenRAL venv interpreter and on a host-confined graph. It refuses an unset or `SUBNET`
 `ROS_AUTOMATIC_DISCOVERY_RANGE` (the one `setup.bash` exports) unless
-`OPENRAL_ALLOW_NETWORK_ROS=1`, so it never joins the LAN graph by default
+`OPENRAL_ALLOW_NETWORK_ROS=1` under SROS2 Enforce (ADR-0130), so it never joins the LAN graph by default
 ([ros-graph-security](../../docs/reference/ros-graph-security.md)):
 
 ```bash

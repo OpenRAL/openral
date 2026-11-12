@@ -177,7 +177,7 @@ Build-time network fetches you should know about:
    `openral_hal`, which `/opt/ros`'s system Python cannot see):
    `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python "$(command -v ros2)" launch openral_hal_unitree real_bringup.launch.py`
    (it refuses an unset or `SUBNET` range — what `setup.bash` exports — unless
-   `OPENRAL_ALLOW_NETWORK_ROS=1`; see `docs/reference/ros-graph-security.md`).
+   `OPENRAL_ALLOW_NETWORK_ROS=1` under SROS2 Enforce, ADR-0130; see `docs/reference/ros-graph-security.md`).
    Never both: two graphs
    double-publish `/joint_states` and `deploy run` refuses to start.
 4. **Verify.** `ros2 control list_controllers` → broadcasters, `safety_controller`,
@@ -187,6 +187,9 @@ Build-time network fetches you should know about:
    OpenRAL raises it. With a velocity command flowing (the HAL publishes zero twist every
    tick), the operator runs `ros2 param set /safety_controller blend_ratio 1.0` (ramped at
    `max_blend_ratio_speed: 1.0`/s), then lowers the gantry.
+   Under SROS2 ([ADR-0130](../../docs/reference/ros-graph-security.md#sros2-enclaves-adr-0130))
+   only the operator enclave may set `/safety_controller` parameters: prefix the command
+   with `ROS_SECURITY_ENCLAVE_OVERRIDE=/openral/operator`.
 
 ### Blend guard (`GuardedSafetyController`, issue #548)
 

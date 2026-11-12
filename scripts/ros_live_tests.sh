@@ -147,6 +147,8 @@ TARGETS=(
     # `openral estop reset` clears the kernel, then the runner; a latched
     # goal rejection logs a WARNING naming the recovery.
     tests/integration/test_estop_reset_cli_live.py
+    # ADR-0130: each SROS2 enclave gets exactly its surfaces under Enforce; keyless participants are shut out.
+    tests/integration/test_sros2_enclaves_live.py
     # Nav2's side of issue #108: a filtered scan keeps a carried payload out
     # of the cost grid, and a self-return inside the robot's own footprint is
     # dropped while a real obstacle at the same bearing survives -- only a

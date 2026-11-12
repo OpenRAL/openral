@@ -39,7 +39,7 @@ interface also releases Unitree's built-in locomotion service (``MotionSwitcherC
 **Host-confined graph first.** Before composing any node the launch applies
 ``openral_core.ros_graph_scope.require_host_confined_real_bringup`` to its environment: an
 unset or ``SUBNET`` ``ROS_AUTOMATIC_DISCOVERY_RANGE`` is refused unless
-``OPENRAL_ALLOW_NETWORK_ROS=1``; export ``LOCALHOST`` for a hand run.
+``OPENRAL_ALLOW_NETWORK_ROS=1`` under SROS2 Enforce (ADR-0130); export ``LOCALHOST`` for a hand run.
 
 ``deploy run`` includes this file through ``hal.real_bringup`` with no arguments, so every
 default must be right for the robot; the one host fact, the NIC wired to the robot, comes
@@ -66,6 +66,7 @@ import yaml
 try:
     from openral_core.exceptions import ROSConfigError
     from openral_core.ros_graph_scope import require_host_confined_real_bringup
+    from openral_core.ros_security import ENCLAVE_OVERRIDE_ENV as _ENCLAVE_OVERRIDE
     from openral_hal.unitree_s0_policy import (
         load_s0_policy,
         policy_parameters,
@@ -215,6 +216,12 @@ def _launch_setup(context: LaunchContext) -> list[Any]:
             "--strict",
         ],
         output="screen",
+        # It starts after the spawner exits, outside the deploy launch's HAL-enclave
+        # scope, so it pins the enclave it was included under (ADR-0130): only the
+        # HAL enclave may call /controller_manager/* under SROS2.
+        additional_env=(
+            {_ENCLAVE_OVERRIDE: enclave} if (enclave := os.environ.get(_ENCLAVE_OVERRIDE)) else {}
+        ),
     )
 
     def _after_load(event: Any, _ctx: Any) -> list[Any]:  # reason: launch event types are untyped

@@ -23,6 +23,7 @@ from typing import Final
 import structlog
 
 from openral_core.exceptions import ROSConfigError
+from openral_core.ros_security import require_secure_ros_graph, ros_security_enabled
 
 _log = structlog.get_logger(__name__)
 
@@ -148,7 +149,7 @@ def networked_ros_scope(env: Mapping[str, str]) -> str | None:
 
 
 def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
-    """Refuse a networked ROS scope for a real robot unless ``env`` opts in.
+    """Refuse a networked ROS scope for a real robot unless ``env`` opts in and runs SROS2.
 
     Args:
         env: The environment the robot's graph runs under. The opt-in
@@ -159,7 +160,9 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
         is networked and opted in, so the caller logs the hazard.
 
     Raises:
-        ROSConfigError: A networked scope without the opt-in.
+        ROSConfigError: A networked scope without the opt-in or without SROS2
+            Enforce (ADR-0130), or ``ROS_SECURITY_ENABLE=true`` with a keystore
+            ``require_secure_ros_graph`` refuses.
 
     Example:
         >>> require_host_confined_ros_scope({"ROS_LOCALHOST_ONLY": "1"}) is None
@@ -175,21 +178,45 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
             "ROS_AUTOMATIC_DISCOVERY_RANGE=OFF stops a real robot's own nodes from "
             "discovering each other; use LOCALHOST to keep the graph on this host."
         )
+    if ros_security_enabled(env):
+        # A secured graph is checked whatever its scope: a broken keystore must
+        # fail here, not as nodes that silently never join.
+        require_secure_ros_graph(env)
     scope = networked_ros_scope(env)
-    if scope is None or env.get(ALLOW_NETWORK_ROS_ENV) == "1":
-        return scope
-    raise ROSConfigError(
-        f"refusing to start a real robot on a ROS graph that reaches other hosts "
-        f"({scope}). Any host that can discover this graph can publish "
-        f"/openral/safe_action (the HAL executes it), call /openral/estop_reset, "
-        f"and spoof /joint_states or the deadman heartbeat. Keep the graph on this "
-        f"host with ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST and no ROS_STATIC_PEERS "
-        f"(`openral deploy run` sets this by default; sourcing ROS's setup.bash "
-        f"exports SUBNET when the range is unset, so a hand-run launch must export "
-        f"LOCALHOST itself), or, when the graph must span "
-        f"machines on a trusted, isolated network, set {ALLOW_NETWORK_ROS_ENV}=1 and "
-        f"export the same ROS_DOMAIN_ID on every host.",
-    )
+    if scope is None:
+        return None
+    if env.get(ALLOW_NETWORK_ROS_ENV) != "1":
+        raise ROSConfigError(
+            f"refusing to start a real robot on a ROS graph that reaches other hosts "
+            f"({scope}). Any host that can discover this graph can publish "
+            f"/openral/safe_action (the HAL executes it), call /openral/estop_reset, "
+            f"and spoof /joint_states. Keep the graph on this "
+            f"host with ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST and no ROS_STATIC_PEERS "
+            f"(`openral deploy run` sets this by default; sourcing ROS's setup.bash "
+            f"exports SUBNET when the range is unset, so a hand-run launch must export "
+            f"LOCALHOST itself), or, when the graph must span "
+            f"machines, set {ALLOW_NETWORK_ROS_ENV}=1, run it under SROS2 "
+            f"(`openral security init <robot_id>`) and export the same ROS_DOMAIN_ID on "
+            f"every host.",
+        )
+    if env.get("RMW_IMPLEMENTATION", "").strip() == _ZENOH_RMW:
+        # ADR-0130: Zenoh's access control is its own session/router config, not the
+        # DDS keystore, so a valid keystore says nothing about who may join a Zenoh graph.
+        raise ROSConfigError(
+            f"refusing to start a real robot on a networked {_ZENOH_RMW} graph: SROS2 "
+            f"enclaves secure DDS only. Use rmw_cyclonedds_cpp or rmw_fastrtps_cpp with "
+            f"`openral security init`, or keep the Zenoh graph on this host."
+        )
+    if not ros_security_enabled(env):
+        # ADR-0130: the opt-in alone is not enough; there is no unsecured networked cell.
+        raise ROSConfigError(
+            f"refusing to start a real robot on a networked ROS graph ({scope}) without "
+            f"SROS2: {ALLOW_NETWORK_ROS_ENV}=1 acknowledges the network but does not stop a "
+            f"peer from publishing /openral/safe_action. Run `openral security init "
+            f"<robot_id>` and export ROS_SECURITY_ENABLE=true, ROS_SECURITY_STRATEGY=Enforce "
+            f"and ROS_SECURITY_KEYSTORE on every host."
+        )
+    return scope
 
 
 def require_host_confined_real_bringup(launch: str, env: Mapping[str, str]) -> None:
@@ -205,7 +232,8 @@ def require_host_confined_real_bringup(launch: str, env: Mapping[str, str]) -> N
         env: The environment the bringup's nodes run under.
 
     Raises:
-        ROSConfigError: A networked scope without ``OPENRAL_ALLOW_NETWORK_ROS=1``,
+        ROSConfigError: Whatever ``require_host_confined_ros_scope`` refuses: a networked
+            scope without ``OPENRAL_ALLOW_NETWORK_ROS=1`` and SROS2 Enforce (ADR-0130),
             or ``ROS_AUTOMATIC_DISCOVERY_RANGE=OFF``.
 
     Example:

@@ -25,11 +25,11 @@ and ``tests/unit/test_openarm_real_bringup_launch.py`` guards this file's defaul
 from those constants.
 
 **Host-confined graph first.** Before anything is included, the launch applies
-``openral_core.ros_graph_scope.require_host_confined_real_bringup`` to its own environment:
-an unset or ``SUBNET`` ``ROS_AUTOMATIC_DISCOVERY_RANGE`` (``setup.bash`` exports ``SUBNET``)
-is refused unless ``OPENRAL_ALLOW_NETWORK_ROS=1``, so a hand-run bringup does not join the
-LAN graph. That check needs ``openral_core``, so a hand run uses the OpenRAL venv interpreter
-(``openral deploy run`` already does).
+``openral_core.ros_graph_scope.require_host_confined_real_bringup`` to its own environment: an unset
+or ``SUBNET`` ``ROS_AUTOMATIC_DISCOVERY_RANGE`` (``setup.bash`` exports ``SUBNET``) is refused
+unless ``OPENRAL_ALLOW_NETWORK_ROS=1`` under SROS2 Enforce (ADR-0130), so a hand-run bringup does
+not join the LAN graph. That check needs ``openral_core``, so a hand run uses the OpenRAL venv
+interpreter (``openral deploy run`` already does).
 
 Usage::
 
