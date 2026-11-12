@@ -809,7 +809,7 @@ def _truncation_error(
     prompt_tokens = _prompt_tokens(response)
     if getattr(response, "system_fingerprint", None) != _OLLAMA_FINGERPRINT or not prompt_tokens:
         return None
-    chars = len(json.dumps(request))
+    chars = len(json.dumps(request, ensure_ascii=False))  # escapes would inflate the count
     if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
         return None
     return ROSPlanningError(

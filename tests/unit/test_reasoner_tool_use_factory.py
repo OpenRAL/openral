@@ -510,3 +510,15 @@ def test_an_inferred_preset_never_overrides_a_cloud_entry(monkeypatch: pytest.Mo
     monkeypatch.delenv("OPENRAL_REASONER_ENDPOINT", raising=False)
     client = build_tool_use_client_from_env()
     assert client._tool_choice == "required"  # type: ignore[attr-defined]  # reason: client-private
+
+
+def test_non_ascii_text_is_not_counted_as_escapes() -> None:
+    """A full read of dense non-ASCII text (6-char JSON escapes each) is not a cut."""
+    from types import SimpleNamespace
+
+    from openral_reasoner.tool_use import _check_prompt_not_truncated
+
+    reply = SimpleNamespace(
+        system_fingerprint="fp_ollama", usage=SimpleNamespace(prompt_tokens=10_000)
+    )
+    _check_prompt_not_truncated(reply, ["机器人" * 10_000], model_id="qwen3.5:4b")
