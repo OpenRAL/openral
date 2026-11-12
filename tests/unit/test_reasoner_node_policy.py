@@ -132,7 +132,11 @@ def test_a_task_completed_on_action_success_is_rebuilt_by_the_next_prompt() -> N
     mission = MissionState(["drive to x=4,y=0 in map"])
     mission.record_attempt(rskill_id="OpenRAL/rskill-nav2-mobile_base-navigate_to_pose")
     step = task_step_without_verifier(
-        succeeded=True, completes_task_on_success=True, reward_available=False, attempts=1
+        succeeded=True,
+        completes_task_on_success=True,
+        reward_available=False,
+        attempts=1,
+        failures=0,
     )
     assert step is not None and step[0] == "complete"
     mission.complete_active(step[1])
@@ -149,6 +153,7 @@ def test_opted_in_success_completes_with_or_without_a_reward_monitor(
         completes_task_on_success=True,
         reward_available=reward_available,
         attempts=1,
+        failures=0,
     )
     assert step is not None
     assert step[0] == "complete"
@@ -158,7 +163,11 @@ def test_opted_in_success_completes_with_or_without_a_reward_monitor(
 def test_success_without_the_opt_in_is_not_completed() -> None:
     assert (
         task_step_without_verifier(
-            succeeded=True, completes_task_on_success=False, reward_available=False, attempts=1
+            succeeded=True,
+            completes_task_on_success=False,
+            reward_available=False,
+            attempts=1,
+            failures=0,
         )
         is None
     )
@@ -195,6 +204,7 @@ def test_successes_do_not_trip_the_attempt_cap_regression_562() -> None:
             completes_task_on_success=False,
             reward_available=False,
             attempts=DEFAULT_MAX_ATTEMPTS,
+            failures=0,
         )
         is None
     )
@@ -238,10 +248,40 @@ def test_a_step_success_completes_only_its_step_regression_562(reward_available:
         completes_task_on_success=True,
         reward_available=reward_available,
         attempts=1,
+        failures=0,
         final_step=False,
     )
     assert step is not None
     assert step[0] == "step"
+
+
+def test_a_failed_opted_in_skill_settles_nothing() -> None:
+    """An aborted Nav2 goal is neither a completed task nor a completed step."""
+    assert (
+        task_step_without_verifier(
+            succeeded=False,
+            completes_task_on_success=True,
+            reward_available=False,
+            attempts=1,
+            failures=1,
+        )
+        is None
+    )
+
+
+def test_the_dispatch_bound_leaves_a_reward_gated_result_to_the_reward_gate() -> None:
+    """With a reward monitor, a VLA result at the bound is still judged by the reward
+    gate (its tier-1 complete wins); only a step, which no gate judges, is bounded here."""
+    assert (
+        task_step_without_verifier(
+            succeeded=True,
+            completes_task_on_success=False,
+            reward_available=True,
+            attempts=DEFAULT_MAX_TASK_DISPATCHES,
+            failures=0,
+        )
+        is None
+    )
 
 
 def test_attempt_cap_is_left_to_the_reward_gate_when_one_is_available() -> None:
@@ -251,6 +291,7 @@ def test_attempt_cap_is_left_to_the_reward_gate_when_one_is_available() -> None:
             completes_task_on_success=False,
             reward_available=True,
             attempts=DEFAULT_MAX_ATTEMPTS + 5,
+            failures=0,
         )
         is None
     )

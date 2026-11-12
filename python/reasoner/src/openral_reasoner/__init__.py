@@ -51,6 +51,7 @@ from openral_reasoner.grounding import (
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
     DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_TASK_DISPATCHES,
     MissionState,
     TaskState,
     evaluate_task_verdict,
@@ -98,6 +99,7 @@ __all__ = [
     "DECLARATION_TIMEOUT_MARGIN_S",
     "DEFAULT_COSMOS3_MODEL",
     "DEFAULT_MAX_ATTEMPTS",
+    "DEFAULT_MAX_TASK_DISPATCHES",
     "DEFAULT_SYSTEM_PROMPT",
     "OPENAI_BASE_URL",
     "OPENROUTER_BASE_URL",

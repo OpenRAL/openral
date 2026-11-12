@@ -99,9 +99,14 @@ completes only its step: the task stays active for the rest. With no reward
 monitor, the per-task attempt cap (`DEFAULT_MAX_ATTEMPTS`, 3) counts *failed*
 dispatches (aborted, or cancelled on patience): a success nobody can judge is
 not a failure, so a multi-skill task whose steps all work is not abandoned
-after three of them. Every task, verifier or not, is also bounded by
+after three of them. A task whose results no reward gate judges (no reward
+monitor, or `final_step: false` steps) is also bounded by
 `DEFAULT_MAX_TASK_DISPATCHES` (10) dispatches of any outcome, so one that
-keeps succeeding without ever completing still ends. Either bound abandons
+keeps succeeding without ever completing still ends. Without a reward monitor
+or completion check a VLA run ends on its budget, which the runner reports as
+a failure (`FAILURE_DEADLINE_MISSED`), so VLA runs still count toward the
+failure cap; the successes the change stops counting are wrapped actions
+(Nav2, MoveIt goals, look-at). Either bound abandons
 through the usual abandon path (one subdivision offer, then hand-off). The
 decisions log `mission: <complete|step|abandon> task <id> after '<rskill_id>' …`.
 

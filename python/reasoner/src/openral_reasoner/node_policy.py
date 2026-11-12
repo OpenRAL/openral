@@ -105,7 +105,7 @@ def task_step_without_verifier(
     completes_task_on_success: bool,
     reward_available: bool,
     attempts: int,
-    failures: int = 0,
+    failures: int,
     final_step: bool = True,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     max_dispatches: int = DEFAULT_MAX_TASK_DISPATCHES,
@@ -117,8 +117,9 @@ def task_step_without_verifier(
       ``final_step``: the action's own success is the task's success, reward
       monitor or not.
     * ``abandon`` — the task used ``max_dispatches`` dispatches of any outcome
-      (the hard bound: a task that keeps succeeding but never completes still
-      terminates), or no reward monitor is available and ``failures`` reached
+      while no reward gate will judge this result (no reward monitor, or a step):
+      the hard bound, so a task that keeps succeeding but never completes still
+      terminates; or no reward monitor is available and ``failures`` reached
       ``max_attempts``. A success nobody can judge is not a failure, so a
       multi-skill task whose steps all succeed is not abandoned by the attempt
       cap (#562). The node's abandon path offers subdivision first, then hands off.
@@ -129,7 +130,11 @@ def task_step_without_verifier(
 
     Example:
         >>> task_step_without_verifier(
-        ...     succeeded=True, completes_task_on_success=True, reward_available=True, attempts=1
+        ...     succeeded=True,
+        ...     completes_task_on_success=True,
+        ...     reward_available=True,
+        ...     attempts=1,
+        ...     failures=0,
         ... )[0]
         'complete'
         >>> task_step_without_verifier(
@@ -137,11 +142,16 @@ def task_step_without_verifier(
         ...     completes_task_on_success=True,
         ...     reward_available=False,
         ...     attempts=1,
+        ...     failures=0,
         ...     final_step=False,
         ... )[0]
         'step'
         >>> task_step_without_verifier(  # three successes: not three failures
-        ...     succeeded=True, completes_task_on_success=False, reward_available=False, attempts=3
+        ...     succeeded=True,
+        ...     completes_task_on_success=False,
+        ...     reward_available=False,
+        ...     attempts=3,
+        ...     failures=0,
         ... ) is None
         True
         >>> task_step_without_verifier(
@@ -153,13 +163,19 @@ def task_step_without_verifier(
         ... )[0]
         'abandon'
         >>> task_step_without_verifier(
-        ...     succeeded=True, completes_task_on_success=False, reward_available=False, attempts=10
+        ...     succeeded=True,
+        ...     completes_task_on_success=False,
+        ...     reward_available=False,
+        ...     attempts=10,
+        ...     failures=0,
         ... )[0]
         'abandon'
     """
     if succeeded and completes_task_on_success and final_step:
         return "complete", "the skill's own success completes the task (completes_task_on_success)"
-    if attempts >= max_dispatches:
+    is_step = succeeded and completes_task_on_success
+    # With a reward monitor, any other result goes to the reward gate, whose own cap binds.
+    if (is_step or not reward_available) and attempts >= max_dispatches:
         return "abandon", (
             f"not complete after {attempts} dispatch(es), the per-task bound ({failures} failed)"
         )
@@ -167,7 +183,7 @@ def task_step_without_verifier(
         return "abandon", (
             f"{failures} of {attempts} attempt(s) failed; no reward monitor can judge the task"
         )
-    if succeeded and completes_task_on_success:
+    if is_step:
         return "step", (
             "the skill's own success completes only this step (final_step=false); "
             "the task stays active"

@@ -4251,7 +4251,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
     # ── §2 — automatic reward-gated task verification ──────────────
 
-    def _maybe_verify_active_mission_task(  # noqa: PLR0911  # reason: linear guard clauses before the reward query
+    def _maybe_verify_active_mission_task(  # noqa: PLR0911, PLR0912  # reason: linear guard clauses before the reward query
         self,
         call: ExecuteRskillTool,
         *,
@@ -4306,8 +4306,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
             entry = self._palette.skill(call.rskill_id)
             dispatch_completes_task = entry is not None and entry.completes_task_on_success
-        active.failures += int(not succeeded)  # the no-verifier cap counts these (#562)
-        self._persist_ladder_state()
+        if not succeeded:
+            active.failures += 1  # the no-verifier cap counts these (#562)
+            self._persist_ladder_state()
         step = task_step_without_verifier(
             succeeded=succeeded,
             completes_task_on_success=dispatch_completes_task,
@@ -4323,6 +4324,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"(attempt {active.attempts}) — {verdict}",
             )
             if action == "step":
+                self._on_tick(force=True, tier="C")  # the next step, now
                 return
             self._apply_mission_verdict(
                 action,
