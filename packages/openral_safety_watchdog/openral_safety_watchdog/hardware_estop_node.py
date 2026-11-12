@@ -39,6 +39,8 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
+from openral_safety_watchdog._param_guard import install_parameter_guard
+
 __all__ = ["DEFAULT_POLL_RATE_HZ", "HardwareEstopNode", "main"]
 
 DEFAULT_POLL_RATE_HZ = 100.0
@@ -65,6 +67,9 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         ``active_low``: Electrical polarity of the pendant contact, for
             vendor subclasses. Unused by the base class.
         ``channel_label``: Tag on the emitted ``HumanEvidence``.
+
+    Every parameter is fixed from the first ``on_configure`` on, including
+    after a failed configure or a cleanup (the C++ kernel's guard, issue #546).
     """
 
     def __init__(self, node_name: str = "openral_hardware_estop") -> None:
@@ -74,6 +79,9 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         self.declare_parameter("device", "")  # "" → no pendant declared (see _resolve_read_source)
         self.declare_parameter("active_low", True)
         self.declare_parameter("channel_label", "hardware_pendant")
+        # Fixed from the first configure on, as the kernel (issue #546).
+        self._params_locked = False
+        install_parameter_guard(self, lambda: self._params_locked)
 
         self._estop_pub: Any = None
         self._failure_pub: Any = None
@@ -101,8 +109,11 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         not-ready on the graph — whenever this host has no hardware E-stop
         this node could read. The reason is logged at ERROR every time, so
         a deploy without a pendant says so instead of implying one.
+        Fixes the parameters from here on, also when it fails, so a peer cannot
+        repoint ``device`` for the retry.
         """
         del state
+        self._params_locked = True
         unavailable = self._resolve_read_source()
         if unavailable is not None:
             self.get_logger().error(
@@ -142,8 +153,9 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Release timer + publishers."""
+        """Release timer + publishers; the parameters stay fixed."""
         del state
+        self._params_locked = True
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None

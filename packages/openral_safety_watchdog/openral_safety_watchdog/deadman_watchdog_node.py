@@ -48,6 +48,8 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
+from openral_safety_watchdog._param_guard import install_parameter_guard
+
 __all__ = [
     "DEFAULT_CHECK_PERIOD_S",
     "DEFAULT_FIRST_CHUNK_DEADLINE_S",
@@ -151,6 +153,10 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
             unknown. Empty disables re-arming, leaving the node one-shot per
             activation.
 
+    Every parameter is fixed from the first ``on_configure`` on, including
+    after a failed configure or a cleanup (the C++ kernel's guard, issue
+    #546); declaring a new parameter still passes. Change one by relaunching.
+
     Example:
         >>> rclpy.init()
         >>> node = DeadmanWatchdogNode(node_name="deadman_doctest")
@@ -171,6 +177,11 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         self.declare_parameter("result_only_topic", DEFAULT_RESULT_ONLY_TOPIC)
         self.declare_parameter("result_only_grace_s", DEFAULT_RESULT_ONLY_GRACE_S)
         self.declare_parameter("result_only_max_s", DEFAULT_RESULT_ONLY_MAX_S)
+        # Fixed from the first configure on (issue #546, as the kernel): the
+        # deadlines are read every tick, so a peer's `ros2 param set` would
+        # otherwise widen them on a running node.
+        self._params_locked = False
+        install_parameter_guard(self, lambda: self._params_locked)
 
         self._safe_sub: Any = None
         self._estop_pub: Any = None
@@ -204,8 +215,9 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
     # -- Lifecycle -----------------------------------------------------------
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Open subscriptions / publishers."""
+        """Open subscriptions / publishers; fixes the parameters from here on."""
         del state
+        self._params_locked = True
         from openral_msgs.msg import ActionChunk, FailureTrigger
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
         from std_msgs.msg import Empty
@@ -320,8 +332,9 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Release all resources."""
+        """Release all resources; the parameters stay fixed."""
         del state
+        self._params_locked = True
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
