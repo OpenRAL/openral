@@ -193,6 +193,14 @@ confirmed torque off, FATAL `downstream_stop=unacknowledged` naming the servo
 that did not (a dark servo, a lost serial link). Recovery needs a lifecycle
 restart (`RESTART_REQUIRED`).
 
+If the HAL process itself dies (SIGKILL, OOM), a separate torque watcher the
+HAL armed at connect writes `Torque_Enable=0` to every servo (measured 118.6 ms
+on the bench arm; `tests/hil/test_so101_torque_watcher_live.py`, run with
+`SO101_TORQUE_HIL=1`, attended). The servos have no communication timeout of
+their own, and the watcher does not survive a whole-cgroup kill, so the
+physical power switch stays the backstop. Details:
+[`python/hal/README.md`](../../python/hal/README.md#so-100so-101-torque-off-when-the-hal-process-dies-issue-545).
+
 ## Pair with
 
 | Component | Path |

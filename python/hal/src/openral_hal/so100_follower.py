@@ -65,6 +65,7 @@ from openral_core.schemas import (
 
 from openral_hal._base import HALBase, resolve_staleness_limit_s
 from openral_hal._sensor_wiring import with_sensors
+from openral_hal.feetech_torque_watcher import FeetechTorqueWatcher
 from openral_hal.protocol import EStopRecovery
 from openral_hal.ros_control import DownstreamStopReport
 
@@ -458,6 +459,8 @@ class SO100FollowerHAL(HALBase):
         self._last_obs_time: float = 0.0
         self._last_obs: dict[str, float] = {}
         self._last_stop_report: DownstreamStopReport | None = None
+        # Out-of-process torque-off on HAL death (issue #545); real bus only.
+        self._torque_watcher: FeetechTorqueWatcher | None = None
 
     @property
     def last_stop_report(self) -> DownstreamStopReport | None:
@@ -534,9 +537,26 @@ class SO100FollowerHAL(HALBase):
                     "Connect the arm via USB, or pass --port /dev/ttyUSBn."
                 )
             _hold_pose_on_torque_enable(robot.bus)
+            # Arm the out-of-process torque-off watcher BEFORE lerobot's
+            # connect() enables torque, so no window exists in which a SIGKILL
+            # leaves the servos energized (issue #545). No watcher, no torque.
+            try:
+                self._torque_watcher = FeetechTorqueWatcher.spawn(
+                    self._port,
+                    [m.id for m in robot.bus.motors.values()],
+                    robot.bus.port_handler.baudrate,
+                )
+            except (OSError, RuntimeError) as exc:
+                raise ROSRuntimeError(
+                    f"SO-100 torque watcher failed to arm for {self._port!r}; refusing to "
+                    f"energize the servos: {exc}"
+                ) from exc
             try:
                 robot.connect(calibrate=self._calibrate_on_connect)
             except Exception as exc:
+                with contextlib.suppress(Exception):
+                    robot.disconnect()
+                self._stop_torque_watcher(clean=False)
                 raise ROSRuntimeError(
                     f"Failed to connect to SO-100 on {self._port!r}: {exc}"
                 ) from exc
@@ -548,6 +568,7 @@ class SO100FollowerHAL(HALBase):
             with contextlib.suppress(Exception):
                 self._robot.disconnect()
             self._robot = None
+            self._stop_torque_watcher(clean=False)
             raise
         self._connected = True
         self._last_obs_time = time.monotonic()
@@ -595,12 +616,25 @@ class SO100FollowerHAL(HALBase):
         """Close the USB connection, disabling motor torque.  Idempotent."""
         if not self._connected:
             return
+        torque_cut = True
         if self._robot is not None:
-            with contextlib.suppress(Exception):
+            try:
                 self._robot.disconnect()
+            except Exception as exc:  # reason: the watcher re-cuts torque below, logged
+                torque_cut = False
+                log.error("hal.disconnect.failed", port=self._port, error=str(exc))
         self._robot = None
         self._connected = False
+        # A disconnect that raised has not proven torque off: let the watcher
+        # run its own torque-off pass on the now-released port (fail closed).
+        self._stop_torque_watcher(clean=torque_cut)
         log.info("hal.disconnect", robot="so100_follower", port=self._port)
+
+    def _stop_torque_watcher(self, *, clean: bool) -> None:
+        """Retire the torque watcher; ``clean=False`` makes it cut torque first."""
+        watcher, self._torque_watcher = self._torque_watcher, None
+        if watcher is not None:
+            watcher.stop(clean=clean)
 
     # ── Hot path ───────────────────────────────────────────────────────────────
 
@@ -757,6 +791,8 @@ class SO100FollowerHAL(HALBase):
         self._robot = None
         report = self._cut_torque(robot)
         self._last_stop_report = report
+        # Unproven stop: the watcher retries the torque-off on the closed port.
+        self._stop_torque_watcher(clean=report.stopped)
         verdict = "acknowledged" if report.stopped else "NOT acknowledged"
         raise ROSEStopRequested(
             f"Emergency stop triggered on SO-100/SO-101 ('{self.description.name}') at port "
