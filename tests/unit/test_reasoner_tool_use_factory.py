@@ -469,3 +469,44 @@ def test_ollama_endpoint_sends_auto_tool_choice(monkeypatch: pytest.MonkeyPatch)
     client = build_tool_use_client_from_env()
     assert isinstance(client, OpenAICompatibleToolUseClient)
     assert client._tool_choice == "auto"
+
+
+@pytest.mark.parametrize(
+    ("prompt_tokens", "fingerprint", "cut"),
+    [
+        (9229, "fp_ollama", False),  # the whole so101_follower prompt
+        (8192, "fp_ollama", False),  # an 8K window: a <15% cut is the known ceiling
+        (5000, "fp_ollama", True),
+        (4096, "fp_ollama", True),  # Ollama's default window
+        (4096, None, False),  # not Ollama: other servers 400 on an over-long prompt
+    ],
+)
+def test_an_ollama_reply_that_read_a_cut_prompt_is_refused(
+    prompt_tokens: int, fingerprint: str | None, cut: bool
+) -> None:
+    """A ~9.2K-token request (~31K characters) read as fewer tokens was truncated."""
+    from types import SimpleNamespace
+
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.tool_use import _check_prompt_not_truncated
+
+    reply = SimpleNamespace(
+        system_fingerprint=fingerprint, usage=SimpleNamespace(prompt_tokens=prompt_tokens)
+    )
+    request: list[object] = ["x" * 31_000]
+    if cut:
+        with pytest.raises(ROSPlanningError, match="cut the prompt"):
+            _check_prompt_not_truncated(reply, request, model_id="qwen3.5:4b")
+    else:
+        _check_prompt_not_truncated(reply, request, model_id="qwen3.5:4b")
+
+
+def test_an_inferred_preset_never_overrides_a_cloud_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gpt-5.5's default URL is OpenRouter's, but its own tool_choice stays in charge."""
+    from openral_reasoner.tool_use import build_tool_use_client_from_env
+
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENRAL_REASONER_ENDPOINT", raising=False)
+    client = build_tool_use_client_from_env()
+    assert client._tool_choice == "required"  # type: ignore[attr-defined]  # reason: client-private

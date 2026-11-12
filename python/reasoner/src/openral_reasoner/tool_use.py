@@ -753,10 +753,14 @@ def _prompt_tokens(response: object) -> int | None:
     return total
 
 
-# A JSON tool schema or English prompt runs ~3-4 characters per token; a server
-# that reports fewer than one token per this many request characters did not
-# read the whole request.
-_MAX_CHARS_PER_PROMPT_TOKEN: int = 8
+# The reasoner's request (JSON tool schemas plus the prompt) measured ~3.3-3.4
+# characters per token on qwen3.5 (so101_follower 9.2K tokens, franka_panda 20.4K);
+# a server that reports fewer than one token per this many request characters did
+# not read the whole request. 4 catches Ollama's 4096 default under a 9K prompt and
+# a 20K prompt cut to 16384, with ~18% headroom over the measured ratio.
+# ponytail: a cut of under ~15% (a 9.2K prompt in an 8K window) still passes; a
+# server-reported window (Ollama's /api/show) would close that.
+_MAX_CHARS_PER_PROMPT_TOKEN: float = 4.0
 
 
 # Ollama's OpenAI-compatible endpoint stamps every reply with this.
@@ -784,18 +788,31 @@ def _check_prompt_not_truncated(response: object, request: list[object], *, mode
         ...     return NS(system_fingerprint=fp, usage=NS(prompt_tokens=n))
         >>> _check_prompt_not_truncated(reply(9000), ["x" * 30000], model_id="m")
         >>> _check_prompt_not_truncated(reply(2051, fp=None), ["x" * 30000], model_id="m")
-        >>> _check_prompt_not_truncated(reply(2051), ["x" * 30000], model_id="m")
-        Traceback (most recent call last):
-        ...
-        openral_core.exceptions.ROSPlanningError: ...
+        >>> try:
+        ...     _check_prompt_not_truncated(reply(4096), ["x" * 30000], model_id="m")
+        ... except ROSPlanningError as exc:
+        ...     print("cut the prompt" in str(exc))
+        True
+    """
+    error = _truncation_error(response, request, model_id=model_id)
+    if error is not None:
+        raise error
+
+
+def _truncation_error(
+    response: object, request: list[object], *, model_id: str
+) -> ROSPlanningError | None:
+    """The error ``_check_prompt_not_truncated`` raises, or ``None``.
+
+    Returned, not raised, so a caller inside a broad SDK ``try`` raises it unwrapped.
     """
     prompt_tokens = _prompt_tokens(response)
     if getattr(response, "system_fingerprint", None) != _OLLAMA_FINGERPRINT or not prompt_tokens:
-        return
+        return None
     chars = len(json.dumps(request))
     if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
-        return
-    raise ROSPlanningError(
+        return None
+    return ROSPlanningError(
         f"the endpoint read {prompt_tokens} prompt tokens of a ~{chars // 4}-token request to "
         f"{model_id!r}: it cut the prompt to fit the model's context window. On Ollama, start "
         "the server with OLLAMA_CONTEXT_LENGTH=32768 (or more) so the reasoner's tools fit."
@@ -1073,6 +1090,8 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
         _ENDPOINT_PRESETS.get(raw_endpoint.lower())
         if raw_endpoint
         else next((p for p in _ENDPOINT_PRESETS.values() if p.url == entry.default_endpoint), None)
+        if entry.hosting == "byo_local"  # only a local daemon's preset (Ollama, vLLM)
+        else None
     )
     if preset is not None and preset.dialect != entry.dialect:
         # e.g. claude-opus-4-8 (anthropic) on `ollama` (openai): building an
@@ -1135,7 +1154,10 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
         api_key=api_key,
         base_url=base_url,
         timeout_s=timeout_s,
-        tool_choice=preset.tool_choice if preset is not None else entry.tool_choice,
+        # A named endpoint's quirk wins; an inferred preset never overrides the entry.
+        tool_choice=preset.tool_choice
+        if preset is not None and raw_endpoint
+        else entry.tool_choice,
         max_tokens=max_tokens,
     )
 
@@ -2250,8 +2272,8 @@ class OpenAICompatibleToolUseClient:
         try:
             choices, response = self._complete(client, messages, tools)
             prompt_tokens = _prompt_tokens(response)
-            _check_prompt_not_truncated(response, [messages, tools], model_id=self.model_id)
-            if (
+            truncated = _truncation_error(response, [messages, tools], model_id=self.model_id)
+            if truncated is None and (
                 not _openai_tool_calls(choices)
                 and self._tool_choice != "required"
                 and _openai_may_nudge(choices)
@@ -2261,9 +2283,12 @@ class OpenAICompatibleToolUseClient:
                 messages.append({"role": "user", "content": _NO_TOOL_CALL_NUDGE})
                 choices, response = self._complete(client, messages, tools)
                 prompt_tokens = _sum_prompt_tokens(prompt_tokens, _prompt_tokens(response))
+                truncated = _truncation_error(response, [messages, tools], model_id=self.model_id)
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
         self.last_prompt_tokens = prompt_tokens
+        if truncated is not None:
+            raise truncated
         if not _openai_tool_calls(choices):
             finish_reason = getattr(choices[0], "finish_reason", None) if choices else None
             if finish_reason == "length":

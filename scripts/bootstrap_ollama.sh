@@ -122,8 +122,13 @@ PY
 
 if probe_port localhost 11434; then
   echo "==> ollama daemon already serving on localhost:11434"
-  echo "    its context window must hold the reasoner's prompt: start it with"
-  echo "    OLLAMA_CONTEXT_LENGTH=32768 (systemd: sudo systemctl edit ollama)"
+  # Not started here (e.g. the systemd unit Ollama's installer registers), so it
+  # runs Ollama's 4096-token default unless its owner raised it.
+  echo "WARNING: this daemon was not started by this script, so it keeps its own context" >&2
+  echo "         window (Ollama's default is 4096 tokens; the reasoner's prompt is 9-26K and" >&2
+  echo "         the client refuses a truncated prompt). For the systemd unit:" >&2
+  echo "           sudo systemctl edit ollama   # Environment=OLLAMA_CONTEXT_LENGTH=32768" >&2
+  echo "           sudo systemctl restart ollama" >&2
 else
   echo "==> starting ollama serve in the background"
   # A private mktemp file, not a fixed /tmp name another local user could pre-create.
