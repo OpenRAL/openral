@@ -23,6 +23,7 @@ boundary to a DDS network) is a substituted seam.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -210,9 +211,15 @@ class TestConfineRealScope:
         _dds_scope.confine_real_scope(env, robot_id="openarm")
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
 
-    def test_opted_in_static_peers_still_default_the_range_to_localhost(self) -> None:
+    def test_opted_in_static_peers_still_default_the_range_to_localhost(
+        self, sros2_env: Callable[[str], dict[str, str]]
+    ) -> None:
         """Peers alone leave the range unset, which ROS reads as SUBNET (the whole LAN)."""
-        env = {"ROS_STATIC_PEERS": "10.0.0.5", _dds_scope.ALLOW_NETWORK_ROS_ENV: "1"}
+        env = {
+            **sros2_env(_dds_scope.real_domain_id("openarm")),
+            "ROS_STATIC_PEERS": "10.0.0.5",
+            _dds_scope.ALLOW_NETWORK_ROS_ENV: "1",
+        }
         _dds_scope.confine_real_scope(env, robot_id="openarm")
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
         assert env["ROS_STATIC_PEERS"] == "10.0.0.5"
@@ -239,14 +246,69 @@ class TestConfineRealScope:
         _dds_scope.confine_real_scope(env, robot_id="openarm")
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
 
-    def test_the_opt_in_keeps_the_networked_scope_and_still_leaves_domain_zero(self) -> None:
+    def test_the_opt_in_keeps_the_networked_scope_and_still_leaves_domain_zero(
+        self, sros2_env: Callable[[str], dict[str, str]]
+    ) -> None:
         env = {
+            **sros2_env(_dds_scope.real_domain_id("openarm")),
             "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",
             _dds_scope.ALLOW_NETWORK_ROS_ENV: "1",
         }
+        del env["ROS_DOMAIN_ID"]  # defaulted by the confinement, then checked against the keystore
         _dds_scope.confine_real_scope(env, robot_id="openarm")
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "SUBNET"
         assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
+    def test_the_opt_in_without_sros2_is_refused(self) -> None:
+        """ADR-0130: acknowledging the network does not stop a peer publishing safe_action."""
+        env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", _dds_scope.ALLOW_NETWORK_ROS_ENV: "1"}
+        with pytest.raises(ROSConfigError, match="without SROS2"):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert "ROS_DOMAIN_ID" not in env  # a refusal leaves the env untouched
+
+    @pytest.mark.parametrize("strategy", ["Permissive", "enforce", ""])
+    def test_sros2_short_of_enforce_is_refused(
+        self, sros2_env: Callable[[str], dict[str, str]], strategy: str
+    ) -> None:
+        """Permissive admits a participant without keys; rcl reads the value case-sensitively."""
+        env = {
+            **sros2_env(_dds_scope.real_domain_id("openarm")),
+            "ROS_SECURITY_STRATEGY": strategy,
+            "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",
+            _dds_scope.ALLOW_NETWORK_ROS_ENV: "1",
+        }
+        with pytest.raises(ROSConfigError, match="ROS_SECURITY_STRATEGY=Enforce"):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+
+    def test_a_networked_zenoh_graph_is_refused_even_with_a_keystore(
+        self, sros2_env: Callable[[str], dict[str, str]]
+    ) -> None:
+        """Zenoh's access control is its own config; the DDS keystore secures nothing there."""
+        env = {
+            **sros2_env(_dds_scope.real_domain_id("openarm")),
+            "RMW_IMPLEMENTATION": "rmw_zenoh_cpp",
+            _dds_scope.ALLOW_NETWORK_ROS_ENV: "1",
+        }
+        with pytest.raises(ROSConfigError, match="SROS2 enclaves secure DDS only"):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+
+    def test_a_keystore_for_another_domain_is_refused(
+        self, sros2_env: Callable[[str], dict[str, str]]
+    ) -> None:
+        """Every node would fail to join; say so before the launch rather than node by node."""
+        env = {**sros2_env("23"), "ROS_DOMAIN_ID": "24"}
+        with pytest.raises(ROSConfigError, match="not ROS_DOMAIN_ID=24"):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
+
+    def test_a_host_confined_graph_with_sros2_on_checks_the_keystore(self, tmp_path: Path) -> None:
+        """Security on is checked whatever the scope: a broken keystore fails here."""
+        env = {
+            "ROS_SECURITY_ENABLE": "true",
+            "ROS_SECURITY_STRATEGY": "Enforce",
+            "ROS_SECURITY_KEYSTORE": str(tmp_path),
+        }
+        with pytest.raises(ROSConfigError, match="no usable enclave '/'"):
+            _dds_scope.confine_real_scope(env, robot_id="openarm")
 
     def test_a_sim_is_unchanged(self) -> None:
         """The sim keeps its fixed domain; only real robots hash."""
@@ -284,6 +346,39 @@ class TestDeployRunAppliesTheRealScope:
         out = capsys.readouterr().out
         assert "SUBNET" not in out
         assert "export ROS_DOMAIN_ID=43 ROS_LOCALHOST_ONLY=1 ROS_STATIC_PEERS=10.0.0.2" in out
+
+    def test_the_printed_scope_carries_the_sros2_variables(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`openral prompt` / `estop reset` in another terminal must join the secured graph."""
+        from openral_cli import deploy_sim
+
+        deploy_sim._print_ros_scope(
+            {
+                "ROS_DOMAIN_ID": "43",
+                "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+                "ROS_SECURITY_ENABLE": "true",
+                "ROS_SECURITY_STRATEGY": "Enforce",
+                "ROS_SECURITY_KEYSTORE": "/ks",
+            }
+        )
+        assert (
+            "ROS_SECURITY_ENABLE=true ROS_SECURITY_STRATEGY=Enforce ROS_SECURITY_KEYSTORE=/ks"
+            in capsys.readouterr().out
+        )
+
+    def test_a_secured_launch_runs_in_the_launch_enclave(
+        self, monkeypatch: pytest.MonkeyPatch, sros2_env: Callable[[str], dict[str, str]]
+    ) -> None:
+        """Only that enclave may drive the kernel's lifecycle (ADR-0130)."""
+        from openral_cli import deploy_sim
+        from openral_core.ros_security import ENCLAVE_OVERRIDE_ENV, LAUNCH_ENCLAVE
+
+        for name, value in sros2_env(_dds_scope.SIM_DOMAIN_ID).items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.delenv(ENCLAVE_OVERRIDE_ENV, raising=False)
+        env = deploy_sim._prepare_launch_env(hal_mode="sim", robot_id="openarm")
+        assert env[ENCLAVE_OVERRIDE_ENV] == LAUNCH_ENCLAVE
 
     def test_the_launch_env_refuses_a_networked_real_robot(
         self, monkeypatch: pytest.MonkeyPatch

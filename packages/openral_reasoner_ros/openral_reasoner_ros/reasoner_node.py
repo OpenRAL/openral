@@ -5572,15 +5572,26 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def _change_state_async(self, node: str, transition: str) -> Any | None:
         """Call ``<node>/change_state`` for ``transition``; return the future.
 
-        Returns ``None`` if the ``change_state`` service is not on the graph.
-        Lifecycle clients are cached per peer node — a typical reasoner flips a
+        Returns ``None`` if the ``change_state`` service is not on the graph, or
+        if SROS2 refuses this enclave a client for it (ADR-0130). Lifecycle clients
+        are cached per peer node — a typical reasoner flips a
         handful of peers (HAL, perception, dispatcher), not a long tail, so a
         dict is cheaper than rebuilding the client on every call.
         """
         client = self._lifecycle_clients.get(node)
         if client is None:
             assert IDLChangeState is not None
-            client = self.create_client(IDLChangeState, f"{node}/change_state")
+            try:
+                client = self.create_client(IDLChangeState, f"{node}/change_state")
+            except Exception as exc:  # reason: rclpy raises RCLError; its type is private
+                # Under SROS2 (ADR-0130) the reasoner's enclave may not cycle the kernel,
+                # the HAL or the E-stop producers: the access-control plugin refuses the
+                # client itself. Refuse the transition rather than crash the tick.
+                self.get_logger().error(
+                    f"dispatch: lifecycle_transition node={node!r} refused — cannot create "
+                    f"{node}/change_state client ({exc}); SROS2 denies this enclave",
+                )
+                return None
             self._lifecycle_clients[node] = client
         if not client.service_is_ready() and not client.wait_for_service(
             timeout_sec=_LIFECYCLE_SERVER_PROBE_S,

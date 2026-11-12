@@ -55,9 +55,11 @@ from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
     ExecuteProcess,
+    GroupAction,
     LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
+    SetEnvironmentVariable,
     Shutdown,
     TimerAction,
 )
@@ -91,6 +93,7 @@ from openral_core import (
     resolve_sensor_overlays,
     resolve_unit_identity,
 )
+from openral_core.ros_security import HAL_ENCLAVE, KERNEL_ENCLAVE, OPERATOR_ENCLAVE
 from openral_core.tracking_thresholds import DeployModeThresholds, load_tracking_thresholds
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
@@ -2196,12 +2199,14 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
     (``openral_core.ros_graph_scope``). Unset ``ROS_AUTOMATIC_DISCOVERY_RANGE``
     is SUBNET to ROS, and ``source /opt/ros/jazzy/setup.bash`` exports SUBNET when
     it is unset, so a freshly sourced shell is refused here unless it exports
-    LOCALHOST or sets ``OPENRAL_ALLOW_NETWORK_ROS=1``. The launch only checks: its
-    own ROS node and every child inherit the environment ``ros2 launch`` started
-    with, so it refuses rather than re-scoping the way ``deploy run`` does.
+    LOCALHOST or sets ``OPENRAL_ALLOW_NETWORK_ROS=1`` — and the opt-in holds only
+    under SROS2 Enforce (ADR-0130). The launch only checks: its own ROS node and
+    every child inherit the environment ``ros2 launch`` started with, so it refuses
+    rather than re-scoping the way ``deploy run`` does.
 
     Raises:
-        ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in.
+        ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in
+            and SROS2, or with a keystore that does not fit.
     """
     # Fail closed: the rest of the launch treats every non-"sim" value as hardware.
     if hal_mode == "sim":
@@ -2215,6 +2220,50 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
             f"every host on this network can command the robot.",
             flush=True,
         )
+
+
+def _hand_off_enclaves(context: LaunchContext) -> Callable[[str], dict[str, str]]:
+    """Hand the launch's children their SROS2 enclaves (ADR-0130); ``{}`` per process when off.
+
+    Under ``ROS_SECURITY_ENABLE=true`` the keystore is checked first
+    (``require_secure_ros_graph``), in every ``hal_mode``. This process must be
+    in ``LAUNCH_ENCLAVE`` (``openral deploy`` sets it): only that enclave may
+    drive the kernel's and HAL's lifecycles. Its ROS node is created under it,
+    then ``ROS_SECURITY_ENCLAVE_OVERRIDE`` is reset to ``DEFAULT_ENCLAVE``, so a
+    child the launch does not name — a vendor driver, a perception node — runs
+    in the default enclave.
+
+    Returns:
+        ``enclave -> additional_env`` for the processes the launch names.
+
+    Raises:
+        ROSConfigError: A keystore ``require_secure_ros_graph`` refuses, or this
+            process is not in ``LAUNCH_ENCLAVE``.
+    """
+    from launch_ros.ros_adapters import get_ros_node
+    from openral_core.exceptions import ROSConfigError
+    from openral_core.ros_security import (
+        DEFAULT_ENCLAVE,
+        ENCLAVE_OVERRIDE_ENV,
+        LAUNCH_ENCLAVE,
+        require_secure_ros_graph,
+        ros_security_enabled,
+    )
+
+    if not ros_security_enabled(os.environ):
+        return lambda _enclave: {}
+    require_secure_ros_graph(os.environ)
+    if os.environ.get(ENCLAVE_OVERRIDE_ENV) != LAUNCH_ENCLAVE:
+        raise ROSConfigError(
+            f"a secured deploy launch must run in the {LAUNCH_ENCLAVE} enclave (got "
+            f"{ENCLAVE_OVERRIDE_ENV}={os.environ.get(ENCLAVE_OVERRIDE_ENV, '(unset)')}); no other "
+            f"enclave may drive the kernel's lifecycle. `openral deploy` sets it; a hand-run "
+            f"`ros2 launch` needs `export {ENCLAVE_OVERRIDE_ENV}={LAUNCH_ENCLAVE}`."
+        )
+    get_ros_node(context)  # joins now, as LAUNCH_ENCLAVE, before the children inherit "/"
+    os.environ[ENCLAVE_OVERRIDE_ENV] = DEFAULT_ENCLAVE
+    print(f"[deploy_e2e] SROS2 Enforce: keystore {os.environ['ROS_SECURITY_KEYSTORE']}", flush=True)
+    return lambda enclave: {ENCLAVE_OVERRIDE_ENV: enclave}
 
 
 def _build_real_bringup_include(real_bringup: str | None) -> IncludeLaunchDescription | None:
@@ -2658,6 +2707,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # digital-twin heritage.
     hal_mode = LaunchConfiguration("hal_mode").perform(context)
     _require_host_confined_real_graph(hal_mode, os.environ)
+    enclave_env = _hand_off_enclaves(context)
     hardware_estop_device = LaunchConfiguration("hardware_estop_device").perform(context)
     enable_slam = LaunchConfiguration("enable_slam").perform(context).lower() in (
         "1",
@@ -3371,7 +3421,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 unit_serial=unit_identity.serial,
             ),
         ]
-    dashboard = ExecuteProcess(cmd=dashboard_cmd, name="openral_dashboard", output="screen")
+    dashboard = ExecuteProcess(
+        cmd=dashboard_cmd,
+        name="openral_dashboard",
+        output="screen",
+        additional_env=enclave_env(OPERATOR_ENCLAVE),
+    )
 
     safety_kernel = LifecycleNode(
         package="openral_safety_kernel",
@@ -3388,7 +3443,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         remappings=(
             [("/joint_states", runtime_joint_states_topic)] if runtime_joint_states_topic else []
         ),
-        additional_env=otel_env,
+        additional_env={**otel_env, **enclave_env(KERNEL_ENCLAVE)},
         output="screen",
     )
 
@@ -3749,6 +3804,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         additional_env={
             **otel_env,
             **({ROBOT_UNIT_ENV: robot_unit} if (robot_unit := _robot_unit(scene_unit)) else {}),
+            **enclave_env(HAL_ENCLAVE),
         },
         output="screen",
     )
@@ -4271,16 +4327,28 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # single graph with a single /joint_states publisher.
     vendor_owns_robot_description = False
     if hal_mode == "real":
+        hardware_side: list[LaunchDescriptionEntity] = []
         real_bringup = _build_real_bringup_include(description.hal.real_bringup)
         if real_bringup is not None:
-            extra_nodes.append(real_bringup)
+            hardware_side.append(real_bringup)
             vendor_owns_robot_description = True
         # Vendor sensor drivers the scene declares (a ZED wrapper, a RealSense
         # node…). Real path only: on the sim path cameras are rendered, not
         # driven. These publish the topics the scene's `ros2_*` sensor bindings
         # read, so they go up with the graph.
         if scene_drivers:
-            extra_nodes.extend(_build_driver_includes(scene_drivers, deploy_config))
+            hardware_side.extend(_build_driver_includes(scene_drivers, deploy_config))
+        # Under SROS2 the vendor stack joins as the HAL (ADR-0130): its broadcaster
+        # publishes /joint_states and its spawners call /controller_manager/*. The
+        # scope covers what starts while the include is visited; a bringup that
+        # defers a process must pin ROS_SECURITY_ENCLAVE_OVERRIDE on it itself
+        # (openral_hal_unitree's switch_controllers step does).
+        # Without SROS2 the includes go in unwrapped, exactly as before.
+        if hal_env := enclave_env(HAL_ENCLAVE):
+            set_env = [SetEnvironmentVariable(name, value) for name, value in hal_env.items()]
+            extra_nodes.append(GroupAction([*set_env, *hardware_side], scoped=True))
+        else:
+            extra_nodes.extend(hardware_side)
 
     robot_description_xml: str | None = None
     robot_mesh_packages: dict[str, pathlib.Path] = {}

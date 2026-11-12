@@ -204,6 +204,9 @@ Build-time network fetches you should know about:
    OpenRAL raises it. With a velocity command flowing (the HAL publishes zero twist every
    tick), the operator runs `ros2 param set /safety_controller blend_ratio 1.0` (ramped at
    `max_blend_ratio_speed: 1.0`/s), then lowers the gantry.
+   Under SROS2 ([ADR-0130](../../docs/reference/ros-graph-security.md#sros2-enclaves-adr-0130))
+   only the operator enclave may set `/safety_controller` parameters: prefix the command
+   with `ROS_SECURITY_ENCLAVE_OVERRIDE=/openral/operator`.
 
 ### Blend guard (`GuardedSafetyController`, issue #548)
 
