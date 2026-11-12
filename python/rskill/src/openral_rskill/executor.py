@@ -814,8 +814,13 @@ class ChunkedExecutor:
 
     def _launch_prefetch(self, batch: Any) -> None:
         """Start the background pre-fetch thread (no live policy state touched)."""
-        if self._bg_thread is not None and self._bg_thread.is_alive():
-            return  # already running
+        if self._bg_thread is not None:
+            # Callers launch only once `_bg_pending` is clear, i.e. the previous pre-fetch's
+            # result was consumed (or, under RTC, merged); that thread is past its work and
+            # only signalling / exiting. Wait for it rather than skip: a skip dropped this
+            # pre-fetch after its observation was already read (the preprocessor had cached
+            # its state), so the buffer drained into a cold-start replan.
+            self._bg_thread.join()
         self._bg_event.clear()
         self._bg_error = None
         self._bg_pending = True
