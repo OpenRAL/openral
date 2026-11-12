@@ -59,6 +59,15 @@ view.
 
 ![HappyEthan/metal_pick_place episode 0, top and wrist views](media/dataset_episode0.png)
 
+Closed loop in the MuJoCo twin, layout A2, seed 2 — the best of the 9 benchmark episodes,
+and still not a success: the policy lifts the cube and sets it down 2.6 cm from the
+marker (graded `partial`, 16 % overlap). Seven of the nine never lift the cube; see
+[Evaluation](#evaluation).
+
+[MuJoCo closed-loop rollout, A2 seed 2 (partial — task not completed)](https://huggingface.co/datasets/OpenRAL/website-media/resolve/main/simulation/metal-pick-place_pi05-metal-pick-place_fail/full.mp4)
+
+![π0.5 Metal pick-place closed-loop rollout (partial)](https://huggingface.co/datasets/OpenRAL/website-media/resolve/main/simulation/metal-pick-place_pi05-metal-pick-place_fail/poster.jpg)
+
 ## What this skill does
 
 Picks a small cube off the tabletop and places it on a marked spot, prompted with

@@ -53,6 +53,17 @@ grasp (frame 250) and as the pen lands in the cup (frame 398, graded `complete`)
 
 ![MuJoCo replay of episode 0: start, pen grasp, pen in the cup](media/mujoco_replay_ep0.jpg)
 
+That replay is the dataset's recorded actions, not this policy. Run closed loop in the
+same twin (`openral sim run --config scenes/sim/makermods_metal_pen_holder.yaml --rskill
+rskills/act-pen-holder-bi --n-episodes 1 --seed 0 --save-video out/ --video-style world`,
+q5090, 2026-11-12) the policy fails: the left arm swings to the cup and stops beside it,
+the right arm hovers over the pen, and nothing is grasped in 900 steps. This matches the
+30 `fail` benchmark episodes under [Evaluation](#evaluation).
+
+[MuJoCo closed-loop rollout, seed 0 (fail)](https://huggingface.co/datasets/OpenRAL/website-media/resolve/main/simulation/metal-pen-holder_act-pen-holder-bi_fail/full.mp4)
+
+![ACT pen-holder closed-loop rollout (fail)](https://huggingface.co/datasets/OpenRAL/website-media/resolve/main/simulation/metal-pen-holder_act-pen-holder-bi_fail/poster.jpg)
+
 ## What this skill does
 
 The left arm lifts a white pen cup off a riser shelf and holds it at mid-desk. The right
