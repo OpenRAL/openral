@@ -40,6 +40,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+from collections.abc import MutableMapping
 from typing import Final
 
 from openral_core.exceptions import ROSConfigError
@@ -53,11 +55,16 @@ __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
     "ALLOW_UNVERIFIED_GRAPH_ENV",
     "RESERVED_DOMAINS",
+    "ROBOT_OPTION_HELP",
     "SIM_DOMAIN_ID",
     "assert_graph_unoccupied",
     "confine_real_scope",
     "confine_sim_scope",
+    "hal_node_name",
+    "join_robot_scope",
+    "join_robot_scope_or_exit",
     "real_domain_id",
+    "require_robot_on_graph",
 ]
 
 
@@ -192,7 +199,7 @@ def real_domain_id(robot_id: str) -> str:
     return str(domain)
 
 
-def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
+def confine_real_scope(env: MutableMapping[str, str], *, robot_id: str) -> None:
     """Keep a real robot's ROS graph on its own host and off domain 0, in place.
 
     Defaults ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` and
@@ -379,3 +386,153 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         f"are launching, do not start it by hand — deploy_e2e.launch.py starts "
         f"it under hal_mode:=real (the manifest's hal.real_bringup).",
     )
+
+
+#: ``--robot`` help, shared by ``openral prompt`` and ``openral estop reset``.
+ROBOT_OPTION_HELP: Final[str] = (
+    "The robot id the deploy runs (`openral deploy run --robot ID`): join its ROS graph — "
+    "the per-robot ROS_DOMAIN_ID and LOCALHOST discovery — without exporting them, and "
+    "act only if that robot's HAL node (openral_hal_ID) is on it. An exported "
+    "ROS_DOMAIN_ID still wins, and is reported when it differs."
+)
+
+
+def hal_node_name(robot_id: str) -> str:
+    """The ROS node name a deploy runs ``robot_id``'s HAL under (``deploy_sim._derive_hal_spec``).
+
+    Example:
+        >>> hal_node_name("openarm")
+        'openral_hal_openarm'
+    """
+    return f"openral_hal_{robot_id}"
+
+
+def join_robot_scope(env: MutableMapping[str, str], *, robot_id: str | None) -> str:
+    """Put an operator command on the graph of ``openral deploy run --robot ROBOT_ID``, in place.
+
+    ``openral prompt`` and ``openral estop reset`` run ``rclpy`` on their own
+    shell's environment. A real deploy runs on ``real_domain_id(robot_id)`` with
+    LOCALHOST discovery (``confine_real_scope``), so from a fresh terminal they
+    used to land on domain 0 and silently reach nothing (#557). With
+    ``robot_id`` this applies ``confine_real_scope`` itself — the deploy's
+    function, so the two cannot drift. An exported non-empty ``ROS_DOMAIN_ID``
+    still wins, as it does for the deploy: it is the documented way to separate
+    two robots of one model, and the deploy started with it is on it too. When
+    it differs from the robot's derived domain the returned line says so; the
+    commands then act only if the robot's HAL is on that graph
+    (``require_robot_on_graph``). Without ``robot_id`` ``env`` is left as it is
+    (the dashboard runs ``openral prompt`` inside the deploy's environment).
+
+    Args:
+        env: The command's environment (``os.environ``), mutated in place
+            before ``rclpy.init()``.
+        robot_id: The deploy's ``--robot``; ``None`` keeps the shell's scope.
+
+    Returns:
+        One line naming the domain and range used and where the domain came from.
+
+    Raises:
+        ROSConfigError: A networked scope without the opt-in
+            (``confine_real_scope``), leaving ``env`` untouched — the deploy
+            refuses that scope as well.
+
+    Example:
+        >>> env = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+        >>> line = join_robot_scope(env, robot_id="openarm")
+        >>> env["ROS_DOMAIN_ID"], env["ROS_AUTOMATIC_DISCOVERY_RANGE"]
+        ('43', 'LOCALHOST')
+        >>> "robot 'openarm'" in line
+        True
+    """
+    exported = env.get("ROS_DOMAIN_ID", "").strip()
+    if robot_id:
+        confine_real_scope(env, robot_id=robot_id)
+        derived = real_domain_id(robot_id)
+        if not exported:
+            origin = f"robot {robot_id!r}"
+        elif exported == derived:
+            origin = f"exported, = robot {robot_id!r}"
+        else:
+            origin = (
+                f"exported, overrides robot {robot_id!r}'s {derived}: a deploy started "
+                f"without this export is on {derived}"
+            )
+    else:
+        origin = "exported" if exported else "unset; pass --robot <id> to reach a real deploy"
+    domain = env.get("ROS_DOMAIN_ID", "").strip() or "0"
+    if env.get("ROS_LOCALHOST_ONLY", "").strip() == "1":
+        reach = "ROS_LOCALHOST_ONLY=1"
+    else:
+        reach = "ROS_AUTOMATIC_DISCOVERY_RANGE=" + (
+            env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip() or "SUBNET (unset)"
+        )
+    return f"ros scope: ROS_DOMAIN_ID={domain} ({origin}) {reach}"
+
+
+def join_robot_scope_or_exit(command: str, *, robot_id: str | None) -> None:
+    """``join_robot_scope`` on ``os.environ`` for a CLI command: print the scope, exit 2 on refusal.
+
+    Call before ``rclpy.init()``: rcl reads the domain and range from the environment.
+
+    Args:
+        command: The command's name, prefixed to what it prints.
+        robot_id: The command's ``--robot``.
+
+    Raises:
+        typer.Exit: Code 2 when ``join_robot_scope`` refuses the scope.
+    """
+    import typer  # noqa: PLC0415  # reason: only the CLI commands need it
+
+    try:
+        typer.echo(f"{command}: {join_robot_scope(os.environ, robot_id=robot_id)}", err=True)
+    except ROSConfigError as exc:
+        typer.echo(f"{command}: refusing to join robot {robot_id!r}'s ROS graph: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+def require_robot_on_graph(
+    command: str, node: object, *, robot_id: str | None, timeout_s: float
+) -> None:
+    """Exit 3 unless ``robot_id``'s HAL node is on the graph ``node`` joined.
+
+    The derived domain names a graph, not a robot: 39 free domains for every
+    robot id, so ids collide (``openarm``, ``makermods_metal`` and
+    ``openamrobot_v2`` all derive 43), and a typo or an exported domain can land
+    on another robot's graph. A deploy runs the HAL as ``openral_hal_<robot_id>``
+    (``hal_node_name``), and the occupancy guard keeps one robot per graph, so
+    that node being present is the check that the graph is the named robot's.
+    Without ``robot_id`` nothing is checked (the shell's scope was chosen by hand).
+
+    Args:
+        command: The command's name, prefixed to what it prints.
+        node: The command's ``rclpy`` node, already created.
+        robot_id: The command's ``--robot``.
+        timeout_s: How long to spin for discovery before deciding it is absent.
+
+    Raises:
+        typer.Exit: Code 3 when the HAL node never appeared.
+    """
+    if not robot_id:
+        return
+    import rclpy  # noqa: PLC0415  # reason: heavy ROS dep deferred
+    import typer  # noqa: PLC0415  # reason: only the CLI commands need it
+
+    wanted = hal_node_name(robot_id)
+    deadline = time.monotonic() + timeout_s
+    names: list[str] = []
+    while True:
+        names = sorted(name for name, _ns in node.get_node_names_and_namespaces())  # type: ignore[attr-defined]  # reason: rclpy untyped
+        if wanted in names or time.monotonic() >= deadline:
+            break
+        rclpy.spin_once(node, timeout_sec=0.1)
+    if wanted in names:
+        return
+    hals = [n for n in names if n.startswith("openral_hal_")]
+    typer.echo(
+        f"{command}: {wanted} is not on ROS_DOMAIN_ID="
+        f"{os.environ.get('ROS_DOMAIN_ID', '').strip() or '0'} after {timeout_s:.1f} s "
+        f"(HAL nodes there: {', '.join(hals) or 'none'}) — this is not robot "
+        f"{robot_id!r}'s graph, or its deploy is not up. Nothing sent.",
+        err=True,
+    )
+    raise typer.Exit(code=3)

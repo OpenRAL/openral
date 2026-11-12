@@ -26,6 +26,12 @@ import time
 
 import typer
 
+from openral_cli._dds_scope import (
+    ROBOT_OPTION_HELP,
+    join_robot_scope_or_exit,
+    require_robot_on_graph,
+)
+
 __all__ = ["CLEARED_TOPIC", "RESET_SERVICE", "estop_app"]
 
 RESET_SERVICE = "/openral/estop_reset"
@@ -59,17 +65,21 @@ def estop_reset_command(
             "match before broadcasting anyway."
         ),
     ),
+    robot: str | None = typer.Option(None, "--robot", help=ROBOT_OPTION_HELP),
 ) -> None:
     """Reset the safety kernel, then broadcast /openral/estop_cleared.
 
     Exit codes: 0 every latch cleared; 1 the kernel refused the reset (e.g.
-    inside its cooldown — retry); 2 ``rclpy`` not importable; 3 the kernel's
-    reset service never answered. On 1 and 3 nothing is broadcast.
+    inside its cooldown — retry); 2 ``rclpy`` not importable, or a networked ROS
+    scope without the opt-in; 3 the kernel's reset service never answered, or
+    ``--robot``'s HAL node is not on the graph. On 1, 2 and 3 nothing is
+    broadcast. Prints the ROS domain and range it used first.
 
     Example::
 
-        openral estop reset
+        openral estop reset --robot openarm
     """
+    join_robot_scope_or_exit("openral estop reset", robot_id=robot)  # before rclpy.init() (#557)
     try:
         import rclpy  # noqa: PLC0415  # reason: heavy ROS dep deferred
         from rclpy.qos import (  # noqa: PLC0415  # reason: heavy ROS dep deferred
@@ -96,12 +106,17 @@ def estop_reset_command(
     rclpy.init()
     try:
         node = rclpy.create_node("openral_cli_estop_reset")
+        require_robot_on_graph(
+            "openral estop reset", node, robot_id=robot, timeout_s=discovery_wait_s
+        )
         _announce_reset(node, operator, discovery_wait_s)
         client = node.create_client(Trigger, RESET_SERVICE)
         if not client.wait_for_service(timeout_sec=service_timeout_s):
             typer.echo(
                 f"openral estop reset: {RESET_SERVICE} not offered after "
-                f"{service_timeout_s:.1f} s — is the safety kernel running? Nothing cleared.",
+                f"{service_timeout_s:.1f} s — is the safety kernel running on "
+                f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '').strip() or '0'}"
+                f"{'' if robot else ' (a real deploy: pass --robot <id>)'}? Nothing cleared.",
                 err=True,
             )
             raise typer.Exit(code=3)

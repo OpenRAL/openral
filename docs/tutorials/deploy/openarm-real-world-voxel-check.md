@@ -364,7 +364,9 @@ EOF
 ```
 
 A cell on or next to the stopping link itself is self-occupancy (gap 1), not an obstacle.
-After each stop, clear the cell, confirm presence, then reset with `openral estop reset`.
+After each stop, clear the cell, confirm presence, then reset with `openral estop reset --robot openarm`
+(`--robot` puts it on the deploy's per-robot ROS domain; without it, a terminal that has not
+exported the deploy's `ros scope:` reaches nothing and the robot stays latched).
 It calls the kernel's `/openral/estop_reset` first and, only if the kernel accepts, broadcasts
 `/openral/estop_cleared`, the same sequence as the dashboard's reset button. Do not call
 `ros2 service call /openral/estop_reset ...` on its own: that clears only the kernel, so the
@@ -398,7 +400,7 @@ Run these tests in order:
    export OPENRAL_REASONER_MODEL=<a model from openral_core.REASONER_MODELS>
    tools/openarm_world_voxel_run.sh --autonomous
    # second terminal, presence confirmed for this goal:
-   openral prompt "pick up the boxes"
+   openral prompt --robot openarm "pick up the boxes"
    ```
 
    The detector lifts every box it sees; the reasoner's `WORLD_STATE` lists each instance
