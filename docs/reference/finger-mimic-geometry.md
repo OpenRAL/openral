@@ -221,7 +221,7 @@ the HAL, the kernel params, core FK and the sidecar to one finger angle on the r
 `test_collision` / `test_lifecycle_kernel` (`UrdfCurve.*`, `ACurvedGripper*`, `*CurveParams*`) and
 `test_self_filter` (`ACurvedLink*`, `RefusesACurve*`) cover the C++.
 
-Hazard log Entry 085 (private `OpenRAL/management`), Safety-WG ACCEPTED 2026-11-12: the kernel
+Hazard log Entry 087 (private `OpenRAL/management`), Safety-WG ACCEPTED 2026-11-12: the kernel
 checks a curved finger where the sim puts it (for the OpenArm twin, more open than before
 mid-grip). Still owed: the real OpenArm jaw's own calibration is unmeasured; it keeps no curve
 until measured.
