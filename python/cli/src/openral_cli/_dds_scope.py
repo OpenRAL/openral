@@ -202,7 +202,8 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
         robot_id: Seeds the default domain.
 
     Raises:
-        ROSConfigError: A networked scope without the opt-in.
+        ROSConfigError: A networked scope without the opt-in and SROS2, or a
+            secured graph whose keystore does not fit (``require_host_confined_ros_scope``).
 
     Example:
         >>> env: dict[str, str] = {}
@@ -214,9 +215,13 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
     # Static peers do not replace the range: unset is still SUBNET to ROS, so the
     # LOCALHOST default applies with or without them (LOCALHOST + one peer).
     defaulted = not localhost_only and not env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip()
-    # The default first, on a copy, so a refusal leaves `env` untouched. Not
-    # setdefault: an exported-but-empty value means SUBNET to ROS.
-    scoped = {**env, "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"} if defaulted else env
+    # The defaults first, on a copy, so a refusal leaves `env` untouched. Not
+    # setdefault: an exported-but-empty value means SUBNET / domain 0 to ROS. The
+    # domain is in the copy because a secured graph's keystore is checked against it.
+    domain = env.get("ROS_DOMAIN_ID", "").strip() or real_domain_id(robot_id)
+    scoped = {**env, "ROS_DOMAIN_ID": domain}
+    if defaulted:
+        scoped["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
     scope = require_host_confined_ros_scope(scoped)
     if scope is not None:
         _log.warning(
@@ -228,8 +233,7 @@ def confine_real_scope(env: dict[str, str], *, robot_id: str) -> None:
         )
     if defaulted:
         env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
-    if not env.get("ROS_DOMAIN_ID", "").strip():
-        env["ROS_DOMAIN_ID"] = real_domain_id(robot_id)
+    env["ROS_DOMAIN_ID"] = domain
 
 
 def _probe_source() -> str:

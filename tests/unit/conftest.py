@@ -301,3 +301,38 @@ def expand_dependency_group() -> Callable[..., list[str]]:
         return result
 
     return _expand
+
+
+# ── SROS2 keystores (ADR-0130) ──────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session")
+def sros2_env(tmp_path_factory: pytest.TempPathFactory) -> Callable[[str], dict[str, str]]:
+    """``domain -> env`` running a graph under SROS2 Enforce with a real OpenRAL keystore.
+
+    The keystore is what ``openral security init`` writes (the real policy, the
+    real ``ros2 security generate_artifacts``), one per domain per session.
+    Skips without a sourced ROS 2 that ships sros2.
+    """
+    import shutil
+
+    from openral_cli.security import generate_keystore
+    from openral_core.ros_security import render_sros2_policy
+
+    if shutil.which("ros2") is None:
+        pytest.skip("SROS2 keystore needs a sourced ROS 2 install (`ros2` not on PATH)")
+    made: dict[str, dict[str, str]] = {}
+
+    def _env(domain: str) -> dict[str, str]:
+        if domain not in made:
+            keystore = tmp_path_factory.mktemp("sros2") / f"domain_{domain}"
+            generate_keystore(render_sros2_policy({}), keystore, domain=domain)
+            made[domain] = {
+                "ROS_DOMAIN_ID": domain,
+                "ROS_SECURITY_ENABLE": "true",
+                "ROS_SECURITY_STRATEGY": "Enforce",
+                "ROS_SECURITY_KEYSTORE": str(keystore),
+            }
+        return dict(made[domain])
+
+    return _env

@@ -130,7 +130,7 @@ docker run --rm --gpus all --network host \
 > `deploy run` keeps the robot's ROS graph on this host (`LOCALHOST` discovery,
 > a per-robot `ROS_DOMAIN_ID`): an unauthenticated ROS graph on the LAN lets any
 > peer command the arm. A graph that must span machines needs
-> `OPENRAL_ALLOW_NETWORK_ROS=1`; see
+> `OPENRAL_ALLOW_NETWORK_ROS=1` and SROS2 (`openral security init`); see
 > [ROS graph security](docs/reference/ros-graph-security.md).
 
 One-liner install (no clone, no sudo):
