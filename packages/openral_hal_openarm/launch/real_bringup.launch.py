@@ -9,9 +9,8 @@ runs at 750 Hz, and belongs under a vendor bringup launch, not under a Python HA
 
 Before this file, nothing in this repo started that graph on real CAN hardware: an operator had
 to bring it up out-of-band from a separate workspace, and OpenRAL simply assumed it was there.
-This file is a standalone include of upstream's ``openarm_bringup``, so
-``ros2 launch openral_hal_openarm real_bringup.launch.py`` is sufficient on a provisioned
-rig — no other repo's overlay needs to be sourced.
+This file is a standalone include of upstream's ``openarm_bringup``, so the launch below
+(Usage) is sufficient on a provisioned rig — no other repo's overlay needs to be sourced.
 
 Provisioning ``openarm_bringup`` itself (the vendor package this include resolves via
 ``FindPackageShare``) is a one-time host setup step, documented in this package's ``README.md``
@@ -20,22 +19,33 @@ OpenRAL only ships the glue" posture as the Franka/UR real adapters.
 
 Defaults match ``OpenArmRealHAL``'s constants exactly (``_LEFT_CAN_INTERFACE`` /
 ``_RIGHT_CAN_INTERFACE`` = ``openarm_left`` / ``openarm_right``, the udev names the OpenArm CAN
-setup assigns) so a bare ``ros2 launch openral_hal_openarm real_bringup.launch.py`` and
-the HAL agree without any argument overrides; ``tests/hil/test_openarm_bringup_agreement.py``
-guards the controller/joint side of that agreement, and
-``tests/unit/test_openarm_real_bringup_launch.py`` guards this file's defaults against drifting
+setup assigns) so the launch with no arguments and the HAL agree without any argument overrides;
+``tests/hil/test_openarm_bringup_agreement.py`` guards the controller/joint side of that agreement,
+and ``tests/unit/test_openarm_real_bringup_launch.py`` guards this file's defaults against drifting
 from those constants.
+
+**Host-confined graph first.** Before anything is included, the launch applies
+``openral_core.ros_graph_scope.require_host_confined_real_bringup`` to its own environment: an
+unset or ``SUBNET`` ``ROS_AUTOMATIC_DISCOVERY_RANGE`` (``setup.bash`` exports ``SUBNET``) is
+refused unless ``OPENRAL_ALLOW_NETWORK_ROS=1`` under SROS2 Enforce (ADR-0130), so a hand-run
+bringup does not join the LAN graph; an opted-in scope is logged on a hand run. That check needs
+``openral_core``, so a hand run uses the OpenRAL venv interpreter (``openral deploy run`` already
+does).
 
 Usage::
 
-    ros2 launch openral_hal_openarm real_bringup.launch.py \
+    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+        .venv/bin/python "$(command -v ros2)" launch openral_hal_openarm real_bringup.launch.py \
         left_can_interface:=openarm_left right_can_interface:=openarm_right
 """
 
 from __future__ import annotations
 
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+import os
+from typing import Any
+
+from launch import LaunchContext, LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
@@ -49,6 +59,27 @@ _RIGHT_CAN_INTERFACE = "openarm_right"
 # (`left_joint_trajectory_controller` / `right_joint_trajectory_controller`), not
 # `forward_position_controller` (which takes `Float64MultiArray`, not `JointTrajectory`).
 _ROBOT_CONTROLLER = "joint_trajectory_controller"
+
+
+def _require_host_confined_graph(context: LaunchContext) -> list[Any]:
+    """Refuse a networked ROS graph before the vendor bringup is included (issue #556)."""
+    try:
+        from openral_core.ros_graph_scope import require_host_confined_real_bringup
+    except ImportError as exc:
+        # Fail closed: without openral_core the graph's scope cannot be checked.
+        raise ImportError(
+            f"openral_hal_openarm real_bringup.launch.py checks the ROS graph scope with "
+            f"openral_core.ros_graph_scope.require_host_confined_real_bringup ({exc}): run "
+            f'it under an OpenRAL venv with a current openral_core (`.venv/bin/python "$(command '
+            f'-v ros2)" launch openral_hal_openarm real_bringup.launch.py`) or via '
+            f"`openral deploy run`."
+        ) from exc
+    require_host_confined_real_bringup(
+        "openral_hal_openarm",
+        os.environ,
+        included_by_deploy="hal_mode" in context.launch_configurations,
+    )
+    return []
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -79,6 +110,7 @@ def generate_launch_description() -> LaunchDescription:
                 default_value=_RIGHT_CAN_INTERFACE,
                 description="SocketCAN interface for the right arm's motor bus.",
             ),
+            OpaqueFunction(function=_require_host_confined_graph),
             real_bringup,
         ]
     )
