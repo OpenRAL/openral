@@ -20,7 +20,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
+import structlog
+
 from openral_core.exceptions import ROSConfigError
+
+_log = structlog.get_logger(__name__)
 
 __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
@@ -191,10 +195,10 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
 def require_host_confined_real_bringup(launch: str, env: Mapping[str, str]) -> None:
     """The gate every vendor ``real_bringup`` launch runs before composing any node.
 
-    Applies ``require_host_confined_ros_scope`` to ``env`` (the launch's own
-    ``os.environ``: its nodes inherit it) and prints the hazard when the graph is
-    networked and opted in. A hand-run bringup gets no host-confined default from
-    ``openral deploy run``, so an unset or exported-``SUBNET`` range is refused.
+    Applies ``require_host_confined_ros_scope`` to ``env`` (the launch's own ``os.environ``: its
+    nodes inherit it) and logs the hazard when the graph is networked and opted in (structlog
+    ``ros_graph_scope.real_bringup_networked``). A hand-run bringup gets no host-confined default
+    from ``openral deploy run``, so an unset or exported-``SUBNET`` range is refused.
 
     Args:
         launch: The launch's name, prefixed to the warning.
@@ -211,8 +215,9 @@ def require_host_confined_real_bringup(launch: str, env: Mapping[str, str]) -> N
     """
     scope = require_host_confined_ros_scope(env)
     if scope is not None:
-        print(
-            f"[{launch}] WARNING: real robot on a networked ROS graph ({scope}); "
-            f"every host on this network can command the robot.",
-            flush=True,
+        _log.warning(
+            "ros_graph_scope.real_bringup_networked",
+            launch=launch,
+            scope=scope,
+            hazard="every host on this network can command the robot",
         )

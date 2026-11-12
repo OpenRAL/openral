@@ -76,9 +76,10 @@ except ImportError as exc:  # pragma: no cover - only under a non-venv interpret
     # does not see the OpenRAL venv. `openral deploy run` already runs the launch
     # under the venv interpreter (openral_cli.deploy_sim._ros2_argv_head).
     raise ImportError(
-        "openral_hal_unitree real_bringup.launch.py needs the OpenRAL venv: run it via "
-        '`openral deploy run`, or `.venv/bin/python "$(command -v ros2)" launch '
-        "openral_hal_unitree real_bringup.launch.py` from the repo root."
+        f"openral_hal_unitree real_bringup.launch.py needs the OpenRAL venv with a current "
+        f"openral_core / openral_hal ({exc}): run it via `openral deploy run`, or "
+        f'`.venv/bin/python "$(command -v ros2)" launch openral_hal_unitree '
+        f"real_bringup.launch.py` from the repo root."
     ) from exc
 
 if TYPE_CHECKING:  # pragma: no cover - launch is a ROS-only dep

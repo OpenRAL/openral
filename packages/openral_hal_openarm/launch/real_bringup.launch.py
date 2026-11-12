@@ -9,9 +9,8 @@ runs at 750 Hz, and belongs under a vendor bringup launch, not under a Python HA
 
 Before this file, nothing in this repo started that graph on real CAN hardware: an operator had
 to bring it up out-of-band from a separate workspace, and OpenRAL simply assumed it was there.
-This file is a standalone include of upstream's ``openarm_bringup``, so
-``ros2 launch openral_hal_openarm real_bringup.launch.py`` is sufficient on a provisioned
-rig — no other repo's overlay needs to be sourced.
+This file is a standalone include of upstream's ``openarm_bringup``, so the launch below
+(Usage) is sufficient on a provisioned rig — no other repo's overlay needs to be sourced.
 
 Provisioning ``openarm_bringup`` itself (the vendor package this include resolves via
 ``FindPackageShare``) is a one-time host setup step, documented in this package's ``README.md``
@@ -20,10 +19,9 @@ OpenRAL only ships the glue" posture as the Franka/UR real adapters.
 
 Defaults match ``OpenArmRealHAL``'s constants exactly (``_LEFT_CAN_INTERFACE`` /
 ``_RIGHT_CAN_INTERFACE`` = ``openarm_left`` / ``openarm_right``, the udev names the OpenArm CAN
-setup assigns) so a bare ``ros2 launch openral_hal_openarm real_bringup.launch.py`` and
-the HAL agree without any argument overrides; ``tests/hil/test_openarm_bringup_agreement.py``
-guards the controller/joint side of that agreement, and
-``tests/unit/test_openarm_real_bringup_launch.py`` guards this file's defaults against drifting
+setup assigns) so the launch with no arguments and the HAL agree without any argument overrides;
+``tests/hil/test_openarm_bringup_agreement.py`` guards the controller/joint side of that agreement,
+and ``tests/unit/test_openarm_real_bringup_launch.py`` guards this file's defaults against drifting
 from those constants.
 
 **Host-confined graph first.** Before anything is included, the launch applies
@@ -69,10 +67,11 @@ def _require_host_confined_graph(_context: LaunchContext) -> list[Any]:
     except ImportError as exc:
         # Fail closed: without openral_core the graph's scope cannot be checked.
         raise ImportError(
-            "openral_hal_openarm real_bringup.launch.py checks the ROS graph scope with "
-            'openral_core: run it under the OpenRAL venv (`.venv/bin/python "$(command -v '
-            'ros2)" launch openral_hal_openarm real_bringup.launch.py`) or via '
-            "`openral deploy run`."
+            f"openral_hal_openarm real_bringup.launch.py checks the ROS graph scope with "
+            f"openral_core.ros_graph_scope.require_host_confined_real_bringup ({exc}): run "
+            f'it under an OpenRAL venv with a current openral_core (`.venv/bin/python "$(command '
+            f'-v ros2)" launch openral_hal_openarm real_bringup.launch.py`) or via '
+            f"`openral deploy run`."
         ) from exc
     require_host_confined_real_bringup("openral_hal_openarm", os.environ)
     return []

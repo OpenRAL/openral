@@ -91,12 +91,12 @@ is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
 (`openral_hal_openarm` and `openral_hal_unitree` `real_bringup.launch.py`) applies the
 same decision to its own environment before composing any node, through
 `openral_core.ros_graph_scope.require_host_confined_real_bringup`; a new real bringup
-must call it first too (`tests/unit/test_real_bringup_graph_gate.py` runs every
-manifest's bringup on a networked environment and fails when it is not refused). The
+must call it first too (`tests/integration/test_real_bringup_graph_gate_live.py` runs every
+in-tree manifest bringup on a networked environment and fails when it is not refused). The
 check imports `openral_core`, so a hand run uses the OpenRAL venv interpreter:
 
 ```bash
-export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ROS_DOMAIN_ID=23
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 .venv/bin/python "$(command -v ros2)" launch openral_hal_openarm real_bringup.launch.py
 ```
 
