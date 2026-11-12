@@ -2194,7 +2194,11 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
     ``ros2 launch ... hal_mode:=real`` gets no such default, so this checks the
     environment the graph actually runs under with the same decision
     (``openral_core.ros_graph_scope``). Unset ``ROS_AUTOMATIC_DISCOVERY_RANGE``
-    is SUBNET to ROS and is refused here. ``OPENRAL_ALLOW_NETWORK_ROS=1`` opts in.
+    is SUBNET to ROS, and ``source /opt/ros/jazzy/setup.bash`` exports SUBNET when
+    it is unset, so a freshly sourced shell is refused here unless it exports
+    LOCALHOST or sets ``OPENRAL_ALLOW_NETWORK_ROS=1``. The launch only checks: its
+    own ROS node and every child inherit the environment ``ros2 launch`` started
+    with, so it refuses rather than re-scoping the way ``deploy run`` does.
 
     Raises:
         ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in.
