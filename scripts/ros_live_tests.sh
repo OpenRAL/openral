@@ -350,6 +350,7 @@ ISOLATED_TARGETS=(
     tests/unit/test_lifecycle_autostart.py
     tests/unit/test_lifecycle_error_logging.py
     tests/unit/test_policy_state_palette_gate.py
+    tests/unit/test_real_bringup_graph_gate.py
     tests/unit/test_real_bringup_include.py
     tests/unit/test_reasoner_execute_prompt.py
     tests/unit/test_reasoner_gpu_probe.py
