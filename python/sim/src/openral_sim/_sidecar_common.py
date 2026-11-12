@@ -196,13 +196,26 @@ def ensure_source(label: str, work: Path, repo_url: str, sha: str) -> Path:
         run_cmd(label, ["git", "-C", str(partial), "fetch", "-q", "--depth", "1", "origin", sha])
         run_cmd(label, ["git", "-C", str(partial), "checkout", "-q", "FETCH_HEAD"])
         partial.rename(source)
-    head = checkout_head(source)
+    require_pinned_head(label, source, sha)
+    return source
+
+
+def require_pinned_head(label: str, source: Path, sha: str) -> None:
+    """Fail closed (``SystemExit``) unless the git checkout ``source`` is at commit ``sha``.
+
+    The check every reuse of a pinned third-party checkout goes through, also after
+    it was moved out of ``ensure_source``'s ``<work>/source``. A directory that is
+    not a git checkout fails too.
+    """
+    try:
+        head = checkout_head(source)
+    except subprocess.CalledProcessError:
+        head = "no git commit"
     if head != sha:
         raise SystemExit(
             f"[{label}] {source} is at {head}, not the pinned {sha}: refusing to run it. "
             f"Delete {source} to re-fetch the pinned commit."
         )
-    return source
 
 
 # Environment a sidecar child inherits. Third-party (often trust_remote_code)
