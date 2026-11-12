@@ -190,7 +190,15 @@ error over the first 10 actions of 10 chunks:
 
 Load 7.8 s from a warm cache (base stream 3.2 s, merge 0.2 s), 8.8 GiB peak device
 memory, 191 ms median per 50-step chunk (805 ms first call). This is a wiring check,
-not a success rate: no closed-loop result exists yet, so `eval/` is empty.
+not a success rate.
+
+**Closed loop, MuJoCo twin** (`benchmarks/makermods_metal_pick_place.yaml`, layouts
+A1–A3 × seeds 0–2, 900 steps, 2026-11-07): **0 of 9 succeed** — 2 `partial`, 7 `fail`
+(`eval/makermods_metal_pick_place.json`, per-episode grades in `eval/episodes/`). The two
+partials (A2 and A3, seed 2) lift the cube and set it down 2.6 cm and 2.0 cm from the
+marker (16 % and 40 % overlap); in the other seven the cube is never lifted. Layouts B–D
+are in the training distribution, but the checkpoint falls back to an average reach point
+there (on real top-camera frames too), so the suite keeps layout A only.
 
 ## License
 
