@@ -90,6 +90,8 @@ _SIM_STEMS: list[str] = [
     "franka_tabletop_push",
     "isaac_arena_droid_banana_in_bowl",
     "isaac_leisaac_pick_orange",
+    "isaac_makermods_metal_pen_holder",
+    "isaac_makermods_metal_pick_place",
     "libero_spatial",
     "makermods_metal_pen_holder",
     "makermods_metal_pick_place",
