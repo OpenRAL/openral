@@ -23,6 +23,7 @@ boundary to a DDS network) is a substituted seam.
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -148,6 +149,31 @@ class TestConfineRealScope:
         with pytest.raises(ROSConfigError, match=_dds_scope.ALLOW_NETWORK_ROS_ENV):
             _dds_scope.confine_real_scope(dict(scope), robot_id="openarm")
 
+    def test_a_vendor_config_that_lists_peers_needs_the_opt_in(self, tmp_path: Path) -> None:
+        """DDS XML peers reach other hosts whatever the ROS_* variables say."""
+        profile = tmp_path / "fastdds.xml"
+        profile.write_text(
+            "<profiles><participant profile_name='p' is_default_profile='true'><rtps>"
+            "<builtin><initialPeersList><locator><udpv4><address>10.0.0.7</address>"
+            "</udpv4></locator></initialPeersList></builtin></rtps></participant></profiles>"
+        )
+        for scope in (
+            {"CYCLONEDDS_URI": "<Discovery><Peers><Peer address='10.0.0.7'/></Peers></Discovery>"},
+            {"CYCLONEDDS_URI": f"file://{profile.parent / 'missing.xml'}"},
+            {"FASTRTPS_DEFAULT_PROFILES_FILE": str(profile)},
+            {"FASTDDS_DEFAULT_PROFILES_FILE": str(profile), "ROS_LOCALHOST_ONLY": "1"},
+        ):
+            with pytest.raises(ROSConfigError, match=_dds_scope.ALLOW_NETWORK_ROS_ENV):
+                _dds_scope.confine_real_scope(dict(scope), robot_id="openarm")
+
+    def test_a_vendor_config_without_peers_stays_host_confined(self) -> None:
+        """The deploy's own large-data Fast DDS profile lists no peers."""
+        from openral_cli.deploy_sim import FASTDDS_LARGE_DATA_PROFILE
+
+        env = {"FASTRTPS_DEFAULT_PROFILES_FILE": str(FASTDDS_LARGE_DATA_PROFILE)}
+        _dds_scope.confine_real_scope(env, robot_id="openarm")
+        assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+
     def test_opted_in_static_peers_still_default_the_range_to_localhost(self) -> None:
         """Peers alone leave the range unset, which ROS reads as SUBNET (the whole LAN)."""
         env = {"ROS_STATIC_PEERS": "10.0.0.5", _dds_scope.ALLOW_NETWORK_ROS_ENV: "1"}
@@ -208,6 +234,19 @@ class TestDeployRunAppliesTheRealScope:
         env = deploy_sim._prepare_launch_env(hal_mode="real", robot_id="openarm")
         assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
         assert env["ROS_DOMAIN_ID"] == _dds_scope.real_domain_id("openarm")
+
+    def test_the_printed_scope_matches_a_localhost_only_graph(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """ROS_LOCALHOST_ONLY=1 overrides the range: never reported as SUBNET, and exported."""
+        from openral_cli import deploy_sim
+
+        deploy_sim._print_ros_scope(
+            {"ROS_DOMAIN_ID": "43", "ROS_LOCALHOST_ONLY": "1", "ROS_STATIC_PEERS": "10.0.0.2"}
+        )
+        out = capsys.readouterr().out
+        assert "SUBNET" not in out
+        assert "export ROS_DOMAIN_ID=43 ROS_LOCALHOST_ONLY=1 ROS_STATIC_PEERS=10.0.0.2" in out
 
     def test_the_launch_env_refuses_a_networked_real_robot(
         self, monkeypatch: pytest.MonkeyPatch

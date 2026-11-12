@@ -2322,6 +2322,15 @@ def _confine_launch_scope(env: dict[str, str], *, hal_mode: str, robot_id: str) 
         confine_real_scope(env, robot_id=robot_id)
 
 
+#: The variables that decide which ROS graph a process joins, in print order.
+_ROS_SCOPE_VARS: Final[tuple[str, ...]] = (
+    "ROS_DOMAIN_ID",
+    "ROS_LOCALHOST_ONLY",
+    "ROS_AUTOMATIC_DISCOVERY_RANGE",
+    "ROS_STATIC_PEERS",
+)
+
+
 def _print_ros_scope(env: Mapping[str, str]) -> None:
     """Print the launch's ROS scope and what another terminal must export to join it.
 
@@ -2329,18 +2338,13 @@ def _print_ros_scope(env: Mapping[str, str]) -> None:
     environment, so on a confined graph they reach the robot only with the same
     ``ROS_DOMAIN_ID`` and discovery range.
     """
-    domain = env.get("ROS_DOMAIN_ID", "")
-    discovery = env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "")
-    _console.print(
-        f"  ros scope: ROS_DOMAIN_ID={domain or '0 (unset)'} "
-        f"ROS_AUTOMATIC_DISCOVERY_RANGE={discovery or 'SUBNET (unset)'}"
-    )
-    if domain or discovery:
-        exports = " ".join(
-            f"{k}={v}"
-            for k, v in (("ROS_DOMAIN_ID", domain), ("ROS_AUTOMATIC_DISCOVERY_RANGE", discovery))
-            if v
-        )
+    scope = {k: env[k].strip() for k in _ROS_SCOPE_VARS if env.get(k, "").strip()}
+    shown = {"ROS_DOMAIN_ID": "0 (unset)", **scope}
+    if scope.get("ROS_LOCALHOST_ONLY") != "1":  # it overrides the range, as in rcl
+        shown.setdefault("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET (unset)")
+    _console.print("  ros scope: " + " ".join(f"{k}={v}" for k, v in shown.items()))
+    if scope:
+        exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in scope.items())
         _console.print(f"  other terminals (openral prompt / estop reset): export {exports}")
 
 

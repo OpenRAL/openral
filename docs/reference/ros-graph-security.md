@@ -40,7 +40,10 @@ wins; an exported empty value counts as unset. Simulations are unchanged
 
 **Networked graphs need an explicit opt-in.** If `ROS_STATIC_PEERS` or a Fast DDS
 `ROS_DISCOVERY_SERVER` is set, `RMW_IMPLEMENTATION=rmw_zenoh_cpp` (Zenoh reads
-neither discovery variable and its router listens on every interface), or
+neither discovery variable and its router listens on every interface), a DDS
+vendor config lists peers (`CYCLONEDDS_URI` with `<Peers>`, a
+`FASTRTPS_DEFAULT_PROFILES_FILE` / `FASTDDS_DEFAULT_PROFILES_FILE` with
+`initialPeersList`; a file that cannot be read counts too), or
 `ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST`, the deploy
 refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set, and
 logs `dds_scope.real_robot_graph_networked` as a warning when it is. An unset
