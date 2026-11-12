@@ -28,13 +28,11 @@ No position commands by construction. The powered tier never calls
 disconnects the motor bus; run this attended with the physical power switch
 within reach.
 
-One caveat worth knowing before you run this on a live arm: lerobot's
-``SOFollower.connect()`` ends in ``configure()``, which cycles torque off and
-back on. Re-enabling torque makes each STS3215 hold at its own
-``Goal_Position`` register, so an arm left with a stale goal from a previous
-session can twitch toward it at connect time. That is inherent to *any*
-``SO100FollowerHAL.connect()``, including the one ``deploy run`` performs; it
-is not introduced here. Keep a hand near the power switch the first time.
+lerobot's ``SOFollower.connect()`` ends in ``configure()``, which cycles torque
+off and back on. An STS3215 enabling torque drives to its ``Goal_Position``
+register (0 after power-up), so ``SO100FollowerHAL.connect()`` writes
+``Goal_Position := Present_Position`` on every servo, read back, before each
+torque-on. Keep a hand near the power switch the first time all the same.
 """
 
 from __future__ import annotations

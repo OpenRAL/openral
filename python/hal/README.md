@@ -37,6 +37,7 @@ attribute satisfies it, without inheriting from anything.
 | `interbotix_transport.py` | `InterbotixXSTransport` — the production torque-off stop seam for the Interbotix XS arms (ALOHA). Stop only; the command path is #250. |
 | `sim_transport.py` | `SimTransport` — typed in-memory `ros2_control` transport **and** `ControllerStopSeam` (a simulated controller table) for unit tests; `SimTorqueSeam` — in-memory `InterbotixStopSeam`. |
 | `so100_follower.py` | `SO100FollowerHAL` + `SO100_DESCRIPTION` + `so100_with_sensors` — real SO-100 follower arm via the `lerobot` SDK. |
+| `feetech_torque_watcher.py` | `FeetechTorqueWatcher` — the separate process `SO100FollowerHAL.connect()` arms before any torque-on; it writes `Torque_Enable=0` to every servo when the HAL process dies (SIGKILL, OOM). Lean by design: stdlib + `scservo_sdk` + `structlog`, run by file path so it skips the `openral_hal` import. |
 | `galaxea_a1.py` | `GalaxeaA1HAL` + `GALAXEA_A1_DESCRIPTION` — real-only six-axis A1 and normalized gripper over a literal IPv4-loopback JSON-lines transport. The operator-provided ROS 1 SDK stays in an isolated sidecar; OpenRAL bundles no vendor code. |
 | `so100_sim.py` | `SO100DigitalTwin` + `SO100DigitalTwinConfig` — pure-Python in-process simulator (a lerobot `Robot` that `SO100FollowerHAL(robot=...)` drives in place of the serial arm). |
 | `so100_mujoco.py` | `SO100MujocoHAL` — MuJoCo digital twin for the SO-100 follower, driving the `mujoco_menagerie` MJCF with the same 6-DoF action layout as `SO100FollowerHAL`. |
@@ -194,6 +195,48 @@ not proven, and keeps its latch regardless. `RESETTABLE` adapters clear only
 after `reset_estop()` succeeds; `RESTART_REQUIRED` adapters reject
 `/openral/estop_cleared` and need a fresh lifecycle start and alignment — the
 procedure is in each `robots/<robot>/README.md` under "E-stop and recovery".
+
+### SO-100/SO-101: torque off when the HAL process dies (issue #545)
+
+`estop()` and `disconnect()` cut torque from inside the HAL process, so a
+SIGKILL or an OOM kill skips both and the STS3215 servos would keep holding.
+`SO100FollowerHAL.connect()` therefore spawns a `FeetechTorqueWatcher` **before**
+lerobot's `connect()` enables torque, and refuses to connect if the watcher
+does not report armed. The watcher is a separate process in its own session
+(a terminal Ctrl-C or a process-group kill aimed at the HAL does not reach
+it). It waits on the HAL's `pidfd` and on a stdin pipe from the HAL:
+
+| Event | Watcher action |
+| --- | --- |
+| HAL process dies (any signal, OOM) | open the port (the kernel closed the HAL's fd), `Torque_Enable=0` per servo with 5 tries each, read back, log `hal.torque_watcher.torque_off` (or `..._unproven`), exit 0 only if every servo reads 0 |
+| `disconnect()` / `estop()` proved torque off | HAL sends `q`: the watcher exits without touching the bus (`hal.torque_watcher.clean_exit`) |
+| `disconnect()` raised, or `estop()` was unacknowledged | HAL closes the pipe without `q`: the watcher runs its own torque-off pass (fail closed) |
+| The watcher itself exits while the HAL runs | the HAL checks it before every bus write (`send_action`, each `reset_to_pose` waypoint) and e-stops (`hal.torque_watcher.lost`, torque off, `ROSEStopRequested`) |
+
+The watcher writes nothing but `Torque_Enable=0`. Measured on the bench
+SO-101 (`tests/hil/test_so101_torque_watcher_live.py`, 2026-11-12, all six
+servos torqued and holding): SIGKILL of the HAL process to every servo read
+back `Torque_Enable=0` and the watcher exited in **118.6 ms**; the watcher's
+own torque-off pass (port open + 6 writes + 6 read-backs) took 40.8 ms of that.
+The HIL bound is 1 s.
+It does not survive a whole-cgroup kill (`systemd stop` with
+`KillMode=control-group`, a container stop); that case stays with the
+hardware E-stop.
+
+**No servo-side fallback exists.** The STS3215 memory table (firmware 3.10
+on the bench arm) has no communication-loss timeout: the `Unloading_Condition`
+register (19) only gates voltage, encoder, overheat, overcurrent and overload
+protection (the bench servos read 44 = overheat + overcurrent + overload). A
+servo with torque on holds its goal indefinitely with the host silent, so the
+host-side watcher plus the hardware E-stop are the only cuts.
+
+### SO-100/SO-101: torque-on holds the current pose
+
+An STS3215 enabling torque drives to its
+`Goal_Position` register, which reads 0 after power-up (bench SO-101: Present
+947-3170). `connect()` wraps the bus's `enable_torque` so each servo first gets
+`Goal_Position := Present_Position`, read back, and refuses the torque-on on a
+mismatch.
 
 ## Pairing with the ROS 2 lifecycle node
 

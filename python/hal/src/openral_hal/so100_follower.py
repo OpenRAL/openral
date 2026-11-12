@@ -65,6 +65,7 @@ from openral_core.schemas import (
 
 from openral_hal._base import HALBase, resolve_staleness_limit_s
 from openral_hal._sensor_wiring import with_sensors
+from openral_hal.feetech_torque_watcher import FeetechTorqueWatcher
 from openral_hal.protocol import EStopRecovery
 from openral_hal.ros_control import DownstreamStopReport
 
@@ -321,6 +322,47 @@ def _rad_to_deg(rad: float) -> float:
     return rad * 180.0 / math.pi
 
 
+def _hold_pose_on_torque_enable(bus: object) -> None:
+    """Make every torque-on of ``bus`` hold the current pose: ``Goal := Present`` first.
+
+    An STS3215 enabling torque drives to its ``Goal_Position`` register, which
+    reads ``0`` after power-up (measured on the bench SO-101, firmware 3.10,
+    while ``Present_Position`` read 947-3170). lerobot's ``connect()`` ends in
+    ``configure()``, whose ``torque_disabled()`` block re-enables torque with
+    whatever goal the servo holds, so a stale or power-up goal was a full-speed
+    jump at connect. This wraps ``bus.enable_torque`` (the one call that path,
+    and every lerobot torque-on, goes through) so each motor first gets
+    ``Goal_Position := Present_Position``, read back, before its torque-on.
+
+    Raises:
+        ROSRuntimeError: (from the wrapped call) when a goal does not read
+            back as written; torque is then never enabled.
+    """
+    enable = bus.enable_torque  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+    read = bus.read  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+    write = bus.write  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+
+    def enable_holding_pose(motors: object = None, num_retry: int = 0) -> None:
+        if motors is None:
+            names: list[object] = list(bus.motors)  # type: ignore[attr-defined]  # reason: lerobot MotorsBus
+        elif isinstance(motors, (str, int)):
+            names = [motors]
+        else:
+            names = list(motors)  # type: ignore[call-overload]  # reason: Sequence[str]
+        for motor in names:
+            present = read("Present_Position", motor, normalize=False, num_retry=num_retry)
+            write("Goal_Position", motor, present, normalize=False, num_retry=num_retry)
+            goal = read("Goal_Position", motor, normalize=False, num_retry=num_retry)
+            if int(goal) != int(present):
+                raise ROSRuntimeError(
+                    f"{motor}: Goal_Position reads back {goal} after writing {present}; "
+                    "refusing to enable torque"
+                )
+        enable(motors, num_retry=num_retry)
+
+    bus.enable_torque = enable_holding_pose  # type: ignore[attr-defined]  # reason: instance seam
+
+
 # ── SO100FollowerHAL ────────────────────────────────────────────────────────────────
 
 
@@ -417,6 +459,8 @@ class SO100FollowerHAL(HALBase):
         self._last_obs_time: float = 0.0
         self._last_obs: dict[str, float] = {}
         self._last_stop_report: DownstreamStopReport | None = None
+        # Out-of-process torque-off on HAL death (issue #545); real bus only.
+        self._torque_watcher: FeetechTorqueWatcher | None = None
 
     @property
     def last_stop_report(self) -> DownstreamStopReport | None:
@@ -492,9 +536,27 @@ class SO100FollowerHAL(HALBase):
                     f"SO-100 serial port {self._port!r} does not exist. "
                     "Connect the arm via USB, or pass --port /dev/ttyUSBn."
                 )
+            _hold_pose_on_torque_enable(robot.bus)
+            # Arm the out-of-process torque-off watcher BEFORE lerobot's
+            # connect() enables torque, so no window exists in which a SIGKILL
+            # leaves the servos energized (issue #545). No watcher, no torque.
+            try:
+                self._torque_watcher = FeetechTorqueWatcher.spawn(
+                    self._port,
+                    [m.id for m in robot.bus.motors.values()],
+                    robot.bus.port_handler.baudrate,
+                )
+            except (OSError, RuntimeError) as exc:
+                raise ROSRuntimeError(
+                    f"SO-100 torque watcher failed to arm for {self._port!r}; refusing to "
+                    f"energize the servos: {exc}"
+                ) from exc
             try:
                 robot.connect(calibrate=self._calibrate_on_connect)
             except Exception as exc:
+                with contextlib.suppress(Exception):
+                    robot.disconnect()
+                self._stop_torque_watcher(clean=False)
                 raise ROSRuntimeError(
                     f"Failed to connect to SO-100 on {self._port!r}: {exc}"
                 ) from exc
@@ -506,6 +568,7 @@ class SO100FollowerHAL(HALBase):
             with contextlib.suppress(Exception):
                 self._robot.disconnect()
             self._robot = None
+            self._stop_torque_watcher(clean=False)
             raise
         self._connected = True
         self._last_obs_time = time.monotonic()
@@ -553,12 +616,47 @@ class SO100FollowerHAL(HALBase):
         """Close the USB connection, disabling motor torque.  Idempotent."""
         if not self._connected:
             return
+        torque_cut = True
         if self._robot is not None:
-            with contextlib.suppress(Exception):
+            try:
                 self._robot.disconnect()
+            except Exception as exc:  # reason: the watcher re-cuts torque below, logged
+                torque_cut = False
+                log.error("hal.disconnect.failed", port=self._port, error=str(exc))
         self._robot = None
         self._connected = False
+        # A disconnect that raised has not proven torque off: let the watcher
+        # run its own torque-off pass on the now-released port (fail closed).
+        self._stop_torque_watcher(clean=torque_cut)
         log.info("hal.disconnect", robot="so100_follower", port=self._port)
+
+    def _require_torque_watcher(self) -> None:
+        """E-stop before a bus write if the armed torque watcher has died (Entry 081).
+
+        Without it a later HAL crash would leave the servos energized, so a
+        dead watcher is treated like any other loss of a safety function:
+        torque off on every servo, then ``ROSEStopRequested``. No-op when no
+        watcher was armed (an injected robot has no serial bus).
+
+        Raises:
+            ROSEStopRequested: The watcher exited.
+        """
+        watcher = self._torque_watcher
+        if watcher is None or watcher.alive:
+            return
+        log.critical(
+            "hal.torque_watcher.lost",
+            robot=self.description.name,
+            port=self._port,
+            exit_code=watcher.proc.returncode,
+        )
+        self.estop()
+
+    def _stop_torque_watcher(self, *, clean: bool) -> None:
+        """Retire the torque watcher; ``clean=False`` makes it cut torque first."""
+        watcher, self._torque_watcher = self._torque_watcher, None
+        if watcher is not None:
+            watcher.stop(clean=clean)
 
     # ── Hot path ───────────────────────────────────────────────────────────────
 
@@ -606,6 +704,7 @@ class SO100FollowerHAL(HALBase):
             ROSConfigError: If the action cannot be converted.
         """
         self._require_connected("send_action")
+        self._require_torque_watcher()
         lerobot_action = self._action_to_lerobot(action)
         assert self._robot is not None
         try:
@@ -682,6 +781,7 @@ class SO100FollowerHAL(HALBase):
         for i in range(1, steps + 1):
             alpha = i / steps
             waypoint = [c + d * alpha for c, d in zip(current, deltas, strict=True)]
+            self._require_torque_watcher()
             try:
                 self._robot.send_action(_joint_values_to_lerobot(waypoint))
             except Exception as exc:
@@ -715,6 +815,8 @@ class SO100FollowerHAL(HALBase):
         self._robot = None
         report = self._cut_torque(robot)
         self._last_stop_report = report
+        # Unproven stop: the watcher retries the torque-off on the closed port.
+        self._stop_torque_watcher(clean=report.stopped)
         verdict = "acknowledged" if report.stopped else "NOT acknowledged"
         raise ROSEStopRequested(
             f"Emergency stop triggered on SO-100/SO-101 ('{self.description.name}') at port "

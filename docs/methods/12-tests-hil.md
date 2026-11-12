@@ -75,9 +75,19 @@ supply off leaves `/dev/ttyACM0` looking healthy and the bus completely
 silent — a skip, not a failure. **No position commands by construction:** the
 powered tier never calls `send_action()` or `reset_to_pose()`. Its terminal
 E-stop assertion disconnects the motor bus, so run it attended with the
-physical power switch within reach. `connect()` can re-enable torque, so a
-stale servo goal can still cause a twitch. Driven by `just hil-so101`, run by
+physical power switch within reach. `connect()` re-enables torque, holding
+the current pose (`Goal_Position := Present_Position` first). Driven by `just hil-so101`, run by
 hand on the bench host (no CI workflow; no self-hosted runner is registered).
+
+`tests/hil/test_so101_torque_watcher_live.py` is the issue #545 gate
+(hazard-log Entry 081): a child process arms the HAL's `FeetechTorqueWatcher`,
+applies the HAL's `_hold_pose_on_torque_enable` guard, writes
+`Torque_Enable=1` (and nothing else — no lerobot `configure()` writes, no
+`Lock`), is SIGKILLed, and every servo must read back `Torque_Enable == 0`
+within `_CUT_BOUND_S`. A joint drifting more than `_MAX_DRIFT_TICKS` after
+torque-on aborts the run with torque off. It reuses the bench gates of
+`test_so101_serial_live.py` and additionally needs `SO101_TORQUE_HIL=1`,
+since it energizes the arm; attended only.
 
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._

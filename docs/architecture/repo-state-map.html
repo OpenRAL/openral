@@ -664,6 +664,15 @@ const LAYERS = [
         schemas: ["RobotDescription", "JointState", "Action"],
       },
       {
+        title: "FeetechTorqueWatcher · SO-100/SO-101",
+        pkg: "python/hal · feetech_torque_watcher.py",
+        status: "green",
+        desc: "Separate process SO100FollowerHAL.connect() arms before any torque-on (issue #545, hazard-log Entry 081): waits on the HAL's pidfd and a stdin pipe; on HAL death (SIGKILL, OOM) or a pipe dropped without the clean-stop byte it reopens the serial port and writes Torque_Enable=0 to every servo, read back. A clean disconnect/estop retires it without touching the bus. No servo-side comms timeout exists on the STS3215, so this plus the hardware E-stop are the only cuts. Unit-tested against a pty Feetech double with a real SIGKILL (tests/unit/test_feetech_torque_watcher.py); HIL on the bench SO-101 (tests/hil/test_so101_torque_watcher_live.py). Does not survive a whole-cgroup kill.",
+        inputs: ["HAL process death", "serial port path + servo ids"],
+        outputs: ["Torque_Enable=0 on every servo"],
+        schemas: [],
+      },
+      {
         title: "SO100 Digital Twin (kinematic)",
         pkg: "python/hal · so100_sim.py",
         status: "yellow",

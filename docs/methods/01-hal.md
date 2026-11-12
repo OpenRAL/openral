@@ -275,31 +275,45 @@ _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driv
 ### `python/hal/src/openral_hal/so100_follower.py`
 _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 
-- module const `_SO100_JOINT_NAMES: list[str]` (L82) — canonical joint order, matching lerobot's bus motor dict order.
-- module const `_RESET_MAX_RAD_S = 0.5` (L97) — `reset_to_pose` ramp speed cap.
-- module const `_RESET_MIN_S = 1.0` (L98) — `reset_to_pose` ramp minimum duration.
-- module const `_RESET_STEP_HZ = 30.0` (L99) — `reset_to_pose` ramp waypoint rate.
-- module const `_RESET_DEADBAND_RAD` (L102) — below this max joint delta the arm counts as already at the target and the ramp is skipped.
-- module const `_ESTOP_VENDOR_STOP` (L111) — `"torque_off (IEC 60204-1 category 0)"`: the stop category, named in every `DownstreamStopReport` so a change of category is a visible decision (issue #526).
-- module const `_ESTOP_TORQUE_RETRIES = 5` (L114) — retries per servo for the e-stop's `Torque_Enable` write and read-back (matches lerobot's own `MotorsBus.disconnect`).
-- module const `_TORQUE_DISABLED = 0` (L116) — Feetech `Torque_Enable` value for torque off.
-- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100/SO-101 follower. Takes `description=` (the loaded manifest, so an SO-101 deploy reports `so101_follower`); `None` falls back to `SO100_DESCRIPTION`. Declares `estop_recovery = RESTART_REQUIRED`: its vendor E-stop cuts torque and disconnects the motor bus, so command execution requires a fresh lifecycle start and alignment. Implements `DownstreamStopReporting`. (L327)
-  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=None, robot=None, description=None)` (L377) — `staleness_limit_s=None` reads the manifest's window.
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` — The `DownstreamStopReporting` surface the lifecycle node reads (ERROR "completed" vs FATAL); `None` before the first e-stop and after `connect()`. (L422)
-  - `connect() -> None` — Open USB serial connection; builds lerobot's config with `disable_torque_on_disconnect=True` set explicitly (the category-0 stop, not a library default) and clears `last_stop_report`. (L432)
-  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L552)
-  - `read_state() -> JointState` — Joint state in radians. (L565)
-  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L593)
-  - `reset_to_pose(pose: list[float]) -> None` — Explicit maintenance/test ramp from current → target (speed-capped `_RESET_MAX_RAD_S`, never shorter than `_RESET_MIN_S` and never sped up for a large move, `_RESET_STEP_HZ` waypoints). Refuses (`ROSConfigError`, before any bus write) a non-finite value or one outside the loaded manifest's `position_limits` — never clips. The lifecycle node exposes it at `/openral/<robot>/reset_to_pose`; skill startup uses the runner's safety-kernel path. (L616)
-  - `estop() -> None` — Drop the connection flag first, then `_cut_torque()`, record the `DownstreamStopReport`, raise `ROSEStopRequested` whose message says whether the stop was acknowledged. A failure is never suppressed. (L691)
-  - `_cut_torque(robot) -> DownstreamStopReport` [private] — Writes `Torque_Enable=0` to every servo (lerobot's `MotorsBus.write` waits for the status packet) and reads it back, attempting every servo even after a failure (`controller_states` per servo `torque_off` / `torque_on` / `torque_unknown`), then `robot.disconnect()`. `stopped` only when every servo read back torque off; not connected, or a robot with no motor bus to verify, is `stopped=False`. A close failure after proven torque off is noted in `detail`; otherwise it is part of the failure. (L724)
-  - `_release_bus_port(bus) -> list[str]` [private, @staticmethod] — `port_handler.clearPort()` + `is_using = False` before the stop writes, as lerobot's own `MotorsBus.disconnect(disable_torque=True)` does; returns notes for the report. (L800)
+- module const `_SO100_JOINT_NAMES: list[str]` (L83) — canonical joint order, matching lerobot's bus motor dict order.
+- module const `_RESET_MAX_RAD_S = 0.5` (L98) — `reset_to_pose` ramp speed cap.
+- module const `_RESET_MIN_S = 1.0` (L99) — `reset_to_pose` ramp minimum duration.
+- module const `_RESET_STEP_HZ = 30.0` (L100) — `reset_to_pose` ramp waypoint rate.
+- module const `_RESET_DEADBAND_RAD` (L103) — below this max joint delta the arm counts as already at the target and the ramp is skipped.
+- module const `_ESTOP_VENDOR_STOP` (L112) — `"torque_off (IEC 60204-1 category 0)"`: the stop category, named in every `DownstreamStopReport` so a change of category is a visible decision (issue #526).
+- module const `_ESTOP_TORQUE_RETRIES = 5` (L115) — retries per servo for the e-stop's `Torque_Enable` write and read-back (matches lerobot's own `MotorsBus.disconnect`).
+- module const `_TORQUE_DISABLED = 0` (L117) — Feetech `Torque_Enable` value for torque off.
+- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100/SO-101 follower. Takes `description=` (the loaded manifest, so an SO-101 deploy reports `so101_follower`); `None` falls back to `SO100_DESCRIPTION`. Declares `estop_recovery = RESTART_REQUIRED`: its vendor E-stop cuts torque and disconnects the motor bus, so command execution requires a fresh lifecycle start and alignment. Implements `DownstreamStopReporting`. (L369)
+  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=None, robot=None, description=None)` (L419) — `staleness_limit_s=None` reads the manifest's window.
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` — The `DownstreamStopReporting` surface the lifecycle node reads (ERROR "completed" vs FATAL); `None` before the first e-stop and after `connect()`. (L466)
+  - `connect() -> None` — Open USB serial connection; builds lerobot's config with `disable_torque_on_disconnect=True` set explicitly (the category-0 stop, not a library default) and clears `last_stop_report`. On the real bus it installs `_hold_pose_on_torque_enable` and arms a `FeetechTorqueWatcher` (bus ids + baud rate) **before** lerobot's `connect()` enables torque; a watcher that fails to arm is a `ROSRuntimeError` and nothing is energized (issue #545). (L476)
+  - `disconnect() -> None` — Close USB, disable motor torque (idempotent); then retires the torque watcher: clean (`q`) when lerobot's disconnect returned, fail-closed (pipe closed, watcher cuts torque itself) when it raised. (L615)
+  - `_require_torque_watcher() -> None` [private] — Called before every bus write (`send_action`, each `reset_to_pose` waypoint): if the armed watcher has exited, logs `hal.torque_watcher.lost` and calls `estop()` (raises `ROSEStopRequested`). No-op without a watcher. (L633)
+  - `_stop_torque_watcher(*, clean: bool) -> None` [private] — Retire `_torque_watcher` (if any) via `FeetechTorqueWatcher.stop`. `estop()` calls it with `clean=report.stopped`. (L655)
+  - `read_state() -> JointState` — Joint state in radians. (L663)
+  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L691)
+  - `reset_to_pose(pose: list[float]) -> None` — Explicit maintenance/test ramp from current → target (speed-capped `_RESET_MAX_RAD_S`, never shorter than `_RESET_MIN_S` and never sped up for a large move, `_RESET_STEP_HZ` waypoints). Refuses (`ROSConfigError`, before any bus write) a non-finite value or one outside the loaded manifest's `position_limits` — never clips. The lifecycle node exposes it at `/openral/<robot>/reset_to_pose`; skill startup uses the runner's safety-kernel path. (L715)
+  - `estop() -> None` — Drop the connection flag first, then `_cut_torque()`, record the `DownstreamStopReport`, raise `ROSEStopRequested` whose message says whether the stop was acknowledged. A failure is never suppressed. (L791)
+  - `_cut_torque(robot) -> DownstreamStopReport` [private] — Writes `Torque_Enable=0` to every servo (lerobot's `MotorsBus.write` waits for the status packet) and reads it back, attempting every servo even after a failure (`controller_states` per servo `torque_off` / `torque_on` / `torque_unknown`), then `robot.disconnect()`. `stopped` only when every servo read back torque off; not connected, or a robot with no motor bus to verify, is `stopped=False`. A close failure after proven torque off is noted in `detail`; otherwise it is part of the failure. (L826)
+  - `_release_bus_port(bus) -> list[str]` [private, @staticmethod] — `port_handler.clearPort()` + `is_using = False` before the stop writes, as lerobot's own `MotorsBus.disconnect(disable_torque=True)` does; returns notes for the report. (L902)
   - `_require_connected(operation: str)`, `_obs_to_positions(obs)` [@staticmethod], `_action_to_lerobot(action)`
-  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L299)
-- `_deg_to_rad(deg) -> float` (L294)
-- `_rad_to_deg(rad) -> float` (L319)
-- const `SO100_DESCRIPTION = RobotDescription(...)` (L120)
-- `so100_with_sensors(catalog_ids=None) -> RobotDescription` — Copy of `SO100_DESCRIPTION` with catalog sensors attached; `None` defaults to the LeRobot reference loadout (`["logitech/c920"]`). (L263)
+  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L300)
+- `_deg_to_rad(deg) -> float` (L295)
+- `_rad_to_deg(rad) -> float` (L320)
+- `_hold_pose_on_torque_enable(bus) -> None` (L325) — Wraps lerobot's `bus.enable_torque` (the call `configure()`'s `torque_disabled()` block re-enables torque through) so every torque-on first writes `Goal_Position := Present_Position` per servo, reads it back, and raises `ROSRuntimeError` (torque never enabled) on a mismatch. An STS3215 enabling torque drives to its goal register, which reads 0 after power-up (bench SO-101), so without this a connect could jump. Installed by `connect()` on the real bus.
+- const `SO100_DESCRIPTION = RobotDescription(...)` (L121)
+- `so100_with_sensors(catalog_ids=None) -> RobotDescription` — Copy of `SO100_DESCRIPTION` with catalog sensors attached; `None` defaults to the LeRobot reference loadout (`["logitech/c920"]`). (L264)
+
+
+### `python/hal/src/openral_hal/feetech_torque_watcher.py`
+_Out-of-process torque-off for a Feetech servo bus when the HAL process dies (issue #545, hazard-log Entry 081). Stdlib + `scservo_sdk` + `structlog` only; spawned by file path with `python -P` so it never pays the `openral_hal` import._
+
+- `cut_torque(port: str, servo_ids: Sequence[int], baudrate: int) -> dict[int, str]` (L77) — Open `port` (up to `_OPEN_RETRIES` tries), write `Torque_Enable=0` (register 40, protocol 0) to every id with `_TORQUE_RETRIES` tries each and read it back; per id `torque_off` / `torque_on` / `torque_unknown: <why>`, every id attempted. Raises `OSError` if the port never opens.
+- `main(argv=None) -> int` (L150) — Watcher entry point: `--port --baudrate --ids --parent-pid`. Ignores SIGINT/SIGHUP, prints `armed`, then waits on the parent's `pidfd` (0.1 s `getppid()` poll without one) and on stdin: `q` → exit 0 without touching the bus; parent death or EOF without `q` → `cut_torque`, log `hal.torque_watcher.torque_off` / `..._unproven` / `..._port_unavailable`, exit 0 / 1 / 2.
+- `class FeetechTorqueWatcher` (L197) — Handle on a running watcher (`proc`).
+  - `spawn(port, servo_ids, baudrate, *, armed_timeout_s=10.0) -> FeetechTorqueWatcher` [@classmethod] (L209) — Start the watcher in its own session for the calling process and wait for `armed`; `RuntimeError` (watcher killed) otherwise.
+  - **(property)** `alive -> bool` — `True` while the watcher process has not exited (non-blocking `poll`). (L250)
+  - `stop(*, clean: bool, timeout_s=5.0) -> int | None` (L254) — `clean=True` sends `q` (caller proved torque off); `clean=False` closes the pipe so the watcher cuts torque itself. Returns the exit code, `None` if it had to be killed.
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
 _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's
