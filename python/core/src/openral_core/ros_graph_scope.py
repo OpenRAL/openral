@@ -4,12 +4,12 @@
 One pure decision shared by every place that starts a real robot:
 ``openral deploy run`` (``openral_cli._dds_scope.confine_real_scope``, which
 defaults a host-confined scope first), ``deploy_e2e.launch.py`` under
-``hal_mode:=real``, and every vendor ``real_bringup`` launch
-(``require_host_confined_real_bringup``). The launches run on whatever
-environment ``ros2 launch`` was started with, so a hand-run launch is checked
-too. A graph that reaches other hosts lets any of them publish
-``/openral/safe_action`` (the HAL executes it), call ``/openral/estop_reset``,
-or spoof ``/joint_states`` and the deadman heartbeat. See ``docs/reference/ros-graph-security.md``.
+``hal_mode:=real`` and every in-tree vendor ``real_bringup`` launch (which run
+on whatever environment ``ros2 launch`` was started with, so a hand-run launch
+is checked too). A graph that reaches other
+hosts lets any of them publish ``/openral/safe_action`` (the HAL executes it),
+call ``/openral/estop_reset``, or spoof ``/joint_states`` and the deadman
+heartbeat. See ``docs/reference/ros-graph-security.md``.
 
 Lives in ``openral_core`` because the launch file cannot import ``openral_cli``.
 """
@@ -20,18 +20,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
-import structlog
-
 from openral_core.exceptions import ROSConfigError
 from openral_core.ros_security import require_secure_ros_graph, ros_security_enabled
-
-_log = structlog.get_logger(__name__)
 
 __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
     "discovery_range_is_ros_default",
     "networked_ros_scope",
-    "require_host_confined_real_bringup",
     "require_host_confined_ros_scope",
 ]
 
@@ -217,35 +212,3 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
             f"and ROS_SECURITY_KEYSTORE on every host."
         )
     return scope
-
-
-def require_host_confined_real_bringup(launch: str, env: Mapping[str, str]) -> None:
-    """The gate every vendor ``real_bringup`` launch runs before composing any node.
-
-    Applies ``require_host_confined_ros_scope`` to ``env`` (the launch's own ``os.environ``: its
-    nodes inherit it) and logs the hazard when the graph is networked and opted in (structlog
-    ``ros_graph_scope.real_bringup_networked``). A hand-run bringup gets no host-confined default
-    from ``openral deploy run``, so an unset or exported-``SUBNET`` range is refused.
-
-    Args:
-        launch: The launch's name, prefixed to the warning.
-        env: The environment the bringup's nodes run under.
-
-    Raises:
-        ROSConfigError: Whatever ``require_host_confined_ros_scope`` refuses: a networked
-            scope without ``OPENRAL_ALLOW_NETWORK_ROS=1`` and SROS2 Enforce (ADR-0130),
-            or ``ROS_AUTOMATIC_DISCOVERY_RANGE=OFF``.
-
-    Example:
-        >>> require_host_confined_real_bringup(
-        ...     "openral_hal_openarm", {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
-        ... )
-    """
-    scope = require_host_confined_ros_scope(env)
-    if scope is not None:
-        _log.warning(
-            "ros_graph_scope.real_bringup_networked",
-            launch=launch,
-            scope=scope,
-            hazard="every host on this network can command the robot",
-        )

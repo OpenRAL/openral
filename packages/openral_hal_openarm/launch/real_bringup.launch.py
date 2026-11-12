@@ -25,7 +25,7 @@ and ``tests/unit/test_openarm_real_bringup_launch.py`` guards this file's defaul
 from those constants.
 
 **Host-confined graph first.** Before anything is included, the launch applies
-``openral_core.ros_graph_scope.require_host_confined_real_bringup`` to its own environment: an unset
+``openral_core.ros_graph_scope.require_host_confined_ros_scope`` to its own environment: an unset
 or ``SUBNET`` ``ROS_AUTOMATIC_DISCOVERY_RANGE`` (``setup.bash`` exports ``SUBNET``) is refused
 unless ``OPENRAL_ALLOW_NETWORK_ROS=1`` under SROS2 Enforce (ADR-0130), so a hand-run bringup does
 not join the LAN graph. That check needs ``openral_core``, so a hand run uses the OpenRAL venv
@@ -63,17 +63,18 @@ _ROBOT_CONTROLLER = "joint_trajectory_controller"
 def _require_host_confined_graph(_context: LaunchContext) -> list[Any]:
     """Refuse a networked ROS graph before the vendor bringup is included (issue #556)."""
     try:
-        from openral_core.ros_graph_scope import require_host_confined_real_bringup
+        from openral_core.ros_graph_scope import require_host_confined_ros_scope
     except ImportError as exc:
         # Fail closed: without openral_core the graph's scope cannot be checked.
         raise ImportError(
             f"openral_hal_openarm real_bringup.launch.py checks the ROS graph scope with "
-            f"openral_core.ros_graph_scope.require_host_confined_real_bringup ({exc}): run "
+            f"openral_core.ros_graph_scope.require_host_confined_ros_scope ({exc}): run "
             f'it under an OpenRAL venv with a current openral_core (`.venv/bin/python "$(command '
             f'-v ros2)" launch openral_hal_openarm real_bringup.launch.py`) or via '
             f"`openral deploy run`."
         ) from exc
-    require_host_confined_real_bringup("openral_hal_openarm", os.environ)
+    # Refusal only: an opted-in scope is logged once, by deploy_e2e's gate (#558).
+    require_host_confined_ros_scope(os.environ)
     return []
 
 

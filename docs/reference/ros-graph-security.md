@@ -59,8 +59,9 @@ vendor config lists peers (`CYCLONEDDS_URI` with `<Peers>`, a
 `initialPeersList` or `discoveryServersList`; a file that cannot be read counts too), or
 `ROS_AUTOMATIC_DISCOVERY_RANGE` is anything but `LOCALHOST`, the deploy
 refuses with `ROSConfigError` unless `OPENRAL_ALLOW_NETWORK_ROS=1` is set **and** the
-graph runs under SROS2 in Enforce mode ([below](#sros2-enclaves-adr-0130)), and
-logs `dds_scope.real_robot_graph_networked` as a warning when both hold. An unset
+graph runs under SROS2 in Enforce mode ([below](#sros2-enclaves-adr-0130)); when both
+hold, `deploy_e2e.launch.py` logs one `deploy_e2e.real_robot_graph_networked` warning
+per deploy (hand-run or `deploy run`). An unset
 range still defaults to `LOCALHOST` when only `ROS_STATIC_PEERS` is exported,
 so an opted-in graph reaches the listed peers, not the whole subnet. Opt in
 only on a trusted, isolated network (a robot-only VLAN or a direct cable). `OFF` is refused outright: in Jazzy it hides nodes
@@ -91,9 +92,10 @@ is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
 **So is a hand-run vendor bringup.** Every `hal.real_bringup` launch
 (`openral_hal_openarm` and `openral_hal_unitree` `real_bringup.launch.py`) applies the
 same decision to its own environment before composing any node, through
-`openral_core.ros_graph_scope.require_host_confined_real_bringup`; a new real bringup
+`openral_core.ros_graph_scope.require_host_confined_ros_scope`; a new real bringup
 must call it first too (`tests/integration/test_real_bringup_graph_gate_live.py` runs every
-in-tree manifest bringup on a networked environment and fails when it is not refused). The
+in-tree manifest bringup on a networked environment and fails when it is not refused). A
+bringup only refuses; an opted-in scope is logged once, by the deploy launch's gate. The
 check imports `openral_core`, so a hand run uses the OpenRAL venv interpreter:
 
 ```bash

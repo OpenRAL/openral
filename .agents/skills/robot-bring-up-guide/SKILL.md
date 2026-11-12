@@ -25,7 +25,7 @@ Read only what matches the target:
 3. `docs/tutorials/sim/create-a-sim-environment.md` for robot manifests and sim registration.
 4. `docs/reference/robots.md`, `docs/reference/sensors_landscape.md`, and `docs/reference/vla_compatibility.md`.
 5. Existing robot examples under `robots/`, especially `so100_follower`, `franka_panda`, `ur5e`, `aloha_bimanual`, `openarm`, `g1`, and `h1`.
-6. Python HAL helpers under `python/hal/` before adding new code. Every robot runs the one generic `packages/openral_hal_node` lifecycle node (robot identity comes from `robot_yaml`), so a new robot needs a manifest, not a ROS package; a vendor real-hardware bringup is declared through the manifest's `hal.real_bringup` (see `packages/openral_hal_openarm`); that launch must call `openral_core.ros_graph_scope.require_host_confined_real_bringup` before composing any node (`tests/integration/test_real_bringup_graph_gate_live.py` checks every in-tree one).
+6. Python HAL helpers under `python/hal/` before adding new code. Every robot runs the one generic `packages/openral_hal_node` lifecycle node (robot identity comes from `robot_yaml`), so a new robot needs a manifest, not a ROS package; a vendor real-hardware bringup is declared through the manifest's `hal.real_bringup` (see `packages/openral_hal_openarm`); that launch must call `openral_core.ros_graph_scope.require_host_confined_ros_scope` before composing any node (`tests/integration/test_real_bringup_graph_gate_live.py` checks every in-tree one).
 7. `python/core/src/openral_core/schemas.py` for `RobotDescription`, capabilities, safety, observation, action, and sim schemas.
 
 ## References

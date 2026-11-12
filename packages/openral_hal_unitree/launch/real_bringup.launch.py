@@ -37,7 +37,7 @@ interface also releases Unitree's built-in locomotion service (``MotionSwitcherC
 ``ReleaseMode``), so the robot must be supported before this launch starts.
 
 **Host-confined graph first.** Before composing any node the launch applies
-``openral_core.ros_graph_scope.require_host_confined_real_bringup`` to its environment: an
+``openral_core.ros_graph_scope.require_host_confined_ros_scope`` to its environment: an
 unset or ``SUBNET`` ``ROS_AUTOMATIC_DISCOVERY_RANGE`` is refused unless
 ``OPENRAL_ALLOW_NETWORK_ROS=1`` under SROS2 Enforce (ADR-0130); export ``LOCALHOST`` for a hand run.
 
@@ -65,7 +65,7 @@ import yaml
 
 try:
     from openral_core.exceptions import ROSConfigError
-    from openral_core.ros_graph_scope import require_host_confined_real_bringup
+    from openral_core.ros_graph_scope import require_host_confined_ros_scope
     from openral_core.ros_security import ENCLAVE_OVERRIDE_ENV as _ENCLAVE_OVERRIDE
     from openral_hal.unitree_s0_policy import (
         load_s0_policy,
@@ -129,7 +129,7 @@ def _launch_setup(context: LaunchContext) -> list[Any]:
 
     # Before any node is composed: a hand-run bringup on SUBNET would put the G1 on the
     # LAN graph (issue #556).
-    require_host_confined_real_bringup(_PACKAGE, os.environ)
+    require_host_confined_ros_scope(os.environ)
     robot_model = context.perform_substitution(_config("robot_model"))
     if robot_model not in _ROBOT_MODELS:
         raise ROSConfigError(
