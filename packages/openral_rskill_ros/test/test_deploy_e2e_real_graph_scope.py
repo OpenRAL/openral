@@ -73,6 +73,15 @@ def test_a_host_confined_or_opted_in_real_hal_launches(
     launch_module._require_host_confined_real_graph("real", env)
 
 
+def test_a_freshly_sourced_shell_is_refused_and_told_why(launch_module: ModuleType) -> None:
+    """``setup.bash`` exports SUBNET when unset; a hand-run launch cannot re-scope its
+    own already-started environment, so it refuses and names the cause."""
+    with pytest.raises(ROSConfigError, match=r"setup\.bash"):
+        launch_module._require_host_confined_real_graph(
+            "real", {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"}
+        )
+
+
 @pytest.mark.parametrize("hal_mode", ["hardware", "Real", "rael"])
 def test_any_non_sim_mode_is_checked(launch_module: ModuleType, hal_mode: str) -> None:
     """Fail closed: the launch composes the hardware path for every non-"sim" value."""

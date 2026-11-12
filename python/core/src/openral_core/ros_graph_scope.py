@@ -21,12 +21,22 @@ from typing import Final
 
 from openral_core.exceptions import ROSConfigError
 
-__all__ = ["ALLOW_NETWORK_ROS_ENV", "networked_ros_scope", "require_host_confined_ros_scope"]
+__all__ = [
+    "ALLOW_NETWORK_ROS_ENV",
+    "discovery_range_is_ros_default",
+    "networked_ros_scope",
+    "require_host_confined_ros_scope",
+]
 
 #: Opt-in for a real robot's ROS graph to reach beyond this host. Only the exact
 #: value ``"1"`` counts.
 ALLOW_NETWORK_ROS_ENV: Final[str] = "OPENRAL_ALLOW_NETWORK_ROS"
 
+#: rcl's default range. ``source /opt/ros/jazzy/setup.bash`` also *exports* it
+#: whenever it is unset (``ros_environment``'s ``1.ros_discovery.dsv``:
+#: ``set-if-unset;ROS_AUTOMATIC_DISCOVERY_RANGE;SUBNET``), so in any sourced shell
+#: an exported ``SUBNET`` is indistinguishable from "nobody chose anything".
+_ROS_DEFAULT_RANGE: Final[str] = "SUBNET"
 #: Discovery ranges that keep a graph on this host.
 _HOST_CONFINED_RANGES: Final[frozenset[str]] = frozenset({"LOCALHOST", "OFF"})
 #: Zenoh ignores both discovery variables and its router listens on every interface.
@@ -64,6 +74,32 @@ def _vendor_peers(env: Mapping[str, str]) -> str | None:
             if any(m in text.lower() for m in markers):
                 return f"{var}={value} (its XML lists remote peers)"
     return None
+
+
+def discovery_range_is_ros_default(env: Mapping[str, str]) -> bool:
+    """Whether ``ROS_AUTOMATIC_DISCOVERY_RANGE`` in ``env`` is ROS's default, not a choice.
+
+    Unset or empty is the default to rcl. ``SUBNET`` is too unless
+    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set: ``setup.bash`` exports it into every
+    sourced shell, so the variable alone cannot say an operator chose the LAN —
+    the OpenRAL opt-in can. Every other value (``LOCALHOST``, ``OFF``,
+    ``SYSTEM_DEFAULT``) is something ROS never exports, so it is a choice.
+    ``ROS_LOCALHOST_ONLY`` is not consulted; callers that honour it check it first.
+
+    Example:
+        >>> discovery_range_is_ros_default({"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"})
+        True
+        >>> discovery_range_is_ros_default(
+        ...     {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", ALLOW_NETWORK_ROS_ENV: "1"}
+        ... )
+        False
+        >>> discovery_range_is_ros_default({"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"})
+        False
+    """
+    discovery = env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip().upper()
+    if not discovery:
+        return True
+    return discovery == _ROS_DEFAULT_RANGE and env.get(ALLOW_NETWORK_ROS_ENV) != "1"
 
 
 def networked_ros_scope(env: Mapping[str, str]) -> str | None:
@@ -142,7 +178,9 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
         f"/openral/safe_action (the HAL executes it), call /openral/estop_reset, "
         f"and spoof /joint_states or the deadman heartbeat. Keep the graph on this "
         f"host with ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST and no ROS_STATIC_PEERS "
-        f"(`openral deploy run` sets this by default), or, when the graph must span "
+        f"(`openral deploy run` sets this by default; sourcing ROS's setup.bash "
+        f"exports SUBNET when the range is unset, so a hand-run launch must export "
+        f"LOCALHOST itself), or, when the graph must span "
         f"machines on a trusted, isolated network, set {ALLOW_NETWORK_ROS_ENV}=1 and "
         f"export the same ROS_DOMAIN_ID on every host.",
     )
