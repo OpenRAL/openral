@@ -221,28 +221,32 @@ def resolve_leapp_config(
     return path
 
 
-def _inference_controller_types(doc: dict[str, Any]) -> list[Any]:
+def _inference_controller_types(doc: object, node_path: str = "") -> list[object]:
     """Every ``type`` a ROS params document gives ``inference_controller``.
 
-    Both forms the spawner or ``controller_manager`` reads:
-    ``<manager key>.ros__parameters.inference_controller.type`` and
-    ``<key ending in inference_controller>.ros__parameters.type`` — namespaced and wildcard
-    keys such as ``/**`` included.
+    Walks every node path, however nested (``"/**": {inference_controller: {...}}``,
+    ``/ns/inference_controller``, …), and collects both forms the spawner or
+    ``controller_manager`` reads: ``<node>.ros__parameters.inference_controller.type`` and
+    ``<node ending in inference_controller>.ros__parameters.type``.
     """
-    found: list[Any] = []
+    found: list[object] = []
+    if not isinstance(doc, dict):
+        return found
     for key, block in doc.items():
-        params = block.get("ros__parameters") if isinstance(block, dict) else None
-        if not isinstance(params, dict):
+        if not isinstance(block, dict):
             continue
-        if str(key).rstrip("/").endswith(INFERENCE_CONTROLLER) and "type" in params:
-            found.append(params["type"])
-        nested = params.get(INFERENCE_CONTROLLER)
+        if key != "ros__parameters":
+            found += _inference_controller_types(block, f"{node_path}/{key}")
+            continue
+        if node_path.rstrip("/").endswith(INFERENCE_CONTROLLER) and "type" in block:
+            found.append(block["type"])
+        nested = block.get(INFERENCE_CONTROLLER)
         if isinstance(nested, dict) and "type" in nested:
             found.append(nested["type"])
     return found
 
 
-def require_watchdog_enforced(policy: S0PolicyFile, base_params: dict[str, Any]) -> None:
+def require_watchdog_enforced(policy: S0PolicyFile, base_params: dict[str, object]) -> None:
     """Refuse a policy whose stale-input watchdog would not be enforced.
 
     The pinned Jazzy ``isaac_ros_deploy`` (v4.6) has no ``topic_input_timeout_ms`` /

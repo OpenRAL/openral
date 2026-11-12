@@ -313,16 +313,19 @@ _UPSTREAM_TYPE = "isaac_ros_deploy_ros2_control/InferenceController"
         # namespaced / wildcard keys
         {"/inference_controller": {"ros__parameters": {"type": _UPSTREAM_TYPE}}},
         {"/**": {"ros__parameters": {"inference_controller": {"type": _UPSTREAM_TYPE}}}},
+        # a node nested under a wildcard namespace: `/**/inference_controller`
+        {"/**": {"inference_controller": {"ros__parameters": {"type": _UPSTREAM_TYPE}}}},
     ],
-    ids=["manager-block", "own-block", "namespaced", "wildcard"],
+    ids=["manager-block", "own-block", "namespaced", "wildcard", "nested-wildcard"],
 )
 def test_any_other_type_anywhere_in_the_policy_file_is_refused(
-    tmp_path: Path, override: dict[str, Any]
+    tmp_path: Path, override: dict[str, dict[str, object]]
 ) -> None:
     doc = _yaml(_G1_CONFIG / "policies" / "agile_velocity.yaml")
     for key, block in override.items():
-        if key in doc["controllers"]:
-            doc["controllers"][key]["ros__parameters"].update(block["ros__parameters"])
+        params = block.get("ros__parameters")
+        if key in doc["controllers"] and isinstance(params, dict):
+            doc["controllers"][key]["ros__parameters"].update(params)
         else:
             doc["controllers"][key] = block
     path = tmp_path / "override.yaml"
