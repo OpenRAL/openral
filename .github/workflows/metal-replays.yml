@@ -14,8 +14,6 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
-  push:  # TEMPORARY proof run for #563; reverted in the next commit
-    branches: [ci/563-metal-replays-gpu]
 
 permissions:
   contents: read
@@ -28,8 +26,8 @@ concurrency:
 jobs:
   replay:
     runs-on: ubuntu-24.04
-    # Measured on this runner: 12-17 s per pick-place replay, 88-91 s per pen-holder replay
-    # (before the pen-holder top view stopped compositing the plate), ~3 min of setup.
+    # Measured on this runner: pick-place 72 s for its 4 replays, pen holder 308 s for its 3,
+    # ~3 min of setup per job.
     timeout-minutes: 30
     env:
       MUJOCO_GL: "egl"
