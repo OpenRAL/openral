@@ -977,14 +977,14 @@ _Pins the dashboard's robot UI to one `robot-ui.yml` build by sha256 (ADR-0129);
 ### `tools/make_metal_isaac_usd.py`
 _Writes the USD assets of the two MakerMods Metal Isaac example scenes (`scenes/sim/isaac_makermods_metal_{pen_holder,pick_place}.yaml`) from the MuJoCo twins' `MetalPenHolderOptions` / `MetalPickPlaceOptions` defaults: every size, pose, mass, friction and colour, the cup's `holder_visual_mesh` / `holder_collider_boxes`, the twins' clutter props. Bakes tiled textures to one image (Isaac 6.1 RTX ignores `wrap: repeat`). `python tools/make_metal_isaac_usd.py`._
 
-- `PEN_DIR: Path` (L60) — `scenes/sim/assets/makermods_metal_pen_holder`.
-- `CUBE_DIR: Path` (L61) — `scenes/sim/assets/makermods_metal_pick_place`.
-- `linear(c) -> float` (L67) — One sRGB channel as the linear value `UsdPreviewSurface` expects.
-- `bake_tiled(src, size_m, tile_m) -> Image` (L87) — `src` tiled over a surface of `size_m` (x, y) at `tile_m` per tile, in one image (columns along +y).
-- `pen_holder_usda(o) -> str` (L299) — The cup: hidden box colliders and its holed visual mesh (64-cell wall grid, under the 2 MB file limit).
-- `pen_usda(o) -> str` (L332) — The marker: hidden square-section collider, glossy barrel, printed sleeve.
-- `pen_table_usda(o) -> str` (L349) — Desk (baked wood), riser shelf (the real board), wall, floor, clutter: the scene's environment.
-- `cube_usda(o) -> str` (L393) — The 25 mm orange cube.
-- `marker_usda(o) -> str` (L401) — The target sticker, visual only.
-- `cube_table_usda(o) -> str` (L420) — Desk, wall, floor, the wall pipes: the scene's environment.
-- `main() -> None` (L447) — Writes both asset folders (USDA + baked textures).
+- `PEN_DIR: Path` (L62) — `scenes/sim/assets/makermods_metal_pen_holder`.
+- `CUBE_DIR: Path` (L63) — `scenes/sim/assets/makermods_metal_pick_place`.
+- `linear(c) -> float` (L69) — One sRGB channel as the linear value `UsdPreviewSurface` expects.
+- `bake_tiled(src, size_m, tile_m) -> Image` (L89) — `src` tiled over a surface of `size_m` (x, y) at `tile_m` per tile, in one image (columns along +y).
+- `pen_holder_usda(o) -> str` (L301) — The cup: hidden box colliders and its holed visual mesh (64-cell wall grid, under the 2 MB file limit).
+- `pen_usda(o) -> str` (L334) — The marker: hidden square-section collider, glossy barrel, printed sleeve.
+- `pen_table_usda(o) -> str` (L351) — Desk (baked wood), riser shelf (the real board), wall, floor, clutter: the scene's environment.
+- `cube_usda(o) -> str` (L395) — The 25 mm orange cube.
+- `marker_usda(o) -> str` (L403) — The target sticker, visual only.
+- `cube_table_usda(o) -> str` (L422) — Desk, wall, floor, the wall pipes: the scene's environment.
+- `main() -> None` (L449) — Writes both asset folders (USDA + baked textures).

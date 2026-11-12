@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from types import ModuleType
 
 import numpy as np
 import pytest
 from openral_core import RobotDescription, SimScene, load_scene_strict
+from openral_core.assets import AssetFetchError
 from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.isaac_sim import (
     IsaacLinkBox,
@@ -35,7 +36,7 @@ _CUBE_PROMPT = "Pick up the cube and place it at the marked location"
 
 
 @pytest.fixture(scope="module")
-def tools() -> Any:
+def tools() -> tuple[ModuleType, ModuleType]:
     path = str(_REPO / "tools")
     if path not in sys.path:
         sys.path.insert(0, path)
@@ -86,7 +87,7 @@ def test_scenes_use_their_station_as_environment_and_the_twins_rubric_prompts() 
     ],
 )
 def test_pen_grades_against_the_cup(
-    tools: Any, offset: tuple[float, float, float], grade: str
+    tools: tuple[ModuleType, ModuleType], offset: tuple[float, float, float], grade: str
 ) -> None:
     scene_mod, _ = tools
     ps = _options(_PEN).placement_success
@@ -104,12 +105,14 @@ def test_pen_grades_against_the_cup(
     [
         ((0.0, 0.0), "complete"),  # centred on the sticker
         ((0.010, -0.008), "complete"),  # about half the footprint on it
-        ((0.025, 0.0), "partial"),  # an edge on it
+        ((0.02, 0.0), "partial"),  # an edge on it
+        ((0.022, 0.022), "partial"),  # a corner on it
+        ((0.03, 0.03), "fail"),  # diagonally beside it: no overlap (centre 42 mm out)
         ((0.045, 0.0), "fail"),  # beside it
     ],
 )
 def test_cube_grades_against_the_marker(
-    tools: Any, offset: tuple[float, float], grade: str
+    tools: tuple[ModuleType, ModuleType], offset: tuple[float, float], grade: str
 ) -> None:
     scene_mod, _ = tools
     spec = _placement_success_spec(_options(_CUBE).placement_success, _CUBE_PROMPT)
@@ -121,7 +124,7 @@ def test_cube_grades_against_the_marker(
     assert scene_mod.placement_grade(pos, level, up, at, 20.0, spec["grades"]) == grade
 
 
-def test_committed_assets_are_the_generators_output(tools: Any) -> None:
+def test_committed_assets_are_the_generators_output(tools: tuple[ModuleType, ModuleType]) -> None:
     from openral_sim.backends.metal_pen_holder._assets import MetalPenHolderOptions
     from openral_sim.backends.metal_pick_place._assets import MetalPickPlaceOptions
 
@@ -150,6 +153,11 @@ def test_new_scene_options_refuse_bad_values() -> None:
         IsaacSimOptions(rtx_settings={"rtx/post/aa/op": 2})
     with pytest.raises(ValidationError, match="half_extents"):
         IsaacLinkBox(xyz=(0.0, 0.0, 0.0), half_extents=(0.01, 0.0, 0.01))
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValidationError, match="finite"):
+            IsaacLinkBox(xyz=(0.0, bad, 0.0), half_extents=(0.01, 0.01, 0.01))
+        with pytest.raises(ValidationError, match="finite"):
+            IsaacLinkBox(xyz=(0.0, 0.0, 0.0), half_extents=(0.01, bad, 0.01))
     spec = _environment_spec(_options(_PEN))
     assert spec["rtx_settings"]["/rtx/post/aa/op"] == 2
     assert spec["link_box_colliders"]["left_link7"]["half_extents"] == [0.001, 0.009, 0.034]
@@ -173,6 +181,8 @@ def test_station_fingers_follow_the_driven_joint8() -> None:
     try:
         spec = _build_robot_spec(desc, "makermods_metal_station", manifest_dir=robot_dir)
     except ROSConfigError as exc:  # the pinned metal_description clone needs network once
+        if not isinstance(exc.__cause__, AssetFetchError):
+            raise  # a broken manifest or gripper convention is a failure, not a skip
         pytest.skip(f"metal_description unavailable: {exc}")
     grippers = {g["name"]: g for g in spec["grippers"]}
     for side in ("left", "right"):
