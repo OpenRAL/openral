@@ -417,6 +417,15 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // `collision_parent`; empty = no mimic link (identity for every link).
   this->declare_parameter<std::vector<double>>("collision_mimic_multiplier", std::vector<double>{});
   this->declare_parameter<std::vector<double>>("collision_mimic_offset", std::vector<double>{});
+  // Gripper calibration curves (`JointSpec.urdf_curve`, issue #533): link i reads
+  // its column through the curve of `collision_curve_point_count[i]` flat
+  // (value, urdf value) pairs from pair `collision_curve_point_first[i]` (-1 =
+  // none) of `collision_curve_points`, before any mimic relation. Empty = no curve.
+  this->declare_parameter<std::vector<std::int64_t>>("collision_curve_point_first",
+                                                     std::vector<std::int64_t>{});
+  this->declare_parameter<std::vector<std::int64_t>>("collision_curve_point_count",
+                                                     std::vector<std::int64_t>{});
+  this->declare_parameter<std::vector<double>>("collision_curve_points", std::vector<double>{});
   this->declare_parameter<std::vector<std::int64_t>>("collision_allowed_pairs",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
@@ -998,6 +1007,16 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
                 "(multiplier * q + offset), rigid, checked at the commanded value",
                 n_mimic);
   }
+  if (!collision_model_.curve_point_first.empty()) {
+    std::size_t n_curved = 0;
+    for (const int first : collision_model_.curve_point_first) {
+      n_curved += first >= 0 ? 1U : 0U;
+    }
+    RCLCPP_INFO(this->get_logger(),
+                "collision model: %zu link(s) posed through a gripper calibration curve "
+                "(JointSpec.urdf_curve), the URDF value the sim drives",
+                n_curved);
+  }
 
   // Set up the measured joint-state seed used to reconstruct
   // non-position chunks (Phase 1) for the velocity check (Phase 2). Sized to
@@ -1067,10 +1086,13 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
   // are leaves); refuse rather than predict wrongly.
   for (int l = collision_ee_link_; l >= 0;
        l = collision_model_.parent[static_cast<std::size_t>(l)]) {
-    if (is_mimic(collision_model_.joint_kind[static_cast<std::size_t>(l)])) {
+    const auto li = static_cast<std::size_t>(l);
+    if (is_mimic(collision_model_.joint_kind[li]) ||
+        (li < collision_model_.curve_point_first.size() &&
+         collision_model_.curve_point_first[li] >= 0)) {
       RCLCPP_ERROR(this->get_logger(),
-                   "collision_ee_link_index %d has a mimic link on its chain; the EE Jacobian "
-                   "cannot predict through a mimic joint",
+                   "collision_ee_link_index %d has a mimic or curved link on its chain; the EE "
+                   "Jacobian cannot predict through it",
                    collision_ee_link_);
       envelope_loaded_ = false;
       return CallbackReturn::FAILURE;
@@ -4117,6 +4139,9 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   const auto names = this->get_parameter("collision_link_names").as_string_array();
   const auto mimic_mult = this->get_parameter("collision_mimic_multiplier").as_double_array();
   const auto mimic_off = this->get_parameter("collision_mimic_offset").as_double_array();
+  const auto curve_first = this->get_parameter("collision_curve_point_first").as_integer_array();
+  const auto curve_count = this->get_parameter("collision_curve_point_count").as_integer_array();
+  const auto curve_pts = this->get_parameter("collision_curve_points").as_double_array();
 
   // Per-link arrays are sized to n_links; capsule/box arrays are sized to the
   // (independent) primitive count — a link may carry zero, one, or several.
@@ -4153,6 +4178,14 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
     return false;
   }
 
+  // Curves: all-or-nothing per model, one (first, count) per link.
+  if (curve_first.size() != curve_count.size() ||
+      (!curve_first.empty() && curve_first.size() != n_links) || curve_pts.size() % 2 != 0 ||
+      (curve_first.empty() && !curve_pts.empty())) {
+    error = "collision_curve_* array shapes disagree with collision_n_links";
+    return false;
+  }
+
   CollisionModel m;
   m.n_links = n_links;
   m.parent.resize(n_links);
@@ -4162,6 +4195,49 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   m.axis.resize(n_links);
   m.mimic_multiplier.assign(mimic_mult.begin(), mimic_mult.end());
   m.mimic_offset.assign(mimic_off.begin(), mimic_off.end());
+  m.curve_point_first.assign(curve_first.begin(), curve_first.end());
+  m.curve_point_count.assign(curve_count.begin(), curve_count.end());
+  m.curve_points.assign(curve_pts.begin(), curve_pts.end());
+  for (std::size_t i = 0; i < m.curve_point_first.size(); ++i) {
+    // A curve is a gripper calibration the producer sorted and checked
+    // (`check_urdf_curve`); the kernel re-checks rather than trusting it.
+    const int first = m.curve_point_first[i];
+    const int count = m.curve_point_count[i];
+    if (first < 0) {
+      if (count != 0) {
+        error = "collision_curve_point_count is non-zero on a link without a curve";
+        return false;
+      }
+      continue;
+    }
+    if (count < 2 || 2 * (static_cast<std::size_t>(first) + static_cast<std::size_t>(count)) >
+                         m.curve_points.size()) {
+      error = "a collision curve needs at least 2 points inside collision_curve_points";
+      return false;
+    }
+    if (dof[i] < 0 || kind[i] == 0) {
+      error = "a collision curve sits on a link no joint column moves";
+      return false;
+    }
+    const double* p = m.curve_points.data() + 2 * static_cast<std::size_t>(first);
+    bool rising = true;
+    bool falling = true;
+    for (int k = 0; k < count; ++k) {
+      if (!std::isfinite(p[2 * k]) || !std::isfinite(p[2 * k + 1]) ||
+          (k > 0 && !(p[2 * k] > p[2 * k - 2]))) {
+        error = "a collision curve must be finite with strictly increasing values";
+        return false;
+      }
+      if (k > 0) {
+        rising = rising && p[2 * k + 1] > p[2 * k - 1];
+        falling = falling && p[2 * k + 1] < p[2 * k - 1];
+      }
+    }
+    if (!rising && !falling) {
+      error = "a collision curve must be strictly monotonic in urdf value";
+      return false;
+    }
+  }
   for (std::size_t i = 0; i < n_links; ++i) {
     m.parent[i] = static_cast<int>(parent[i]);
     if (kind[i] < 0 || kind[i] > static_cast<std::int64_t>(JointKind::kMimicPrismatic)) {

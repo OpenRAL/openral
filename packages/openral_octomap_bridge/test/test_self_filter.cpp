@@ -75,6 +75,9 @@ osk::CollisionModel kernel_model(const bridge::SelfModelParams& p) {
   }
   m.mimic_multiplier = p.mimic_multiplier;
   m.mimic_offset = p.mimic_offset;
+  m.curve_point_first.assign(p.curve_point_first.begin(), p.curve_point_first.end());
+  m.curve_point_count.assign(p.curve_point_count.begin(), p.curve_point_count.end());
+  m.curve_points = p.curve_points;
   return m;
 }
 
@@ -92,6 +95,16 @@ bridge::SelfModelParams chain_with_mimic_params() {
   p.link_names.push_back("follower");
   p.mimic_multiplier = {1.0, 1.0, 1.0, 1.0, -2.0};
   p.mimic_offset = {0.0, 0.0, 0.0, 0.0, 0.3};
+  return p;
+}
+
+// `chain_with_mimic_params()` with a calibration curve on column 1's links (l2 and
+// the follower), as `with_joint_curves` emits for a `JointSpec.urdf_curve` gripper.
+bridge::SelfModelParams chain_with_curve_params() {
+  auto p = chain_with_mimic_params();
+  p.curve_point_first = {-1, -1, 0, -1, 0};
+  p.curve_point_count = {0, 0, 3, 0, 3};
+  p.curve_points = {-0.1, -0.2, 0.05, 0.08, 0.3, 0.1};
   return p;
 }
 
@@ -173,6 +186,59 @@ TEST(SelfFilterFk, AMimicLinkMatchesTheKernelForwardKinematicsExactly) {
       }
     }
   }
+}
+
+TEST(SelfFilterFk, ACurvedLinkMatchesTheKernelForwardKinematicsExactly) {
+  const auto params = chain_with_curve_params();
+  bridge::SelfModel model;
+  std::string error;
+  ASSERT_TRUE(bridge::build_self_model(params, model, error)) << error;
+  const auto kernel = kernel_model(params);
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(kernel.n_links);
+  std::vector<tf2::Transform> ours;
+  for (const auto& q : std::vector<std::vector<double>>{
+           {0.0, -0.3, 0.0}, {0.7, 0.0, -1.3}, {-2.1, 0.06, 2.9}, {0.2, 0.4, 0.1}}) {
+    osk::forward_kinematics(kernel, q.data(), q.size(), scratch);
+    bridge::self_forward_kinematics(model, q.data(), q.size(), ours);
+    for (std::size_t i = 0; i < kernel.n_links; ++i) {
+      const auto& k = scratch.link_world[i];
+      const tf2::Matrix3x3& r = ours[i].getBasis();
+      for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+          EXPECT_NEAR(r[row][col], k.r[row * 3 + col], 1e-12) << "link " << i;
+        }
+      }
+      EXPECT_NEAR(ours[i].getOrigin().x(), k.t.x, 1e-12) << "link " << i;
+      EXPECT_NEAR(ours[i].getOrigin().y(), k.t.y, 1e-12) << "link " << i;
+      EXPECT_NEAR(ours[i].getOrigin().z(), k.t.z, 1e-12) << "link " << i;
+    }
+  }
+  // The curve itself: clamped at both ends, linear between the points.
+  const std::vector<std::pair<double, double>> curve{{-0.1, -0.2}, {0.05, 0.08}, {0.3, 0.1}};
+  EXPECT_DOUBLE_EQ(bridge::curve_value(curve, -1.0), -0.2);
+  EXPECT_DOUBLE_EQ(bridge::curve_value(curve, 1.0), 0.1);
+  EXPECT_NEAR(bridge::curve_value(curve, 0.175), 0.09, 1e-12);
+}
+
+TEST(SelfFilterModel, RefusesACurveTheKernelWouldRefuse) {
+  std::string error;
+  bridge::SelfModel model;
+  auto p = chain_with_curve_params();
+  p.curve_point_count.pop_back();  // not per link
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_curve_params();
+  p.curve_point_count[2] = 1;  // one point is no curve
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_curve_params();
+  p.curve_point_count[2] = 4;  // past the end of curve_points
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_curve_params();
+  p.curve_points[2] = -0.1;  // values not strictly increasing
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_curve_params();
+  p.curve_points[5] = NAN;
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
 }
 
 TEST(SelfFilterModel, RefusesAMimicLinkTheKernelWouldRefuse) {
@@ -642,9 +708,16 @@ bridge::SelfModelParams manifest_chain(const YAML::Node& robot,
   };
   std::map<std::string, Edge> edge_of;
   std::map<std::string, int> column;
+  std::map<std::int64_t, std::vector<double>> curve_of;  // dof -> flat (value, urdf value)
   int idx = 0;
   for (const auto& j : robot["joints"]) {
     const auto type = j["joint_type"].as<std::string>();
+    if (j["urdf_curve"]) {  // JointSpec.urdf_curve, as `with_joint_curves` lowers it
+      for (const auto& point : j["urdf_curve"]) {
+        curve_of[idx].push_back(point[0].as<double>());
+        curve_of[idx].push_back(point[1].as<double>());
+      }
+    }
     Edge e;
     e.parent = j["parent_link"].as<std::string>();
     e.kind = type == "prismatic" ? 2 : type == "fixed" ? 0 : 1;
@@ -715,6 +788,19 @@ bridge::SelfModelParams manifest_chain(const YAML::Node& robot,
     }
   }
   p.n_links = static_cast<std::int64_t>(p.link_names.size());
+  if (!curve_of.empty()) {
+    for (const auto dof : p.dof_index) {
+      const auto it = curve_of.find(dof);
+      if (dof < 0 || it == curve_of.end()) {
+        p.curve_point_first.push_back(-1);
+        p.curve_point_count.push_back(0);
+        continue;
+      }
+      p.curve_point_first.push_back(static_cast<std::int64_t>(p.curve_points.size() / 2));
+      p.curve_point_count.push_back(static_cast<std::int64_t>(it->second.size() / 2));
+      p.curve_points.insert(p.curve_points.end(), it->second.begin(), it->second.end());
+    }
+  }
   return p;
 }
 

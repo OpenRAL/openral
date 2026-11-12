@@ -9531,3 +9531,115 @@ TEST_F(LifecycleKernelTest, AFailedConfigureStillLocksTheParameters) {
   EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("n_dof", std::int64_t{3})).successful);
   node->shutdown();
 }
+
+// ── Gripper calibration curve, end to end (JointSpec.urdf_curve, issue #533) ──
+//
+// The mimic gripper rig with a FALLING curve on both jaws: a commanded 0.0 is the
+// URDF finger at 0.03 (open), 0.03 is 0.0 (closed) — the Robotiq's sense, where the
+// fraction and its URDF finger_joint run opposite ways. The EE is the hand (link 0):
+// the Jacobian cannot predict through a curved link.
+
+namespace {
+
+std::vector<rclcpp::Parameter> curved_kernel_params() {
+  auto params = mimic_kernel_params(kBothJaws);
+  for (auto& p : params) {
+    if (p.get_name() == "collision_ee_link_index") {
+      p = rclcpp::Parameter("collision_ee_link_index", std::int64_t{0});
+    }
+  }
+  params.insert(params.end(),
+                {
+                    {"collision_curve_point_first", std::vector<std::int64_t>{-1, 0, 0}},
+                    {"collision_curve_point_count", std::vector<std::int64_t>{0, 2, 2}},
+                    {"collision_curve_points", std::vector<double>{0.0, 0.03, 0.03, 0.0}},
+                });
+  return params;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ACurvedGripperIsCheckedAtItsUrdfValue) {
+  {
+    GraspRig rig("kernel_curve_open", curved_kernel_params());
+    rig.voxels = mimic_cell(0.0);  // between the jaws
+    rig.start();
+    EXPECT_TRUE(rig.offer(nullptr, 0.0)) << "command 0.0 is the URDF finger at 0.03: open";
+    EXPECT_FALSE(rig.node->fault_latched());
+  }
+  {
+    GraspRig rig("kernel_curve_closed", curved_kernel_params());
+    rig.voxels = mimic_cell(0.0);
+    rig.start();
+    EXPECT_FALSE(rig.offer(nullptr, 0.03)) << "command 0.03 is the URDF finger at 0.0: closed";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, MisShapedOrUnsoundCurveParamsFailConfigure) {
+  const auto configure = [](const std::string& name, std::vector<rclcpp::Parameter> params) {
+    rclcpp::NodeOptions opts;
+    opts.parameter_overrides(std::move(params));
+    auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+    return node->on_configure(unconf);
+  };
+  const auto with = [](const char* key, rclcpp::Parameter value) {
+    auto params = curved_kernel_params();
+    for (auto& p : params) {
+      if (p.get_name() == key) {
+        p = std::move(value);
+      }
+    }
+    return params;
+  };
+  using CR = osk::SafetyKernelLifecycleNode::CallbackReturn;
+  EXPECT_EQ(configure("kernel_curve_ok", curved_kernel_params()), CR::SUCCESS);
+  EXPECT_EQ(
+      configure("kernel_curve_short", with("collision_curve_point_first",
+                                           rclcpp::Parameter("collision_curve_point_first",
+                                                             std::vector<std::int64_t>{-1, 0}))),
+      CR::FAILURE)
+      << "curve arrays must be per link";
+  EXPECT_EQ(configure("kernel_curve_one_point",
+                      with("collision_curve_point_count",
+                           rclcpp::Parameter("collision_curve_point_count",
+                                             std::vector<std::int64_t>{0, 1, 1}))),
+            CR::FAILURE)
+      << "a curve needs two points";
+  EXPECT_EQ(configure("kernel_curve_past_end",
+                      with("collision_curve_point_count",
+                           rclcpp::Parameter("collision_curve_point_count",
+                                             std::vector<std::int64_t>{0, 3, 2}))),
+            CR::FAILURE)
+      << "a curve's points must lie inside collision_curve_points";
+  EXPECT_EQ(configure("kernel_curve_not_increasing",
+                      with("collision_curve_points",
+                           rclcpp::Parameter("collision_curve_points",
+                                             std::vector<double>{0.03, 0.03, 0.0, 0.0}))),
+            CR::FAILURE)
+      << "values must strictly increase";
+  EXPECT_EQ(configure("kernel_curve_flat",
+                      with("collision_curve_points",
+                           rclcpp::Parameter("collision_curve_points",
+                                             std::vector<double>{0.0, 0.03, 0.03, 0.03}))),
+            CR::FAILURE)
+      << "urdf values must be strictly monotonic";
+  EXPECT_EQ(configure("kernel_curve_nan",
+                      with("collision_curve_points",
+                           rclcpp::Parameter("collision_curve_points",
+                                             std::vector<double>{0.0, 0.03, 0.03, NAN}))),
+            CR::FAILURE)
+      << "points must be finite";
+  EXPECT_EQ(
+      configure("kernel_curve_fixed", with("collision_curve_point_first",
+                                           rclcpp::Parameter("collision_curve_point_first",
+                                                             std::vector<std::int64_t>{0, 0, 0}))),
+      CR::FAILURE)
+      << "a curve on the fixed root moves nothing";
+  EXPECT_EQ(configure("kernel_curve_ee",
+                      with("collision_ee_link_index",
+                           rclcpp::Parameter("collision_ee_link_index", std::int64_t{1}))),
+            CR::FAILURE)
+      << "the EE Jacobian cannot predict through a curved link";
+}

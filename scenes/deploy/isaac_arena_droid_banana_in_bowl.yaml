@@ -80,8 +80,6 @@ scene:
       # error vs mimic p95 17.1 -> 0.75 deg, max 22.7 -> 4.8 deg (was up to 39 deg).
       "(right_finger_joint|.*_phalanx_joint)": [5729.578, 0.011459]
     gripper_followers_track: measured
-    gripper_joint_curve:
-      finger_joint: [[0.0, 0.7853982], [1.0, 0.0]]
     # Simulated-only depth for the world map: Arena's `external_camera` as metric
     # depth at 640x360. fx = fy = 320 / tan(104.0 deg / 2) = 250.0, the `exterior`
     # mount's field of view (its 1280x720 fx = 500 halved).

@@ -34,7 +34,6 @@ from openral_rskill.loader import load_rskill_manifest
 from openral_sim.backends.isaac_sim import (
     IsaacSimOptions,
     _build_robot_spec,
-    _curve_gripper_specs,
     _isaac_importable_urdf,
     _placement_success_spec,
 )
@@ -159,8 +158,9 @@ def test_robot_spec_drives_the_robotiq_leader_and_inverts_the_jaw(scene_mod: Any
     assert gripper["leader"] == "finger_joint"
     assert len(gripper["followers"]) == 5
     assert spec["action"]["control_freq_hz"] == 15.0
-    curve = _options(_SIM, SimScene).gripper_joint_curve
-    _curve_gripper_specs(spec, curve)
+    # The manifest's finger_joint.urdf_curve (issue #533); the scenes set none of their own.
+    assert not _options(_SIM, SimScene).gripper_joint_curve
+    assert gripper["curve"] == [[0.0, 0.7853982], [1.0, 0.0]]
     # normalized_open_unit: 0 = closed -> Arena's close target pi/4, 1 = open -> 0.
     assert scene_mod.manifest_to_urdf_gripper(gripper, 0.0) == pytest.approx(np.pi / 4)
     assert scene_mod.manifest_to_urdf_gripper(gripper, 1.0) == pytest.approx(0.0)

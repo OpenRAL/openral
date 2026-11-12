@@ -37,6 +37,7 @@
 #include <deque>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <tf2/LinearMath/Transform.h>
@@ -48,7 +49,8 @@ namespace openral_octomap_bridge {
 
 /// Joint connecting a link to its parent — the kernel's `JointKind` codes. A
 /// mimic kind reads another joint's column (`dof_index`) and moves by
-/// `mimic_multiplier * q + mimic_offset` (the OpenArm's follower finger).
+/// `mimic_multiplier * u + mimic_offset` (the OpenArm's follower finger), `u`
+/// the column through the link's calibration curve when it has one.
 enum class SelfJointKind : std::uint8_t {
   kFixed = 0,
   kRevolute = 1,
@@ -143,6 +145,12 @@ struct SelfModelParams {
   /// Per link when the model has a mimic link (`collision_mimic_*`), else empty.
   std::vector<double> mimic_multiplier;
   std::vector<double> mimic_offset;
+  /// Per link when a joint has a gripper calibration curve (`collision_curve_*`,
+  /// the kernel's layout: pair index / point count into flat (value, urdf value)
+  /// `curve_points`, -1 = none), else empty.
+  std::vector<std::int64_t> curve_point_first;
+  std::vector<std::int64_t> curve_point_count;
+  std::vector<double> curve_points;
   std::vector<std::string> link_names;
   std::vector<std::int64_t> capsule_link;
   std::vector<double> capsule_radius;
@@ -171,8 +179,11 @@ struct SelfModel {
   std::vector<int> dof_index;
   std::vector<tf2::Transform> origin;
   std::vector<tf2::Vector3> axis;
-  std::vector<double> mimic_multiplier;      ///< per link, or empty (identity)
-  std::vector<double> mimic_offset;          ///< per link, or empty (identity)
+  std::vector<double> mimic_multiplier;  ///< per link, or empty (identity)
+  std::vector<double> mimic_offset;      ///< per link, or empty (identity)
+  /// Per link, or empty: the link's `(value, urdf value)` calibration curve the
+  /// column is read through before any mimic relation (empty = none).
+  std::vector<std::vector<std::pair<double, double>>> curves;
   std::vector<int> primitive_link;           ///< link index each primitive rides
   std::vector<PayloadPrimitive> primitives;  ///< pose = primitive in its link frame
   std::vector<int> primitive_hull;           ///< parallel: index into `hulls`, or -1
@@ -202,6 +213,10 @@ tf2::Transform self_transform_from_xyz_rpy(double x, double y, double z, double 
 /// hull it cannot prove, the filter refuses the whole model: its fallback is
 /// forwarding nothing, which the kernel then sees as a stale map.
 bool build_self_model(const SelfModelParams& params, SelfModel& out, std::string& error);
+
+/// Piecewise-linear `curve` (`(x, y)`, x strictly increasing, non-empty) at `x`,
+/// clamped at the end points — the kernel's `link_joint_value` curve step.
+double curve_value(const std::vector<std::pair<double, double>>& curve, double x) noexcept;
 
 /// Forward kinematics for one joint-position vector (`q`, length `n_dof`):
 /// fills `link_world[i]` with link `i`'s frame in the model root's frame. A dof

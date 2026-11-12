@@ -94,6 +94,9 @@ public:
     params.axis = declare_doubles("collision_axis");
     params.mimic_multiplier = declare_doubles("collision_mimic_multiplier");
     params.mimic_offset = declare_doubles("collision_mimic_offset");
+    params.curve_point_first = declare_ints("collision_curve_point_first");
+    params.curve_point_count = declare_ints("collision_curve_point_count");
+    params.curve_points = declare_doubles("collision_curve_points");
     params.link_names = declare_strings("collision_link_names");
     params.capsule_link = declare_ints("collision_capsule_link");
     params.capsule_radius = declare_doubles("collision_capsule_radius");
