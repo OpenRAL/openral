@@ -147,6 +147,9 @@ TARGETS=(
     # `openral estop reset` clears the kernel, then the runner; a latched
     # goal rejection logs a WARNING naming the recovery.
     tests/integration/test_estop_reset_cli_live.py
+    # Issue #557: `openral prompt` / `estop reset --robot ID` reach a real deploy's
+    # per-robot ROS domain from a terminal that exported nothing.
+    tests/integration/test_operator_cli_robot_domain_live.py
     # ADR-0130: each SROS2 enclave gets exactly its surfaces under Enforce; keyless participants are shut out.
     tests/integration/test_sros2_enclaves_live.py
     # Nav2's side of issue #108: a filtered scan keeps a carried payload out

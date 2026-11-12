@@ -33,7 +33,15 @@ ones; every other `robot_id` keeps the domain it had before the reservations
 as `ros scope:` before launch, followed by the `export` line another terminal
 needs: `openral prompt` and `openral estop reset` run `rclpy` on their own
 shell's environment, so they reach the robot only on the same domain and
-range. An exported non-empty `ROS_DOMAIN_ID` wins; an exported empty value of
+range. Pass them `--robot <robot_id>` instead and they derive that scope
+themselves with the same `confine_real_scope` (`openral_cli._dds_scope.join_robot_scope`,
+#557), printing the domain they used and where it came from; an exported
+`ROS_DOMAIN_ID` still wins there too, and a mismatch with the robot's domain is
+named in that line. They then act only if `openral_hal_<robot_id>` is on the
+joined graph (`require_robot_on_graph`, exit 3 otherwise), because 39 free
+domains are shared by every robot id: `openarm`, `makermods_metal` and
+`openamrobot_v2` all derive 43. The deploy prints the `--robot` hint only when
+its graph is on the derived domain with LOCALHOST discovery. An exported non-empty `ROS_DOMAIN_ID` wins; an exported empty value of
 either variable counts as unset. Simulations get the same range rule, on domain 77
 (`openral_cli._dds_scope.confine_sim_scope`). Implementation:
 `openral_cli._dds_scope.confine_real_scope`.
