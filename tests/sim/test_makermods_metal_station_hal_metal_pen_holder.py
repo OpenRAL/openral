@@ -129,6 +129,13 @@ def test_camera_offset_moves_and_turns_the_wrist_camera_in_its_own_frame() -> No
     assert min(np.abs(rel - ref).max(), np.abs(rel + ref).max()) < 1e-9
 
 
+# Each step renders three 640x480 views; a ~700-step replay outlasts the 15-min CI shard
+# under software OSMesa (one episode did not finish in 15 min on a 16-core host). The GPU
+# (EGL) run takes seconds, so the replays run wherever a hardware renderer exists.
+@pytest.mark.skipif(
+    os.environ.get("MUJOCO_GL") == "osmesa",
+    reason="replays render 3 views per step: too slow on OSMesa; runs with a hardware renderer",
+)
 @pytest.mark.parametrize("episode", [0, 7, 30])
 def test_replayed_episode_drops_the_pen_into_the_cup(episode: int) -> None:
     hx, hy, hyaw, px, py, pyaw = (float(v) for v in _EPISODES[f"layout_{episode}"])

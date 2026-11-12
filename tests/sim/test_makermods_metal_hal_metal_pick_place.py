@@ -125,6 +125,12 @@ def test_leader_arm_never_adds_actuators(leader: str) -> None:
 _REPLAYS = {0: "A", 42: "B", 62: "C", 91: "D"}
 
 
+# Each step renders the manifest cameras; one replay took 594 s under software OSMesa (16-core
+# host) against ~4 s on EGL, so four of them outlast the 15-min CI shard.
+@pytest.mark.skipif(
+    os.environ.get("MUJOCO_GL") == "osmesa",
+    reason="replays render every step: too slow on OSMesa; runs with a hardware renderer",
+)
 @pytest.mark.parametrize("episode", sorted(_REPLAYS), ids=lambda e: f"ep{e:02d}-{_REPLAYS[e]}")
 def test_replaying_a_real_episode_places_the_cube_on_the_marker(episode: int) -> None:
     ep = np.load(_ROOT / "tests" / "unit" / "fixtures" / f"metal_pick_place_ep{episode:02d}.npz")
