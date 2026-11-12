@@ -134,7 +134,12 @@ PY
 
 if [[ "${OLLAMA_UNIT_SET:-0}" -eq 1 ]]; then
   # The unit was just restarted: wait for it, never race it with a second serve.
-  for _ in $(seq 20); do probe_port localhost 11434 && break; sleep 0.5; done
+  for _ in $(seq 60); do probe_port localhost 11434 && break; sleep 0.5; done
+  if ! probe_port localhost 11434; then
+    echo "the ollama systemd unit did not start listening on localhost:11434 within 30 s;" >&2
+    echo "see: systemctl status ollama; journalctl -u ollama" >&2
+    exit 1
+  fi
 fi
 
 if [[ "${OLLAMA_UNIT_SET:-0}" -eq 1 ]] && probe_port localhost 11434; then

@@ -531,17 +531,26 @@ def _ollama_reply(prompt_tokens: int, fingerprint: str | None) -> tuple[int, dic
         ("x" * 31_000, 4096, None, False),  # not Ollama: others 400 on an over-long prompt
         # Dense non-ASCII text: counted as characters, not as 6-char JSON escapes.
         ("机器人" * 10_000, 15_000, "fp_ollama", False),
+        # Repeated text packs ~8 chars/token: read whole when the reported window holds it.
+        ("a" * 100_000, 15_000, "fp_ollama", False),
     ],
 )
 def test_an_ollama_reply_that_read_a_cut_prompt_is_refused(
     context: str, prompt_tokens: int, fingerprint: str | None, cut: bool
 ) -> None:
-    """The real client refuses an Ollama reply that read far fewer tokens than it sent."""
+    """The real client refuses an Ollama reply that read far fewer tokens than it sent.
+
+    The fake reports the 4096-token default window (``/api/ps``) for the cut cases
+    and a 32K one for the rest, as a real Ollama does.
+    """
     from openral_core import WaitTool
     from openral_core.exceptions import ROSPlanningError
     from openral_reasoner.palette import ToolPalette
 
-    with FakeLLMServer([_ollama_reply(prompt_tokens, fingerprint)]) as server:
+    window = 4096 if cut else 32768
+    ps = {"models": [{"name": "qwen3.5:4b", "model": "qwen3.5:4b", "context_length": window}]}
+    replies = [_ollama_reply(prompt_tokens, fingerprint)]
+    with FakeLLMServer(replies, get_bodies={"/api/ps": ps}) as server:
         client = OpenAICompatibleToolUseClient(
             model_id="qwen3.5:4b", base_url=server.openai_base_url, tool_choice="auto"
         )
@@ -552,3 +561,16 @@ def test_an_ollama_reply_that_read_a_cut_prompt_is_refused(
             tool = client.select_tool(context_text=context, palette=ToolPalette(skills=()))
             assert isinstance(tool, WaitTool)
     assert len(server.requests) == 1  # a cut prompt is never nudged and re-sent
+
+
+def test_a_ratio_flagged_reply_is_refused_without_a_reported_window() -> None:
+    """No ``/api/ps`` (an old or proxied Ollama): the ratio alone decides."""
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    with FakeLLMServer([_ollama_reply(4096, "fp_ollama")]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3.5:4b", base_url=server.openai_base_url, tool_choice="auto"
+        )
+        with pytest.raises(ROSPlanningError, match="cut the prompt"):
+            client.select_tool(context_text="x" * 31_000, palette=ToolPalette(skills=()))

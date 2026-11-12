@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.request
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
@@ -758,8 +759,10 @@ def _prompt_tokens(response: object) -> int | None:
 # a server that reports fewer than one token per this many request characters did
 # not read the whole request. 4 catches Ollama's 4096 default under a 9K prompt and
 # a 20K prompt cut to 16384, with ~18% headroom over the measured ratio.
-# ponytail: a cut of under ~15% (a 9.2K prompt in an 8K window) still passes; a
-# server-reported window (Ollama's /api/show) would close that.
+# Text that packs denser than that (long repeated runs measured ~8 characters per
+# token) is not refused when the window Ollama reports (``/api/ps``) holds the
+# request at this ratio. ponytail: a cut of under ~15% (a 9.2K prompt in an 8K
+# window) still passes.
 _MAX_CHARS_PER_PROMPT_TOKEN: float = 4.0
 
 
@@ -767,8 +770,33 @@ _MAX_CHARS_PER_PROMPT_TOKEN: float = 4.0
 _OLLAMA_FINGERPRINT: str = "fp_ollama"
 
 
+def _ollama_context_length(base_url: str | None, model_id: str) -> int | None:
+    """The context window Ollama loaded ``model_id`` with (``GET /api/ps``), or ``None``.
+
+    ``base_url`` is the OpenAI-compatible root (``…/v1``); the native API sits
+    beside it. ``None`` when the server, the model or the field is missing.
+    """
+    if not base_url:
+        return None
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        # The configured reasoner endpoint, never a user-supplied URL.
+        with urllib.request.urlopen(f"{root}/api/ps", timeout=2.0) as reply:
+            models = json.load(reply).get("models", [])
+    except (OSError, ValueError):
+        return None
+    for entry in models:
+        if (
+            model_id in (entry.get("name"), entry.get("model"))
+            or entry.get("name") == f"{model_id}:latest"
+        ):
+            length = entry.get("context_length")
+            return length if isinstance(length, int) and length > 0 else None
+    return None
+
+
 def _truncation_error(
-    response: object, request: list[object], *, model_id: str
+    response: object, request: list[object], *, model_id: str, base_url: str | None = None
 ) -> ROSPlanningError | None:
     """The error for an Ollama server that read far fewer prompt tokens than ``request`` holds.
 
@@ -783,7 +811,9 @@ def _truncation_error(
 
     Returns:
         A ``ROSPlanningError`` when the reply's prompt tokens are under one per
-        ``_MAX_CHARS_PER_PROMPT_TOKEN`` characters of ``request``, else ``None``.
+        ``_MAX_CHARS_PER_PROMPT_TOKEN`` characters of ``request`` and the window
+        Ollama reports for the model (when it reports one) is too small to hold
+        ``request`` at that ratio, else ``None``.
     """
     prompt_tokens = _prompt_tokens(response)
     if getattr(response, "system_fingerprint", None) != _OLLAMA_FINGERPRINT or not prompt_tokens:
@@ -791,6 +821,9 @@ def _truncation_error(
     chars = len(json.dumps(request, ensure_ascii=False))  # escapes would inflate the count
     if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
         return None
+    window = _ollama_context_length(base_url, model_id)
+    if window is not None and window * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
+        return None  # dense text in a window that holds it: read whole
     return ROSPlanningError(
         f"the endpoint read {prompt_tokens} prompt tokens of a {chars}-character request to "
         f"{model_id!r}: it cut the prompt to fit the model's context window. On Ollama, start "
@@ -2256,7 +2289,9 @@ class OpenAICompatibleToolUseClient:
         try:
             choices, response = self._complete(client, messages, tools)
             prompt_tokens = _prompt_tokens(response)
-            truncated = _truncation_error(response, [messages, tools], model_id=self.model_id)
+            truncated = _truncation_error(
+                response, [messages, tools], model_id=self.model_id, base_url=self._base_url
+            )
             if truncated is None and (
                 not _openai_tool_calls(choices)
                 and self._tool_choice != "required"
@@ -2267,7 +2302,9 @@ class OpenAICompatibleToolUseClient:
                 messages.append({"role": "user", "content": _NO_TOOL_CALL_NUDGE})
                 choices, response = self._complete(client, messages, tools)
                 prompt_tokens = _sum_prompt_tokens(prompt_tokens, _prompt_tokens(response))
-                truncated = _truncation_error(response, [messages, tools], model_id=self.model_id)
+                truncated = _truncation_error(
+                    response, [messages, tools], model_id=self.model_id, base_url=self._base_url
+                )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
         self.last_prompt_tokens = prompt_tokens

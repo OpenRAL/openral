@@ -478,8 +478,9 @@ the daemon with `OLLAMA_CONTEXT_LENGTH=32768` (`just bootstrap-ollama` sets it o
 the daemon it starts and on the systemd unit of an Ollama it installs; an
 existing systemd install: `sudo systemctl edit ollama` →
 `Environment=OLLAMA_CONTEXT_LENGTH=32768`). The
-client compares the prompt tokens Ollama reports with the request it sent and
-fails the tick (`ROSPlanningError: … cut the prompt to fit`) rather than act
+client compares the prompt tokens Ollama reports with the request it sent
+(confirming a suspected cut against the window `/api/ps` reports, so densely
+packed text that fits is not refused) and fails the tick (`ROSPlanningError: … cut the prompt to fit`) rather than act
 on a truncated prompt.
 
 Ollama ignores `tool_choice`

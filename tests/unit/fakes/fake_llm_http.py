@@ -212,16 +212,21 @@ class FakeLLMServer:
     ``/responses`` under ``openai_base_url`` (``base_url + "/v1"``).
 
     Args:
-        replies: ``(status, json_body)`` pairs, consumed one per request.
+        replies: ``(status, json_body)`` pairs, consumed one per POST.
+        get_bodies: JSON bodies served (200) on GET by path, e.g. Ollama's
+            ``/api/ps``; any other GET is a 404.
 
     Attributes:
         requests: Every request body received, in order.
         paths: The request path of every request, in order.
     """
 
-    def __init__(self, replies: list[Reply]) -> None:
+    def __init__(
+        self, replies: list[Reply], *, get_bodies: dict[str, dict[str, Any]] | None = None
+    ) -> None:
         """Bind an ephemeral loopback port; serving starts on ``__enter__``."""
         self._replies: deque[Reply] = deque(replies)
+        self._get_bodies = dict(get_bodies or {})
         self.requests: list[dict[str, Any]] = []
         self.paths: list[str] = []
         server = self
@@ -237,6 +242,15 @@ class FakeLLMServer:
                     status, body = 500, {"error": {"message": "fake LLM: no scripted reply left"}}
                 payload = json.dumps(body).encode()
                 self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self) -> None:
+                body = server._get_bodies.get(self.path)
+                payload = json.dumps(body if body is not None else {"error": "not found"}).encode()
+                self.send_response(200 if body is not None else 404)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()
