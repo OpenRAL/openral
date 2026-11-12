@@ -30,6 +30,7 @@ from typing import Literal
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_MAX_SUBDIVIDE_DEPTH",
+    "DEFAULT_MAX_TASK_DISPATCHES",
     "DEFAULT_MAX_TASK_LOCATE_ATTEMPTS",
     "MissionState",
     "TaskLocateBudget",
@@ -47,7 +48,20 @@ success_threshold), ``vlm_check`` (ambiguous band — caller must adjudicate via
 keep the task active)."""
 
 DEFAULT_MAX_ATTEMPTS: int = 3
-"""Default per-task attempt cap before the reward gate abandons + hands off."""
+"""Default per-task attempt cap before the reward gate abandons + hands off.
+
+With no reward monitor it counts *failed* dispatches only (``TaskState.failures``):
+a success nobody can judge is not evidence the task failed, so a multi-skill task
+whose steps all succeed is not abandoned after three of them (#562)."""
+
+DEFAULT_MAX_TASK_DISPATCHES: int = 10
+"""Hard per-task bound on dispatches of any outcome (#562).
+
+Terminates the loop the failure-only cap cannot see: a task whose dispatches
+keep succeeding but which nothing ever completes (no reward monitor, or a
+``final_step=False`` step skill re-sent forever) is abandoned here through the
+usual abandon path (one subdivision offer, then hand-off). Sized for a few
+one-skill steps (navigate, pick, place) plus their retries."""
 
 DEFAULT_MAX_SUBDIVIDE_DEPTH: int = 2
 """Max re-decomposition depth (#123).
@@ -251,6 +265,9 @@ class TaskState:
         status: Lifecycle position (``TaskStatus``).
         attempts: Number of ``execute_rskill`` dispatches made for this task —
             the loop guard for the replanning ladder.
+        failures: How many of those dispatches came back failed (aborted, or
+            cancelled on patience / reward). With no reward monitor this, not
+            ``attempts``, is what ``DEFAULT_MAX_ATTEMPTS`` caps.
         last_rskill_id: rSkill id of the most recent attempt, or ``None``.
         tried_rskill_ids: Every rSkill id dispatched for this task, in first-try
             order. A task still active after a skill ran was not finished by it,
@@ -269,6 +286,7 @@ class TaskState:
     text: str
     status: TaskStatus = "pending"
     attempts: int = 0
+    failures: int = 0
     last_rskill_id: str | None = None
     tried_rskill_ids: tuple[str, ...] = ()
     last_trace_id: str | None = None
@@ -511,6 +529,7 @@ class MissionState:
                     "text": t.text,
                     "status": t.status,
                     "attempts": t.attempts,
+                    "failures": t.failures,
                     "last_rskill_id": t.last_rskill_id,
                     "tried_rskill_ids": list(t.tried_rskill_ids),
                     "last_trace_id": t.last_trace_id,
@@ -537,6 +556,7 @@ class MissionState:
                     text=str(raw["text"]),
                     status=raw["status"],  # validated against the Literal set below
                     attempts=int(raw.get("attempts", 0)),
+                    failures=int(raw.get("failures", 0)),
                     last_rskill_id=raw.get("last_rskill_id"),
                     tried_rskill_ids=tuple(str(i) for i in raw.get("tried_rskill_ids") or ()),
                     last_trace_id=raw.get("last_trace_id"),

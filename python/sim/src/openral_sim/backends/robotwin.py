@@ -54,6 +54,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim._sidecar_common import (
     ensure_pip_venv,
     ensure_source,
+    require_pinned_head,
     run_cmd,
     sidecar_port_for_key,
 )
@@ -90,8 +91,9 @@ _AUTO_PROVISION_ENV = "OPENRAL_ROBOTWIN_AUTO_PROVISION"
 _ROBOTWIN_SIDECAR_HOME = Path.home() / ".cache" / "openral" / "robotwin-sidecar"
 _ROBOTWIN_PYTHON = "3.12"
 _ROBOTWIN_REPO = "https://github.com/RoboTwin-Platform/RoboTwin.git"
-# Pinned upstream commit for a fresh clone (``ensure_source``; its asset script
-# runs on the host): "Merge pull request #502", 2026-09-22.
+# Pinned upstream commit of the provisioned checkout, fresh or reused (``ensure_source``
+# + ``require_pinned_head``; its asset script runs on the host): "Merge pull request
+# #502", 2026-09-22.
 _ROBOTWIN_SHA = "ee3d076fb61c4542e9be6c16f3af5ecd67d4a6f7"
 # LeRobot 0.6.0 ships `lerobot.envs.robotwin` and supports the workspace's Python
 # 3.12. The RoboTwin checkout is still needed as task package + asset root.
@@ -262,8 +264,11 @@ def _provision_robotwin_venv() -> Path:
     provisioning order so it reuses an existing venv + sentinel. Returns the venv
     python (``<home>/.venv/bin/python``).
 
-    Also clones RoboTwin and downloads its object assets into the default root so
-    the strict verifier can run the live env instead of skipping on a half-provision.
+    Also fetches RoboTwin at ``_ROBOTWIN_SHA`` into the default root (verifying a
+    reused root against the pin) and downloads its object assets, so the strict
+    verifier can run the live env instead of skipping on a half-provision. An
+    ``OPENRAL_ROBOTWIN_ROOT`` pointing elsewhere is the operator's own checkout and
+    is left untouched.
     """
 
     def _install(uv: str, py: Path) -> None:
@@ -307,17 +312,44 @@ def _provision_robotwin_venv() -> Path:
         # Keyed on the pins so editing them repairs an already-provisioned venv.
         spec=(*_ROBOTWIN_BASE_DEPS, *_ROBOTWIN_MPLIB_DEPS),
     )
-    root = _ROBOTWIN_SIDECAR_HOME / "RoboTwin"
-    if not root.is_dir():
-        source = ensure_source(
-            "robotwin-assets", _ROBOTWIN_SIDECAR_HOME, _ROBOTWIN_REPO, _ROBOTWIN_SHA
-        )
-        source.rename(root)
+    if not _is_managed_root(_robotwin_root_path()):
+        # The operator's own checkout: theirs to pin, never cloned, patched or verified here.
+        return py
+    root = _ensure_robotwin_checkout(_ROBOTWIN_SIDECAR_HOME)
     _patch_robotwin_checkout(root)
     assets = root / "assets" / "objects" / "objaverse" / "list.json"
     if not assets.is_file():
         run_cmd("robotwin-assets", ["bash", _download_assets_script(root)], cwd=root)
     return py
+
+
+def _ensure_robotwin_checkout(
+    home: Path, repo: str = _ROBOTWIN_REPO, sha: str = _ROBOTWIN_SHA
+) -> Path:
+    """Return ``<home>/RoboTwin`` at commit ``sha``, fetching it on first use.
+
+    Fresh or reused, the checkout must be the pin (its asset script runs on this
+    host): anything else raises ``ROSConfigError`` with the delete-to-refetch hint.
+    """
+    root = home / "RoboTwin"
+    try:
+        if not root.is_dir():
+            ensure_source("robotwin-assets", home, repo, sha).rename(root)
+        require_pinned_head("robotwin-assets", root, sha)
+    except SystemExit as exc:
+        raise ROSConfigError(str(exc)) from exc
+    return root
+
+
+def _robotwin_root_path() -> Path:
+    """The configured RoboTwin root: ``OPENRAL_ROBOTWIN_ROOT``, else the managed default."""
+    override = os.environ.get(_ROBOTWIN_ROOT_ENV)
+    return Path(override).expanduser() if override else _ROBOTWIN_SIDECAR_HOME / "RoboTwin"
+
+
+def _is_managed_root(root: Path) -> bool:
+    """Whether ``root`` is the provisioned ``<sidecar home>/RoboTwin`` (however it is named)."""
+    return root.resolve() == (_ROBOTWIN_SIDECAR_HOME / "RoboTwin").resolve()
 
 
 def _download_assets_script(root: Path) -> str:
@@ -368,6 +400,7 @@ def _sidecar_python() -> Path:
         "  uv pip install --python ~/.cache/openral/robotwin-sidecar/.venv/bin/python "
         "lerobot==0.6.0 sapien mplib pyzmq msgpack\n"
         "  git clone https://github.com/RoboTwin-Platform/RoboTwin.git\n"
+        f"  git -C RoboTwin checkout {_ROBOTWIN_SHA}  # the tested pin\n"
         "  cd RoboTwin && bash scripts/_download_assets.sh\n"
         f"  export {_ROBOTWIN_ROOT_ENV}=$(pwd)  # checkout + assets path for the sidecar\n"
         "  export OPENRAL_ROBOTWIN_SIDECAR_PYTHON=$(which python)"
@@ -401,8 +434,7 @@ def _robotwin_root() -> Path:
     Pass the checkout root explicitly so the sidecar can chdir and add it to
     ``sys.path`` before LeRobot imports the task package.
     """
-    override = os.environ.get(_ROBOTWIN_ROOT_ENV)
-    root = Path(override).expanduser() if override else _ROBOTWIN_SIDECAR_HOME / "RoboTwin"
+    root = _robotwin_root_path()
     if not root.is_dir():
         raise ROSConfigError(
             "RoboTwin checkout not found. Clone https://github.com/RoboTwin-Platform/RoboTwin "
@@ -414,6 +446,10 @@ def _robotwin_root() -> Path:
             f"RoboTwin assets not found at {assets}. Run scripts/_download_assets.sh in "
             f"the RoboTwin checkout, then set {_ROBOTWIN_ROOT_ENV}={root}."
         )
+    if _is_managed_root(root):
+        # The sidecar imports this checkout's code: the provisioned one must be the pin
+        # on every launch, not only when it was (re)provisioned.
+        _ensure_robotwin_checkout(_ROBOTWIN_SIDECAR_HOME, _ROBOTWIN_REPO, _ROBOTWIN_SHA)
     return root.resolve()
 
 

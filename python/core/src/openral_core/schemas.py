@@ -15832,6 +15832,12 @@ class ExecuteRskillTool(_ReasonerToolBase):
             search box at dispatch, or refuses the goal. ``None`` (the normal case)
             = no dispatch place declaration; the real producer still measures the
             surface under the carried payload.
+        final_step: ``False`` when this goal is only one step of the active
+            mission task and more skills must follow (drive to the kitchen, then
+            pick the cup there). A skill whose own success completes its task
+            (``RosIntegration.completes_task_on_success``) then completes only
+            this step: the task stays active. Default ``True`` keeps the
+            single-step task (``drive to x=4``) completing on that success.
     """
 
     tool: Literal["execute_rskill"] = "execute_rskill"
@@ -15885,6 +15891,14 @@ class ExecuteRskillTool(_ReasonerToolBase):
             "when memory has it); naming it arms nothing by itself, and a hint perception "
             "cannot ground REFUSES the goal rather than placing anywhere, so omit it unless "
             "you can name a surface perception sees."
+        ),
+    )
+    final_step: bool = Field(
+        default=True,
+        description=(
+            "False when this goal is only one step of the active task and other skills must "
+            "still run after it (e.g. drive to the kitchen, then pick the cup there): its "
+            "success then completes only this step, not the task. True when it finishes the task."
         ),
     )
 

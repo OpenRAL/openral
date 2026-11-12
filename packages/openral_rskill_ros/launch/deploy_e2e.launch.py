@@ -50,6 +50,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
+import structlog
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -2215,10 +2216,14 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
 
     scope = require_host_confined_ros_scope(env)
     if scope is not None:
-        print(
-            f"[deploy_e2e] WARNING: real robot on a networked ROS graph ({scope}); "
-            f"every host on this network can command the robot.",
-            flush=True,
+        # The one emitter per deploy: `openral deploy run` scopes its env twice
+        # (orphan reap + launch env) and logs neither time (#558).
+        structlog.get_logger("deploy_e2e").warning(
+            "deploy_e2e.real_robot_graph_networked",
+            scope=scope,
+            hal_mode=hal_mode,
+            opt_in="OPENRAL_ALLOW_NETWORK_ROS",
+            hazard="every host on this network can command the robot",
         )
 
 

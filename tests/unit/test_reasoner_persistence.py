@@ -27,6 +27,7 @@ def _worked_mission() -> MissionState:
     assert child is not None and child.task_id == "t2.1"
     mission.record_attempt(rskill_id="openral/rskill-b")
     mission.record_attempt(rskill_id="openral/rskill-b")
+    child.failures = 1
     return mission
 
 
@@ -56,6 +57,7 @@ def test_round_trip_resumes_exactly(tmp_path: pathlib.Path) -> None:
         ("t2.1", "active", 2, 1),
         ("t2.2", "pending", 0, 1),
     ]
+    assert tasks[1].failures == 1, "the no-verifier attempt cap counts failures (#562)"
     assert tasks[0].last_verdict == "progress=0.91"
     assert tasks[0].last_trace_id == "00-abc"
     active = restored.mission.active()
@@ -135,6 +137,7 @@ def test_invalid_mission_loads_as_none(tmp_path: pathlib.Path) -> None:
             ]
         },
         {"tasks": [{"task_id": "t1", "text": "x", "status": "active", "attempts": -1}]},
+        {"tasks": [{"task_id": "t1", "text": "x", "status": "active", "failures": -1}]},
     )
     for mission in invalid_missions:
         path.write_text(json.dumps(valid | {"mission": mission}), encoding="utf-8")

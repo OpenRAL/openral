@@ -71,7 +71,11 @@ class ReasonerLadderState(BaseModel):
             if len({task.task_id for task in tasks}) != len(tasks):
                 raise ValueError("invalid mission snapshot: duplicate task ids")
             if any(
-                not task.task_id or not task.text.strip() or task.attempts < 0 or task.depth < 0
+                not task.task_id
+                or not task.text.strip()
+                or task.attempts < 0
+                or task.failures < 0
+                or task.depth < 0
                 for task in tasks
             ):
                 raise ValueError("invalid mission snapshot: invalid task fields")
