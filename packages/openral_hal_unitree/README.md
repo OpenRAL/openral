@@ -175,7 +175,9 @@ Build-time network fetches you should know about:
    `robot_id: g1` — it includes this launch through `hal.real_bringup`), or the graph
    alone to check wiring, under the OpenRAL venv interpreter (the launch imports
    `openral_hal`, which `/opt/ros`'s system Python cannot see):
-   `.venv/bin/python "$(command -v ros2)" launch openral_hal_unitree real_bringup.launch.py`.
+   `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python "$(command -v ros2)" launch openral_hal_unitree real_bringup.launch.py`
+   (it refuses an unset or `SUBNET` range — what `setup.bash` exports — unless
+   `OPENRAL_ALLOW_NETWORK_ROS=1` under SROS2 Enforce, ADR-0130; see `docs/reference/ros-graph-security.md`).
    Never both: two graphs
    double-publish `/joint_states` and `deploy run` refuses to start.
 4. **Verify.** `ros2 control list_controllers` → broadcasters, `safety_controller`,

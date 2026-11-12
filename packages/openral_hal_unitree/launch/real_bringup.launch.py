@@ -36,6 +36,12 @@ runs ``ros2 param set /safety_controller blend_ratio 1.0``. Activating the hardw
 interface also releases Unitree's built-in locomotion service (``MotionSwitcherClient``
 ``ReleaseMode``), so the robot must be supported before this launch starts.
 
+**Host-confined graph first.** Before composing any node the launch applies
+``openral_core.ros_graph_scope.require_host_confined_real_bringup`` to its environment: an unset or
+``SUBNET`` ``ROS_AUTOMATIC_DISCOVERY_RANGE`` is refused unless ``OPENRAL_ALLOW_NETWORK_ROS=1``
+under SROS2 Enforce (ADR-0130), and an opted-in scope is logged on a hand run; export ``LOCALHOST``
+for a hand run.
+
 ``deploy run`` includes this file through ``hal.real_bringup`` with no arguments, so every
 default must be right for the robot; the one host fact, the NIC wired to the robot, comes
 from ``$OPENRAL_UNITREE_NETWORK_INTERFACE`` (default ``eth0``).
@@ -44,7 +50,7 @@ Usage (under the OpenRAL venv interpreter — this file imports ``openral_hal``,
 bare ``ros2 launch`` running ``/opt/ros``'s system Python cannot see; ``openral deploy
 run`` does this for you)::
 
-    OPENRAL_UNITREE_NETWORK_INTERFACE=enp3s0 \
+    OPENRAL_UNITREE_NETWORK_INTERFACE=enp3s0 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
         .venv/bin/python "$(command -v ros2)" launch openral_hal_unitree \
         real_bringup.launch.py robot_model:=g1 policy:=gr00t_decoupled_wbc
 """
@@ -60,6 +66,7 @@ import yaml
 
 try:
     from openral_core.exceptions import ROSConfigError
+    from openral_core.ros_graph_scope import require_host_confined_real_bringup
     from openral_core.ros_security import ENCLAVE_OVERRIDE_ENV as _ENCLAVE_OVERRIDE
     from openral_hal.unitree_s0_policy import (
         load_s0_policy,
@@ -71,9 +78,10 @@ except ImportError as exc:  # pragma: no cover - only under a non-venv interpret
     # does not see the OpenRAL venv. `openral deploy run` already runs the launch
     # under the venv interpreter (openral_cli.deploy_sim._ros2_argv_head).
     raise ImportError(
-        "openral_hal_unitree real_bringup.launch.py needs the OpenRAL venv: run it via "
-        '`openral deploy run`, or `.venv/bin/python "$(command -v ros2)" launch '
-        "openral_hal_unitree real_bringup.launch.py` from the repo root."
+        f"openral_hal_unitree real_bringup.launch.py needs the OpenRAL venv with a current "
+        f"openral_core / openral_hal ({exc}): run it via `openral deploy run`, or "
+        f'`.venv/bin/python "$(command -v ros2)" launch openral_hal_unitree '
+        f"real_bringup.launch.py` from the repo root."
     ) from exc
 
 if TYPE_CHECKING:  # pragma: no cover - launch is a ROS-only dep
@@ -120,6 +128,11 @@ def _launch_setup(context: LaunchContext) -> list[Any]:
     from launch_ros.actions import Node
     from launch_ros.descriptions import ParameterValue
 
+    # Before any node is composed: a hand-run bringup on SUBNET would put the G1 on the
+    # LAN graph (issue #556).
+    require_host_confined_real_bringup(
+        _PACKAGE, os.environ, included_by_deploy="hal_mode" in context.launch_configurations
+    )
     robot_model = context.perform_substitution(_config("robot_model"))
     if robot_model not in _ROBOT_MODELS:
         raise ROSConfigError(

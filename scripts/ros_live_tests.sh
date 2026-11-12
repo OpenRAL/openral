@@ -318,6 +318,7 @@ ISOLATED_TARGETS=(
     tests/integration/test_object_tracker_node_live.py
     tests/integration/test_object_tracking_kernel_live.py
     tests/integration/test_panda_mobile_hal_lifecycle.py
+    tests/integration/test_real_bringup_graph_gate_live.py
     tests/integration/test_real_hal_estop_ros2_control_live.py
     tests/integration/test_record_profile_full_live.py
     tests/integration/test_sim_idle_stepper_wiring.py
