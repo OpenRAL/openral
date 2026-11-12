@@ -200,42 +200,42 @@ _Reusable, robot-agnostic depth-camera → `sensor_msgs/PointCloud2` plumbing fo
 ### `python/hal/src/openral_hal/aloha.py`
 _HAL adapter for the Trossen ALOHA bimanual setup, plus the MuJoCo digital twin._
 
-- `class AlohaHAL(HALBase)` — Real-hardware adapter for the 14-DoF ALOHA over the Interbotix XS SDK. Takes `description=` (loaded manifest; `None` → `ALOHA_REAL_DESCRIPTION`). Stays on `HALBase`, not `RosControlHAL`: the driver owns the bus, like `SO100FollowerHAL`. Emits the `xs_sdk` command contract (#250): per arm, a `JointGroupCommand` payload `{name: arm_group, cmd: [6]}` on `/<ns>/commands/joint_group` and a `JointSingleCommand` payload `{name: gripper_name, cmd}` on `/<ns>/commands/joint_single`. No production transport carries them yet, so `connect()` raises `ROSConfigError` unless both `publish_fn` and `state_fn` are injected — a `build_hal(mode="real")` ALOHA refuses instead of reporting success and moving nothing. Defaults are stock Interbotix values, not read off a cell (#250 stays open for the rig check, the per-namespace state merge and the transport). Its **e-stop** targets the same `xs_sdk` nodes: `estop_recovery = RESTART_REQUIRED`, and `estop()` cuts torque on every arm namespace through an attached `InterbotixStopSeam`. (L445)
-  - `__init__(*, arm_group='arm', gripper_name='gripper', gripper_cmd_range=(0.6197, 1.6214), joint_state_topic='/joint_states', arm_namespaces=('follower_left', 'follower_right'), publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0, description=None)` — `arm_namespaces` must be exactly two distinct names (a bare `str` is refused); `gripper_cmd_range` is the `(closed, open)` calibration the normalised `[0, 1]` gripper maps onto (default: upstream `aloha/constants.py` `FOLLOWER_GRIPPER_JOINT_{CLOSE,OPEN}`, valid in `current_based_position` mode). The four `*_controller` kwargs are gone (breaking). `staleness_limit_s=None` reads the manifest's window (0.2 s, formerly a code-only default). — The former `estop_topic` (`/aloha/estop`, a broadcast for a watchdog node that does not exist in this repo) is gone; `arm_namespaces` names the `xs_sdk` robots the stop torques off. (L522)
-  - `arm_namespaces() -> list[str]` — The `xs_sdk` robot namespaces the stop torques off; the `InterbotixStoppable` surface the lifecycle node reflects on. (L574)
-  - `attach_torque_stop(seam) -> None` — Bind the `InterbotixStopSeam` after construction (`build_hal` runs before any ROS node exists); rejects a non-seam with `ROSConfigError`. (L578)
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` — The `DownstreamStopReporting` surface the lifecycle heartbeat and FATAL log read. (L592)
-  - `connect() -> None` — `ROSConfigError` without an injected `publish_fn` / `state_fn` (#250). (L598)
-  - `read_state() -> JointState` (L632)
-  - `send_action(action) -> None` — Sends `joint_targets[0]` (both messages hold one target) as four payloads: arm `0:6` / `7:13` on each `joint_group`, gripper `6` / `13` mapped onto `gripper_cmd_range` on each `joint_single`. (L659)
-  - `estop() -> None` — Drop the connection flag first, then `torque_enable(cmd_type='group', name='all', enable=false)` on every arm namespace (each attempted even if an earlier one refused), record a `DownstreamStopReport` (`stopped` only when every arm acknowledged; `controller_states` per arm `torque_off` / `torque_unknown`), raise `ROSEStopRequested`. Torque off leaves the ViperX arms limp (no brakes) — the same outcome as the rig's hardware e-stop and the only stop `xs_sdk` offers. (L707)
+- `class AlohaHAL(HALBase)` — Real-hardware adapter for the 14-DoF ALOHA over the Interbotix XS SDK. Takes `description=` (loaded manifest; `None` → `ALOHA_REAL_DESCRIPTION`). Stays on `HALBase`, not `RosControlHAL`: the driver owns the bus, like `SO100FollowerHAL`. Emits the `xs_sdk` command contract (#250): per arm, a `JointGroupCommand` payload `{name: arm_group, cmd: [6]}` on `/<ns>/commands/joint_group` and a `JointSingleCommand` payload `{name: gripper_name, cmd}` on `/<ns>/commands/joint_single`. No production transport carries them yet, so `connect()` raises `ROSConfigError` unless both `publish_fn` and `state_fn` are injected — a `build_hal(mode="real")` ALOHA refuses instead of reporting success and moving nothing. Defaults are stock Interbotix values, not read off a cell (#250 stays open for the rig check, the per-namespace state merge and the transport). Its **e-stop** targets the same `xs_sdk` nodes: `estop_recovery = RESTART_REQUIRED`, and `estop()` cuts torque on every arm namespace through an attached `InterbotixStopSeam`. (L446)
+  - `__init__(*, arm_group='arm', gripper_name='gripper', gripper_cmd_range=(0.6197, 1.6214), joint_state_topic='/joint_states', arm_namespaces=('follower_left', 'follower_right'), publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0, description=None)` — `arm_namespaces` must be exactly two distinct names (a bare `str` is refused); `gripper_cmd_range` is the `(closed, open)` calibration the normalised `[0, 1]` gripper maps onto (default: upstream `aloha/constants.py` `FOLLOWER_GRIPPER_JOINT_{CLOSE,OPEN}`, valid in `current_based_position` mode). The four `*_controller` kwargs are gone (breaking). `staleness_limit_s=None` reads the manifest's window (0.2 s, formerly a code-only default). — The former `estop_topic` (`/aloha/estop`, a broadcast for a watchdog node that does not exist in this repo) is gone; `arm_namespaces` names the `xs_sdk` robots the stop torques off. (L523)
+  - `arm_namespaces() -> list[str]` — The `xs_sdk` robot namespaces the stop torques off; the `InterbotixStoppable` surface the lifecycle node reflects on. (L581)
+  - `attach_torque_stop(seam) -> None` — Bind the `InterbotixStopSeam` after construction (`build_hal` runs before any ROS node exists); rejects a non-seam with `ROSConfigError`. (L585)
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` — The `DownstreamStopReporting` surface the lifecycle heartbeat and FATAL log read. (L599)
+  - `connect() -> None` — `ROSConfigError` without an injected `publish_fn` / `state_fn` (#250). (L605)
+  - `read_state() -> JointState` (L639)
+  - `send_action(action) -> None` — Sends `joint_targets[0]` (both messages hold one target) as four payloads: arm `0:6` / `7:13` on each `joint_group`, gripper `6` / `13` mapped onto `gripper_cmd_range` on each `joint_single`. (L666)
+  - `estop() -> None` — Drop the connection flag first, then `torque_enable(cmd_type='group', name='all', enable=false)` on every arm namespace (each attempted even if an earlier one refused), record a `DownstreamStopReport` (`stopped` only when every arm acknowledged; `controller_states` per arm `torque_off` / `torque_unknown`), raise `ROSEStopRequested`. Torque off leaves the ViperX arms limp (no brakes) — the same outcome as the rig's hardware e-stop and the only stop `xs_sdk` offers. (L721)
   - private: `_require_connected`, `_cut_torque`
-- `class InterbotixStopSeam(Protocol)` — `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport`; production `InterbotixXSTransport`, unit lane `SimTorqueSeam`. (L417)
-  - `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` — `/<robot_name>/torque_enable` with `cmd_type='group'`; `success` is the call completing. (L425)
-- `class InterbotixStoppable(Protocol)` — `arm_namespaces()` + `attach_torque_stop(seam)`; what the lifecycle node's `_attach_interbotix_transport` reflects on. (L433)
-  - `arm_namespaces() -> list[str]` (L436)
-  - `attach_torque_stop(seam) -> None` (L440)
-- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two grippers on a normalized `[0, 1]` channel (0 closed, 1 open; `NORMALISED` writes, `AFFINE_LOW_HIGH` reads, mapped onto the finger range `[0.021, 0.057]` m) with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside that range). (L781)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L819)
-- `_aloha_joint_specs() -> list[JointSpec]` (L177)
-- module const `_ALOHA_LEFT_ARM_JOINTS: tuple[str, ...]` (L122) — left-arm joint names, ViperX 300 order.
-- module const `_ALOHA_LEFT_GRIPPER_JOINT: str` (L130) — left gripper joint name.
-- module const `_ALOHA_RIGHT_ARM_JOINTS: tuple[str, ...]` (L131) — right-arm joint names.
-- module const `_ALOHA_RIGHT_GRIPPER_JOINT: str` (L139) — right gripper joint name.
-- module const `_ALOHA_JOINT_NAMES: tuple[str, ...]` (L141) — full 14-DoF joint order: left arm + left gripper + right arm + right gripper.
-- module const `_PI: float = 3.14159` (L153) — truncated π matching the YAML manifest's string form, used by `_ALOHA_ARM_POSITION_LIMITS` so the manifest-vs-HAL drift guard stays byte-equal.
-- module const `_ALOHA_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L154) — per-joint-group position limits from the ViperX 300 data sheet.
-- module const `_ALOHA_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L166)
-- module const `_ALOHA_ARM_AXIS: dict[str, tuple[float, float, float]]` (L167) — per-joint-group rotation axis.
+- `class InterbotixStopSeam(Protocol)` — `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport`; production `InterbotixXSTransport`, unit lane `SimTorqueSeam`. (L418)
+  - `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` — `/<robot_name>/torque_enable` with `cmd_type='group'`; `success` is the call completing. (L426)
+- `class InterbotixStoppable(Protocol)` — `arm_namespaces()` + `attach_torque_stop(seam)`; what the lifecycle node's `_attach_interbotix_transport` reflects on. (L434)
+  - `arm_namespaces() -> list[str]` (L437)
+  - `attach_torque_stop(seam) -> None` (L441)
+- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two grippers on a normalized `[0, 1]` channel (0 closed, 1 open; `NORMALISED` writes, `AFFINE_LOW_HIGH` reads, mapped onto the finger range `[0.021, 0.057]` m) with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside that range). (L795)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L833)
+- `_aloha_joint_specs() -> list[JointSpec]` (L178)
+- module const `_ALOHA_LEFT_ARM_JOINTS: tuple[str, ...]` (L123) — left-arm joint names, ViperX 300 order.
+- module const `_ALOHA_LEFT_GRIPPER_JOINT: str` (L131) — left gripper joint name.
+- module const `_ALOHA_RIGHT_ARM_JOINTS: tuple[str, ...]` (L132) — right-arm joint names.
+- module const `_ALOHA_RIGHT_GRIPPER_JOINT: str` (L140) — right gripper joint name.
+- module const `_ALOHA_JOINT_NAMES: tuple[str, ...]` (L142) — full 14-DoF joint order: left arm + left gripper + right arm + right gripper.
+- module const `_PI: float = 3.14159` (L154) — truncated π matching the YAML manifest's string form, used by `_ALOHA_ARM_POSITION_LIMITS` so the manifest-vs-HAL drift guard stays byte-equal.
+- module const `_ALOHA_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L155) — per-joint-group position limits from the ViperX 300 data sheet.
+- module const `_ALOHA_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L167)
+- module const `_ALOHA_ARM_AXIS: dict[str, tuple[float, float, float]]` (L168) — per-joint-group rotation axis.
 - module const `_ALOHA_ARM_COUNT: int` — a real ALOHA is bimanual: exactly two follower namespaces (#250).
 - module const `_DEFAULT_ARM_GROUP: str` — `xs_sdk` motor group receiving the 6-DoF arm commands (`JointGroupCommand.name`, #250).
 - module const `_DEFAULT_GRIPPER_NAME: str` — `xs_sdk` single motor receiving the gripper (`JointSingleCommand.name`; stock ALOHA lists `gripper` under `singles:`, #250).
 - module const `_DEFAULT_GRIPPER_CMD_RANGE: tuple[float, float]` — `(0.6197, 1.6214)`, upstream ALOHA's follower gripper joint close/open.
-- module const `_DEFAULT_ALOHA_JOINT_STATE_TOPIC: str` (L401) — `/joint_states`, reported only; `xs_sdk` publishes `/<ns>/joint_states` per arm and the merge is still open (#250).
-- module const `_DEFAULT_ALOHA_ARM_NAMESPACES: tuple[str, str]` (L409) — the `xs_sdk` robot namespaces `estop` torques off (`follower_left`, `follower_right`).
-- module const `_TORQUE_GROUP_ALL = "all"` (L410) — the `TorqueEnable` group name covering every joint of one arm.
-- const `ALOHA_DESCRIPTION = RobotDescription(...)` (L221) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.aloha:AlohaMujocoHAL"` + `hal.real="openral_hal.aloha:AlohaHAL"`.
-- const `ALOHA_REAL_DESCRIPTION = make_real_description(ALOHA_DESCRIPTION, sdk_kind="closed_with_api")` (L368) — inherits the shared `hal`; what `robots/aloha_bimanual/robot.yaml` mirrors.
+- module const `_DEFAULT_ALOHA_JOINT_STATE_TOPIC: str` (L402) — `/joint_states`, reported only; `xs_sdk` publishes `/<ns>/joint_states` per arm and the merge is still open (#250).
+- module const `_DEFAULT_ALOHA_ARM_NAMESPACES: tuple[str, str]` (L410) — the `xs_sdk` robot namespaces `estop` torques off (`follower_left`, `follower_right`).
+- module const `_TORQUE_GROUP_ALL = "all"` (L411) — the `TorqueEnable` group name covering every joint of one arm.
+- const `ALOHA_DESCRIPTION = RobotDescription(...)` (L222) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.aloha:AlohaMujocoHAL"` + `hal.real="openral_hal.aloha:AlohaHAL"`.
+- const `ALOHA_REAL_DESCRIPTION = make_real_description(ALOHA_DESCRIPTION, sdk_kind="closed_with_api")` (L369) — inherits the shared `hal`; what `robots/aloha_bimanual/robot.yaml` mirrors.
 
 ### `python/hal/src/openral_hal/ur.py`
 _HAL adapters for the Universal Robots UR5e and UR10e arms (sim, MuJoCo)._

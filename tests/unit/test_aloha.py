@@ -273,8 +273,33 @@ class TestSendActionSplit:
             hal.connect()
 
     def test_bad_gripper_range_rejected(self) -> None:
-        with pytest.raises(ROSConfigError, match="closed, open"):
-            AlohaHAL(gripper_cmd_range=(1.0,))
+        for bad in ((1.0,), (1.0, 1.0), (0.5, float("nan")), (float("inf"), 1.0)):
+            with pytest.raises(ROSConfigError, match="closed, open"):
+                AlohaHAL(gripper_cmd_range=bad)
+
+    def test_gripper_overshoot_is_clamped_to_the_calibrated_stops(
+        self, transport: SimTransport
+    ) -> None:
+        hal = AlohaHAL(
+            publish_fn=transport.publish, state_fn=transport.state, gripper_cmd_range=(0.5, 1.5)
+        )
+        targets = [0.0] * _N_JOINTS
+        targets[6], targets[13] = 1.3, -0.2
+        action = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[targets])
+        sent = _sent(hal, transport, action)
+        assert sent["/follower_left/commands/joint_single"]["cmd"] == pytest.approx(1.5)
+        assert sent["/follower_right/commands/joint_single"]["cmd"] == pytest.approx(0.5)
+
+    def test_non_finite_target_rejected(self, hal: AlohaHAL) -> None:
+        targets = [0.0] * _N_JOINTS
+        targets[13] = float("nan")
+        action = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[targets])
+        hal.connect()
+        try:
+            with pytest.raises(ROSConfigError, match="non-finite"):
+                hal.send_action(action)
+        finally:
+            hal.disconnect()
 
     def test_single_namespace_rejected(self) -> None:
         """One namespace would collide both arms onto one command topic."""
