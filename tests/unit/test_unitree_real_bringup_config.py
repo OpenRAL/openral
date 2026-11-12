@@ -105,7 +105,8 @@ def test_whole_body_controllers_cover_exactly_the_manifest_joints() -> None:
         )
 
 
-def test_every_declared_controller_type_is_an_upstream_plugin() -> None:
+def test_every_declared_controller_type_is_a_known_plugin() -> None:
+    """Upstream plugins, except safety_controller, which runs through OpenRAL's guard."""
     types_ = {
         name: spec["type"]
         for name, spec in _params(_yaml(_CONTROLLER_MANAGER), "controller_manager").items()
@@ -115,7 +116,7 @@ def test_every_declared_controller_type_is_an_upstream_plugin() -> None:
         "joint_state_broadcaster": "joint_state_broadcaster/JointStateBroadcaster",
         "imu_sensor_broadcaster": "imu_sensor_broadcaster/IMUSensorBroadcaster",
         "freeze_controller": "isaac_ros_deploy_ros2_control/FreezeController",
-        "safety_controller": "isaac_ros_deploy_ros2_control/SafetyController",
+        "safety_controller": "openral_hal_unitree/GuardedSafetyController",
         "inference_controller": "isaac_ros_deploy_ros2_control/InferenceController",
         "upper_body_forward_joint_command_controller": (
             "isaac_ros_deploy_ros2_control/ForwardJointCommandController"
@@ -134,6 +135,25 @@ def test_the_safety_controllers_emergency_handover_matches_the_hal_estop() -> No
 def test_the_policy_starts_blended_out() -> None:
     """Nothing in OpenRAL raises blend_ratio; the operator does, on the gantry."""
     assert _params(_yaml(_CONTROLLER_MANAGER), "safety_controller")["blend_ratio"] == 0.0
+
+
+def test_the_blend_ramp_is_within_the_guards_cap() -> None:
+    """GuardedSafetyController refuses to configure outside (0, 1.0] /s (issue #548)."""
+    speed = _params(_yaml(_CONTROLLER_MANAGER), "safety_controller")["max_blend_ratio_speed"]
+    assert 0.0 < speed <= 1.0
+
+
+def test_the_guarded_plugin_is_exported_under_the_configured_name() -> None:
+    """The type the YAML names must be the class the plugin XML exports, in a library
+    CMake builds; a mismatch is a controller that fails to load on the robot."""
+    xml = (_PKG / "openral_hal_unitree_controllers.xml").read_text(encoding="utf-8")
+    assert 'name="openral_hal_unitree/GuardedSafetyController"' in xml
+    assert 'type="openral_hal_unitree::GuardedSafetyController"' in xml
+    library = re.search(r'<library path="([^"]+)"', xml)
+    assert library is not None
+    cmake = (_PKG / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert f"add_library({library.group(1)} SHARED" in cmake
+    assert "controller_interface openral_hal_unitree_controllers.xml" in cmake
 
 
 def test_the_upper_body_controller_listens_where_the_hal_publishes() -> None:

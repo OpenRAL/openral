@@ -38,6 +38,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import time
@@ -104,20 +106,30 @@ _MIRRORED_PREFIXES: tuple[str, ...] = (
 _NODE = "openral_safety_kernel"
 
 
-def record_command(out_dir: str) -> list[str]:
+def record_command(out_dir: str, extra: Sequence[str] = ()) -> list[str]:
     """The ``ros2 bag record`` command a parity run uses.
 
     Args:
         out_dir: The bag directory to create.
+        extra: More topics to record beside ``REPLAY_TOPICS``, each a topic name or a regex
+            matched against the whole name (``/openral/cameras/.*``).
 
     Returns:
-        The argv, MCAP storage, exactly ``REPLAY_TOPICS``.
+        The argv, MCAP storage, exactly ``REPLAY_TOPICS``. With ``extra``, one anchored
+        ``--regex`` over both: Jazzy's rosbag2 stops discovering once it holds as many topics
+        as were listed explicitly, regex matches included (the rule
+        ``openral_observability.replay.cli.build_record_command`` follows too).
 
     Example:
         >>> record_command("/tmp/b")[:5]
         ['ros2', 'bag', 'record', '--storage', 'mcap']
+        >>> record_command("/tmp/b", ["/openral/cameras/.*"])[-1].endswith("|/openral/cameras/.*)$")
+        True
     """
-    return ["ros2", "bag", "record", "--storage", "mcap", "-o", out_dir, *REPLAY_TOPICS]
+    base = ["ros2", "bag", "record", "--storage", "mcap", "-o", out_dir]
+    if not extra:
+        return [*base, *REPLAY_TOPICS]
+    return [*base, "--regex", "^(?:" + "|".join([*map(re.escape, REPLAY_TOPICS), *extra]) + ")$"]
 
 
 def _kernel_params(dump: Mapping[str, Any]) -> dict[str, Any]:
@@ -587,6 +599,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     rec = sub.add_parser("record-cmd", help="print the ros2 bag record command")
     rec.add_argument("out_dir")
+    rec.add_argument(
+        "--topic",
+        action="append",
+        default=[],
+        metavar="TOPIC_OR_REGEX",
+        help="also record this topic (a name or a whole-name regex), repeatable",
+    )
     diff = sub.add_parser("diff", help="replay a bag into kernels A and B")
     diff.add_argument("--bag", type=Path, required=True)
     diff.add_argument("--params", type=Path, required=True, help="ros2 param dump of kernel A")
@@ -603,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.cmd == "record-cmd":
-        print(" ".join(record_command(args.out_dir)))
+        print(shlex.join(record_command(args.out_dir, args.topic)))  # the regex holds | ( $
         return 0
     params_a = _kernel_params(yaml.safe_load(args.params.read_text()))
     params_b = provider_params(params_a, args.provider)

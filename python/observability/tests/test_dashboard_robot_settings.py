@@ -146,3 +146,14 @@ def test_a_cloud_model_without_its_key_leaves_the_account_settings_in_charge() -
     assert reasoner_env(load_settings())
     save_setting("OPENAI_API_KEY", "")
     assert reasoner_env(load_settings()) == {}
+
+
+def test_a_model_on_the_robots_ollama_needs_no_key_and_no_endpoint() -> None:
+    """qwen3.5-4b runs on the robot's own Ollama: only the model is applied, never a key."""
+    from openral_core import reasoner_model_options
+    from openral_observability.dashboard.robot_settings import reasoner_env, save_setting
+
+    assert {o["id"]: o["needs"] for o in reasoner_model_options()}["qwen3.5-4b"] is None
+    save_setting("ANTHROPIC_API_KEY", _KEY)
+    values = save_setting("OPENRAL_REASONER_MODEL", "qwen3.5-4b")
+    assert reasoner_env(values) == {"OPENRAL_REASONER_MODEL": "qwen3.5-4b"}
