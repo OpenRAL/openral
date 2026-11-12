@@ -110,6 +110,19 @@ registered. Without any release the node would be one-shot: the first estop of a
 deploy, from any source including the dashboard stop button, would silence it
 for the life of the process, unnoticed.
 
+## Parameters are fixed once configured
+
+Both nodes refuse every change to an existing parameter (`ros2 param set`, the
+`/<node>/set_parameters*` services, in-process) from the start of their first
+`on_configure` on, for ever: also after a configure that fails and after a
+cleanup, so neither set → retry nor cleanup → set → configure gets a new value
+in. This is the C++ safety kernel's guard (hazard-log Entry 078), applied here
+because the deadman reads `safe_action_deadline_s` / `first_chunk_deadline_s`
+on every tick: a same-host graph peer could otherwise widen them on a running
+node and silence the brake (issue #546). Launch parameters arrive at
+declaration and are unaffected, a set before the first configure still works,
+and declaring a new parameter still passes. To change a value, relaunch.
+
 ## Hardware pendant
 
 `hardware_estop_node` is a bridge, not a driver: `HardwareEstopNode._read_pressed`
@@ -153,6 +166,10 @@ other E-stop sources.
   publish through an injected device state source, the fail-closed brake on a
   read that raises, and a button held across activation braking on the first
   active poll.
+* `test/test_parameter_guard.py` — a peer's `set_parameters` on a configured
+  deadman is refused over the real service and the deadlines stay put, also
+  across cleanup → configure; a failed hardware-estop configure locks too; a
+  new declaration still passes.
 * `tests/integration/test_estop_watchdog_graph_live.py` — a
   real multi-process graph where the in-band safety node is killed and
   `/openral/estop` still fires from this package.

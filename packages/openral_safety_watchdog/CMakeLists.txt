@@ -29,6 +29,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_hardware_estop_node test/test_hardware_estop_node.py
     TIMEOUT 60
   )
+  ament_add_pytest_test(test_parameter_guard test/test_parameter_guard.py
+    TIMEOUT 60
+  )
 endif()
 
 ament_package()

@@ -72,11 +72,13 @@ it override both variables. The shared decision is
 `openral_core.ros_graph_scope.require_host_confined_ros_scope`; the launch hook
 is `_require_host_confined_real_graph` in `deploy_e2e.launch.py`.
 
-**Not covered here: the deadman watchdog's deadlines.**
-`openral_deadman_watchdog` still declares `safe_action_deadline_s` /
-`first_chunk_deadline_s` writable and reads them every tick; a participant on
-the graph can raise them. Host confinement is the only control until they are
-made read-only (Safety-WG follow-up).
+**The deadman watchdog and hardware E-stop: parameters fixed once configured.**
+`openral_deadman_watchdog` and `openral_hardware_estop` refuse every
+`set_parameters` on an already-declared parameter from the start of their first
+`on_configure` on, also after a failed configure and after a cleanup, so a peer
+cannot raise `safe_action_deadline_s` / `first_chunk_deadline_s` on a running
+cell. A set before the first configure still works (nothing is supervised yet);
+see `packages/openral_safety_watchdog/README.md`.
 
 **Unitree G1: the blend parameters stay writable (open risk).** NVIDIA's
 `SafetyController` (`isaac_ros_deploy` f3aa6b89, `deps.repos`) declares
