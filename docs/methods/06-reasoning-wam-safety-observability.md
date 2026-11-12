@@ -668,7 +668,7 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_free_vram_peers_then_send(call, peers, generation, traceparent)` — Deactivate each GPU lifecycle peer and send the goal only once every deactivation response returns, so a peer's VRAM is released before the runner loads the policy. Peers whose service is absent are skipped; a late deactivation from an invalidated generation is immediately reactivated instead of sending a stale goal.
   - `_reactivate_vram_peers()` — Reactivate the peers deactivated for the last dispatch (idempotent). Called on terminal result and on goal reject/error, not on a deadline (the policy may still be resident).
   - `_on_reactivate_result(peer, future)` — Best-effort log of a reactivation `change_state` outcome.
-  - `_change_state_async(node, transition) -> future | None` — Shared helper: lazily cache a `ChangeState` client per peer node and call it asynchronously; `None` if the service isn't on the graph. Used by both lifecycle dispatch and VRAM eviction.
+  - `_change_state_async(node, transition) -> future | None` — Shared helper: lazily cache a `ChangeState` client per peer node and call it asynchronously; `None` if the service isn't on the graph or SROS2 refuses this enclave the client (ADR-0130: the reasoner may not cycle the kernel, HAL or E-stop producers; logged as a refusal, never raised). Used by both lifecycle dispatch and VRAM eviction.
   - `_dispatch_lifecycle_transition(call)` — Refuses (error log, no call) a `call.node` outside `self._palette.node_ids`; else drives `<call.node>/change_state` via `_change_state_async`; on success attach `_on_lifecycle_response`, on an absent service log + skip.
   - module constant `_FEEDBACK_LOG_PERIOD_S: float = 1.0` (L537) — WARNING-log throttle period for per-chunk action feedback.
   - `_on_execute_skill_feedback(rskill_id, feedback_msg)` — Forward action feedback to the operator log, throttled to one WARNING per `_FEEDBACK_LOG_PERIOD_S` (a VLA goal streams one feedback per chunk); suppressed lines go to DEBUG.
@@ -686,11 +686,11 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_on_lifecycle_response(call, future)` — Log the `ChangeState` result; lifecycle failures surface in the target node's own logs (no `FailureTrigger` re-emission).
   - `_publish_skill_failure(*, kind, rskill_id, evidence, traceparent, trace_id=None)` — Build + publish a `FailureTrigger` on `/openral/failure/rskill`, then mirror it onto the OTLP span path via `_emit_skill_failure_event` so the OTLP-only dashboard can tally it.
   - `_emit_skill_failure_event(*, kind, rskill_id, evidence)` — Stamp an `openral.event.skill_failure` span event carrying the failure state, on the active tick span when recording or a transient span otherwise. Drives the dashboard "skill failures" counter.
-  - `renderer(self) -> ContextRenderer` (L6308) — Direct read access for tests asserting buffer state.
-  - `dispatched_calls(self) -> tuple[Any, ...]` (L6313) — Snapshot of tool calls the reasoner has dispatched (in order).
-  - `set_palette(self, palette) -> None` (L6317) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
+  - `renderer(self) -> ContextRenderer` (L6319) — Direct read access for tests asserting buffer state.
+  - `dispatched_calls(self) -> tuple[Any, ...]` (L6324) — Snapshot of tool calls the reasoner has dispatched (in order).
+  - `set_palette(self, palette) -> None` (L6328) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
 - `_QOS_REGISTRY_CHANGED` (L262) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
-- `main(args=None) -> int` (L6322) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
+- `main(args=None) -> int` (L6333) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
 
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack are out of scope._
@@ -712,7 +712,7 @@ _Single lifecycle node that fans in operator prompts from any external source in
 ### `python/cli/src/openral_cli/prompt.py`
 _`openral prompt "do X"` CLI adapter. Publishes a one-shot `PromptStamped` onto `/openral/prompt_in/cli` for the prompt-router to fan out. `rclpy` lazy-imported so `openral --help` stays sub-second._
 
-- `prompt_command(text, topic="/openral/prompt_in/cli", wait_s=1.0, discovery_wait_s=5.0, new_goal=False)` (L31) — Initialise rclpy, publish one PromptStamped with `metadata_json={"source_cli": true}` plus `"new_goal": true` under `--new-goal`, wait briefly for the subscriber to be discovered, then shut down. Exits 2 if rclpy / openral_msgs are not importable (with a hint at `just ros2-build`). The prompt-router preserves the mission-replacement flag when stamping `source`/`priority`.
+- `prompt_command(text, topic="/openral/prompt_in/cli", wait_s=1.0, discovery_wait_s=5.0, new_goal=False)` (L32) — Initialise rclpy, publish one PromptStamped with `metadata_json={"source_cli": true}` plus `"new_goal": true` under `--new-goal`, wait briefly for the subscriber to be discovered, then shut down. Exits 2 if rclpy / openral_msgs are not importable (with a hint at `just ros2-build`). The prompt-router preserves the mission-replacement flag when stamping `source`/`priority`.
 
 ### Observability (Layer 6 — fully shipped)
 

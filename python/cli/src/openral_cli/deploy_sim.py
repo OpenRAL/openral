@@ -2302,12 +2302,23 @@ def _ros2_argv_head() -> list[str]:
 def _confine_launch_scope(env: dict[str, str], *, hal_mode: str, robot_id: str) -> None:
     """Apply the DDS scope for ``hal_mode`` to ``env`` (sim and real), in place.
 
-    One place, so the orphan reap and the launch see the same domain.
+    One place, so the orphan reap and the launch see the same domain. Under
+    SROS2 (``ROS_SECURITY_ENABLE=true``) the keystore is checked against the
+    final domain and the ``ros2 launch`` process is put in ``LAUNCH_ENCLAVE``
+    (ADR-0130); the launch hands its children the default enclave.
 
     Raises:
         ROSConfigError: A real robot on a networked scope without the opt-in
-            (``openral_cli._dds_scope.confine_real_scope``).
+            and SROS2 (``openral_cli._dds_scope.confine_real_scope``), or a
+            secured graph whose keystore does not fit.
     """
+    from openral_core.ros_security import (  # reason: deferred
+        ENCLAVE_OVERRIDE_ENV,
+        LAUNCH_ENCLAVE,
+        require_secure_ros_graph,
+        ros_security_enabled,
+    )
+
     from openral_cli._dds_scope import (  # reason: deferred
         confine_real_scope,
         confine_sim_scope,
@@ -2320,6 +2331,9 @@ def _confine_launch_scope(env: dict[str, str], *, hal_mode: str, robot_id: str) 
         raise ROSConfigError(f"hal_mode={hal_mode!r} needs the robot id to scope its ROS graph")
     else:
         confine_real_scope(env, robot_id=robot_id)
+    if ros_security_enabled(env):
+        require_secure_ros_graph(env)
+        env[ENCLAVE_OVERRIDE_ENV] = LAUNCH_ENCLAVE
 
 
 #: The variables that decide which ROS graph a process joins, in print order.
@@ -2328,6 +2342,9 @@ _ROS_SCOPE_VARS: Final[tuple[str, ...]] = (
     "ROS_LOCALHOST_ONLY",
     "ROS_AUTOMATIC_DISCOVERY_RANGE",
     "ROS_STATIC_PEERS",
+    "ROS_SECURITY_ENABLE",
+    "ROS_SECURITY_STRATEGY",
+    "ROS_SECURITY_KEYSTORE",
 )
 
 
