@@ -95,22 +95,29 @@ def _allow_the_other_side(permissions: Path) -> None:
     publication stopped the HAL subscribing to it, and denying the watchdog's
     ``set_parameters`` requests stopped the watchdog serving them. Fast DDS
     follows the DDS-Security spec and does not. An allow rule listed first for
-    the opposite direction (subscribe what is denied for publishing, publish
-    what is denied for subscribing — a service's request reader and reply
-    writer) lets Cyclone create the topic; the deny rule still refuses the
-    denied writer or reader on both RMWs. Measured 2026-11-12, both RMWs.
+    the opposite direction lets Cyclone create the topic; the deny rule still
+    refuses the denied writer or reader on both RMWs. Measured 2026-11-12, both RMWs.
+
+    Only a one-sided denial is mirrored: a topic denied in both directions (a
+    service whose client *and* server side are denied, such as ``estop_reset``
+    outside the kernel) gets no allow rule, so the mirror never grants serving.
     """
     tree = ET.parse(permissions)
     for grant in tree.getroot().iter("grant"):
         deny = grant.find("deny_rule")
         if deny is None:
             continue
+        sides = {
+            side: {t.text for t in deny.iterfind(f"{side}/topics/topic") if t.text}
+            for side in ("publish", "subscribe")
+        }
+        both = sides["publish"] & sides["subscribe"]
         allow = ET.Element("allow_rule")
         domains = deny.find("domains")
         if domains is not None:
             allow.append(copy.deepcopy(domains))
         for denied, granted in (("subscribe", "publish"), ("publish", "subscribe")):
-            topics = [t.text for t in deny.iterfind(f"{denied}/topics/topic") if t.text]
+            topics = sorted(sides[denied] - both)
             if topics:
                 group = ET.SubElement(ET.SubElement(allow, granted), "topics")
                 for topic in topics:
@@ -183,18 +190,20 @@ def security_init_command(
     exported = os.environ.get("ROS_DOMAIN_ID", "").strip()
     domain = str(domain_id) if domain_id is not None else exported or real_domain_id(robot_id)
     path = (keystore or default_keystore(robot_id)).expanduser().resolve()
-    if path.exists():
-        if not force:
-            typer.echo(
-                f"openral security init: {path} exists; pass --force to regenerate.", err=True
-            )
-            raise typer.Exit(code=1)
-        shutil.rmtree(path)
+    if path.exists() and not force:
+        typer.echo(f"openral security init: {path} exists; pass --force to regenerate.", err=True)
+        raise typer.Exit(code=1)
+    # Generate beside it and swap on success, so a failed --force keeps the old keystore.
+    staging = path.with_name(f".{path.name}.new")
+    shutil.rmtree(staging, ignore_errors=True)
     try:
-        generate_keystore(render_sros2_policy(description.onboard_compute), path, domain=domain)
+        generate_keystore(render_sros2_policy(description.onboard_compute), staging, domain=domain)
     except ROSConfigError as exc:
         typer.echo(f"openral security init: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    if path.exists():
+        shutil.rmtree(path)
+    staging.rename(path)
     exports = {
         "ROS_DOMAIN_ID": domain,
         "ROS_SECURITY_KEYSTORE": str(path),

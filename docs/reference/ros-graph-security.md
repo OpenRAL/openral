@@ -123,7 +123,9 @@ export OPENRAL_ALLOW_NETWORK_ROS=1          # on the host running `openral deplo
 A same-host driver started by hand in another terminal (not from the scene's
 `drivers:` block) must use the same scope: read the `ros scope:` line the deploy
 printed, or export `ROS_DOMAIN_ID` and `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`
-in both terminals.
+in both terminals. Under SROS2 it must also run in the HAL enclave
+(`export ROS_SECURITY_ENCLAVE_OVERRIDE=/openral/hal`): a driver in the default
+enclave is refused publishing joint states and controller commands.
 
 ## SROS2 enclaves (ADR-0130)
 
@@ -177,8 +179,16 @@ needs: a laptop running `rviz2` needs the default enclave (`enclaves/` files plu
   `openral_human_estop_forwarder`, `openral_compliance_recorder` and `safety_controller`
   (`change_state`, `set_parameters`, `set_parameters_atomically`).
 
-Only writing and calling are denied. Every enclave may subscribe to every topic,
-serve its own services and publish `/openral/estop`.
+Every enclave may subscribe to every topic and publish `/openral/estop`.
+**Serving** is denied where a fake server could answer the real one's callers
+first: only the kernel may serve `/openral/estop_reset` (a fake "success" would make
+`openral estop reset` broadcast `estop_cleared` while the kernel stays latched), and
+only the HAL and kernel enclaves may serve `/controller_manager/*` and the
+trajectory action. A protected node's own `change_state` / `set_parameters` stay
+servable wherever it runs.
+
+The reasoner runs in `/`, so under SROS2 it cannot cycle the kernel, the HAL or the
+E-stop producers; such a `LifecycleTransitionTool` is logged as refused.
 
 **How a process gets its enclave.** `ROS_SECURITY_ENCLAVE_OVERRIDE`, per process.
 `openral deploy` starts `ros2 launch` in `/openral/launch`. The launch creates its own
@@ -193,9 +203,11 @@ enclave on it itself. A hand-run secured launch must export
 that any deny rule names, even a publish-only rule: the HAL could not subscribe to
 `safe_action` and the watchdog could not serve its own `set_parameters`. Fast DDS
 does not have this problem. The keystore therefore lists an allow rule for the
-opposite direction ahead of each deny rule and re-signs the permissions
+opposite direction ahead of each one-sided deny (never for a surface denied in
+both directions, so it grants no serving) and re-signs the permissions
 (`openral_cli.security._allow_the_other_side`). The live test
-`tests/integration/test_sros2_enclaves_live.py` checks both directions per enclave.
+`tests/integration/test_sros2_enclaves_live.py` checks both directions per enclave, on
+Cyclone and Fast DDS.
 
 **Measured cost** (dev host, Cyclone): 1280×720 RGB at 30 Hz was received at 24.0 Hz
 under encryption vs 26.6 Hz without, with 18 % more subscriber CPU.

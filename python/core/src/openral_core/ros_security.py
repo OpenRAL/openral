@@ -142,7 +142,10 @@ def require_secure_ros_graph(env: Mapping[str, str]) -> Path:
         domains = _governance_domains(governance)
     except (OSError, ET.ParseError, ValueError) as exc:
         raise ROSConfigError(f"cannot read {governance}: {exc}. {remedy}") from exc
-    domain = int(env.get("ROS_DOMAIN_ID", "").strip() or "0")
+    raw_domain = env.get("ROS_DOMAIN_ID", "").strip() or "0"
+    if not raw_domain.isdigit():
+        raise ROSConfigError(f"ROS_DOMAIN_ID={raw_domain!r} is not a domain number.")
+    domain = int(raw_domain)
     if domain not in domains:
         raise ROSConfigError(
             f"keystore {keystore} admits ROS domain(s) {sorted(domains)}, not "
@@ -212,8 +215,10 @@ def _manifest_topics(onboard_compute: Mapping[str, object], keys: tuple[str, ...
 def render_sros2_policy(onboard_compute: Mapping[str, object]) -> str:
     """Render the sros2 policy (0.2.0) for one robot: the ADR-0130 enclave table.
 
-    Each enclave denies the protected surfaces it does not need and allows the
-    rest; sros2 emits deny rules before allow rules, so the denials win.
+    Each enclave denies the protected surfaces it does not need, as a client and,
+    for ``estop_reset``, the controller manager and the trajectory action, as a
+    server too; then allows the rest. sros2 emits deny rules before allow rules,
+    so the denials win.
 
     Args:
         onboard_compute: The robot's ``RobotDescription.onboard_compute``; its
@@ -237,30 +242,42 @@ def render_sros2_policy(onboard_compute: Mapping[str, object]) -> str:
     controller = ["/controller_manager/*"]
     reset = ["/openral/estop_reset"]
     hal_only = [t for t in commands if t not in ("/openral/safe_action", "/openral/estop_cleared")]
-    # (publish-denied topics, request-denied services, call-denied actions) per enclave.
-    denied: dict[str, tuple[list[str], list[str], list[str]]] = {
-        KERNEL_ENCLAVE: ([], [], []),
+    actions = list(_COMMAND_ACTIONS)
+    # Per enclave: publish-denied topics, request-denied services, reply-denied services
+    # (serving them would let the enclave answer the real server's callers first: a fake
+    # estop_reset "success" makes `openral estop reset` broadcast estop_cleared while the
+    # kernel stays latched), call-denied and execute-denied actions. Only the kernel
+    # serves estop_reset; only the HAL's vendor stack serves the controller manager and
+    # the trajectory action.
+    denied: dict[str, tuple[list[str], ...]] = {
+        KERNEL_ENCLAVE: ([], [], [], [], []),
         HAL_ENCLAVE: (
             ["/openral/safe_action", "/openral/estop_cleared"],
             reset + node_services,
+            reset,
+            [],
             [],
         ),
-        LAUNCH_ENCLAVE: (commands + states, [], list(_COMMAND_ACTIONS)),
+        LAUNCH_ENCLAVE: (commands + states, [], reset + controller, actions, actions),
         OPERATOR_ENCLAVE: (
             ["/openral/safe_action", *hal_only, *states],
             operator_node_services + controller,
-            list(_COMMAND_ACTIONS),
+            reset + controller,
+            actions,
+            actions,
         ),
         DEFAULT_ENCLAVE: (
             commands + states,
             reset + node_services + controller,
-            list(_COMMAND_ACTIONS),
+            reset + controller,
+            actions,
+            actions,
         ),
     }
     root = ET.Element("policy", version="0.2.0")
     enclaves = ET.SubElement(root, "enclaves")
     for path in OPENRAL_ENCLAVES:
-        topics, services, actions = denied[path]
+        topics, requests, replies, calls, executes = denied[path]
         profile = ET.SubElement(
             ET.SubElement(ET.SubElement(enclaves, "enclave", path=path), "profiles"),
             "profile",
@@ -269,10 +286,14 @@ def render_sros2_policy(onboard_compute: Mapping[str, object]) -> str:
         )
         if topics:
             _names(profile, "topics", "topic", topics, publish="DENY")
-        if services:
-            _names(profile, "services", "service", services, request="DENY")
-        if actions:
-            _names(profile, "actions", "action", actions, call="DENY")
+        if requests:
+            _names(profile, "services", "service", requests, request="DENY")
+        if replies:
+            _names(profile, "services", "service", replies, reply="DENY")
+        if calls:
+            _names(profile, "actions", "action", calls, call="DENY")
+        if executes:
+            _names(profile, "actions", "action", executes, execute="DENY")
         _names(profile, "topics", "topic", ["/*"], publish="ALLOW", subscribe="ALLOW")
         _names(profile, "services", "service", ["/*"], request="ALLOW", reply="ALLOW")
         _names(profile, "actions", "action", ["/*"], call="ALLOW", execute="ALLOW")

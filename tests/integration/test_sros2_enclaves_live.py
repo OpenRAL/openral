@@ -3,7 +3,7 @@
 
 A keystore written by the real ``openral security init`` (franka_panda: its
 manifest adds ``/franka_arm_controller/joint_trajectory``) is put in front of
-real participants, one process per enclave, on Cyclone DDS in Enforce mode:
+real participants, one process per enclave, on Cyclone DDS and Fast DDS in Enforce mode:
 
 1. every enclave can or cannot create the publishers / service clients the
    ADR's table says, enforced by the DDS access-control plugin (a denied
@@ -92,9 +92,18 @@ _ALLOWED: dict[str, set[str]] = {
     "/": _ALL - _COMMANDS - _STATES - _ACTION - _CONTROLLER - _RESET - _LIFECYCLE,
 }
 
+#: Services each enclave may not serve (a fake server's reply would win the race).
+_NOT_SERVED: dict[str, set[str]] = {
+    "/openral/safety_kernel": set(),
+    "/openral/hal": _RESET,
+    "/openral/launch": _RESET | _CONTROLLER | _ACTION,
+    "/openral/operator": _RESET | _CONTROLLER | _ACTION,
+    "/": _RESET | _CONTROLLER | _ACTION,
+}
+
 _CREATE_PROBE = """
 import json, sys, rclpy
-from rclpy.action import ActionClient
+from rclpy.action import ActionClient, ActionServer
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from control_msgs.action import FollowJointTrajectory
@@ -111,6 +120,8 @@ for kind, name in json.loads(sys.argv[1]):
             node.create_client(Trigger, name)
         elif kind == "srv":
             node.create_service(Trigger, name, lambda _req, res: res)
+        elif kind == "exe":
+            ActionServer(node, FollowJointTrajectory, name, lambda _goal: None)
         else:
             ActionClient(node, FollowJointTrajectory, name)
         result[kind + " " + name] = True
@@ -141,9 +152,16 @@ print(count[0])
 """
 
 
-@pytest.fixture(scope="module")
-def secured_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
-    """The env of a franka_panda graph under SROS2 Enforce, keystore from the real CLI."""
+@pytest.fixture(scope="module", params=["rmw_cyclonedds_cpp", "rmw_fastrtps_cpp"])
+def secured_env(
+    tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureRequest
+) -> dict[str, str]:
+    """A franka_panda graph under SROS2 Enforce, keystore from the real CLI, per RMW.
+
+    Both RMWs: Cyclone (the default) needs the keystore's mirrored allow rules to create
+    a topic any deny rule names; Fast DDS follows the spec, and is where a reply-side
+    gap (a default-enclave fake estop_reset server) would have shown regardless.
+    """
     pytest.importorskip("rclpy")
     pytest.importorskip("control_msgs.action")
     pytest.importorskip("openral_msgs.msg")
@@ -171,7 +189,7 @@ def secured_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     assert init.returncode == 0, init.stdout + init.stderr
     env = {k: v for k, v in os.environ.items() if not k.startswith(("ROS_SECURITY_", "ROS_STATIC"))}
     env.update(
-        RMW_IMPLEMENTATION="rmw_cyclonedds_cpp",
+        RMW_IMPLEMENTATION=request.param,
         ROS_DOMAIN_ID=_DOMAIN,
         ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST",
         ROS_SECURITY_ENABLE="true",
@@ -209,13 +227,17 @@ def test_each_enclave_gets_exactly_its_surfaces(secured_env: dict[str, str], enc
 def test_every_enclave_still_reads_and_serves_the_protected_surfaces(
     secured_env: dict[str, str], enclave: str
 ) -> None:
-    """Only writing and calling are denied: the HAL reads safe_action, the watchdog serves
+    """Writing and calling are what is denied: the HAL reads safe_action, the watchdog serves
     its own set_parameters. Cyclone refused both until the keystore listed that side first
-    (``openral_cli.security._allow_the_other_side``)."""
+    (``openral_cli.security._allow_the_other_side``). Serving is denied only where a fake
+    server could answer the real one's callers: estop_reset outside the kernel, the
+    controller manager outside the HAL and kernel."""
     probes = [("sub", name) for kind, name in _SURFACES if kind == "pub"]
     probes += [("srv", name) for kind, name in _SURFACES if kind == "cli"]
+    probes += [("exe", name) for kind, name in _SURFACES if kind == "act"]
     created = json.loads(_run(secured_env, enclave, _CREATE_PROBE, json.dumps(probes)))
-    assert [key for key, ok in created.items() if not ok] == []
+    refused = {key.split(" ", 1)[1] for key, ok in created.items() if not ok}
+    assert refused == _NOT_SERVED[enclave]
 
 
 def test_kernel_chunks_reach_the_hal_and_no_keyless_participant(

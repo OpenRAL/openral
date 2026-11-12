@@ -113,7 +113,7 @@ _openral CLI entry point — `openral` command (typer-based)._
 ### `python/cli/src/openral_cli/security.py`
 _`openral security init`: one SROS2 keystore per robot (ADR-0130). Needs a sourced ROS 2 with `sros2`, and `openssl`._
 
-- `security_init_command(ROBOT_ID, --keystore, --domain-id, --force)` — Resolves the robot manifest, renders `openral_core.ros_security.render_sros2_policy(description.onboard_compute)`, and writes the keystore (default `default_keystore(robot_id)`) for `--domain-id`, else the exported `ROS_DOMAIN_ID`, else `real_domain_id(robot_id)`. Refuses an existing keystore without `--force`. Checks the result with `require_secure_ros_graph` and prints the exports. (L149)
+- `security_init_command(ROBOT_ID, --keystore, --domain-id, --force)` — Resolves the robot manifest, renders `openral_core.ros_security.render_sros2_policy(description.onboard_compute)`, and writes the keystore (default `default_keystore(robot_id)`) for `--domain-id`, else the exported `ROS_DOMAIN_ID`, else `real_domain_id(robot_id)`. Refuses an existing keystore without `--force`. Checks the result with `require_secure_ros_graph` and prints the exports. (L156)
 - `security_app: typer.Typer` — the `openral security` sub-app. (L26)
 - `default_keystore(robot_id: str) -> Path` — `$XDG_DATA_HOME/openral/sros2/<robot_id>` (`~/.local/share` when unset). (L33)
 - `generate_keystore(policy_xml: str, keystore: Path, *, domain: str) -> None` — Runs the system `ros2 security generate_artifacts` for the policy on `domain`, then `_allow_the_other_side` and re-signs each enclave's permissions with the permissions CA (`openssl smime`); private keys go 0600, the policy is kept as `policy.xml`. On any failure it removes the keystore and raises `ROSConfigError`. (L44)

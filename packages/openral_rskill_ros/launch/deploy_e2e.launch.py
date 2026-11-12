@@ -2186,10 +2186,12 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
     ``ros2 launch ... hal_mode:=real`` gets no such default, so this checks the
     environment the graph actually runs under with the same decision
     (``openral_core.ros_graph_scope``). Unset ``ROS_AUTOMATIC_DISCOVERY_RANGE``
-    is SUBNET to ROS and is refused here. ``OPENRAL_ALLOW_NETWORK_ROS=1`` opts in.
+    is SUBNET to ROS and is refused here. ``OPENRAL_ALLOW_NETWORK_ROS=1`` opts in,
+    and only under SROS2 Enforce (ADR-0130).
 
     Raises:
-        ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in.
+        ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in
+            and SROS2, or with a keystore that does not fit.
     """
     # Fail closed: the rest of the launch treats every non-"sim" value as hardware.
     if hal_mode == "sim":
@@ -4317,19 +4319,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # scope covers what starts while the include is visited; a bringup that
         # defers a process must pin ROS_SECURITY_ENCLAVE_OVERRIDE on it itself
         # (openral_hal_unitree's switch_controllers step does).
-        if hardware_side:
-            extra_nodes.append(
-                GroupAction(
-                    [
-                        *(
-                            SetEnvironmentVariable(name, value)
-                            for name, value in enclave_env(HAL_ENCLAVE).items()
-                        ),
-                        *hardware_side,
-                    ],
-                    scoped=True,
-                )
-            )
+        # Without SROS2 the includes go in unwrapped, exactly as before.
+        if hal_env := enclave_env(HAL_ENCLAVE):
+            set_env = [SetEnvironmentVariable(name, value) for name, value in hal_env.items()]
+            extra_nodes.append(GroupAction([*set_env, *hardware_side], scoped=True))
+        else:
+            extra_nodes.extend(hardware_side)
 
     robot_description_xml: str | None = None
     robot_mesh_packages: dict[str, pathlib.Path] = {}
