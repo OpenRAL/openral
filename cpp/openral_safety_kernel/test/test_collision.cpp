@@ -7900,3 +7900,69 @@ TEST(ExemptionProvider, NoQuotedRegionMeansNoVerdict) {
   expect_same_hit(with, today);
   EXPECT_EQ(with.provider_pairs, 0);
 }
+
+// ── Gripper calibration curve (JointSpec.urdf_curve, issue #533) ──────────────
+//
+// The mimic gripper above with the OpenArm Isaac twin's jaw curve on BOTH links of
+// column 0: a reported 0.316 rad poses the URDF finger at 0.42. The leader moves
+// by curve(q), the follower by multiplier * curve(q) + offset.
+
+namespace {
+
+osk::CollisionModel curved_mimic_model() {
+  auto m = mimic_model();
+  m.curve_point_first = {-1, 0, 0};
+  m.curve_point_count = {0, 3, 3};
+  m.curve_points = {0.0, 0.0, 0.316, 0.42, 0.785, 0.785};
+  return m;
+}
+
+double curve_by_hand(double q) {
+  if (q <= 0.0) {
+    return 0.0;
+  }
+  if (q <= 0.316) {
+    return 0.42 * q / 0.316;
+  }
+  if (q <= 0.785) {
+    return 0.42 + (0.785 - 0.42) * (q - 0.316) / (0.785 - 0.316);
+  }
+  return 0.785;
+}
+
+}  // namespace
+
+TEST(UrdfCurve, BothFingersArePosedAtTheCurvedValue) {
+  const auto m = curved_mimic_model();
+  auto s = mimic_scratch(m);
+  for (const double q : {-0.1, 0.0, 0.222, 0.316, 0.5, 0.785, 0.9}) {
+    const double qpos[1] = {q};
+    osk::forward_kinematics(m, qpos, 1, s);
+    const double u = curve_by_hand(q);
+    // Rotation by u about -x: r[5] = sin(u) for the leader, by -u for the follower.
+    EXPECT_NEAR(s.link_world[kMimicLeader].r[5], std::sin(u), 1e-12) << "q=" << q;
+    EXPECT_NEAR(s.link_world[kMimicFollower].r[5], std::sin(kMimicMultiplier * u), 1e-12)
+        << "q=" << q;
+  }
+  // The issue's mid-grip point: 0.222 reported is 0.295 at the URDF finger.
+  EXPECT_NEAR(osk::link_joint_value(m, kMimicLeader, 0.222), 0.29506, 1e-5);
+}
+
+TEST(UrdfCurve, TheGainIsTheSegmentSlopeTimesTheMimicMultiplierAndZeroWhereItClamps) {
+  const auto m = curved_mimic_model();
+  EXPECT_NEAR(osk::link_joint_gain(m, kMimicLeader, 0.1), 0.42 / 0.316, 1e-12);
+  EXPECT_NEAR(osk::link_joint_gain(m, kMimicFollower, 0.5),
+              kMimicMultiplier * (0.785 - 0.42) / (0.785 - 0.316), 1e-12);
+  EXPECT_EQ(osk::link_joint_gain(m, kMimicLeader, -0.2), 0.0);
+  EXPECT_EQ(osk::link_joint_gain(m, kMimicLeader, 1.0), 0.0);
+  EXPECT_EQ(osk::link_joint_gain(m, 0, 0.3), 1.0) << "an uncurved link keeps unit gain";
+}
+
+TEST(UrdfCurve, ANonFiniteColumnStaysNonFinite) {
+  // The clamp would map NaN to the last point: a finite pose the distance checks trust.
+  const auto m = curved_mimic_model();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isnan(osk::link_joint_value(m, kMimicLeader, nan)));
+  EXPECT_TRUE(std::isnan(osk::link_joint_value(m, kMimicFollower, nan)));
+  EXPECT_TRUE(std::isnan(osk::link_joint_gain(m, kMimicLeader, nan)));
+}

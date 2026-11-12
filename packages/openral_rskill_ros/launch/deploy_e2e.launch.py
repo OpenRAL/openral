@@ -733,6 +733,14 @@ class _ReachModel:
         self.mimic_off = [float(v) for v in params.get("collision_mimic_offset", [])] or [
             0.0
         ] * n_links
+        # A curved gripper link (`collision_curve_*`) reads its column through the curve.
+        first = ints("collision_curve_point_first") or [-1] * n_links
+        count = ints("collision_curve_point_count") or [0] * n_links
+        pts = floats("collision_curve_points", 2) if first != [-1] * n_links else None
+        self.curves: list[tuple[NDArray[np.float64], NDArray[np.float64]] | None] = [
+            None if f < 0 or pts is None else (pts[f : f + c, 0], pts[f : f + c, 1])
+            for f, c in zip(first, count, strict=True)
+        ]
         self.base = set(base_dofs)
         n = len(self.parent)
         moving = [False] * n
@@ -769,6 +777,9 @@ class _ReachModel:
             motion = np.broadcast_to(np.eye(4), (count, 4, 4)).copy()
             if self.dof[i] >= 0 and self.kind[i] in (1, 2, 3, 4):
                 qi = q[:, self.dof[i]]
+                curve = self.curves[i]
+                if curve is not None:  # the kernel's link_joint_value curve step
+                    qi = np.interp(qi, curve[0], curve[1])
                 if self.kind[i] in (3, 4):
                     qi = self.mimic_mult[i] * qi + self.mimic_off[i]
                 a = self.axis[i] / np.linalg.norm(self.axis[i])
@@ -2595,6 +2606,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         ee_link_index_from_collision_params,
         kernel_params_from_envelope,
         merge_extra_allowed_pairs,
+        with_joint_curves,
     )
 
     robot_yaml = LaunchConfiguration("robot_yaml").perform(context)
@@ -3034,6 +3046,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 "using manifest geometry",
                 flush=True,
             )
+    # Either lowering numbers columns by `description.joints`: re-attach the gripper
+    # calibration curves (`JointSpec.urdf_curve`) so an MJCF model poses a curved
+    # finger at its URDF value too, as the manifest lowering does (issue #533).
+    collision_params = with_joint_curves(collision_params, description)
     if workcell is not None and workcell.extra_allowed_collision_pairs:
         before = list(cast("list[object]", collision_params.get("collision_allowed_pairs", [])))
         collision_params = merge_extra_allowed_pairs(
@@ -3688,6 +3704,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         if _rsp_map is not None
         else {}
     )
+    if _rsp_map is not None and _rsp_map.curves_param():
+        # A curved gripper (`JointSpec.urdf_curve`, issue #533): /tf poses its finger
+        # where the kernel and the sim do. Omitted otherwise (an empty list has no type).
+        rsp_urdf_joint_units["urdf_joint_curves"] = _rsp_map.curves_param()
     hal = LifecycleNode(
         package=hal_package,
         executable=hal_executable,

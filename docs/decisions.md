@@ -84,7 +84,10 @@ in full so the posture stays visible although the records are private:
   quantized upstream. The quantized rSkills stay in the open catalogue and
   refuse to load without Pro, with a typed error naming it. Pro plugs in as
   `openral.pro_modules: quantization`
-  (`python/rskill/src/openral_rskill/quantization_gate.py`).
+  (`python/rskill/src/openral_rskill/quantization_gate.py`). Exception
+  (2026-11-12 amendment): a 4-bit (NF4 / GGUF Q4_K_M) reasoner LLM served by an
+  operator-run model server such as Ollama stays open; OpenRAL ships no
+  quantization code for it.
 - **The robot dashboard's sign-in check is open** (`ADR-0129`): the robot-side
   token validation, roles, the remote (tunnel) listener and the action audit live
   in `openral-observability`, because free users get one remote robot. Every Pro

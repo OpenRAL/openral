@@ -162,8 +162,10 @@ def link_transform(
 ) -> NDArray[np.float64]:
     """``T_root<-link`` at joint ``positions`` (by ``JointSpec.name``), mimic-aware.
 
-    A ``MimicJoint`` reads its leader's position through ``value_at``; never posed from a
-    ``robot_state_publisher`` tf, which reads the SO-101's jaw fraction as radians.
+    Each driving joint's position goes through its ``JointSpec.urdf_value`` (a curved
+    gripper's calibration), and a ``MimicJoint`` reads that through ``value_at``; never
+    posed from a ``robot_state_publisher`` tf, which reads the SO-101's jaw fraction as
+    radians.
 
     Raises:
         ROSConfigError: ``link`` is not in ``root``'s subtree, or a joint on the chain has
@@ -179,6 +181,7 @@ def link_transform(
     chain = edge_chain(description, root, link)
     if chain is None:
         raise ROSConfigError(f"link {link!r} is not in the subtree of {root!r}.")
+    joints = {j.name: j for j in description.joints}
     t = np.eye(4, dtype=np.float64)
     for edge, origin in chain:
         t = t @ origin
@@ -187,8 +190,8 @@ def link_transform(
         driver = edge.mimics if isinstance(edge, MimicJoint) else edge.name
         if driver not in positions:
             raise ROSConfigError(f"no position for joint {driver!r} posing {link!r}.")
-        q = float(positions[driver])
-        t = t @ joint_motion(edge, edge.value_at(q) if isinstance(edge, MimicJoint) else q)
+        u = joints[driver].urdf_value(float(positions[driver]))
+        t = t @ joint_motion(edge, edge.value_at(u) if isinstance(edge, MimicJoint) else u)
     return t
 
 

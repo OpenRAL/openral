@@ -312,6 +312,44 @@ class TestChunkedExecutorChunkFn:
         assert calls == 2  # cold start + prefetch
         ex.stop()
 
+    def test_prefetch_launches_while_the_last_one_is_still_exiting(self) -> None:
+        """Every observation read starts an inference, even if the previous thread lingers.
+
+        The previous pre-fetch thread signals its result and only then exits. A launch in
+        that window used to be skipped after the observation was already read, so the
+        buffer drained into a cold-start replan (CI flake in
+        ``test_chunked_executor_postprocess``). A slow-exiting event pins the window open.
+        """
+
+        class _SlowExitEvent(threading.Event):
+            def set(self) -> None:
+                super().set()
+                if threading.current_thread() is not threading.main_thread():
+                    time.sleep(0.05)  # the pre-fetch thread lingers after signalling
+
+        reads = 0
+        inferences = 0
+
+        def chunk_fn(_batch: Any, **_: Any) -> list[list[float]]:
+            nonlocal inferences
+            inferences += 1
+            return [[float(inferences)]] * 6
+
+        def batch() -> dict[str, Any]:
+            nonlocal reads
+            reads += 1
+            return {}
+
+        ex = ChunkedExecutor(chunk_fn=chunk_fn, chunk_size=6, prefetch_at=3)
+        ex._bg_event = _SlowExitEvent()
+        ex.start()
+        try:
+            for _ in range(12):
+                ex.select_action(batch)
+        finally:
+            ex.stop()
+        assert reads == inferences
+
     def test_chunk_fn_with_policy_delegates_reset(self) -> None:
         """policy passed alongside chunk_fn is used for reset() only."""
         p = _NullPolicy(chunk_size=4)

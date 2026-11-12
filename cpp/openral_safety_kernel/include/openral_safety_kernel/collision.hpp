@@ -204,6 +204,16 @@ struct CollisionModel {
   /// `mimic_multiplier[i] * qpos[dof_index[i]] + mimic_offset[i]`.
   std::vector<double> mimic_multiplier;
   std::vector<double> mimic_offset;
+  /// Parallel to links when a joint declares `JointSpec.urdf_curve`, else empty
+  /// (no curve anywhere): link `i` with `curve_point_first[i] >= 0` reads its
+  /// column through the piecewise-linear curve of `curve_point_count[i]` points
+  /// starting at pair `curve_point_first[i]` of `curve_points` (flat
+  /// `(value, urdf value)`, value strictly increasing, clamped at the ends)
+  /// before any mimic relation — the URDF value the HAL publishes and the sim
+  /// drives (issue #533).
+  std::vector<int> curve_point_first;
+  std::vector<int> curve_point_count;
+  std::vector<double> curve_points;
   std::vector<int> capsule_link;  ///< link index each capsule attaches to
   std::vector<Capsule> capsules;  ///< parallel to capsule_link
   std::vector<int> box_link;      ///< link index each OBB attaches to
@@ -1185,12 +1195,22 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
 double hull_hull_distance(const TightPose& a, const TightPose& b, double margin, double fallback,
                           bool* depth_is_box_bound = nullptr) noexcept;
 
+/// Link `i`'s joint value for its column value `q`: through the link's
+/// `urdf_curve` when it has one, then `mimic_multiplier * u + mimic_offset` for a
+/// `kMimic*` link. Allocation-free.
+double link_joint_value(const CollisionModel& model, std::size_t i, double q) noexcept;
+
+/// `d link_joint_value / d q` at `q`: the curve segment's slope (0 where it clamps)
+/// times the mimic multiplier. Allocation-free.
+double link_joint_gain(const CollisionModel& model, std::size_t i, double q) noexcept;
+
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.
 /// Allocation-free; `scratch.link_world` must already be sized to
-/// `model.n_links`. A `kMimic*` link reads its mimicked joint's column and
-/// moves by `mimic_multiplier * q + mimic_offset` (identity relation when the
-/// model's mimic arrays are empty).
+/// `model.n_links`. Each link moves by `link_joint_value` of its column: a
+/// `kMimic*` link reads its mimicked joint's column and moves by
+/// `mimic_multiplier * u + mimic_offset` (identity relation when the model's
+/// mimic arrays are empty), `u` the column through the link's curve if any.
 void forward_kinematics(const CollisionModel& model, const double* qpos, std::size_t n_dof,
                         CollisionScratch& scratch) noexcept;
 

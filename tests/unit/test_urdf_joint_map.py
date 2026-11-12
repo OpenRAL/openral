@@ -85,10 +85,15 @@ def _manifest_link_pose(
     """root <- link down the manifest's own edge chain at gripper position ``q``."""
     chain = _edge_chain(robot, root, link)
     assert chain is not None
+    joints = {j.name: j for j in robot.joints}
     pose = np.eye(4)
     for edge, origin in chain:
         assert not isinstance(edge, FixedAttachment), edge  # joint_motion poses joints only
-        value = edge.value_at(q) if isinstance(edge, MimicJoint) else q
+        # A mimic row reads its leader's URDF value (the leader's urdf_curve, issue #533).
+        if isinstance(edge, MimicJoint):
+            value = edge.value_at(joints[edge.mimics].urdf_value(q))
+        else:
+            value = edge.urdf_value(q)
         pose = pose @ origin @ _joint_motion(edge, value)
     return np.asarray(pose, dtype=np.float64)
 
@@ -105,7 +110,7 @@ def _sent(robot: RobotDescription, urdf: str, joint: str, q: float) -> tuple[str
         velocity=[],
         effort=[],
     )
-    out = urdf_named_joint_state(msg, m.names, m.scales, m.offsets)
+    out = urdf_named_joint_state(msg, m.names, m.scales, m.offsets, m.curves)
     i = [j.name for j in robot.joints].index(joint)
     return m.names[i], float(out.position[list(out.name).index(m.names[i])])
 
@@ -161,7 +166,8 @@ def test_the_droid_robotiq_tf_fingers_are_the_mimic_map_fingers(fraction: float)
     for name, mimic in followers.items():
         assert mimic is not None
         urdf_value = float(mimic.get("multiplier", "1")) * value + float(mimic.get("offset", "0"))
-        assert urdf_value == pytest.approx(rows[str(name)].value_at(fraction), abs=1e-6), name
+        # A row reads the leader's URDF value (finger_joint.urdf_curve), never the fraction.
+        assert urdf_value == pytest.approx(rows[str(name)].value_at(value), abs=1e-6), name
 
 
 def test_robots_whose_names_and_units_agree_need_no_map() -> None:

@@ -3,7 +3,8 @@
 
 Brings up the production `openral_hal_unitree` controller config
 (`config/g1/controller_manager.yaml` + the default `policies/gr00t_decoupled_wbc.yaml`) in a real
-`controller_manager`, with NVIDIA's real `SafetyController`, `FreezeController` and
+`controller_manager`, with NVIDIA's real `SafetyController` (run through OpenRAL's
+`GuardedSafetyController` plugin, as on the robot), `FreezeController` and
 `ForwardJointCommandController` (isaac_ros_deploy) over `mock_components/GenericSystem`
 exporting the G1's 29 joints with the same `position/velocity/effort/kp/kd` command
 interfaces `UnitreeHgSystemInterface` exports — the hardware-boundary double CLAUDE.md
@@ -20,13 +21,16 @@ chain through `safety_controller`, the e-stop swap — is the production article
 
 Asserts: an upper-body chunk reaches the joints through the safety chain; a leg target is
 refused before the wire; `/openral/estop`'s swap leaves `freeze_controller` active and
-the S0 chain inactive, acknowledged by `controller_manager`.
+the S0 chain inactive, acknowledged by `controller_manager`; the blend guard (issue #548)
+refuses a `max_blend_ratio_speed` change over the real parameter service, and re-arming the
+chain after the e-stop with the policy still blended in starts it blended out.
 
 Not `launch_testing`: the workspace pytest config disables its plugins globally (see
 `tests/integration/test_estop_watchdog_graph_live.py`); the graph is orchestrated with the
 same subprocess helpers as `test_real_hal_estop_ros2_control_live.py`. Gates: a sourced ROS
 2 with ros2_control, plus `isaac_ros_deploy_ros2_control` and `isaac_ros_deploy_interfaces`
-(build them from `packages/openral_hal_unitree/deps.repos`). Missing any → skip with reason.
+(build them from `packages/openral_hal_unitree/deps.repos`), and `openral_hal_unitree` built
+against them (its plugin). Missing any → skip with reason.
 """
 
 from __future__ import annotations
@@ -68,6 +72,15 @@ def _why_not() -> str | None:
         get_package_share_directory("isaac_ros_deploy_ros2_control")
     except (PackageNotFoundError, ValueError):
         return f"isaac_ros_deploy_ros2_control not installed — {_BUILD_HINT}"
+    try:
+        prefix = Path(get_package_share_directory("openral_hal_unitree")).parents[1]
+    except (PackageNotFoundError, ValueError):
+        return "openral_hal_unitree not installed — build it with the NVIDIA workspace sourced"
+    if not (prefix / "lib" / "libopenral_hal_unitree_guarded_safety_controller.so").exists():
+        return (
+            "openral_hal_unitree was built without isaac_ros_deploy_ros2_control, so "
+            "GuardedSafetyController is missing — rebuild it with the NVIDIA workspace sourced"
+        )
     return None
 
 
@@ -127,6 +140,28 @@ def _overrides(path: Path, s0_joints: list[str]) -> Path:
 
 def _run(argv: list[str], timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
+
+
+def _ros2_param(argv: list[str], within_s: float = 20.0) -> subprocess.CompletedProcess[str]:
+    """`ros2 param …`, retried while the node is not yet discovered.
+
+    Right after a switch, the CLI's discovery (daemon or not) can miss the freshly
+    activated controller's node and answer "Node not found" (seen on q5090, Jazzy).
+    """
+    deadline = time.monotonic() + within_s
+    while True:
+        out = _run(["ros2", "param", *argv])
+        if "Node not found" not in out.stderr or time.monotonic() > deadline:
+            return out
+        time.sleep(0.5)
+
+
+def _param(node: str, name: str) -> float:
+    """A double parameter via `ros2 param get` ("Double value is: <v>")."""
+    got = _ros2_param(["get", node, name])
+    prefix = "Double value is:"
+    assert got.stdout.startswith(prefix), got.stdout + got.stderr
+    return float(got.stdout.removeprefix(prefix))
 
 
 @pytest.fixture
@@ -210,7 +245,7 @@ def s0_graph(tmp_path: Path) -> Iterator[None]:
         )
         assert switch.returncode == 0, switch.stdout + switch.stderr
         # The policy starts blended out; the operator's step, done here by the test.
-        blend = _run(["ros2", "param", "set", "/safety_controller", "blend_ratio", "1.0"])
+        blend = _ros2_param(["set", "/safety_controller", "blend_ratio", "1.0"])
         assert blend.returncode == 0, blend.stdout + blend.stderr
         yield
     finally:
@@ -219,7 +254,7 @@ def s0_graph(tmp_path: Path) -> Iterator[None]:
 
 
 def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freezes(
-    s0_graph: None,
+    s0_graph: None, tmp_path: Path
 ) -> None:
     from openral_core import RobotDescription
     from openral_core.exceptions import ROSCapabilityMismatch, ROSEStopRequested
@@ -248,6 +283,12 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
             f"/joint_states never carried {transport.missing_joints()}"
         )
         hal.connect()
+
+        # Issue #548: the blend speed is fixed at configure, over the real parameter service.
+        speed = _ros2_param(["set", "/safety_controller", "max_blend_ratio_speed", "10.0"])
+        # `ros2 param set` exits 0 on a refusal and reports it on stderr.
+        assert "Setting parameter failed" in speed.stderr, speed.stdout + speed.stderr
+        assert _param("/safety_controller", "max_blend_ratio_speed") == 1.0
 
         left = [n for n in hal.upper_body_joints() if n.startswith("left_")]
         row = [0.3 if n == "left_elbow_joint" else 0.0 for n in names]
@@ -281,4 +322,27 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
         assert states.get("freeze_controller") == "active", states
         for controller in hal.controller_names():
             assert states.get(controller) == "inactive", states
+
+        # Issue #548: blend_ratio is still 1.0 and upstream's activation would apply it with no
+        # ramp. The guard resets it to 0.0 instead of refusing — a refused activation would
+        # keep this swap's deactivation of freeze_controller and leave the joints unclaimed.
+        rearm = _run(
+            [
+                "ros2",
+                "control",
+                "switch_controllers",
+                "--deactivate",
+                "freeze_controller",
+                "--activate",
+                *hal.controller_names(),
+                "--strict",
+            ]
+        )
+        assert rearm.returncode == 0, rearm.stdout + rearm.stderr
+        states = transport.controller_states(timeout_s=5.0)
+        for controller in hal.controller_names():
+            assert states.get(controller) == "active", states
+        assert _param("/safety_controller", "blend_ratio") == 0.0
+        cm_log = (tmp_path / "controller_manager.log").read_text(errors="replace")
+        assert "blend_ratio was 1 at activation; reset to 0.0" in cm_log, cm_log[-2000:]
         transport.close()
