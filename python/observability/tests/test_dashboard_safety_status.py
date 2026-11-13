@@ -189,3 +189,23 @@ def test_subscriber_writes_a_real_message_into_the_store() -> None:
     assert status["drop_reason_label"] == "kind_workspace"
     assert status["detail"] == "joint_position"
     assert status["stamp_unix"] == pytest.approx(1234.5)
+
+
+def test_kernel_status_clears_a_released_estop_flag() -> None:
+    """A release made anywhere clears the UI's "E-STOP latched" flag.
+
+    The flag (``topics.safety.estopped``) is set by an operator E-STOP; only the
+    dashboard's own reset cleared it. Released another way (``ros2 service call
+    /openral/estop_reset``, another screen) the kernel reports ``latched: false`` but
+    the flag stayed set, so the UI kept saying "E-STOP latched" on a released robot.
+    The kernel's status is the authority: it sets the flag both ways.
+    """
+    store = TelemetryStore()
+    store.set_estopped(True)  # the operator pressed E-STOP
+    _set(store, latched=True, detail="external estop")
+    assert store.snapshot()["topics"]["safety"]["estopped"] is True
+    _set(store, latched=False, detail="estop_reset")  # released elsewhere
+    assert store.snapshot()["topics"]["safety"]["estopped"] is False
+    # A latch the kernel reports (e.g. self-tripped) shows too, with no operator action.
+    _set(store, latched=True, detail="collision")
+    assert store.snapshot()["topics"]["safety"]["estopped"] is True

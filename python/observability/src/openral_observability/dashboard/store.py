@@ -685,6 +685,10 @@ class TelemetryStore:
                 # the snapshot uses — the publisher's stamp can be sim-time.
                 "ts_unix": time.time(),
             }
+            # The kernel's latch is the authority for the UI's e-stop flag, both ways: a
+            # release made anywhere (another screen, `ros2 service call
+            # /openral/estop_reset`) clears "E-STOP latched", not only this dashboard's.
+            self._topics["safety"]["estopped"] = bool(latched)
             payload = self._snapshot_locked()
         self._publish(payload)
 
