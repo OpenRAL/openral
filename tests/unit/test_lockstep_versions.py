@@ -110,16 +110,17 @@ def test_every_package_is_an_extra_file() -> None:
 
 
 def test_commit_search_depth_reaches_the_last_release() -> None:
-    """release-please reads at most ``commit-search-depth`` first-parent commits (default 500).
+    """release-please reads at most ``commit-search-depth`` commits (default 500).
 
-    Older commits drop out of the release notes without a warning: v0.4.0's first
-    release PR covered 673 first-parent commits and lost 316 entries.
+    It counts every commit in the range, merged-branch commits included, not just
+    first-parent ones. Older commits drop out of the release notes without a
+    warning: v0.4.0 covered 1017 commits and lost 316 entries at 500, 23 at 1000.
     """
     depth = _release_please_config().get("commit-search-depth", 500)
     manifest = json.loads((REPO_ROOT / ".release-please-manifest.json").read_text(encoding="utf-8"))
     tag = f"v{manifest['.']}"
     since = subprocess.run(
-        ["git", "rev-list", "--first-parent", "--count", f"{tag}..HEAD"],
+        ["git", "rev-list", "--count", f"{tag}..HEAD"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -128,7 +129,7 @@ def test_commit_search_depth_reaches_the_last_release() -> None:
     if since.returncode != 0:
         pytest.skip(f"{tag} is not in this checkout's history (shallow clone or unreleased)")
     assert int(since.stdout) < depth, (
-        f"{since.stdout.strip()} first-parent commits since {tag}, but release-please reads only "
+        f"{since.stdout.strip()} commits since {tag}, but release-please reads only "
         f"{depth}: raise commit-search-depth in release-please-config.json"
     )
 
