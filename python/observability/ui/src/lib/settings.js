@@ -30,3 +30,19 @@ export function shownValue(setting, value) {
   if (!value?.set) return "not set";
   return setting?.secret ? `set ${value.hint || ""}`.trim() : String(value.value ?? "");
 }
+
+// Open the left pane's Settings at a section ("reasoner"), from anywhere on the page:
+// the Rail listens for this event. The section is highlighted when the pane opens.
+export const OPEN_SETTINGS_EVENT = "openral:open-settings";
+export function openSettings(section) {
+  globalThis.dispatchEvent?.(new CustomEvent(OPEN_SETTINGS_EVENT, { detail: { section } }));
+}
+
+// Why the reasoner is not running for this robot, or "": its settings' problem (no
+// model, a missing key), else whether its lifecycle start failed (`reasonerDown`).
+export function reasonerNotConfigured(settingsData, lifecycleProblem) {
+  const problem = settingsData ? modelProblem(settingsData) : "";
+  if (problem) return `Reasoner is not configured. ${problem}`;
+  if (lifecycleProblem) return "Reasoner is not configured, or it failed to start (see Events).";
+  return "";
+}

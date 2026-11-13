@@ -1031,3 +1031,43 @@ main > .waiting {
 .cam-slot .cam-pills {
   display: none;
 }
+
+/* The Reasoner card before its first tick: why, and a link to the settings */
+.reasoner-warn {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font: 500 13px/1.5 var(--body);
+  color: var(--text);
+  background: color-mix(in srgb, var(--amber, #d9a441) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber, #d9a441) 45%, transparent);
+}
+.link-btn {
+  font: inherit;
+  color: var(--text);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+/* Settings opened from a "configure" link: the section flashes once */
+.settings-section.highlight {
+  border-radius: 10px;
+  animation: settings-flash 1.6s ease-out 2;
+}
+@keyframes settings-flash {
+  0% {
+    box-shadow: 0 0 0 2px var(--accent-line, rgba(255, 255, 255, 0.35));
+    background: var(--bg-2);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-section.highlight {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent-line, rgba(255, 255, 255, 0.35));
+  }
+}

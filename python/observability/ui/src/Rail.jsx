@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { viewerLabel, workspaceLabel } from "./lib/viewer.js";
 import { SettingsPane } from "./SettingsPane.jsx";
+import { OPEN_SETTINGS_EVENT } from "./lib/settings.js";
 
 // The left pane: whose workspace this is at the top (the org's logo or first letter,
 // and its name), then on the website the robots this account reaches (a click opens
@@ -66,6 +67,15 @@ export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasoner
   const [open, setOpen] = useOpen();
   const [menu, setMenu] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [highlight, setHighlight] = useState("");
+  useEffect(() => {
+    const open = (e) => {
+      setHighlight(String(e.detail?.section || ""));
+      setSettings(true);
+    };
+    window.addEventListener(OPEN_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
+  }, []);
   const me = useMe(onWebsite);
   const v = viewerLabel(me, cfg);
   const ws = workspaceLabel(me, cfg, robotName);
@@ -133,6 +143,7 @@ export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasoner
                 role="menuitem"
                 onClick={() => {
                   setMenu(false);
+                  setHighlight("");
                   setSettings(true);
                 }}
               >
@@ -188,7 +199,12 @@ export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasoner
         </div>
       </aside>
       {settings && (
-        <SettingsPane onWebsite={onWebsite} reasonerModel={reasonerModel} onClose={() => setSettings(false)} />
+        <SettingsPane
+          onWebsite={onWebsite}
+          reasonerModel={reasonerModel}
+          highlight={highlight}
+          onClose={() => (setSettings(false), setHighlight(""))}
+        />
       )}
     </>
   );
