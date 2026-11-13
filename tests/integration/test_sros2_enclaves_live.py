@@ -3,7 +3,8 @@
 
 A keystore written by the real ``openral security init`` (franka_panda: its
 manifest adds ``/franka_arm_controller/joint_trajectory``) is put in front of
-real participants, one process per enclave, on Cyclone DDS and Fast DDS in Enforce mode:
+real participants, one process per enclave, on Cyclone DDS and (where installed) Fast DDS
+in Enforce mode:
 
 1. every enclave can or cannot create the publishers / service clients the
    ADR's table says, enforced by the DDS access-control plugin (a denied
@@ -193,6 +194,10 @@ def secured_env(
     pytest.importorskip("trajectory_msgs.msg")
     if shutil.which("ros2") is None:
         pytest.skip("needs a sourced ROS 2 with sros2")
+    rmw = subprocess.run(["ros2", "pkg", "prefix", request.param], capture_output=True, check=False)
+    if rmw.returncode != 0:
+        # The openral:x86 image ships Cyclone only; a dev host with both runs both.
+        pytest.skip(f"{request.param} is not installed")
     keystore = tmp_path_factory.mktemp("sros2") / "franka_panda"
     init = subprocess.run(
         [

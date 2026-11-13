@@ -256,7 +256,8 @@ opposite direction ahead of each one-sided deny (never for a surface denied in
 both directions, so it grants no serving) and re-signs the permissions
 (`openral_cli.security._allow_the_other_side`). The live test
 `tests/integration/test_sros2_enclaves_live.py` checks both directions per enclave, on
-Cyclone and Fast DDS.
+Cyclone and, where it is installed, Fast DDS (the `openral:x86` image ships Cyclone only,
+so CI runs the Cyclone lane; a dev host with both RMWs runs both).
 
 **Measured cost** (dev host, Cyclone): 1280×720 RGB at 30 Hz was received at 24.0 Hz
 under encryption vs 26.6 Hz without, with 18 % more subscriber CPU.
