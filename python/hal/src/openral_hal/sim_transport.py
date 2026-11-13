@@ -80,16 +80,16 @@ class SimTransport:
             applied **by name** to those joints only; without it every command
             is a whole-vector one.
         switch_faults: Per-operation (``"deactivate"`` / ``"activate"`` /
-            ``"swap"``) exception the switch **raises** instead of answering — the
-            rclpy-shaped fault (executor or context shut down, a dead
-            client handle) a real ``controller_manager`` call can die with.
-            The HAL must contain it in its stop report.
+            ``"swap"`` / ``"list"`` / ``"configure"``) exception the call **raises**
+            instead of answering — the rclpy-shaped fault (executor or context
+            shut down, a dead client handle) a real ``controller_manager`` call
+            can die with. The HAL must contain it in its stop report.
         initial_states: Per-controller starting state overriding ``active``
             (e.g. ``{"freeze_controller": "unconfigured"}``).
         activation_faults: Per-controller number of activations whose
             ``on_activate`` fails before one succeeds. A failed activation in a
             swap keeps the swap's deactivations, as a real ``controller_manager``
-            does (verified on Jazzy 4.48, #566).
+            does under either strictness (verified on Jazzy 4.48, #566).
 
     Example:
         >>> transport = SimTransport(n_joints=2)
@@ -223,11 +223,12 @@ class SimTransport:
 
         Recorded as one ``("swap", deactivate + activate)`` entry in
         ``switch_calls``, so a test can prove no separate deactivate-then-
-        activate pair was issued. A name not in a STRICT table refuses the whole
-        swap. Otherwise, as a real BEST_EFFORT switch: an activation of a
-        controller that is not ``inactive`` is dropped and an activation whose
-        ``on_activate`` fails (``activation_faults``) fails — and in both cases
-        the deactivations still happen.
+        activate pair was issued. As the STRICT switch ``RosControlTransport``
+        sends: a name not in a STRICT table, a ``deactivate`` controller not
+        ``active`` or an ``activate`` one not ``inactive`` refuses the whole swap
+        and nothing moves. Past that check, an activation whose ``on_activate``
+        fails (``activation_faults``) fails and the deactivations still happen —
+        ``controller_manager`` has no rollback for them (4.48.1).
         """
         off, on = tuple(deactivate), tuple(activate)
         wanted = off + on
@@ -236,13 +237,18 @@ class SimTransport:
         self._switches.append(("swap", wanted))
         if "swap" in self._switch_faults:
             raise self._switch_faults["swap"]
-        unknown = [n for n in wanted if self._state_of(n) == "unloaded"]
-        if unknown:
+        must = {n: "active" for n in off} | {n: "inactive" for n in on}
+        refused = [
+            f"{n} is {state}, not {need}"
+            for n, need in must.items()
+            if (state := self._state_of(n)) != need
+        ]
+        if refused:
             return ControllerSwitchReport(
                 ok=False,
                 controllers=wanted,
                 states={n: self._state_of(n) for n in wanted},
-                detail=f"controller(s) not loaded: {unknown}",
+                detail="STRICT swap refused: " + "; ".join(refused),
             )
         for n in off:
             self._controller_states[n] = "inactive"
@@ -256,11 +262,18 @@ class SimTransport:
         )
 
     def controller_states(self, *, timeout_s: float) -> dict[str, str]:
-        """``{name: state}`` of the controller table."""
+        """``{name: state}`` of the controller table; may raise the ``"list"`` fault."""
+        if "list" in self._switch_faults:
+            raise self._switch_faults["list"]
         return dict(self._controller_states)
 
     def configure_controller(self, name: str, *, timeout_s: float) -> bool:
-        """``unconfigured`` → ``inactive``; ``False`` for an unloaded controller."""
+        """``unconfigured`` → ``inactive``; ``False`` for an unloaded controller.
+
+        May raise the ``"configure"`` fault.
+        """
+        if "configure" in self._switch_faults:
+            raise self._switch_faults["configure"]
         state = self._state_of(name)
         if state == "unloaded":
             return False

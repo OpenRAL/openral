@@ -317,8 +317,9 @@ def test_estop_swaps_the_s0_chain_for_freeze_in_one_request() -> None:
 
 
 def test_an_unconfigured_freeze_controller_is_configured_before_the_swap() -> None:
-    """#566: the swap is BEST_EFFORT, so an unconfigured freeze would be dropped while the
-    chain is still deactivated — every joint unclaimed, zero torque on the hg hardware."""
+    """#566: the STRICT swap is refused whole while freeze is unconfigured (a BEST_EFFORT one
+    dropped its activation and still deactivated the chain — every joint unclaimed), so the
+    HAL configures it first."""
     hal, transport = _wired(initial_states={"freeze_controller": "unconfigured"})
     with pytest.raises(ROSEStopRequested, match="acknowledged"):
         hal.estop()
@@ -353,6 +354,69 @@ def test_a_freeze_that_will_not_activate_is_reported_unacknowledged() -> None:
     report = hal.last_stop_report
     assert report is not None and not report.stopped
     assert report.controller_states["freeze_controller"] == "inactive"
+
+
+def test_a_freeze_that_cannot_be_activated_never_releases_the_chain() -> None:
+    """Review of #571, finding 1: a BEST_EFFORT swap drops the activation of a freeze
+    controller that is not ``inactive`` (here ``finalized``; live: a configure that fails)
+    and still deactivates the chain — every joint unclaimed. The swap is STRICT, so
+    ``controller_manager`` refuses it whole and the chain keeps the joints."""
+    hal, transport = _wired(initial_states={"freeze_controller": "finalized"})
+    with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+        hal.estop()
+    assert all(transport.controller_state(c) == "active" for c in _CHAIN)
+    assert transport.controller_state("freeze_controller") == "finalized"
+    report = hal.last_stop_report
+    assert report is not None and not report.stopped
+
+
+def test_a_faulting_precheck_still_sends_the_swap() -> None:
+    """Review of #571, finding 3: the pre-check is advisory. An exception in it (a dead
+    list client) must not skip the swap — before the fix it escaped `_stop_switch` and no
+    stop request ever reached the manager."""
+    hal, transport = _wired(switch_faults={"list": RuntimeError("list client destroyed")})
+    switches_before = list(transport.switch_calls)
+    with pytest.raises(ROSEStopRequested, match="acknowledged"):
+        hal.estop()
+    new = transport.switch_calls[len(switches_before) :]
+    assert new == [("swap", (*_CHAIN, "freeze_controller"))]
+    assert transport.controller_state("freeze_controller") == "active"
+    assert all(transport.controller_state(c) == "inactive" for c in _CHAIN)
+    report = hal.last_stop_report
+    assert report is not None and report.stopped
+    assert "pre-check failed (RuntimeError: list client destroyed)" in report.detail
+
+
+def test_a_second_estop_finds_the_joints_already_held() -> None:
+    """STRICT refuses deactivating a controller that is already out; the listing — freeze
+    active, chain inactive — is the verdict, so a repeat e-stop is still acknowledged."""
+    hal, transport = _wired()
+    for _ in range(2):
+        with pytest.raises(ROSEStopRequested, match="acknowledged"):
+            hal.estop()
+        report = hal.last_stop_report
+        assert report is not None and report.stopped, report
+    assert transport.controller_state("freeze_controller") == "active"
+
+
+def test_a_chain_member_already_out_is_left_out_of_the_swap() -> None:
+    """A partial chain (upper body already inactive): STRICT refuses the full swap, so the
+    HAL swaps out the members still active — the joints still end up held by freeze."""
+    hal, transport = _wired(
+        initial_states={"upper_body_forward_joint_command_controller": "inactive"}
+    )
+    switches_before = list(transport.switch_calls)
+    with pytest.raises(ROSEStopRequested, match="acknowledged"):
+        hal.estop()
+    new = transport.switch_calls[len(switches_before) :]
+    assert new == [
+        ("swap", (*_CHAIN, "freeze_controller")),
+        ("swap", (*_CHAIN[:2], "freeze_controller")),
+    ]
+    assert transport.controller_state("freeze_controller") == "active"
+    assert all(transport.controller_state(c) == "inactive" for c in _CHAIN)
+    report = hal.last_stop_report
+    assert report is not None and report.stopped
 
 
 def test_a_failing_swap_is_reported_unacknowledged_and_still_raises() -> None:

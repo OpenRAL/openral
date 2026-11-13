@@ -43,7 +43,9 @@ from what the HAL declared in `vendor_stop_services()` /
 `vendor_stop_topics()`, so the stop path never creates an entity — and so a
 vendor stop on an undeclared name is refused rather than silently absent.
 `swap_controllers` (`ControllerSwapSeam`) is the one-request hand-over a robot
-whose hardware releases unclaimed joints needs instead of plain deactivation.
+whose hardware releases unclaimed joints needs instead of plain deactivation;
+it is STRICT too, so the manager refuses it whole rather than apply the
+deactivations without the activation.
 
 Service calls run on a private helper node with its own executor: the e-stop
 callback runs on the lifecycle node's single-threaded executor, and a future
@@ -75,16 +77,11 @@ _DEFAULT_CONTROLLER_MANAGER = "/controller_manager"
 
 #: `controller_manager_msgs/srv/SwitchController` strictness: refuse the whole
 #: switch if any named controller cannot move. A best-effort stop that leaves
-#: one controller active is not a stop.
+#: one controller active is not a stop — and a best-effort *swap* drops an
+#: activation that cannot happen (a controller not `inactive`) while still
+#: applying the deactivations, which releases every joint the chain held
+#: (controller_manager 4.48.1 `switch_controller_cb`; review of #571).
 _STRICT = 2
-
-#: `BEST_EFFORT` strictness, used only by `swap_controllers`: the swap is an
-#: emergency hand-over (NVIDIA's own `SafetyController` issues the same
-#: request BEST_EFFORT) and one of its controllers may already be where the
-#: swap wants it — e.g. the S0 safety controller already fell back to its
-#: freeze controller. STRICT would refuse that whole request; the post-switch
-#: `list_controllers` confirmation is what decides whether the swap held.
-_BEST_EFFORT = 1
 
 #: Components of a `TWIST` command: vx, vy, vz, wx, wy, wz.
 _TWIST_DIM = 6
@@ -494,14 +491,17 @@ class RosControlTransport:
         Implements `ControllerSwapSeam` for robots whose hardware releases
         unclaimed joints: the hand-over happens inside one controller-manager
         switch, so no update cycle runs with the joints unclaimed. Requested
-        BEST_EFFORT (see `_BEST_EFFORT`); `ok` is the manager's `ok` **and** a
-        post-switch listing with every `deactivate` controller `inactive` and
-        every `activate` controller `active`.
+        STRICT (see `_STRICT`): a controller that cannot make its transition
+        (an `activate` one not `inactive`, a `deactivate` one not `active`)
+        refuses the whole request and nothing moves. `ok` is the manager's `ok`
+        **and** a post-switch listing with every `deactivate` controller
+        `inactive` and every `activate` controller `active`; `states` is that
+        listing either way.
         """
         return self._switch_request(
             deactivate=tuple(deactivate),
             activate=tuple(activate),
-            strictness=_BEST_EFFORT,
+            strictness=_STRICT,
             timeout_s=timeout_s,
         )
 
@@ -557,9 +557,8 @@ class RosControlTransport:
     def configure_controller(self, name: str, *, timeout_s: float) -> bool:
         """Configure one loaded controller (`configure_controller`); True when the manager says ok.
 
-        Part of `ControllerSwapSeam`: a swap is requested BEST_EFFORT, and the manager drops
-        the activation of a controller that is not `inactive` while still applying the
-        swap's deactivations, so a HAL configures its holding controller before swapping.
+        Part of `ControllerSwapSeam`: the STRICT swap is refused whole while its holding
+        controller is `unconfigured`, so a HAL configures it before swapping.
         """
         deadline = time.monotonic() + timeout_s
         if not self._configure_client.wait_for_service(timeout_sec=timeout_s):
