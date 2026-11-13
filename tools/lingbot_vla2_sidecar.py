@@ -9,7 +9,8 @@ driven from ``openral_sim.policies.lingbot_vla2`` over ZMQ REQ/REP +
 msgpack (same transport as rldx / rlbench-3dda).
 
 Auto-provisions on first use, under the openral interpreter:
-1. **Clone** ``lingbot-vla-v2`` at ``_PINNED_SHA`` into ``<home>/source``
+1. **Clone** ``lingbot-vla-v2`` at ``_PINNED_SHA`` into ``<home>/source``; a
+   reused checkout must still be at the pin
    (``$OPENRAL_LINGBOT_VLA2_REPO`` overrides with an existing checkout).
 2. **Venv** — Python 3.12 from upstream ``requirements.txt`` under
    ``_V2_OVERRIDES`` (torch 2.9.1 / triton 3.5.1, not upstream's
@@ -40,6 +41,7 @@ from pathlib import Path
 from openral_rskill.quantization_gate import sidecar_quantization_args
 from openral_sim._sidecar_common import (
     ensure_pip_venv,
+    ensure_source,
     ensure_uv,
     make_isolated_env,
     run_cmd,
@@ -108,12 +110,12 @@ _V2_OVERRIDES = (
 def _ensure_source(
     home: Path, *, url: str = _REPO_URL, sha: str = _PINNED_SHA, repo_env: str = _REPO_ENV
 ) -> Path:
-    """Clone the upstream lingbotvla repo at the pinned commit into ``<home>/source``.
+    """Return the upstream lingbotvla checkout at ``<home>/source``, fetched at ``sha``.
 
-    ``$<repo_env>`` overrides with an existing checkout (dev escape hatch). Unlike
-    the shared ``ensure_source`` (which shallow-clones the default branch HEAD), we
-    fetch exactly the pinned commit so the sidecar is reproducible (CLAUDE.md §1.8)
-    regardless of where upstream ``main`` has moved.
+    The sidecar executes this code, so fresh or reused it must be the pin (the
+    shared ``ensure_source`` fails closed otherwise; delete ``<home>/source`` to
+    re-fetch after a pin bump). ``$<repo_env>`` overrides with an existing
+    checkout (dev escape hatch): the operator's own, never fetched or verified here.
     """
     override = os.environ.get(repo_env)
     if override:
@@ -122,17 +124,7 @@ def _ensure_source(
             raise SystemExit(f"{repo_env}={override!r} has no lingbotvla/ package dir")
         print(f"[{_LABEL}] reusing operator-provided checkout at {src}", flush=True)
         return src
-    source = home / "source"
-    if (source / ".git").is_dir():
-        print(f"[{_LABEL}] reusing existing checkout at {source}", flush=True)
-        return source
-    home.mkdir(parents=True, exist_ok=True)
-    # Shallow-fetch exactly the pinned commit (no full history) and check it out.
-    run_cmd(_LABEL, ["git", "init", "-q", str(source)])
-    run_cmd(_LABEL, ["git", "-C", str(source), "remote", "add", "origin", url])
-    run_cmd(_LABEL, ["git", "-C", str(source), "fetch", "--depth", "1", "origin", sha])
-    run_cmd(_LABEL, ["git", "-C", str(source), "checkout", "-q", "FETCH_HEAD"])
-    return source
+    return ensure_source(_LABEL, home, url, sha)
 
 
 def _install_v1(uv: str, py: Path) -> None:

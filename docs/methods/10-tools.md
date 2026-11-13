@@ -708,27 +708,27 @@ _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.polici
 ### `tools/lingbot_vla2_sidecar.py` + `tools/_lingbot_vla2_server.py`
 _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.policies.lingbot_vla2`. v2 (6B Qwen3-VL MoE) is the default; `--variant v1` selects the 4B Qwen2.5-VL dense RoboTwin post-train, which is x86_64-only. Runs out-of-process because upstream pins a torch/kernel stack incompatible with the workspace._
 
-- `_LABEL = "lingbot-sidecar"` (L50) — sidecar identity.
-- `_REPO_URL: str` (L51) — upstream `robbyant/lingbot-vla-v2` clone URL.
-- `_PINNED_SHA: str` (L54) — pinned v2 commit.
-- `_DEFAULT_HOME: Path` (L55) — v2 cache dir.
-- `_HOME_ENV: str` (L56) — `--home` override env var name.
-- `_VENV_ENV: str` (L57) — `--venv` override env var name (v2).
-- `_REPO_ENV: str` (L58) — repo-dir override env var name (v2).
-- `_REPO_URL_V1: str` (L64) — the v1 (`robbyant/lingbot-vla`) clone URL, driven by `--variant v1`.
-- `_PINNED_SHA_V1: str` (L65) — pinned v1 commit.
-- `_DEFAULT_HOME_V1: Path` (L66) — v1 cache dir.
-- `_VENV_ENV_V1: str` (L67) — `--venv` override env var name (v1).
-- `_REPO_ENV_V1: str` (L68) — repo-dir override env var name (v1).
-- `_SERVER: Path` (L70) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
-- `_AARCH64_PTXAS: str` (L75) — `nvidia-cuda-nvcc==13.0.88`, installed on aarch64 only so the MoE Triton kernels get a `ptxas` that targets both Thor (`sm_110`) and GB10 (`sm_121`); also part of the aarch64 venv spec, so a CUDA-12.9-ptxas venv is repaired.
-- `_TORCH_PIN` (L90) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
-- `_TORCHVISION_PIN` (L91) — matching v2 torch-stack pin.
-- `_TORCHAUDIO_PIN` (L92) — matching v2 torch-stack pin.
-- `_TORCHCODEC_PIN` (L97) — matching v2 torch-stack pin (excluded on aarch64).
-- `_TRITON_PIN` (L98) — matching v2 torch-stack pin.
-- `_V2_OVERRIDES: tuple[str, ...]` (L99) — the override requirement files applied on top of upstream's v2 lock.
-- `main() -> int` (L326) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
+- `_LABEL = "lingbot-sidecar"` (L52) — sidecar identity.
+- `_REPO_URL: str` (L53) — upstream `robbyant/lingbot-vla-v2` clone URL.
+- `_PINNED_SHA: str` (L56) — pinned v2 commit.
+- `_DEFAULT_HOME: Path` (L57) — v2 cache dir.
+- `_HOME_ENV: str` (L58) — `--home` override env var name.
+- `_VENV_ENV: str` (L59) — `--venv` override env var name (v2).
+- `_REPO_ENV: str` (L60) — repo-dir override env var name (v2).
+- `_REPO_URL_V1: str` (L66) — the v1 (`robbyant/lingbot-vla`) clone URL, driven by `--variant v1`.
+- `_PINNED_SHA_V1: str` (L67) — pinned v1 commit.
+- `_DEFAULT_HOME_V1: Path` (L68) — v1 cache dir.
+- `_VENV_ENV_V1: str` (L69) — `--venv` override env var name (v1).
+- `_REPO_ENV_V1: str` (L70) — repo-dir override env var name (v1).
+- `_SERVER: Path` (L72) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
+- `_AARCH64_PTXAS: str` (L77) — `nvidia-cuda-nvcc==13.0.88`, installed on aarch64 only so the MoE Triton kernels get a `ptxas` that targets both Thor (`sm_110`) and GB10 (`sm_121`); also part of the aarch64 venv spec, so a CUDA-12.9-ptxas venv is repaired.
+- `_TORCH_PIN` (L92) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
+- `_TORCHVISION_PIN` (L93) — matching v2 torch-stack pin.
+- `_TORCHAUDIO_PIN` (L94) — matching v2 torch-stack pin.
+- `_TORCHCODEC_PIN` (L99) — matching v2 torch-stack pin (excluded on aarch64).
+- `_TRITON_PIN` (L100) — matching v2 torch-stack pin.
+- `_V2_OVERRIDES: tuple[str, ...]` (L101) — the override requirement files applied on top of upstream's v2 lock.
+- `main() -> int` (L318) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L49) — Marker key for the msgpack ndarray codec.
 - `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L1009) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy. `--quantization nf4` on CUDA needs a valid `--quantization-config` (Pro's kwargs with `load_in_4bit`), which `lingbot_vla2_sidecar.py` takes from OpenRAL Pro (`sidecar_quantization_args`); a missing, malformed or mismatched config, or no `--pro-quant-module` (the path of Pro's sidecar rewrites file, `sidecar_quantization_args(..., rewrites=True)`), makes the server exit (ADR-0123). `--device cpu` falls back to bf16 and needs neither Pro nor a config.
 

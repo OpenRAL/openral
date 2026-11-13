@@ -8,9 +8,11 @@ operator credentials (reasoner API keys) away from remote-code sidecars. Real
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import subprocess
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from openral_core.exceptions import ROSConfigError
@@ -109,6 +111,25 @@ def test_robotwin_checkout_is_verified_on_reuse_not_only_on_clone(tmp_path: Path
     shutil.rmtree(root / ".git")
     with pytest.raises(ROSConfigError, match="no git checkout"):
         _ensure_robotwin_checkout(home, url, first)
+
+
+@_needs_git
+def test_lingbot_checkout_is_verified_on_reuse_not_only_on_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The LingBot-VLA2 boot helper executes its ``<home>/source`` checkout: a reused
+    checkout moved off the pin is refused like a fresh one (#560 for LingBot)."""
+    lingbot = _tool("lingbot_vla2_sidecar")
+    monkeypatch.delenv(lingbot._REPO_ENV, raising=False)
+    url, first, tip = _upstream(tmp_path)
+    home = tmp_path / "home"
+    source = lingbot._ensure_source(home, url=url, sha=first)
+    assert source == home / "source" and checkout_head(source) == first
+    assert lingbot._ensure_source(home, url=url, sha=first) == source  # reuse at the pin
+    _git("fetch", "-q", "--depth", "1", "origin", tip, cwd=source)
+    _git("checkout", "-q", "FETCH_HEAD", cwd=source)
+    with pytest.raises(SystemExit, match="not the pinned"):
+        lingbot._ensure_source(home, url=url, sha=first)
 
 
 @_needs_git
@@ -266,6 +287,17 @@ def test_isolated_env_never_carries_the_reasoner_key(monkeypatch: pytest.MonkeyP
 
 
 _TOOLS = Path(__file__).resolve().parents[2] / "tools"
+
+
+def _tool(name: str) -> ModuleType:
+    """Import ``tools/<name>.py`` (a script, not a package) as a fresh module."""
+    spec = importlib.util.spec_from_file_location(f"_tool_{name}", _TOOLS / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _OPERATOR_SECRETS = {
     "OPENRAL_REASONER_API_KEY": "sk-openral",
     "ANTHROPIC_API_KEY": "sk-ant",
@@ -309,16 +341,12 @@ def test_boot_helper_scrubs_environ_before_anything(
     any venv install or exec, so the patched ``os.environ`` is exactly what the
     rest of the boot (and the exec'd server) would see.
     """
-    import importlib.util
     import os
     import sys
 
     environ = {"PATH": "/usr/bin", "HF_HOME": "/data/hf", "HF_TOKEN": "hf_x"}
     environ |= reads | _OPERATOR_SECRETS
-    spec = importlib.util.spec_from_file_location(f"_scrub_{tool}", _TOOLS / f"{tool}.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _tool(tool)
     monkeypatch.setattr(os, "environ", dict(environ))
     monkeypatch.setattr(sys, "argv", [tool, "--help"])
     with pytest.raises(SystemExit):
