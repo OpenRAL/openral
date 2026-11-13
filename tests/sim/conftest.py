@@ -233,6 +233,17 @@ def _repo_root() -> Path:
     raise RuntimeError("could not locate repo root from test file")
 
 
+def _lingbot_sidecar_home(variant: str) -> Path:
+    """Where ``tools/lingbot_vla2_sidecar.py`` provisions ``variant`` (its own rule)."""
+    tool = Path(__file__).resolve().parents[2] / "tools" / "lingbot_vla2_sidecar.py"
+    spec = importlib.util.spec_from_file_location("_lingbot_vla2_sidecar_tool", tool)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    home: Path = module._default_home(variant)
+    return home
+
+
 def _robotwin_obs() -> dict[str, object]:
     """A synthetic 3-camera RoboTwin-shaped observation for the aloha_agilex (14-DoF) rig."""
     import numpy as np

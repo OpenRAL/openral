@@ -38,24 +38,16 @@ import numpy as np
 import pytest
 from openral_rskill.quantization_gate import pro_quantization_installed
 
-from tests.sim.conftest import _robotwin_obs
+from tests.sim.conftest import _lingbot_sidecar_home, _robotwin_obs
 
 _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is None]
-
-
-def _home() -> Path:
-    """The boot helper's home for this variant (``_default_home`` in the tool)."""
-    override = os.environ.get("OPENRAL_LINGBOT_VLA_SIDECAR_HOME")
-    return Path(
-        override or Path.home() / ".cache" / "openral" / "lingbot-vla-v1-sidecar"
-    ).expanduser()
 
 
 def _sidecar_python() -> Path | None:
     override = os.environ.get("OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON")
     if override:
         return Path(override) if Path(override).is_file() else None
-    default = _home() / ".venv" / "bin" / "python"
+    default = _lingbot_sidecar_home("v1") / ".venv" / "bin" / "python"
     return default if default.is_file() else None
 
 
@@ -64,7 +56,7 @@ def _repo_checkout() -> Path | None:
     if override:
         p = Path(override)
         return p if (p / "lingbotvla").is_dir() else None
-    default = _home() / "source"
+    default = _lingbot_sidecar_home("v1") / "source"
     return default if (default / "lingbotvla").is_dir() else None
 
 

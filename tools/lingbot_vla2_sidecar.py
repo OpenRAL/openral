@@ -35,8 +35,9 @@ import argparse
 import os
 import platform
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
 from openral_rskill.quantization_gate import sidecar_quantization_args
@@ -334,28 +335,30 @@ class _Variant(NamedTuple):
 
 # v1 and v2 are different repos at different pins with different dependency
 # stacks, so nothing here is shared: one record per variant, no cross-reading.
-_VARIANTS = {
-    "v2": _Variant(
-        url=_REPO_URL,
-        sha=_PINNED_SHA,
-        home_env=_HOME_ENV,
-        default_home=_DEFAULT_HOME,
-        repo_env=_REPO_ENV,
-        venv_env=_VENV_ENV,
-        install=None,
-        qwen_envs=("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH"),
-    ),
-    "v1": _Variant(
-        url=_REPO_URL_V1,
-        sha=_PINNED_SHA_V1,
-        home_env=_HOME_ENV_V1,
-        default_home=_DEFAULT_HOME_V1,
-        repo_env=_REPO_ENV_V1,
-        venv_env=_VENV_ENV_V1,
-        install=_install_v1,
-        qwen_envs=("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH"),
-    ),
-}
+_VARIANTS: Mapping[str, _Variant] = MappingProxyType(
+    {
+        "v2": _Variant(
+            url=_REPO_URL,
+            sha=_PINNED_SHA,
+            home_env=_HOME_ENV,
+            default_home=_DEFAULT_HOME,
+            repo_env=_REPO_ENV,
+            venv_env=_VENV_ENV,
+            install=None,
+            qwen_envs=("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH"),
+        ),
+        "v1": _Variant(
+            url=_REPO_URL_V1,
+            sha=_PINNED_SHA_V1,
+            home_env=_HOME_ENV_V1,
+            default_home=_DEFAULT_HOME_V1,
+            repo_env=_REPO_ENV_V1,
+            venv_env=_VENV_ENV_V1,
+            install=_install_v1,
+            qwen_envs=("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH"),
+        ),
+    }
+)
 # Records which variant a home holds; see _claim_home.
 _VARIANT_MARKER = ".lingbot-variant"
 
@@ -378,22 +381,36 @@ def _default_home(variant: str) -> Path:
     return Path(override or v.default_home).expanduser()
 
 
-def _claim_home(home: Path, variant: str) -> None:
-    """Mark ``home`` as ``variant``'s; refuse a home another variant already holds.
+def _claim_home(home: Path, variant: str, *, mark: bool) -> None:
+    """Refuse a ``home`` another variant holds; with ``mark``, record it as ``variant``'s.
 
-    A shared home hands one variant the other's ``source/`` and ``.venv``; the
-    pin check catches the checkout, but not the venv when ``$<repo_env>`` points
-    at an operator checkout. Checked for every home, ``--home`` included.
+    A shared home hands one variant the other's ``source/`` and ``.venv``; the pin
+    check catches the checkout, not the venv when ``$<repo_env>`` names an operator
+    checkout. Checked for every home, ``--home`` included: ``mark=False`` before the
+    fetch, ``mark=True`` once the checkout is verified and before the venv, so a
+    refused run never claims a home. A home neither the checkout nor the venv
+    lives in (both overrides set) is left untouched.
     """
+    v = _VARIANTS[variant]
+    if os.environ.get(v.repo_env) and os.environ.get(v.venv_env):
+        return
     marker = home / _VARIANT_MARKER
-    owner = marker.read_text(encoding="utf-8").strip() if marker.is_file() else variant
+    if mark and not marker.exists():
+        home.mkdir(parents=True, exist_ok=True)
+        tmp = home / f"{_VARIANT_MARKER}.{os.getpid()}"
+        tmp.write_text(f"{variant}\n", encoding="utf-8")
+        try:  # link is atomic and exclusive: never a half-written marker, one racer wins
+            os.link(tmp, marker)
+        except FileExistsError:
+            pass
+        finally:
+            tmp.unlink()
+    owner = marker.read_text(encoding="utf-8").strip() if marker.exists() else variant
     if owner != variant:
         raise SystemExit(
-            f"[{_LABEL}] {home} is the LingBot {owner} sidecar home; give --variant "
-            f"{variant} its own (--home or ${_VARIANTS[variant].home_env})"
+            f"[{_LABEL}] {home} is held by LingBot variant {owner!r} ({marker}); give "
+            f"--variant {variant} its own home (--home or ${v.home_env})"
         )
-    home.mkdir(parents=True, exist_ok=True)
-    marker.write_text(f"{variant}\n", encoding="utf-8")
 
 
 def main() -> int:
@@ -432,16 +449,17 @@ def main() -> int:
         type=Path,
         default=None,
         help=f"Sidecar work directory (default ${_HOME_ENV} for v2, ${_HOME_ENV_V1} for v1, "
-        "else ~/.cache/openral/lingbot-vla{2,-v1}-sidecar).",
+        "else a per-variant directory under ~/.cache/openral).",
     )
     args = p.parse_args()
 
     # Per-variant provisioning: repo URL/SHA, venv installer, home, env names.
     variant = _VARIANTS[args.variant]
     home = args.home or _default_home(args.variant)
-    _claim_home(home, args.variant)
+    _claim_home(home, args.variant, mark=False)
 
     source = _ensure_source(home, url=variant.url, sha=variant.sha, repo_env=variant.repo_env)
+    _claim_home(home, args.variant, mark=True)
     # Sub-16-bit needs OpenRAL Pro; ask before the venv build (ADR-0123).
     # CPU NF4 runs bf16 (no CPU 4-bit kernel; the server falls back), so only a
     # GPU sub-16-bit load needs Pro.
