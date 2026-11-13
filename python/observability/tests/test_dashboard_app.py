@@ -458,6 +458,10 @@ async def test_root_serves_a_local_ui_build(
     assert asset.text == "console.log('ui')"
     assert escape.status_code == 404
     assert "script-src 'self';" in index.headers["content-security-policy"]
+    # The page names the hashed bundles: revalidated on every load, or an updated UI
+    # keeps serving the old one from the browser cache. The bundles themselves may cache.
+    assert index.headers["cache-control"] == "no-cache"
+    assert "cache-control" not in asset.headers
 
 
 @pytest.mark.asyncio
