@@ -24,3 +24,9 @@ _A real `ros2_control` graph with only the motors left out — `controller_manag
 - `bring_up(tmp, *, urdf, config, controllers)` [contextmanager] — `robot_state_publisher` + `ros2_control_node`, then the spawner per controller (its exit code is the readiness signal). Children inherit `ROS_DOMAIN_ID`; never sets `ROS_AUTOMATIC_DISCOVERY_RANGE` (see `tests/sim/conftest.py` for the hang). (L164)
 - `driver_node(name)` [contextmanager] — `(node, spin)` on a private rclpy context. (L254)
 - `wait_until(spin, predicate, timeout_s) -> bool` — Poll, never a bare sleep; DDS discovery takes a beat. (L286)
+
+### `packages/openral_rskill_ros/test/_launch_test_common.py`
+_The `deploy_e2e.launch.py` loader and launch walker for launch tests, plus the ROS scope those tests compose under. `tests/integration/test_real_bringup_graph_gate_live.py` loads it by path._
+
+- `ROS_SCOPE_VARS: tuple[str, ...]` — Every variable `openral_core.ros_graph_scope` reads to decide a graph's reach (range, peers, opt-in, RMW, discovery server, vendor XML, SROS2 trio). (L24)
+- `set_ros_scope(monkeypatch, env) -> None` — Clear every `ROS_SCOPE_VARS` entry, then export `env`, for one test. Only for a graph that runs in that environment alone (a LOCALHOST range across a process boundary the test does not launch hangs, see `tests/sim/conftest.py`). The package conftest's `host_confined_ros_graph` fixture applies the scope `openral deploy run` gives a real robot through it. (L40)

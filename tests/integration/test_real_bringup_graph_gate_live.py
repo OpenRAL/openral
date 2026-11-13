@@ -23,6 +23,7 @@ import re
 import sys
 import traceback
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -30,26 +31,17 @@ from typing import Any
 import pytest
 import structlog
 import yaml
+from openral_core import ros_graph_scope
 from openral_core.exceptions import ROSConfigError
 
 _REPO = Path(__file__).resolve().parents[2]
 _SCOPE_MODULE = "openral_core.ros_graph_scope"
-#: Variables that make an env host-confined, opted in, secured, or networked through
-#: another branch of ``networked_ros_scope`` than the discovery range under test.
-_SCOPE_VARS = (
-    "OPENRAL_ALLOW_NETWORK_ROS",
-    "ROS_LOCALHOST_ONLY",
-    "ROS_AUTOMATIC_DISCOVERY_RANGE",
-    "ROS_STATIC_PEERS",
-    "ROS_DISCOVERY_SERVER",
-    "RMW_IMPLEMENTATION",
-    "CYCLONEDDS_URI",
-    "FASTRTPS_DEFAULT_PROFILES_FILE",
-    "FASTDDS_DEFAULT_PROFILES_FILE",
-    "ROS_SECURITY_ENABLE",
-    "ROS_SECURITY_STRATEGY",
-    "ROS_SECURITY_KEYSTORE",
-)
+#: The gate itself, captured before any test wraps it.
+_GATE = ros_graph_scope.require_host_confined_real_bringup
+#: What a walk past the gate may stop on: a vendor package this host lacks, or the G1's
+#: S0 LEAPP bundle, which is built on the robot's own host
+#: (``openral_hal.unitree_s0_policy.resolve_leapp_config``).
+_PAST_THE_GATE = re.compile(r"not found|S0 policy LEAPP config .+ does not exist")
 
 
 def _in_tree_real_bringups() -> list[Path]:
@@ -93,10 +85,7 @@ def _launch_module(launch: Path) -> ModuleType:
 
 
 def _set_scope(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
-    for var in _SCOPE_VARS:
-        monkeypatch.delenv(var, raising=False)
-    for var, value in env.items():
-        monkeypatch.setenv(var, value)
+    _helpers().set_ros_scope(monkeypatch, env)
 
 
 def _walk(description: Any, started: list[Any]) -> None:  # reason: LaunchDescription
@@ -105,16 +94,34 @@ def _walk(description: Any, started: list[Any]) -> None:  # reason: LaunchDescri
     _helpers().walk_launch(description, LaunchContext(), started)
 
 
-def _assert_past_the_gate(exc: BaseException) -> None:
-    """``exc`` came from past the scope gate: from what this host lacks, never the gate.
+def _walk_past_the_gate(
+    launch: Path, monkeypatch: pytest.MonkeyPatch, *, included: bool = False
+) -> None:
+    """Walk ``launch`` (by hand, or as ``deploy_e2e`` includes it) through its scope gate.
 
-    Without the vendor packages the walk stops resolving one (``not found``); with them it
-    stops at an artifact built on the robot's host, such as the G1's LEAPP bundle
-    (``does not exist``).
+    The gate must run once and return, and anything raised later must be
+    :data:`_PAST_THE_GATE`, never from the gate. The launch is loaded fresh, so the module
+    binds the counting wrapper whether it imports the gate at load or at launch time.
     """
-    frames = [f.filename for f in traceback.extract_tb(exc.__traceback__)]
-    assert not any(f.endswith("ros_graph_scope.py") for f in frames), exc
-    assert re.search("not found|does not exist", str(exc)), exc
+    calls: list[str] = []
+
+    def gate(name: str, env: Mapping[str, str], *, included_by_deploy: bool) -> None:
+        calls.append(name)
+        _GATE(name, env, included_by_deploy=included_by_deploy)
+
+    monkeypatch.setattr(ros_graph_scope, "require_host_confined_real_bringup", gate)
+    description = (
+        _included(launch)
+        if included
+        else _helpers().import_launch_module(launch).generate_launch_description()
+    )
+    try:
+        _walk(description, [])
+    except Exception as exc:  # reason: package lookup raises launch/ament-specific types
+        frames = [f.filename for f in traceback.extract_tb(exc.__traceback__)]
+        assert not any(f.endswith("ros_graph_scope.py") for f in frames), exc
+        assert _PAST_THE_GATE.search(str(exc)), exc
+    assert len(calls) == 1, f"the scope gate ran {len(calls)} times, not once"
 
 
 def _included(launch: Path) -> Any:  # reason: LaunchDescription
@@ -176,10 +183,7 @@ def test_a_host_confined_real_bringup_passes_the_gate(
     """
     _requires_launch()
     _set_scope(monkeypatch, {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"})
-    try:
-        _walk(_launch_module(launch).generate_launch_description(), [])
-    except Exception as exc:  # reason: package lookup raises launch/ament-specific types
-        _assert_past_the_gate(exc)
+    _walk_past_the_gate(launch, monkeypatch)
 
 
 @pytest.mark.parametrize("launch", _LAUNCHES, ids=_IDS)
@@ -224,14 +228,8 @@ def test_an_opted_in_bringup_logs_the_hazard_only_when_run_by_hand(
         },
     )
     events = {}
-    for name, description in (
-        ("hand", _launch_module(launch).generate_launch_description()),
-        ("deploy", _included(launch)),
-    ):
+    for name, included in (("hand", False), ("deploy", True)):
         with structlog.testing.capture_logs() as logs:
-            try:
-                _walk(description, [])
-            except Exception as exc:  # reason: past the gate, the vendor package lookup
-                _assert_past_the_gate(exc)
+            _walk_past_the_gate(launch, monkeypatch, included=included)
         events[name] = [log["event"] for log in logs if log["log_level"] == "warning"]
     assert events == {"hand": ["ros_graph_scope.real_bringup_networked"], "deploy": []}

@@ -30,6 +30,10 @@ def host_confined_ros_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     hosts (``openral_core.ros_graph_scope``), and sourcing ROS's ``setup.bash`` exports
     ``SUBNET``, so a test composing the real graph sets the deploy's scope first. The
     refusal itself is covered with explicit envs in ``test_deploy_e2e_real_graph_scope.py``.
+    Every other scope variable is cleared, so a shell's Zenoh RMW, discovery server,
+    peer-listing XML or SROS2 keystore cannot fail the composition either. Nothing is
+    launched, so no process outside this environment has to find the graph.
     """
-    monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
-    monkeypatch.delenv("ROS_STATIC_PEERS", raising=False)
+    from _launch_test_common import set_ros_scope
+
+    set_ros_scope(monkeypatch, {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"})
