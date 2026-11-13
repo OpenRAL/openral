@@ -1,8 +1,9 @@
-"""Pin the robot UI the dashboard serves to one ``robot-ui.yml`` build (ADR-0129).
+"""Pin the robot console the dashboard serves to one prebuilt build (ADR-0129, ADR-0131).
 
-``robot-ui.yml`` runs this after publishing a ``robot-ui-<sha>`` pre-release, then
-opens the pin bump as a PR. The pin stays a sha256 committed in code: the UI runs
-with the local operator's full control, so it is never trusted on a release alone.
+The console's release workflow (its source is not in this repository) runs this after
+publishing a ``robot-ui-<id>`` build, then opens the pin bump here as a PR. The pin
+stays a sha256 committed in code: the console runs with the local operator's full
+control, so it is never trusted on a release alone.
 
 Usage: python tools/pin_robot_ui.py <version> <url> <sha256> <size> [ui_assets.py]
 """

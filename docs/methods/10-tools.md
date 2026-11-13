@@ -977,11 +977,11 @@ _Exports `openral_core.reasoner_model_options()` (the curated `REASONER_MODELS` 
 - `export() -> list[dict[str, Any]]` (L21) — `[{id, label, needs}]` in registry order; `needs` is the API-key variable the website asks for (`None` for an on-robot model); providers the website has no key for are left out.
 
 ### `tools/pin_robot_ui.py`
-_Pins the dashboard's robot UI to one `robot-ui.yml` build by sha256 (ADR-0129); the workflow's `pin` job runs it from a master checkout (never the built commit's tree) and opens the pin bump as a PR._
+_Pins the dashboard's robot console to one prebuilt build by sha256 (ADR-0129, ADR-0131); the console's release workflow (its source is not in this repo) runs it and opens the pin bump here as a PR. CLI: `python3 tools/pin_robot_ui.py <tag> <url> <sha256> <size>`._
 
-- `UI_ASSETS: Path` (L16) — Default `ui_assets.py` it rewrites.
-- `pin(text, version, url, sha256, size) -> str` (L24) — `ui_assets.py` source with `ROBOT_UI` set to the given build.
-- `main(argv) -> int` (L52) — CLI: rewrites `ui_assets.py` in place.
+- `UI_ASSETS: Path` (L17) — Default `ui_assets.py` it rewrites.
+- `pin(text, version, url, sha256, size) -> str` (L25) — `ui_assets.py` source with `ROBOT_UI` set to the given build.
+- `main(argv) -> int` (L53) — CLI: rewrites `ui_assets.py` in place.
 
 ### `tools/make_metal_isaac_usd.py`
 _Writes the USD assets of the two MakerMods Metal Isaac example scenes (`scenes/sim/isaac_makermods_metal_{pen_holder,pick_place}.yaml`) from the MuJoCo twins' `MetalPenHolderOptions` / `MetalPickPlaceOptions` defaults: every size, pose, mass, friction and colour, the cup's `holder_visual_mesh` / `holder_collider_boxes`, the twins' clutter props. Bakes tiled textures to one image (Isaac 6.1 RTX ignores `wrap: repeat`). `python tools/make_metal_isaac_usd.py`._

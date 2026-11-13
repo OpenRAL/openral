@@ -1,12 +1,13 @@
-"""The robot UI the dashboard serves at ``/``: a pinned release, fetched on first start.
+"""The robot console the dashboard serves at ``/``: a pinned prebuilt bundle, fetched once.
 
-The UI is the React app in ``python/observability/ui/`` (ADR-0129 §2), released as
-``openral-robot-ui-<ver>.tar.gz`` by ``.github/workflows/robot-ui.yml``. The dashboard
-pins one release by URL, sha256 and size (``ROBOT_UI``), downloads it once into
-``$OPENRAL_CACHE_DIR/dashboard_assets/robot-ui/<sha256>/`` and serves it from there.
-``$OPENRAL_DASHBOARD_UI_DIR`` points at a local build instead (UI development).
+The console is a prebuilt, Apache-2.0 web bundle (``openral-robot-ui-<ver>.tar.gz``); its
+source is not in this repository (ADR-0131).
+The dashboard pins one build by URL, sha256 and size (``ROBOT_UI``), downloads it once
+into ``$OPENRAL_CACHE_DIR/dashboard_assets/robot-ui/<sha256>/`` and serves it from there.
+``$OPENRAL_DASHBOARD_UI_DIR`` points at a local build instead (your own UI); a directory
+without ``index.html`` serves the fallback page and never fetches the pin.
 
-With neither — no pin yet, or an offline first start — ``/`` serves the built-in
+With neither — no pin, or an offline first start — ``/`` serves the built-in
 ``static/fallback.html``: robot status and an E-STOP button. Fetching never raises:
 a failure is a loud ``structlog`` warning and the fallback page.
 
@@ -57,9 +58,9 @@ ROBOT_UI: PinnedAsset | None = PinnedAsset(
     sha256="8fada4a8225a60f1e440b902c0e282bfff6bc78507e1e26808c6e24fc36eddc1",
     size=379348,
 )
-"""The robot UI release this dashboard serves (``robot-ui.yml``'s tarball), or ``None``
-to serve the built-in fallback page. Bumped by ``robot-ui.yml`` (``tools/pin_robot_ui.py``)
-whenever the UI changes on master: ``robot-ui-3047b18`` until the next pin."""
+"""The prebuilt robot console this dashboard serves, or ``None`` to serve the built-in
+fallback page. The console's release workflow publishes each build and opens the pin
+bump here (``tools/pin_robot_ui.py``): ``robot-ui-3047b18`` until the next pin."""
 
 
 def _cache_root() -> Path:
@@ -151,7 +152,19 @@ def ui_dir() -> Path | None:
 
 
 def ensure_ui_assets() -> Path | None:
-    """Fetch the pinned robot UI if it is not cached yet; the directory to serve, or ``None``."""
+    """Fetch the pinned robot console if not cached yet; the directory to serve, or ``None``.
+
+    Logs once, at INFO, which UI ``/`` serves (``dashboard.ui_source``): the pinned bundle
+    with its URL, a local directory, or the built-in fallback page.
+    """
     if os.environ.get(UI_DIR_ENV) or ROBOT_UI is None:
-        return ui_dir()
-    return ensure_bundle("robot-ui", ROBOT_UI)
+        served = ui_dir()
+        if served is not None:
+            _logger.info("dashboard.ui_source", source="local", path=str(served))
+    else:
+        served = ensure_bundle("robot-ui", ROBOT_UI)
+        if served is not None:
+            _logger.info("dashboard.ui_source", source="pinned", url=ROBOT_UI.url)
+    if served is None:
+        _logger.info("dashboard.ui_source", source="fallback")
+    return served

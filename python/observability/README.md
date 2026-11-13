@@ -19,11 +19,13 @@ seven-layer model in the project docs.
 `openral dashboard` serves the robot UI, its API and an OTLP/HTTP receiver on one
 port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
 
-- **The UI** at `/` is the pinned release of `python/observability/ui/`
-  (`dashboard/ui_assets.py`: url + sha256 + size, fetched once into
-  `$OPENRAL_CACHE_DIR/dashboard_assets/`), or a local build named by
+- **The UI** at `/` is the pinned robot console, a prebuilt Apache-2.0 bundle whose
+  source is not in this repository (`dashboard/ui_assets.py`: url + sha256 + size,
+  fetched once into `$OPENRAL_CACHE_DIR/dashboard_assets/`; see
+  `docs/quickstart/dashboard.md`, "The page"), or a local build named by
   `OPENRAL_DASHBOARD_UI_DIR`. Without either, `static/fallback.html` shows the
-  robot's status and an E-STOP button. Both are served under a strict
+  robot's status and an E-STOP button. Start-up logs `dashboard.ui_source`: which of
+  the three `/` serves. Both are served under a strict
   `Content-Security-Policy` (own scripts only, an HTML file's inline scripts by
   sha256; framed only by this origin and openral.com); `/viz/` gets Lichtblick's own
   (`'unsafe-eval'`, `'wasm-unsafe-eval'`, blob: workers).
@@ -95,7 +97,7 @@ plus E-STOP, and the removal of free-form parameter writes (ADR-0129 §6).
 
 ### The 3D view
 
-The robot UI draws the 3D scene itself (three.js, `ui/src/Scene3D.jsx`) from
+The robot UI draws the 3D scene itself (three.js) from
 `foxglove_bridge` through `WS /ws`: the URDF (meshes through the bridge's `assets`
 capability), link poses from `/tf`, the occupancy grid, a point cloud, collision and
 payload markers and the world-state objects. It subscribes only to the layers that are

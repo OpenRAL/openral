@@ -33,14 +33,27 @@ dashboard exits with the workload).
 
 ## The page
 
-`/` serves the robot UI, the React app in `python/observability/ui/`. The dashboard
-downloads its pinned release once (url + sha256 + size in
+`/` serves the robot UI (the robot console), a prebuilt web bundle the dashboard
+downloads once (url + sha256 + size pinned in
 `openral_observability.dashboard.ui_assets.ROBOT_UI`) into
-`$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`). To serve a local
-build instead, set `OPENRAL_DASHBOARD_UI_DIR=/path/to/ui/dist`.
+`$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`). To serve another
+build instead, set `OPENRAL_DASHBOARD_UI_DIR` to a directory holding its `index.html`.
+At start the dashboard logs one `dashboard.ui_source` line saying what `/` serves: the
+pinned bundle with its URL, a local directory, or the fallback page.
 
-When no UI is available (no release pinned yet, or an offline first start) `/` serves a
-built-in fallback page: the robot's status and an **E-STOP** button.
+When no console is available (an offline first start, or `OPENRAL_DASHBOARD_UI_DIR`
+naming a directory without an `index.html`) `/` serves a built-in fallback page: the
+robot's status and an **E-STOP** button.
+
+**The console's license and source.**
+
+- The console bundle is licensed Apache-2.0, like the rest of OpenRAL.
+- It is prebuilt (minified), and its source is not published (ADR-0131). The
+  dashboard server, the robot API and the fallback page with its E-STOP button are
+  in this repository.
+- To serve a different UI, point `OPENRAL_DASHBOARD_UI_DIR` at your own build, or at
+  an empty directory to get the fallback page. The robot API
+  ([Endpoints](#endpoints)) is the public contract for third-party UIs.
 
 What the UI shows comes from the **robot manifest**, which the deploy runtime emits at
 start and again whenever the installed rSkills change (`/openral/skill_registry_changed`):

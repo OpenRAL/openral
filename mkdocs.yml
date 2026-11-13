@@ -88,7 +88,6 @@ nav:
     # the output verbatim.
   - Roadmap:
     - roadmap/index.md
-    - Robot console: roadmap/robot-console.md
   - Reference:
     - API: reference/api.md
     - Glossary: reference/glossary.md

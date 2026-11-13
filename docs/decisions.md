@@ -92,8 +92,16 @@ in full so the posture stays visible although the records are private:
   token validation, roles, the remote (tunnel) listener and the action audit live
   in `openral-observability`, because free users get one remote robot. Every Pro
   limit — how many robots, teammates and roles, fleet mode, the compliance
-  history — is enforced by openral.com when it issues tunnels and tokens; there
-  is no Pro plugin on the robot.
+  history — is enforced by openral.com when it issues tunnels and tokens, not by
+  code on the robot.
+- **The robot console ships as a prebuilt bundle; its source is not in this
+  repository** (`ADR-0131`). The bundle stays Apache-2.0; only its source is
+  kept private. The dashboard downloads the build pinned by sha256
+  (`ui_assets.ROBOT_UI`) and logs which UI it serves. The dashboard server,
+  the robot API, the manifest schema (`openral_core.robot_ui`) and the
+  fallback page with its E-STOP button stay in this repository, and
+  `OPENRAL_DASHBOARD_UI_DIR` serves any other UI instead. See the
+  [dashboard guide](quickstart/dashboard.md#the-page).
 - Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
   own upstream license, independent of OpenRAL's code license. This is
   compliance for models OpenRAL doesn't own, not a statement about
