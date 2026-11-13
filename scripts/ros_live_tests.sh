@@ -152,22 +152,6 @@ TARGETS=(
     tests/integration/test_operator_cli_robot_domain_live.py
     # ADR-0130: each SROS2 enclave gets exactly its surfaces under Enforce; keyless participants are shut out.
     tests/integration/test_sros2_enclaves_live.py
-    # Nav2's side of issue #108: a filtered scan keeps a carried payload out
-    # of the cost grid, and a self-return inside the robot's own footprint is
-    # dropped while a real obstacle at the same bearing survives -- only a
-    # real nav2_costmap_2d binary settles this. Load-bearing since Nav2 is
-    # base-only, with no footprint growth over the payload. Needs
-    # ros-jazzy-nav2-bringup, which this image bakes.
-    tests/integration/test_nav2_scan_filter_live.py
-    # Issue #211: Nav2 filters observation z in each costmap's OWN
-    # global_frame; `map`'s z origin isn't the floor -- slam_toolbox flattens
-    # `base_link`, the arm mount 0.700 m up the pedestal, to z = 0, so
-    # `min_obstacle_height` 0.0 kept local-costmap returns but discarded every
-    # global one, and the planner ran against a blank grid silently. Paired
-    # control restores the pre-fix gate and re-empties the grid -- claims the
-    # upstream binary applies the cut TWICE, from two differently-scoped
-    # parameters.
-    tests/integration/test_nav2_global_costmap_height_live.py
     # Opt-in /cmd_vel relay for body_twist robots without base_joints: real
     # relay + real kernel booted from r1pro -- chunk content, one stale zero,
     # over-speed veto, and refusal of a base_joints manifest.
@@ -311,7 +295,21 @@ ISOLATED_TARGETS=(
     tests/integration/test_fastrtps_shm_purge_live.py
     tests/integration/test_hil_transport_publishes_and_caches_state.py
     tests/integration/test_manifest_hal_lifecycle_live.py
+    # Issue #211: Nav2 filters observation z in each costmap's OWN
+    # global_frame; `map`'s z origin isn't the floor -- slam_toolbox flattens
+    # `base_link`, the arm mount 0.700 m up the pedestal, to z = 0, so
+    # `min_obstacle_height` 0.0 kept local-costmap returns but discarded every
+    # global one, and the planner ran against a blank grid silently. Paired
+    # control restores the pre-fix gate and re-empties the grid -- claims the
+    # upstream binary applies the cut TWICE, from two differently-scoped
+    # parameters.
     tests/integration/test_nav2_global_costmap_height_live.py
+    # Nav2's side of issue #108: a filtered scan keeps a carried payload out
+    # of the cost grid, and a self-return inside the robot's own footprint is
+    # dropped while a real obstacle at the same bearing survives -- only a
+    # real nav2_costmap_2d binary settles this. Load-bearing since Nav2 is
+    # base-only, with no footprint growth over the payload. Needs
+    # ros-jazzy-nav2-bringup, which this image bakes.
     tests/integration/test_nav2_scan_filter_live.py
     tests/integration/test_object_lift_real_camera_live.py
     tests/integration/test_object_lift_world_state.py
