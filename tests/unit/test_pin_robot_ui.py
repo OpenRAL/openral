@@ -20,7 +20,7 @@ _spec.loader.exec_module(tool)
 @pytest.mark.parametrize(
     "url",
     [
-        # The Apache-2.0 builds on this repo's Releases, and the console's own releases repo.
+        # The builds on this repo's Releases, and the console's own releases repo.
         "https://github.com/OpenRAL/openral/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz",
         "https://github.com/OpenRAL/robot-ui-releases/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz",
     ],

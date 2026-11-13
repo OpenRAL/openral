@@ -1,7 +1,7 @@
 """The robot console the dashboard serves at ``/``: a pinned prebuilt bundle, fetched once.
 
-The console is a prebuilt web bundle (``openral-robot-ui-<ver>.tar.gz``); its source is
-not in this repository (ADR-0131; license terms in ``docs/quickstart/dashboard.md``).
+The console is a prebuilt, Apache-2.0 web bundle (``openral-robot-ui-<ver>.tar.gz``); its
+source is not in this repository (ADR-0131).
 The dashboard pins one build by URL, sha256 and size (``ROBOT_UI``), downloads it once
 into ``$OPENRAL_CACHE_DIR/dashboard_assets/robot-ui/<sha256>/`` and serves it from there.
 ``$OPENRAL_DASHBOARD_UI_DIR`` points at a local build instead (your own UI); a directory
@@ -61,13 +61,6 @@ ROBOT_UI: PinnedAsset | None = PinnedAsset(
 """The prebuilt robot console this dashboard serves, or ``None`` to serve the built-in
 fallback page. The console's release workflow publishes each build and opens the pin
 bump here (``tools/pin_robot_ui.py``): ``robot-ui-3047b18`` until the next pin."""
-
-# ponytail: the license is read off the pin's URL prefix; if hosting moves, this moves
-# with the pin (an unlisted host logs ``unknown``, never a guess).
-_UI_LICENSE_BY_URL_PREFIX = (
-    ("https://github.com/OpenRAL/openral/releases/download/", "Apache-2.0"),
-    ("https://github.com/OpenRAL/robot-ui-releases/", "proprietary (LICENSE.txt in the bundle)"),
-)
 
 
 def _cache_root() -> Path:
@@ -162,7 +155,7 @@ def ensure_ui_assets() -> Path | None:
     """Fetch the pinned robot console if not cached yet; the directory to serve, or ``None``.
 
     Logs once, at INFO, which UI ``/`` serves (``dashboard.ui_source``): the pinned bundle
-    with its URL and license, a local directory, or the built-in fallback page.
+    with its URL, a local directory, or the built-in fallback page.
     """
     if os.environ.get(UI_DIR_ENV) or ROBOT_UI is None:
         served = ui_dir()
@@ -171,11 +164,7 @@ def ensure_ui_assets() -> Path | None:
     else:
         served = ensure_bundle("robot-ui", ROBOT_UI)
         if served is not None:
-            terms = next(
-                (v for k, v in _UI_LICENSE_BY_URL_PREFIX if ROBOT_UI.url.startswith(k)),
-                "unknown",
-            )
-            _logger.info("dashboard.ui_source", source="pinned", url=ROBOT_UI.url, license=terms)
+            _logger.info("dashboard.ui_source", source="pinned", url=ROBOT_UI.url)
     if served is None:
         _logger.info("dashboard.ui_source", source="fallback")
     return served

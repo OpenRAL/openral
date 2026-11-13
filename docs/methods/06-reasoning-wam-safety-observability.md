@@ -1248,10 +1248,10 @@ _The robot UI served at `/`: the pinned prebuilt robot console (source not in th
 - `class PinnedAsset(NamedTuple)` (L48) — `url`, `sha256`, `size` of one pinned download.
 - module constant `ROBOT_UI: PinnedAsset | None` (L56) — The pinned robot-console build (rewritten by `tools/pin_robot_ui.py`); `None` serves the fallback page.
 - module constant `UI_DIR_ENV = "OPENRAL_DASHBOARD_UI_DIR"` (L44)
-- `sha256_of(path: Path) -> str` (L79) — Hex sha256 of a file, read in chunks.
-- `ensure_bundle(name: str, asset: PinnedAsset) -> Path | None` (L114) — Download (size + sha256 verified), extract with the `data` tar filter minus `*.map`, and move into `$OPENRAL_CACHE_DIR/dashboard_assets/<name>/<sha256>/` only when complete; the directory holding `index.html`, or `None` (logged). Shared with `viz_assets`.
-- `ui_dir() -> Path | None` (L150) — The local build, else the fetched pin, else `None`; no download.
-- `ensure_ui_assets() -> Path | None` (L161) — Fetch the pin if not cached; called best-effort by `run_dashboard`. Logs `dashboard.ui_source` once at INFO: `source=pinned` (+ `url`, `license` from the pin URL prefix), `local` (+ `path`) or `fallback`.
+- `sha256_of(path: Path) -> str` (L72) — Hex sha256 of a file, read in chunks.
+- `ensure_bundle(name: str, asset: PinnedAsset) -> Path | None` (L107) — Download (size + sha256 verified), extract with the `data` tar filter minus `*.map`, and move into `$OPENRAL_CACHE_DIR/dashboard_assets/<name>/<sha256>/` only when complete; the directory holding `index.html`, or `None` (logged). Shared with `viz_assets`.
+- `ui_dir() -> Path | None` (L143) — The local build, else the fetched pin, else `None`; no download.
+- `ensure_ui_assets() -> Path | None` (L154) — Fetch the pin if not cached; called best-effort by `run_dashboard`. Logs `dashboard.ui_source` once at INFO: `source=pinned` (+ `url`), `local` (+ `path`) or `fallback`.
 
 ### `python/observability/src/openral_observability/dashboard/tunnel.py`
 

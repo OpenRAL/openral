@@ -19,10 +19,10 @@ seven-layer model in the project docs.
 `openral dashboard` serves the robot UI, its API and an OTLP/HTTP receiver on one
 port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
 
-- **The UI** at `/` is the pinned robot console, a prebuilt bundle whose source is
-  not in this repository (`dashboard/ui_assets.py`: url + sha256 + size, fetched once
-  into `$OPENRAL_CACHE_DIR/dashboard_assets/`; its license and the open alternatives
-  are in `docs/quickstart/dashboard.md`, "The page"), or a local build named by
+- **The UI** at `/` is the pinned robot console, a prebuilt Apache-2.0 bundle whose
+  source is not in this repository (`dashboard/ui_assets.py`: url + sha256 + size,
+  fetched once into `$OPENRAL_CACHE_DIR/dashboard_assets/`; see
+  `docs/quickstart/dashboard.md`, "The page"), or a local build named by
   `OPENRAL_DASHBOARD_UI_DIR`. Without either, `static/fallback.html` shows the
   robot's status and an E-STOP button. Start-up logs `dashboard.ui_source`: which of
   the three `/` serves. Both are served under a strict

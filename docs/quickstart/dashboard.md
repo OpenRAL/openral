@@ -39,25 +39,20 @@ downloads once (url + sha256 + size pinned in
 `$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`). To serve another
 build instead, set `OPENRAL_DASHBOARD_UI_DIR` to a directory holding its `index.html`.
 At start the dashboard logs one `dashboard.ui_source` line saying what `/` serves: the
-pinned bundle with its URL and license, a local directory, or the fallback page.
+pinned bundle with its URL, a local directory, or the fallback page.
 
 When no console is available (an offline first start, or `OPENRAL_DASHBOARD_UI_DIR`
 naming a directory without an `index.html`) `/` serves a built-in fallback page: the
 robot's status and an **E-STOP** button.
 
-**The console's license.**
+**The console's license and source.**
 
-- The console is a prebuilt bundle. Its source is not in this repository (ADR-0131).
-- Builds published from `OpenRAL/robot-ui-releases` are proprietary (not Apache-2.0).
-  They are free to download, to run with OpenRAL and to redistribute unmodified (in a
-  robot image, or on a mirror for an offline site). They may not be modified. Each
-  carries its terms in `LICENSE.txt`.
-- The `robot-ui-*` builds published on `OpenRAL/openral` Releases (up to
-  `robot-ui-3047b18`) are Apache-2.0 and stay available.
-- Everything in this repository stays Apache-2.0, including the dashboard server, the
-  robot API and the fallback page with its E-STOP button.
-- To run without the closed bundle, point `OPENRAL_DASHBOARD_UI_DIR` at your own UI
-  build, or at an empty directory to get the fallback page. The robot API
+- The console bundle is licensed Apache-2.0, like the rest of OpenRAL.
+- It is prebuilt (minified), and its source is not published (ADR-0131). The
+  dashboard server, the robot API and the fallback page with its E-STOP button are
+  in this repository.
+- To serve a different UI, point `OPENRAL_DASHBOARD_UI_DIR` at your own build, or at
+  an empty directory to get the fallback page. The robot API
   ([Endpoints](#endpoints)) is the public contract for third-party UIs.
 
 What the UI shows comes from the **robot manifest**, which the deploy runtime emits at

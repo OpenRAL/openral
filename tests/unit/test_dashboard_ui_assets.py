@@ -15,8 +15,7 @@ from openral_observability.dashboard.ui_assets import PinnedAsset, ensure_ui_ass
 from structlog.testing import capture_logs
 
 _SHA = "a" * 64
-_OPEN = "https://github.com/OpenRAL/openral/releases/download/robot-ui-3047b18/x.tar.gz"
-_CLOSED = "https://github.com/OpenRAL/robot-ui-releases/releases/download/robot-ui-1/x.tar.gz"
+_URL = "https://github.com/OpenRAL/robot-ui-releases/releases/download/robot-ui-1/x.tar.gz"
 _Logs = list[MutableMapping[str, Any]]
 
 
@@ -46,8 +45,8 @@ def _ui_source(logs: _Logs) -> _Logs:
 def test_an_empty_ui_dir_serves_the_fallback_and_never_fetches(
     cache: Path, logs: _Logs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The documented way to run without the pinned (closed) console bundle.
-    monkeypatch.setattr(ui_assets, "ROBOT_UI", PinnedAsset(_CLOSED, _SHA, 1))
+    # The documented way to run without the pinned console bundle.
+    monkeypatch.setattr(ui_assets, "ROBOT_UI", PinnedAsset(_URL, _SHA, 1))
     (tmp_path / "empty").mkdir()
     monkeypatch.setenv(ui_assets.UI_DIR_ENV, str(tmp_path / "empty"))
     assert ensure_ui_assets() is None
@@ -75,18 +74,10 @@ def test_a_local_ui_dir_is_logged(
     ]
 
 
-@pytest.mark.parametrize(
-    ("url", "license_"),
-    [
-        (_OPEN, "Apache-2.0"),
-        (_CLOSED, "proprietary (LICENSE.txt in the bundle)"),
-        ("https://example.com/robot-ui-1.tar.gz", "unknown"),
-    ],
-)
-def test_the_pinned_bundle_is_logged_with_its_license(
-    cache: Path, logs: _Logs, monkeypatch: pytest.MonkeyPatch, url: str, license_: str
+def test_the_pinned_bundle_is_logged_with_its_url(
+    cache: Path, logs: _Logs, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ui_assets, "ROBOT_UI", PinnedAsset(url, _SHA, 1))
+    monkeypatch.setattr(ui_assets, "ROBOT_UI", PinnedAsset(_URL, _SHA, 1))
     (cache / "robot-ui" / _SHA).mkdir(parents=True)  # already fetched: no network
     (cache / "robot-ui" / _SHA / "index.html").write_text("<!doctype html>")
     assert ensure_ui_assets() == cache / "robot-ui" / _SHA
@@ -94,15 +85,7 @@ def test_the_pinned_bundle_is_logged_with_its_license(
         {
             "event": "dashboard.ui_source",
             "source": "pinned",
-            "url": url,
-            "license": license_,
+            "url": _URL,
             "log_level": "info",
         }
     ]
-
-
-def test_the_real_pin_names_a_known_license() -> None:
-    # Moving the bundle's hosting without its license prefix would log "unknown".
-    pin = ui_assets.ROBOT_UI
-    prefixes = [p for p, _ in ui_assets._UI_LICENSE_BY_URL_PREFIX]
-    assert pin is None or any(pin.url.startswith(p) for p in prefixes)
