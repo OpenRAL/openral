@@ -469,8 +469,13 @@ class SO100FollowerHAL(HALBase):
         # After a proven torque-off: the lerobot session kept open for reads only
         # (``read_state_estopped``) and for ``reset_estop``. Never used to command.
         self._estop_robot: _LeRobotRobot | None = None
-        # Serialises the e-stop-time bus users (the node's read timer, reset_estop).
-        self._estop_lock = threading.Lock()
+        # Serialises every user of the serial bus (reads, commands, the e-stop's torque
+        # writes, the re-arm), which may run on different executor threads. Each holds
+        # it for one bounded transaction, so an e-stop waits at most one of them.
+        self._bus_lock = threading.Lock()
+        # Bumped by every ``estop()``: a re-arm that waited outside the lock (spawning
+        # the torque watcher) aborts when an e-stop arrived meanwhile.
+        self._estop_gen = 0
 
     @property
     def last_stop_report(self) -> DownstreamStopReport | None:
@@ -683,9 +688,11 @@ class SO100FollowerHAL(HALBase):
             ``JointState`` with positions in radians (gripper in [0, 1]).
         """
         self._require_connected("read_state")
-
-        assert self._robot is not None  # guaranteed by _require_connected
-        return self._observe(self._robot)
+        with self._bus_lock:
+            robot = self._robot
+            if not self._connected or robot is None:  # e-stopped while waiting for the bus
+                raise ROSRuntimeError(f"{type(self).__name__}.read_state(): not connected.")
+            return self._observe(robot)
 
     def read_state_estopped(self) -> JointState:
         """Read the joint state during an e-stop, through the read-only session.
@@ -698,7 +705,7 @@ class SO100FollowerHAL(HALBase):
             ROSRuntimeError: No read-only session (no e-stop, or the torque-off
                 was not proven and the bus was closed), or the read failed.
         """
-        with self._estop_lock:
+        with self._bus_lock:
             robot = self._estop_robot
             if robot is None:
                 raise ROSRuntimeError(
@@ -742,11 +749,18 @@ class SO100FollowerHAL(HALBase):
         self._require_connected("send_action")
         self._require_torque_watcher()
         lerobot_action = self._action_to_lerobot(action)
-        assert self._robot is not None
-        try:
-            self._robot.send_action(lerobot_action)
-        except Exception as exc:
-            raise ROSRuntimeError(f"send_action() failed: {exc}") from exc
+        self._send_on_bus(lerobot_action, "send_action")
+
+    def _send_on_bus(self, lerobot_action: dict[str, float], what: str) -> None:
+        """One command under the bus lock, refused if an e-stop landed while waiting."""
+        with self._bus_lock:
+            robot = self._robot
+            if not self._connected or robot is None:
+                raise ROSRuntimeError(f"{type(self).__name__}.{what}(): not connected.")
+            try:
+                robot.send_action(lerobot_action)
+            except Exception as exc:
+                raise ROSRuntimeError(f"{what}() failed: {exc}") from exc
 
     def reset_to_pose(self, pose: list[float]) -> None:
         """Ramp the real arm to ``pose`` with a slow linear interpolation.
@@ -813,15 +827,11 @@ class SO100FollowerHAL(HALBase):
             duration_s=round(duration_s, 2),
             steps=steps,
         )
-        assert self._robot is not None  # guaranteed by _require_connected
         for i in range(1, steps + 1):
             alpha = i / steps
             waypoint = [c + d * alpha for c, d in zip(current, deltas, strict=True)]
             self._require_torque_watcher()
-            try:
-                self._robot.send_action(_joint_values_to_lerobot(waypoint))
-            except Exception as exc:
-                raise ROSRuntimeError(f"reset_to_pose send_action failed: {exc}") from exc
+            self._send_on_bus(_joint_values_to_lerobot(waypoint), "reset_to_pose")
             time.sleep(1.0 / _RESET_STEP_HZ)
 
     def estop(self) -> None:
@@ -848,10 +858,15 @@ class SO100FollowerHAL(HALBase):
             ROSEStopRequested: Always.
         """
         log.critical("hal.estop", robot=self.description.name, port=self._port)
-        robot = self._robot if self._connected else None
+        # Before the lock: a command waiting for the bus sees it and is refused.
         self._connected = False
-        self._robot = None
-        with self._estop_lock:
+        self._estop_gen += 1
+        with self._bus_lock:
+            # The live session, or the read-only one a previous proven stop kept: a
+            # second stop cuts torque through it again rather than dropping it unclosed.
+            robot = self._robot if self._robot is not None else self._estop_robot
+            self._robot = None
+            self._estop_robot = None
             report = self._cut_torque(robot)
             self._last_stop_report = report
             # Kept only after a proven stop; ``_cut_torque`` closed it otherwise.
@@ -972,18 +987,22 @@ class SO100FollowerHAL(HALBase):
         The lifecycle node calls this on ``/openral/estop_cleared`` (after the
         kernel accepted the reset) and keeps its latch when it raises. In order:
         re-arm the out-of-process torque watcher (real bus; no watcher, no
-        torque), set every servo's ``Goal_Position := Present_Position`` and read
-        it back, enable torque, and read ``Torque_Enable`` back on every servo.
-        Only then does the HAL accept commands again. On any failure torque is
-        cut again and the read-only session is kept, so the arm stays limp and
-        observable.
+        torque) — outside the bus lock, so an e-stop meanwhile is never held up
+        by it, and the re-arm aborts if one arrived — then set every servo's
+        ``Goal_Position := Present_Position`` and read it back, enable torque, and
+        read ``Torque_Enable`` back on every servo. Only then does the HAL accept
+        commands again. On any failure torque is cut again: proven, the read-only
+        session is kept (the arm stays limp and observable); not proven, the
+        session is closed, the stop is recorded as unacknowledged, and only a
+        lifecycle restart recovers.
 
         Raises:
             ROSRuntimeError: No read-only session (no proven stop: restart the
-                lifecycle node), no motor bus, the watcher did not arm, or a goal
-                or torque read-back did not match.
+                lifecycle node), no motor bus, the watcher did not arm, an e-stop
+                arrived during the re-arm, or a goal or torque read-back did not
+                match.
         """
-        with self._estop_lock:
+        with self._bus_lock:
             robot = self._estop_robot
             if robot is None:
                 raise ROSRuntimeError(
@@ -995,18 +1014,31 @@ class SO100FollowerHAL(HALBase):
                 raise ROSRuntimeError(
                     f"{type(self).__name__}.reset_estop(): no motor bus to re-arm."
                 )
-            if self._injected_robot is None:
-                try:
-                    self._torque_watcher = FeetechTorqueWatcher.spawn(
-                        self._port,
-                        [m.id for m in bus.motors.values()],
-                        bus.port_handler.baudrate,
-                    )
-                except (OSError, RuntimeError) as exc:
-                    raise ROSRuntimeError(
-                        f"SO-100 torque watcher failed to re-arm for {self._port!r}; refusing "
-                        f"to energize the servos: {exc}"
-                    ) from exc
+            gen = self._estop_gen
+            session: _LeRobotRobot = robot
+        watcher: FeetechTorqueWatcher | None = None
+        if self._injected_robot is None:
+            try:
+                watcher = FeetechTorqueWatcher.spawn(
+                    self._port,
+                    [m.id for m in bus.motors.values()],
+                    bus.port_handler.baudrate,
+                )
+            except (OSError, RuntimeError) as exc:
+                raise ROSRuntimeError(
+                    f"SO-100 torque watcher failed to re-arm for {self._port!r}; refusing "
+                    f"to energize the servos: {exc}"
+                ) from exc
+        with self._bus_lock:
+            if self._estop_gen != gen or self._estop_robot is not session:
+                # An e-stop landed while the watcher armed: it already cut torque.
+                if watcher is not None:
+                    watcher.stop(clean=True)
+                raise ROSRuntimeError(
+                    f"{type(self).__name__}.reset_estop(): an e-stop arrived during the "
+                    "re-arm; the arm stays stopped."
+                )
+            self._torque_watcher = watcher
             if not getattr(bus.enable_torque, "holds_pose", False):
                 _hold_pose_on_torque_enable(bus)
             try:
@@ -1028,13 +1060,29 @@ class SO100FollowerHAL(HALBase):
                 if wrong:
                     raise ROSRuntimeError(f"Torque_Enable does not read back 1 on {wrong}")
             except Exception as exc:
-                report = self._cut_torque_keeping_session(bus)
-                self._stop_torque_watcher(clean=report)
+                proven = self._cut_torque_keeping_session(bus)
+                if not proven:
+                    # Only a proven stop may keep the session (and be released again).
+                    self._estop_robot = None
+                    assert session is not None  # checked under the first lock
+                    try:
+                        session.disconnect()
+                    except Exception as close_exc:  # reason: the watcher cuts torque next
+                        log.error(
+                            "hal.estop.session_close_failed", port=self._port, error=str(close_exc)
+                        )
+                    self._last_stop_report = DownstreamStopReport(
+                        stopped=False,
+                        controllers=tuple(_SO100_JOINT_NAMES),
+                        vendor_stop=_ESTOP_VENDOR_STOP,
+                        detail=f"re-arm failed ({exc}) and torque off was not proven again",
+                    )
+                self._stop_torque_watcher(clean=proven)
                 raise ROSRuntimeError(
                     f"{type(self).__name__}.reset_estop() failed, torque cut again "
-                    f"({'proven' if report else 'NOT proven'}): {exc}"
+                    f"({'proven' if proven else 'NOT proven: restart the lifecycle node'}): {exc}"
                 ) from exc
-            self._robot = robot
+            self._robot = session
             self._estop_robot = None
             self._connected = True
             self._last_obs_time = time.monotonic()
@@ -1064,7 +1112,7 @@ class SO100FollowerHAL(HALBase):
 
     def _close_estop_session(self) -> None:
         """Close the read-only session kept after a proven e-stop (if any)."""
-        with self._estop_lock:
+        with self._bus_lock:
             robot, self._estop_robot = self._estop_robot, None
         if robot is not None:
             try:

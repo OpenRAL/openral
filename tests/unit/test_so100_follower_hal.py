@@ -843,3 +843,100 @@ class TestSO100FollowerHALEstopObserveAndReset:
         hal, _ = _proven_stop()
         hal.connect()
         assert hal._connected is True and hal._estop_robot is None
+
+    def test_a_failed_rearm_whose_cut_is_unproven_closes_the_session(self) -> None:
+        # The re-arm fails (a goal that does not take) and the follow-up torque cut is
+        # not proven (a servo that stops answering): only a proven stop may stay
+        # releasable, so the session closes and the stop is recorded unacknowledged.
+        hal, bus = _proven_stop()
+        bus.stuck_goal = frozenset({"wrist_flex"})
+        bus.unreadable = frozenset({"gripper"})
+        with pytest.raises(ROSRuntimeError, match="NOT proven"):
+            hal.reset_estop()
+        assert hal._estop_robot is None
+        assert hal.last_stop_report is not None and not hal.last_stop_report.stopped
+        with pytest.raises(ROSRuntimeError, match="restart the lifecycle node"):
+            hal.reset_estop()
+
+    def test_a_second_stop_cuts_torque_through_the_kept_session(self) -> None:
+        hal, bus = _proven_stop()
+        writes = len(bus.writes)
+        _estop(hal)
+        assert len(bus.writes) > writes  # torque off written again, not skipped
+        assert hal.last_stop_report is not None and hal.last_stop_report.stopped
+        assert hal._estop_robot is not None
+        hal.read_state_estopped()
+
+    def test_an_estop_while_the_watcher_arms_aborts_the_rearm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The watcher is a subprocess (the process-boundary double): it arms outside the
+        # bus lock, and a stop that lands meanwhile wins.
+        from types import SimpleNamespace
+
+        hal, bus = _proven_stop()
+        bus.port_handler.baudrate = 1_000_000  # type: ignore[attr-defined]  # reason: fake port
+        # lerobot's MotorsBus.motors values carry the servo id the watcher is armed with.
+        monkeypatch.setattr(
+            FakeFeetechBus,
+            "motors",
+            property(
+                lambda self: {
+                    n: SimpleNamespace(id=i + 1) for i, n in enumerate(SO_FOLLOWER_MOTORS)
+                }
+            ),
+        )
+        hal._injected_robot = None  # take the real-bus path, which arms a watcher
+
+        stopped: list[bool] = []
+
+        class _Watcher:
+            def stop(self, *, clean: bool) -> None:
+                stopped.append(clean)
+
+        def spawn(*_args: object, **_kw: object) -> _Watcher:
+            with pytest.raises(ROSEStopRequested):
+                hal.estop()
+            return _Watcher()
+
+        monkeypatch.setattr("openral_hal.so100_follower.FeetechTorqueWatcher.spawn", spawn)
+        with pytest.raises(ROSRuntimeError, match="arrived during the re-arm"):
+            hal.reset_estop()
+        assert stopped == [True]
+        assert hal._connected is False
+        assert bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 0)
+
+    def test_a_command_waiting_for_the_bus_is_refused_after_a_stop(self) -> None:
+        import threading
+
+        hal = SO100FollowerHAL(robot=_twin_on_bus(FakeFeetechBus()))
+        hal.connect()
+        errors: list[BaseException] = []
+
+        def send() -> None:
+            try:
+                hal.send_action(_make_action())
+            except BaseException as exc:  # reason: collected for the assertion
+                errors.append(exc)
+
+        with hal._bus_lock:  # a transaction in flight
+            t = threading.Thread(target=send)
+            t.start()
+            time.sleep(0.1)  # the command has passed its connected check, waits for the bus
+            hal._connected = False  # what estop() does first, before taking the lock
+        t.join(2)
+        assert errors and isinstance(errors[0], ROSRuntimeError)
+        assert "not connected" in str(errors[0])
+
+
+def test_a_composed_robot_stays_observable_through_its_parts_stop() -> None:
+    """``ComposedHAL`` forwards ``read_state_estopped``: an SO-101 part read read-only."""
+    from openral_hal.composed import ComposedHAL
+
+    assert hasattr(ComposedHAL, "read_state_estopped")
+    hal, _ = _proven_stop()
+    composed = ComposedHAL.__new__(ComposedHAL)
+    composed._parts = [hal]
+    composed.description = hal.description
+    state = composed.read_state_estopped()
+    assert list(state.name) == [j.name for j in hal.description.joints]

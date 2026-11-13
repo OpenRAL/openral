@@ -1592,16 +1592,12 @@ if _ROS2_AVAILABLE:
 
             if self._hal is None or self._publisher is None:
                 return
-            observer = (
-                self._hal
-                if self._estopped
-                and self._proprio is None
-                and isinstance(self._hal, EStopObservableHAL)
-                else None
-            )
-            observe_estopped = observer is not None
-            if self._estopped and self._proprio is None and not observe_estopped:
-                return
+            # A real HAL while latched: read through its read-only path, or not at all.
+            observer = None
+            if self._estopped and self._proprio is None:
+                if not isinstance(self._hal, EStopObservableHAL):
+                    return
+                observer = self._hal
 
             from openral_observability import producer as ral_producer
             from openral_observability import semconv
@@ -1674,13 +1670,14 @@ if _ROS2_AVAILABLE:
             msg.velocity = list(state.velocity) if state.velocity else []
             msg.effort = list(state.effort) if state.effort else []
             self._publisher.publish(msg)
-            if not observe_estopped:  # a de-energized robot follows no command
+            if observer is None:  # a de-energized robot follows no command
                 self._judge_tracking(state)
             # The grasp trigger reads the same typed snapshot the HAL just read —
             # no second source of truth, no extra subscription. Only wired when
             # the vision attachment leg is enabled.
             vision = getattr(self, "_vision_attachment", None)
-            if vision is not None:
+            # Not during an e-stop: a jaw closed by hand on the limp arm is not a grasp.
+            if vision is not None and observer is None:
                 # On the sim clock when the frame carries one (`grasp_trigger_state`).
                 vision.observe_joint_state(
                     grasp_trigger_state(state, frame.sim_time_ns if frame is not None else None)

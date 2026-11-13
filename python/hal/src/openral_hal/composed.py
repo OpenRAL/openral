@@ -363,12 +363,37 @@ class ComposedHAL:
         every part measures it, else empty. A part without effort (odometry, a held
         lift) is never zero-filled, since a torque observer reads 0.0 as unloaded.
         """
+        return self._merged_state(lambda part: part.read_state())
+
+    def read_state_estopped(self) -> JointState:
+        """``EStopObservableHAL``: the merged state during an e-stop, read-only.
+
+        Each part that keeps a read path through its stop (``EStopObservableHAL``)
+        is read through it; the others by ``read_state`` (a part the stop did not tear
+        down, e.g. odometry). Any part that cannot be read raises, and the lifecycle
+        node skips the tick, as for a HAL without the extension.
+
+        Raises:
+            ROSRuntimeError: (or the part's own error) A part has no read path now.
+        """
+        from openral_hal.protocol import EStopObservableHAL  # noqa: PLC0415
+
+        return self._merged_state(
+            lambda part: (
+                part.read_state_estopped()
+                if isinstance(part, EStopObservableHAL)
+                else part.read_state()
+            )
+        )
+
+    def _merged_state(self, read: Callable[[HAL], JointState]) -> JointState:
+        """Every part's ``read(part)`` merged into ``description.joints`` order, by name."""
         pos: dict[str, float] = {}
         vel: dict[str, float] = {}
         eff: dict[str, float] = {}
         stamps: list[int] = []
         for part in self._parts:
-            js = part.read_state()
+            js = read(part)
             names = js.name or [j.name for j in part.description.joints]
             for k, name in enumerate(names):
                 pos[name] = js.position[k]
