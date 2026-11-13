@@ -139,14 +139,15 @@ def test_the_hal_node_bridges_the_base_only_when_openral_owns_navigation(
     from openral_hal.lifecycle import _ManifestHALLifecycleNode
     from rclpy.parameter import Parameter
 
-    node = _ManifestHALLifecycleNode(f"t_platform_nav_{hal_mode}")
     params = [
         Parameter("robot_yaml", value=str(_REPO / "robots" / "openamrobot_v2" / "robot.yaml")),
         Parameter("hal_mode", value=hal_mode),
     ]
     if hal_mode == "real":  # build the composite without its CAN links up
         params.append(Parameter("hal_transport_json", value='{"require_can_links": false}'))
-    node.set_parameters(params)
+    # The HAL parameters are read-only (#537): set_parameters is refused, so they go in
+    # at construction, as the launch file passes them.
+    node = _ManifestHALLifecycleNode(f"t_platform_nav_{hal_mode}", parameter_overrides=params)
     try:
         node._hal = node._create_hal()
         node._attach_mobile_base_bridge()
