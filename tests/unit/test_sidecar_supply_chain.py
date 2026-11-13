@@ -164,16 +164,42 @@ def test_lingbot_variants_never_share_a_checkout_under_the_home_override(
     run as the wrong repo before the pin was checked on reuse); v1 has its own."""
     monkeypatch.setenv("HOME", str(tmp_path / "user"))  # the *_DEFAULT_HOME* constants
     lingbot = _tool("lingbot_vla2_sidecar")
-    for env in (lingbot._REPO_ENV, lingbot._REPO_ENV_V1, "OPENRAL_LINGBOT_VLA_SIDECAR_HOME"):
+    for env in (lingbot._REPO_ENV, lingbot._REPO_ENV_V1, lingbot._HOME_ENV_V1):
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setenv(lingbot._HOME_ENV, str(tmp_path / "v2-home"))
     url, v2_pin, v1_pin = _upstream(tmp_path)
-    v2 = lingbot._ensure_source(lingbot._default_home("v2"), url=url, sha=v2_pin)
-    v1 = lingbot._ensure_source(lingbot._default_home("v1"), url=url, sha=v1_pin)
-    assert v2 == tmp_path / "v2-home" / "source" and checkout_head(v2) == v2_pin
-    assert v1 != v2 and checkout_head(v1) == v1_pin
-    monkeypatch.setenv("OPENRAL_LINGBOT_VLA_SIDECAR_HOME", str(tmp_path / "v1-home"))
-    assert lingbot._default_home("v1") == tmp_path / "v1-home"
+    homes = {}
+    for variant, pin in (("v2", v2_pin), ("v1", v1_pin)):
+        homes[variant] = lingbot._default_home(variant)
+        lingbot._claim_home(homes[variant], variant)
+        source = lingbot._ensure_source(homes[variant], url=url, sha=pin)
+        assert source == homes[variant] / "source" and checkout_head(source) == pin
+    assert homes["v2"] == tmp_path / "v2-home" != homes["v1"]
+    # A home one variant holds is refused to the other, however it was named.
+    with pytest.raises(SystemExit, match="is the LingBot v2 sidecar home"):
+        lingbot._claim_home(homes["v2"], "v1")
+
+
+def test_lingbot_home_override_is_per_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each variant reads only its own ``*_SIDECAR_HOME``, ``~``-expanded, an empty
+    value as unset; v1 says out loud that it no longer reads the v2 override."""
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    lingbot = _tool("lingbot_vla2_sidecar")
+    v1_default = tmp_path / "user" / ".cache" / "openral" / "lingbot-vla-v1-sidecar"
+    monkeypatch.setenv(lingbot._HOME_ENV, str(tmp_path / "v2-home"))
+    monkeypatch.delenv(lingbot._HOME_ENV_V1, raising=False)
+    assert lingbot._default_home("v1") == v1_default
+    assert f"ignores ${lingbot._HOME_ENV}" in capsys.readouterr().out
+    monkeypatch.setenv(lingbot._HOME_ENV_V1, "~/v1-home")
+    assert lingbot._default_home("v1") == tmp_path / "user" / "v1-home"
+    assert lingbot._default_home("v2") == tmp_path / "v2-home"
+    assert capsys.readouterr().out == ""
+    monkeypatch.setenv(lingbot._HOME_ENV_V1, "")
+    monkeypatch.setenv(lingbot._HOME_ENV, "")
+    assert lingbot._default_home("v1") == v1_default
+    assert lingbot._default_home("v2") == tmp_path / "user" / ".cache/openral/lingbot-vla2-sidecar"
 
 
 @_needs_git
