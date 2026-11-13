@@ -712,12 +712,13 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 - `_REPO_URL: str` (L54) — upstream `robbyant/lingbot-vla-v2` clone URL.
 - `_PINNED_SHA: str` (L57) — pinned v2 commit.
 - `_DEFAULT_HOME: Path` (L58) — v2 cache dir.
-- `_HOME_ENV: str` (L59) — `--home` override env var name.
+- `_HOME_ENV: str` (L59) — `--home` override env var name (v2, `OPENRAL_LINGBOT_VLA2_SIDECAR_HOME`).
 - `_VENV_ENV: str` (L60) — `--venv` override env var name (v2).
 - `_REPO_ENV: str` (L61) — repo-dir override env var name (v2).
 - `_REPO_URL_V1: str` (L67) — the v1 (`robbyant/lingbot-vla`) clone URL, driven by `--variant v1`.
 - `_PINNED_SHA_V1: str` (L68) — pinned v1 commit.
 - `_DEFAULT_HOME_V1: Path` (L69) — v1 cache dir.
+- `_HOME_ENV_V1: str` (L69) — `--home` override env var name (v1, `OPENRAL_LINGBOT_VLA_SIDECAR_HOME`); never the v2 one, so the two variants never share a `source/` or `.venv`.
 - `_VENV_ENV_V1: str` (L70) — `--venv` override env var name (v1).
 - `_REPO_ENV_V1: str` (L71) — repo-dir override env var name (v1).
 - `_SERVER: Path` (L73) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
@@ -728,6 +729,7 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 - `_TORCHCODEC_PIN` (L100) — matching v2 torch-stack pin (excluded on aarch64).
 - `_TRITON_PIN` (L101) — matching v2 torch-stack pin.
 - `_V2_OVERRIDES: tuple[str, ...]` (L102) — the override requirement files applied on top of upstream's v2 lock.
+- `_default_home(variant: str) -> Path` (L131) — the variant's home when `--home` is not given: its own `*_SIDECAR_HOME` override, else its cache dir.
 - `main() -> int` (L320) — `scrub_environ()` first (no operator API key reaches the fetch, install or server), then argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L49) — Marker key for the msgpack ndarray codec.
 - `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L1009) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy. `--quantization nf4` on CUDA needs a valid `--quantization-config` (Pro's kwargs with `load_in_4bit`), which `lingbot_vla2_sidecar.py` takes from OpenRAL Pro (`sidecar_quantization_args`); a missing, malformed or mismatched config, or no `--pro-quant-module` (the path of Pro's sidecar rewrites file, `sidecar_quantization_args(..., rewrites=True)`), makes the server exit (ADR-0123). `--device cpu` falls back to bf16 and needs neither Pro nor a config.

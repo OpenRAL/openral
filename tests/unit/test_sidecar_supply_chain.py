@@ -156,6 +156,27 @@ def test_lingbot_checkout_is_verified_on_reuse_not_only_on_clone(
 
 
 @_needs_git
+def test_lingbot_variants_never_share_a_checkout_under_the_home_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1 and v2 are different repos at different pins with different venvs: setting
+    the v2 home override must not hand v1 the v2 ``source/`` (refused as off-pin, or
+    run as the wrong repo before the pin was checked on reuse); v1 has its own."""
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # the *_DEFAULT_HOME* constants
+    lingbot = _tool("lingbot_vla2_sidecar")
+    for env in (lingbot._REPO_ENV, lingbot._REPO_ENV_V1, "OPENRAL_LINGBOT_VLA_SIDECAR_HOME"):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv(lingbot._HOME_ENV, str(tmp_path / "v2-home"))
+    url, v2_pin, v1_pin = _upstream(tmp_path)
+    v2 = lingbot._ensure_source(lingbot._default_home("v2"), url=url, sha=v2_pin)
+    v1 = lingbot._ensure_source(lingbot._default_home("v1"), url=url, sha=v1_pin)
+    assert v2 == tmp_path / "v2-home" / "source" and checkout_head(v2) == v2_pin
+    assert v1 != v2 and checkout_head(v1) == v1_pin
+    monkeypatch.setenv("OPENRAL_LINGBOT_VLA_SIDECAR_HOME", str(tmp_path / "v1-home"))
+    assert lingbot._default_home("v1") == tmp_path / "v1-home"
+
+
+@_needs_git
 def test_every_launch_verifies_the_provisioned_robotwin_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

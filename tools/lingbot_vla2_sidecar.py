@@ -67,6 +67,7 @@ _REPO_ENV = "OPENRAL_LINGBOT_VLA2_REPO"
 _REPO_URL_V1 = "https://github.com/robbyant/lingbot-vla.git"
 _PINNED_SHA_V1 = "4eb34b7693a0565c67433f8fac9c59a2e67eb60b"
 _DEFAULT_HOME_V1 = Path.home() / ".cache" / "openral" / "lingbot-vla-v1-sidecar"
+_HOME_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_HOME"
 _VENV_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON"
 _REPO_ENV_V1 = "OPENRAL_LINGBOT_VLA_REPO"
 
@@ -127,6 +128,19 @@ def _ensure_source(
         return src
     # Never patched after the fetch (overrides go to <home>), so it must be clean too.
     return ensure_source(_LABEL, home, url, sha, clean=True)
+
+
+def _default_home(variant: str) -> Path:
+    """Sidecar home for ``variant`` when ``--home`` is not given.
+
+    Each variant reads its own override (``$OPENRAL_LINGBOT_VLA_SIDECAR_HOME`` for
+    v1, ``$OPENRAL_LINGBOT_VLA2_SIDECAR_HOME`` for v2): the two are different repos
+    at different pins with different venvs, so a shared home would hand one
+    variant the other's ``source/`` and ``.venv``.
+    """
+    if variant == "v1":
+        return Path(os.environ.get(_HOME_ENV_V1, _DEFAULT_HOME_V1))
+    return Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME))
 
 
 def _install_v1(uv: str, py: Path) -> None:
@@ -352,13 +366,13 @@ def main() -> int:
         "--home",
         type=Path,
         default=None,
-        help="Sidecar work directory (default depends on --variant).",
+        help=f"Sidecar work directory (default ${_HOME_ENV} or {_DEFAULT_HOME} for v2, "
+        f"${_HOME_ENV_V1} or {_DEFAULT_HOME_V1} for v1).",
     )
     args = p.parse_args()
 
     # Per-variant provisioning: repo URL/SHA, venv installer, home, env names.
     if args.variant == "v1":
-        default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME_V1))
         url, sha, repo_env, venv_env, install = (
             _REPO_URL_V1,
             _PINNED_SHA_V1,
@@ -368,7 +382,6 @@ def main() -> int:
         )
         qwen_envs = ("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH")
     else:
-        default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME))
         url, sha, repo_env, venv_env, install = (
             _REPO_URL,
             _PINNED_SHA,
@@ -377,7 +390,7 @@ def main() -> int:
             None,
         )
         qwen_envs = ("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH")
-    home = args.home or default_home
+    home = args.home or _default_home(args.variant)
 
     source = _ensure_source(home, url=url, sha=sha, repo_env=repo_env)
     # Sub-16-bit needs OpenRAL Pro; ask before the venv build (ADR-0123).
