@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,10 +27,20 @@ _NO_GATES = {
 }
 
 
+# This checkout's `openral` (the one beside the test interpreter) first on PATH: the script
+# runs whichever `openral` PATH finds, and a stale global install (e.g. a uv tool) would
+# fail its manifest gate for reasons that have nothing to do with this checkout.
+_CHECKOUT_BIN = str(Path(sys.executable).parent)
+
+
+def _with_checkout_openral(env: dict[str, str]) -> dict[str, str]:
+    return {**env, "PATH": os.pathsep.join([_CHECKOUT_BIN, env.get("PATH", "")])}
+
+
 def _run_script(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(_REPO_ROOT / "tools" / "openarm_world_voxel_run.sh"), *args],
-        env=env,
+        env=_with_checkout_openral(env),
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
@@ -50,7 +61,10 @@ def _skip_unless_ros_and_openral() -> None:
     if (
         "ROS_DISTRO" not in os.environ
         or subprocess.run(
-            ["bash", "-c", "command -v openral"], capture_output=True, check=False
+            ["bash", "-c", "command -v openral"],
+            capture_output=True,
+            check=False,
+            env=_with_checkout_openral(dict(os.environ)),
         ).returncode
     ):
         pytest.skip("needs a sourced ROS 2 and openral on PATH to reach this gate")

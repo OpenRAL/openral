@@ -49,6 +49,7 @@ from openral_cli.deploy_sim import apply_fastdds_large_data_profile  # noqa: E40
 from openral_core import RobotDescription  # noqa: E402
 from openral_safety.envelope_loader import collision_params_from_description  # noqa: E402
 
+from tests.integration._ros_pkg import ros_pkg_available  # noqa: E402
 from tests.sim.safety._kernel_subprocess import (  # noqa: E402
     isolated_domain_id,
     terminate_kernel,
@@ -97,15 +98,9 @@ def _json_line(text: str, role: str) -> dict[str, Any]:
 def test_megabyte_clouds_cross_the_real_self_filter(hz: float, tmp_path: pathlib.Path) -> None:
     if shutil.which("ros2") is None:
         pytest.skip("ros2 not on PATH; source install/setup.bash first")
-    prefix = subprocess.run(
-        ["ros2", "pkg", "prefix", "openral_octomap_bridge"], capture_output=True, check=False
-    )
-    if prefix.returncode != 0:
+    if not ros_pkg_available("openral_octomap_bridge"):
         pytest.skip("openral_octomap_bridge is not built in the sourced overlay")
-    fastrtps = subprocess.run(
-        ["ros2", "pkg", "prefix", "rmw_fastrtps_cpp"], capture_output=True, check=False
-    )
-    if fastrtps.returncode != 0:
+    if not ros_pkg_available("rmw_fastrtps_cpp"):
         # The open deploy image ships Cyclone only; this test pins Fast DDS's large-data path.
         pytest.skip("rmw_fastrtps_cpp is not installed (the openral:x86 image is Cyclone-only)")
     if shutil.disk_usage("/dev/shm").free < _SHM_NEEDED_BYTES:

@@ -55,6 +55,7 @@ _ENVELOPE_PARAMS: dict[str, object] = {
 P99_BUDGET_MS = 25.0
 
 
+@pytest.mark.wall_clock
 def test_kernel_round_trip_latency_p99_under_budget() -> None:
     """500 chunks → measure p99 round-trip; must beat the 30 Hz chunk budget."""
     import rclpy

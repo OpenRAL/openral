@@ -13,7 +13,6 @@ reaches the seeded palette.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -21,6 +20,8 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 import pytest
+
+from tests.integration._ros_pkg import ros_pkg_available
 
 if TYPE_CHECKING:
     from openral_core import RSkillManifest
@@ -32,16 +33,7 @@ def moveit_panda_demo_available() -> bool:
     Resolved via ``ros2 pkg prefix`` rather than importing because the package
     is a pure-ament resource package (no Python entry point).
     """
-    if shutil.which("ros2") is None:
-        return False
-    result = subprocess.run(
-        ["ros2", "pkg", "prefix", "moveit_resources_panda_moveit_config"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    return result.returncode == 0 and result.stdout.strip() != ""
+    return ros_pkg_available("moveit_resources_panda_moveit_config")
 
 
 @pytest.fixture

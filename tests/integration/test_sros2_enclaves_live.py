@@ -3,7 +3,8 @@
 
 A keystore written by the real ``openral security init`` (franka_panda: its
 manifest adds ``/franka_arm_controller/joint_trajectory``) is put in front of
-real participants, one process per enclave, on Cyclone DDS and Fast DDS in Enforce mode:
+real participants, one process per enclave, on Cyclone DDS and (where installed) Fast DDS
+in Enforce mode:
 
 1. every enclave can or cannot create the publishers / service clients the
    ADR's table says, enforced by the DDS access-control plugin (a denied
@@ -24,6 +25,8 @@ import subprocess
 import sys
 
 import pytest
+
+from tests.integration._ros_pkg import ros_pkg_available
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 pytestmark = pytest.mark.skipif(
@@ -151,7 +154,7 @@ for kind, name in json.loads(sys.argv[1]):
         result[kind + " " + name] = True
     except Exception:  # rclpy raises RCLError when the access-control plugin refuses
         result[kind + " " + name] = False
-print(json.dumps(result))
+print("SROS2_PROBE_RESULT " + json.dumps(result), flush=True)
 """
 
 _TRAFFIC_PROBE = """
@@ -172,7 +175,7 @@ while time.monotonic() < deadline:
     if role == "pub":
         pub.publish(ActionChunk())
     rclpy.spin_once(node, timeout_sec=0.1)
-print(count[0])
+print("SROS2_PROBE_RESULT", count[0], flush=True)
 """
 
 
@@ -193,6 +196,9 @@ def secured_env(
     pytest.importorskip("trajectory_msgs.msg")
     if shutil.which("ros2") is None:
         pytest.skip("needs a sourced ROS 2 with sros2")
+    # Cyclone is OpenRAL's RMW: its lane fails, never skips, when the RMW is missing.
+    if request.param != "rmw_cyclonedds_cpp" and not ros_pkg_available(request.param):
+        pytest.skip(f"{request.param} is not installed")
     keystore = tmp_path_factory.mktemp("sros2") / "franka_panda"
     init = subprocess.run(
         [
@@ -225,6 +231,19 @@ def secured_env(
     return env
 
 
+#: Tags a probe's result line. Fast DDS logs every access-control refusal to stdout from
+#: its own thread, so under load a log line can follow the result (docker-build run
+#: 43402624616 parsed "[DATA_READER Error] Problem creating associated Reader").
+_RESULT = "SROS2_PROBE_RESULT "
+
+
+def _result(stdout: str) -> str:
+    """The payload of the probe's one result line in ``stdout``."""
+    lines = [line for line in stdout.splitlines() if line.startswith(_RESULT)]
+    assert len(lines) == 1, stdout
+    return lines[0].removeprefix(_RESULT)
+
+
 def _run(env: dict[str, str], enclave: str | None, code: str, *args: str) -> str:
     probe_env = dict(env)
     if enclave is None:  # a participant without keys
@@ -240,7 +259,7 @@ def _run(env: dict[str, str], enclave: str | None, code: str, *args: str) -> str
         check=False,
     )
     assert done.returncode == 0, done.stdout + done.stderr
-    return done.stdout.strip().splitlines()[-1]
+    return _result(done.stdout)
 
 
 @pytest.mark.parametrize("enclave", sorted(_ALLOWED))
@@ -296,7 +315,7 @@ def test_kernel_chunks_reach_the_hal_and_no_keyless_participant(
     for name, proc in (("hal", hal), ("keyless", keyless), ("kernel", kernel)):
         out, err = proc.communicate(timeout=60)
         assert proc.returncode == 0, out + err
-        received[name] = int(out.strip().splitlines()[-1])
+        received[name] = int(_result(out))
     assert received["hal"] > 0
     assert received["keyless"] == 0
 
@@ -308,4 +327,4 @@ def test_kernel_chunks_reach_the_hal_and_no_keyless_participant(
     # The intruder must have published for real: a crashed publisher would also deliver 0.
     assert intruder.returncode == 0, intruder_out + intruder_err
     assert hal.returncode == 0, out + err
-    assert int(out.strip().splitlines()[-1]) == 0
+    assert int(_result(out)) == 0

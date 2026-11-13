@@ -156,12 +156,12 @@ _Observation-only object-local occupied surface voxels. Uses bounded native PCL 
 never supplies collision geometry or world occupancy clearing. Explicit bounded depth rays may
 retire only its independently owned diagnostic surface cells._
 
-- `class ObjectSurfaceModels(config)` — Explicit `ObjectSurfaceModelConfig`; loads the ROS-built `_openral_pcl_registration` module, fails configuration if unavailable. Stores at most `TrackedObjectSet.MAX_OBJECTS` independent identities and bounded local surface cells. (L50)
-  - `retain(identities) -> None` — Drops models for retired track IDs. (L73)
-  - `observe(object_id, epoch, points_world, initial_world_pose, stamp_ns) -> str` — Seeds a canonical frame from the first observed fit; later observations register against accumulated local points with PCL, gated by convergence/residual/overlap. Rejects old stamps/generations and invalid rigid inputs; only accepted measurements update pose/voxels. Reports capacity explicitly. No unseen-space inference or deformation model. (L77)
-  - `world_points(object_id) -> NDArray` — Projects the stored local surface at its latest accepted observed pose without retaining world-coordinate trails. (L173)
-  - `clear_observed_free(object_id, epoch, stamp_ns, depth_m, robot_mask, intrinsics, t_world_from_cam, *, now_ns, max_age_ns, depth_error_m, pose_error_m, pixel_error, min_depth_m, max_depth_m) -> int` — Removes only model-owned voxels whose entire projected volume is independently observed free in the same accepted-pose frame, within explicit error/freshness bounds. Unknown/occluded/off-image/unexamined cells remain; projected pixel work bounded by `max_points`, once per frame. No world-map edits. (L179)
-  - `diagnostics() -> dict[str, str]` — Model status, voxel count, actual observation stamp, residual, overlap, epoch and retired-cell count. (L292)
+- `class ObjectSurfaceModels(config)` — Explicit `ObjectSurfaceModelConfig`; loads the ROS-built `_openral_pcl_registration` module, fails configuration if unavailable. Stores at most `TrackedObjectSet.MAX_OBJECTS` independent identities and bounded local surface cells. (L69)
+  - `retain(identities) -> None` — Drops models for retired track IDs. (L92)
+  - `observe(object_id, epoch, points_world, initial_world_pose, stamp_ns) -> str` — Seeds a canonical frame from the first observed fit; later observations register against accumulated local points with PCL, gated by convergence/residual/overlap. Rejects old stamps/generations and invalid rigid inputs; only accepted measurements update pose/voxels. Reports capacity explicitly. No unseen-space inference or deformation model. (L96)
+  - `world_points(object_id) -> NDArray` — Projects the stored local surface at its latest accepted observed pose without retaining world-coordinate trails. (L195)
+  - `clear_observed_free(object_id, epoch, stamp_ns, depth_m, robot_mask, intrinsics, t_world_from_cam, *, now_ns, max_age_ns, depth_error_m, pose_error_m, pixel_error, min_depth_m, max_depth_m) -> int` — Removes only model-owned voxels whose entire projected volume is independently observed free in the same accepted-pose frame, within explicit error/freshness bounds. Unknown/occluded/off-image/unexamined cells remain; projected pixel work bounded by `max_points`, once per frame. No world-map edits. (L201)
+  - `diagnostics() -> dict[str, str]` — Model status, voxel count, actual observation stamp, residual, overlap, epoch and retired-cell count. (L314)
 
 ### `python/world_state/src/openral_world_state/object_tracker/multi_view.py`
 _Multi-view containing fit (#418 phase 4): `K = conv(C_primary) ∩ cone_j ∩ …` — only second views' silhouette cones intersect, never their front cut or prism; pure numpy, no scipy._
