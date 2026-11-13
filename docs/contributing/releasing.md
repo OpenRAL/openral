@@ -107,6 +107,13 @@ CHANGES" section against `git log --grep='BREAKING CHANGE'`. The changelog
 body is editable, and editing it is the intended fix; the merged commit
 message cannot be corrected without rewriting `master`.
 
+release-please also stops reading history after `commit-search-depth`
+first-parent commits (`release-please-config.json`; its default is 500). Older
+commits drop out of the notes with no warning: the first `v0.4.0` release PR
+covered 673 and lost 316 entries. `tests/unit/test_lockstep_versions.py` fails
+when the commits since the last tag reach the depth; count them with
+`git rev-list --first-parent --count v<last>..origin/master`.
+
 A merge commit needs the same care in the other direction: keep its message
 free of any `type(scope): subject` line, or release-please parses the merge
 *and* the branch commit and the entry appears twice.
