@@ -17,13 +17,20 @@ sys.modules["pin_robot_ui"] = tool
 _spec.loader.exec_module(tool)
 
 
-def test_the_pin_is_rewritten_in_place_and_parses(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "url",
+    [
+        # The Apache-2.0 builds on this repo's Releases, and the console's own releases repo.
+        "https://github.com/OpenRAL/openral/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz",
+        "https://github.com/OpenRAL/robot-ui-releases/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz",
+    ],
+)
+def test_the_pin_is_rewritten_in_place_and_parses(tmp_path: Path, url: str) -> None:
     src = (_REPO / tool.UI_ASSETS).read_text(encoding="utf-8")
-    url = "https://github.com/OpenRAL/openral/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz"
     out = tool.pin(src, "robot-ui-abc1234", url, "a" * 64, 184_000)
     changed = [(a, b) for a, b in zip(src.splitlines(), out.splitlines(), strict=True) if a != b]
     assert len(changed) == 4  # url, sha256, size, and the docstring's version
-    assert "``robot-ui.yml``" in out and "``robot-ui-abc1234``" in out
+    assert "``tools/pin_robot_ui.py``" in out and "``robot-ui-abc1234``" in out
     assert f'url="{url}"' in out and 'sha256="' + "a" * 64 + '"' in out and "size=184000," in out
     # Idempotent over its own output (the next bump finds the block again).
     assert tool.pin(out, "robot-ui-def5678", url, "b" * 64, 1).count("robot-ui-def5678") == 1

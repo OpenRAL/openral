@@ -30,10 +30,11 @@
     <dt>Safety</dt><dd id="safety"></dd>
   </dl>
   <p class="note">
-    This is the dashboard's built-in fallback page: the robot UI is not installed.
-    The dashboard downloads the pinned UI release on start; check the network and restart
-    <code>openral dashboard</code>, or point <code>OPENRAL_DASHBOARD_UI_DIR</code> at a local
-    build of <code>python/observability/ui/</code>.
+    This is the dashboard's built-in fallback page: no robot console bundle is available.
+    Either the dashboard could not download its pinned console on first start (check the
+    network and restart <code>openral dashboard</code>), or
+    <code>OPENRAL_DASHBOARD_UI_DIR</code> names a directory without an
+    <code>index.html</code>.
     The physical e-stop stays authoritative.
   </p>
 </main>

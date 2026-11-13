@@ -33,14 +33,30 @@ dashboard exits with the workload).
 
 ## The page
 
-`/` serves the robot UI, the React app in `python/observability/ui/`. The dashboard
-downloads its pinned release once (url + sha256 + size in
+`/` serves the robot UI (the robot console), a prebuilt web bundle the dashboard
+downloads once (url + sha256 + size pinned in
 `openral_observability.dashboard.ui_assets.ROBOT_UI`) into
-`$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`). To serve a local
-build instead, set `OPENRAL_DASHBOARD_UI_DIR=/path/to/ui/dist`.
+`$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`). To serve another
+build instead, set `OPENRAL_DASHBOARD_UI_DIR` to a directory holding its `index.html`.
+At start the dashboard logs one `dashboard.ui_source` line saying what `/` serves: the
+pinned bundle with its URL and license, a local directory, or the fallback page.
 
-When no UI is available (no release pinned yet, or an offline first start) `/` serves a
-built-in fallback page: the robot's status and an **E-STOP** button.
+When no console is available (an offline first start, or `OPENRAL_DASHBOARD_UI_DIR`
+naming a directory without an `index.html`) `/` serves a built-in fallback page: the
+robot's status and an **E-STOP** button.
+
+**The console's license.**
+
+- The console is a prebuilt bundle. Its source is not in this repository (ADR-0131).
+- Builds published from `OpenRAL/robot-ui-releases` are proprietary (not Apache-2.0),
+  free to download and run with OpenRAL, and each carries its terms in `LICENSE.txt`.
+- The `robot-ui-*` builds published on `OpenRAL/openral` Releases (up to
+  `robot-ui-3047b18`) are Apache-2.0 and stay available.
+- Everything in this repository stays Apache-2.0, including the dashboard server, the
+  robot API and the fallback page with its E-STOP button.
+- To run without the closed bundle, point `OPENRAL_DASHBOARD_UI_DIR` at your own UI
+  build, or at an empty directory to get the fallback page. The robot API
+  ([Endpoints](#endpoints)) is the public contract for third-party UIs.
 
 What the UI shows comes from the **robot manifest**, which the deploy runtime emits at
 start and again whenever the installed rSkills change (`/openral/skill_registry_changed`):

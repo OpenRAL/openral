@@ -2,15 +2,20 @@ name: reasoner-models
 # openral.com's Account → Settings offers the curated reasoner models (REASONER_MODELS in
 # openral_core) as a drop-down, from the website's server/reasoner-models.json. When the
 # list changes on master, this regenerates that file (tools/export_reasoner_models.py)
-# and merges it into the website's dev branch, the same way robot-ui.yml rolls out the
-# UI pin; promote-to-main carries it to production. Needs ROBOT_UI_BOT_TOKEN (see
-# robot-ui.yml); without it the job says what changed.
+# and merges it into the website's dev branch (the website lives in OpenRAL/platform);
+# promote-to-main carries it to production. Needs ROBOT_UI_BOT_TOKEN (setup below);
+# without it the job says what changed.
 #
 # Two jobs so the token never shares a runner with third-party code: `export` runs
 # uv and the openral-core import with no secret and a read-only GITHUB_TOKEN, and
 # hands the JSON over as an artifact; `sync` holds ROBOT_UI_BOT_TOKEN, has no
 # GITHUB_TOKEN scopes and runs nothing but git/gh on that file. Not reachable from
 # a fork: push to master and a dispatch on master only (no pull_request*).
+#
+# Maintainer setup (Settings → Environments → `robot-ui-release`): deployment
+# branches master only; ROBOT_UI_BOT_TOKEN, a fine-grained token with Contents and
+# Pull requests: write on OpenRAL/platform, is a secret of this environment, so no
+# other branch or job can read it.
 
 on:
   push:
@@ -56,8 +61,8 @@ jobs:
 
   sync:
     needs: export
-    # The bot token merges into the website: master only, in the same environment
-    # as robot-ui.yml's pin job (see the setup notes there).
+    # The bot token merges into the website: master only, in the environment that
+    # holds it (see the setup notes at the top).
     if: github.ref == 'refs/heads/master'
     environment: robot-ui-release
     runs-on: ubuntu-24.04
@@ -99,7 +104,7 @@ jobs:
           git config --global user.name "openral-bot"
           git config --global user.email "openral-bot@users.noreply.github.com"
           gh auth setup-git
-          gh repo clone OpenRAL/website website -- --branch dev --depth 1
+          gh repo clone OpenRAL/platform website -- --branch dev --depth 1
           cd website
           cp "$RUNNER_TEMP/export/reasoner-models.json" server/reasoner-models.json
           git add server/reasoner-models.json
