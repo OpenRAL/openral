@@ -131,7 +131,9 @@ def _api_state(store: Any) -> dict[str, Any]:
     async def _get() -> dict[str, Any]:
         app = create_app(store)
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # A loopback request must name this machine: the dashboard refuses any other
+        # Host header (DNS-rebinding guard), as it does for the browser.
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             resp = await client.get("/api/state")
         assert resp.status_code == 200
         return dict(resp.json())

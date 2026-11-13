@@ -15,6 +15,40 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
+#: Every variable ``openral_core.ros_graph_scope`` reads to decide whether a graph stays on
+#: this host, is opted in, or runs SROS2: the discovery range and peers, the opt-in, the
+#: RMW (Zenoh ignores both), Fast DDS's discovery server, vendor XML that lists peers, and
+#: the security trio a secured graph is checked under.
+ROS_SCOPE_VARS: tuple[str, ...] = (
+    "OPENRAL_ALLOW_NETWORK_ROS",
+    "ROS_LOCALHOST_ONLY",
+    "ROS_AUTOMATIC_DISCOVERY_RANGE",
+    "ROS_STATIC_PEERS",
+    "ROS_DISCOVERY_SERVER",
+    "RMW_IMPLEMENTATION",
+    "CYCLONEDDS_URI",
+    "FASTRTPS_DEFAULT_PROFILES_FILE",
+    "FASTDDS_DEFAULT_PROFILES_FILE",
+    "ROS_SECURITY_ENABLE",
+    "ROS_SECURITY_STRATEGY",
+    "ROS_SECURITY_KEYSTORE",
+)
+
+
+def set_ros_scope(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    """Clear every :data:`ROS_SCOPE_VARS` entry, then export ``env``, for this test only.
+
+    The scope is then exactly ``env``, whatever the shell exported. Only for a test whose
+    graph runs in this environment alone: ``tests/sim/conftest.py`` records a
+    LOCALHOST range set across a process boundary the test does not launch hanging.
+    """
+    for var in ROS_SCOPE_VARS:
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+
 
 def import_launch_module(launch_file: Path) -> ModuleType:
     """Load ``launch_file`` (e.g. ``deploy_e2e.launch.py``) as a Python module via importlib."""

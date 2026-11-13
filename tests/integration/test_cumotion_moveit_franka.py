@@ -27,6 +27,8 @@ from typing import Any
 
 import pytest
 
+from tests.integration._ros_pkg import ros_pkg_available
+
 _ROS2_AVAILABLE = bool(os.environ.get("ROS_DISTRO")) and (
     importlib.util.find_spec("openral_msgs") is not None
 )
@@ -37,19 +39,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 pytest.importorskip("rclpy")
-
-
-def _ros_pkg_available(name: str) -> bool:
-    if shutil.which("ros2") is None:
-        return False
-    result = subprocess.run(
-        ["ros2", "pkg", "prefix", name],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    return result.returncode == 0 and result.stdout.strip() != ""
 
 
 def _require_live_cumotion_stack() -> None:
@@ -69,7 +58,7 @@ def _require_live_cumotion_stack() -> None:
             "moveit_resources_panda_description",
             "moveit_resources_panda_moveit_config",
         )
-        if not _ros_pkg_available(pkg)
+        if not ros_pkg_available(pkg)
     ]
     if missing:
         pytest.skip(f"missing ROS package(s) required for cuMotion MoveIt e2e: {missing}")
