@@ -640,38 +640,80 @@ def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
     ), "the tracker's escalation span is not in the goal's trace"
 
 
+def _query_reasoner() -> Any:  # reason: ReasonerNode imports only with ROS sourced
+    """A configured, active reasoner whose palette holds the object-query test skill."""
+    from openral_core import WaitTool
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    reasoner = ReasonerNode(
+        client=FakeToolUseClient(responses=[WaitTool() for _ in range(64)]),
+        palette=ToolPalette(execute_rskill_ids=frozenset({_SKILL})),
+        tick_hz=0.2,
+    )
+    reasoner.trigger_configure()
+    reasoner.trigger_activate()
+    return reasoner
+
+
+_INVOCATION = "ab" * 16
+
+
+def _escalate(reasoner: Any, task_id: str) -> None:  # reason: ReasonerNode needs ROS
+    """The tracker's escalation for the in-flight goal dispatched for ``task_id``."""
+    from openral_core import ObjectQueryEvidence, ObjectRole
+    from openral_reasoner.context import FailureEventRecord
+
+    reasoner._rskill_inflight = True
+    reasoner._active_object_query_invocation_id = _INVOCATION
+    evidence = ObjectQueryEvidence(
+        escalation="exhausted",
+        goal_id="grasp:obj:banana@1",
+        query_id="0",
+        label="banana",
+        role=ObjectRole.TARGET,
+        waited_s=1.5,
+        attempts=3,
+        invocation_id=_INVOCATION,
+    )
+    reasoner._on_object_query(
+        FailureEventRecord(
+            source="world_state",
+            kind=0,
+            severity=0,
+            evidence_json=evidence.model_dump_json(),
+            rskill_id=_SKILL,
+            trace_id="",
+            stamp_ns=1,
+        )
+    )
+
+
+def _query_record(reasoner: Any) -> Any:  # reason: ReasonerNode needs ROS
+    [record] = [e for e in reasoner._renderer.executions if e.rskill_id == "(object-query)"]
+    return record
+
+
 def test_a_replaced_tasks_object_query_does_not_tell_the_new_goal_to_stop() -> None:
     """An escalation for a goal whose task a new operator goal replaced has no budget to read
     (#586 review). Its record must not carry the blocked reflection ("Stop this task …") into
     the new goal's context: nothing blocked the new task."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
-    from openral_core import ObjectQueryEvidence, ObjectRole, WaitTool
     from openral_msgs.msg import PromptStamped
-    from openral_reasoner import MissionState, ToolPalette
-    from openral_reasoner.context import FailureEventRecord
-    from openral_reasoner_ros import ReasonerNode
+    from openral_reasoner import MissionState
 
-    from tests.integration.fakes.fake_llm import FakeToolUseClient
-
-    invocation = "ab" * 16
     rclpy.init()
     try:
-        reasoner = ReasonerNode(
-            client=FakeToolUseClient(responses=[WaitTool() for _ in range(64)]),
-            palette=ToolPalette(execute_rskill_ids=frozenset({_SKILL})),
-            tick_hz=0.2,
-        )
-        reasoner.trigger_configure()
-        reasoner.trigger_activate()
+        reasoner = _query_reasoner()
         first = MissionState.from_prompt("pick the banana")
         reasoner._renderer.set_mission(first)
         first.record_attempt(rskill_id=_SKILL)
         active = first.active()
         assert active is not None
         # The pick is in flight for the first goal's task ...
-        reasoner._rskill_inflight = True
-        reasoner._active_object_query_invocation_id = invocation
         reasoner._active_dispatch_task_id = active.task_id
         reasoner._active_dispatch_mission_generation = reasoner._mission_generation
         # ... when the operator starts over.
@@ -681,30 +723,103 @@ def test_a_replaced_tasks_object_query_does_not_tell_the_new_goal_to_stop() -> N
         prompt.metadata_json = '{"new_goal": true}'
         reasoner._on_prompt(prompt)
         assert reasoner._renderer.mission is not first
-        evidence = ObjectQueryEvidence(
-            escalation="exhausted",
-            goal_id="grasp:obj:banana@1",
-            query_id="0",
-            label="banana",
-            role=ObjectRole.TARGET,
-            waited_s=1.5,
-            attempts=3,
-            invocation_id=invocation,
-        )
-        reasoner._on_object_query(
-            FailureEventRecord(
-                source="world_state",
-                kind=0,
-                severity=0,
-                evidence_json=evidence.model_dump_json(),
-                rskill_id=_SKILL,
-                trace_id="",
-                stamp_ns=1,
-            )
-        )
-        [record] = [e for e in reasoner._renderer.executions if e.rskill_id == "(object-query)"]
+        _escalate(reasoner, active.task_id)
+        record = _query_record(reasoner)
         assert "Stop this task" not in (record.reflection or ""), record.reflection
         assert reasoner._rskill_cancel_reason == "object_query_old_task"
         assert reasoner._object_query_blocked_task_id is None
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_pending_reward_verdict_counts_against_the_object_query_budget() -> None:
+    """#586 review: with a reward monitor a success's verdict lands asynchronously, and until
+    it does it may still be a failure. One failed dispatch, one success whose verdict is in
+    flight, then this goal's object query fails: that is the third failure, so the task
+    blocks instead of recovering past the cap. The verdict landing releases the hold."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.srv import QueryTaskProgress
+    from openral_reasoner import MissionState
+    from rclpy.task import Future
+
+    rclpy.init()
+    try:
+        reasoner = _query_reasoner()
+        reasoner._task_progress_available = True
+        mission = MissionState.from_prompt("pick the banana")
+        reasoner._renderer.set_mission(mission)
+        active = mission.active()
+        assert active is not None
+        mission.record_attempt(rskill_id=_SKILL)  # failed, counted on return
+        active.failures = 1
+        mission.record_attempt(rskill_id=_SKILL)  # succeeded; its reward query was sent
+        mission.mark_verifying()
+        pending = (reasoner._mission_generation, active.task_id)
+        reasoner._pending_success_verdicts[pending] += 1
+        mission.record_attempt(rskill_id=_SKILL)  # the goal in flight now
+        reasoner._active_dispatch_task_id = active.task_id
+        reasoner._active_dispatch_mission_generation = reasoner._mission_generation
+        _escalate(reasoner, active.task_id)
+        record = _query_record(reasoner)
+        assert "Recovery budget is 3/3 failed dispatches" in (record.reflection or "")
+        assert reasoner._object_query_blocked_task_id == active.task_id
+        response = QueryTaskProgress.Response()
+        response.ok = True
+        response.progress_now = 0.2
+        response.success_now = 0.2
+        response.frames_seen = 30
+        future = Future()
+        future.set_result(response)
+        reasoner._on_mission_verify_response(
+            active.task_id,
+            active.text,
+            future,
+            mission=mission,
+            traceparent=None,
+            succeeded=True,
+            pending=pending,
+        )
+        assert reasoner._pending_success_verdicts[pending] == 0
+        assert active.failures == 2, "the gate scored the success not done"
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_goal_that_succeeds_before_the_object_query_cancel_lands_is_a_success() -> None:
+    """#586 review: the tracker escalates as the runner finishes the goal, and the result
+    comes back SUCCEEDED despite the cancel. That dispatch worked: it is not a failure, and
+    the recovery wait it armed is released."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_core import ExecuteRskillTool
+    from openral_msgs.action import ExecuteRskill
+    from openral_reasoner import MissionState
+    from rclpy.task import Future
+
+    rclpy.init()
+    try:
+        reasoner = _query_reasoner()
+        mission = MissionState.from_prompt("pick the banana")
+        reasoner._renderer.set_mission(mission)
+        mission.record_attempt(rskill_id=_SKILL)
+        active = mission.active()
+        assert active is not None
+        reasoner._active_dispatch_generation = 4
+        reasoner._active_dispatch_task_id = active.task_id
+        reasoner._active_dispatch_mission_generation = reasoner._mission_generation
+        reasoner._rskill_cancel_reason = "object_query_recovery"
+        reasoner._object_query_recovery_pending = True
+        wrapped = ExecuteRskill.Impl.GetResultService.Response()
+        wrapped.status = 4  # STATUS_SUCCEEDED
+        wrapped.result.success = True
+        future = Future()
+        future.set_result(wrapped)
+        reasoner._on_execute_rskill_result(
+            ExecuteRskillTool(rskill_id=_SKILL), 4, b"\x00" * 16, future, None
+        )
+        assert active.failures == 0
+        assert reasoner._renderer.executions[-1].outcome == "ok"
+        assert not reasoner._object_query_recovery_pending
     finally:
         rclpy.try_shutdown()

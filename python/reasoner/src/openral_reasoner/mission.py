@@ -61,10 +61,13 @@ DEFAULT_MAX_TASK_DISPATCHES: int = 10
 """Hard per-task bound on dispatches of any outcome (#562).
 
 Terminates the loop the failure-only cap cannot see: a task whose dispatches
-keep succeeding but which nothing ever completes (no reward monitor, or a
-``final_step=False`` step skill re-sent forever) is abandoned here through the
-usual abandon path (one subdivision offer, then hand-off). Sized for a few
-one-skill steps (navigate, pick, place) plus their retries."""
+keep succeeding but which nothing ever completes (no reward monitor, a reply it
+could not score, or a ``final_step=False`` step skill re-sent forever) is
+abandoned here through the usual abandon path (one subdivision offer, then
+hand-off). The reasoner node checks it where a goal would be sent, so it holds on
+every result path, a reward verdict that never comes included: no task sends more
+than this many goals. Sized for a few one-skill steps (navigate, pick, place) plus
+their retries."""
 
 DEFAULT_MAX_SUBDIVIDE_DEPTH: int = 2
 """Max re-decomposition depth (#123).

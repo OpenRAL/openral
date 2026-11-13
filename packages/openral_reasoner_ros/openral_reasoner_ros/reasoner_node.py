@@ -39,7 +39,7 @@ import pathlib
 import sys
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
@@ -1221,6 +1221,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._active_dispatch_completes_task: bool | None = None
         self._object_query_recovery_pending: bool = False
         self._active_object_query_invocation_id: str | None = None
+        # Reward verdicts still pending for successful dispatches, per (mission generation,
+        # task id): until one lands it may still be a failure, so the object-query budget
+        # counts it.
+        self._pending_success_verdicts: Counter[tuple[int, str]] = Counter()
         self._execute_rskill_client: Any = None  # rclpy.action.ActionClient
         # Lifecycle clients are cached per target node — one
         # ``<node>/change_state`` client per peer.
@@ -2064,9 +2068,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             current_task_id=active.task_id if active is not None else None,
             current_mission_generation=self._mission_generation,
         )
-        # The budget counts failed dispatches, this goal included; an earlier success spends
-        # none of it (#562). A goal for a task no longer active has no budget to read.
-        failures = None if active is None or invocation_task_changed else active.failures + 1
+        # The budget counts failed dispatches, this goal included, and any earlier success
+        # whose reward verdict is still pending; a judged success spends none of it (#562).
+        # A goal for a task no longer active has no budget to read.
+        failures = (
+            None
+            if active is None or invocation_task_changed
+            else active.failures + 1 + self._pending_success_verdicts_for(active)
+        )
         step = object_query_step(evidence, failures=failures)
         self.get_logger().warning(
             f"object_query: {evidence.escalation} label={evidence.label!r} "
@@ -4383,6 +4392,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             else _MISSION_VERIFY_WINDOW_S
         )
         req.task = active.text
+        pending = (self._mission_generation, active.task_id) if succeeded else None
+        if pending is not None:
+            self._pending_success_verdicts[pending] += 1
         future = client.call_async(req)
         # Carry BOTH the task id and text into the response guard: two tasks
         # frequently share text after a decompose ("pick up the milk…" twice),
@@ -4397,6 +4409,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 mission=mission,
                 traceparent=traceparent,
                 succeeded=succeeded,
+                pending=pending,
             ),
         )
         self.get_logger().info(
@@ -4413,6 +4426,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         mission: MissionState,
         traceparent: str | None,
         succeeded: bool,
+        pending: tuple[int, str] | None = None,
     ) -> None:
         """Apply the reward gate (§2): complete / abandon / retry.
 
@@ -4425,7 +4439,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         advance to the next task; ``abandon`` (ladder exhausted) → mark abandoned,
         advance, and on mission end emit an honest handoff; ``retry`` → keep the
         task active. A forced tick wakes the reasoner to act on the new state.
+        ``pending`` is the success's pending-verdict hold, released here (or by the VLM
+        continuation when the band is ambiguous).
         """
+        self._release_pending_verdict(pending)
         try:
             resp = future.result()
         except Exception as exc:  # best-effort; a failed verify must not kill the loop
@@ -4472,17 +4489,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 traceparent=traceparent,
             )
             return
-        action, verdict = evaluate_task_verdict(
+        action, verdict = self._gate_ladder(
+            active,
             ok=bool(resp.ok),
             progress_now=progress_now,
             success_now=success_now,
             success_threshold=success_threshold,
             check_floor=check_floor,
-            # A failed dispatch is already counted; a success counts unless it completes.
-            failures=active.failures + int(succeeded),
+            succeeded=succeeded,
         )
-        if succeeded and action in ("retry", "abandon"):
-            self._count_failure(active)
         if action == "vlm_check":
             # VLM-adjudicated completion §5 — ambiguous reward band: ask the VLM whether the task is
             # visually complete. True → advance as if "complete"; False/None → degrade
@@ -4491,7 +4506,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # primary adjudicator here; the success head (``success_now``) is the
             # secondary corroborating cue already folded into ``verdict``.
             # The describe_image round-trip runs off-executor (#21); the
-            # continuation re-checks staleness before acting.
+            # continuation re-checks staleness before acting. The success's verdict is
+            # still pending until it answers.
+            if pending is not None:
+                self._pending_success_verdicts[pending] += 1
             self._adjudicate_completion_async(
                 active.text,
                 lambda verdict_vlm: self._on_vlm_completion_verdict(
@@ -4506,6 +4524,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     check_floor=check_floor,
                     traceparent=traceparent,
                     succeeded=succeeded,
+                    pending=pending,
                 ),
             )
             return
@@ -4533,14 +4552,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         check_floor: float,
         traceparent: str | None,
         succeeded: bool,
+        pending: tuple[int, str] | None = None,
     ) -> None:
         """Executor-thread continuation of the ``vlm_check`` branch (#21).
 
         Re-fetches the active task (the mission may have advanced while the
         VLM call was in flight — same stale-verdict guard as the verify
         response itself), then applies the pre-async semantics: True →
-        complete; False/None → degrade to the attempts ladder.
+        complete; False/None → degrade to the attempts ladder. Releases the success's
+        pending-verdict hold.
         """
+        self._release_pending_verdict(pending)
         if self._renderer.mission is not mission:
             return  # a new goal replaced the mission under us; stale verdict
         active = mission.active()
@@ -4568,16 +4590,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # task retries forever — never abandons, never hands off (CLAUDE.md §3
         # bounded ladder). Each such verdict counts a failure (a failed dispatch was
         # counted on return) and ``failures`` never decreases, so this terminates.
-        action, verdict = evaluate_task_verdict(
+        action, verdict = self._gate_ladder(
+            active,
             ok=False,
             progress_now=progress_now,
             success_now=success_now,
             success_threshold=success_threshold,
             check_floor=check_floor,
-            failures=active.failures + int(succeeded),
+            succeeded=succeeded,
         )
-        if succeeded:
-            self._count_failure(active)
         self._apply_mission_verdict(
             action,
             verdict,
@@ -4588,7 +4609,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             traceparent=traceparent,
         )
 
-    def _count_failure(self, active: TaskState) -> None:
+    def _count_failure(self, active: TaskState, *, persist: bool = True) -> None:
         """Count one failed dispatch against the active task (``TaskState.failures``).
 
         Every per-task ladder caps failures, not dispatches (#562). A failure is a
@@ -4596,10 +4617,53 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         success the reward gate scored not done, or a goal whose object query failed. A
         success nobody judged (no reward monitor, an ``ok=False`` reply, a
         ``final_step=False`` step the gate never sees) counts nothing;
-        ``DEFAULT_MAX_TASK_DISPATCHES`` bounds those.
+        ``DEFAULT_MAX_TASK_DISPATCHES`` bounds those. ``persist=False`` when the caller
+        writes the ladder state itself right after.
         """
         active.failures += 1
-        self._persist_ladder_state()
+        if persist:
+            self._persist_ladder_state()
+
+    def _gate_ladder(
+        self,
+        active: TaskState,
+        *,
+        ok: bool,
+        progress_now: float,
+        success_now: float,
+        success_threshold: float,
+        check_floor: float,
+        succeeded: bool,
+    ) -> tuple[str, str]:
+        """The reward gate's verdict for this dispatch, counting it when it failed.
+
+        A failed dispatch was counted when it returned; a ``succeeded`` one counts here
+        when the verdict is ``retry`` / ``abandon`` (``vlm_check`` defers it to the VLM).
+        """
+        action, verdict = evaluate_task_verdict(
+            ok=ok,
+            progress_now=progress_now,
+            success_now=success_now,
+            success_threshold=success_threshold,
+            check_floor=check_floor,
+            failures=active.failures + int(succeeded),
+        )
+        if succeeded and action in ("retry", "abandon"):
+            # The abandon path writes the ladder state itself.
+            self._count_failure(active, persist=action == "retry")
+        return action, verdict
+
+    def _pending_success_verdicts_for(self, active: TaskState) -> int:
+        """Reward verdicts still pending for the active task's successful dispatches."""
+        return self._pending_success_verdicts[(self._mission_generation, active.task_id)]
+
+    def _release_pending_verdict(self, pending: tuple[int, str] | None) -> None:
+        """Drop one pending-verdict hold taken when a success's reward query was sent."""
+        if pending is None:
+            return
+        self._pending_success_verdicts[pending] -= 1
+        if self._pending_success_verdicts[pending] <= 0:
+            del self._pending_success_verdicts[pending]
 
     def _bound_unjudged_dispatch(
         self,
@@ -4658,7 +4722,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     outcome="failed",
                     summary=(
                         f"reward says NOT done: progress={progress_now:.2f} below the "
-                        f"progress bar (success={success_now:.2f}, attempt {active.attempts}); "
+                        f"progress bar (success={success_now:.2f}, failed attempt "
+                        f"{active.failures}/{DEFAULT_MAX_ATTEMPTS}); "
                         "the policy executed without a fault but did not accomplish the task"
                     ),
                     reflection=reflect_on_reward_plateau(progress_now),
@@ -5177,7 +5242,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return True
         return False
 
-    def _dispatch_execute_rskill(
+    def _dispatch_execute_rskill(  # noqa: PLR0911, PLR0915  # reason: linear refusal gates before the goal is sent
         self,
         call: ExecuteRskillTool,
         *,
@@ -5235,6 +5300,28 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     ),
                     stamp_ns=self.get_clock().now().nanoseconds,
                 )
+            )
+            return
+        # Per-task dispatch bound (#562): checked where a goal would be sent, so it holds
+        # whatever the results said, a reward verdict that never came included. The usual
+        # abandon path ends the task (one subdivision offer, then hand-off); no goal is sent.
+        if (
+            mission is not None
+            and active is not None
+            and active.attempts >= DEFAULT_MAX_TASK_DISPATCHES
+        ):
+            self.get_logger().info(
+                f"execute gate: task {active.task_id} used its {DEFAULT_MAX_TASK_DISPATCHES} "
+                f"dispatches; not sending {call.rskill_id!r}",
+            )
+            self._apply_mission_verdict(
+                "abandon",
+                f"not complete after {active.attempts} dispatch(es), the per-task bound",
+                mission=mission,
+                active=active,
+                progress_now=0.0,
+                success_now=0.0,
+                traceparent=traceparent,
             )
             return
         # Target grounding: the LLM named a grasp/place target; ground it now, before any
@@ -6205,12 +6292,20 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     ) -> bool:
         """Record typed object-query termination and apply the persisted failure cap."""
         not_found_kind = _failure_kind_value("FAILURE_OBJECT_NOT_FOUND")
-        is_query_failure = cancel_reason in (
+        query_cancel = cancel_reason in (
             "object_query_recovery",
             "object_query_blocked",
             "object_not_found",
             "object_query_old_task",
-        ) or (not_found_kind != 0 and _rskill_failure_kind(result) == not_found_kind)
+        )
+        if status == 4 and result.success:
+            # The goal finished before the cancel landed: a success, not a failed dispatch.
+            if query_cancel:
+                self._object_query_recovery_pending = False
+            return False
+        is_query_failure = query_cancel or (
+            not_found_kind != 0 and _rskill_failure_kind(result) == not_found_kind
+        )
         if not is_query_failure:
             return False
         self._renderer.append_execution(
@@ -6242,18 +6337,21 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         ):
             self._object_query_recovery_pending = False
             return True
-        self._count_failure(active)  # the goal failed; it never reaches the reward gate
         if cancel_reason in ("object_query_recovery", "object_query_blocked"):
+            self._count_failure(active)  # the goal failed; it never reaches the reward gate
             self._finish_object_query_cancel(
                 cancel_reason, dispatch_task_id, dispatch_mission_generation
             )
             return True
         # A runner may report the typed result before the tracker escalation arrives.
-        if active.failures < DEFAULT_MAX_ATTEMPTS:
-            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
-        else:
+        blocked = (
+            active.failures + 1 + self._pending_success_verdicts_for(active) >= DEFAULT_MAX_ATTEMPTS
+        )
+        if blocked:
             self._object_query_blocked_task_id = active.task_id
-            self._persist_ladder_state()
+        self._count_failure(active)  # one write: the failure and any block
+        if not blocked:
+            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
         return True
 
     # ── Lifecycle service callback ──────────────────────────────────────────

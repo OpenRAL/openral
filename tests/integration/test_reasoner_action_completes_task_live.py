@@ -420,6 +420,9 @@ def test_approach_steps_do_not_spend_the_reward_gates_failure_budget() -> None:
             assert picks < 2 * DEFAULT_MAX_ATTEMPTS, "the gate never ended the pick"
             _judge(reasoner, pick, progress=_NOT_DONE)
             picks += 1
+            if picks == 1:  # the retry record counts failures, not dispatches (3 here)
+                summary = reasoner._renderer.executions[-1].summary
+                assert f"failed attempt 1/{DEFAULT_MAX_ATTEMPTS}" in summary, summary
         assert picks == DEFAULT_MAX_ATTEMPTS, f"the pick got {picks} of its 3 tries"
         active = mission.active()
         assert active is not None and active.failures == DEFAULT_MAX_ATTEMPTS
@@ -557,5 +560,50 @@ def test_a_success_the_reward_monitor_could_not_score_is_not_a_failure() -> None
         assert sent == DEFAULT_MAX_TASK_DISPATCHES + 1  # bound → offer, then abandon
         assert mission.tasks[0].failures == 0
         assert _status(mission) == "abandoned"
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_the_dispatch_bound_holds_when_no_reward_verdict_ever_comes() -> None:
+    """#586 review: a reward query that raises leaves no verdict, so nothing on the result
+    path bounds the task. The bound holds where a goal would be sent: past it no goal is
+    sent and the abandon path ends the task (subdivision offer, then hand-off)."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_TASK_DISPATCHES, MissionState
+    from rclpy.task import Future
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True
+        pick = ExecuteRskillTool(
+            rskill_id=next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        )
+        mission = MissionState.from_prompt("pick up the cup")
+        reasoner._renderer.set_mission(mission)
+        for _ in range(DEFAULT_MAX_TASK_DISPATCHES):
+            mission.record_attempt(rskill_id=pick.rskill_id)
+            mission.mark_verifying()
+            active = mission.active()
+            assert active is not None
+            future = Future()
+            future.set_exception(RuntimeError("reward service died"))
+            reasoner._on_mission_verify_response(
+                active.task_id,
+                active.text,
+                future,
+                mission=mission,
+                traceparent=None,
+                succeeded=True,
+            )
+        assert reasoner._subdivide_offered == set(), "no verdict came: nothing settled yet"
+        reasoner._dispatch_execute_rskill(pick, traceparent=None)  # the 11th: not sent
+        assert mission.tasks[0].task_id in reasoner._subdivide_offered
+        assert mission.tasks[0].attempts == DEFAULT_MAX_TASK_DISPATCHES
+        assert not reasoner._rskill_inflight, "a goal past the bound was sent or held"
+        reasoner._dispatch_execute_rskill(pick, traceparent=None)  # after the offer: hand-off
+        assert _status(mission) == "abandoned"
+        assert mission.tasks[0].attempts == DEFAULT_MAX_TASK_DISPATCHES
     finally:
         rclpy.try_shutdown()

@@ -117,9 +117,14 @@ drive it never judges, or a success it could not score (`ok=false`: stale frames
 no task, a backend error), spends none, so "drive to the kitchen and pick up the
 cup" still gets three picks. A task whose dispatches keep succeeding while the gate
 keeps scoring them not done still ends at the cap; unscored successes end at
-`DEFAULT_MAX_TASK_DISPATCHES`. Object-query recovery (the tracker cannot resolve the
+`DEFAULT_MAX_TASK_DISPATCHES`, which the node checks before sending each goal, so
+no task sends more than 10 goals whatever its results said (a reward query that
+raises or never answers included). Object-query recovery (the tracker cannot resolve the
 goal's object) recovers while the task's failed dispatches, the failing goal
-included, stay below the cap, so an earlier drive or look-at does not block it. The
+included, stay below the cap, so an earlier drive or look-at does not block it; an
+earlier success whose reward verdict is still pending counts as a possible failure
+until the verdict lands, and a goal that finished before the cancel landed is a
+success. The
 mission summary the dashboard reads (`reasoner.mission_json`) carries `failures`
 next to `attempts`, plus `max_dispatches`.
 
