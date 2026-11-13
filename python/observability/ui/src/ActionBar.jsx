@@ -92,26 +92,40 @@ function ActionForm({ api, action }) {
 }
 
 // E-STOP's place while the kernel is latched: a green "Release e-stop" (the estop_reset
-// action). Pressable only RELEASE_ARM_MS after it appears, and only after a confirm: the
-// servos take torque back and may move toward their last goal.
+// action). Pressable only RELEASE_ARM_MS after it appears, then confirmed on the page: the
+// first press asks, a second within RELEASE_CONFIRM_MS releases. Not window.confirm: an
+// embedded browser or a cross-origin frame (the website) suppresses it, answering "no".
+const RELEASE_CONFIRM_MS = 5000;
 function ReleaseButton({ api, action }) {
   const [armed, setArmed] = useState(false);
+  const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   useEffect(() => {
     const t = setTimeout(() => setArmed(true), RELEASE_ARM_MS);
     return () => clearTimeout(t);
   }, []);
-  async function release() {
-    if (!window.confirm("Release the e-stop? Torque comes back on, and the arm may move toward its last goal. Make sure the area around the robot is clear.")) return;
+  useEffect(() => {
+    if (!asking) return undefined;
+    const t = setTimeout(() => setAsking(false), RELEASE_CONFIRM_MS);
+    return () => clearTimeout(t);
+  }, [asking]);
+  async function press() {
+    if (!asking) {
+      setResult(null);
+      setAsking(true);
+      return;
+    }
+    setAsking(false);
     setBusy(true);
     setResult(await runAction(api.call, action.id, {}));
     setBusy(false);
   }
   return (
     <div className="action action-release">
-      <button type="button" className="btn release" disabled={!armed || busy} onClick={release}>
-        Release e-stop
+      {asking && <span className="release-warn">Torque comes back on; the arm holds its pose. Area clear?</span>}
+      <button type="button" className={asking ? "btn release asking" : "btn release"} disabled={!armed || busy} onClick={press}>
+        {asking ? "Confirm release" : "Release e-stop"}
       </button>
       <span className="action-result err" role="status" aria-live="polite">
         {result && !result.ok ? result.text : ""}

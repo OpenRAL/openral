@@ -62,7 +62,7 @@ with a ⋯ menu that opens the Settings pane: the reasoner's Anthropic/OpenAI ke
 read and written through the site's `/api/settings` on openral.com, and where they come from on
 the robot); the header (robot, safety, Layout, **E-STOP**: while a fresh safety status says the
 kernel is latched and this session may run `estop_reset`, a green **Release e-stop** takes its
-place, pressable 1.5 s after it appears and after a confirm; over the network with remote control
+place, pressable 1.5 s after it appears, then confirmed on the page (a second press within 5 s; never a browser dialog, which embedded browsers and cross-origin frames suppress); over the network with remote control
 off, E-STOP stays and the header says to release it at the robot. The safety pill is the one
 "E-STOP latched" label, and the right pane offers `estop_reset` only as the fallback for a latch
 the header can't confirm, such as a stale safety status); the prompt bar
