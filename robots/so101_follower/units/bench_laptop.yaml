@@ -24,3 +24,13 @@ sensors:
         width: 640
         height: 480
         fps: 30
+# This unit's jaw: the `gripper` fraction f -> the URDF value u the `jaw` mimic reads
+# (jaw = 1.74533 u rad, robot.yaml `mimic_joints`). lerobot's 0..100 gripper spans this
+# unit's calibrated servo range (scenes/deploy/calibration/so_follower.json: range_min
+# 2045 = jaw closed, the homing pose; range_max 3515), i.e. 1470 ticks = 2.2550 rad of
+# jaw travel, from closed at the URDF's lower limit (-0.174533 rad, where the meshes'
+# fingertips meet): jaw = -0.174533 + 2.25495 f. Without it /tf (the dashboard's 3D
+# model) and the kernel posed the real jaw by Isaac's 1.74533 f: ~10 deg open when
+# closed, ~19 deg short when open. Recalibrated the gripper? Recompute from its range.
+gripper_joint_curve:
+  gripper: [[0.0, -0.1], [1.0, 1.19199]]

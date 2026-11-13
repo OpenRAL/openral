@@ -3,7 +3,8 @@ import { viewerLabel, workspaceLabel } from "./lib/viewer.js";
 import { SettingsPane } from "./SettingsPane.jsx";
 
 // The left pane: whose workspace this is at the top (the org's logo or first letter,
-// and its name), the sections (none yet) and, at the bottom, the viewer with a ⋯ menu
+// and its name), then on the website the robots this account reaches (a click opens
+// that one on the dashboard) and, at the bottom, the viewer with a ⋯ menu
 // that opens the settings pane (and, on the website, the account page).
 // It starts closed (an icon rail) and remembers open/closed in this browser.
 const KEY = "openral.rail.open";
@@ -44,7 +45,8 @@ function useMe(onWebsite) {
   return me;
 }
 
-export function Rail({ cfg, onWebsite, robotName, reasonerModel }) {
+// robots: robotLinks() of the list the session already loaded (none on the robot).
+export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasonerModel }) {
   const [open, setOpen] = useOpen();
   const [menu, setMenu] = useState(false);
   const [settings, setSettings] = useState(false);
@@ -89,7 +91,24 @@ export function Rail({ cfg, onWebsite, robotName, reasonerModel }) {
             {open ? "‹" : "›"}
           </button>
         </div>
-        <nav className="rail-nav" aria-label="Sections" />
+        <nav className="rail-nav" aria-label="Robots">
+          {robots.map((r) => (
+            // The whole dashboard page (target _top) switches, so its heading names the same robot.
+            <a
+              key={r.id}
+              className="rail-robot"
+              href={r.href}
+              target="_top"
+              aria-current={r.id === robotId ? "page" : undefined}
+              title={r.name}
+            >
+              <span className="rail-robot-icon" aria-hidden="true">
+                {r.initial}
+              </span>
+              {open ? <span className="rail-robot-name">{r.name}</span> : <span className="sr-only">{r.name}</span>}
+            </a>
+          ))}
+        </nav>
         <div className="rail-profile" ref={box}>
           {menu && (
             <div className="rail-menu" role="menu" aria-label={v.name}>

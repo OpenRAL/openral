@@ -147,22 +147,11 @@ TARGETS=(
     # `openral estop reset` clears the kernel, then the runner; a latched
     # goal rejection logs a WARNING naming the recovery.
     tests/integration/test_estop_reset_cli_live.py
-    # Nav2's side of issue #108: a filtered scan keeps a carried payload out
-    # of the cost grid, and a self-return inside the robot's own footprint is
-    # dropped while a real obstacle at the same bearing survives -- only a
-    # real nav2_costmap_2d binary settles this. Load-bearing since Nav2 is
-    # base-only, with no footprint growth over the payload. Needs
-    # ros-jazzy-nav2-bringup, which this image bakes.
-    tests/integration/test_nav2_scan_filter_live.py
-    # Issue #211: Nav2 filters observation z in each costmap's OWN
-    # global_frame; `map`'s z origin isn't the floor -- slam_toolbox flattens
-    # `base_link`, the arm mount 0.700 m up the pedestal, to z = 0, so
-    # `min_obstacle_height` 0.0 kept local-costmap returns but discarded every
-    # global one, and the planner ran against a blank grid silently. Paired
-    # control restores the pre-fix gate and re-empties the grid -- claims the
-    # upstream binary applies the cut TWICE, from two differently-scoped
-    # parameters.
-    tests/integration/test_nav2_global_costmap_height_live.py
+    # Issue #557: `openral prompt` / `estop reset --robot ID` reach a real deploy's
+    # per-robot ROS domain from a terminal that exported nothing.
+    tests/integration/test_operator_cli_robot_domain_live.py
+    # ADR-0130: each SROS2 enclave gets exactly its surfaces under Enforce; keyless participants are shut out.
+    tests/integration/test_sros2_enclaves_live.py
     # Opt-in /cmd_vel relay for body_twist robots without base_joints: real
     # relay + real kernel booted from r1pro -- chunk content, one stale zero,
     # over-speed veto, and refusal of a base_joints manifest.
@@ -307,7 +296,21 @@ ISOLATED_TARGETS=(
     tests/integration/test_fastrtps_shm_purge_live.py
     tests/integration/test_hil_transport_publishes_and_caches_state.py
     tests/integration/test_manifest_hal_lifecycle_live.py
+    # Issue #211: Nav2 filters observation z in each costmap's OWN
+    # global_frame; `map`'s z origin isn't the floor -- slam_toolbox flattens
+    # `base_link`, the arm mount 0.700 m up the pedestal, to z = 0, so
+    # `min_obstacle_height` 0.0 kept local-costmap returns but discarded every
+    # global one, and the planner ran against a blank grid silently. Paired
+    # control restores the pre-fix gate and re-empties the grid -- claims the
+    # upstream binary applies the cut TWICE, from two differently-scoped
+    # parameters.
     tests/integration/test_nav2_global_costmap_height_live.py
+    # Nav2's side of issue #108: a filtered scan keeps a carried payload out
+    # of the cost grid, and a self-return inside the robot's own footprint is
+    # dropped while a real obstacle at the same bearing survives -- only a
+    # real nav2_costmap_2d binary settles this. Load-bearing since Nav2 is
+    # base-only, with no footprint growth over the payload. Needs
+    # ros-jazzy-nav2-bringup, which this image bakes.
     tests/integration/test_nav2_scan_filter_live.py
     tests/integration/test_object_lift_real_camera_live.py
     tests/integration/test_object_lift_world_state.py
@@ -316,6 +319,7 @@ ISOLATED_TARGETS=(
     tests/integration/test_object_tracker_node_live.py
     tests/integration/test_object_tracking_kernel_live.py
     tests/integration/test_panda_mobile_hal_lifecycle.py
+    tests/integration/test_real_bringup_graph_gate_live.py
     tests/integration/test_real_hal_estop_ros2_control_live.py
     tests/integration/test_record_profile_full_live.py
     tests/integration/test_sim_idle_stepper_wiring.py
@@ -370,10 +374,71 @@ ISOLATED_TARGETS=(
 
 export OPENRAL_TEST_ROS_LIVE=1
 
+# OPENRAL_LIVE_SHARD picks a slice for docker-build, which runs each in its own
+# container on its own Docker network (one ROS graph, /dev/shm, /tmp and PID space
+# per shard; on a shared network DDS discovery crosses containers):
+#   unset  every list in order (`just test-ros-live` on a dev host)
+#   I/K    every K-th TARGETS entry from the I-th (one process), and the I-th of K
+#          longest-first splits of ISOLATED_TARGETS; tests marked wall_clock deselected
+#   quiet  the wall_clock tests alone: every listed file that has one, one process each
+# Tests that assert a wall-clock bound a loaded runner misses carry
+# @pytest.mark.wall_clock, so docker-build runs them after the shards, on an idle CPU.
+# A -m of your own replaces the shard's marker filter.
+# OPENRAL_LIVE_LIST=1 prints the selection and runs nothing (test_ros_live_targets.py).
+shard="${OPENRAL_LIVE_SHARD:-}"
+# Wall seconds per ISOLATED_TARGETS file from a docker-build run (refresh it from the
+# step's "wall time per process" list); a file missing from it counts 5 s.
+declare -A cost=()
+while read -r secs file; do
+    if [[ "$secs" =~ ^[0-9]+$ ]]; then cost[$file]=$secs; fi
+done < scripts/ros_live_durations.txt
+balance() { # balance I K FILE...: shard I's files, each longest first onto the least-loaded
+    local i=$1 k=$2 s best c t
+    local -a load=()
+    shift 2
+    for ((s = 1; s <= k; s++)); do load[s]=0; done
+    while read -r c t; do
+        best=1
+        for ((s = 2; s <= k; s++)); do
+            if ((load[s] < load[best])); then best=$s; fi
+        done
+        load[best]=$((load[best] + c))
+        if ((best == i)); then printf '%s\n' "$t"; fi
+    done < <(for t in "$@"; do printf '%s %s\n' "${cost[$t]:-5}" "$t"; done | LC_ALL=C sort -k1,1nr -k2,2)
+}
+case "$shard" in
+    "")
+        batch=("${TARGETS[@]}")
+        isolated=("${ISOLATED_TARGETS[@]}")
+        marker=()
+        ;;
+    quiet)
+        batch=()
+        mapfile -t isolated < <(grep -l -- 'pytest.mark.wall_clock' "${TARGETS[@]}" "${ISOLATED_TARGETS[@]}")
+        marker=(-m wall_clock)
+        ;;
+    *)
+        if ! [[ "$shard" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] \
+            || [ "${BASH_REMATCH[1]}" -gt "${BASH_REMATCH[2]}" ]; then
+            echo "OPENRAL_LIVE_SHARD=$shard: expected I/K with 1 <= I <= K, or quiet" >&2
+            exit 2
+        fi
+        i=${BASH_REMATCH[1]} k=${BASH_REMATCH[2]}
+        mapfile -t batch < <(printf '%s\n' "${TARGETS[@]}" | sed -n "${i}~${k}p")
+        mapfile -t isolated < <(balance "$i" "$k" "${ISOLATED_TARGETS[@]}")
+        marker=(-m "not wall_clock")
+        ;;
+esac
+if [ -n "${OPENRAL_LIVE_LIST:-}" ]; then # print the selection, run nothing
+    printf '%s\n' "${batch[@]}" "${isolated[@]}"
+    exit 0
+fi
+
 # Exit 5 ("nothing collected") is expected under an explicit -k / -m selection,
-# which empties some runs, and for a file skipped whole at import -- pytest
-# reports a module-level importorskip as "1 skipped" yet exits 5. Otherwise it
-# means a target ran nothing, which fails the step.
+# which empties some runs, for a file skipped whole at import -- pytest
+# reports a module-level importorskip as "1 skipped" yet exits 5 -- and for a file
+# whose every test the shard's wall_clock filter deselected. Otherwise it means a
+# target ran nothing, which fails the step.
 filtered=0
 for a in "$@"; do
     case "$a" in -k | -k* | -m | -m*) filtered=1 ;; esac
@@ -381,17 +446,22 @@ done
 rc=0
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
-run() {
-    local r=0
+run() { # run LABEL CMD...
+    local label=$1 r=0 start=$SECONDS
+    shift
     # pipefail (set above) makes the pipeline's status pytest's, not tee's.
     "$@" 2>&1 | tee "$out" || r=$?
-    if [ "$r" -eq 5 ] && { [ "$filtered" -eq 1 ] || grep -qE '[0-9]+ skipped' "$out"; }; then
+    if [ "$r" -eq 5 ] && { [ "$filtered" -eq 1 ] || grep -qE '[0-9]+ (skipped|deselected)' "$out"; }; then
         r=0
     fi
+    # Wall time per process, to balance the shards on.
+    echo "--- live: $((SECONDS - start)) s, exit $r: $label"
     [ "$r" -eq 0 ] || rc=$r
 }
-run python -m pytest "${TARGETS[@]}" "$@"
-for t in "${ISOLATED_TARGETS[@]}"; do
-    run env MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "$@"
+if [ "${#batch[@]}" -gt 0 ]; then
+    run "${#batch[@]} TARGETS in one process" python -m pytest "${batch[@]}" "${marker[@]}" "$@"
+fi
+for t in "${isolated[@]}"; do
+    run "$t" env MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "${marker[@]}" "$@"
 done
 exit "$rc"

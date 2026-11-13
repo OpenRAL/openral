@@ -80,15 +80,19 @@ actuators holding the initial pose instead of driving to 0.
 
 The manifest's `gripper` joint carries the normalised `[0, 1]` fraction, not
 metres, so its `child_link` is the LOGICAL `finger_pair` (no primitive), as
-`so101_follower`'s `moving_jaw`. The two real fingers are `mimic_joints` rows
-at the upstream URDF joint origins / axes: `link8` at `joint8 = 0.05 f` m (the
-MuJoCo twin's driven finger) and `link7` at `joint7 = -0.05 f` m (the URDF's
-`<mimic multiplier="-1">` master). The safety kernel and
-`openral_core.kinematics` pose both fingers from the commanded fraction, and
-`openral_hal.resolver.urdf_joint_map` publishes the gripper's state to
-`robot_state_publisher` as `joint7` in metres (`-0.05 f`), from which it
-derives `joint8`. The real gripper's stroke-to-metres map is unverified (no
-real HAL yet).
+`so101_follower`'s `moving_jaw`. Its `urdf_curve` `[[0, 0], [1, 0.05]]` is the
+finger stroke `u = 0.05 f` m, the MuJoCo twin's. The two real fingers are
+`mimic_joints` rows at the upstream URDF joint origins / axes, reading `u`:
+`link8` at `joint8 = u` (the MuJoCo twin's driven finger) and `link7` at
+`joint7 = -u` (the URDF's `<mimic multiplier="-1">` master). The Isaac scenes
+replace the curve with their own (`gripper_joint_curve`
+`[[0.025, 0], [1.025, 0.05]]`: closed below `f = 0.025`), and the kernel then
+reads theirs too (`sim_scene_description`). The safety kernel, the self-filter and
+`openral_core.kinematics` pose both fingers from the commanded fraction through
+the curve, and `openral_hal.resolver.urdf_joint_map` publishes the gripper's state
+to `robot_state_publisher` as `joint7` in metres (`-u`), from which it derives
+`joint8`. The real gripper's stroke-to-metres map is unverified (no real HAL
+yet).
 
 ## Cameras
 

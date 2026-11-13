@@ -97,12 +97,25 @@ def _kernel_fk(params: dict[str, Any], q: npt.NDArray[np.float64]) -> list[npt.N
     world: list[npt.NDArray[np.float64]] = []
     mult = params.get("collision_mimic_multiplier", [1.0] * n)
     off = params.get("collision_mimic_offset", [0.0] * n)
+    # A curved link (`collision_curve_*`, JointSpec.urdf_curve) reads its column through
+    # the curve first, as the kernel's `link_joint_value` (#533).
+    first = params.get("collision_curve_point_first", [-1] * n)
+    count = params.get("collision_curve_point_count", [0] * n)
+    pts = np.asarray(params.get("collision_curve_points", []), dtype=float).reshape(-1, 2)
+
+    def column(i: int, dof: int) -> float:
+        if int(first[i]) < 0:
+            return float(q[dof])
+        seg = pts[int(first[i]) : int(first[i]) + int(count[i])]
+        return float(np.interp(q[dof], seg[:, 0], seg[:, 1]))
+
     for i in range(n):
         motion = np.eye(4)
         dof = int(params["collision_dof_index"][i])
         kind = int(params["collision_joint_kind"][i])
         # A mimic kind (3/4) reads its leader's column: multiplier * q + offset.
-        qi = float(mult[i]) * q[dof] + float(off[i]) if dof >= 0 and kind in (3, 4) else q[dof]
+        qi = column(i, dof) if dof >= 0 else 0.0
+        qi = float(mult[i]) * qi + float(off[i]) if dof >= 0 and kind in (3, 4) else qi
         if dof >= 0 and kind in (1, 3):
             motion[:3, :3] = _axis_angle(axis[i] / np.linalg.norm(axis[i]), qi)
         elif dof >= 0 and kind in (2, 4):
@@ -194,14 +207,14 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
         q = rng.uniform(lo, hi)
         kernel_world = _kernel_fk(params, q)
         cfg = {
-            child_to_urdf[j.child_link]: float(v)
+            child_to_urdf[j.child_link]: j.urdf_value(float(v))
             for j, v in zip(robot.joints, q, strict=True)
             if child_to_urdf.get(j.child_link) in actuated
         }
         # A mimic row whose child is driven by an actuated URDF joint (the DROID's
         # Robotiq leader `finger_joint` under the normalised jaw) sets that joint
         # from the manifest relation; the URDF's own <mimic> rows pose the rest.
-        leader_q = {j.name: float(v) for j, v in zip(robot.joints, q, strict=True)}
+        leader_q = {j.name: j.urdf_value(float(v)) for j, v in zip(robot.joints, q, strict=True)}
         for mim in robot.mimic_joints:
             if child_to_urdf.get(mim.child_link) in actuated:
                 cfg[child_to_urdf[mim.child_link]] = mim.value_at(leader_q[mim.mimics])

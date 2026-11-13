@@ -28,6 +28,8 @@ from openral_reasoner.tool_use import (
     build_tool_use_client_from_env,
 )
 
+from tests.unit.fakes.fake_llm_http import FakeLLMServer, openai_tool_call
+
 _ENV_VARS = (
     "OPENRAL_REASONER_MODEL",
     "OPENRAL_REASONER_ENDPOINT",
@@ -434,3 +436,156 @@ def test_malformed_numeric_env_raises_typed_config_error(
     monkeypatch.setenv(env, value)
     with pytest.raises(ROSConfigError, match=env):
         build_tool_use_client_from_env()
+
+
+# ── Curated Ollama models ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("model", "served"), [("qwen3.5-4b", "qwen3.5:4b"), ("qwen3.5-9b", "qwen3.5:9b")]
+)
+def test_curated_ollama_model_needs_only_the_model(
+    monkeypatch: pytest.MonkeyPatch, model: str, served: str
+) -> None:
+    """A curated Ollama model alone reaches the local Ollama with the `ollama` preset's properties.
+
+    The website and the robot console set only the model for a no-key model, so the
+    registry default (`OLLAMA_BASE_URL`) must bring Ollama's 60 s cold start and
+    `auto` tool_choice, not the 10 s cloud default.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model)
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client.model_id, client._base_url, client._api_key) == (
+        served,
+        OLLAMA_BASE_URL,
+        None,
+    )
+    assert (client._timeout_s, client._tool_choice) == (60.0, "auto")
+
+
+def test_ollama_endpoint_sends_auto_tool_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ollama ignores tool_choice, so the preset sends `auto` and keeps the prose nudge."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:0.6b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "auto"
+
+
+def test_a_curated_ollama_model_at_an_explicit_url_keeps_the_local_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit URL (a trailing slash, a remote GPU box) is no named preset.
+
+    The 9B's median tick is 18.8 s, so the 10 s cloud default would time out
+    every tick; ``byo_local`` gets the local endpoints' 60 s cold start.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3.5-9b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://localhost:11434/v1/")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client._timeout_s, client._tool_choice) == (60.0, "auto")
+
+
+def test_an_inferred_preset_never_overrides_the_entry_tool_choice() -> None:
+    """A registry default that matches a preset's URL brings its timeout, not its tool_choice.
+
+    A local entry on vLLM's default URL that runs ``auto`` keeps ``auto``; only a
+    named ``OPENRAL_REASONER_ENDPOINT`` applies the preset's ``required``.
+    """
+    from openral_reasoner.tool_use import _build_curated_model
+
+    entry = REASONER_MODELS["qwen3.5-4b"].model_copy(update={"default_endpoint": VLLM_BASE_URL})
+    client = _build_curated_model(entry)
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client._base_url, client._timeout_s, client._tool_choice) == (
+        VLLM_BASE_URL,
+        60.0,
+        "auto",
+    )
+
+
+def test_an_inferred_preset_never_overrides_a_cloud_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gpt-5.5's default URL is OpenRouter's, but its own tool_choice stays in charge."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENRAL_REASONER_ENDPOINT", raising=False)
+    client = build_tool_use_client_from_env()
+    assert client._tool_choice == "required"  # type: ignore[attr-defined]  # reason: client-private
+
+
+def _ollama_reply(prompt_tokens: int, fingerprint: str | None) -> tuple[int, dict[str, object]]:
+    """A ``wait`` tool call as Ollama's OpenAI endpoint sends it, reading ``prompt_tokens``."""
+    status, body = openai_tool_call("wait", {"rationale": "ok"})
+    body["system_fingerprint"] = fingerprint
+    body["usage"] = {"prompt_tokens": prompt_tokens, "completion_tokens": 7, "total_tokens": 0}
+    return status, body
+
+
+@pytest.mark.parametrize(
+    ("context", "prompt_tokens", "fingerprint", "cut"),
+    [
+        ("x" * 31_000, 100_000, "fp_ollama", False),  # the whole prompt read
+        ("x" * 31_000, 4096, "fp_ollama", True),  # Ollama's default window
+        ("x" * 31_000, 4096, None, False),  # not Ollama: others 400 on an over-long prompt
+        # Dense non-ASCII text: counted as characters, not as 6-char JSON escapes.
+        ("机器人" * 10_000, 15_000, "fp_ollama", False),
+        # Repeated text packs ~8 chars/token: read whole when the reported window holds it.
+        ("a" * 100_000, 15_000, "fp_ollama", False),
+    ],
+)
+def test_an_ollama_reply_that_read_a_cut_prompt_is_refused(
+    context: str, prompt_tokens: int, fingerprint: str | None, cut: bool
+) -> None:
+    """The real client refuses an Ollama reply that read far fewer tokens than it sent.
+
+    The fake reports the 4096-token default window (``/api/ps``) for the cut cases
+    and a 32K one for the rest, as a real Ollama does.
+    """
+    from openral_core import WaitTool
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    window = 4096 if cut else 32768
+    ps = {"models": [{"name": "qwen3.5:4b", "model": "qwen3.5:4b", "context_length": window}]}
+    replies = [_ollama_reply(prompt_tokens, fingerprint)]
+    with FakeLLMServer(replies, get_bodies={"/api/ps": ps}) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3.5:4b", base_url=server.openai_base_url, tool_choice="auto"
+        )
+        if cut:
+            with pytest.raises(ROSPlanningError, match="cut the prompt"):
+                client.select_tool(context_text=context, palette=ToolPalette(skills=()))
+        else:
+            tool = client.select_tool(context_text=context, palette=ToolPalette(skills=()))
+            assert isinstance(tool, WaitTool)
+    assert len(server.requests) == 1  # a cut prompt is never nudged and re-sent
+
+
+def test_a_ratio_flagged_reply_is_refused_without_a_reported_window() -> None:
+    """No ``/api/ps`` (an old or proxied Ollama): the ratio alone decides."""
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    with FakeLLMServer([_ollama_reply(4096, "fp_ollama")]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3.5:4b", base_url=server.openai_base_url, tool_choice="auto"
+        )
+        with pytest.raises(ROSPlanningError, match="cut the prompt"):
+            client.select_tool(context_text="x" * 31_000, palette=ToolPalette(skills=()))
+
+
+@pytest.mark.parametrize("ps", [[], {"models": [None]}, {"models": "x"}])
+def test_a_malformed_api_ps_body_falls_back_to_the_ratio(ps: object) -> None:
+    """A body that is not ``/api/ps``'s shape reads as no window, not a crash."""
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    replies = [_ollama_reply(4096, "fp_ollama")]
+    with FakeLLMServer(replies, get_bodies={"/api/ps": ps}) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3.5:4b", base_url=server.openai_base_url, tool_choice="auto"
+        )
+        with pytest.raises(ROSPlanningError, match="cut the prompt"):
+            client.select_tool(context_text="x" * 31_000, palette=ToolPalette(skills=()))

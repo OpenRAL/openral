@@ -143,6 +143,7 @@ from openral_core import (
     MimicJoint,
     VisionAttachmentRuntime,
     camera_topic,
+    curve_value,
 )
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
@@ -775,6 +776,8 @@ class ReleaseWindow:
             ``fixed_attachments`` row (the Robotiq's outer finger on its knuckle).
             ``chain`` is ``None`` for a link the hand does not reach: then the
             clearance is unknown, never clear.
+        urdf_curves: Each curved jaw joint's ``JointSpec.urdf_curve`` by name: a jaw
+            position goes through it before posing (issue #533).
     """
 
     record: AttachedCollisionObject
@@ -784,6 +787,7 @@ class ReleaseWindow:
     jaws: tuple[
         tuple[tuple[tuple[Any, NDArray[np.float64]], ...] | None, tuple[_FramedBox, ...]], ...
     ]
+    urdf_curves: Mapping[str, tuple[tuple[float, float], ...]] = field(default_factory=dict)
 
     @classmethod
     def open(
@@ -823,6 +827,7 @@ class ReleaseWindow:
             hand_link=held.attach_link,
             hand_boxes=_link_boxes(description, held.attach_link),
             jaws=jaws,
+            urdf_curves={j.name: j.urdf_curve for j in description.joints if j.urdf_curve},
         )
 
     def clearance_m(
@@ -850,11 +855,13 @@ class ReleaseWindow:
             t_link = t_base_from_hand
             for edge, origin in chain:
                 if isinstance(edge, JointSpec | MimicJoint):
-                    # A mimic follower reads its leader's angle: multiplier * q + offset.
+                    # A mimic follower reads its leader's URDF value: multiplier * u + offset.
                     driving = edge.mimics if isinstance(edge, MimicJoint) else edge.name
                     if driving not in positions:
                         return None
                     q = positions[driving]
+                    if driving in self.urdf_curves:
+                        q = curve_value(self.urdf_curves[driving], q)
                     q = edge.value_at(q) if isinstance(edge, MimicJoint) else q
                     t_link = t_link @ origin @ _joint_motion(edge, q)
                 else:  # a rigid fixed_attachments row

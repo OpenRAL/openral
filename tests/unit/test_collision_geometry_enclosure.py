@@ -108,13 +108,26 @@ def _kernel_fk(params: dict[str, Any], q: npt.NDArray[np.float64]) -> list[npt.N
     world: list[npt.NDArray[np.float64]] = []
     mult = params.get("collision_mimic_multiplier", [1.0] * n)
     off = params.get("collision_mimic_offset", [0.0] * n)
+    # A curved link (`collision_curve_*`, JointSpec.urdf_curve) reads its column through
+    # the curve first, as the kernel's `link_joint_value` (#533).
+    first = params.get("collision_curve_point_first", [-1] * n)
+    count = params.get("collision_curve_point_count", [0] * n)
+    pts = np.asarray(params.get("collision_curve_points", []), dtype=float).reshape(-1, 2)
+
+    def column(i: int, dof: int) -> float:
+        if int(first[i]) < 0:
+            return float(q[dof])
+        seg = pts[int(first[i]) : int(first[i]) + int(count[i])]
+        return float(np.interp(q[dof], seg[:, 0], seg[:, 1]))
+
     for i in range(n):
         motion = np.eye(4)
         dof = int(params["collision_dof_index"][i])
         if dof >= 0:
             kind = int(params["collision_joint_kind"][i])
             # A mimic kind (3/4) reads its leader's column: multiplier * q + offset.
-            qi = float(mult[i]) * q[dof] + float(off[i]) if kind in (3, 4) else q[dof]
+            qi = column(i, dof)
+            qi = float(mult[i]) * qi + float(off[i]) if kind in (3, 4) else qi
             if kind in (1, 3):
                 motion[:3, :3] = _axis_angle(axis[i], qi)
             elif kind in (2, 4):

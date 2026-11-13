@@ -1,3 +1,5 @@
+import { findRobot } from "./auth.js";
+
 // Who the profile button at the bottom of the left pane names.
 // On the website (`remote`), `me` is GET /api/dashboard (the signed-in account);
 // on the robot there is no account: the viewer is the local operator, by role.
@@ -20,4 +22,21 @@ export function workspaceLabel(me, cfg, robotName) {
     text(me?.orgName) || text(me?.org) || text(cfg?.org) || text(me?.name) || text(me?.email) || text(robotName) || "Robot";
   const logo = text(me?.orgLogo);
   return { name, initial: name[0].toUpperCase(), logo: /^(https:\/\/|\/(?![/\\]))/.test(logo) ? logo : null };
+}
+
+// The left pane's robot list on the website: the robots in GET /api/robots that the
+// console can open (findRobot), each linking to its dashboard page. The initial is
+// the name's first character, not its first UTF-16 unit, so an emoji stays whole.
+export function robotLinks(list) {
+  return (list?.robots || [])
+    .filter((r) => findRobot(list, r.id))
+    .map((r) => {
+      const name = typeof r.name === "string" && r.name.trim() ? r.name.trim() : r.id;
+      return {
+        id: r.id,
+        name,
+        initial: Array.from(name)[0].toUpperCase(),
+        href: `/dashboard?robot=${encodeURIComponent(r.id)}#robots`,
+      };
+    });
 }

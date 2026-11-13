@@ -82,7 +82,10 @@ in `map`, or a relative turn / drive in `base_link`) and sends it as
 3. `ros_integration.completes_task_on_success: true` — Nav2 SUCCEEDED means
    "within `xy_goal_tolerance` / `yaw_goal_tolerance` of the pose", which is
    the task, so the reasoner completes its active mission task on success
-   instead of re-driving a residual inside the tolerance.
+   instead of re-driving a residual inside the tolerance. When the drive is
+   only one step of the task ("drive to the kitchen and pick up the cup"),
+   the reasoner sends it with `final_step: false` and the success completes
+   only that step; the task stays active for the pick.
 
 ### Observation → action contract (result-only mode)
 

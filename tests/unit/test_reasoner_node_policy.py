@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 from openral_reasoner import MissionState
-from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS
+from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TASK_DISPATCHES
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
     should_rebuild_mission,
@@ -132,7 +132,11 @@ def test_a_task_completed_on_action_success_is_rebuilt_by_the_next_prompt() -> N
     mission = MissionState(["drive to x=4,y=0 in map"])
     mission.record_attempt(rskill_id="OpenRAL/rskill-nav2-mobile_base-navigate_to_pose")
     step = task_step_without_verifier(
-        succeeded=True, completes_task_on_success=True, reward_available=False, attempts=1
+        succeeded=True,
+        completes_task_on_success=True,
+        reward_available=False,
+        attempts=1,
+        failures=0,
     )
     assert step is not None and step[0] == "complete"
     mission.complete_active(step[1])
@@ -149,6 +153,7 @@ def test_opted_in_success_completes_with_or_without_a_reward_monitor(
         completes_task_on_success=True,
         reward_available=reward_available,
         attempts=1,
+        failures=0,
     )
     assert step is not None
     assert step[0] == "complete"
@@ -158,31 +163,125 @@ def test_opted_in_success_completes_with_or_without_a_reward_monitor(
 def test_success_without_the_opt_in_is_not_completed() -> None:
     assert (
         task_step_without_verifier(
-            succeeded=True, completes_task_on_success=False, reward_available=False, attempts=1
+            succeeded=True,
+            completes_task_on_success=False,
+            reward_available=False,
+            attempts=1,
+            failures=0,
         )
         is None
     )
 
 
-@pytest.mark.parametrize("succeeded", [False, True])
-def test_attempt_cap_abandons_without_a_reward_monitor(succeeded: bool) -> None:
-    """The per-task cap binds even when no reward gate runs (it used to live only there)."""
+def test_attempt_cap_counts_failures_without_a_reward_monitor() -> None:
+    """The per-task cap binds even when no reward gate runs, on failed attempts."""
     below = task_step_without_verifier(
-        succeeded=succeeded,
-        completes_task_on_success=False,
-        reward_available=False,
-        attempts=DEFAULT_MAX_ATTEMPTS - 1,
-    )
-    assert below is None
-    at_cap = task_step_without_verifier(
-        succeeded=succeeded,
+        succeeded=False,
         completes_task_on_success=False,
         reward_available=False,
         attempts=DEFAULT_MAX_ATTEMPTS,
+        failures=DEFAULT_MAX_ATTEMPTS - 1,
+    )
+    assert below is None
+    at_cap = task_step_without_verifier(
+        succeeded=False,
+        completes_task_on_success=False,
+        reward_available=False,
+        attempts=DEFAULT_MAX_ATTEMPTS,
+        failures=DEFAULT_MAX_ATTEMPTS,
     )
     assert at_cap is not None
     assert at_cap[0] == "abandon"
-    assert f"{DEFAULT_MAX_ATTEMPTS} attempt(s)" in at_cap[1]
+    assert f"{DEFAULT_MAX_ATTEMPTS} of {DEFAULT_MAX_ATTEMPTS} attempt(s) failed" in at_cap[1]
+
+
+def test_successes_do_not_trip_the_attempt_cap_regression_562() -> None:
+    """#562: three successful dispatches of a multi-skill task (no reward monitor)
+    used to abandon it. A success nobody can judge is not a failed attempt."""
+    assert (
+        task_step_without_verifier(
+            succeeded=True,
+            completes_task_on_success=False,
+            reward_available=False,
+            attempts=DEFAULT_MAX_ATTEMPTS,
+            failures=0,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("completes_task_on_success", "final_step", "reward_available"),
+    [(False, True, False), (True, False, False), (True, False, True)],
+)
+def test_an_endlessly_succeeding_task_still_terminates(
+    completes_task_on_success: bool, final_step: bool, reward_available: bool
+) -> None:
+    """The ladder stays bounded when every dispatch succeeds and none completes the
+    task (unverifiable VLA successes, or a step skill re-sent forever)."""
+    mission = MissionState(["pick the cup and put it in the bin"])
+    for _ in range(10 * DEFAULT_MAX_TASK_DISPATCHES):
+        mission.record_attempt(rskill_id="x")
+        active = mission.active()
+        assert active is not None
+        step = task_step_without_verifier(
+            succeeded=True,
+            completes_task_on_success=completes_task_on_success,
+            reward_available=reward_available,
+            attempts=active.attempts,
+            failures=active.failures,
+            final_step=final_step,
+        )
+        if step is not None and step[0] == "abandon":
+            mission.abandon_active(step[1])
+            break
+    assert mission.is_complete()
+    assert mission.tasks[0].status == "abandoned"
+    assert mission.tasks[0].attempts == DEFAULT_MAX_TASK_DISPATCHES
+
+
+@pytest.mark.parametrize("reward_available", [False, True])
+def test_a_step_success_completes_only_its_step_regression_562(reward_available: bool) -> None:
+    """#562: a Nav2 success that is one step of a longer task does not complete it."""
+    step = task_step_without_verifier(
+        succeeded=True,
+        completes_task_on_success=True,
+        reward_available=reward_available,
+        attempts=1,
+        failures=0,
+        final_step=False,
+    )
+    assert step is not None
+    assert step[0] == "step"
+
+
+def test_a_failed_opted_in_skill_settles_nothing() -> None:
+    """An aborted Nav2 goal is neither a completed task nor a completed step."""
+    assert (
+        task_step_without_verifier(
+            succeeded=False,
+            completes_task_on_success=True,
+            reward_available=False,
+            attempts=1,
+            failures=1,
+        )
+        is None
+    )
+
+
+def test_the_dispatch_bound_leaves_a_reward_gated_result_to_the_reward_gate() -> None:
+    """With a reward monitor, a VLA result at the bound is still judged by the reward
+    gate (its tier-1 complete wins); only a step, which no gate judges, is bounded here."""
+    assert (
+        task_step_without_verifier(
+            succeeded=True,
+            completes_task_on_success=False,
+            reward_available=True,
+            attempts=DEFAULT_MAX_TASK_DISPATCHES,
+            failures=0,
+        )
+        is None
+    )
 
 
 def test_attempt_cap_is_left_to_the_reward_gate_when_one_is_available() -> None:
@@ -192,6 +291,7 @@ def test_attempt_cap_is_left_to_the_reward_gate_when_one_is_available() -> None:
             completes_task_on_success=False,
             reward_available=True,
             attempts=DEFAULT_MAX_ATTEMPTS + 5,
+            failures=0,
         )
         is None
     )

@@ -118,13 +118,13 @@ joints:
     actuator_kind: "bldc"
   # Robotiq 2F-85 jaw as a NORMALISED fraction [0 = closed, 1 = open], like every
   # OpenRAL gripper channel. The URDF leader is `finger_joint` (0 = open .. 0.8 rad
-  # = closed), the opposite sense, so the Isaac scenes map it with
-  # backend_options.gripper_joint_curve (closed = pi/4, Arena's close target).
+  # = closed), the opposite sense, so `urdf_curve` maps the fraction f onto it
+  # (closed = pi/4, Arena's close target): every consumer — the kernel, the
+  # self-filter, /tf and the Isaac sidecar — poses the URDF finger at pi/4 (1 - f).
   # The five <mimic> followers of the URDF carry no channel of their own.
   # `robotiq_finger_pair` is a logical link (franka_panda's `panda_finger_pair`)
-  # with no primitive: posing the URDF's `left_outer_knuckle` here would read the
-  # normalised fraction as radians. The real linkage is posed from this fraction
-  # by `mimic_joints` below (see README.md "Self-collision").
+  # with no primitive. The real linkage is posed from the URDF value by
+  # `mimic_joints` below (see README.md "Self-collision").
   - name: "finger_joint"
     origin_xyz: [0.0, -0.0306, 0.0549]
     origin_rpy: [0, 0, 0]
@@ -138,6 +138,7 @@ joints:
     has_torque_sensor: false
     actuator_kind: "servo"
     role: "gripper"
+    urdf_curve: [[0.0, 0.7853982], [1.0, 0.0]]
     # Position-stall grasp-trigger thresholds, in this channel's [0, 1] fraction units.
     # SIM-MEASURED (2026-10-16), Isaac 6.1 deploy twin of
     # scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml, 15 Hz joint states, sim time:
@@ -291,14 +292,13 @@ fixed_attachments:
     origin_rpy: [0, 0, 0]
 
 # The Robotiq 2F-85 linkage as moving links of the collision model, posed from the
-# `finger_joint` jaw fraction f. Origins and axes are the URDF joints'. The Isaac
-# scenes map f onto the URDF leader `finger_joint` through
-# `backend_options.gripper_joint_curve` [[0, pi/4], [1, 0]] (Arena's close target,
-# not the URDF's 0.8 rad limit), piecewise linear, and drive each URDF <mimic>
-# follower at its multiplier times that (`tools/isaac_manifest_scene.py`
-# `_write_slots`). So each row composes the curve with its URDF multiplier:
-#   outer knuckle, inner knuckle (URDF multiplier +1):  q = pi/4 - pi/4 * f
-#   inner finger + pad (URDF multiplier -1):            q = pi/4 * f - pi/4
+# URDF `finger_joint` value u = pi/4 (1 - f) that `finger_joint.urdf_curve`
+# [[0, pi/4], [1, 0]] gives the jaw fraction f (Arena's close target, not the URDF's
+# 0.8 rad limit). Origins and axes are the URDF joints'. A mimic row reads its
+# leader's URDF value, so each row is its URDF <mimic> multiplier, as the Isaac
+# sidecar drives each follower (`tools/isaac_manifest_scene.py` `_write_slots`):
+#   outer knuckle, inner knuckle (URDF multiplier +1):  q = u = pi/4 - pi/4 * f
+#   inner finger + pad (URDF multiplier -1):            q = -u = pi/4 * f - pi/4
 # (f = 1 open = 0 rad; f = 0 closed = pi/4 rad.) The map is per backend:
 # - EXACT in Isaac deploy sim, at the commanded fraction;
 # - UNVERIFIED anywhere else: another backend or a real Robotiq driver must map f
@@ -312,8 +312,8 @@ mimic_joints:
     parent_link: "robotiq_arg2f_base_link"
     child_link: "left_outer_knuckle"
     mimics: "finger_joint"
-    multiplier: -0.7853982
-    offset: 0.7853982
+    multiplier: 1.0
+    offset: 0.0
     joint_type: "revolute"
     axis_xyz: [1.0, 0.0, 0.0]
     origin_xyz: [0.0, -0.0306011, 0.054904]
@@ -322,8 +322,8 @@ mimic_joints:
     parent_link: "robotiq_arg2f_base_link"
     child_link: "right_outer_knuckle"
     mimics: "finger_joint"
-    multiplier: -0.7853982
-    offset: 0.7853982
+    multiplier: 1.0
+    offset: 0.0
     joint_type: "revolute"
     axis_xyz: [1.0, 0.0, 0.0]
     origin_xyz: [0.0, 0.0306011, 0.054904]
@@ -332,8 +332,8 @@ mimic_joints:
     parent_link: "robotiq_arg2f_base_link"
     child_link: "left_proximal_phalanx"
     mimics: "finger_joint"
-    multiplier: -0.7853982
-    offset: 0.7853982
+    multiplier: 1.0
+    offset: 0.0
     joint_type: "revolute"
     axis_xyz: [1.0, 0.0, 0.0]
     origin_xyz: [0.0, -0.0127, 0.06142]
@@ -342,8 +342,8 @@ mimic_joints:
     parent_link: "robotiq_arg2f_base_link"
     child_link: "right_proximal_phalanx"
     mimics: "finger_joint"
-    multiplier: -0.7853982
-    offset: 0.7853982
+    multiplier: 1.0
+    offset: 0.0
     joint_type: "revolute"
     axis_xyz: [1.0, 0.0, 0.0]
     origin_xyz: [0.0, 0.0127, 0.06142]
@@ -352,8 +352,8 @@ mimic_joints:
     parent_link: "left_bar"
     child_link: "left_distal_phalanx"
     mimics: "finger_joint"
-    multiplier: 0.7853982
-    offset: -0.7853982
+    multiplier: -1.0
+    offset: 0.0
     joint_type: "revolute"
     axis_xyz: [1.0, 0.0, 0.0]
     origin_xyz: [0.0, 0.0061, 0.0471]
@@ -362,8 +362,8 @@ mimic_joints:
     parent_link: "right_bar"
     child_link: "right_distal_phalanx"
     mimics: "finger_joint"
-    multiplier: 0.7853982
-    offset: -0.7853982
+    multiplier: -1.0
+    offset: 0.0
     joint_type: "revolute"
     axis_xyz: [1.0, 0.0, 0.0]
     origin_xyz: [0.0, 0.0061, 0.0471]

@@ -45,8 +45,9 @@ brakes, so a real HAL waits on a safety-WG-reviewed stop behaviour.
 `deploy run` confines the robot's ROS graph to the deploy host
 (`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) on a per-robot `ROS_DOMAIN_ID`, and
 prints the result as `ros scope:`. A graph that must reach another computer
-(a remote driver, `rviz2` on a laptop) needs `OPENRAL_ALLOW_NETWORK_ROS=1`
-plus the same exported domain on every host; otherwise the deploy refuses. The
+(a remote driver, `rviz2` on a laptop) needs `OPENRAL_ALLOW_NETWORK_ROS=1`,
+SROS2 in Enforce mode (`openral security init <robot_id>`) and the same exported
+domain on every host; otherwise the deploy refuses. The
 Foxglove bridge and the dashboard are unaffected. Why, and the opt-in recipe:
 [ROS graph security](../../reference/ros-graph-security.md).
 
@@ -672,19 +673,29 @@ active task passes the reward gate.
 **While it runs**, from another terminal:
 
 ```bash
-openral prompt "put the pen back in the cup"
+openral prompt --robot so101_follower "put the pen back in the cup"
 ```
 
 This publishes one `PromptStamped` on `/openral/prompt_in/cli`; the
 prompt-router fans it out to `/openral/prompt` for the reasoner. It needs a
-sourced ROS 2 install.
+sourced ROS 2 install. `--robot` is the deploy's robot id: a real deploy runs
+on a per-robot `ROS_DOMAIN_ID` with LOCALHOST discovery, and `--robot` derives
+the same scope with the deploy's own function, so nothing has to be exported.
+The command prints the domain it used first (`ros scope: ROS_DOMAIN_ID=39
+(robot 'so101_follower') …`). Without `--robot` it runs on the shell's own scope,
+which reaches a real deploy only if the deploy's `export` line was copied. An
+exported `ROS_DOMAIN_ID` still wins over `--robot`, as it does for the deploy;
+when it differs from the robot's domain the line says so. With `--robot` the
+command acts only if that robot's HAL node (`openral_hal_so101_follower`) is on
+the graph it joined, and exits 3 otherwise: robot ids share the derived domains,
+so a typo or a stale export could otherwise reach another robot.
 
 A prompt arriving mid-mission is **conversational context** by default (an
 answer to a reasoner question, or a hint) and does *not* rebuild the task
 queue. To replace the current mission:
 
 ```bash
-openral prompt --new-goal "stop that, clear the table instead"
+openral prompt --robot so101_follower --new-goal "stop that, clear the table instead"
 ```
 
 On a cold-booted graph the router may not have discovered the publisher yet;
@@ -697,7 +708,7 @@ as the CLI.
 **After an e-stop**, clear it from the CLI with:
 
 ```bash
-openral estop reset
+openral estop reset --robot so101_follower
 ```
 
 Like the dashboard's reset button, it calls the safety kernel's

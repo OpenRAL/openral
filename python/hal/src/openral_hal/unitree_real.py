@@ -48,7 +48,7 @@ the same tick is re-published instead of zero.
 
 **Base height is not commandable.** ``Action`` has no base-height field, and upstream's
 only height-carrying converter (``command/body/velocity_height`` at isaac_ros_deploy
-f3aa6b89) hardcodes 0.7 m — there is nothing to forward a height to.
+v4.6-0 3e84f85a) hardcodes 0.7 m — there is nothing to forward a height to.
 
 **E-stop.** ``UnitreeHgSystemInterface`` sends zero torque (motor mode 0) for any joint no
 controller claims, so the base ``RosControlHAL`` stop — deactivate the controllers — would
@@ -73,6 +73,7 @@ Example:
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -117,6 +118,11 @@ _SAFETY_CONTROLLER = "safety_controller"
 _INFERENCE_CONTROLLER = "inference_controller"
 _UPPER_BODY_CONTROLLER = "upper_body_forward_joint_command_controller"
 _FREEZE_CONTROLLER = "freeze_controller"
+
+#: Budget for the e-stop's pre-swap listing: it must never hold the stop back long. A
+#: listing that does not answer in time goes straight to the swap.
+_PRECHECK_TIMEOUT_S = 0.2
+
 #: `joint_command_trajectory_topic: "~/joint_commands_trajectory"` in that file.
 _UPPER_BODY_TOPIC_SUFFIX = "joint_commands_trajectory"
 
@@ -336,11 +342,82 @@ class UnitreeHgRealHAL(RosControlHAL):
     def _stop_switch(
         self, seam: ControllerStopSeam, names: tuple[str, ...]
     ) -> ControllerSwitchReport:
-        """Swap the S0 chain for ``freeze_controller`` in one ``switch_controller`` request."""
+        """Swap the S0 chain for ``freeze_controller``: pre-check, one STRICT swap, retry.
+
+        ``freeze_controller`` cannot be activated *before* the chain lets go — the two
+        claim the same command interfaces and ``controller_manager`` refuses the
+        activation — so the single swap request is the tightest hand-over. It is STRICT:
+        when ``freeze_controller`` cannot be activated the manager refuses the whole
+        request and the chain keeps the joints, where a BEST_EFFORT swap applies the
+        deactivations alone and leaves every joint at zero torque (review of #571). Every
+        step shares one ``stop_timeout_s`` deadline:
+
+        * **pre-check** (#566) — list states (at most ``_PRECHECK_TIMEOUT_S``) and
+          configure an ``unconfigured`` freeze controller, which STRICT would refuse.
+          Advisory: a fault in it is noted and the swap is sent anyway — STRICT makes a
+          blind swap safe.
+        * **partial chain** — STRICT also refuses deactivating a controller that is not
+          ``active``; if the refused swap's listing shows part of the chain already out,
+          the members still ``active`` are swapped for freeze.
+        * **retry** (#566) — if the chain is out but ``freeze_controller`` is not active
+          (its ``on_activate`` failed inside the switch, which the manager does not roll
+          back), it is activated alone at once; nothing conflicts any more.
+
+        ``ok`` is the listing's verdict — ``freeze_controller`` ``active`` and every chain
+        controller ``inactive`` — so a repeat e-stop, refused because the joints are
+        already held, is still acknowledged.
+        """
         if not isinstance(seam, ControllerSwapSeam):  # attach_controller_stop refuses these
             raise ROSConfigError(f"{type(seam).__name__} cannot swap controllers")
-        return seam.swap_controllers(
-            deactivate=names, activate=(self._freeze_controller,), timeout_s=self._stop_timeout_s
+        freeze = self._freeze_controller
+        deadline = time.monotonic() + self._stop_timeout_s
+
+        def left() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        notes: list[str] = []
+        try:
+            before = seam.controller_states(timeout_s=min(left(), _PRECHECK_TIMEOUT_S))
+            if before.get(freeze) == "unconfigured":
+                configured = seam.configure_controller(freeze, timeout_s=left())
+                log.critical(
+                    "hal.estop.freeze_configured",
+                    robot=self.description.name,
+                    controller=freeze,
+                    ok=configured,
+                )
+                notes.append(
+                    f"{freeze} was unconfigured; configure {'ok' if configured else 'FAILED'}"
+                )
+        except Exception as exc:  # reason: an advisory pre-check must never skip the swap
+            log.critical(
+                "hal.estop.precheck_failed",
+                robot=self.description.name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            notes.append(f"pre-check failed ({type(exc).__name__}: {exc}); swapped blind")
+        swap = seam.swap_controllers(deactivate=names, activate=(freeze,), timeout_s=left())
+        notes.append(f"swap: {swap.detail}")
+        states = dict(swap.states)
+        still = tuple(n for n in names if states.get(n) == "active")
+        if 0 < len(still) < len(names) and states.get(freeze) == "inactive":
+            swap = seam.swap_controllers(deactivate=still, activate=(freeze,), timeout_s=left())
+            states.update(swap.states)
+            notes.append(f"swapped the members still active {list(still)}: {swap.detail}")
+        chain_out = all(states.get(n) == "inactive" for n in names)
+        if chain_out and states.get(freeze) != "active":
+            log.critical(
+                "hal.estop.freeze_retry",
+                robot=self.description.name,
+                controller=freeze,
+                swap_detail=swap.detail,
+            )
+            retry = seam.activate_controllers((freeze,), timeout_s=left())
+            states.update(retry.states)
+            notes.append(f"{freeze} activated alone: {retry.detail}")
+        held = chain_out and states.get(freeze) == "active"
+        return ControllerSwitchReport(
+            ok=held, controllers=(*names, freeze), states=states, detail="; ".join(notes)
         )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────

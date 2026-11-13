@@ -1,0 +1,20 @@
+<library path="openral_hal_unitree_guarded_controllers">
+  <class name="openral_hal_unitree/GuardedSafetyController"
+         type="openral_hal_unitree::GuardedSafetyController"
+         base_class_type="controller_interface::ChainableControllerInterface">
+    <description>
+      NVIDIA isaac_ros_deploy SafetyController with max_blend_ratio_speed capped at
+      1.0 /s and fixed at configure, blend_ratio reset to 0.0 on every activation, and a
+      NaN position reference held at the pose captured at stale entry (v5.0 semantics).
+    </description>
+  </class>
+  <class name="openral_hal_unitree/GuardedInferenceController"
+         type="openral_hal_unitree::GuardedInferenceController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      NVIDIA isaac_ros_deploy InferenceController with v5.0's stale-input watchdog
+      (topic_input_timeout_ms / topic_input_sources) on the v4.6 Jazzy release: a topic
+      input older than the timeout invalidates the policy's commands.
+    </description>
+  </class>
+</library>

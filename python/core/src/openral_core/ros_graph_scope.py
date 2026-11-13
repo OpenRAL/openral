@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Whether a process's ROS 2 graph reaches beyond this host.
 
-One pure decision shared by the two places that start a real robot:
+One pure decision shared by every place that starts a real robot:
 ``openral deploy run`` (``openral_cli._dds_scope.confine_real_scope``, which
-defaults a host-confined scope first) and ``deploy_e2e.launch.py`` under
-``hal_mode:=real`` (which runs on whatever environment ``ros2 launch`` was
-started with, so a hand-run launch is checked too). A graph that reaches other
+defaults a host-confined scope first), ``deploy_e2e.launch.py`` under
+``hal_mode:=real`` and every in-tree vendor ``real_bringup`` launch (which run
+on whatever environment ``ros2 launch`` was started with, so a hand-run launch
+is checked too). A graph that reaches other
 hosts lets any of them publish ``/openral/safe_action`` (the HAL executes it),
 call ``/openral/estop_reset``, or spoof ``/joint_states`` and the deadman
 heartbeat. See ``docs/reference/ros-graph-security.md``.
@@ -19,14 +20,28 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
-from openral_core.exceptions import ROSConfigError
+import structlog
 
-__all__ = ["ALLOW_NETWORK_ROS_ENV", "networked_ros_scope", "require_host_confined_ros_scope"]
+from openral_core.exceptions import ROSConfigError
+from openral_core.ros_security import require_secure_ros_graph, ros_security_enabled
+
+__all__ = [
+    "ALLOW_NETWORK_ROS_ENV",
+    "discovery_range_is_ros_default",
+    "networked_ros_scope",
+    "require_host_confined_real_bringup",
+    "require_host_confined_ros_scope",
+]
 
 #: Opt-in for a real robot's ROS graph to reach beyond this host. Only the exact
 #: value ``"1"`` counts.
 ALLOW_NETWORK_ROS_ENV: Final[str] = "OPENRAL_ALLOW_NETWORK_ROS"
 
+#: rcl's default range. ``source /opt/ros/jazzy/setup.bash`` also *exports* it
+#: whenever it is unset (``ros_environment``'s ``1.ros_discovery.dsv``:
+#: ``set-if-unset;ROS_AUTOMATIC_DISCOVERY_RANGE;SUBNET``), so in any sourced shell
+#: an exported ``SUBNET`` is indistinguishable from "nobody chose anything".
+_ROS_DEFAULT_RANGE: Final[str] = "SUBNET"
 #: Discovery ranges that keep a graph on this host.
 _HOST_CONFINED_RANGES: Final[frozenset[str]] = frozenset({"LOCALHOST", "OFF"})
 #: Zenoh ignores both discovery variables and its router listens on every interface.
@@ -64,6 +79,32 @@ def _vendor_peers(env: Mapping[str, str]) -> str | None:
             if any(m in text.lower() for m in markers):
                 return f"{var}={value} (its XML lists remote peers)"
     return None
+
+
+def discovery_range_is_ros_default(env: Mapping[str, str]) -> bool:
+    """Whether ``ROS_AUTOMATIC_DISCOVERY_RANGE`` in ``env`` is ROS's default, not a choice.
+
+    Unset or empty is the default to rcl. ``SUBNET`` is too unless
+    ``OPENRAL_ALLOW_NETWORK_ROS=1`` is set: ``setup.bash`` exports it into every
+    sourced shell, so the variable alone cannot say an operator chose the LAN —
+    the OpenRAL opt-in can. Every other value (``LOCALHOST``, ``OFF``,
+    ``SYSTEM_DEFAULT``) is something ROS never exports, so it is a choice.
+    ``ROS_LOCALHOST_ONLY`` is not consulted; callers that honour it check it first.
+
+    Example:
+        >>> discovery_range_is_ros_default({"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET"})
+        True
+        >>> discovery_range_is_ros_default(
+        ...     {"ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET", ALLOW_NETWORK_ROS_ENV: "1"}
+        ... )
+        False
+        >>> discovery_range_is_ros_default({"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"})
+        False
+    """
+    discovery = env.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "").strip().upper()
+    if not discovery:
+        return True
+    return discovery == _ROS_DEFAULT_RANGE and env.get(ALLOW_NETWORK_ROS_ENV) != "1"
 
 
 def networked_ros_scope(env: Mapping[str, str]) -> str | None:
@@ -106,7 +147,7 @@ def networked_ros_scope(env: Mapping[str, str]) -> str | None:
 
 
 def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
-    """Refuse a networked ROS scope for a real robot unless ``env`` opts in.
+    """Refuse a networked ROS scope for a real robot unless ``env`` opts in and runs SROS2.
 
     Args:
         env: The environment the robot's graph runs under. The opt-in
@@ -117,7 +158,9 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
         is networked and opted in, so the caller logs the hazard.
 
     Raises:
-        ROSConfigError: A networked scope without the opt-in.
+        ROSConfigError: A networked scope without the opt-in or without SROS2
+            Enforce (ADR-0130), or ``ROS_SECURITY_ENABLE=true`` with a keystore
+            ``require_secure_ros_graph`` refuses.
 
     Example:
         >>> require_host_confined_ros_scope({"ROS_LOCALHOST_ONLY": "1"}) is None
@@ -133,16 +176,78 @@ def require_host_confined_ros_scope(env: Mapping[str, str]) -> str | None:
             "ROS_AUTOMATIC_DISCOVERY_RANGE=OFF stops a real robot's own nodes from "
             "discovering each other; use LOCALHOST to keep the graph on this host."
         )
+    if ros_security_enabled(env):
+        # A secured graph is checked whatever its scope: a broken keystore must
+        # fail here, not as nodes that silently never join.
+        require_secure_ros_graph(env)
     scope = networked_ros_scope(env)
-    if scope is None or env.get(ALLOW_NETWORK_ROS_ENV) == "1":
-        return scope
-    raise ROSConfigError(
-        f"refusing to start a real robot on a ROS graph that reaches other hosts "
-        f"({scope}). Any host that can discover this graph can publish "
-        f"/openral/safe_action (the HAL executes it), call /openral/estop_reset, "
-        f"and spoof /joint_states or the deadman heartbeat. Keep the graph on this "
-        f"host with ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST and no ROS_STATIC_PEERS "
-        f"(`openral deploy run` sets this by default), or, when the graph must span "
-        f"machines on a trusted, isolated network, set {ALLOW_NETWORK_ROS_ENV}=1 and "
-        f"export the same ROS_DOMAIN_ID on every host.",
-    )
+    if scope is None:
+        return None
+    if env.get(ALLOW_NETWORK_ROS_ENV) != "1":
+        raise ROSConfigError(
+            f"refusing to start a real robot on a ROS graph that reaches other hosts "
+            f"({scope}). Any host that can discover this graph can publish "
+            f"/openral/safe_action (the HAL executes it), call /openral/estop_reset, "
+            f"and spoof /joint_states. Keep the graph on this "
+            f"host with ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST and no ROS_STATIC_PEERS "
+            f"(`openral deploy run` sets this by default; sourcing ROS's setup.bash "
+            f"exports SUBNET when the range is unset, so a hand-run launch must export "
+            f"LOCALHOST itself), or, when the graph must span "
+            f"machines, set {ALLOW_NETWORK_ROS_ENV}=1, run it under SROS2 "
+            f"(`openral security init <robot_id>`) and export the same ROS_DOMAIN_ID on "
+            f"every host.",
+        )
+    if env.get("RMW_IMPLEMENTATION", "").strip() == _ZENOH_RMW:
+        # ADR-0130: Zenoh's access control is its own session/router config, not the
+        # DDS keystore, so a valid keystore says nothing about who may join a Zenoh graph.
+        raise ROSConfigError(
+            f"refusing to start a real robot on a networked {_ZENOH_RMW} graph: SROS2 "
+            f"enclaves secure DDS only. Use rmw_cyclonedds_cpp or rmw_fastrtps_cpp with "
+            f"`openral security init`, or keep the Zenoh graph on this host."
+        )
+    if not ros_security_enabled(env):
+        # ADR-0130: the opt-in alone is not enough; there is no unsecured networked cell.
+        raise ROSConfigError(
+            f"refusing to start a real robot on a networked ROS graph ({scope}) without "
+            f"SROS2: {ALLOW_NETWORK_ROS_ENV}=1 acknowledges the network but does not stop a "
+            f"peer from publishing /openral/safe_action. Run `openral security init "
+            f"<robot_id>` and export ROS_SECURITY_ENABLE=true, ROS_SECURITY_STRATEGY=Enforce "
+            f"and ROS_SECURITY_KEYSTORE on every host."
+        )
+    return scope
+
+
+def require_host_confined_real_bringup(
+    launch: str, env: Mapping[str, str], *, included_by_deploy: bool
+) -> None:
+    """The gate every in-tree vendor ``real_bringup`` launch runs before composing any node.
+
+    Applies ``require_host_confined_ros_scope`` to ``env`` (the launch's own
+    ``os.environ``: its nodes inherit it). An opted-in networked scope is logged
+    (``ros_graph_scope.real_bringup_networked``) only on a hand run: under
+    ``deploy_e2e.launch.py`` its own gate is the one emitter per deploy (#558).
+
+    Args:
+        launch: The bringup's package name, logged with the hazard.
+        env: The environment the bringup's nodes run under.
+        included_by_deploy: Whether ``deploy_e2e.launch.py`` included the bringup
+            (its ``hal_mode`` launch configuration is set).
+
+    Raises:
+        ROSConfigError: Whatever ``require_host_confined_ros_scope`` refuses.
+
+    Example:
+        >>> require_host_confined_real_bringup(
+        ...     "openral_hal_openarm",
+        ...     {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"},
+        ...     included_by_deploy=False,
+        ... )
+    """
+    scope = require_host_confined_ros_scope(env)
+    if scope is not None and not included_by_deploy:
+        structlog.get_logger(__name__).warning(
+            "ros_graph_scope.real_bringup_networked",
+            launch=launch,
+            scope=scope,
+            hazard="every host on this network can command the robot",
+        )

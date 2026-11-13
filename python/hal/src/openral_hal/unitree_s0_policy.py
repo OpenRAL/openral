@@ -39,6 +39,7 @@ __all__ = [
     "S0PolicyMeta",
     "load_s0_policy",
     "policy_parameters",
+    "require_watchdog_enforced",
     "resolve_leapp_config",
     "s0_policy_path",
 ]
@@ -49,6 +50,10 @@ UNITREE_BRINGUP_PACKAGE = "openral_hal_unitree"
 UPPER_BODY_CONTROLLER = "upper_body_forward_joint_command_controller"
 #: The S0 policy controller.
 INFERENCE_CONTROLLER = "inference_controller"
+#: The only inference controller type that enforces ``WATCHDOG_KEYS`` (issue #565).
+GUARDED_INFERENCE_CONTROLLER = "openral_hal_unitree/GuardedInferenceController"
+#: Stale-input watchdog parameters: isaac_ros_deploy v5.0 names, absent from v4.6.
+WATCHDOG_KEYS = ("topic_input_timeout_ms", "topic_input_sources")
 #: Repo-checkout location of the configs (``python/hal/src/openral_hal/`` → repo root).
 _REPO_CONFIG = Path(__file__).resolve().parents[4] / "packages" / UNITREE_BRINGUP_PACKAGE / "config"
 
@@ -214,6 +219,68 @@ def resolve_leapp_config(
             )
         )
     return path
+
+
+def _inference_controller_types(doc: object, node_path: str = "") -> list[object]:
+    """Every ``type`` a ROS params document gives ``inference_controller``.
+
+    Walks every node path, however nested (``"/**": {inference_controller: {...}}``,
+    ``/ns/inference_controller``, …), and collects both forms the spawner or
+    ``controller_manager`` reads: ``<node>.ros__parameters.inference_controller.type`` and
+    ``<node ending in inference_controller>.ros__parameters.type``.
+    """
+    found: list[object] = []
+    if not isinstance(doc, dict):
+        return found
+    for key, block in doc.items():
+        if not isinstance(block, dict):
+            continue
+        if key != "ros__parameters":
+            found += _inference_controller_types(block, f"{node_path}/{key}")
+            continue
+        if node_path.rstrip("/").endswith(INFERENCE_CONTROLLER) and "type" in block:
+            found.append(block["type"])
+        nested = block.get(INFERENCE_CONTROLLER)
+        if isinstance(nested, dict) and "type" in nested:
+            found.append(nested["type"])
+    return found
+
+
+def require_watchdog_enforced(policy: S0PolicyFile, base_params: dict[str, object]) -> None:
+    """Refuse a policy whose stale-input watchdog would not be enforced.
+
+    The pinned Jazzy ``isaac_ros_deploy`` (v4.6) has no ``topic_input_timeout_ms`` /
+    ``topic_input_sources``: its ``InferenceController`` accepts them without a word and
+    keeps running the policy on its last velocity command (issue #565). Only
+    ``GuardedInferenceController`` enforces them, and only with a positive timeout. So the
+    policy must set ``topic_input_timeout_ms > 0``, and every ``type`` that ``base_params``
+    (``controller_manager.yaml``) or the policy file gives ``inference_controller`` — in the
+    manager's block or the controller's own, under any key — must be the guarded one.
+
+    Raises:
+        ROSConfigError: No positive timeout, no type, or any type other than the guarded one.
+    """
+    name = policy.openral_policy.name
+    inference = policy.controllers[INFERENCE_CONTROLLER].get("ros__parameters", {})
+    timeout = inference.get("topic_input_timeout_ms")
+    # A float: ROS types the parameter from the YAML literal, and the controller refuses an int.
+    if not isinstance(timeout, float) or not timeout > 0:
+        raise ROSConfigError(
+            f"S0 policy {name!r}: {INFERENCE_CONTROLLER}.topic_input_timeout_ms is {timeout!r}; "
+            "a real robot needs a positive stale-input timeout in ms, written as a float "
+            "(500.0), or a dead OpenRAL side leaves it walking on its last velocity command."
+        )
+    types = _inference_controller_types(base_params) + _inference_controller_types(
+        policy.controllers
+    )
+    wrong = [t for t in types if t != GUARDED_INFERENCE_CONTROLLER]
+    if not types or wrong:
+        raise ROSConfigError(
+            f"S0 policy {name!r} sets {INFERENCE_CONTROLLER}.topic_input_timeout_ms, but "
+            f"{INFERENCE_CONTROLLER} is typed {types!r}; only {GUARDED_INFERENCE_CONTROLLER!r} "
+            "enforces it on the pinned isaac_ros_deploy — any other type ignores it and a stale "
+            "velocity command keeps the robot walking."
+        )
 
 
 def policy_parameters(policy: S0PolicyFile, leapp_config: Path) -> dict[str, Any]:

@@ -8,19 +8,27 @@ operator credentials (reasoner API keys) away from remote-code sidecars. Real
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
+from openral_core.exceptions import ROSConfigError
 from openral_sim._deps import _RLDX_SIDECAR_REPO_SHA, _rldx_sidecar_setup_plan
 from openral_sim._sidecar_common import (
     checkout_head,
     ensure_source,
     make_isolated_env,
+    require_pinned_head,
     run_sidecar,
     sidecar_env,
 )
+from openral_sim.backends import robotwin
+from openral_sim.backends.robotwin import _ensure_robotwin_checkout
 
 # Only the fetch tests need git; the environment-policy tests run everywhere.
 _needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
@@ -79,6 +87,184 @@ def test_refuses_a_pin_that_is_not_a_full_sha(tmp_path: Path, pin: str) -> None:
     with pytest.raises(SystemExit, match="not a full SHA"):
         ensure_source("t", tmp_path / "work", url, pin)
     assert not (tmp_path / "work" / "source").exists()
+
+
+@_needs_git
+def test_require_pinned_head_refuses_a_directory_that_is_not_a_checkout(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="no git checkout"):
+        require_pinned_head("t", tmp_path, "0" * 40)
+
+
+@_needs_git
+def test_require_pinned_head_gives_the_refetch_hint_for_an_unreadable_head(
+    tmp_path: Path,
+) -> None:
+    """An interrupted in-place fetch leaves a .git with no commit: refused with the fix."""
+    _git("init", "-q", str(tmp_path / "source"), cwd=tmp_path)
+    with pytest.raises(SystemExit, match=r"(?s)cannot read the commit.*Delete"):
+        require_pinned_head("t", tmp_path / "source", "0" * 40)
+
+
+@_needs_git
+def test_robotwin_checkout_is_verified_on_reuse_not_only_on_clone(tmp_path: Path) -> None:
+    """``ensure_source`` hands RoboTwin over and it is renamed out of ``source/``:
+    the pin must still hold on every later provisioning run (#560)."""
+    url, first, tip = _upstream(tmp_path)
+    home = tmp_path / "home"
+    root = _ensure_robotwin_checkout(home, url, first)
+    assert root == home / "RoboTwin" and checkout_head(root) == first
+    assert _ensure_robotwin_checkout(home, url, first) == root  # reuse at the pin
+    # The provisioned root moved off the pin (a pull, an operator's checkout): refused.
+    _git("fetch", "-q", "--depth", "1", "origin", tip, cwd=root)
+    _git("checkout", "-q", "FETCH_HEAD", cwd=root)
+    with pytest.raises(ROSConfigError, match="not the pinned"):
+        _ensure_robotwin_checkout(home, url, first)
+    # Not a git checkout at all (a copied tree): refused too.
+    shutil.rmtree(root / ".git")
+    with pytest.raises(ROSConfigError, match="no git checkout"):
+        _ensure_robotwin_checkout(home, url, first)
+
+
+@_needs_git
+def test_lingbot_checkout_is_verified_on_reuse_not_only_on_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The LingBot-VLA2 boot helper executes its ``<home>/source`` checkout: a reused
+    checkout moved off the pin is refused like a fresh one (#560 for LingBot)."""
+    lingbot = _tool("lingbot_vla2_sidecar")
+    monkeypatch.delenv(lingbot._REPO_ENV, raising=False)
+    url, first, tip = _upstream(tmp_path)
+    home = tmp_path / "home"
+    source = lingbot._ensure_source(home, url=url, sha=first)
+    assert source == home / "source" and checkout_head(source) == first
+    assert lingbot._ensure_source(home, url=url, sha=first) == source  # reuse at the pin
+    _git("fetch", "-q", "--depth", "1", "origin", tip, cwd=source)
+    _git("checkout", "-q", "FETCH_HEAD", cwd=source)
+    with pytest.raises(SystemExit, match="not the pinned"):
+        lingbot._ensure_source(home, url=url, sha=first)
+    # At the pin but with an edited tracked file: what would run is not the pin.
+    _git("checkout", "-q", first, cwd=source)
+    (source / "f.txt").write_text("edited")
+    with pytest.raises(SystemExit, match="local changes"):
+        lingbot._ensure_source(home, url=url, sha=first)
+    _git("checkout", "-q", "--", "f.txt", cwd=source)
+    (source / "__pycache__").mkdir()  # untracked byproducts of running it are fine
+    assert lingbot._ensure_source(home, url=url, sha=first) == source
+    # A copied tree without .git: refused with the hint, before any fetch.
+    shutil.rmtree(source / ".git")
+    with pytest.raises(SystemExit, match=r"no git checkout.*Delete"):
+        lingbot._ensure_source(home, url=url, sha=first)
+    assert not (home / "source.partial").exists()
+
+
+@_needs_git
+def test_lingbot_variants_never_share_a_checkout_under_the_home_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1 and v2 are different repos at different pins with different venvs: setting
+    the v2 home override must not hand v1 the v2 ``source/`` (refused as off-pin, or
+    run as the wrong repo before the pin was checked on reuse); v1 has its own."""
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # the *_DEFAULT_HOME* constants
+    lingbot = _tool("lingbot_vla2_sidecar")
+    for env in (lingbot._REPO_ENV, lingbot._REPO_ENV_V1, lingbot._HOME_ENV_V1):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv(lingbot._HOME_ENV, str(tmp_path / "v2-home"))
+    url, v2_pin, v1_pin = _upstream(tmp_path)
+    homes = {}
+    for variant, pin in (("v2", v2_pin), ("v1", v1_pin)):
+        homes[variant] = lingbot._default_home(variant)
+        lingbot._claim_home(homes[variant], variant, mark=False)
+        source = lingbot._ensure_source(homes[variant], url=url, sha=pin)
+        lingbot._claim_home(homes[variant], variant, mark=True)
+        assert source == homes[variant] / "source" and checkout_head(source) == pin
+    assert homes["v2"] == tmp_path / "v2-home" != homes["v1"]
+    # A home one variant holds is refused to the other, however it was named.
+    for mark in (False, True):
+        with pytest.raises(SystemExit, match="held by LingBot variant 'v2'"):
+            lingbot._claim_home(homes["v2"], "v1", mark=mark)
+
+
+@_needs_git
+def test_lingbot_boot_refuses_a_foreign_home_before_touching_it(tmp_path: Path) -> None:
+    """``main()`` end to end, no network: a home marked for the other variant is
+    refused before the fetch, and a home whose checkout fails the pin is refused
+    without being claimed (so the variant it really holds can still use it)."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("OPENRAL_LINGBOT_VLA", "OPENRAL_QWEN"))
+    }
+    env["HOME"] = str(tmp_path / "user")
+
+    def boot(variant: str, home: Path) -> subprocess.CompletedProcess[str]:
+        argv = [sys.executable, str(_TOOLS / "lingbot_vla2_sidecar.py"), "--model", "m"]
+        argv += ["--variant", variant, "--home", str(home)]
+        return subprocess.run(
+            argv, env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+
+    held = tmp_path / "held"
+    held.mkdir()
+    (held / ".lingbot-variant").write_text("v2\n")
+    run = boot("v1", held)
+    assert run.returncode != 0 and "held by LingBot variant 'v2'" in run.stderr
+    assert sorted(p.name for p in held.iterdir()) == [".lingbot-variant"]
+
+    url, first, _ = _upstream(tmp_path)  # a checkout that is not the v2 pin
+    legacy = tmp_path / "legacy"
+    _git("clone", "-q", url, str(legacy / "source"), cwd=tmp_path)
+    _git("checkout", "-q", first, cwd=legacy / "source")
+    run = boot("v2", legacy)
+    assert run.returncode != 0 and "not the pinned" in run.stderr
+    assert not (legacy / ".lingbot-variant").exists()
+
+
+def test_lingbot_home_override_is_per_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each variant reads only its own ``*_SIDECAR_HOME``, ``~``-expanded, an empty
+    value as unset; v1 says out loud that it no longer reads the v2 override."""
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    lingbot = _tool("lingbot_vla2_sidecar")
+    v1_default = tmp_path / "user" / ".cache" / "openral" / "lingbot-vla-v1-sidecar"
+    monkeypatch.setenv(lingbot._HOME_ENV, str(tmp_path / "v2-home"))
+    monkeypatch.delenv(lingbot._HOME_ENV_V1, raising=False)
+    assert lingbot._default_home("v1") == v1_default
+    assert f"ignores ${lingbot._HOME_ENV}" in capsys.readouterr().out
+    monkeypatch.setenv(lingbot._HOME_ENV_V1, "~/v1-home")
+    assert lingbot._default_home("v1") == tmp_path / "user" / "v1-home"
+    assert lingbot._default_home("v2") == tmp_path / "v2-home"
+    assert capsys.readouterr().out == ""
+    monkeypatch.setenv(lingbot._HOME_ENV_V1, "")
+    monkeypatch.setenv(lingbot._HOME_ENV, "")
+    assert lingbot._default_home("v1") == v1_default
+    assert lingbot._default_home("v2") == tmp_path / "user" / ".cache/openral/lingbot-vla2-sidecar"
+
+
+@_needs_git
+def test_every_launch_verifies_the_provisioned_robotwin_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_robotwin_root`` hands the checkout to the sidecar, which imports its code:
+    the provisioned root is pin-checked there too, also when named through
+    OPENRAL_ROBOTWIN_ROOT; an operator's own checkout elsewhere is theirs."""
+    url, first, tip = _upstream(tmp_path)
+    home = tmp_path / "home"
+    root = _ensure_robotwin_checkout(home, url, tip)  # provisioned, but not at the pin
+    (root / "assets" / "objects" / "objaverse").mkdir(parents=True)
+    (root / "assets" / "objects" / "objaverse" / "list.json").write_text("[]")
+    monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", home)
+    monkeypatch.setattr(robotwin, "_ROBOTWIN_SHA", first)
+    monkeypatch.delenv(robotwin._ROBOTWIN_ROOT_ENV, raising=False)
+    with pytest.raises(ROSConfigError, match="not the pinned"):
+        robotwin._robotwin_root()
+    monkeypatch.setenv(robotwin._ROBOTWIN_ROOT_ENV, str(root))
+    with pytest.raises(ROSConfigError, match="not the pinned"):
+        robotwin._robotwin_root()
+    own = tmp_path / "operator"
+    shutil.copytree(root, own)
+    monkeypatch.setenv(robotwin._ROBOTWIN_ROOT_ENV, str(own))
+    assert robotwin._robotwin_root() == own.resolve()
 
 
 def test_rldx_install_plan_fetches_the_pin_and_verifies_head() -> None:
@@ -210,6 +396,17 @@ def test_isolated_env_never_carries_the_reasoner_key(monkeypatch: pytest.MonkeyP
 
 
 _TOOLS = Path(__file__).resolve().parents[2] / "tools"
+
+
+def _tool(name: str) -> ModuleType:
+    """Import ``tools/<name>.py`` (a script, not a package) as a fresh module."""
+    spec = importlib.util.spec_from_file_location(f"_tool_{name}", _TOOLS / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _OPERATOR_SECRETS = {
     "OPENRAL_REASONER_API_KEY": "sk-openral",
     "ANTHROPIC_API_KEY": "sk-ant",
@@ -224,6 +421,15 @@ _OPERATOR_SECRETS = {
     [
         ("da3_depth_sidecar", {"OPENRAL_DA3_DEPTH_SIDECAR_HOME": "/h"}, False),
         ("qwen_vlm_sidecar", {"OPENRAL_QWEN_VLM_SIDECAR_VENV": "/v"}, True),
+        (
+            "lingbot_vla2_sidecar",
+            {
+                "OPENRAL_LINGBOT_VLA2_SIDECAR_HOME": "/h",
+                "OPENRAL_LINGBOT_VLA_SIDECAR_HOME": "/h1",
+                "OPENRAL_QWEN3VL_PATH": "/q",
+            },
+            True,
+        ),
         (
             "locateanything_sidecar",
             {"OPENRAL_LOCATEANYTHING_SIDECAR_HOME": "/h", "OPENRAL_ALLOW_REMOTE_CODE": "1"},
@@ -253,16 +459,12 @@ def test_boot_helper_scrubs_environ_before_anything(
     any venv install or exec, so the patched ``os.environ`` is exactly what the
     rest of the boot (and the exec'd server) would see.
     """
-    import importlib.util
     import os
     import sys
 
     environ = {"PATH": "/usr/bin", "HF_HOME": "/data/hf", "HF_TOKEN": "hf_x"}
     environ |= reads | _OPERATOR_SECRETS
-    spec = importlib.util.spec_from_file_location(f"_scrub_{tool}", _TOOLS / f"{tool}.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _tool(tool)
     monkeypatch.setattr(os, "environ", dict(environ))
     monkeypatch.setattr(sys, "argv", [tool, "--help"])
     with pytest.raises(SystemExit):

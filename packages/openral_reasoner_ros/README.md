@@ -93,10 +93,40 @@ reward / VLM verdict. A wrapped ROS action rSkill whose manifest sets
 `navigate_to_pose` skill; the setting is read when the goal is dispatched)
 completes the active task when its goal succeeds —
 Nav2 SUCCEEDED means "within the goal tolerance", so the reasoner must not
-re-drive a 0.2 m residual. With no reward monitor, the per-task attempt cap
-(`DEFAULT_MAX_ATTEMPTS`, 3) still applies: the task is abandoned through the
-usual abandon path (one subdivision offer, then hand-off). Both decisions log
-`mission: <complete|abandon> task <id> after '<rskill_id>' …`.
+re-drive a 0.2 m residual. A goal the LLM sends with `final_step: false`
+(the drive is one step of "drive to the kitchen and pick up the cup")
+completes only its step: the task stays active for the rest. With no reward
+monitor, the per-task attempt cap (`DEFAULT_MAX_ATTEMPTS`, 3) counts *failed*
+dispatches (aborted, or cancelled on patience): a success nobody can judge is
+not a failure, so a multi-skill task whose steps all work is not abandoned
+after three of them. A task whose results no reward gate judges (no reward
+monitor, or `final_step: false` steps) is also bounded by
+`DEFAULT_MAX_TASK_DISPATCHES` (10) dispatches of any outcome, so one that
+keeps succeeding without ever completing still ends. Without a reward monitor
+or completion check a VLA run ends on its budget, which the runner reports as
+a failure (`FAILURE_DEADLINE_MISSED`), so VLA runs still count toward the
+failure cap; the successes the change stops counting are wrapped actions
+(Nav2, MoveIt goals, look-at). Either bound abandons
+through the usual abandon path (one subdivision offer, then hand-off). The
+decisions log `mission: <complete|step|abandon> task <id> after '<rskill_id>' …`.
+
+The other per-task ladders count the same failures (`TaskState.failures`), never
+every dispatch. With a reward monitor, the gate's three tries are spent by failed
+dispatches and by successes it scores not done; a `final_step: false` approach
+drive it never judges, or a success it could not score (`ok=false`: stale frames,
+no task, a backend error), spends none, so "drive to the kitchen and pick up the
+cup" still gets three picks. A task whose dispatches keep succeeding while the gate
+keeps scoring them not done still ends at the cap; unscored successes end at
+`DEFAULT_MAX_TASK_DISPATCHES`, which the node checks before sending each goal, so
+no task sends more than 10 goals whatever its results said (a reward query that
+raises or never answers included). Object-query recovery (the tracker cannot resolve the
+goal's object) recovers while the task's failed dispatches, the failing goal
+included, stay below the cap, so an earlier drive or look-at does not block it; an
+earlier success whose reward verdict is still pending counts as a possible failure
+until the verdict lands, and a goal that finished before the cancel landed is a
+success. The
+mission summary the dashboard reads (`reasoner.mission_json`) carries `failures`
+next to `attempts`, plus `max_dispatches`.
 
 **What a success says.** The `## EXECUTION` line for a successful goal carries
 the runner's `ExecuteRskill.Result.outcome_summary` before the trace id. For a
@@ -213,6 +243,8 @@ auth requirement, hosting mode, and local-compute floor.
 | `gpt-5.5` | `openai/gpt-5.5` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `gpt-5.6` | `openai/gpt-5.6` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
+| `qwen3.5-4b` | `qwen3.5:4b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
+| `qwen3.5-9b` | `qwen3.5:9b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
 
 The env contract is:
 
@@ -455,6 +487,91 @@ plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
 > sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0`. Full findings in the
 > [assessment page](../../docs/reference/cosmos3-edge-reasoner.md).
 
+### On the robot — Qwen 3.5 4B / 9B via Ollama
+
+`qwen3.5-4b` and `qwen3.5-9b` run on the robot's own [Ollama](https://ollama.com)
+(vision, tools and thinking; Apache-2.0 weights; the Q4_K_M `qwen3.5:4b`
+(3.4 GB) and `qwen3.5:9b` (6.6 GB) tags). They need no key and nothing but the
+model (`just bootstrap-ollama --model qwen3.5:9b` for the 9B):
+
+```bash
+just bootstrap-ollama            # installs Ollama, pulls qwen3.5:4b, serves a 32K window
+export OPENRAL_REASONER_MODEL=qwen3.5-4b
+```
+
+The bootstrap reads its tags from `REASONER_MODELS`, so it needs a Python that
+imports `openral_core` (the repo's `.venv` after `just sync`, or
+`OPENRAL_PYTHON`). On Linux it installs Ollama v0.32.14 from the GitHub
+release tarballs, each checked against a sha256 pinned in
+`scripts/bootstrap_ollama.sh` before anything is extracted, and registers the
+systemd unit under the default `/usr/local` prefix. `OLLAMA_PREFIX` installs
+elsewhere (files only), and `OLLAMA_PORT` serves on another port (the script
+then prints the endpoint URL to export). It always talks to the local daemon,
+whatever a client `OLLAMA_HOST` says.
+
+**The context window is the one setting that matters.** The reasoner's prompt
+is 9–26K tokens (system prompt plus one tool per skill); Ollama loads a model
+with a 4096-token window on a GPU under 24 GiB
+([docs](https://docs.ollama.com/context-length)) and **silently truncates** a
+longer prompt, and its OpenAI-compatible API has no field to raise it. Start
+the daemon with `OLLAMA_CONTEXT_LENGTH=32768` (`just bootstrap-ollama` sets it on
+the daemon it starts and on the systemd unit of an Ollama it installs; an
+existing systemd install: `sudo systemctl edit ollama` →
+`Environment=OLLAMA_CONTEXT_LENGTH=32768`). The
+client compares the prompt tokens Ollama reports with the request it sent
+(confirming a suspected cut against the window `/api/ps` reports, so densely
+packed text that fits is not refused) and fails the tick (`ROSPlanningError: … cut the prompt to fit`) rather than act
+on a truncated prompt.
+
+Ollama ignores `tool_choice`
+([OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility)),
+so the `ollama` endpoint sends `auto`: a prose reply gets the one nudge, then
+counts as an invalid plan.
+
+The 4B, measured through the real client (Ollama 0.32.14, RTX 5070 Laptop 8 GB,
+32K window, thinking on, 20 ticks each; the curation bar is ≥ 17/20, #494):
+
+| prompt | skills | tokens | valid | median tick |
+|---|---|---|---|---|
+| `so101_follower` + query tools | 3 | 9,229 | 18/20 | 9.2 s |
+| `franka_panda` + query tools, full palette | 14 | 20,379 | 20/20 | 9.7 s |
+
+The 9B was first measured on Ollama 0.40.16 (same laptop, 12% of the model on
+the CPU): `so101_follower` 20/20 (18.8 s), `franka_panda` full palette 20/20
+(16.3 s), frames 2/2. Re-measured on the pinned 0.32.14 (#559), both models on
+an RTX 5090 (32 GB, all on the GPU), same harness:
+
+| model | Ollama | `so101_follower` (9,286 tokens) | `franka_panda` full palette (20,436 tokens) | frames |
+|---|---|---|---|---|
+| `qwen3.5-4b` | 0.32.14 | 19/20 (2.5 s) | 18/20 (2.6 s) | 2/2 |
+| `qwen3.5-9b` | 0.32.14 | 18, 17, 20 /20 (3.1–3.3 s) | 20/20 (3.8 s) | 4/6 |
+| `qwen3.5-9b` | 0.40.16 | 19, 18, 19 /20 (3.0–3.2 s) | — | 6/6 |
+
+The pin holds the 9B to the bar (55/60 vs 56/60 on 0.40.16). Its frames are
+not a version effect: asked 10 times each, the "eraser on the square" frame was
+right 7/10 on 0.32.14 and 7/10 and 6/10 on 0.40.16 (the 4B 10/10 on 0.32.14);
+the "not on it" frame was 10/10 everywhere.
+
+On the laptop the 4B's `describe_image` answered both SO-101 eraser frames (2/2). Re-run on
+Ollama 0.40.16: `so101_follower` 18/20 again, frames 2/2 (ticks slower there
+because a CI job held 3.4 GB of the same GPU). With
+thinking off (`reasoning_effort: none`) ticks drop to ~2 s but validity to
+16/20, under the bar, so the entry keeps thinking on.
+Failures were a nested `place_target` sent as a JSON string and a
+hallucinated tool name; both come back to the model as invalid-plan feedback.
+
+Not curated, same harness: `qwen3-vl:4b-instruct` 17/20 but 1/2 frames and
+24 s ticks; `gemma4:e4b` 17/20, 1/2 frames, and it re-dispatched a skill the
+context reported done; `ministral-3:3b` 15/20 (`franka_panda` 9/20);
+`granite3.2-vision:2b` 0/20 (a 16K model under a 21K prompt); `qwen3-vl:4b` is
+a thinking-only tag (165 s first tick). `lfm3-vl` needs a newer Ollama than
+0.32.
+
+Ollama Cloud models are not curated: none could be run here without an
+`OLLAMA_API_KEY`. One works through the escape hatch below with
+`OPENRAL_REASONER_ENDPOINT=https://ollama.com/v1`, `OPENRAL_REASONER_DIALECT=openai`
+and the key as `OPENRAL_REASONER_API_KEY` (sent as `Authorization: Bearer`).
+
 ### Uncurated local endpoint — explicit escape hatch
 
 Models outside `REASONER_MODELS` are not claimed compatible. They work when the
@@ -462,12 +579,11 @@ model id, endpoint, and dialect are explicit; the factory and `openral doctor`
 warn that robotics tool-calling reliability is unverified.
 
 ```bash
-# Linux: runs ollama's release-tag install.sh only when its sha256 matches
-# OLLAMA_INSTALL_SH_SHA256 (scripts/bootstrap_ollama.sh); refuses otherwise.
-just bootstrap-ollama
+# Linux: installs ollama's release tarballs only when each one's sha256 matches
+# its pin in scripts/bootstrap_ollama.sh; refuses otherwise.
+just bootstrap-ollama --model qwen3:8b
 export OPENRAL_REASONER_MODEL=qwen3:8b
-export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
-export OPENRAL_REASONER_DIALECT=openai
+export OPENRAL_REASONER_ENDPOINT=ollama
 ```
 
 ## Synopsis
@@ -502,7 +618,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.prompt_tokens` | When the client surfaces usage | Provider-reported prompt tokens, cache reads included. |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
 | `reasoner.offered_skills` | When a skill-tool cap is set | Skill ids offered this tick (`ReasonerCore.offered_palette`). The ranking (every skill's score and the query) is on the `reasoner.skill_subset` log, emitted when the subset changes. |
-| `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
+| `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/failures/verdict/rskill_id, with `max_attempts` and `max_dispatches`) the live dashboard renders as the Mission card checklist. A task's budget is `failures` of `max_attempts` and `attempts` of `max_dispatches`. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
 | `reasoner.llm_s` | Every tick that reached the LLM | Wall-clock of the provider round-trip **alone**. `ReasonerTickResult.elapsed_s` is end-to-end tick time (context render + call + bookkeeping), so `elapsed_s - llm_s` is the reasoner-side overhead — without the split a tick that grew from 6 s to 99 s cannot be attributed. |
 | `reasoner.prompt_tokens` | When the client reports usage | Provider-reported prompt tokens (Anthropic cache reads included). Tick latency that grows in step with this is a context-size problem — window or summarize the history rather than raising `OPENRAL_REASONER_TIMEOUT_S`. |

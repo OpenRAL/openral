@@ -134,6 +134,7 @@ joints:
     effort_limit: 3.0
     actuator_kind: "bldc"
     role: "gripper"
+    urdf_curve: [[0.0, 0.0], [1.0, 0.05]]
     has_torque_sensor: false
 
 # The gripper is bolted to link6 (upstream fixed joint `gripper_base`).
@@ -145,13 +146,16 @@ fixed_attachments:
     origin_rpy: [1.57079745225378, -1.57079631189374, 1.57079520133601]
 
 # The two fingers as moving links of the collision model, posed from the
-# `gripper` fraction f with the upstream URDF joint origins / axes. The MuJoCo
-# twin drives joint8 = 0.05 f m (`sim.grippers[].ctrl_range`) and couples
+# gripper's URDF value u = 0.05 f m (`gripper.urdf_curve`, the fraction f's
+# finger stroke) with the upstream URDF joint origins / axes. The MuJoCo twin
+# drives joint8 = 0.05 f m (`sim.grippers[].ctrl_range`) and couples
 # joint7 = -joint8 (the URDF `<mimic multiplier="-1">` on joint8, whose master
-# is joint7). joint7 is the URDF's non-mimic finger joint, so
-# `urdf_joint_map` publishes the gripper's state to it as -0.05 f m and
-# robot_state_publisher derives joint8. The real gripper's stroke -> metres map
-# is UNVERIFIED (no real HAL yet).
+# is joint7). The Isaac scenes replace the curve with their own
+# (`backend_options.gripper_joint_curve`, closed below f = 0.025), which the
+# kernel then reads too (`sim_scene_description`). joint7 is the URDF's
+# non-mimic finger joint, so `urdf_joint_map` publishes the gripper's state to
+# it as -u and robot_state_publisher derives joint8. The real gripper's
+# stroke -> metres map is UNVERIFIED (no real HAL yet).
 mimic_joints:
   - name: "joint7"
     origin_xyz: [0, -0.00275, 0]
@@ -160,7 +164,7 @@ mimic_joints:
     parent_link: "gripper_base"
     child_link: "link7"
     mimics: "gripper"
-    multiplier: -0.05
+    multiplier: -1.0
     offset: 0.0
     joint_type: "prismatic"
   - name: "joint8"
@@ -170,7 +174,7 @@ mimic_joints:
     parent_link: "gripper_base"
     child_link: "link8"
     mimics: "gripper"
-    multiplier: 0.05
+    multiplier: 1.0
     offset: 0.0
     joint_type: "prismatic"
 

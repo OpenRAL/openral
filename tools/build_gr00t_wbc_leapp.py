@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Build the GR00T Decoupled WBC (Unitree G1) S0 policy as a LEAPP bundle for isaac_ros_deploy.
 
-NVIDIA's ``InferenceController`` (isaac_ros_deploy @ f3aa6b89) loads a *LEAPP* export: a YAML
+NVIDIA's ``InferenceController`` (isaac_ros_deploy v4.6-0 @ 3e84f85a) loads a *LEAPP* export: a YAML
 naming one ONNX model's inputs/outputs by ``kind`` (``state/joint/position``,
 ``command/body/velocity``, ``target/joint/position``, ``kp``, …) plus a ``feedback_flow``
 that loops recurrent outputs back to inputs every tick. GR00T-WholeBodyControl ships two

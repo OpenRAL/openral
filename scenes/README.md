@@ -387,8 +387,10 @@ environment USD) are named, not spawned, in `backend_options.stage_objects`:
 referenced at `/World/environment`). The prim must carry a rigid body (the boot
 fails otherwise); each reset returns it to its authored pose, and it is a scene
 object for `placement_success` and step `info` like `objects`. A placement region
-may follow one: `relative_to: plate` makes `min_xyz` / `max_xyz` offsets (world
-axes) from the plate's centre at each graded step.
+may follow one: `relative_to: plate` makes `min_xyz` / `max_xyz` a box in the
+plate's frame at each graded step: centred on the plate, on the world axes turned
+by the plate's declared yaw when it rests at its declared pose, and turning and
+tilting with the plate from there (a pen holder the arm turns turns its box).
 
 **Stages from older Isaac releases or other tools** may need two opt-in load
 fixes, both logged at boot: `strip_xform_colliders: true` removes
@@ -452,7 +454,7 @@ Isaac 6.1 asset root (`isaac:Isaac/IsaacLab/Arena/...`). The banana and bowl are
 `objects` at RoboLab's fixed layout (Arena re-samples one per reset); the success
 region follows the bowl (`relative_to`). The Robotiq's leader `finger_joint` closes
 toward +0.8 rad, the opposite sense of OpenRAL's `[0 = closed, 1 = open]` jaw, so
-`gripper_joint_curve` maps it onto Arena's 0 .. pi/4 travel. Run it with
+the manifest's `finger_joint.urdf_curve` maps it onto Arena's 0 .. pi/4 travel. Run it with
 [`rskills/pi05-droid-jointpos-arena`](../rskills/pi05-droid-jointpos-arena/); its
 deploy twin is [`deploy/isaac_arena_droid_banana_in_bowl.yaml`](deploy/isaac_arena_droid_banana_in_bowl.yaml), which maps the world from a simulated
 `exterior_depth` camera (`sim_sensors`) for the kernel's world-voxel check.

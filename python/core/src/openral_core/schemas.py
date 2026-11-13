@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import itertools
 import math
 import os
 import re
@@ -782,7 +783,7 @@ def sim_scene_description(
 ) -> RobotDescription:
     """The robot as a sim scene runs it: the scene's control rate and its simulated sensors.
 
-    Two ``SceneSpec.backend_options`` keys change the robot a sim scene drives. Every
+    Three ``SceneSpec.backend_options`` keys change the robot a sim scene drives. Every
     ``deploy sim`` consumer (the CLI, the launch's kernel / runner / recorder rates,
     ``build_hal``'s scene-attached HAL) and the Isaac scene apply them here, so all of
     them read one description:
@@ -794,6 +795,10 @@ def sim_scene_description(
       appended to its sensors. Depth cameras only (the world map's input on a robot
       whose real cameras are RGB), with intrinsics and no ``deploy_binding`` (nothing
       real publishes them); a name the manifest uses is refused.
+    * ``gripper_joint_curve``: ``{gripper joint: [(value, urdf value), …]}`` replaces
+      that joint's ``JointSpec.urdf_curve`` — how this twin's jaw reading maps onto
+      the URDF finger, so the kernel, the self-filter, /tf and the sim pose one finger
+      (issue #533).
 
     Pure (``openral_core`` has no logging dependency): each caller reports the result
     (``deploy sim`` prints it, ``SimAttachedHAL`` logs ``sim.time_base``, the runner's
@@ -844,6 +849,11 @@ def sim_scene_description(
         if dupes:
             raise ROSConfigError(f"backend_options.sim_sensors names {dupes} more than once.")
         update["sensors"] = merge_deploy_sensors(description.sensors, added)
+    raw_curves = options.get("gripper_joint_curve")
+    if raw_curves:
+        update["joints"] = _with_urdf_curves(
+            description, raw_curves, "backend_options.gripper_joint_curve"
+        )
     if not update:
         return description
     # Re-run RobotDescription's validators on the merged robot (``model_copy`` skips
@@ -854,6 +864,40 @@ def sim_scene_description(
         raise ROSConfigError(
             f"robot {description.name!r} with this scene's backend_options is invalid: {exc}"
         ) from exc
+
+
+def _with_urdf_curves(description: RobotDescription, raw: object, what: str) -> list[JointSpec]:
+    """``description.joints`` with each ``gripper_joint_curve`` entry as its ``urdf_curve``.
+
+    The points (``(value, urdf value)``, any order) are sorted by value. ``what`` names
+    the source in errors (a sim scene's ``backend_options`` or a robot unit).
+
+    Raises:
+        ROSConfigError: Not a mapping, a name that is not a ``role: gripper`` joint, or
+            points ``JointSpec.urdf_curve`` refuses.
+    """
+    if not isinstance(raw, Mapping):
+        raise ROSConfigError(f"{what} must map joint -> points")
+    grippers = {j.name for j in description.joints if j.role == "gripper"}
+    unknown = sorted(set(map(str, raw)) - grippers)
+    if unknown:
+        raise ROSConfigError(
+            f"{what} names no gripper joint: {unknown} (grippers: {sorted(grippers)})"
+        )
+    joints: list[JointSpec] = []
+    for joint in description.joints:
+        points = raw.get(joint.name)
+        if points is None:
+            joints.append(joint)
+            continue
+        try:
+            if any(len(p) != _MIN_CURVE_POINTS for p in points):
+                raise ValueError("every point must be a (value, urdf value) pair")
+            curve = tuple(sorted((float(p[0]), float(p[1])) for p in points))
+            joints.append(JointSpec.model_validate({**dict(joint), "urdf_curve": curve}))
+        except (TypeError, ValueError, IndexError) as exc:
+            raise ROSConfigError(f"{what}[{joint.name!r}] is invalid: {exc}") from exc
+    return joints
 
 
 ROBOT_UNIT_ENV = "OPENRAL_ROBOT_UNIT"
@@ -1089,6 +1133,37 @@ def resolve_sensor_overlays(
     return list(load_robot_unit(robot_yaml, unit).sensors)
 
 
+def unit_gripper_curves(
+    description: RobotDescription, robot_yaml: str | Path, scene_unit: str | None
+) -> RobotDescription:
+    """The robot with its unit's ``gripper_joint_curve`` as its grippers' ``urdf_curve``.
+
+    The real-deploy counterpart of a sim scene's ``backend_options.gripper_joint_curve``
+    (``sim_scene_description``): a jaw's reading maps onto its URDF finger through its
+    servo calibration, which is per unit. The unit is ``$OPENRAL_ROBOT_UNIT`` if set, else
+    ``scene_unit``; with neither, or a unit without curves, ``description`` itself.
+
+    Raises:
+        ROSConfigError: The unit is invalid, or names a non-gripper joint or a bad curve.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> real = unit_gripper_curves(desc, "robots/so101_follower/robot.yaml", "bench_laptop")
+        >>> real.joints[-1].urdf_curve is not None
+        True
+    """
+    unit = os.environ.get(ROBOT_UNIT_ENV) or scene_unit
+    if not unit:
+        return description
+    loaded = load_robot_unit(robot_yaml, unit)
+    if not loaded.gripper_joint_curve:
+        return description
+    joints = _with_urdf_curves(
+        description, loaded.gripper_joint_curve, f"unit {unit!r} gripper_joint_curve"
+    )
+    return description.model_copy(update={"joints": joints})
+
+
 def publishing_sensors(
     manifest_sensors: Iterable[SensorSpec],
     scene_sensors: Iterable[SensorSpec],
@@ -1305,6 +1380,21 @@ class JointSpec(BaseModel):
         origin_rpy: Fixed orientation (roll, pitch, yaw, radians) of this
             joint's frame in its ``parent_link`` frame — the URDF
             ``<joint><origin rpy>``. Default ``(0, 0, 0)``.
+        urdf_curve: For a ``role: "gripper"`` joint whose reported value is
+            not the URDF joint value its link moves by, the piecewise-linear
+            calibration ``((value, urdf value), …)``: at least two points,
+            finite, strictly increasing in ``value`` and strictly monotonic in
+            ``urdf value``; clamped outside the end points (``numpy.interp``).
+            The Robotiq 2F-85 reads a jaw fraction ``f`` its URDF ``finger_joint``
+            takes as ``pi/4 (1 - f)``; the OpenArm jaw in the Isaac restock twin
+            reads 0.316 rad where its URDF finger is at 0.42 (issue #533). Every
+            consumer that poses the link applies it: the safety kernel and the
+            self-filter (``collision_curve_*``), the HAL's ``~/urdf_joint_states``
+            (``urdf_joint_map``), the Isaac sidecar. A ``MimicJoint`` reads its
+            leader's URDF value (``urdf_value``), never the reported one. ``None``
+            (default) = the value is the URDF value. A sim scene's
+            ``backend_options.gripper_joint_curve`` replaces it for that twin
+            (``sim_scene_description``).
     """
 
     name: str
@@ -1328,6 +1418,7 @@ class JointSpec(BaseModel):
     role: JointRole = "unknown"
     closure_calibration: GripperClosureCalibration | None = None
     fixed_jaw_link: str | None = None
+    urdf_curve: tuple[tuple[float, float], ...] | None = None
 
     @model_validator(mode="after")
     def _fixed_jaw_only_on_a_gripper(self) -> JointSpec:
@@ -1336,6 +1427,109 @@ class JointSpec(BaseModel):
                 f"joint {self.name!r}: fixed_jaw_link needs role 'gripper' and a link name"
             )
         return self
+
+    @model_validator(mode="after")
+    def _check_urdf_curve(self) -> JointSpec:
+        if self.urdf_curve is None:
+            return self
+        if self.role != "gripper":
+            raise ValueError(f"joint {self.name!r}: urdf_curve needs role 'gripper'")
+        check_urdf_curve(self.urdf_curve, f"joint {self.name!r} urdf_curve")
+        return self
+
+    def urdf_value(self, value: float) -> float:
+        """The URDF joint value this joint's link is posed at for reported ``value``.
+
+        Example:
+            >>> j = JointSpec(
+            ...     name="finger_joint",
+            ...     joint_type="revolute",
+            ...     parent_link="a",
+            ...     child_link="b",
+            ...     role="gripper",
+            ...     urdf_curve=((0.0, 0.8), (1.0, 0.0)),
+            ... )
+            >>> j.urdf_value(0.25), j.urdf_value(2.0)
+            (0.6000000000000001, 0.0)
+        """
+        if self.urdf_curve is None:
+            return value
+        return curve_value(self.urdf_curve, value)
+
+    def urdf_slope(self, value: float) -> float:
+        """``d urdf_value / d value`` at ``value`` (``0`` where the curve clamps)."""
+        if self.urdf_curve is None:
+            return 1.0
+        return curve_slope(self.urdf_curve, value)
+
+
+_MIN_CURVE_POINTS = 2
+"""A calibration curve's fewest points, and the length of each ``(value, urdf value)`` pair."""
+
+
+def check_urdf_curve(points: Sequence[Sequence[float]], what: str) -> None:
+    """Refuse a calibration curve ``JointSpec.urdf_curve`` cannot hold.
+
+    Raises:
+        ValueError: Fewer than two points, a point that is not a finite pair, values
+            that are not strictly increasing, or URDF values not strictly monotonic.
+
+    Example:
+        >>> check_urdf_curve([(0.0, 0.0), (1.0, 0.05)], "gripper")
+    """
+    if len(points) < _MIN_CURVE_POINTS:
+        raise ValueError(f"{what} needs at least {_MIN_CURVE_POINTS} points")
+    if any(
+        len(p) != _MIN_CURVE_POINTS or not all(math.isfinite(float(v)) for v in p) for p in points
+    ):
+        raise ValueError(f"{what}: every point must be a finite (value, urdf value) pair")
+    xs = [float(p[0]) for p in points]
+    us = [float(p[1]) for p in points]
+    rising = all(b > a for a, b in itertools.pairwise(us))
+    falling = all(b < a for a, b in itertools.pairwise(us))
+    if not all(b > a for a, b in itertools.pairwise(xs)) or not (rising or falling):
+        raise ValueError(
+            f"{what} must be sorted by strictly increasing value and strictly monotonic "
+            f"in urdf value, got {[tuple(p) for p in points]}"
+        )
+
+
+def curve_value(points: Sequence[Sequence[float]], x: float) -> float:
+    """Piecewise-linear ``points`` at ``x``, clamped to the end points (``numpy.interp``).
+
+    ``points`` are ``(x, y)`` sorted by strictly increasing ``x`` (``check_urdf_curve``).
+
+    Example:
+        >>> curve_value([(0.0, 0.0), (0.316, 0.42), (0.785, 0.785)], 0.316)
+        0.42
+    """
+    if math.isnan(x):
+        return x  # an invalid reading stays invalid, as without a curve
+    if x <= points[0][0]:
+        return float(points[0][1])
+    for (x0, y0), (x1, y1) in itertools.pairwise(points):
+        if x <= x1:
+            return float(y0 + (y1 - y0) * (x - x0) / (x1 - x0))
+    return float(points[-1][1])
+
+
+def curve_slope(points: Sequence[Sequence[float]], x: float) -> float:
+    """``d curve_value / dx`` at ``x``: the segment's slope, ``0`` outside the end points.
+
+    At a breakpoint, the slope of the segment ending there.
+
+    Example:
+        >>> curve_slope([(0.0, 0.0), (1.0, 0.05)], 0.5), curve_slope([(0.0, 0.0), (1.0, 0.05)], 2)
+        (0.05, 0.0)
+    """
+    if math.isnan(x):
+        return x
+    if x < points[0][0] or x > points[-1][0]:
+        return 0.0
+    for (x0, y0), (x1, y1) in itertools.pairwise(points):
+        if x <= x1:
+            return float((y1 - y0) / (x1 - x0))
+    return 0.0
 
 
 GripperConvention: TypeAlias = Literal[
@@ -2806,7 +3000,11 @@ class FixedAttachment(BaseModel):
 
 
 class MimicJoint(BaseModel):
-    """A link posed by another joint's value: ``q = multiplier * q[mimics] + offset``.
+    """A link posed by another joint's value: ``q = multiplier * u[mimics] + offset``.
+
+    ``u[mimics]`` is the leader's URDF value (``JointSpec.urdf_value``): its reported
+    value through its ``urdf_curve`` when it has one (the DROID Robotiq jaw fraction
+    ``f`` is the URDF ``finger_joint`` angle ``pi/4 (1 - f)``), else the value itself.
 
     The URDF ``<mimic>`` / MuJoCo joint-equality relation, for a link that
     moves but has **no command channel of its own** — the OpenArm's second
@@ -2832,7 +3030,7 @@ class MimicJoint(BaseModel):
         parent_link: The link this joint hangs from.
         child_link: The link it poses. Defined by no other edge.
         mimics: The ``JointSpec`` (by ``name``) whose value drives this one.
-        multiplier: ``q = multiplier * q[mimics] + offset``; finite, non-zero.
+        multiplier: ``q = multiplier * u[mimics] + offset``; finite, non-zero.
         offset: Same relation; finite, in the joint's own unit.
         joint_type: ``revolute`` (or ``continuous``) or ``prismatic``.
         axis_xyz: This joint's own axis in its frame (the source model's, not
@@ -2896,7 +3094,7 @@ class MimicJoint(BaseModel):
         return self
 
     def value_at(self, leader_value: float) -> float:
-        """This joint's value when the mimicked joint is at ``leader_value``."""
+        """This joint's value when the mimicked joint's URDF value is ``leader_value``."""
         return self.multiplier * leader_value + self.offset
 
 
@@ -13567,6 +13765,11 @@ class RobotUnit(BaseModel):
         serial: The unit's serial number (``$OPENRAL_UNIT_SERIAL`` wins); see
             ``resolve_unit_identity``.
         org_id: The organisation operating the unit (``$OPENRAL_ORG_ID`` wins).
+        gripper_joint_curve: ``{gripper joint: [(value, urdf value), …]}``: this unit's
+            jaw calibration, replacing the joint's ``JointSpec.urdf_curve`` on a real
+            deploy (``unit_gripper_curves``) the way a sim scene's
+            ``backend_options.gripper_joint_curve`` does for its twin, so the kernel, the
+            self-filter and ``/tf`` pose the finger where this unit's servo puts it.
 
     Example:
         >>> RobotUnit(robot_id="so101_follower", unit="bench_laptop").sensors
@@ -13581,6 +13784,7 @@ class RobotUnit(BaseModel):
     sensors: list[SensorOverlay] = Field(default_factory=list)
     serial: str | None = Field(default=None, pattern=_RESOURCE_TOKEN)
     org_id: str | None = Field(default=None, pattern=_RESOURCE_TOKEN)
+    gripper_joint_curve: dict[str, list[tuple[float, float]]] = Field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str) -> RobotUnit:
@@ -15090,10 +15294,13 @@ class ReasonerModel(BaseModel):
             near-identical skill tools (Cosmos 3 Edge: 0/20 valid ticks with 14
             franka skills, 19/20 with 4; #494). ``None`` offers every
             capability-matched skill.
-        min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.
-            ``None`` for ``cloud`` models (not a local-compute question).
+        min_gpu_vram_gb: VRAM floor for a comfortable local fit at the precision
+            the model is served in (BF16 for ``cosmos3-edge``, the Q4_K_M tag
+            for the Ollama entries). ``None`` for ``cloud`` models (not a
+            local-compute question).
         required_dtype: Dtype the local runtime must support, matched against
-            ``ComputeSpec.gpu_supported_dtypes``. ``None`` for cloud models.
+            ``ComputeSpec.gpu_supported_dtypes``. ``None`` for cloud models and
+            for a model on an operator-run server (Ollama) that picks its own.
         weights_license: Informational weights-license posture for local models
             (§1.9), e.g. ``"OpenMDW-1.1"``. ``None`` for cloud API models
             (OpenRAL never holds their weights).
@@ -15127,6 +15334,10 @@ class ReasonerModel(BaseModel):
         """True for ``managed_local`` / ``byo_local`` (needs local compute)."""
         return self.hosting != "cloud"
 
+
+# A local ``ollama serve``: its OpenAI-compatible API on :11434, no auth. The
+# default endpoint of the curated Ollama models below, and the ``ollama`` preset.
+OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
 
 # OpenRouter's OpenAI-compatible endpoint — the default gateway for the curated
 # GPT-5.x entries (a metered router, hence the max_tokens caps below).
@@ -15229,6 +15440,45 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         required_dtype=QuantizationDtype.BF16,
         weights_license="OpenMDW-1.1",
     ),
+    # Ollama on the robot (``ollama pull qwen3.5:4b``, the Q4_K_M tag; vision +
+    # tools + thinking). Measured on an RTX 5070 Laptop (8 GB) through the real
+    # client, Ollama 0.32.14, 32K window, thinking on: so101_follower 18/20 valid
+    # ticks (median 9.2 s), franka_panda's full 14-skill palette (20.4K tokens)
+    # 20/20 (9.7 s), the eraser-on-square frames 2/2. With thinking off
+    # (``reasoning_effort="none"``) 16/20 at 1.9 s, under the #494 bar of 17/20.
+    # The server must load a window that fits the prompt: Ollama's default on a
+    # GPU under 24 GiB is 4096 tokens, which the client refuses as a truncation.
+    "qwen3.5-4b": ReasonerModel(
+        id="qwen3.5-4b",
+        display_name="Qwen 3.5 4B (Ollama, on the robot)",
+        dialect="openai",
+        hosting="byo_local",
+        served_model_id="qwen3.5:4b",
+        default_endpoint=OLLAMA_BASE_URL,
+        auth_required=False,
+        # Ollama ignores tool_choice; the endpoint preset sends ``auto``.
+        tool_choice="auto",
+        min_gpu_vram_gb=8.0,
+        weights_license="Apache-2.0",
+    ),
+    # The 9B of the same family (``ollama pull qwen3.5:9b``, Q4_K_M, 6.6 GB), same
+    # rig on Ollama 0.40.16: so101_follower 20/20 (median 18.8 s, 12% of the model
+    # offloaded to CPU), franka_panda's full palette 20/20 (16.3 s), frames 2/2.
+    # On the bootstrap's pinned Ollama 0.32.14 (RTX 5090, #559): so101_follower
+    # 18, 17 and 20 /20 over three runs (~3.2 s), franka_panda 20/20 (3.8 s); the
+    # "eraser on the square" frame 7/10, as on 0.40.16 (7/10, 6/10).
+    "qwen3.5-9b": ReasonerModel(
+        id="qwen3.5-9b",
+        display_name="Qwen 3.5 9B (Ollama, on the robot)",
+        dialect="openai",
+        hosting="byo_local",
+        served_model_id="qwen3.5:9b",
+        default_endpoint=OLLAMA_BASE_URL,
+        auth_required=False,
+        tool_choice="auto",
+        min_gpu_vram_gb=12.0,
+        weights_license="Apache-2.0",
+    ),
 }
 
 
@@ -15285,10 +15535,9 @@ OPENAI_BASE_URL: str = "https://api.openai.com/v1"
 # passed. Spelled out so the ``anthropic`` endpoint preset can carry a real URL
 # instead of ``None`` (see ``ReasonerEndpointPreset.url``).
 ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
-# Ollama and vLLM are loopback daemons that enforce no auth unless fronted by a
-# gateway (or started with ``vllm serve --api-key``); ``vllm serve`` listens on
-# :8000, Ollama on :11434.
-OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
+# vLLM, like Ollama (``OLLAMA_BASE_URL`` above), is a loopback daemon that enforces
+# no auth unless fronted by a gateway or started with ``vllm serve --api-key``;
+# ``vllm serve`` listens on :8000.
 VLLM_BASE_URL: str = "http://localhost:8000/v1"
 # Google / xAI / DeepSeek's own OpenAI-compatible endpoints. Gemini's
 # OpenAI-compat shim lives under a ``/v1beta/openai/`` path.
@@ -15377,8 +15626,10 @@ REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
     # The HF router 400s on tool_choice="required" (INVALID_TOOL_CHOICE).
     "huggingface": ReasonerEndpointPreset(HUGGINGFACE_BASE_URL, "openai", True, 60.0, "auto"),
     # Loopback daemons enforce no auth unless fronted by a gateway, so an
-    # API key stays optional rather than required.
-    "ollama": ReasonerEndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "required"),
+    # API key stays optional rather than required. Ollama ignores ``tool_choice``
+    # (docs.ollama.com/api/openai-compatibility), so ``required`` forced nothing
+    # and only skipped the client's one nudge on a prose reply.
+    "ollama": ReasonerEndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "auto"),
     "vllm": ReasonerEndpointPreset(VLLM_BASE_URL, "openai", False, 60.0, "required"),
 }
 
@@ -15621,6 +15872,12 @@ class ExecuteRskillTool(_ReasonerToolBase):
             search box at dispatch, or refuses the goal. ``None`` (the normal case)
             = no dispatch place declaration; the real producer still measures the
             surface under the carried payload.
+        final_step: ``False`` when this goal is only one step of the active
+            mission task and more skills must follow (drive to the kitchen, then
+            pick the cup there). A skill whose own success completes its task
+            (``RosIntegration.completes_task_on_success``) then completes only
+            this step: the task stays active. Default ``True`` keeps the
+            single-step task (``drive to x=4``) completing on that success.
     """
 
     tool: Literal["execute_rskill"] = "execute_rskill"
@@ -15674,6 +15931,14 @@ class ExecuteRskillTool(_ReasonerToolBase):
             "when memory has it); naming it arms nothing by itself, and a hint perception "
             "cannot ground REFUSES the goal rather than placing anywhere, so omit it unless "
             "you can name a surface perception sees."
+        ),
+    )
+    final_step: bool = Field(
+        default=True,
+        description=(
+            "False when this goal is only one step of the active task and other skills must "
+            "still run after it (e.g. drive to the kitchen, then pick the cup there): its "
+            "success then completes only this step, not the task. True when it finishes the task."
         ),
     )
 

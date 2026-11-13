@@ -318,8 +318,11 @@ from openral_core.schemas import (
     camera_topic,
     canonical_slots_for_representation,
     check_scene_sensor_overrides,
+    check_urdf_curve,
     contains_rskill_template_sentinel,
     control_modes_for_representation,
+    curve_slope,
+    curve_value,
     deploy_cloud_topic,
     expected_repo_name,
     extract_base_sim_joint_names,
@@ -344,6 +347,7 @@ from openral_core.schemas import (
     sim_scene_description,
     task_space_compatible,
     trace_ids_from_wire,
+    unit_gripper_curves,
 )
 from openral_core.time_base import (
     TIME_BASE_TOL,
@@ -662,8 +666,11 @@ __all__ = [
     "canonical_slots_for_representation",
     "check_scene_sensor_overrides",
     "check_time_base",
+    "check_urdf_curve",
     "contains_rskill_template_sentinel",
     "control_modes_for_representation",
+    "curve_slope",
+    "curve_value",
     "deploy_cloud_topic",
     "detect_gpu_vram_gb",
     "enrolment_path",
@@ -701,5 +708,6 @@ __all__ = [
     "sim_scene_description",
     "task_space_compatible",
     "trace_ids_from_wire",
+    "unit_gripper_curves",
 ]
 __version__ = _pkg_version("openral-core")

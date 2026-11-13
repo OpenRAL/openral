@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.request
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
@@ -211,7 +212,9 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "To act on an object that is out of reach, APPROACH it first: "
     "dispatch the navigation (Nav2-backed) skill to drive the base "
     "to the recalled approach pose (or close enough to interact), then "
-    "continue on a later tick. When the read-only resolve_place tool is "
+    "continue on a later tick; send that approach drive with final_step=false, "
+    "because a drive's success otherwise completes the whole task. "
+    "When the read-only resolve_place tool is "
     "in the palette, use it to turn a place / room / agent reference "
     "(e.g. 'the kitchen', 'where I was standing') into a navigation goal "
     "pose plus a traversable path. Do not dispatch a manipulation skill at "
@@ -753,6 +756,95 @@ def _prompt_tokens(response: object) -> int | None:
     return total
 
 
+# The reasoner's request (JSON tool schemas plus the prompt) measured ~3.3-3.4
+# characters per token on qwen3.5 (so101_follower 9.2K tokens, franka_panda 20.4K);
+# a server that reports fewer than one token per this many request characters did
+# not read the whole request. 4 catches Ollama's 4096 default under a 9K prompt and
+# a 20K prompt cut to 16384, with ~18% headroom over the measured ratio.
+# Text that packs denser than that (long repeated runs measured ~8 characters per
+# token) is not refused when the window Ollama reports (``/api/ps``) holds the
+# request at this ratio. ponytail: a cut of under ~15% (a 9.2K prompt in an 8K
+# window) still passes.
+_MAX_CHARS_PER_PROMPT_TOKEN: float = 4.0
+
+
+# Ollama's OpenAI-compatible endpoint stamps every reply with this.
+_OLLAMA_FINGERPRINT: str = "fp_ollama"
+
+
+class _OllamaLoadedModel(BaseModel):
+    """One entry of Ollama's ``GET /api/ps`` (only the fields read here)."""
+
+    name: str = ""
+    model: str = ""
+    context_length: int | None = None
+
+
+class _OllamaPs(BaseModel):
+    """Ollama's ``GET /api/ps`` body: the models it has loaded."""
+
+    models: list[_OllamaLoadedModel] = []
+
+
+def _ollama_context_length(base_url: str | None, model_id: str) -> int | None:
+    """The context window Ollama loaded ``model_id`` with (``GET /api/ps``), or ``None``.
+
+    ``base_url`` is the OpenAI-compatible root (``…/v1``); the native API sits
+    beside it. ``None`` when the server, the model or the field is missing, or
+    the body is not the documented shape.
+    """
+    if not base_url:
+        return None
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        # The configured reasoner endpoint, never a user-supplied URL.
+        with urllib.request.urlopen(f"{root}/api/ps", timeout=2.0) as reply:
+            loaded = _OllamaPs.model_validate_json(reply.read()).models
+    except (OSError, ValidationError):
+        return None
+    for entry in loaded:
+        if model_id in (entry.name, entry.model) or entry.name == f"{model_id}:latest":
+            length = entry.context_length
+            return length if length is not None and length > 0 else None
+    return None
+
+
+def _truncation_error(
+    response: object, request: list[object], *, model_id: str, base_url: str | None = None
+) -> ROSPlanningError | None:
+    """The error for an Ollama server that read far fewer prompt tokens than ``request`` holds.
+
+    Ollama cuts a prompt longer than the model's loaded context window down to
+    fit, silently, and its OpenAI-compatible endpoint has no field to raise that
+    window (it defaults to 4096 tokens on a GPU under 24 GiB). The reasoner's
+    prompt is 9-26K tokens, so on a default ``ollama serve`` the model never sees
+    most of its tools or the system prompt's rules — and still answers. Other
+    servers refuse an over-long prompt with a 400, so only a reply carrying
+    Ollama's ``system_fingerprint`` is checked. Returned, not raised, so a caller
+    inside a broad SDK ``try`` raises it unwrapped.
+
+    Returns:
+        A ``ROSPlanningError`` when the reply's prompt tokens are under one per
+        ``_MAX_CHARS_PER_PROMPT_TOKEN`` characters of ``request`` and the window
+        Ollama reports for the model (when it reports one) is too small to hold
+        ``request`` at that ratio, else ``None``.
+    """
+    prompt_tokens = _prompt_tokens(response)
+    if getattr(response, "system_fingerprint", None) != _OLLAMA_FINGERPRINT or not prompt_tokens:
+        return None
+    chars = len(json.dumps(request, ensure_ascii=False))  # escapes would inflate the count
+    if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
+        return None
+    window = _ollama_context_length(base_url, model_id)
+    if window is not None and window * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
+        return None  # dense text in a window that holds it: read whole
+    return ROSPlanningError(
+        f"the endpoint read {prompt_tokens} prompt tokens of a {chars}-character request to "
+        f"{model_id!r}: it cut the prompt to fit the model's context window. On Ollama, start "
+        "the server with OLLAMA_CONTEXT_LENGTH=32768 (or more) so the reasoner's tools fit."
+    )
+
+
 def _openai_choices(response: object) -> list[Any]:
     """``response.choices``, or a legible error when the provider sent none.
 
@@ -832,7 +924,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     * ``OPENRAL_REASONER_MODEL`` (**required**) — a curated registry key
       (``REASONER_MODELS``: ``claude-opus-4-8`` / ``claude-opus-5-5`` /
       ``claude-sonnet-5-5`` / ``claude-haiku-5-5`` / ``gpt-5.5`` / ``gpt-5.6``
-      / ``cosmos3-edge``), or a raw model id for the uncurated
+      / ``cosmos3-edge`` / ``qwen3.5-4b`` / ``qwen3.5-9b``), or a raw model id for the uncurated
       escape hatch.
     * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a named endpoint
       (``_ENDPOINT_PRESETS``: ``openai`` / ``openrouter`` / ``ollama`` / ``vllm`` /
@@ -988,12 +1080,16 @@ def _reasoner_timeout_s(hosting: str) -> float:
     """Per-call timeout: env override, else a hosting-aware default.
 
     ``managed_local`` gets 120 s (an on-device model's first inference after
-    server boot compiles kernels); cloud/byo get the tight 10 s default.
+    server boot compiles kernels); ``byo_local`` (a curated model on an
+    operator-run server such as Ollama, at any URL) gets the local endpoints'
+    60 s cold start; cloud gets the tight 10 s default.
     """
     env = _env_float(REASONER_TIMEOUT_ENV)
     if env is not None:
         return env
-    return 120.0 if hosting == "managed_local" else 10.0
+    if hosting == "managed_local":
+        return 120.0
+    return 60.0 if hosting == "byo_local" else 10.0
 
 
 def _reasoner_max_tokens(entry: ReasonerModel) -> int | None:
@@ -1016,7 +1112,17 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
     # orthogonal axis"). Using only `preset.url` drops the other four: e.g.
     # `gpt-5.5` on the HF router built with `tool_choice="required"` (a 400)
     # and a cold `ollama` on the 10 s cloud timeout instead of 60 s.
-    preset = _ENDPOINT_PRESETS.get(raw_endpoint.lower()) if raw_endpoint else None
+    # With no endpoint set, a registry default that IS a named endpoint's URL
+    # (a curated Ollama model on ``OLLAMA_BASE_URL``) brings that endpoint's
+    # properties too, so the website's model-only setting gets Ollama's cold-start
+    # timeout and tool_choice, not the 10 s cloud default.
+    preset = (
+        _ENDPOINT_PRESETS.get(raw_endpoint.lower())
+        if raw_endpoint
+        else next((p for p in _ENDPOINT_PRESETS.values() if p.url == entry.default_endpoint), None)
+        if entry.hosting == "byo_local"  # only a local daemon's preset (Ollama, vLLM)
+        else None
+    )
     if preset is not None and preset.dialect != entry.dialect:
         # e.g. claude-opus-4-8 (anthropic) on `ollama` (openai): building an
         # Anthropic client against an OpenAI-only server configures cleanly
@@ -1078,7 +1184,10 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
         api_key=api_key,
         base_url=base_url,
         timeout_s=timeout_s,
-        tool_choice=preset.tool_choice if preset is not None else entry.tool_choice,
+        # A named endpoint's quirk wins; an inferred preset never overrides the entry.
+        tool_choice=preset.tool_choice
+        if preset is not None and raw_endpoint
+        else entry.tool_choice,
         max_tokens=max_tokens,
     )
 
@@ -1171,10 +1280,11 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
             f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r}."
         )
     env_timeout = _env_float(REASONER_TIMEOUT_ENV)
+    # An uncurated bare URL could be anything: it keeps the tight default.
     timeout_s = (
         env_timeout
         if env_timeout is not None
-        else (preset.timeout_s if preset is not None else _reasoner_timeout_s("byo_local"))
+        else (preset.timeout_s if preset is not None else _reasoner_timeout_s("cloud"))
     )
     max_tokens = _env_int(REASONER_MAX_TOKENS_ENV)
     if dialect == "anthropic":
@@ -1385,10 +1495,16 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             # wire-format ``str`` field before constructing
             # ``ExecuteRskillTool``. Skills without a schema fall
             # through to the freeform string surface (today's behaviour).
-            tool_schema = per_skill_schema
+            # final_step only changes how an own-success skill (Nav2) settles its task;
+            # elsewhere it is ignored, so it is not offered (tokens, and no false promise).
+            tool_schema = (
+                per_skill_schema
+                if entry.completes_task_on_success
+                else _drop_property(per_skill_schema, "final_step")
+            )
             if entry.goal_params_schema is not None:
                 tool_schema = _replace_property_schema(
-                    per_skill_schema,
+                    tool_schema,
                     "goal_params_json",
                     entry.goal_params_schema,
                 )
@@ -2193,7 +2309,10 @@ class OpenAICompatibleToolUseClient:
         try:
             choices, response = self._complete(client, messages, tools)
             prompt_tokens = _prompt_tokens(response)
-            if (
+            truncated = _truncation_error(
+                response, [messages, tools], model_id=self.model_id, base_url=self._base_url
+            )
+            if truncated is None and (
                 not _openai_tool_calls(choices)
                 and self._tool_choice != "required"
                 and _openai_may_nudge(choices)
@@ -2203,9 +2322,14 @@ class OpenAICompatibleToolUseClient:
                 messages.append({"role": "user", "content": _NO_TOOL_CALL_NUDGE})
                 choices, response = self._complete(client, messages, tools)
                 prompt_tokens = _sum_prompt_tokens(prompt_tokens, _prompt_tokens(response))
+                truncated = _truncation_error(
+                    response, [messages, tools], model_id=self.model_id, base_url=self._base_url
+                )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
         self.last_prompt_tokens = prompt_tokens
+        if truncated is not None:
+            raise truncated
         if not _openai_tool_calls(choices):
             finish_reason = getattr(choices[0], "finish_reason", None) if choices else None
             if finish_reason == "length":

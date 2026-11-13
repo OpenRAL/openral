@@ -2,8 +2,15 @@
 # (`launch/real_bringup.launch.py`). Sim needs none of this — the G1 MuJoCo twin
 # (`openral_hal.g1.G1MujocoHAL`) is pure Python.
 #
-# Pinned 2026-11-07 at each repo's HEAD (`git ls-remote`); NOT yet validated together on a
-# real G1 — the first hardware bring-up re-validates (and, if needed, re-pins) them.
+# Target: ROS 2 Jazzy (issue #565). isaac_ros_robots pinned 2026-11-07 at its HEAD;
+# isaac_ros_deploy re-pinned 2026-11-12 to tag v4.6-0 (3e84f85a, the source of the Isaac ROS
+# apt release-4 `ros-jazzy-isaac-ros-deploy-*` 4.6.0): its HEAD / v5.0-0 (f3aa6b89) needs
+# ROS 2 Lyrical (`cuda_buffer`, `urdf/model.hpp`). v4.6 has no stale-input watchdog and
+# re-reads the measured pose on a NaN reference; openral_hal_unitree's
+# GuardedInferenceController / GuardedSafetyController restore v5.0's behaviour on top of it.
+# isaac_ros_robots stays at 520aa94f (release-4 has no unitree_hg_ros2_control). Built and
+# gtested together on Jazzy (q5090, x86_64); NOT yet validated on a real G1 — the first
+# hardware bring-up re-validates (and, if needed, re-pins) them.
 #
 #   isaac_ros_robots  (Apache-2.0)  unitree_hg/unitree_hg_ros2_control (UnitreeHgSystemInterface,
 #                                   G1 + H2), unitree_g1/unitree_g1_description (real xacro)
@@ -18,9 +25,9 @@
 #   * unitreerobotics/unitree_ros2 (BSD-3, HEAD 668d1ec5a05d1c38d3306bdca7d59f2ba3581a88) —
 #     none of the packages above depends on its unitree_hg / unitree_go message packages;
 #     the hardware interface speaks the SDK's own DDS types.
-#   * isaac_ros_triton / isaac_ros_tensor_msgs / cuda_buffer / triton-server /
-#     python3-torch-pip-shim — Isaac ROS apt packages and rosdep keys pulled in by
-#     isaac_ros_deploy; install them from the Isaac ROS apt repository (README).
+#   * isaac_ros_tensor_list_interfaces / triton-server / python3-torch-pip-shim /
+#     python3-onnx-pip-shim — Isaac ROS apt packages and rosdep keys pulled in by
+#     isaac_ros_deploy; install them from the Isaac ROS apt repository, release 4 (README).
 #   * isaac_ros_agile_unitree_g1 — the AGILE policy's LEAPP export (data package), not
 #     shipped in either repo; see README "S0 policy".
 #
@@ -37,4 +44,4 @@ repositories:
   isaac_ros_deploy:
     type: git
     url: https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_deploy.git
-    version: f3aa6b89b89fb009c9d3a338feb8c549eb00a1b3
+    version: 3e84f85aff8ce157d376b16b6fab07bf877b3abd

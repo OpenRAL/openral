@@ -908,6 +908,78 @@ double hull_hull_distance(const TightPose& a, const TightPose& b, double /*margi
   return lower > fallback ? lower : fallback;
 }
 
+namespace {
+
+/// The curve segment `[k, k + 1]` of link `i` that `q` falls in, or -1 when `q`
+/// clamps at an end (`*end` then holds the end point's pair index).
+int curve_segment(const CollisionModel& model, std::size_t i, double q, int* end) noexcept {
+  const int first = model.curve_point_first[i];
+  const int count = model.curve_point_count[i];
+  const double* p = model.curve_points.data() + 2 * static_cast<std::size_t>(first);
+  if (q <= p[0]) {
+    *end = 0;
+    return -1;
+  }
+  for (int k = 0; k + 1 < count; ++k) {
+    if (q <= p[2 * (k + 1)]) {
+      return k;
+    }
+  }
+  *end = count - 1;
+  return -1;
+}
+
+bool has_curve(const CollisionModel& model, std::size_t i) noexcept {
+  return i < model.curve_point_first.size() && i < model.curve_point_count.size() &&
+         model.curve_point_first[i] >= 0;
+}
+
+double mimic_gain(const CollisionModel& model, std::size_t i) noexcept {
+  return is_mimic(model.joint_kind[i]) && i < model.mimic_multiplier.size()
+             ? model.mimic_multiplier[i]
+             : 1.0;
+}
+
+}  // namespace
+
+double link_joint_value(const CollisionModel& model, std::size_t i, double q) noexcept {
+  // A non-finite column stays non-finite: the curve's clamp would turn NaN into its
+  // last point, a finite pose the distance checks would trust.
+  if (has_curve(model, i) && std::isfinite(q)) {
+    const double* p =
+        model.curve_points.data() + 2 * static_cast<std::size_t>(model.curve_point_first[i]);
+    int end = 0;
+    const int k = curve_segment(model, i, q, &end);
+    if (k < 0) {
+      q = p[2 * end + 1];
+    } else {
+      const double x0 = p[2 * k], y0 = p[2 * k + 1], x1 = p[2 * k + 2], y1 = p[2 * k + 3];
+      q = y0 + (y1 - y0) * (q - x0) / (x1 - x0);
+    }
+  }
+  if (is_mimic(model.joint_kind[i]) && i < model.mimic_multiplier.size() &&
+      i < model.mimic_offset.size()) {
+    // A mimic link reads its leader's column: q = multiplier * u_leader + offset.
+    q = model.mimic_multiplier[i] * q + model.mimic_offset[i];
+  }
+  return q;
+}
+
+double link_joint_gain(const CollisionModel& model, std::size_t i, double q) noexcept {
+  double slope = 1.0;
+  if (has_curve(model, i)) {
+    if (!std::isfinite(q)) {
+      return q;  // as link_joint_value: an invalid column stays invalid
+    }
+    const double* p =
+        model.curve_points.data() + 2 * static_cast<std::size_t>(model.curve_point_first[i]);
+    int end = 0;
+    const int k = curve_segment(model, i, q, &end);
+    slope = k < 0 ? 0.0 : (p[2 * k + 3] - p[2 * k + 1]) / (p[2 * k + 2] - p[2 * k]);
+  }
+  return slope * mimic_gain(model, i);
+}
+
 void forward_kinematics(const CollisionModel& model, const double* qpos, std::size_t n_dof,
                         CollisionScratch& scratch) noexcept {
   for (std::size_t i = 0; i < model.n_links; ++i) {
@@ -916,11 +988,7 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
     const int dof = model.dof_index[i];
     if (dof >= 0 && static_cast<std::size_t>(dof) < n_dof) {
       const JointKind kind = model.joint_kind[i];
-      double q = qpos[static_cast<std::size_t>(dof)];
-      if (is_mimic(kind) && i < model.mimic_multiplier.size() && i < model.mimic_offset.size()) {
-        // A mimic link reads its leader's column: q = multiplier * q_leader + offset.
-        q = model.mimic_multiplier[i] * q + model.mimic_offset[i];
-      }
+      const double q = link_joint_value(model, i, qpos[static_cast<std::size_t>(dof)]);
       if (kind == JointKind::kRevolute || kind == JointKind::kMimicRevolute) {
         axis_angle(model.axis[i], q, motion.r);
       } else if (kind == JointKind::kPrismatic || kind == JointKind::kMimicPrismatic) {

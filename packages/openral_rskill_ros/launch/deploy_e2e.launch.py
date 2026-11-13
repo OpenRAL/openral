@@ -50,14 +50,17 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
+import structlog
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
     ExecuteProcess,
+    GroupAction,
     LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
+    SetEnvironmentVariable,
     Shutdown,
     TimerAction,
 )
@@ -91,6 +94,7 @@ from openral_core import (
     resolve_sensor_overlays,
     resolve_unit_identity,
 )
+from openral_core.ros_security import HAL_ENCLAVE, KERNEL_ENCLAVE, OPERATOR_ENCLAVE
 from openral_core.tracking_thresholds import DeployModeThresholds, load_tracking_thresholds
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
@@ -733,6 +737,14 @@ class _ReachModel:
         self.mimic_off = [float(v) for v in params.get("collision_mimic_offset", [])] or [
             0.0
         ] * n_links
+        # A curved gripper link (`collision_curve_*`) reads its column through the curve.
+        first = ints("collision_curve_point_first") or [-1] * n_links
+        count = ints("collision_curve_point_count") or [0] * n_links
+        pts = floats("collision_curve_points", 2) if first != [-1] * n_links else None
+        self.curves: list[tuple[NDArray[np.float64], NDArray[np.float64]] | None] = [
+            None if f < 0 or pts is None else (pts[f : f + c, 0], pts[f : f + c, 1])
+            for f, c in zip(first, count, strict=True)
+        ]
         self.base = set(base_dofs)
         n = len(self.parent)
         moving = [False] * n
@@ -769,6 +781,9 @@ class _ReachModel:
             motion = np.broadcast_to(np.eye(4), (count, 4, 4)).copy()
             if self.dof[i] >= 0 and self.kind[i] in (1, 2, 3, 4):
                 qi = q[:, self.dof[i]]
+                curve = self.curves[i]
+                if curve is not None:  # the kernel's link_joint_value curve step
+                    qi = np.interp(qi, curve[0], curve[1])
                 if self.kind[i] in (3, 4):
                     qi = self.mimic_mult[i] * qi + self.mimic_off[i]
                 a = self.axis[i] / np.linalg.norm(self.axis[i])
@@ -2183,10 +2198,16 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
     ``ros2 launch ... hal_mode:=real`` gets no such default, so this checks the
     environment the graph actually runs under with the same decision
     (``openral_core.ros_graph_scope``). Unset ``ROS_AUTOMATIC_DISCOVERY_RANGE``
-    is SUBNET to ROS and is refused here. ``OPENRAL_ALLOW_NETWORK_ROS=1`` opts in.
+    is SUBNET to ROS, and ``source /opt/ros/jazzy/setup.bash`` exports SUBNET when
+    it is unset, so a freshly sourced shell is refused here unless it exports
+    LOCALHOST or sets ``OPENRAL_ALLOW_NETWORK_ROS=1`` — and the opt-in holds only
+    under SROS2 Enforce (ADR-0130). The launch only checks: its own ROS node and
+    every child inherit the environment ``ros2 launch`` started with, so it refuses
+    rather than re-scoping the way ``deploy run`` does.
 
     Raises:
-        ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in.
+        ROSConfigError: ``hal_mode != "sim"`` on a networked scope without the opt-in
+            and SROS2, or with a keystore that does not fit.
     """
     # Fail closed: the rest of the launch treats every non-"sim" value as hardware.
     if hal_mode == "sim":
@@ -2195,11 +2216,59 @@ def _require_host_confined_real_graph(hal_mode: str, env: Mapping[str, str]) -> 
 
     scope = require_host_confined_ros_scope(env)
     if scope is not None:
-        print(
-            f"[deploy_e2e] WARNING: real robot on a networked ROS graph ({scope}); "
-            f"every host on this network can command the robot.",
-            flush=True,
+        # The one emitter per deploy: `openral deploy run` scopes its env twice
+        # (orphan reap + launch env) and logs neither time (#558).
+        structlog.get_logger("deploy_e2e").warning(
+            "deploy_e2e.real_robot_graph_networked",
+            scope=scope,
+            hal_mode=hal_mode,
+            opt_in="OPENRAL_ALLOW_NETWORK_ROS",
+            hazard="every host on this network can command the robot",
         )
+
+
+def _hand_off_enclaves(context: LaunchContext) -> Callable[[str], dict[str, str]]:
+    """Hand the launch's children their SROS2 enclaves (ADR-0130); ``{}`` per process when off.
+
+    Under ``ROS_SECURITY_ENABLE=true`` the keystore is checked first
+    (``require_secure_ros_graph``), in every ``hal_mode``. This process must be
+    in ``LAUNCH_ENCLAVE`` (``openral deploy`` sets it): only that enclave may
+    drive the kernel's and HAL's lifecycles. Its ROS node is created under it,
+    then ``ROS_SECURITY_ENCLAVE_OVERRIDE`` is reset to ``DEFAULT_ENCLAVE``, so a
+    child the launch does not name — a vendor driver, a perception node — runs
+    in the default enclave.
+
+    Returns:
+        ``enclave -> additional_env`` for the processes the launch names.
+
+    Raises:
+        ROSConfigError: A keystore ``require_secure_ros_graph`` refuses, or this
+            process is not in ``LAUNCH_ENCLAVE``.
+    """
+    from launch_ros.ros_adapters import get_ros_node
+    from openral_core.exceptions import ROSConfigError
+    from openral_core.ros_security import (
+        DEFAULT_ENCLAVE,
+        ENCLAVE_OVERRIDE_ENV,
+        LAUNCH_ENCLAVE,
+        require_secure_ros_graph,
+        ros_security_enabled,
+    )
+
+    if not ros_security_enabled(os.environ):
+        return lambda _enclave: {}
+    require_secure_ros_graph(os.environ)
+    if os.environ.get(ENCLAVE_OVERRIDE_ENV) != LAUNCH_ENCLAVE:
+        raise ROSConfigError(
+            f"a secured deploy launch must run in the {LAUNCH_ENCLAVE} enclave (got "
+            f"{ENCLAVE_OVERRIDE_ENV}={os.environ.get(ENCLAVE_OVERRIDE_ENV, '(unset)')}); no other "
+            f"enclave may drive the kernel's lifecycle. `openral deploy` sets it; a hand-run "
+            f"`ros2 launch` needs `export {ENCLAVE_OVERRIDE_ENV}={LAUNCH_ENCLAVE}`."
+        )
+    get_ros_node(context)  # joins now, as LAUNCH_ENCLAVE, before the children inherit "/"
+    os.environ[ENCLAVE_OVERRIDE_ENV] = DEFAULT_ENCLAVE
+    print(f"[deploy_e2e] SROS2 Enforce: keystore {os.environ['ROS_SECURITY_KEYSTORE']}", flush=True)
+    return lambda enclave: {ENCLAVE_OVERRIDE_ENV: enclave}
 
 
 def _build_real_bringup_include(real_bringup: str | None) -> IncludeLaunchDescription | None:
@@ -2591,6 +2660,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         ee_link_index_from_collision_params,
         kernel_params_from_envelope,
         merge_extra_allowed_pairs,
+        with_joint_curves,
     )
 
     robot_yaml = LaunchConfiguration("robot_yaml").perform(context)
@@ -2642,6 +2712,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # digital-twin heritage.
     hal_mode = LaunchConfiguration("hal_mode").perform(context)
     _require_host_confined_real_graph(hal_mode, os.environ)
+    enclave_env = _hand_off_enclaves(context)
     hardware_estop_device = LaunchConfiguration("hardware_estop_device").perform(context)
     enable_slam = LaunchConfiguration("enable_slam").perform(context).lower() in (
         "1",
@@ -2928,6 +2999,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     description = description.model_copy(
         update={"sensors": apply_sensor_overlays(description.sensors, unit_overlays)}
     )
+    if hal_mode == "real":
+        # This unit's jaw calibration (`RobotUnit.gripper_joint_curve`): the kernel, the
+        # self-filter and /tf pose the real finger where its servo puts it, not where a sim
+        # twin's map would. A sim scene's own curve was applied above.
+        from openral_core import unit_gripper_curves
+
+        description = unit_gripper_curves(description, robot_yaml, scene_unit)
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     # Issue #418: the Layer-2 object tracker (off by default; checked here once).
     object_tracking, tracked_cameras = _object_tracking(
@@ -3030,6 +3108,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 "using manifest geometry",
                 flush=True,
             )
+    # Either lowering numbers columns by `description.joints`: re-attach the gripper
+    # calibration curves (`JointSpec.urdf_curve`) so an MJCF model poses a curved
+    # finger at its URDF value too, as the manifest lowering does (issue #533).
+    collision_params = with_joint_curves(collision_params, description)
     if workcell is not None and workcell.extra_allowed_collision_pairs:
         before = list(cast("list[object]", collision_params.get("collision_allowed_pairs", [])))
         collision_params = merge_extra_allowed_pairs(
@@ -3351,7 +3433,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 unit_serial=unit_identity.serial,
             ),
         ]
-    dashboard = ExecuteProcess(cmd=dashboard_cmd, name="openral_dashboard", output="screen")
+    dashboard = ExecuteProcess(
+        cmd=dashboard_cmd,
+        name="openral_dashboard",
+        output="screen",
+        additional_env=enclave_env(OPERATOR_ENCLAVE),
+    )
 
     safety_kernel = LifecycleNode(
         package="openral_safety_kernel",
@@ -3368,7 +3455,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         remappings=(
             [("/joint_states", runtime_joint_states_topic)] if runtime_joint_states_topic else []
         ),
-        additional_env=otel_env,
+        additional_env={**otel_env, **enclave_env(KERNEL_ENCLAVE)},
         output="screen",
     )
 
@@ -3684,6 +3771,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         if _rsp_map is not None
         else {}
     )
+    if _rsp_map is not None and _rsp_map.curves_param():
+        # A curved gripper (`JointSpec.urdf_curve`, issue #533): /tf poses its finger
+        # where the kernel and the sim do. Omitted otherwise (an empty list has no type).
+        rsp_urdf_joint_units["urdf_joint_curves"] = _rsp_map.curves_param()
     hal = LifecycleNode(
         package=hal_package,
         executable=hal_executable,
@@ -3725,6 +3816,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         additional_env={
             **otel_env,
             **({ROBOT_UNIT_ENV: robot_unit} if (robot_unit := _robot_unit(scene_unit)) else {}),
+            **enclave_env(HAL_ENCLAVE),
         },
         output="screen",
     )
@@ -4247,16 +4339,28 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # single graph with a single /joint_states publisher.
     vendor_owns_robot_description = False
     if hal_mode == "real":
+        hardware_side: list[LaunchDescriptionEntity] = []
         real_bringup = _build_real_bringup_include(description.hal.real_bringup)
         if real_bringup is not None:
-            extra_nodes.append(real_bringup)
+            hardware_side.append(real_bringup)
             vendor_owns_robot_description = True
         # Vendor sensor drivers the scene declares (a ZED wrapper, a RealSense
         # node…). Real path only: on the sim path cameras are rendered, not
         # driven. These publish the topics the scene's `ros2_*` sensor bindings
         # read, so they go up with the graph.
         if scene_drivers:
-            extra_nodes.extend(_build_driver_includes(scene_drivers, deploy_config))
+            hardware_side.extend(_build_driver_includes(scene_drivers, deploy_config))
+        # Under SROS2 the vendor stack joins as the HAL (ADR-0130): its broadcaster
+        # publishes /joint_states and its spawners call /controller_manager/*. The
+        # scope covers what starts while the include is visited; a bringup that
+        # defers a process must pin ROS_SECURITY_ENCLAVE_OVERRIDE on it itself
+        # (openral_hal_unitree's switch_controllers step does).
+        # Without SROS2 the includes go in unwrapped, exactly as before.
+        if hal_env := enclave_env(HAL_ENCLAVE):
+            set_env = [SetEnvironmentVariable(name, value) for name, value in hal_env.items()]
+            extra_nodes.append(GroupAction([*set_env, *hardware_side], scoped=True))
+        else:
+            extra_nodes.extend(hardware_side)
 
     robot_description_xml: str | None = None
     robot_mesh_packages: dict[str, pathlib.Path] = {}

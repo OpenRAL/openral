@@ -41,12 +41,19 @@ controller_manager:
     freeze_controller:
       type: isaac_ros_deploy_ros2_control/FreezeController
     # Chainable: blends, rate-limits and range-checks everything the two controllers
-    # below write into its `<joint>/<interface>_raw` reference interfaces.
+    # below write into its `<joint>/<interface>_raw` reference interfaces. NVIDIA's
+    # SafetyController through OpenRAL's guard (src/guarded_safety_controller.cpp,
+    # issue #548): max_blend_ratio_speed is fixed at configure and capped at 1.0 /s,
+    # and every activation resets blend_ratio to 0.0 (starts blended out).
     safety_controller:
-      type: isaac_ros_deploy_ros2_control/SafetyController
+      type: openral_hal_unitree/GuardedSafetyController
     # The S0 whole-body policy (ONNX through Triton). Owns the legs; see policies/.
+    # NVIDIA's InferenceController through OpenRAL's guard (src/guarded_inference_controller.cpp,
+    # issue #565): the Jazzy release (v4.6) has no stale-input watchdog, so the guard adds
+    # v5.0's `topic_input_timeout_ms` — a stale velocity command invalidates the policy's
+    # output and safety_controller holds the pose captured at stale entry.
     inference_controller:
-      type: isaac_ros_deploy_ros2_control/InferenceController
+      type: openral_hal_unitree/GuardedInferenceController
     # What OpenRAL's Python HAL commands: the upper-body joints, nothing else.
     upper_body_forward_joint_command_controller:
       type: isaac_ros_deploy_ros2_control/ForwardJointCommandController
@@ -146,6 +153,8 @@ safety_controller:
     # raises it (`ros2 param set /safety_controller blend_ratio 1.0`) with the robot on its
     # gantry, after the first velocity command is flowing. Nothing in OpenRAL raises it.
     blend_ratio: 0.0
+    # The guard refuses to configure above 1.0 /s or at 0 (0 freezes the blend, so it
+    # could no longer be blended out) and refuses any runtime change.
     max_blend_ratio_speed: 1.0
     out_of_domain_detection:
       velocity_threshold:

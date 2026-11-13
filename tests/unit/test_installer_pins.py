@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -44,9 +47,43 @@ def test_the_pipe_guard_sees_a_continued_line() -> None:
     assert re.search(r"(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b", joined)
 
 
-def test_ollama_installer_pin_is_a_sha256() -> None:
-    """An empty pin made `just bootstrap-ollama` refuse on every Linux host."""
+def test_every_ollama_artifact_is_sha256_pinned_and_verified_before_extraction() -> None:
+    """Each tarball the bootstrap installs is pinned and checked before tar sees it (#559)."""
     text = (_ROOT / "scripts/bootstrap_ollama.sh").read_text(encoding="utf-8")
-    pin = re.search(r'OLLAMA_INSTALL_SH_SHA256="\$\{OLLAMA_INSTALL_SH_SHA256:-([^}]*)\}"', text)
-    assert pin is not None
-    assert re.fullmatch(r"[0-9a-f]{64}", pin[1])
+    pins = dict(re.findall(r"^\s*(ollama-linux-[\w-]+)\) echo (\S+) ;;$", text, flags=re.M))
+    assert set(pins) == {
+        "ollama-linux-amd64",
+        "ollama-linux-arm64",
+        "ollama-linux-arm64-jetpack5",
+        "ollama-linux-arm64-jetpack6",
+    }
+    assert all(re.fullmatch(r"[0-9a-f]{64}", sha) for sha in pins.values()), pins
+    # Every download is verified before the first extraction, and nothing runs upstream's
+    # unverified install.sh any more.
+    assert text.index("sha256sum -c") < text.index("tar -xf")
+    assert "scripts/install.sh" not in text
+
+
+def test_bootstrap_offers_exactly_the_curated_ollama_models() -> None:
+    """The bootstrap reads its model tags from REASONER_MODELS, not a copy of them (#559)."""
+    from openral_core import OLLAMA_BASE_URL, REASONER_MODELS
+
+    out = subprocess.run(
+        ["bash", str(_ROOT / "scripts/bootstrap_ollama.sh"), "--help"],
+        env={**os.environ, "OPENRAL_PYTHON": sys.executable},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    curated = [m for m in REASONER_MODELS.values() if m.default_endpoint == OLLAMA_BASE_URL]
+    assert curated
+    listed = out.split("(openral_core.REASONER_MODELS, <tag> <model id>):\n", 1)[1]
+    listed = listed.split("\n\n", 1)[0]
+    assert sorted(listed.split("\n")) == sorted(f"  {m.served_model_id} {m.id}" for m in curated)
+    # The default is a curated model with the smallest recorded GPU floor.
+    default = re.search(r"\(default: (\S+)\)", out)
+    assert default is not None
+    chosen = next(m for m in curated if m.served_model_id == default[1])
+    floors = [m.min_gpu_vram_gb for m in curated if m.min_gpu_vram_gb is not None]
+    assert chosen.min_gpu_vram_gb == min(floors)
+    assert f"OPENRAL_REASONER_MODEL={chosen.id}\n" in out

@@ -3,7 +3,8 @@
 
 Brings up the production `openral_hal_unitree` controller config
 (`config/g1/controller_manager.yaml` + the default `policies/gr00t_decoupled_wbc.yaml`) in a real
-`controller_manager`, with NVIDIA's real `SafetyController`, `FreezeController` and
+`controller_manager`, with NVIDIA's real `SafetyController` (run through OpenRAL's
+`GuardedSafetyController` plugin, as on the robot), `FreezeController` and
 `ForwardJointCommandController` (isaac_ros_deploy) over `mock_components/GenericSystem`
 exporting the G1's 29 joints with the same `position/velocity/effort/kp/kd` command
 interfaces `UnitreeHgSystemInterface` exports — the hardware-boundary double CLAUDE.md
@@ -20,21 +21,30 @@ chain through `safety_controller`, the e-stop swap — is the production article
 
 Asserts: an upper-body chunk reaches the joints through the safety chain; a leg target is
 refused before the wire; `/openral/estop`'s swap leaves `freeze_controller` active and
-the S0 chain inactive, acknowledged by `controller_manager`.
+the S0 chain inactive, acknowledged by `controller_manager`; the blend guard (issue #548)
+refuses a `max_blend_ratio_speed` change over the real parameter service, and re-arming the
+chain after the e-stop with the policy still blended in starts it blended out. The review of
+#571: a freeze controller that cannot be configured never costs the chain its joints; a
+stalled manager (SIGSTOP) holds the e-stop no longer than `stop_timeout_s`; a dead listing
+client does not keep the swap from reaching the manager.
 
 Not `launch_testing`: the workspace pytest config disables its plugins globally (see
 `tests/integration/test_estop_watchdog_graph_live.py`); the graph is orchestrated with the
 same subprocess helpers as `test_real_hal_estop_ros2_control_live.py`. Gates: a sourced ROS
 2 with ros2_control, plus `isaac_ros_deploy_ros2_control` and `isaac_ros_deploy_interfaces`
-(build them from `packages/openral_hal_unitree/deps.repos`). Missing any → skip with reason.
+(build them from `packages/openral_hal_unitree/deps.repos`), and `openral_hal_unitree` built
+against them (its plugin). Missing any → skip with reason.
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import os
+import signal
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +78,15 @@ def _why_not() -> str | None:
         get_package_share_directory("isaac_ros_deploy_ros2_control")
     except (PackageNotFoundError, ValueError):
         return f"isaac_ros_deploy_ros2_control not installed — {_BUILD_HINT}"
+    try:
+        prefix = Path(get_package_share_directory("openral_hal_unitree")).parents[1]
+    except (PackageNotFoundError, ValueError):
+        return "openral_hal_unitree not installed — build it with the NVIDIA workspace sourced"
+    if not (prefix / "lib" / "libopenral_hal_unitree_guarded_controllers.so").exists():
+        return (
+            "openral_hal_unitree was built without isaac_ros_deploy_ros2_control, so "
+            "GuardedSafetyController is missing — rebuild it with the NVIDIA workspace sourced"
+        )
     return None
 
 
@@ -129,8 +148,111 @@ def _run(argv: list[str], timeout_s: float = 60.0) -> subprocess.CompletedProces
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
 
 
+def _ros2_param(argv: list[str], within_s: float = 20.0) -> subprocess.CompletedProcess[str]:
+    """`ros2 param …`, retried while the node is not yet discovered.
+
+    Right after a switch, the CLI's discovery (daemon or not) can miss the freshly
+    activated controller's node and answer "Node not found" (seen on q5090, Jazzy).
+    """
+    deadline = time.monotonic() + within_s
+    while True:
+        out = _run(["ros2", "param", *argv])
+        if "Node not found" not in out.stderr or time.monotonic() > deadline:
+            return out
+        time.sleep(0.5)
+
+
+def _param(node: str, name: str) -> float:
+    """A double parameter via `ros2 param get` ("Double value is: <v>")."""
+    got = _ros2_param(["get", node, name])
+    prefix = "Double value is:"
+    assert got.stdout.startswith(prefix), got.stdout + got.stderr
+    return float(got.stdout.removeprefix(prefix))
+
+
+@contextlib.contextmanager
+def _wired_hal(name: str) -> Iterator[tuple[Any, Any, Any, Callable[[float], None]]]:
+    """`(hal, transport, node, spin)`: the production G1 HAL on a live `RosControlTransport`."""
+    from openral_core import RobotDescription
+    from openral_hal import build_hal
+    from openral_hal.ros_control_transport import RosControlTransport
+    from openral_hal.unitree_real import UnitreeHgRealHAL
+
+    desc = RobotDescription.from_yaml(str(_G1_YAML))
+    hal = build_hal(desc, mode="real")
+    assert isinstance(hal, UnitreeHgRealHAL)
+    with driver_node(name) as (node, spin):
+        bindings = hal.command_bindings()
+        transport = RosControlTransport(
+            node,
+            command_topics=list(bindings),
+            joint_names=hal.ros2_control_joint_names(),
+            joint_state_topic=hal.joint_state_topic,
+            command_kinds=bindings,
+            controller_names=hal.controller_names(),
+        )
+        hal.attach_transport(transport.publish, transport.state, transport.last_arrival)
+        hal.attach_controller_stop(transport)
+        assert wait_until(spin, lambda: not transport.missing_joints(), 20.0), (
+            f"/joint_states never carried {transport.missing_joints()}"
+        )
+        try:
+            yield hal, transport, node, spin
+        finally:
+            transport.close()
+
+
+def _listed(node: Any, spin: Callable[[float], None]) -> dict[str, str]:
+    """`{name: state}` straight from `/controller_manager/list_controllers` on `node`."""
+    from controller_manager_msgs.srv import ListControllers
+
+    client = node.create_client(ListControllers, "/controller_manager/list_controllers")
+    try:
+        assert wait_until(spin, client.service_is_ready, 20.0), "list_controllers never appeared"
+        future = client.call_async(ListControllers.Request())
+        assert wait_until(spin, future.done, 10.0), "list_controllers did not answer"
+        return {str(c.name): str(c.state) for c in future.result().controller}
+    finally:
+        node.destroy_client(client)
+
+
+def _set_string_array(
+    node: Any, spin: Callable[[float], None], target: str, name: str, value: list[str]
+) -> None:
+    """Set one string-array parameter over `<target>/set_parameters`; assert it was taken."""
+    from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+    from rcl_interfaces.srv import SetParameters
+
+    client = node.create_client(SetParameters, f"{target}/set_parameters")
+    try:
+        assert wait_until(spin, client.service_is_ready, 20.0), f"{target} has no parameters"
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter(
+                name=name,
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_STRING_ARRAY, string_array_value=value
+                ),
+            )
+        ]
+        future = client.call_async(request)
+        assert wait_until(spin, future.done, 10.0), f"{target}/set_parameters did not answer"
+        result = future.result().results[0]
+        assert result.successful, result.reason
+    finally:
+        node.destroy_client(client)
+
+
+def _released(states: dict[str, str], chain: list[str]) -> bool:
+    """Every joint unclaimed: the chain out and `freeze_controller` not in (zero torque)."""
+    return states.get("freeze_controller") != "active" and all(
+        states.get(c) != "active" for c in chain
+    )
+
+
 @pytest.fixture
-def s0_graph(tmp_path: Path) -> Iterator[None]:
+def s0_graph(tmp_path: Path) -> Iterator[subprocess.Popen[bytes]]:
+    """The S0 graph, up and blended in; yields the `ros2_control_node` process group leader."""
     from openral_core import RobotDescription
     from openral_hal.unitree_real import UnitreeHgRealHAL
 
@@ -210,16 +332,16 @@ def s0_graph(tmp_path: Path) -> Iterator[None]:
         )
         assert switch.returncode == 0, switch.stdout + switch.stderr
         # The policy starts blended out; the operator's step, done here by the test.
-        blend = _run(["ros2", "param", "set", "/safety_controller", "blend_ratio", "1.0"])
+        blend = _ros2_param(["set", "/safety_controller", "blend_ratio", "1.0"])
         assert blend.returncode == 0, blend.stdout + blend.stderr
-        yield
+        yield procs[1]
     finally:
         for p in reversed(procs):
             terminate(p)
 
 
 def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freezes(
-    s0_graph: None,
+    s0_graph: subprocess.Popen[bytes], tmp_path: Path
 ) -> None:
     from openral_core import RobotDescription
     from openral_core.exceptions import ROSCapabilityMismatch, ROSEStopRequested
@@ -248,6 +370,12 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
             f"/joint_states never carried {transport.missing_joints()}"
         )
         hal.connect()
+
+        # Issue #548: the blend speed is fixed at configure, over the real parameter service.
+        speed = _ros2_param(["set", "/safety_controller", "max_blend_ratio_speed", "10.0"])
+        # `ros2 param set` exits 0 on a refusal and reports it on stderr.
+        assert "Setting parameter failed" in speed.stderr, speed.stdout + speed.stderr
+        assert _param("/safety_controller", "max_blend_ratio_speed") == 1.0
 
         left = [n for n in hal.upper_body_joints() if n.startswith("left_")]
         row = [0.3 if n == "left_elbow_joint" else 0.0 for n in names]
@@ -281,4 +409,128 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
         assert states.get("freeze_controller") == "active", states
         for controller in hal.controller_names():
             assert states.get(controller) == "inactive", states
+
+        # Issue #548: blend_ratio is still 1.0 and upstream's activation would apply it with no
+        # ramp. The guard resets it to 0.0 instead of refusing — a refused activation would
+        # keep this swap's deactivation of freeze_controller and leave the joints unclaimed.
+        rearm = _run(
+            [
+                "ros2",
+                "control",
+                "switch_controllers",
+                "--deactivate",
+                "freeze_controller",
+                "--activate",
+                *hal.controller_names(),
+                "--strict",
+            ]
+        )
+        assert rearm.returncode == 0, rearm.stdout + rearm.stderr
+        states = transport.controller_states(timeout_s=5.0)
+        for controller in hal.controller_names():
+            assert states.get(controller) == "active", states
+        assert _param("/safety_controller", "blend_ratio") == 0.0
+        cm_log = (tmp_path / "controller_manager.log").read_text(errors="replace")
+        assert "blend_ratio was 1 at activation; reset to 0.0" in cm_log, cm_log[-2000:]
         transport.close()
+
+
+def test_estop_configures_an_unconfigured_freeze_controller_before_the_swap(
+    s0_graph: subprocess.Popen[bytes],
+) -> None:
+    """#566: the swap is refused whole while `freeze_controller` is unconfigured (STRICT; a
+    BEST_EFFORT swap dropped its activation and still deactivated the chain — every joint
+    unclaimed, zero torque on the hg hardware). The HAL configures it first."""
+    from openral_core.exceptions import ROSEStopRequested
+
+    cleanup = _run(["ros2", "control", "cleanup_controller", "freeze_controller"])
+    assert cleanup.returncode == 0, cleanup.stdout + cleanup.stderr
+    with _wired_hal("unitree_hal_live_566") as (hal, transport, _node, _spin):
+        assert transport.controller_states(timeout_s=5.0).get("freeze_controller") == (
+            "unconfigured"
+        )
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="acknowledged"):
+            hal.estop()
+        report = hal.last_stop_report
+        assert report is not None and report.stopped, report
+        states = transport.controller_states(timeout_s=5.0)
+        assert states.get("freeze_controller") == "active", states
+        for controller in hal.controller_names():
+            assert states.get(controller) == "inactive", states
+
+
+def test_estop_never_releases_the_chain_when_freeze_cannot_be_configured(
+    s0_graph: subprocess.Popen[bytes],
+) -> None:
+    """Review of #571, finding 1. `FreezeController::on_configure` refuses an empty `joints`
+    (isaac_ros_deploy v4.6-0), so the pre-check's configure fails. A BEST_EFFORT swap then
+    dropped freeze's activation and still deactivated the chain — every joint unclaimed. The
+    STRICT swap is refused whole: not acknowledged, but the chain keeps the joints."""
+    from openral_core.exceptions import ROSEStopRequested
+
+    cleanup = _run(["ros2", "control", "cleanup_controller", "freeze_controller"])
+    assert cleanup.returncode == 0, cleanup.stdout + cleanup.stderr
+    with _wired_hal("unitree_hal_live_571_f1") as (hal, transport, node, spin):
+        _set_string_array(node, spin, "/freeze_controller", "joints", [])
+        assert transport.controller_states(timeout_s=5.0).get("freeze_controller") == (
+            "unconfigured"
+        )
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+            hal.estop()
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped, report
+        assert "configure FAILED" in report.detail, report.detail
+        states = transport.controller_states(timeout_s=5.0)
+        assert not _released(states, hal.controller_names()), states
+        for controller in hal.controller_names():
+            assert states.get(controller) == "active", states
+
+
+def test_estop_returns_within_stop_timeout_when_the_manager_stalls(
+    s0_graph: subprocess.Popen[bytes],
+) -> None:
+    """Review of #571, finding 2. Never unbounded — every call has a finite timeout — but the
+    pre-check, swap and retry each took a full `stop_timeout_s` window, so a stalled manager
+    held the e-stop ~2x the documented bound (~3x if it answered the listing first). One
+    deadline now bounds the whole sequence. The stall is real: SIGSTOP on the manager."""
+    from openral_core.exceptions import ROSEStopRequested
+
+    with _wired_hal("unitree_hal_live_571_f2") as (hal, _transport, node, spin):
+        budget = hal._stop_timeout_s  # the bound under test
+        hal.connect()
+        group = os.getpgid(s0_graph.pid)
+        os.killpg(group, signal.SIGSTOP)
+        try:
+            start = time.monotonic()
+            with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+                hal.estop()
+            elapsed = time.monotonic() - start
+        finally:
+            os.killpg(group, signal.SIGCONT)
+        # Slack: rclpy's wait_for_service polls in 0.25 s steps.
+        assert elapsed <= budget + 0.5, f"e-stop held {elapsed:.2f} s, budget {budget} s"
+        # The queued STRICT swap lands once the manager resumes; it must not release.
+        states = _listed(node, spin)
+        assert not _released(states, hal.controller_names()), states
+
+
+def test_a_dead_listing_client_does_not_keep_the_swap_from_the_manager(
+    s0_graph: subprocess.Popen[bytes],
+) -> None:
+    """Review of #571, finding 3. The pre-check is advisory; an exception in it escaped
+    `_stop_switch` before the swap was sent, so no stop request reached the manager. The
+    fault is real rclpy: the transport's `list_controllers` client destroyed under it (its
+    own post-swap confirmation fails too, so the report cannot say `stopped`)."""
+    from openral_core.exceptions import ROSEStopRequested
+
+    with _wired_hal("unitree_hal_live_571_f3") as (hal, transport, node, spin):
+        hal.connect()
+        transport._helper.destroy_client(transport._list_client)  # the fault under test
+        with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+            hal.estop()
+        states = _listed(node, spin)
+        assert states.get("freeze_controller") == "active", states
+        for controller in hal.controller_names():
+            assert states.get(controller) == "inactive", states

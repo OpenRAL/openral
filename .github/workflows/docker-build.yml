@@ -66,6 +66,7 @@ on:
       - tests/integration/test_reasoner_*.py
       - tests/integration/test_critic_producer_node.py
       - tests/integration/test_sim_sensor_bridge_tf_guard.py
+      - tests/integration/test_real_bringup_graph_gate_live.py
       - tests/integration/test_safety_status_latched_topic.py
       - tests/integration/test_safety_kernel_place_allowance_band.py
       - tests/integration/test_safety_kernel_grasp_target_band.py
@@ -247,29 +248,82 @@ jobs:
       # suite is exec'd last.
       - name: Live ROS tests (OPENRAL_TEST_ROS_LIVE)
         run: |
+          set -o pipefail
           mkdir -p "$RUNNER_TEMP/cores"
           chmod 1777 "$RUNNER_TEMP/cores"
-          sudo sysctl -w kernel.core_pattern=/cores/core.%E.%p
+          # %P, the host PID: the shards' containers each count PIDs from 1.
+          sudo sysctl -w kernel.core_pattern=/cores/core.%E.%P
+          # The ros-* listing first: the apt layer is unpinned, so diff it between a
+          # crashing run and a clean one. Fast DDS is added for this run only (5
+          # packages, no upgrades), never baked: the image ships Cyclone, and the
+          # ADR-0130 enclave test's Fast DDS lane is where a reply-side keystore gap
+          # shows regardless of Cyclone. Installed once, committed as openral:x86-live.
+          docker run --name openral-live-base --entrypoint bash openral:x86 -ec '
+            echo "--- runtime ros-*:"; cat /opt/openral/ros-jazzy-versions.txt
+            echo "--- builder ros-* (colcon overlay ABI):"
+            cat /opt/openral/ros-jazzy-versions.builder.txt
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends ros-jazzy-rmw-fastrtps-cpp
+            echo "--- test-time ros-* (unpinned, like the apt layer):"
+            dpkg-query -W ros-jazzy-rmw-fastrtps-cpp ros-jazzy-fastrtps
+          '
+          # Keep the base image's ENTRYPOINT/CMD: commit would record the bash override.
+          docker commit \
+            --change "ENTRYPOINT $(docker image inspect openral:x86 --format '{{json .Config.Entrypoint}}')" \
+            --change "CMD $(docker image inspect openral:x86 --format '{{json .Config.Cmd}}')" \
+            openral-live-base openral:x86-live > /dev/null
+          docker rm openral-live-base > /dev/null
+
+          # One container per slice of scripts/ros_live_tests.sh (OPENRAL_LIVE_SHARD),
+          # each on its own Docker network: on a shared one DDS discovery crosses
+          # containers, and the isolated targets assert on who is on the graph.
+          # The container also gives each slice its own /dev/shm, /tmp and PIDs.
           # --entrypoint /entrypoint.sh drops the image's hardcoded `openral`
           # argument while keeping the ROS + colcon-overlay sourcing the tests
-          # depend on. The ros-* listing first: the apt layer is unpinned, so
-          # diff it between a crashing run and a clean one.
-          # MUJOCO_GL=osmesa: the hosted runner has no GPU, and MuJoCo's EGL
-          # backend needs a GPU device ("gladLoadGL error" on the camera-rendering
+          # depend on. MUJOCO_GL=osmesa: the hosted runner has no GPU, and MuJoCo's
+          # EGL backend needs a GPU device ("gladLoadGL error" on the camera-rendering
           # twins); the image ships libosmesa6 for this.
-          docker run --rm --entrypoint /entrypoint.sh \
-            -e MUJOCO_GL=osmesa -e PYOPENGL_PLATFORM=osmesa \
-            --ulimit core=-1 \
-            -v "$RUNNER_TEMP/cores:/cores" \
-            -v "$PWD/tests:/workspace/tests:ro" \
-            -v "$PWD/conftest.py:/workspace/conftest.py:ro" \
-            -v "$PWD/scripts:/workspace/scripts:ro" \
-            openral:x86 bash -c '
-              echo "--- runtime ros-*:"; cat /opt/openral/ros-jazzy-versions.txt
-              echo "--- builder ros-* (colcon overlay ABI):"
-              cat /opt/openral/ros-jazzy-versions.builder.txt
-              exec bash scripts/ros_live_tests.sh -q
-            '
+          # OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1: a palette test whose VLA runtime
+          # is missing fails here instead of skipping (tests/integration/conftest.py),
+          # so a dependency group dropped from the image cannot pass as a skip.
+          live() { # live NAME SHARD
+            docker network create "openral-live-$1" > /dev/null
+            docker run --rm --network "openral-live-$1" --entrypoint /entrypoint.sh \
+              -e MUJOCO_GL=osmesa -e PYOPENGL_PLATFORM=osmesa \
+              -e OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1 -e OPENRAL_LIVE_SHARD="$2" \
+              --ulimit core=-1 \
+              -v "$RUNNER_TEMP/cores:/cores" \
+              -v "$PWD/tests:/workspace/tests:ro" \
+              -v "$PWD/conftest.py:/workspace/conftest.py:ro" \
+              -v "$PWD/scripts:/workspace/scripts:ro" \
+              openral:x86-live bash scripts/ros_live_tests.sh -q
+          }
+          # One shard per vCPU, streamed with a prefix; each also keeps its own log,
+          # uploaded on failure, since concurrent output can split a long line.
+          shards=$(nproc)
+          shard() { # shard I
+            local r=0 start=$SECONDS
+            live "$1" "$1/$shards" 2>&1 | tee "$RUNNER_TEMP/live-$1.log" \
+              | sed -u "s|^|[$1/$shards] |" || r=$?
+            echo "[$1/$shards] shard done in $((SECONDS - start)) s, exit $r"
+            return "$r"
+          }
+          pids=()
+          for i in $(seq "$shards"); do
+            shard "$i" &
+            pids+=("$!")
+          done
+          rc=0
+          for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+          # The tests marked wall_clock run alone, after, on an idle CPU.
+          live quiet quiet 2>&1 | tee "$RUNNER_TEMP/live-quiet.log" || rc=1
+          # In scripts/ros_live_durations.txt's format, to rebalance the shards on.
+          echo "--- wall time per process, all shards and the quiet tail (s file):"
+          grep -h -- '^--- live:' "$RUNNER_TEMP"/live-*.log \
+            | sed -E 's/^--- live: ([0-9]+) s, exit [0-9]+: /\1 /' | sort -k1,1rn || true
+          echo "--- failures across the shards and the quiet tail:"
+          grep -hE '^(FAILED|ERROR) ' "$RUNNER_TEMP"/live-*.log || echo "(none)"
+          exit "$rc"
 
       # The kernel writes cores as the crashing (root, in-container) uid with
       # mode 0600, which the runner user cannot read: open them up for the
@@ -283,7 +337,8 @@ jobs:
       # Symbolize any core from the step above. The image ships no gdb, so a
       # throwaway container installs it. Each core is read against the binary
       # that crashed, recovered from its %E filename (`!` -> `/`) inside the
-      # same image; only a python core whose path does not resolve falls back
+      # image the shards ran (openral:x86-live, so Fast DDS frames resolve);
+      # only a python core whose path does not resolve falls back
       # to the venv's python, and anything else is read core-only.
       # Diagnostic only: its own failure must not hide the real one, which
       # already failed the job.
@@ -298,7 +353,7 @@ jobs:
           fi
           docker run --rm --entrypoint /entrypoint.sh \
             -v "$RUNNER_TEMP/cores:/cores:ro" \
-            openral:x86 bash -c '
+            openral:x86-live bash -c '
               apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb > /dev/null
               for core in /cores/core.*; do
                 name="${core#/cores/core.}"
@@ -315,6 +370,15 @@ jobs:
                   ${exe:+"$exe"} -c "$core"
               done
             '
+
+      - name: Upload live-ROS shard logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: live-ros-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload live-ROS core dumps
         if: failure()

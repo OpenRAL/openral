@@ -29,6 +29,7 @@ import os
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,6 +45,7 @@ from openral_core.assets import (  # noqa: E402
 from openral_core.exceptions import ROSConfigError  # noqa: E402
 from openral_hal import _makermods_metal_assets as metal  # noqa: E402
 from openral_hal._mujoco_arm import MujocoArmHAL  # noqa: E402
+from openral_hal.lifecycle import urdf_named_joint_state  # noqa: E402
 from openral_hal.resolver import urdf_joint_map  # noqa: E402
 
 pytestmark = pytest.mark.sim
@@ -315,10 +317,11 @@ def test_single_arm_gripper_matches_derived_urdf(arm: RobotDescription) -> None:
         assert mimic.axis_xyz == pytest.approx(_floats(axis.get("xyz")))
         lim = joint.find("limit")
         assert lim is not None
-        # f = 1 (open) reaches the finger's far URDF limit, f = 0 its closed 0.
+        # f = 1 (open) reaches the finger's far URDF limit, f = 0 its closed 0. A row reads
+        # the gripper's URDF value (its urdf_curve, issue #533), never the fraction.
         far = float(str(lim.get("lower" if mimic.multiplier < 0 else "upper")))
-        assert mimic.value_at(1.0) == pytest.approx(far)
-        assert mimic.value_at(0.0) == pytest.approx(0.0)
+        assert mimic.value_at(gripper.urdf_value(1.0)) == pytest.approx(far)
+        assert mimic.value_at(gripper.urdf_value(0.0)) == pytest.approx(0.0)
     # The URDF's own coupling: joint8 mimics joint7 with multiplier -1.
     urdf_mimic = urdf["joint8"].find("mimic")
     assert urdf_mimic is not None and urdf_mimic.get("joint") == "joint7"
@@ -384,19 +387,27 @@ def test_urdf_joint_map_publishes_the_finger_master_in_metres(robot_id: str) -> 
     """``robot_state_publisher`` gets each gripper as URDF ``joint7`` in metres.
 
     joint7 is the URDF's non-mimic finger (joint8 mimics it), so the fraction
-    f goes out as ``-0.05 f`` m and every other joint passes through unscaled.
+    f goes out as ``-0.05 f`` m — the gripper's ``urdf_curve`` (f → 0.05 f, issue
+    #533) times joint7's multiplier -1 — and every other joint passes through.
     """
     desc = RobotDescription.from_yaml(str(_ROOT / "robots" / robot_id / "robot.yaml"))
     assert desc.assets.urdf is not None and desc.assets.urdf.ref is not None
     urdf_xml = _resolve(desc.assets.urdf.ref, "urdf").read_text(encoding="utf-8")
     joint_map = urdf_joint_map(desc, urdf_xml)
     assert joint_map is not None
+    gripper = [j.role == "gripper" for j in desc.joints]
     expected = [
-        (str(j.sim_joint_name).replace("joint8", "joint7"), -0.05)
-        if j.role == "gripper"
-        else (str(j.sim_joint_name), 1.0)
-        for j in desc.joints
+        str(j.sim_joint_name).replace("joint8", "joint7") if g else str(j.sim_joint_name)
+        for j, g in zip(desc.joints, gripper, strict=True)
     ]
-    assert list(joint_map.names) == [name for name, _ in expected]
-    assert list(joint_map.scales) == pytest.approx([scale for _, scale in expected])
-    assert list(joint_map.offsets) == [0.0] * len(desc.joints)
+    assert list(joint_map.names) == expected
+    names = [j.name for j in desc.joints]
+    for f in (0.0, 0.3, 1.0):
+        msg = SimpleNamespace(
+            header=None, name=names, position=[f] * len(names), velocity=[], effort=[]
+        )
+        sent = urdf_named_joint_state(
+            msg, joint_map.names, joint_map.scales, joint_map.offsets, joint_map.curves
+        )
+        assert list(sent.name) == expected
+        assert list(sent.position) == pytest.approx([-0.05 * f if g else f for g in gripper])

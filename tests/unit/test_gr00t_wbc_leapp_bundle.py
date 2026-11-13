@@ -176,7 +176,7 @@ def test_the_bundle_matches_the_original_runner_tick_for_tick(tmp_path: Path) ->
 
 
 def test_the_leapp_yaml_has_what_isaac_ros_deploys_parser_requires(tmp_path: Path) -> None:
-    """`parse_graph_config` / `merge_graph_to_model_config` contract (isaac_ros_deploy f3aa6b89)."""
+    """`parse_graph_config` / `merge_graph_to_model_config` contract (isaac_ros_deploy v4.6-0)."""
     tool = _tool()
     walk, balance = _networks(tool)
     doc = yaml.safe_load(tool.build_bundle(walk, balance, tmp_path).read_text())

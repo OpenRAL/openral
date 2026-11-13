@@ -20,12 +20,15 @@ from __future__ import annotations
 import os
 import pathlib
 import time
+from collections.abc import Callable
 
 import pytest
+from openral_core import RSkillManifest
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _ROBOT_YAML = _REPO_ROOT / "robots" / "so101_follower" / "robot.yaml"
+_SKILL_YAML = _REPO_ROOT / "rskills" / "rskill-smolvla-so101-eraser_place-bf16" / "rskill.yaml"
 _SKILL = "skill:OpenRAL/rskill-smolvla-so101-eraser_place-bf16"
 
 
@@ -34,8 +37,9 @@ _SKILL = "skill:OpenRAL/rskill-smolvla-so101-eraser_place-bf16"
     reason="live rclpy node construction — set OPENRAL_TEST_ROS_LIVE=1, source install/setup.bash",
 )
 def test_reasoner_emits_the_manifest_at_configure_and_on_registry_change(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, require_policy_runtime: Callable[[RSkillManifest], None]
 ) -> None:
+    require_policy_runtime(RSkillManifest.from_yaml(str(_SKILL_YAML)))
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_core import DeployRuntime, RobotManifest

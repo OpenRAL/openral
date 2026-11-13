@@ -5,18 +5,26 @@ Used by ``test_moveit_plan_arm_franka.py`` and
 spawns the upstream ``moveit_resources_panda_moveit_config`` demo (real
 ``move_group`` + ``ros2_control`` fake hardware + ``robot_state_publisher``)
 and skips — never fakes — when the package or a ROS workspace is absent.
+
+Also ``require_policy_runtime``, for the live reasoner tests that assert a VLA
+reaches the seeded palette.
 """
 
 from __future__ import annotations
 
-import shutil
+import os
 import subprocess
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+from tests.integration._ros_pkg import ros_pkg_available
+
+if TYPE_CHECKING:
+    from openral_core import RSkillManifest
 
 
 def moveit_panda_demo_available() -> bool:
@@ -25,16 +33,38 @@ def moveit_panda_demo_available() -> bool:
     Resolved via ``ros2 pkg prefix`` rather than importing because the package
     is a pure-ament resource package (no Python entry point).
     """
-    if shutil.which("ros2") is None:
-        return False
-    result = subprocess.run(
-        ["ros2", "pkg", "prefix", "moveit_resources_panda_moveit_config"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    return result.returncode == 0 and result.stdout.strip() != ""
+    return ros_pkg_available("moveit_resources_panda_moveit_config")
+
+
+@pytest.fixture
+def require_policy_runtime() -> Callable[[RSkillManifest], None]:
+    """Skip unless an rSkill's policy runtime imports in this venv.
+
+    The reasoner's palette seed drops every rSkill whose ``model_family`` runtime
+    is not installed (``openral_sim.policy_deps.filter_importable_manifests``), so
+    whether a VLA reaches the palette depends on the venv's dependency groups: a
+    dev venv without ``--group sim`` (transformers) or ``sidecar-wire`` (pyzmq)
+    drops what the ``openral:x86`` image admits. Call it before ``rclpy.init``.
+
+    With ``OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1`` (the docker-build workflow
+    sets it) a missing runtime fails instead: the image is meant to carry every
+    group these tests need, and a skip there would hide one dropped from it.
+    """
+    from openral_sim.policy_deps import can_import_policy_manifest, manifest_install_hint
+
+    def require(manifest: RSkillManifest) -> None:
+        ok, reason = can_import_policy_manifest(manifest)
+        if ok:
+            return
+        why = (
+            f"the reasoner palette drops {manifest.name!r} in this venv ({reason}). "
+            f"{manifest_install_hint(manifest)}"
+        )
+        if os.environ.get("OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES") == "1":
+            pytest.fail(why)
+        pytest.skip(why)
+
+    return require
 
 
 @pytest.fixture(scope="session")
@@ -102,7 +132,6 @@ def move_group_subprocess() -> Iterator[None]:
         time.sleep(8.0)
         yield
     finally:
-        import os
         import signal as _signal
 
         with suppress(ProcessLookupError):

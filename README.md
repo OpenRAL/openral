@@ -130,7 +130,7 @@ docker run --rm --gpus all --network host \
 > `deploy run` keeps the robot's ROS graph on this host (`LOCALHOST` discovery,
 > a per-robot `ROS_DOMAIN_ID`): an unauthenticated ROS graph on the LAN lets any
 > peer command the arm. A graph that must span machines needs
-> `OPENRAL_ALLOW_NETWORK_ROS=1`; see
+> `OPENRAL_ALLOW_NETWORK_ROS=1` and SROS2 (`openral security init`); see
 > [ROS graph security](docs/reference/ros-graph-security.md).
 
 One-liner install (no clone, no sudo):
@@ -401,7 +401,7 @@ The reasoner is the slow half of the dual-system architecture: an event-driven L
 
 - **Model-first** — `OPENRAL_REASONER_MODEL` picks a tested robotics
   tool-calling model (`claude-opus-4-8`, `claude-opus-5-5`, `claude-sonnet-5-5`,
-  `claude-haiku-5-5`, `gpt-5.5`, `gpt-5.6`, `cosmos3-edge`).
+  `claude-haiku-5-5`, `gpt-5.5`, `gpt-5.6`, `cosmos3-edge`, `qwen3.5-4b`, `qwen3.5-9b`).
   Endpoint and auth come from the curated registry and stay overrideable; an
   uncurated model needs an explicit endpoint + dialect and logs a warning. No
   cloud lock-in, no hidden library default.
