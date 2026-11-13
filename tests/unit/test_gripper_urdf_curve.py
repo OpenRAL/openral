@@ -158,6 +158,52 @@ def test_the_so101_bench_unit_poses_the_real_jaw_by_its_servo_calibration(
         assert _kernel_link_value(params, "jaw", f) == pytest.approx(jaw, abs=1e-4)
 
 
+def test_the_so101_bench_unit_rolls_the_gripper_by_its_calibrated_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A unit's ``joint_curve`` reaches any joint: the bench wrist roll's calibrated zero
+    is a quarter turn from the URDF's, so /tf and the kernel pose the gripper at
+    value + pi/2 (they showed it rolled 90 degrees); the arm's other joints are untouched."""
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
+    robot_yaml = _ROBOTS / "so101_follower" / "robot.yaml"
+    desc = unit_gripper_curves(
+        RobotDescription.from_yaml(str(robot_yaml)), robot_yaml, "bench_laptop"
+    )
+    urdf = (_ROBOTS / "so101_follower" / "so101_follower.urdf").read_text()
+    params = collision_params_from_description(desc)
+    for q in (-2.0, 0.088, 2.0):
+        name, tf = _tf_value(desc, urdf, "wrist_roll", q)
+        assert name == "wrist_roll"
+        assert tf == pytest.approx(q + math.pi / 2, abs=1e-6)
+        assert _kernel_link_value(params, "gripper", q) == pytest.approx(q + math.pi / 2, abs=1e-6)
+    curved = {j.name for j in desc.joints if j.urdf_curve}
+    assert curved == {"wrist_roll", "gripper"}
+
+
+def test_a_unit_curve_names_a_known_joint_once(tmp_path: Path) -> None:
+    """``gripper_joint_curve`` stays gripper-only; ``joint_curve`` takes any known joint,
+    never one the other map also names."""
+    import shutil
+
+    src = _ROBOTS / "so101_follower"
+    robot = tmp_path / "so101_follower"
+    shutil.copytree(src, robot, ignore=shutil.ignore_patterns("assets"))
+    plain = RobotDescription.from_yaml(str(robot / "robot.yaml"))
+    unit = robot / "units" / "t.yaml"
+    for body, match in (
+        ("gripper_joint_curve: {wrist_roll: [[0, 0], [1, 1]]}", "no gripper joint"),
+        ("joint_curve: {nope: [[0, 0], [1, 1]]}", "no joint"),
+        (
+            "gripper_joint_curve: {gripper: [[0, 0], [1, 1]]}\n"
+            "joint_curve: {gripper: [[0, 0], [1, 1]]}",
+            "in both",
+        ),
+    ):
+        unit.write_text(f"robot_id: so101_follower\nunit: t\n{body}\n", "utf-8")
+        with pytest.raises(ROSConfigError, match=match):
+            unit_gripper_curves(plain, robot / "robot.yaml", "t")
+
+
 def test_the_sidecar_drives_the_finger_the_kernel_checks(_manifest_scene_mod: Any) -> None:
     """The Isaac command map lands the finger on the curve the kernel and /tf read."""
     from openral_sim.backends.isaac_sim import _build_robot_spec, _curve_gripper_specs
@@ -297,14 +343,23 @@ def test_bad_curves_are_refused_everywhere(points: list[tuple[float, float]], ma
         sim_scene_description(base, {"gripper_joint_curve": {"left_gripper": points}})
 
 
-def test_a_curve_needs_a_gripper_joint() -> None:
-    with pytest.raises(ValueError, match="role 'gripper'"):
+def test_any_joint_takes_a_curve_but_a_scene_curve_names_a_gripper() -> None:
+    # A calibration offset (a wrist roll a quarter turn off) is a curve on a non-gripper.
+    j = JointSpec(
+        name="j",
+        joint_type="revolute",
+        parent_link="a",
+        child_link="b",
+        urdf_curve=((0.0, 1.5), (1.0, 2.5)),
+    )
+    assert j.urdf_value(0.5) == pytest.approx(2.0)
+    with pytest.raises(ValueError, match="urdf_curve"):  # still a valid curve, or refused
         JointSpec(
             name="j",
             joint_type="revolute",
             parent_link="a",
             child_link="b",
-            urdf_curve=((0.0, 0.0), (1.0, 1.0)),
+            urdf_curve=((0.0, 1.0), (0.0, 2.0)),
         )
     base = RobotDescription.from_yaml(str(_ROBOTS / "openarm" / "robot.yaml"))
     with pytest.raises(ROSConfigError, match="names no gripper joint"):

@@ -34,3 +34,12 @@ sensors:
 # closed, ~19 deg short when open. Recalibrated the gripper? Recompute from its range.
 gripper_joint_curve:
   gripper: [[0.0, -0.1], [1.0, 1.19199]]
+# This unit's wrist roll: lerobot's calibration puts its zero (the middle of the
+# calibrated range, the pose held while calibrating) a quarter turn from the URDF's
+# zero, so /tf (the dashboard's 3D model) and the kernel showed the whole gripper
+# rolled 90 degrees. An offset is a two-point curve of slope 1 over the joint's range
+# (robot.yaml position_limits +-2.7925): urdf = value + pi/2. Seen from the gripper's
+# tip, a positive URDF roll turns it clockwise (the axis points from the tip to the
+# wrist). Recalibrated the wrist roll? Re-check this against the real arm.
+joint_curve:
+  wrist_roll: [[-2.7925, -1.2217037], [2.7925, 4.3632963]]
