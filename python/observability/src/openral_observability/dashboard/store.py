@@ -635,6 +635,21 @@ class TelemetryStore:
             payload = self._snapshot_locked()
         self._publish(payload)
 
+    def set_hal_estop(self, name: str, estopped: bool) -> None:
+        """Record one HAL's own e-stop latch from its ``/diagnostics`` heartbeat.
+
+        The kernel's ``safety_status`` says whether the kernel is latched; a HAL keeps
+        its own latch, released only by its ``reset_estop`` (or a restart). The UI
+        treats the robot as stopped while either is latched.
+        """
+        with self._lock:
+            self._topics.setdefault("hal_estop", {})[name] = {
+                "estopped": bool(estopped),
+                "ts_unix": time.time(),
+            }
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
     def set_safety_status(
         self,
         *,
@@ -673,6 +688,7 @@ class TelemetryStore:
                 publisher's leftover durable value (hazard-log HZ-0096-1).
         """
         with self._lock:
+            was_latched = (self._topics.get("safety_status") or {}).get("latched") is True
             self._topics["safety_status"] = {
                 "latched": bool(latched),
                 "drop_reason": int(drop_reason),
@@ -685,6 +701,15 @@ class TelemetryStore:
                 # the snapshot uses — the publisher's stamp can be sim-time.
                 "ts_unix": time.time(),
             }
+            # The kernel's latch drives the UI's e-stop flag: a latch sets it, and a
+            # release made anywhere (another screen, `ros2 service call
+            # /openral/estop_reset`) clears it, but only as a latched -> released
+            # transition. A publisher that never latches (one that does not follow
+            # /openral/estop) cannot clear an operator E-STOP the dashboard recorded.
+            if latched:
+                self._topics["safety"]["estopped"] = True
+            elif was_latched:
+                self._topics["safety"]["estopped"] = False
             payload = self._snapshot_locked()
         self._publish(payload)
 

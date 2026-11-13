@@ -3,6 +3,8 @@
 // React — never as HTML.
 import { Component, useEffect, useRef, useState } from "react";
 import { SAFETY_LIVENESS_S } from "./lib/safety.js";
+import { openSettings, reasonerNotConfigured } from "./lib/settings.js";
+import { reasonerDown } from "./lib/reasoner.js";
 import {
   b64Blob,
   jpegBlob,
@@ -562,12 +564,45 @@ function Pointcloud({ panel, snap }) {
 }
 
 // ── reasoner · mission ────────────────────────────────────────────────────
-function Reasoner({ panel, snap }) {
+// Before the first tick: why the reasoner is not running (no model or key in the robot's
+// settings, or a failed lifecycle start), with a link to the settings that fix it.
+function useReasonerSettings(cfg) {
+  const [data, setData] = useState(null);
+  const local = cfg?.mode === "local";
+  useEffect(() => {
+    if (!local) return undefined; // the robot's own settings; the website shows its own
+    let live = true;
+    const load = () =>
+      fetch("/api/settings", { credentials: "same-origin" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((b) => live && setData(b), () => {});
+    load();
+    const t = setInterval(load, 10000); // picks up a key saved in the pane
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [local]);
+  return data;
+}
+
+function Reasoner({ panel, snap, cfg }) {
   const r = snap?.topics?.reasoner;
+  const settings = useReasonerSettings(cfg);
   if (!r?.ts_unix) {
+    const why = reasonerNotConfigured(settings, reasonerDown(snap?.topics?.lifecycle));
     return (
       <Card panel={panel}>
-        <Empty>waiting for reasoner.tick (the reasoner_node must be ACTIVE)</Empty>
+        {why ? (
+          <p className="reasoner-warn" role="alert">
+            {why}{" "}
+            <button type="button" className="link-btn" onClick={() => openSettings("reasoner")}>
+              Open reasoner settings
+            </button>
+          </p>
+        ) : (
+          <Empty>waiting for reasoner.tick (the reasoner_node must be ACTIVE)</Empty>
+        )}
       </Card>
     );
   }

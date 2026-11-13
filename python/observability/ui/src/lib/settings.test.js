@@ -62,3 +62,19 @@ test("the pane's top names the org, else the person, else the robot", () => {
   assert.equal(workspaceLabel(null, { org: "acme" }, "amr").name, "acme");
   assert.deepEqual(workspaceLabel(null, { org: "" }, "openamrobot_v2"), { name: "openamrobot_v2", initial: "O", logo: null });
 });
+
+test("the Reasoner card says why the reasoner is not running", async () => {
+  const { reasonerNotConfigured } = await import("./settings.js");
+  const noKey = {
+    scope: "robot",
+    canWrite: true,
+    settings: {
+      KEY: { label: "Anthropic API key", secret: true },
+      MODEL: { label: "Reasoner model", options: [{ id: "m", label: "M", needs: "KEY" }] },
+    },
+    values: {},
+  };
+  assert.match(reasonerNotConfigured(noKey, null), /^Reasoner is not configured\. Set an Anthropic/);
+  assert.match(reasonerNotConfigured(null, "failed"), /failed to start/);
+  assert.equal(reasonerNotConfigured(null, null), "");
+});

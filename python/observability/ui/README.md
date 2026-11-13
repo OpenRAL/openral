@@ -60,17 +60,30 @@ workspace it is: the org's logo or first letter and its name, from the site's `/
 openral.com or the robot's enrolment on the robot; sections to come; at the bottom the viewer,
 with a ⋯ menu that opens the Settings pane: the reasoner's Anthropic/OpenAI keys and model,
 read and written through the site's `/api/settings` on openral.com, and where they come from on
-the robot); the header (robot, safety, Layout, **E-STOP**); the prompt bar
+the robot); the header (robot, safety, Layout, **E-STOP**: while a fresh safety status says the
+kernel is latched and this session may run `estop_reset`, a green **Release e-stop** takes its
+place, pressable 1.5 s after it appears, then confirmed on the page (a second press within 5 s; never a browser dialog, which embedded browsers and cross-origin frames suppress); over the network with remote control
+off, E-STOP stays and the header says to release it at the robot. The safety pill is the one
+"E-STOP latched" label (it stays latched while any HAL's own `/diagnostics` heartbeat says
+`estopped` after the kernel's release, with a note to restart the deploy), and it stays latched while any HAL's own heartbeat (`/diagnostics`
+`estopped`) does after the kernel's release, with a note to restart the deploy; and the right pane offers `estop_reset` only as the fallback for a latch
+the header can't confirm, such as a stale safety status); the prompt bar
 (the manifest's `prompt` action; it says why when prompting is unavailable, including when the
 reasoner's last lifecycle transition failed); a fixed-height
 row of cameras ordered left → center → right by their manifest `position` (only cameras that
 stream viewable frames, then the 2D occupancy map when the robot has a `map` panel); the 3D
-scene filling the rest; and a right pane that shows one tab at a time, scrolls on its own and
+scene filling the rest (its top left: a status dot, blinking green while the robot's pose
+(`/tf`) is arriving, hollow when the stream is open but the pose has stopped, red when it
+isn't connected, the word "3D", and an eye that shows the Layers card, hidden by
+default); and a right pane that shows one tab at a time, scrolls on its own and
 can be dragged wider. The 3D view is pinned to the world frame (`map`, else `odom`) when the
 robot has one, with a **Follow robot** toggle at its top right; its layers include the
 lidar scan and each depth camera's thinned cloud. Layout choices (tabs shown, order,
-default tab, pane width, 3D layers, follow, cameras, light/dark/system theme) are saved per
-robot in the browser.
+default tab, pane width, 3D layers, follow, cameras) and the theme are saved per robot in the
+browser. The theme follows the system until it is switched from the left pane's menu (**Theme**,
+a moon in dark mode, a sun in light); switching back to the system's own mode follows it again.
+An action the manifest marks `confirm` is confirmed on the page (a second press within 5 s),
+never with a browser dialog, which embedded browsers and cross-origin frames suppress.
 
 - `src/main.jsx`: mode detection, manifest/config polling, the SSE stream, and the header.
 - `src/Console.jsx`: the camera strip, the right pane and its tabs, the reasoner trace, the Layout sheet.

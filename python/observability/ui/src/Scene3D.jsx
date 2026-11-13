@@ -261,12 +261,23 @@ function useBridge(api, needTicket, handlers) {
   return [ref, status];
 }
 
+const DOT_LABEL = {
+  live: "3D stream live",
+  paused: "3D stream connected, but the robot's pose is not updating",
+  wait: "connecting to the 3D stream",
+  error: "3D stream not connected",
+};
+// The robot's pose (/tf) older than this reads as paused: the stream is open but the
+// robot is not moving the model (a HAL that stopped publishing, a frozen render).
+const TF_STALE_MS = 5000;
+
 export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, bridgeOn, follow, setFollow }) {
   const host = useRef(null);
   const labels = useRef(null);
   const world = useRef(null); // three.js state, created once
   const [topics, setTopics] = useState([]);
   const [info, setInfo] = useState({ robot: "waiting", meshesMissing: false });
+  const [showLayers, setShowLayers] = useState(false); // the Layers card, behind the eye
   // The robot's base frame; the view's fixed frame is chosen per frame (viewFrame):
   // the world frame (map, else odom) unless following the robot.
   const base = String(manifest?.base_frame || "base");
@@ -299,6 +310,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       if (!w) return;
       w.dirty = true;
       if (topic === "/tf" || topic === "/tf_static") w.tf.addMessage(msg), (w.tfVersion += 1);
+      if (topic === "/tf") w.lastTfAt = Date.now();
       else if (COLLISION.has(topic)) markersFrom(w.collision, topic, msg);
       else if (PAYLOAD.has(topic)) markersFrom(w.payload, topic, msg);
       else if (ROBOT.has(topic) && typeof msg?.data === "string") loadRobot(msg.data);
@@ -795,12 +807,42 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
     return layerTopics(id, topics).length > 0;
   };
   const view = (name) => () => world.current && setView(world.current, name);
+  // Like a camera's: blinking green while the 3D stream is open, red when it isn't.
+  const tfFresh = Date.now() - (world.current?.lastTfAt ?? 0) < TF_STALE_MS;
+  const dotState = !bridgeOn
+    ? "error"
+    : status.state === "open"
+      ? tfFresh
+        ? "live"
+        : "paused"
+      : status.state === "connecting"
+        ? "wait"
+        : "error";
 
   return (
     <section className="scene" aria-label="3D scene">
       <div className="scene-canvas" ref={host} />
       <div className="scene-labels" ref={labels} aria-hidden="true" />
-      <div className="scene-layers glass" role="group" aria-label="Layers">
+      <div className="scene-hd glass">
+        <span className={`dot st-${dotState}`} title={DOT_LABEL[dotState]} aria-hidden="true" />
+        <span className="scene-title">3D</span>
+        <span className="sr-only">{DOT_LABEL[dotState]}</span>
+        <button
+          type="button"
+          className={showLayers ? "eye on" : "eye"}
+          aria-pressed={showLayers}
+          aria-label={showLayers ? "Hide layers" : "Show layers"}
+          title={showLayers ? "Hide layers" : "Show layers"}
+          onClick={() => setShowLayers((v) => !v)}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12Z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+            {!showLayers && <path d="M3 3l18 18" stroke="currentColor" strokeWidth="1.8" />}
+          </svg>
+        </button>
+      </div>
+      <div className="scene-layers glass" role="group" aria-label="Layers" hidden={!showLayers}>
         <span className="glass-hd">Layers</span>
         {LAYERS.map((l) => (
           <label key={l.id} className={available(l.id) ? "layer" : "layer off"}>

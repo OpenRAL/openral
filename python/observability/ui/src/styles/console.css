@@ -324,6 +324,12 @@ main > .waiting {
   padding: 8px 10px;
   cursor: pointer;
 }
+.rail-menu > .rail-theme {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .rail-menu > *:hover:not(:disabled),
 .rail-menu > *:focus-visible {
   background: var(--bg-2);
@@ -673,10 +679,49 @@ main > .waiting {
   color: var(--muted);
   padding: 2px 4px 6px;
 }
-.scene-layers {
+/* top left: status dot, "3D", and the eye that shows the Layers card (hidden by default) */
+.scene-hd {
   position: absolute;
   left: 12px;
   top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+}
+.scene-title {
+  font: 600 12px/1 var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+.eye {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.eye:hover,
+.eye.on {
+  color: var(--text);
+  border-color: var(--hair);
+}
+.eye:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.scene-layers[hidden] {
+  display: none;
+}
+.scene-layers {
+  position: absolute;
+  left: 12px;
+  top: 56px;
   display: grid;
   gap: 2px;
   padding: 10px;
@@ -708,9 +753,9 @@ main > .waiting {
 .scene-views {
   position: absolute;
   right: 12px;
-  /* never under the layer list (left: 12px, ~200px wide): when the 3D view is narrow
+  /* never under the "3D" header (left: 12px, ~90px wide): when the 3D view is narrow
      (the settings pane open) the buttons wrap onto a second row instead of overlapping */
-  left: 232px;
+  left: 112px;
   top: 12px;
   display: flex;
   flex-wrap: wrap;
@@ -985,4 +1030,44 @@ main > .waiting {
 /* In the row the tile header already carries the live dot and age. */
 .cam-slot .cam-pills {
   display: none;
+}
+
+/* The Reasoner card before its first tick: why, and a link to the settings */
+.reasoner-warn {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font: 500 13px/1.5 var(--body);
+  color: var(--text);
+  background: color-mix(in srgb, var(--amber, #d9a441) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber, #d9a441) 45%, transparent);
+}
+.link-btn {
+  font: inherit;
+  color: var(--text);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+/* Settings opened from a "configure" link: the section flashes once */
+.settings-section.highlight {
+  border-radius: 10px;
+  animation: settings-flash 1.6s ease-out 2;
+}
+@keyframes settings-flash {
+  0% {
+    box-shadow: 0 0 0 2px var(--accent-line, rgba(255, 255, 255, 0.35));
+    background: var(--bg-2);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-section.highlight {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent-line, rgba(255, 255, 255, 0.35));
+  }
 }

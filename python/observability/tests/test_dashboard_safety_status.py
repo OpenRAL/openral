@@ -189,3 +189,45 @@ def test_subscriber_writes_a_real_message_into_the_store() -> None:
     assert status["drop_reason_label"] == "kind_workspace"
     assert status["detail"] == "joint_position"
     assert status["stamp_unix"] == pytest.approx(1234.5)
+
+
+def test_kernel_status_clears_a_released_estop_flag() -> None:
+    """A release made anywhere clears the UI's "E-STOP latched" flag.
+
+    The flag (``topics.safety.estopped``) is set by an operator E-STOP; only the
+    dashboard's own reset cleared it. Released another way (``ros2 service call
+    /openral/estop_reset``, another screen) the kernel reports ``latched: false`` but
+    the flag stayed set, so the UI kept saying "E-STOP latched" on a released robot.
+    The kernel's status is the authority: it sets the flag both ways.
+    """
+    store = TelemetryStore()
+    store.set_estopped(True)  # the operator pressed E-STOP
+    _set(store, latched=True, detail="external estop")
+    assert store.snapshot()["topics"]["safety"]["estopped"] is True
+    _set(store, latched=False, detail="estop_reset")  # released elsewhere
+    assert store.snapshot()["topics"]["safety"]["estopped"] is False
+    # A latch the kernel reports (e.g. self-tripped) shows too, with no operator action.
+    _set(store, latched=True, detail="collision")
+    assert store.snapshot()["topics"]["safety"]["estopped"] is True
+
+
+def test_a_status_that_never_latched_does_not_clear_an_operator_estop() -> None:
+    """Only a latched -> released transition clears the flag (finding: a publisher that
+    does not latch on /openral/estop must not undo an operator E-STOP)."""
+    store = TelemetryStore()
+    _set(store, latched=False)
+    store.set_estopped(True)  # operator E-STOP, the publisher does not follow it
+    _set(store, latched=False)
+    assert store.snapshot()["topics"]["safety"]["estopped"] is True
+
+
+def test_the_hal_heartbeat_latch_is_recorded_per_hal() -> None:
+    """The HAL's own latch (its /diagnostics heartbeat) is kept beside the kernel's."""
+    store = TelemetryStore()
+    store.set_hal_estop("openral_hal_so101_follower", True)
+    entry = store.snapshot()["topics"]["hal_estop"]["openral_hal_so101_follower"]
+    assert entry["estopped"] is True and isinstance(entry["ts_unix"], float)
+    store.set_hal_estop("openral_hal_so101_follower", False)
+    assert (
+        store.snapshot()["topics"]["hal_estop"]["openral_hal_so101_follower"]["estopped"] is False
+    )

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { viewerLabel, workspaceLabel } from "./lib/viewer.js";
 import { SettingsPane } from "./SettingsPane.jsx";
+import { OPEN_SETTINGS_EVENT } from "./lib/settings.js";
 
 // The left pane: whose workspace this is at the top (the org's logo or first letter,
 // and its name), then on the website the robots this account reaches (a click opens
@@ -45,11 +46,36 @@ function useMe(onWebsite) {
   return me;
 }
 
+// The menu's Theme switch shows the mode in use: a moon in dark mode, a sun in light.
+function ThemeIcon({ dark }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      {dark ? (
+        <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      ) : (
+        <g fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" />
+        </g>
+      )}
+    </svg>
+  );
+}
+
 // robots: robotLinks() of the list the session already loaded (none on the robot).
-export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasonerModel }) {
+export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasonerModel, theme, toggleTheme }) {
   const [open, setOpen] = useOpen();
   const [menu, setMenu] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [highlight, setHighlight] = useState("");
+  useEffect(() => {
+    const open = (e) => {
+      setHighlight(String(e.detail?.section || ""));
+      setSettings(true);
+    };
+    window.addEventListener(OPEN_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
+  }, []);
   const me = useMe(onWebsite);
   const v = viewerLabel(me, cfg);
   const ws = workspaceLabel(me, cfg, robotName);
@@ -117,10 +143,21 @@ export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasoner
                 role="menuitem"
                 onClick={() => {
                   setMenu(false);
+                  setHighlight("");
                   setSettings(true);
                 }}
               >
                 Settings
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="rail-theme"
+                aria-label={theme === "dark" ? "Theme: dark. Switch to light" : "Theme: light. Switch to dark"}
+                onClick={toggleTheme}
+              >
+                Theme
+                <ThemeIcon dark={theme === "dark"} />
               </button>
               {onWebsite && (
                 <a role="menuitem" href="/account" target="_top">
@@ -162,7 +199,12 @@ export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasoner
         </div>
       </aside>
       {settings && (
-        <SettingsPane onWebsite={onWebsite} reasonerModel={reasonerModel} onClose={() => setSettings(false)} />
+        <SettingsPane
+          onWebsite={onWebsite}
+          reasonerModel={reasonerModel}
+          highlight={highlight}
+          onClose={() => (setSettings(false), setHighlight(""))}
+        />
       )}
     </>
   );

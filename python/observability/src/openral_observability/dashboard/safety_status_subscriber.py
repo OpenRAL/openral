@@ -27,9 +27,17 @@ from openral_observability.rclpy_spin import spin_executor_until_shutdown
 if TYPE_CHECKING:
     from openral_observability.dashboard.store import TelemetryStore
 
-__all__ = ["SAFETY_STATUS_TOPIC", "SafetyStatusSubscriber", "drop_reason_label"]
+__all__ = [
+    "DIAGNOSTICS_TOPIC",
+    "SAFETY_STATUS_TOPIC",
+    "SafetyStatusSubscriber",
+    "drop_reason_label",
+]
 
 SAFETY_STATUS_TOPIC = "/openral/safety_status"
+# The HAL lifecycle node's 1 Hz heartbeat carries its own e-stop latch (``estopped``):
+# a kernel release does not release a HAL that needs a restart, or whose re-arm failed.
+DIAGNOSTICS_TOPIC = "/diagnostics"
 
 
 def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message class is untyped
@@ -78,6 +86,7 @@ class SafetyStatusSubscriber:
         self._store = store
         self._node: Any = None
         self._subscription: Any = None
+        self._diagnostics: Any = None
         self._executor: Any = None
         self._thread: threading.Thread | None = None
         self._owns_rclpy = False
@@ -108,6 +117,15 @@ class SafetyStatusSubscriber:
         self._subscription = self._node.create_subscription(
             SafetyStatus, SAFETY_STATUS_TOPIC, self._on_status, qos
         )
+        try:
+            from diagnostic_msgs.msg import DiagnosticArray
+
+            # The heartbeat's own profile (depth 10, RELIABLE, VOLATILE).
+            self._diagnostics = self._node.create_subscription(
+                DiagnosticArray, DIAGNOSTICS_TOPIC, self._on_diagnostics, 10
+            )
+        except ImportError:  # reason: no diagnostic_msgs: the kernel's latch alone, as before
+            self._diagnostics = None
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(
@@ -135,6 +153,13 @@ class SafetyStatusSubscriber:
             trace_id=str(msg.trace_id),
             stamp_unix=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
         )
+
+    def _on_diagnostics(self, msg: Any) -> None:  # reason: ROS message is untyped
+        """Record each HAL heartbeat's ``estopped`` (runs on the spin thread)."""
+        for status in msg.status:
+            values = {kv.key: kv.value for kv in status.values}
+            if "estopped" in values:
+                self._store.set_hal_estop(str(status.name), values["estopped"] == "true")
 
     def close(self) -> None:
         """Tear down the node + executor; shut down rclpy only if we started it."""

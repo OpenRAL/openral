@@ -1004,9 +1004,17 @@ def _csp(policy: str, html: str = "") -> str:
 
 
 def _with_csp(target: Path, policy: str) -> FileResponse:
-    """Serve ``target`` under ``policy``, allowing an HTML file's own inline scripts by hash."""
-    html = target.read_text(encoding="utf-8") if target.suffix == ".html" else ""
-    return FileResponse(target, headers={"Content-Security-Policy": _csp(policy, html)})
+    """Serve ``target`` under ``policy``, allowing an HTML file's own inline scripts by hash.
+
+    HTML is ``no-cache`` (revalidated by ETag on every load): it names the hashed asset
+    bundles, so a cached copy kept serving the previous UI after an update.
+    """
+    is_html = target.suffix == ".html"
+    html = target.read_text(encoding="utf-8") if is_html else ""
+    headers = {"Content-Security-Policy": _csp(policy, html)}
+    if is_html:
+        headers["Cache-Control"] = "no-cache"
+    return FileResponse(target, headers=headers)
 
 
 def _robot_layout(manifest: RobotManifest | None) -> dict[str, Any] | None:

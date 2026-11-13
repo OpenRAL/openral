@@ -150,8 +150,13 @@ function Scope({ which, url = `/api/settings?scope=${which}` }) {
   );
 }
 
-export function SettingsPane({ onWebsite, reasonerModel, onClose }) {
+export function SettingsPane({ onWebsite, reasonerModel, highlight = "", onClose }) {
   const ref = useRef(null);
+  const reasonerRef = useRef(null);
+  // Opened from a "configure" link: bring the section into view and flash it.
+  useEffect(() => {
+    if (highlight === "reasoner") reasonerRef.current?.scrollIntoView({ block: "start" });
+  }, [highlight]);
   // Focus once, on open: the console re-renders on every snapshot with a new onClose,
   // and refocusing then would pull the caret out of a key being typed.
   useEffect(() => ref.current?.focus(), []);
@@ -168,6 +173,7 @@ export function SettingsPane({ onWebsite, reasonerModel, onClose }) {
           ×
         </button>
       </header>
+      <div ref={reasonerRef} className={highlight === "reasoner" ? "settings-section highlight" : "settings-section"}>
       <h3 className="settings-sub">Reasoner</h3>
       {onWebsite ? (
         <>
@@ -184,6 +190,7 @@ export function SettingsPane({ onWebsite, reasonerModel, onClose }) {
           </div>
         </>
       )}
+      </div>
     </section>
   );
 }
