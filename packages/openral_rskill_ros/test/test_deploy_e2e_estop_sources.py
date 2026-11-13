@@ -33,10 +33,14 @@ pytest.importorskip("openral_core")
 pytest.importorskip("openral_safety")
 pytest.importorskip("mujoco")
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("ROS_DISTRO"),
-    reason="ROS_DISTRO not set — these tests require a sourced ROS 2 installation.",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not os.environ.get("ROS_DISTRO"),
+        reason="ROS_DISTRO not set — these tests require a sourced ROS 2 installation.",
+    ),
+    # They compose hal_mode:=real, which the launch refuses on a networked graph.
+    pytest.mark.usefixtures("host_confined_ros_graph"),
+]
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"

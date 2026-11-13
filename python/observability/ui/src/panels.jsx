@@ -8,6 +8,7 @@ import {
   jpegBlob,
   coverMap,
   eventMeta,
+  camAge,
   fmtAge,
   fmtMs,
   fmtNum,
@@ -39,8 +40,9 @@ const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0));
 const pct = (v) => `${Math.round(clamp01(v) * 100)}%`;
 const s = (n) => (n === 1 ? "" : "s");
 
-// `ts === false` hides the freshness dot and age (panels with no data stream).
-function Card({ panel, ts, error, extra, children }) {
+// `ts === false` hides the freshness dot and age (panels with no data stream);
+// `right` takes the age's place at the top right.
+function Card({ panel, ts, error, extra, right, children }) {
   const st = error ? "error" : ts ? (robotNow() - ts < STALE_S ? "live" : "paused") : "wait";
   const title = String(panel.title || panel.type);
   return (
@@ -50,7 +52,7 @@ function Card({ panel, ts, error, extra, children }) {
         <h2>{title}</h2>
         {ts !== false && <span className="sr-only">{DOT_LABEL[st]}</span>}
         {extra}
-        {ts !== false && <span className="age">{fmtAge(ts)}</span>}
+        {right ?? (ts !== false && <span className="age">{fmtAge(ts)}</span>)}
       </header>
       <div className="card-bd">{children}</div>
     </section>
@@ -342,7 +344,17 @@ function Camera({ panel, snap, api, cfg }) {
   ].filter(Boolean);
   const live = !!cam?.ts_unix && now - cam.ts_unix < 2;
   return (
-    <Card panel={panel} ts={cam?.ts_unix}>
+    <Card
+      panel={panel}
+      ts={cam?.ts_unix}
+      right={
+        cam && (
+          <span className="age" title={cam.encoding || cam.modality || undefined}>
+            {`${cam.width ?? "?"} × ${cam.height ?? "?"}`}
+          </span>
+        )
+      }
+    >
       <div className="cam" ref={box}>
         {url ? (
           <img ref={img} src={url} alt={`Camera ${source}`} onLoad={bump} />
@@ -360,9 +372,7 @@ function Camera({ panel, snap, api, cfg }) {
         {producers.length > 0 && <div className="cam-src">{producers.join(" · ")}</div>}
       </div>
       <p className="meta">
-        <span>{source}</span>
-        <span>{cam?.age_ms != null ? `age ${num(cam.age_ms, 0)} ms` : "—"}</span>
-        {cam && <span>{`${cam.width ?? "?"} × ${cam.height ?? "?"} · ${cam.encoding || cam.modality || "?"}`}</span>}
+        <span>{camAge(cam, now)}</span>
         {cam?.fps != null && <span className="right">{num(cam.fps, 0)} fps</span>}
       </p>
     </Card>
