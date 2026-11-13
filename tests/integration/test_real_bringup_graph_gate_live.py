@@ -105,6 +105,18 @@ def _walk(description: Any, started: list[Any]) -> None:  # reason: LaunchDescri
     _helpers().walk_launch(description, LaunchContext(), started)
 
 
+def _assert_past_the_gate(exc: BaseException) -> None:
+    """``exc`` came from past the scope gate: from what this host lacks, never the gate.
+
+    Without the vendor packages the walk stops resolving one (``not found``); with them it
+    stops at an artifact built on the robot's host, such as the G1's LEAPP bundle
+    (``does not exist``).
+    """
+    frames = [f.filename for f in traceback.extract_tb(exc.__traceback__)]
+    assert not any(f.endswith("ros_graph_scope.py") for f in frames), exc
+    assert re.search("not found|does not exist", str(exc)), exc
+
+
 def _included(launch: Path) -> Any:  # reason: LaunchDescription
     """``launch`` as ``deploy_e2e`` includes it: under a set ``hal_mode``."""
     from launch import LaunchDescription
@@ -159,17 +171,15 @@ def test_a_host_confined_real_bringup_passes_the_gate(
 ) -> None:
     """Control: on LOCALHOST nothing raised comes from the scope gate.
 
-    With the vendor packages installed the walk records the bringup's processes (never
-    spawned); without them it stops resolving a package, past the gate.
+    With the vendor packages and their host-built artifacts the walk records the bringup's
+    processes (never spawned); without them it stops past the gate.
     """
     _requires_launch()
     _set_scope(monkeypatch, {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"})
     try:
         _walk(_launch_module(launch).generate_launch_description(), [])
     except Exception as exc:  # reason: package lookup raises launch/ament-specific types
-        frames = [f.filename for f in traceback.extract_tb(exc.__traceback__)]
-        assert not any(f.endswith("ros_graph_scope.py") for f in frames), exc
-        assert "not found" in str(exc), exc
+        _assert_past_the_gate(exc)
 
 
 @pytest.mark.parametrize("launch", _LAUNCHES, ids=_IDS)
@@ -222,6 +232,6 @@ def test_an_opted_in_bringup_logs_the_hazard_only_when_run_by_hand(
             try:
                 _walk(description, [])
             except Exception as exc:  # reason: past the gate, the vendor package lookup
-                assert "not found" in str(exc), exc
+                _assert_past_the_gate(exc)
         events[name] = [log["event"] for log in logs if log["log_level"] == "warning"]
     assert events == {"hand": ["ros_graph_scope.real_bringup_networked"], "deploy": []}
