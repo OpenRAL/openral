@@ -163,7 +163,7 @@ def test_taskstate_defaults() -> None:
 def test_verdict_complete_on_success() -> None:
     # The band gates on the PROGRESS head.
     action, verdict = evaluate_task_verdict(
-        ok=True, progress_now=0.91, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.91, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "complete"
     assert verdict == "progress=0.91"
@@ -172,7 +172,7 @@ def test_verdict_complete_on_success() -> None:
 def test_verdict_ambiguous_band_returns_vlm_check() -> None:
     # progress_now=0.79 sits in the [check_floor, success_threshold) band — vlm_check.
     action, _ = evaluate_task_verdict(
-        ok=True, progress_now=0.79, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.79, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "vlm_check"
 

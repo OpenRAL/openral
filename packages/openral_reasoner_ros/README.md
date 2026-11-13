@@ -110,6 +110,24 @@ failure cap; the successes the change stops counting are wrapped actions
 through the usual abandon path (one subdivision offer, then hand-off). The
 decisions log `mission: <complete|step|abandon> task <id> after '<rskill_id>' …`.
 
+The other per-task ladders count the same failures (`TaskState.failures`), never
+every dispatch. With a reward monitor, the gate's three tries are spent by failed
+dispatches and by successes it scores not done; a `final_step: false` approach
+drive it never judges, or a success it could not score (`ok=false`: stale frames,
+no task, a backend error), spends none, so "drive to the kitchen and pick up the
+cup" still gets three picks. A task whose dispatches keep succeeding while the gate
+keeps scoring them not done still ends at the cap; unscored successes end at
+`DEFAULT_MAX_TASK_DISPATCHES`, which the node checks before sending each goal, so
+no task sends more than 10 goals whatever its results said (a reward query that
+raises or never answers included). Object-query recovery (the tracker cannot resolve the
+goal's object) recovers while the task's failed dispatches, the failing goal
+included, stay below the cap, so an earlier drive or look-at does not block it; an
+earlier success whose reward verdict is still pending counts as a possible failure
+until the verdict lands, and a goal that finished before the cancel landed is a
+success. The
+mission summary the dashboard reads (`reasoner.mission_json`) carries `failures`
+next to `attempts`, plus `max_dispatches`.
+
 **What a success says.** The `## EXECUTION` line for a successful goal carries
 the runner's `ExecuteRskill.Result.outcome_summary` before the trace id. For a
 result-only wrapped action that is the terminal status, the result's scalar
@@ -600,7 +618,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.prompt_tokens` | When the client surfaces usage | Provider-reported prompt tokens, cache reads included. |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
 | `reasoner.offered_skills` | When a skill-tool cap is set | Skill ids offered this tick (`ReasonerCore.offered_palette`). The ranking (every skill's score and the query) is on the `reasoner.skill_subset` log, emitted when the subset changes. |
-| `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
+| `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/failures/verdict/rskill_id, with `max_attempts` and `max_dispatches`) the live dashboard renders as the Mission card checklist. A task's budget is `failures` of `max_attempts` and `attempts` of `max_dispatches`. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
 | `reasoner.llm_s` | Every tick that reached the LLM | Wall-clock of the provider round-trip **alone**. `ReasonerTickResult.elapsed_s` is end-to-end tick time (context render + call + bookkeeping), so `elapsed_s - llm_s` is the reasoner-side overhead — without the split a tick that grew from 6 s to 99 s cannot be attributed. |
 | `reasoner.prompt_tokens` | When the client reports usage | Provider-reported prompt tokens (Anthropic cache reads included). Tick latency that grows in step with this is a context-size problem — window or summarize the history rather than raising `OPENRAL_REASONER_TIMEOUT_S`. |

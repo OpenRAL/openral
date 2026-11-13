@@ -48,20 +48,26 @@ success_threshold), ``vlm_check`` (ambiguous band — caller must adjudicate via
 keep the task active)."""
 
 DEFAULT_MAX_ATTEMPTS: int = 3
-"""Default per-task attempt cap before the reward gate abandons + hands off.
+"""Default per-task cap on *failed* dispatches (``TaskState.failures``) before abandon + hand-off.
 
-With no reward monitor it counts *failed* dispatches only (``TaskState.failures``):
-a success nobody can judge is not evidence the task failed, so a multi-skill task
-whose steps all succeed is not abandoned after three of them (#562)."""
+Every per-task ladder counts failures, not dispatches: the reward gate, the
+no-reward-monitor cap and object-query recovery. A success nobody judges (no reward
+monitor, a reply it could not score, or a ``final_step=False`` step the gate never
+sees) is not evidence the task failed, so a multi-skill task whose steps all succeed
+is not abandoned after three of them (#562); ``DEFAULT_MAX_TASK_DISPATCHES`` bounds
+those successes instead."""
 
 DEFAULT_MAX_TASK_DISPATCHES: int = 10
 """Hard per-task bound on dispatches of any outcome (#562).
 
 Terminates the loop the failure-only cap cannot see: a task whose dispatches
-keep succeeding but which nothing ever completes (no reward monitor, or a
-``final_step=False`` step skill re-sent forever) is abandoned here through the
-usual abandon path (one subdivision offer, then hand-off). Sized for a few
-one-skill steps (navigate, pick, place) plus their retries."""
+keep succeeding but which nothing ever completes (no reward monitor, a reply it
+could not score, or a ``final_step=False`` step skill re-sent forever) is
+abandoned here through the usual abandon path (one subdivision offer, then
+hand-off). The reasoner node checks it where a goal would be sent, so it holds on
+every result path, a reward verdict that never comes included: no task sends more
+than this many goals. Sized for a few one-skill steps (navigate, pick, place) plus
+their retries."""
 
 DEFAULT_MAX_SUBDIVIDE_DEPTH: int = 2
 """Max re-decomposition depth (#123).
@@ -173,7 +179,7 @@ def evaluate_task_verdict(
     progress_now: float,
     success_threshold: float,
     check_floor: float,
-    attempts: int,
+    failures: int,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     success_now: float | None = None,
 ) -> tuple[VerdictAction, str]:
@@ -194,10 +200,15 @@ def evaluate_task_verdict(
     1. ``progress_now >= success_threshold`` → ``"complete"`` (auto-pass).
     2. ``check_floor <= progress_now < success_threshold`` →
        ``"vlm_check"`` — caller must adjudicate via ``describe_image``.
-    3. ``progress_now < check_floor`` → attempts ladder: ``"abandon"``
-       once ``attempts >= max_attempts``, else ``"retry"``.
+    3. ``progress_now < check_floor`` → failure ladder: ``"abandon"``
+       once ``failures >= max_attempts``, else ``"retry"``.
 
-    ``ok=False`` skips tier evaluation, going straight to the attempts
+    ``failures`` counts the task's failed dispatches *including this one*, should the
+    gate not complete it: a failed dispatch is already counted when it returns, a
+    successful one the caller adds and keeps only on a ladder verdict, so a step the gate
+    never judged spends nothing (#562).
+
+    ``ok=False`` skips tier evaluation, going straight to the failure
     ladder. Caller must pass ``check_floor <= success_threshold``
     (enforced upstream by ``RewardContract``, not re-validated here).
 
@@ -212,19 +223,19 @@ def evaluate_task_verdict(
         ...     success_now=0.62,
         ...     success_threshold=0.8,
         ...     check_floor=0.5,
-        ...     attempts=1,
+        ...     failures=1,
         ... )
         ('complete', 'progress=0.91 (success=0.62)')
         >>> evaluate_task_verdict(
-        ...     ok=True, progress_now=0.65, success_threshold=0.8, check_floor=0.5, attempts=1
+        ...     ok=True, progress_now=0.65, success_threshold=0.8, check_floor=0.5, failures=1
         ... )[0]
         'vlm_check'
         >>> evaluate_task_verdict(
-        ...     ok=True, progress_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=1
+        ...     ok=True, progress_now=0.40, success_threshold=0.8, check_floor=0.5, failures=1
         ... )[0]
         'retry'
         >>> evaluate_task_verdict(
-        ...     ok=True, progress_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=3
+        ...     ok=True, progress_now=0.40, success_threshold=0.8, check_floor=0.5, failures=3
         ... )[0]
         'abandon'
     """
@@ -234,15 +245,16 @@ def evaluate_task_verdict(
             return "complete", f"progress={progress_now:.2f}{corro}"
         if progress_now >= check_floor:
             return "vlm_check", f"ambiguous progress={progress_now:.2f}{corro}; VLM adjudicates"
-    # ok=False or progress_now < check_floor: attempts ladder
-    if attempts >= max_attempts:
+    # ok=False or progress_now < check_floor: failure ladder
+    if failures >= max_attempts:
         return (
             "abandon",
-            f"unverified after {attempts} attempt(s) (progress={progress_now:.2f}{corro})",
+            f"unverified after {failures} failed attempt(s) (progress={progress_now:.2f}{corro})",
         )
     return (
         "retry",
-        f"not verified (progress={progress_now:.2f}{corro}), attempt {attempts}/{max_attempts}",
+        f"not verified (progress={progress_now:.2f}{corro}), "
+        f"failed attempt {failures}/{max_attempts}",
     )
 
 
@@ -265,9 +277,11 @@ class TaskState:
         status: Lifecycle position (``TaskStatus``).
         attempts: Number of ``execute_rskill`` dispatches made for this task —
             the loop guard for the replanning ladder.
-        failures: How many of those dispatches came back failed (aborted, or
-            cancelled on patience / reward). With no reward monitor this, not
-            ``attempts``, is what ``DEFAULT_MAX_ATTEMPTS`` caps.
+        failures: How many of those dispatches failed: the ones that came back
+            aborted or cancelled on patience / reward, the successes a reward gate scored
+            not done, and the ones whose object query failed. This, not ``attempts``, is
+            what ``DEFAULT_MAX_ATTEMPTS`` caps; ``attempts`` meets
+            ``DEFAULT_MAX_TASK_DISPATCHES``.
         last_rskill_id: rSkill id of the most recent attempt, or ``None``.
         tried_rskill_ids: Every rSkill id dispatched for this task, in first-try
             order. A task still active after a skill ran was not finished by it,
@@ -576,22 +590,29 @@ class MissionState:
         Stamped on the ``reasoner.tick`` span as ``reasoner.mission_json`` so the
         live dashboard can render the mission checklist (status, attempts, last
         verdict) instead of only the single ``## MISSION`` text ledger. Pure data;
-        no rclpy, no Pydantic.
+        no rclpy, no Pydantic. A task's budget is ``failures`` of ``max_attempts``
+        and ``attempts`` of ``max_dispatches``; ``attempts`` of ``max_attempts``
+        mixes the two (a healthy task shows "5/3").
 
         Example:
             >>> m = MissionState(["pick the bowl", "place the butter"])
+            >>> m.record_attempt(rskill_id="x")
             >>> s = m.to_summary()
-            >>> s["max_attempts"], len(s["tasks"]), s["tasks"][0]["status"]
-            (3, 2, 'active')
+            >>> s["max_attempts"], s["max_dispatches"], len(s["tasks"])
+            (3, 10, 2)
+            >>> s["tasks"][0]["status"], s["tasks"][0]["attempts"], s["tasks"][0]["failures"]
+            ('active', 1, 0)
         """
         return {
             "max_attempts": DEFAULT_MAX_ATTEMPTS,
+            "max_dispatches": DEFAULT_MAX_TASK_DISPATCHES,
             "tasks": [
                 {
                     "id": t.task_id,
                     "text": t.text,
                     "status": t.status,
                     "attempts": t.attempts,
+                    "failures": t.failures,
                     "verdict": t.last_verdict,
                     "rskill_id": t.last_rskill_id,
                 }

@@ -173,7 +173,7 @@ class ObjectQueryStep(BaseModel):
     """The bounded recovery decision for a failed object query.
 
     Attributes:
-        rung: ``"recover"`` while dispatch attempts remain, else ``"blocked"``.
+        rung: ``"recover"`` while the task's failure budget remains, else ``"blocked"``.
         label: The object the goal names.
         reason: The tracker's last refusal reason.
         reflection: Bounded recovery instructions for the reasoner's context.
@@ -190,13 +190,15 @@ class ObjectQueryStep(BaseModel):
 def object_query_step(
     evidence: ObjectQueryEvidence,
     *,
-    attempts: int | None,
+    failures: int | None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> ObjectQueryStep:
     """Map tracker refusal evidence onto bounded task recovery or a stopped state.
 
-    The task's persisted manipulation dispatch count is the recovery budget. An absent
-    mission or spent budget blocks automatic dispatch until a new operator goal. While
+    The recovery budget is the task's persisted *failed* dispatch count (``failures``,
+    counting the goal this query fails): earlier dispatches that succeeded, an approach
+    drive or a look-at, spend none of it (#562). An absent mission or spent budget
+    blocks automatic dispatch until a new operator goal. While
     recovery remains, re-observe and re-ground the named object and workspace before
     another manipulation attempt; query resolution by itself does not authorize contact.
 
@@ -211,8 +213,10 @@ def object_query_step(
         ...     waited_s=60.0,
         ...     attempts=9,
         ... )
-        >>> object_query_step(ev, attempts=1).rung
+        >>> object_query_step(ev, failures=1).rung
         'recover'
+        >>> object_query_step(ev, failures=3).rung
+        'blocked'
     """
     observed = (
         "; ".join(
@@ -226,8 +230,9 @@ def object_query_step(
             f" Workspace {evidence.workspace.frame_id} bounds "
             f"{evidence.workspace.pose.xyz} ± {evidence.workspace.half_extents}."
         )
-    budget = f"{attempts}/{max_attempts}" if attempts is not None else f"unknown/{max_attempts}"
-    recover = attempts is not None and attempts < max_attempts
+    spent = "unknown" if failures is None else str(failures)
+    budget = f"{spent}/{max_attempts} failed dispatches"
+    recover = failures is not None and failures < max_attempts
     visibility_unknown = evidence.reason in {
         "no_camera_pose",
         "no_robot_mask",
@@ -241,13 +246,13 @@ def object_query_step(
     if recover:
         rung: Literal["recover", "blocked"] = "recover"
         ending = (
-            f"Recovery dispatch budget is {budget}. Re-observe and re-ground the object and "
+            f"Recovery budget is {budget}. Re-observe and re-ground the object and "
             "workspace, then replan; do not manipulate until geometry and contact are validated."
         )
     else:
         rung = "blocked"
         ending = (
-            f"Recovery dispatch budget is {budget}. Stop this task; automatic dispatch remains "
+            f"Recovery budget is {budget}. Stop this task; automatic dispatch remains "
             "blocked until a new operator goal."
         )
     return ObjectQueryStep(
