@@ -113,9 +113,9 @@ def _ensure_source(
 ) -> Path:
     """Return the upstream lingbotvla checkout at ``<home>/source``, fetched at ``sha``.
 
-    The sidecar executes this code, so fresh or reused it must be the pin (the
-    shared ``ensure_source`` fails closed otherwise; delete ``<home>/source`` to
-    re-fetch after a pin bump). ``$<repo_env>`` overrides with an existing
+    The sidecar executes this code, so fresh or reused it must be the pin with no
+    local changes to tracked files (the shared ``ensure_source`` fails closed
+    otherwise; delete ``<home>/source`` to re-fetch after a pin bump). ``$<repo_env>`` overrides with an existing
     checkout (dev escape hatch): the operator's own, never fetched or verified here.
     """
     override = os.environ.get(repo_env)
@@ -125,7 +125,8 @@ def _ensure_source(
             raise SystemExit(f"{repo_env}={override!r} has no lingbotvla/ package dir")
         print(f"[{_LABEL}] reusing operator-provided checkout at {src}", flush=True)
         return src
-    return ensure_source(_LABEL, home, url, sha)
+    # Never patched after the fetch (overrides go to <home>), so it must be clean too.
+    return ensure_source(_LABEL, home, url, sha, clean=True)
 
 
 def _install_v1(uv: str, py: Path) -> None:

@@ -94,6 +94,16 @@ def test_require_pinned_head_refuses_a_directory_that_is_not_a_checkout(tmp_path
 
 
 @_needs_git
+def test_require_pinned_head_gives_the_refetch_hint_for_an_unreadable_head(
+    tmp_path: Path,
+) -> None:
+    """An interrupted in-place fetch leaves a .git with no commit: refused with the fix."""
+    _git("init", "-q", str(tmp_path / "source"), cwd=tmp_path)
+    with pytest.raises(SystemExit, match=r"(?s)cannot read the commit.*Delete"):
+        require_pinned_head("t", tmp_path / "source", "0" * 40)
+
+
+@_needs_git
 def test_robotwin_checkout_is_verified_on_reuse_not_only_on_clone(tmp_path: Path) -> None:
     """``ensure_source`` hands RoboTwin over and it is renamed out of ``source/``:
     the pin must still hold on every later provisioning run (#560)."""
@@ -130,6 +140,19 @@ def test_lingbot_checkout_is_verified_on_reuse_not_only_on_clone(
     _git("checkout", "-q", "FETCH_HEAD", cwd=source)
     with pytest.raises(SystemExit, match="not the pinned"):
         lingbot._ensure_source(home, url=url, sha=first)
+    # At the pin but with an edited tracked file: what would run is not the pin.
+    _git("checkout", "-q", first, cwd=source)
+    (source / "f.txt").write_text("edited")
+    with pytest.raises(SystemExit, match="local changes"):
+        lingbot._ensure_source(home, url=url, sha=first)
+    _git("checkout", "-q", "--", "f.txt", cwd=source)
+    (source / "__pycache__").mkdir()  # untracked byproducts of running it are fine
+    assert lingbot._ensure_source(home, url=url, sha=first) == source
+    # A copied tree without .git: refused with the hint, before any fetch.
+    shutil.rmtree(source / ".git")
+    with pytest.raises(SystemExit, match=r"no git checkout.*Delete"):
+        lingbot._ensure_source(home, url=url, sha=first)
+    assert not (home / "source.partial").exists()
 
 
 @_needs_git

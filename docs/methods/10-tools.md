@@ -728,7 +728,7 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 - `_TORCHCODEC_PIN` (L100) — matching v2 torch-stack pin (excluded on aarch64).
 - `_TRITON_PIN` (L101) — matching v2 torch-stack pin.
 - `_V2_OVERRIDES: tuple[str, ...]` (L102) — the override requirement files applied on top of upstream's v2 lock.
-- `main() -> int` (L319) — `scrub_environ()` first (no operator API key reaches the fetch, install or server), then argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
+- `main() -> int` (L320) — `scrub_environ()` first (no operator API key reaches the fetch, install or server), then argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L49) — Marker key for the msgpack ndarray codec.
 - `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L1009) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy. `--quantization nf4` on CUDA needs a valid `--quantization-config` (Pro's kwargs with `load_in_4bit`), which `lingbot_vla2_sidecar.py` takes from OpenRAL Pro (`sidecar_quantization_args`); a missing, malformed or mismatched config, or no `--pro-quant-module` (the path of Pro's sidecar rewrites file, `sidecar_quantization_args(..., rewrites=True)`), makes the server exit (ADR-0123). `--device cpu` falls back to bf16 and needs neither Pro nor a config.
 

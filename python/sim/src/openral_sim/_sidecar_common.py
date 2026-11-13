@@ -170,20 +170,22 @@ def checkout_head(source: Path) -> str:
     return out.stdout.strip()
 
 
-def ensure_source(label: str, work: Path, repo_url: str, sha: str) -> Path:
+def ensure_source(label: str, work: Path, repo_url: str, sha: str, *, clean: bool = False) -> Path:
     """Fetch ``repo_url`` at exactly commit ``sha`` into ``<work>/source``; return it.
 
     Third-party sidecar sources are executed on the host (their install scripts,
     their server code), so the commit is pinned, never the default branch's
     moving ``HEAD``. Fails closed (``SystemExit``) on a ``sha`` that is not a full
-    40-hex commit id, and when the checkout's ``HEAD`` is not ``sha`` after the
-    fetch or on reuse of an existing checkout (delete ``<work>/source`` to
-    re-fetch after a pin bump).
+    40-hex commit id, and when ``require_pinned_head(..., clean=clean)`` refuses the
+    checkout after the fetch or on reuse of anything already at ``<work>/source``
+    (delete it to re-fetch after a pin bump).
     """
     if not _FULL_SHA.fullmatch(sha):
         raise SystemExit(f"[{label}] refusing to clone {repo_url}: pin {sha!r} is not a full SHA")
     source = work / "source"
-    if (source / ".git").is_dir():
+    # Anything already there is verified, never fetched over: a tree without .git is
+    # refused with the delete hint rather than failing the rename after a full fetch.
+    if source.exists(follow_symlinks=False):
         print(f"[{label}] reusing existing checkout at {source}", flush=True)
     else:
         # Built beside the destination and renamed into place only once complete, so
@@ -196,32 +198,49 @@ def ensure_source(label: str, work: Path, repo_url: str, sha: str) -> Path:
         run_cmd(label, ["git", "-C", str(partial), "fetch", "-q", "--depth", "1", "origin", sha])
         run_cmd(label, ["git", "-C", str(partial), "checkout", "-q", "FETCH_HEAD"])
         partial.rename(source)
-    require_pinned_head(label, source, sha)
+    require_pinned_head(label, source, sha, clean=clean)
     return source
 
 
-def require_pinned_head(label: str, source: Path, sha: str) -> None:
+def require_pinned_head(label: str, source: Path, sha: str, *, clean: bool = False) -> None:
     """Fail closed (``SystemExit``) unless the git checkout ``source`` is at commit ``sha``.
 
     The check every reuse of a pinned third-party checkout goes through, also after
     it was moved out of ``ensure_source``'s ``<work>/source``. A directory without
     its own ``.git`` fails (an enclosing repository's ``HEAD`` is never read), and so
     does a ``git`` that cannot answer, with git's own reason (e.g. dubious ownership).
+    ``clean=True`` also refuses local changes to tracked files, for a checkout that
+    is never patched after the fetch (untracked byproducts such as ``__pycache__``
+    are not changes).
     """
+    hint = f"Delete {source} to re-fetch the pinned commit."
+    changed = ""
     if not (source / ".git").exists():
         head = "no git checkout"
     else:
         try:
             head = checkout_head(source)
+            if clean:
+                changed = subprocess.run(
+                    ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
         except (OSError, subprocess.CalledProcessError) as exc:
             reason = (getattr(exc, "stderr", None) or str(exc)).strip()
             raise SystemExit(
-                f"[{label}] cannot read the commit of {source} ({reason}): refusing to run it."
+                f"[{label}] cannot read the commit of {source} ({reason}): "
+                f"refusing to run it. {hint}"
             ) from exc
     if head != sha:
         raise SystemExit(
-            f"[{label}] {source} is at {head}, not the pinned {sha}: refusing to run it. "
-            f"Delete {source} to re-fetch the pinned commit."
+            f"[{label}] {source} is at {head}, not the pinned {sha}: refusing to run it. {hint}"
+        )
+    if changed:
+        raise SystemExit(
+            f"[{label}] {source} has local changes to tracked files at the pinned {sha} "
+            f"(`git -C {source} status` lists them): refusing to run it. {hint}"
         )
 
 
