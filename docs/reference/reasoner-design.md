@@ -235,8 +235,8 @@ storm).
 **retry → param-tweak → substitute-skill → goal-replan → human-handoff**. The
 shipped gate is `ReasonerCore`'s per-kind retry cap
 ([`reasoner.md` §Bounded replanning](reasoner.md#bounded-replanning)). At the mission layer, `TaskState.failures` caps a task's failed tries
-(`DEFAULT_MAX_ATTEMPTS`, the reward gate's not-done verdicts or, with no reward
-monitor, failed dispatches) and `TaskState.attempts` its dispatches of any outcome
+(`DEFAULT_MAX_ATTEMPTS`: failed dispatches, and successes the reward gate scores not
+done) and `TaskState.attempts` its dispatches of any outcome
 (`DEFAULT_MAX_TASK_DISPATCHES`), so successes that never finish the task are bounded
 without spending its tries; exhaustion calls `abandon_active`, emits an honest *"could not complete task K"*
 with the `MissionState` snapshot, and advances. The terminal rung is always

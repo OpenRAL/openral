@@ -52,9 +52,10 @@ DEFAULT_MAX_ATTEMPTS: int = 3
 
 Every per-task ladder counts failures, not dispatches: the reward gate, the
 no-reward-monitor cap and object-query recovery. A success nobody judges (no reward
-monitor, or a ``final_step=False`` step the gate never sees) is not evidence the task
-failed, so a multi-skill task whose steps all succeed is not abandoned after three of
-them (#562); ``DEFAULT_MAX_TASK_DISPATCHES`` bounds those successes instead."""
+monitor, a reply it could not score, or a ``final_step=False`` step the gate never
+sees) is not evidence the task failed, so a multi-skill task whose steps all succeed
+is not abandoned after three of them (#562); ``DEFAULT_MAX_TASK_DISPATCHES`` bounds
+those successes instead."""
 
 DEFAULT_MAX_TASK_DISPATCHES: int = 10
 """Hard per-task bound on dispatches of any outcome (#562).
@@ -200,8 +201,9 @@ def evaluate_task_verdict(
        once ``failures >= max_attempts``, else ``"retry"``.
 
     ``failures`` counts the task's failed dispatches *including this one*, should the
-    gate not complete it: the caller adds it and keeps the count only on a ladder
-    verdict, so a step the gate never judged spends nothing (#562).
+    gate not complete it: a failed dispatch is already counted when it returns, a
+    successful one the caller adds and keeps only on a ladder verdict, so a step the gate
+    never judged spends nothing (#562).
 
     ``ok=False`` skips tier evaluation, going straight to the failure
     ladder. Caller must pass ``check_floor <= success_threshold``
@@ -272,11 +274,11 @@ class TaskState:
         status: Lifecycle position (``TaskStatus``).
         attempts: Number of ``execute_rskill`` dispatches made for this task —
             the loop guard for the replanning ladder.
-        failures: How many of those dispatches failed: with a reward monitor, the
-            ones its gate did not judge complete; without one, the ones that came back
-            aborted or cancelled on patience / reward; and, either way, the ones whose
-            object query failed. This, not ``attempts``, is what ``DEFAULT_MAX_ATTEMPTS``
-            caps; ``attempts`` meets ``DEFAULT_MAX_TASK_DISPATCHES``.
+        failures: How many of those dispatches failed: the ones that came back
+            aborted or cancelled on patience / reward, the successes a reward gate scored
+            not done, and the ones whose object query failed. This, not ``attempts``, is
+            what ``DEFAULT_MAX_ATTEMPTS`` caps; ``attempts`` meets
+            ``DEFAULT_MAX_TASK_DISPATCHES``.
         last_rskill_id: rSkill id of the most recent attempt, or ``None``.
         tried_rskill_ids: Every rSkill id dispatched for this task, in first-try
             order. A task still active after a skill ran was not finished by it,

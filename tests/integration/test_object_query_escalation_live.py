@@ -638,3 +638,73 @@ def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
         and typed(s)
         for s in in_goal
     ), "the tracker's escalation span is not in the goal's trace"
+
+
+def test_a_replaced_tasks_object_query_does_not_tell_the_new_goal_to_stop() -> None:
+    """An escalation for a goal whose task a new operator goal replaced has no budget to read
+    (#586 review). Its record must not carry the blocked reflection ("Stop this task …") into
+    the new goal's context: nothing blocked the new task."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_core import ObjectQueryEvidence, ObjectRole, WaitTool
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import MissionState, ToolPalette
+    from openral_reasoner.context import FailureEventRecord
+    from openral_reasoner_ros import ReasonerNode
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    invocation = "ab" * 16
+    rclpy.init()
+    try:
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[WaitTool() for _ in range(64)]),
+            palette=ToolPalette(execute_rskill_ids=frozenset({_SKILL})),
+            tick_hz=0.2,
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+        first = MissionState.from_prompt("pick the banana")
+        reasoner._renderer.set_mission(first)
+        first.record_attempt(rskill_id=_SKILL)
+        active = first.active()
+        assert active is not None
+        # The pick is in flight for the first goal's task ...
+        reasoner._rskill_inflight = True
+        reasoner._active_object_query_invocation_id = invocation
+        reasoner._active_dispatch_task_id = active.task_id
+        reasoner._active_dispatch_mission_generation = reasoner._mission_generation
+        # ... when the operator starts over.
+        prompt = PromptStamped()
+        prompt.header.frame_id = "dashboard"
+        prompt.text = "pick the orange"
+        prompt.metadata_json = '{"new_goal": true}'
+        reasoner._on_prompt(prompt)
+        assert reasoner._renderer.mission is not first
+        evidence = ObjectQueryEvidence(
+            escalation="exhausted",
+            goal_id="grasp:obj:banana@1",
+            query_id="0",
+            label="banana",
+            role=ObjectRole.TARGET,
+            waited_s=1.5,
+            attempts=3,
+            invocation_id=invocation,
+        )
+        reasoner._on_object_query(
+            FailureEventRecord(
+                source="world_state",
+                kind=0,
+                severity=0,
+                evidence_json=evidence.model_dump_json(),
+                rskill_id=_SKILL,
+                trace_id="",
+                stamp_ns=1,
+            )
+        )
+        [record] = [e for e in reasoner._renderer.executions if e.rskill_id == "(object-query)"]
+        assert "Stop this task" not in (record.reflection or ""), record.reflection
+        assert reasoner._rskill_cancel_reason == "object_query_old_task"
+        assert reasoner._object_query_blocked_task_id is None
+    finally:
+        rclpy.try_shutdown()

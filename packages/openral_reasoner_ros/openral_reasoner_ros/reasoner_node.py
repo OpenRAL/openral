@@ -2070,14 +2070,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         step = object_query_step(evidence, failures=failures)
         self.get_logger().warning(
             f"object_query: {evidence.escalation} label={evidence.label!r} "
-            f"reason={evidence.reason!r} goal={evidence.goal_id} → {step.rung}"
+            f"reason={evidence.reason!r} goal={evidence.goal_id} → "
+            f"{'stale (task replaced)' if invocation_task_changed else step.rung}"
         )
         self._renderer.append_execution(
             ExecutionEventRecord(
                 rskill_id="(object-query)",
                 outcome="failed",
                 summary=str(evidence.to_exception()),
-                reflection=step.reflection,
+                # A replaced task's goal: its "blocked, stop this task" verdict would reach
+                # the new goal's context, which nothing blocked.
+                reflection=None if invocation_task_changed else step.reflection,
                 stamp_ns=record.stamp_ns,
             )
         )
@@ -4276,9 +4279,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         ``completes_task_on_success`` completes the task (only its step when the
         goal was not the task's ``final_step``), a task past its dispatch bound is
         abandoned, and with no reward monitor so is one whose *failed* attempts
-        reach the cap (a success is not a failure, #562). With a reward monitor the gate
-        counts the failure instead: one per verdict short of complete
-        (``_count_failure``), so a step it never judges spends none of its tries.
+        reach the cap (a success is not a failure, #562). A failed dispatch is counted
+        here (``_count_failure``), reward monitor or not; the gate counts a success only
+        when it scores it not done, so a step it never sees, or a success it could not
+        score, spends none of its tries.
 
         ``dispatch_task_id`` / ``dispatch_mission_generation`` name the task the
         returning goal was dispatched for; when given and no longer the active task
@@ -4309,9 +4313,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
             entry = self._palette.skill(call.rskill_id)
             dispatch_completes_task = entry is not None and entry.completes_task_on_success
-        if not succeeded and not self._task_progress_available:
-            # The no-verifier cap counts these (#562); with a reward monitor its gate
-            # decides whether this dispatch failed.
+        if not succeeded:  # counted once, here; the reward gate never counts it again
             self._count_failure(active)
         step = task_step_without_verifier(
             succeeded=succeeded,
@@ -4364,19 +4366,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().warning(
                 "mission verify: query_task_progress not on graph; active task stays active",
             )
-            if not succeeded:  # no verdict will count it
-                self._count_failure(active)
-            if active.attempts >= DEFAULT_MAX_TASK_DISPATCHES:  # no verdict can come: bound it
-                self._apply_mission_verdict(
-                    "abandon",
-                    f"not complete after {active.attempts} dispatch(es), the per-task bound "
-                    "(the reward monitor is not on the graph)",
-                    mission=mission,
-                    active=active,
-                    progress_now=0.0,
-                    success_now=0.0,
-                    traceparent=traceparent,
-                )
+            self._bound_unjudged_dispatch(
+                active,
+                mission=mission,
+                why="the reward monitor is not on the graph",
+                traceparent=traceparent,
+            )
             return
         req = QueryTaskProgress.Request()
         # VLM-adjudicated completion amendment — score the whole attempt (start→now), not a trailing
@@ -4396,7 +4391,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # new mission whose first task has the same ``t1`` id and text.
         future.add_done_callback(
             lambda fut: self._on_mission_verify_response(
-                active.task_id, active.text, fut, mission=mission, traceparent=traceparent
+                active.task_id,
+                active.text,
+                fut,
+                mission=mission,
+                traceparent=traceparent,
+                succeeded=succeeded,
             ),
         )
         self.get_logger().info(
@@ -4412,12 +4412,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         *,
         mission: MissionState,
         traceparent: str | None,
+        succeeded: bool,
     ) -> None:
         """Apply the reward gate (§2): complete / abandon / retry.
 
         Runs ``evaluate_task_verdict`` on the reward response and the active task's
-        failure count (this dispatch included unless the verdict completes the task),
-        then advances the deterministic queue. ``complete`` →
+        failure count, then advances the deterministic queue. A failed dispatch was
+        counted when it returned; a ``succeeded`` one counts only if the gate scores it
+        not done. A success the monitor could not score (``ok=False``: stale frames, no
+        task, a backend error) is no verdict and counts nothing (#562); the dispatch bound
+        ends a task fed such successes forever. ``complete`` →
         advance to the next task; ``abandon`` (ladder exhausted) → mark abandoned,
         advance, and on mission end emit an honest handoff; ``retry`` → keep the
         task active. A forced tick wakes the reasoner to act on the new state.
@@ -4456,15 +4460,28 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     stamp_ns=self.get_clock().now().nanoseconds,
                 )
             )
+        if succeeded and not resp.ok:
+            self.get_logger().info(
+                f"mission verify: no reward score for task {active.task_id} "
+                f"(attempt {active.attempts}); a success nobody judged is not a failure",
+            )
+            self._bound_unjudged_dispatch(
+                active,
+                mission=mission,
+                why="the reward monitor could not score it",
+                traceparent=traceparent,
+            )
+            return
         action, verdict = evaluate_task_verdict(
             ok=bool(resp.ok),
             progress_now=progress_now,
             success_now=success_now,
             success_threshold=success_threshold,
             check_floor=check_floor,
-            failures=active.failures + 1,  # this dispatch, unless the gate completes it
+            # A failed dispatch is already counted; a success counts unless it completes.
+            failures=active.failures + int(succeeded),
         )
-        if action in ("retry", "abandon"):
+        if succeeded and action in ("retry", "abandon"):
             self._count_failure(active)
         if action == "vlm_check":
             # VLM-adjudicated completion §5 — ambiguous reward band: ask the VLM whether the task is
@@ -4488,6 +4505,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     success_threshold=success_threshold,
                     check_floor=check_floor,
                     traceparent=traceparent,
+                    succeeded=succeeded,
                 ),
             )
             return
@@ -4514,6 +4532,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         success_threshold: float,
         check_floor: float,
         traceparent: str | None,
+        succeeded: bool,
     ) -> None:
         """Executor-thread continuation of the ``vlm_check`` branch (#21).
 
@@ -4547,17 +4566,18 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # the verdict with ok=False to skip tiers 1/2 and apply the failure
         # ladder (abandon once failures >= max). Without this an ambiguous-band
         # task retries forever — never abandons, never hands off (CLAUDE.md §3
-        # bounded ladder). Each such verdict counts a failure and ``failures``
-        # never decreases, so this terminates.
+        # bounded ladder). Each such verdict counts a failure (a failed dispatch was
+        # counted on return) and ``failures`` never decreases, so this terminates.
         action, verdict = evaluate_task_verdict(
             ok=False,
             progress_now=progress_now,
             success_now=success_now,
             success_threshold=success_threshold,
             check_floor=check_floor,
-            failures=active.failures + 1,
+            failures=active.failures + int(succeeded),
         )
-        self._count_failure(active)
+        if succeeded:
+            self._count_failure(active)
         self._apply_mission_verdict(
             action,
             verdict,
@@ -4572,14 +4592,39 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Count one failed dispatch against the active task (``TaskState.failures``).
 
         Every per-task ladder caps failures, not dispatches (#562). A failure is a
-        dispatch the reward gate judged not done, or, where no verdict comes, one that
-        came back failed; an object-query failure counts either way. A
-        ``final_step=False`` step the gate never judges counts nothing. Every gate verdict
-        either completes the task or counts one here, so a task whose dispatches keep
-        succeeding but never complete still reaches the cap.
+        dispatch that came back failed (counted on return, reward monitor or not), a
+        success the reward gate scored not done, or a goal whose object query failed. A
+        success nobody judged (no reward monitor, an ``ok=False`` reply, a
+        ``final_step=False`` step the gate never sees) counts nothing;
+        ``DEFAULT_MAX_TASK_DISPATCHES`` bounds those.
         """
         active.failures += 1
         self._persist_ladder_state()
+
+    def _bound_unjudged_dispatch(
+        self,
+        active: TaskState,
+        *,
+        mission: MissionState,
+        why: str,
+        traceparent: str | None,
+    ) -> None:
+        """Abandon at the dispatch bound a task whose dispatch got no reward verdict.
+
+        Below ``DEFAULT_MAX_TASK_DISPATCHES`` the task stays active for the LLM; at it, the
+        usual abandon path (one subdivision offer, then hand-off) ends a task whose
+        results nobody can judge.
+        """
+        if active.attempts >= DEFAULT_MAX_TASK_DISPATCHES:
+            self._apply_mission_verdict(
+                "abandon",
+                f"not complete after {active.attempts} dispatch(es), the per-task bound ({why})",
+                mission=mission,
+                active=active,
+                progress_now=0.0,
+                success_now=0.0,
+                traceparent=traceparent,
+            )
 
     def _apply_mission_verdict(
         self,

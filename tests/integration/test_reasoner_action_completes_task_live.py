@@ -227,6 +227,7 @@ def test_the_dispatch_bound_holds_when_the_reward_monitor_is_off_the_graph() -> 
             dispatches += 1
         assert dispatches == DEFAULT_MAX_TASK_DISPATCHES + 1  # bound → offer, then abandon
         assert _status(mission) == "abandoned"
+        assert mission.tasks[0].failures == 0, "a success with no verdict is not a failure"
     finally:
         rclpy.try_shutdown()
 
@@ -352,25 +353,42 @@ def _judge(
     call: ExecuteRskillTool,
     *,
     progress: float,
+    succeeded: bool = True,
+    scored: bool = True,
 ) -> None:
-    """One dispatch the reward gate judges: the node marks the task verifying and the
-    monitor's ``QueryTaskProgress`` reply reaches its response callback."""
+    """One dispatch the reward gate judges: it returns, then the monitor's
+    ``QueryTaskProgress`` reply reaches the node's response callback.
+
+    A failed dispatch returns through ``_maybe_verify_active_mission_task``, which counts it.
+    No monitor serves the query here, so the node then takes its off-graph branch, which
+    settles nothing below the dispatch bound. A successful one only marks the task verifying
+    on return. ``scored=False`` is the monitor's no-score reply (stale frames, no task, a
+    backend error)."""
     from openral_msgs.srv import QueryTaskProgress
     from rclpy.task import Future
 
     mission = reasoner._renderer.mission
     mission.record_attempt(rskill_id=call.rskill_id)
-    mission.mark_verifying()
+    if succeeded:
+        mission.mark_verifying()
+    else:
+        reasoner._maybe_verify_active_mission_task(call, traceparent=None, succeeded=False)
     active = mission.active()
     response = QueryTaskProgress.Response()
-    response.ok = True
-    response.progress_now = progress
-    response.success_now = progress
-    response.frames_seen = 30
+    response.ok = scored
+    response.stale = not scored
+    response.progress_now = progress if scored else 0.0
+    response.success_now = progress if scored else 0.0
+    response.frames_seen = 30 if scored else 0
     future = Future()
     future.set_result(response)
     reasoner._on_mission_verify_response(
-        active.task_id, active.text, future, mission=mission, traceparent=None
+        active.task_id,
+        active.text,
+        future,
+        mission=mission,
+        traceparent=None,
+        succeeded=succeeded,
     )
 
 
@@ -480,5 +498,64 @@ def test_mission_summary_counts_failures_not_dispatches() -> None:
         assert isinstance(tasks, list)
         assert (tasks[0]["attempts"], tasks[0]["failures"]) == (6, 1)
         assert tasks[0]["status"] == "active"
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_failed_dispatch_spends_one_try_of_the_reward_gate() -> None:
+    """#586 review: a failed pick is counted once, when it returns, not again when the gate
+    judges it: three failed picks reach the subdivision offer, not two."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True
+        pick = ExecuteRskillTool(
+            rskill_id=next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        )
+        mission = MissionState.from_prompt("pick up the cup")
+        reasoner._renderer.set_mission(mission)
+        picks = 0
+        while not reasoner._subdivide_offered:
+            assert picks < 2 * DEFAULT_MAX_ATTEMPTS, "the gate never ended the pick"
+            _judge(reasoner, pick, progress=_NOT_DONE, succeeded=False)
+            picks += 1
+            active = mission.active()
+            assert active is not None and active.failures == picks
+        assert picks == DEFAULT_MAX_ATTEMPTS
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_success_the_reward_monitor_could_not_score_is_not_a_failure() -> None:
+    """#586 review: ``ok=False`` (stale frames, no task, a backend error) is no verdict. A
+    successful dispatch it could not score spends no try, as with no reward monitor (#562),
+    and the dispatch bound still ends a task fed such successes forever."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_TASK_DISPATCHES, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True
+        look = ExecuteRskillTool(
+            rskill_id=next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        )
+        mission = MissionState.from_prompt("look at the shelf and pick up the cup")
+        reasoner._renderer.set_mission(mission)
+        sent = 0
+        while not mission.is_complete():
+            assert sent < 4 * DEFAULT_MAX_TASK_DISPATCHES, "unbounded unscored successes"
+            _judge(reasoner, look, progress=_NOT_DONE, scored=False)
+            sent += 1
+            if sent < DEFAULT_MAX_TASK_DISPATCHES:
+                assert reasoner._subdivide_offered == set(), f"offered after {sent} successes"
+        assert sent == DEFAULT_MAX_TASK_DISPATCHES + 1  # bound → offer, then abandon
+        assert mission.tasks[0].failures == 0
+        assert _status(mission) == "abandoned"
     finally:
         rclpy.try_shutdown()

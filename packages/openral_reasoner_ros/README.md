@@ -111,11 +111,13 @@ through the usual abandon path (one subdivision offer, then hand-off). The
 decisions log `mission: <complete|step|abandon> task <id> after '<rskill_id>' …`.
 
 The other per-task ladders count the same failures (`TaskState.failures`), never
-every dispatch. With a reward monitor, the gate's three tries are spent only by
-verdicts short of complete: a `final_step: false` approach drive it never judges
-spends none, so "drive to the kitchen and pick up the cup" still gets three picks,
-and a task whose dispatches keep succeeding while the gate keeps judging them not
-done still ends at the cap. Object-query recovery (the tracker cannot resolve the
+every dispatch. With a reward monitor, the gate's three tries are spent by failed
+dispatches and by successes it scores not done; a `final_step: false` approach
+drive it never judges, or a success it could not score (`ok=false`: stale frames,
+no task, a backend error), spends none, so "drive to the kitchen and pick up the
+cup" still gets three picks. A task whose dispatches keep succeeding while the gate
+keeps scoring them not done still ends at the cap; unscored successes end at
+`DEFAULT_MAX_TASK_DISPATCHES`. Object-query recovery (the tracker cannot resolve the
 goal's object) recovers while the task's failed dispatches, the failing goal
 included, stay below the cap, so an earlier drive or look-at does not block it. The
 mission summary the dashboard reads (`reasoner.mission_json`) carries `failures`
