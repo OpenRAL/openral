@@ -76,8 +76,9 @@ default); and a right pane that shows one tab at a time, scrolls on its own and
 can be dragged wider. The 3D view is pinned to the world frame (`map`, else `odom`) when the
 robot has one, with a **Follow robot** toggle at its top right; its layers include the
 lidar scan and each depth camera's thinned cloud. Layout choices (tabs shown, order,
-default tab, pane width, 3D layers, follow, cameras, light/dark/system theme) are saved per
-robot in the browser.
+default tab, pane width, 3D layers, follow, cameras) and the theme are saved per robot in the
+browser. The theme follows the system until it is switched from the left pane's menu (**Theme**,
+a moon in dark mode, a sun in light).
 
 - `src/main.jsx`: mode detection, manifest/config polling, the SSE stream, and the header.
 - `src/Console.jsx`: the camera strip, the right pane and its tabs, the reasoner trace, the Layout sheet.

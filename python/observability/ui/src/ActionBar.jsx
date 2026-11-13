@@ -84,7 +84,8 @@ function ActionForm({ api, action }) {
         {label}
       </button>
       <span className={`action-result${result && !result.ok ? " err" : ""}`} role="status" aria-live="polite">
-        {result?.text}
+        {/* A stop speaks through the header (the latched pill, Release); only its failures need words. */}
+        {estop && result?.ok ? "" : result?.text}
       </span>
     </form>
   );
@@ -112,8 +113,8 @@ function ReleaseButton({ api, action }) {
       <button type="button" className="btn release" disabled={!armed || busy} onClick={release}>
         Release e-stop
       </button>
-      <span className={`action-result${result && !result.ok ? " err" : ""}`} role="status" aria-live="polite">
-        {result?.text}
+      <span className="action-result err" role="status" aria-live="polite">
+        {result && !result.ok ? result.text : ""}
       </span>
     </div>
   );

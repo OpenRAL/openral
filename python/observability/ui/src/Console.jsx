@@ -15,7 +15,6 @@ import {
   resolveTheme,
   savePrefs,
   TABS,
-  THEMES,
   toggleIn,
   availableTabs,
   visibleTabs,
@@ -324,15 +323,6 @@ function LayoutSheet({ prefs, update, tabsAvail, cams, onClose }) {
           </ul>
         </>
       )}
-      <h3 className="pane-sub">Theme</h3>
-      <div className="seg" role="radiogroup" aria-label="Theme">
-        {THEMES.map((t) => (
-          <label key={t} className={prefs.theme === t ? "on" : undefined}>
-            <input type="radio" name="theme" checked={prefs.theme === t} onChange={() => update((p) => ({ ...p, theme: t }))} />
-            {t}
-          </label>
-        ))}
-      </div>
     </section>
   );
 }

@@ -193,7 +193,14 @@ function Robot({ api, robot }) {
   };
   return (
     <div className="app">
-      <Rail cfg={cfg} onWebsite={!!robot} robotName={name} reasonerModel={t.reasoner?.model} />
+      <Rail
+        cfg={cfg}
+        onWebsite={!!robot}
+        robotName={name}
+        reasonerModel={t.reasoner?.model}
+        theme={theme}
+        toggleTheme={() => update((p) => ({ ...p, theme: theme === "dark" ? "light" : "dark" }))}
+      />
       <div className="app-body">
       <header className="top">
         <Header logo={false}>

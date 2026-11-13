@@ -287,6 +287,12 @@ main > .waiting {
   padding: 8px 10px;
   cursor: pointer;
 }
+.rail-menu > .rail-theme {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .rail-menu > *:hover:not(:disabled),
 .rail-menu > *:focus-visible {
   background: var(--bg-2);
