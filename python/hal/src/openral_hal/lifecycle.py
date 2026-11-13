@@ -1552,19 +1552,55 @@ if _ROS2_AVAILABLE:
                 )
             )
 
+        def _read_live_state(self, observer: Any, span: Any) -> Any:  # noqa: ANN401  # reason: EStopObservableHAL | None, OTel span, JointState | None live on the ROS path only
+            """One live read: ``read_state``, or ``read_state_estopped`` while latched.
+
+            ``None`` when the read failed (recorded on ``span``): a failed normal read
+            also feeds the tracking watch; a failed e-stopped read is skipped quietly
+            (the stop may have closed the read path).
+            """
+            if observer is not None:
+                try:
+                    return observer.read_state_estopped()
+                except Exception as exc:  # reason: no read path this stop; skip quietly
+                    span.record_exception(exc)
+                    self.get_logger().debug(f"read_state_estopped failed: {exc}")
+                    return None
+            assert self._hal is not None  # checked by the caller
+            try:
+                return self._hal.read_state()
+            except Exception as exc:  # reason: HAL surfaces typed errors; log + skip
+                span.record_exception(exc)
+                self.get_logger().warn(f"read_state failed: {exc}")
+                self._judge_tracking_read_failure()
+                return None
+
         def _publish_joint_state(self) -> None:
             """Timer callback: publish joint state.
 
             From the proprio snapshot for sim-attached HALs, else a live
             ``hal.read_state``. While the e-stop latch is set, snapshot-backed
             HALs keep publishing the last post-step frame so operators retain
-            joint visibility through the latch; real HALs are skipped instead —
-            their transport may already be torn down (``RESTART_REQUIRED``
-            stops the whole vendor stack) and polling would only spam errors.
+            joint visibility through the latch, and so do real HALs that leave a
+            read-only path open (``EStopObservableHAL.read_state_estopped``), so
+            the 3D view follows a robot moved by hand. Other real HALs are
+            skipped — their transport may already be torn down
+            (``RESTART_REQUIRED`` stops the whole vendor stack) and polling
+            would only spam errors.
             """
+            from openral_hal.protocol import EStopObservableHAL
+
             if self._hal is None or self._publisher is None:
                 return
-            if self._estopped and self._proprio is None:
+            observer = (
+                self._hal
+                if self._estopped
+                and self._proprio is None
+                and isinstance(self._hal, EStopObservableHAL)
+                else None
+            )
+            observe_estopped = observer is not None
+            if self._estopped and self._proprio is None and not observe_estopped:
                 return
 
             from openral_observability import producer as ral_producer
@@ -1603,13 +1639,10 @@ if _ROS2_AVAILABLE:
                         return
                     state = frame.state
                 else:
-                    try:
-                        state = self._hal.read_state()
-                    except Exception as exc:  # reason: HAL surfaces typed errors; log + skip
-                        hal_read_span.record_exception(exc)
-                        self.get_logger().warn(f"read_state failed: {exc}")
-                        self._judge_tracking_read_failure()
+                    live = self._read_live_state(observer, hal_read_span)
+                    if live is None:
                         return
+                    state = live
                 joint_specs = list(self._hal.description.joints)
                 ral_producer.record_joint_state(
                     hal_read_span,
@@ -1641,7 +1674,8 @@ if _ROS2_AVAILABLE:
             msg.velocity = list(state.velocity) if state.velocity else []
             msg.effort = list(state.effort) if state.effort else []
             self._publisher.publish(msg)
-            self._judge_tracking(state)
+            if not observe_estopped:  # a de-energized robot follows no command
+                self._judge_tracking(state)
             # The grasp trigger reads the same typed snapshot the HAL just read —
             # no second source of truth, no extra subscription. Only wired when
             # the vision attachment leg is enabled.

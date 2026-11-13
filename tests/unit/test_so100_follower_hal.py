@@ -22,7 +22,12 @@ from openral_core import (
     ROSRuntimeError,
     ROSSafetyViolation,
 )
-from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
+from openral_hal.protocol import (
+    EStopObservableHAL,
+    EStopRecovery,
+    LifecycleEStopHAL,
+    ResettableLifecycleEStopHAL,
+)
 from openral_hal.ros_control import DownstreamStopReporting
 from openral_hal.so100_follower import (
     _SO100_JOINT_NAMES,
@@ -367,12 +372,14 @@ class TestSO100FollowerHALEstop:
             hal.estop()
 
     def test_lifecycle_estop_disconnects(self, hal: SO100FollowerHAL) -> None:
+        # No motor bus to prove the torque-off: the session is closed, nothing kept.
         assert isinstance(hal, LifecycleEStopHAL)
-        assert hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+        assert hal.estop_recovery is EStopRecovery.RESETTABLE
         with pytest.raises(ROSEStopRequested):
             hal.estop()
         assert hal._connected is False
         assert hal._robot is None
+        assert hal._estop_robot is None
 
     def test_read_state_fails_after_estop(self, hal: SO100FollowerHAL) -> None:
         with pytest.raises(ROSEStopRequested):
@@ -473,7 +480,7 @@ class TestSO100FollowerHALDownstreamStopReport:
         assert report is not None and not report.stopped
         assert report.controller_states["wrist_roll"] == "torque_unknown"
 
-    def test_a_failed_close_after_proven_torque_off_still_counts_as_stopped(self) -> None:
+    def test_a_proven_stop_keeps_the_bus_open_and_closes_it_on_disconnect(self) -> None:
         bus = FakeFeetechBus()
         hal = SO100FollowerHAL(robot=_twin_on_bus(bus, failing_close=True))
         hal.connect()
@@ -482,7 +489,10 @@ class TestSO100FollowerHALDownstreamStopReport:
 
         report = hal.last_stop_report
         assert report is not None and report.stopped
-        assert "disconnect failed: ConnectionError: serial port vanished" in report.detail
+        assert "bus kept open read-only" in report.detail
+        assert hal._estop_robot is not None
+        hal.disconnect()  # the failing close is logged, never raised: torque is proven off
+        assert hal._estop_robot is None
 
     def test_a_failed_close_with_no_bus_to_verify_is_unacknowledged(self) -> None:
         twin = _TwinWithFailingClose(SO100DigitalTwinConfig())
@@ -756,3 +766,80 @@ class TestHoldPoseOnTorqueEnable:
             bus.enable_torque()
         assert bus.torque["elbow_flex"] == 0
         assert ("Torque_Enable", "elbow_flex", 1) not in bus.writes
+
+
+# ── E-stop: read-only observation and in-process release ──────────────────────
+
+
+def _proven_stop(bus: FakeFeetechBus | None = None) -> tuple[SO100FollowerHAL, FakeFeetechBus]:
+    """A connected HAL on a fake bus, e-stopped with torque proven off on every servo."""
+    bus = bus or FakeFeetechBus()
+    hal = SO100FollowerHAL(robot=_twin_on_bus(bus))
+    hal.connect()
+    _estop(hal)
+    assert hal.last_stop_report is not None and hal.last_stop_report.stopped
+    return hal, bus
+
+
+class TestSO100FollowerHALEstopObserveAndReset:
+    """The arm stays observable while e-stopped and a release resumes it holding its pose."""
+
+    def test_implements_both_estop_extensions(self, hal: SO100FollowerHAL) -> None:
+        assert isinstance(hal, EStopObservableHAL)
+        assert isinstance(hal, ResettableLifecycleEStopHAL)
+
+    def test_reads_during_a_proven_stop_never_write(self) -> None:
+        hal, bus = _proven_stop()
+        writes = len(bus.writes)
+        state = hal.read_state_estopped()
+        assert list(state.name) == list(SO_FOLLOWER_MOTORS)
+        assert len(bus.writes) == writes
+        assert bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 0)
+        # Commands stay refused: the normal paths still see a disconnected HAL.
+        with pytest.raises(ROSRuntimeError, match="not connected"):
+            hal.read_state()
+        with pytest.raises(ROSRuntimeError, match="not connected"):
+            hal.send_action(_make_action())
+
+    def test_an_unproven_stop_offers_no_reads_and_no_release(self) -> None:
+        bus = FakeFeetechBus(dark=frozenset({"elbow_flex"}))
+        hal = SO100FollowerHAL(robot=_twin_on_bus(bus))
+        hal._robot = hal._injected_robot  # bypass the connect-time ping, which would refuse
+        hal._connected = True
+        _estop(hal)
+        assert hal.last_stop_report is not None and not hal.last_stop_report.stopped
+        with pytest.raises(ROSRuntimeError, match="no read-only session"):
+            hal.read_state_estopped()
+        with pytest.raises(ROSRuntimeError, match="restart the lifecycle node"):
+            hal.reset_estop()
+        assert hal._connected is False
+
+    def test_release_holds_the_present_pose_and_resumes(self) -> None:
+        hal, bus = _proven_stop()
+        bus.present = {m: 1500 + 37 * i for i, m in enumerate(SO_FOLLOWER_MOTORS)}  # moved by hand
+        bus.goal = dict.fromkeys(SO_FOLLOWER_MOTORS, 0)  # a stale goal: a full-speed jump
+
+        hal.reset_estop()
+
+        # Every servo got Goal := Present before its torque came on: no motion.
+        assert bus.goal_at_enable == bus.present
+        assert bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 1)
+        assert hal._connected is True and hal._estop_robot is None
+        assert hal.last_stop_report is None
+        hal.read_state()
+        hal.send_action(_make_action())
+
+    def test_a_goal_that_does_not_take_keeps_the_arm_limp_and_observable(self) -> None:
+        hal, bus = _proven_stop(FakeFeetechBus(stuck_goal=frozenset({"wrist_flex"})))
+        with pytest.raises(ROSRuntimeError, match="torque cut again"):
+            hal.reset_estop()
+        assert bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 0)
+        assert hal._connected is False
+        hal.read_state_estopped()  # still observable
+        with pytest.raises(ROSRuntimeError, match="not connected"):
+            hal.send_action(_make_action())
+
+    def test_a_restart_after_a_proven_stop_frees_the_bus_first(self) -> None:
+        hal, _ = _proven_stop()
+        hal.connect()
+        assert hal._connected is True and hal._estop_robot is None

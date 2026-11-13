@@ -287,3 +287,55 @@ def test_so101_estop_logs_error_when_acknowledged_and_fatal_when_a_write_fails(
             node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+def test_estopped_observable_real_hal_keeps_publishing_and_a_release_resumes_it() -> None:
+    """A real HAL whose stop leaves a read path (``EStopObservableHAL``) stays visible.
+
+    The SO-100/SO-101 on its serial-boundary fake bus: the node's e-stop proves torque
+    off and keeps the bus open read-only, so ``/joint_states`` keeps flowing through
+    the latch (the 3D view follows the limp arm). ``/openral/estop_cleared`` then
+    re-arms it in process, holding the present pose, and the node resumes.
+    """
+    import time
+
+    from openral_hal.so100_follower import SO100FollowerHAL
+    from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
+    from sensor_msgs.msg import JointState as RosJointState
+
+    from tests.unit.fakes.fake_feetech_bus import SO_FOLLOWER_MOTORS, FakeFeetechBus
+
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_so101_observable_estop")
+        listener = rclpy.create_node("t_observable_estop_listener")
+        received: list[RosJointState] = []
+        listener.create_subscription(RosJointState, "/t_observable_estop_js", received.append, 5)
+        try:
+            node._publisher = node.create_publisher(RosJointState, "/t_observable_estop_js", 5)
+            twin = SO100DigitalTwin(SO100DigitalTwinConfig())
+            bus = FakeFeetechBus()
+            twin.bus = bus
+            hal = SO100FollowerHAL(robot=twin)
+            hal.connect()
+            node._hal = cast(HAL, hal)
+
+            node._on_estop(object())
+            assert node._estopped and bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 0)
+            writes = len(bus.writes)
+            node._publish_joint_state()
+            deadline = time.monotonic() + 2.0
+            while not received and time.monotonic() < deadline:
+                rclpy.spin_once(listener, timeout_sec=0.1)
+            assert received, "an observable real HAL went dark during the e-stop"
+            assert len(bus.writes) == writes  # observing never wrote to the bus
+
+            node._on_estop_cleared(object())
+            assert not node._estopped
+            assert bus.goal_at_enable == bus.present  # re-armed holding the pose
+            assert bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 1)
+        finally:
+            listener.destroy_node()
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()

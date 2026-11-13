@@ -78,10 +78,39 @@ class LifecycleEStopHAL(Protocol):
 
 @runtime_checkable
 class ResettableLifecycleEStopHAL(LifecycleEStopHAL, Protocol):
-    """Lifecycle e-stop extension for HALs that support in-process recovery."""
+    """Lifecycle e-stop extension for HALs that support in-process recovery.
+
+    The contract every implementation keeps: the robot comes back **holding its
+    present pose** (no motion toward a stale goal), and the HAL accepts commands
+    only after the re-arm is confirmed by the hardware. On any failure it raises,
+    leaves the hardware stopped, and the lifecycle node keeps its latch.
+    """
 
     def reset_estop(self) -> None:
         """Re-arm the downstream controller after its safety conditions pass."""
+        ...
+
+
+@runtime_checkable
+class EStopObservableHAL(Protocol):
+    """Optional extension: the HAL can still report joint state while e-stopped.
+
+    The lifecycle node stops polling a real HAL once it latches an e-stop, because
+    many stops tear the transport down. A HAL whose stop leaves a read path open
+    (servos de-energized, bus still answering reads) implements this, and the node
+    keeps publishing ``/joint_states`` through the latch, so the 3D view and the
+    safety kernel see the robot moved by hand or by gravity.
+
+    ``read_state_estopped`` must never write to the hardware or energize anything.
+    """
+
+    def read_state_estopped(self) -> JointState:
+        """Read the joint state during an e-stop, read-only.
+
+        Raises:
+            ROSRuntimeError: No read path is open (e.g. the stop was not proven,
+                so the transport was closed). The node then skips the tick.
+        """
         ...
 
 
