@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { coerceArgs, initialValues, runAction, schemaFields, visibleActions } from "./lib/actions.js";
+import { RELEASE_ARM_MS, releaseInPlaceOfStop } from "./lib/safety.js";
 
 // One form per manifest action. Fields come from `args_schema`; an action
 // without fields is just its button.
@@ -89,22 +90,63 @@ function ActionForm({ api, action }) {
   );
 }
 
+// E-STOP's place while the kernel is latched: a green "Release e-stop" (the estop_reset
+// action). Pressable only RELEASE_ARM_MS after it appears, and only after a confirm: the
+// servos take torque back and may move toward their last goal.
+function ReleaseButton({ api, action }) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  useEffect(() => {
+    const t = setTimeout(() => setArmed(true), RELEASE_ARM_MS);
+    return () => clearTimeout(t);
+  }, []);
+  async function release() {
+    if (!window.confirm("Release the e-stop? Torque comes back on, and the arm may move toward its last goal. Make sure the area around the robot is clear.")) return;
+    setBusy(true);
+    setResult(await runAction(api.call, action.id, {}));
+    setBusy(false);
+  }
+  return (
+    <div className="action action-release">
+      <button type="button" className="btn release" disabled={!armed || busy} onClick={release}>
+        Release e-stop
+      </button>
+      <span className={`action-result${result && !result.ok ? " err" : ""}`} role="status" aria-live="polite">
+        {result?.text}
+      </span>
+    </div>
+  );
+}
+
 // The action bar, in two parts: `estop` (E-STOP, always present, in the
 // sticky header so it never scrolls away) and `rest` (whatever the manifest
 // allows this role over this connection).
 // `skipKinds`: action kinds drawn elsewhere on the page (the prompt bar).
-export function ActionBar({ api, cfg, actions, latched, part, skipKinds = [] }) {
+export function ActionBar({ api, cfg, actions, latched, topics, now, part, skipKinds = [] }) {
   const all = visibleActions(actions, cfg.role, cfg.mode === "remote");
   const { hidden } = all;
   const blocked = all.blocked.filter((a) => !skipKinds.includes(a.kind));
   const mine = all.shown.filter((a) => (a.kind === "estop") === (part === "estop") && !skipKinds.includes(a.kind));
   if (part === "estop") {
+    const release = all.shown.find((a) => a.kind === "estop_reset");
+    if (releaseInPlaceOfStop(topics, now, release)) {
+      return (
+        <section className="actions" aria-label="Emergency stop">
+          <ReleaseButton api={api} action={release} />
+          <span className="pill violation">e-stop latched</span>
+        </section>
+      );
+    }
     return (
       <section className="actions" aria-label="Emergency stop">
         {mine.map((a) => (
           <ActionForm key={a.id} api={api} action={a} />
         ))}
         {latched && <span className="pill violation">e-stop latched</span>}
+        {latched && !release && cfg.mode === "remote" && (
+          <span className="actions-note">Release it at the robot: http://&lt;robot&gt;:4318.</span>
+        )}
       </section>
     );
   }

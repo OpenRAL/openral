@@ -188,6 +188,8 @@ function Robot({ api, robot }) {
     cfg,
     actions: manifest?.actions,
     latched: !!(t.safety_status?.latched || t.safety?.estopped),
+    topics: t,
+    now: robotNow(),
   };
   return (
     <div className="app">

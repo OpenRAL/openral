@@ -18,3 +18,19 @@ export function safetyVerdict(topics, nowUnix) {
   if (reason && reason !== "drop_none") return { state: "warn", label: "safety: dropping actions" };
   return { state: "ok", label: "safety nominal" };
 }
+
+// Whether the header shows "Release e-stop" in E-STOP's place. Only while a fresh
+// /openral/safety_status says the kernel is latched (stopped now, not an hour ago), and
+// only when this session may release it (`release`: the estop_reset action it can run).
+// Anything else (stale or missing status, a latch learned only from an event, no release
+// for this role or connection) keeps E-STOP on screen.
+export function releaseInPlaceOfStop(topics, nowUnix, release) {
+  const st = topics?.safety_status;
+  if (!release || st?.latched !== true || typeof st.ts_unix !== "number") return false;
+  const age = nowUnix - st.ts_unix;
+  return age >= 0 && age <= SAFETY_LIVENESS_S;
+}
+
+// A release can only be pressed this long after it replaced E-STOP, so a double-click on
+// E-STOP (or a second press "to be sure") never releases the stop it just set.
+export const RELEASE_ARM_MS = 1500;

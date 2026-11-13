@@ -60,7 +60,10 @@ workspace it is: the org's logo or first letter and its name, from the site's `/
 openral.com or the robot's enrolment on the robot; sections to come; at the bottom the viewer,
 with a ⋯ menu that opens the Settings pane: the reasoner's Anthropic/OpenAI keys and model,
 read and written through the site's `/api/settings` on openral.com, and where they come from on
-the robot); the header (robot, safety, Layout, **E-STOP**); the prompt bar
+the robot); the header (robot, safety, Layout, **E-STOP**: while a fresh safety status says the
+kernel is latched and this session may run `estop_reset`, a green **Release e-stop** takes its
+place, pressable 1.5 s after it appears and after a confirm; over the network with remote control
+off, E-STOP stays and the header says to release it at the robot); the prompt bar
 (the manifest's `prompt` action; it says why when prompting is unavailable, including when the
 reasoner's last lifecycle transition failed); a fixed-height
 row of cameras ordered left → center → right by their manifest `position` (only cameras that
