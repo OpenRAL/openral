@@ -1921,7 +1921,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         return result
 
     def _adjudicate_completion_async(
-        self, task_text: str, done: Callable[[bool | None], None]
+        self,
+        task_text: str,
+        done: Callable[[bool | None], None],
+        dropped: Callable[[], None] | None = None,
     ) -> None:
         """Run ``_adjudicate_completion`` off-executor; deliver the verdict back (#21).
 
@@ -1931,10 +1934,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         on the worker: it only reads immutable snapshot refs (frame bytes,
         client handle) and the network call. ``done(verdict)`` runs on the
         executor thread; it is dropped when a lifecycle transition landed
-        first (generation mismatch). With no pool (pre-configure), degrades
-        to the synchronous call. Runs on its OWN single worker (not the tick
-        pool) so a Tier-A tick's select_tool is never queued behind an
-        in-flight adjudication call.
+        first (generation mismatch), and ``dropped()`` runs instead. With no
+        pool (pre-configure), degrades to the synchronous call. Runs on its OWN
+        single worker (not the tick pool) so a Tier-A tick's select_tool is never
+        queued behind an in-flight adjudication call.
         """
         if self._vlm_pool is None:
             done(self._adjudicate_completion(task_text))
@@ -1950,6 +1953,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
 
             def _deliver() -> None:
                 if generation != self._llm_generation:
+                    if dropped is not None:
+                        dropped()
                     return  # lifecycle transitioned mid-flight — stale verdict
                 done(verdict)
 
@@ -4447,6 +4452,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             resp = future.result()
         except Exception as exc:  # best-effort; a failed verify must not kill the loop
             self.get_logger().warning(f"mission verify: query failed: {exc}")
+            self._reconcile_object_query_block(tick=True)  # no verdict: no failure counted
             return
         if self._renderer.mission is not mission:
             return  # a new goal replaced the mission under us; stale verdict
@@ -4488,6 +4494,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 why="the reward monitor could not score it",
                 traceparent=traceparent,
             )
+            self._reconcile_object_query_block(tick=True)
             return
         action, verdict = self._gate_ladder(
             active,
@@ -4526,6 +4533,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     succeeded=succeeded,
                     pending=pending,
                 ),
+                # A dropped verdict never counts a failure: release its hold.
+                dropped=lambda: self._release_pending_verdict(pending, unjudged=True),
             )
             return
         self._apply_mission_verdict(
@@ -4657,13 +4666,50 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Reward verdicts still pending for the active task's successful dispatches."""
         return self._pending_success_verdicts[(self._mission_generation, active.task_id)]
 
-    def _release_pending_verdict(self, pending: tuple[int, str] | None) -> None:
-        """Drop one pending-verdict hold taken when a success's reward query was sent."""
+    def _release_pending_verdict(
+        self, pending: tuple[int, str] | None, *, unjudged: bool = False
+    ) -> None:
+        """Drop one pending-verdict hold taken when a success's reward query was sent.
+
+        ``unjudged``: the verdict will never come (its continuation was dropped), so no
+        failure is counted for it and any object-query block it caused is re-checked.
+        """
         if pending is None:
             return
         self._pending_success_verdicts[pending] -= 1
         if self._pending_success_verdicts[pending] <= 0:
             del self._pending_success_verdicts[pending]
+        if unjudged:
+            self._reconcile_object_query_block(tick=True)
+
+    def _reconcile_object_query_block(self, *, tick: bool) -> None:
+        """Lift an object-query block whose predicted failures did not come true.
+
+        ``_on_object_query`` blocks the active task once its failed dispatches, the
+        failing goal and any success still awaiting its reward verdict would reach
+        ``DEFAULT_MAX_ATTEMPTS``. When such a verdict resolves without a failure (no
+        score, the query raised, the VLM continuation was dropped) or the canceled goal
+        comes back SUCCEEDED, the task may be below the cap again: the block is lifted
+        so the task is not left idle until a new operator goal. A block its confirmed
+        failures justify stays. ``tick`` forces the recovery the block held back, once
+        the canceled goal's result is in.
+        """
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        if active is None or active.task_id != self._object_query_blocked_task_id:
+            return
+        outstanding = int(self._object_query_recovery_pending)  # canceled goal, not yet counted
+        spent = active.failures + outstanding + self._pending_success_verdicts_for(active)
+        if spent >= DEFAULT_MAX_ATTEMPTS:
+            return
+        self._object_query_blocked_task_id = None
+        self._persist_ladder_state()
+        self.get_logger().info(
+            f"object_query: task {active.task_id} is below its failure cap again "
+            f"({spent}/{DEFAULT_MAX_ATTEMPTS}); block lifted",
+        )
+        if tick and not outstanding:
+            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
 
     def _bound_unjudged_dispatch(
         self,
@@ -6299,9 +6345,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             "object_query_old_task",
         )
         if status == 4 and result.success:
-            # The goal finished before the cancel landed: a success, not a failed dispatch.
+            # The goal finished before the cancel landed: a success, not a failed dispatch,
+            # so a block that predicted its failure is re-checked. The success path ticks.
             if query_cancel:
                 self._object_query_recovery_pending = False
+                self._reconcile_object_query_block(tick=False)
             return False
         is_query_failure = query_cancel or (
             not_found_kind != 0 and _rskill_failure_kind(result) == not_found_kind
