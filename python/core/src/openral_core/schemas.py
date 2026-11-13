@@ -866,24 +866,27 @@ def sim_scene_description(
         ) from exc
 
 
-def _with_urdf_curves(description: RobotDescription, raw: object, what: str) -> list[JointSpec]:
-    """``description.joints`` with each ``gripper_joint_curve`` entry as its ``urdf_curve``.
+def _with_urdf_curves(
+    description: RobotDescription, raw: object, what: str, *, grippers_only: bool = True
+) -> list[JointSpec]:
+    """``description.joints`` with each entry of ``raw`` as that joint's ``urdf_curve``.
 
     The points (``(value, urdf value)``, any order) are sorted by value. ``what`` names
     the source in errors (a sim scene's ``backend_options`` or a robot unit).
+    ``grippers_only`` limits the names to ``role: gripper`` joints (``gripper_joint_curve``);
+    a unit's ``joint_curve`` may name any joint.
 
     Raises:
-        ROSConfigError: Not a mapping, a name that is not a ``role: gripper`` joint, or
-            points ``JointSpec.urdf_curve`` refuses.
+        ROSConfigError: Not a mapping, a name that is not an allowed joint, or points
+            ``JointSpec.urdf_curve`` refuses.
     """
     if not isinstance(raw, Mapping):
         raise ROSConfigError(f"{what} must map joint -> points")
-    grippers = {j.name for j in description.joints if j.role == "gripper"}
-    unknown = sorted(set(map(str, raw)) - grippers)
+    allowed = {j.name for j in description.joints if j.role == "gripper" or not grippers_only}
+    unknown = sorted(set(map(str, raw)) - allowed)
     if unknown:
-        raise ROSConfigError(
-            f"{what} names no gripper joint: {unknown} (grippers: {sorted(grippers)})"
-        )
+        kind = "gripper joint" if grippers_only else "joint"
+        raise ROSConfigError(f"{what} names no {kind}: {unknown} (known: {sorted(allowed)})")
     joints: list[JointSpec] = []
     for joint in description.joints:
         points = raw.get(joint.name)
@@ -1136,15 +1139,18 @@ def resolve_sensor_overlays(
 def unit_gripper_curves(
     description: RobotDescription, robot_yaml: str | Path, scene_unit: str | None
 ) -> RobotDescription:
-    """The robot with its unit's ``gripper_joint_curve`` as its grippers' ``urdf_curve``.
+    """The robot with its unit's calibration curves as its joints' ``urdf_curve``.
 
     The real-deploy counterpart of a sim scene's ``backend_options.gripper_joint_curve``
-    (``sim_scene_description``): a jaw's reading maps onto its URDF finger through its
-    servo calibration, which is per unit. The unit is ``$OPENRAL_ROBOT_UNIT`` if set, else
+    (``sim_scene_description``): a reading maps onto its URDF joint through the unit's
+    servo calibration, which is per unit. ``gripper_joint_curve`` names grippers (a jaw's
+    stroke); ``joint_curve`` any joint (e.g. a wrist roll whose calibrated zero is a
+    quarter turn from the URDF's). The unit is ``$OPENRAL_ROBOT_UNIT`` if set, else
     ``scene_unit``; with neither, or a unit without curves, ``description`` itself.
 
     Raises:
-        ROSConfigError: The unit is invalid, or names a non-gripper joint or a bad curve.
+        ROSConfigError: The unit is invalid, names an unknown joint (or a non-gripper in
+            ``gripper_joint_curve``), names one joint in both maps, or has a bad curve.
 
     Example:
         >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
@@ -1156,12 +1162,31 @@ def unit_gripper_curves(
     if not unit:
         return description
     loaded = load_robot_unit(robot_yaml, unit)
-    if not loaded.gripper_joint_curve:
-        return description
-    joints = _with_urdf_curves(
-        description, loaded.gripper_joint_curve, f"unit {unit!r} gripper_joint_curve"
-    )
-    return description.model_copy(update={"joints": joints})
+    both = sorted(set(loaded.gripper_joint_curve) & set(loaded.joint_curve))
+    if both:
+        raise ROSConfigError(
+            f"unit {unit!r} names {both} in both gripper_joint_curve and joint_curve"
+        )
+    if loaded.gripper_joint_curve:
+        description = description.model_copy(
+            update={
+                "joints": _with_urdf_curves(
+                    description, loaded.gripper_joint_curve, f"unit {unit!r} gripper_joint_curve"
+                )
+            }
+        )
+    if loaded.joint_curve:
+        description = description.model_copy(
+            update={
+                "joints": _with_urdf_curves(
+                    description,
+                    loaded.joint_curve,
+                    f"unit {unit!r} joint_curve",
+                    grippers_only=False,
+                )
+            }
+        )
+    return description
 
 
 def publishing_sensors(
@@ -1380,8 +1405,9 @@ class JointSpec(BaseModel):
         origin_rpy: Fixed orientation (roll, pitch, yaw, radians) of this
             joint's frame in its ``parent_link`` frame — the URDF
             ``<joint><origin rpy>``. Default ``(0, 0, 0)``.
-        urdf_curve: For a ``role: "gripper"`` joint whose reported value is
-            not the URDF joint value its link moves by, the piecewise-linear
+        urdf_curve: For a joint whose reported value is not the URDF joint
+            value its link moves by (a gripper's stroke; a servo whose calibrated
+            zero is not the URDF's, e.g. a wrist roll a quarter turn off), the piecewise-linear
             calibration ``((value, urdf value), …)``: at least two points,
             finite, strictly increasing in ``value`` and strictly monotonic in
             ``urdf value``; clamped outside the end points (``numpy.interp``).
@@ -1432,8 +1458,6 @@ class JointSpec(BaseModel):
     def _check_urdf_curve(self) -> JointSpec:
         if self.urdf_curve is None:
             return self
-        if self.role != "gripper":
-            raise ValueError(f"joint {self.name!r}: urdf_curve needs role 'gripper'")
         check_urdf_curve(self.urdf_curve, f"joint {self.name!r} urdf_curve")
         return self
 
@@ -13770,6 +13794,10 @@ class RobotUnit(BaseModel):
             deploy (``unit_gripper_curves``) the way a sim scene's
             ``backend_options.gripper_joint_curve`` does for its twin, so the kernel, the
             self-filter and ``/tf`` pose the finger where this unit's servo puts it.
+        joint_curve: ``{joint: [(value, urdf value), …]}``: the same for any joint, e.g.
+            a wrist roll whose calibrated zero is a quarter turn from the URDF's zero
+            (an offset is a two-point curve of slope 1). A joint is named in at most one
+            of the two maps.
 
     Example:
         >>> RobotUnit(robot_id="so101_follower", unit="bench_laptop").sensors
@@ -13785,6 +13813,7 @@ class RobotUnit(BaseModel):
     serial: str | None = Field(default=None, pattern=_RESOURCE_TOKEN)
     org_id: str | None = Field(default=None, pattern=_RESOURCE_TOKEN)
     gripper_joint_curve: dict[str, list[tuple[float, float]]] = Field(default_factory=dict)
+    joint_curve: dict[str, list[tuple[float, float]]] = Field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str) -> RobotUnit:

@@ -177,7 +177,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.\n\nSelected by ``$OPENRAL_ROBOT_UNIT`` or ``DeployScene.robot_unit``; see\n``resolve_sensor_overlays``.\n\nAttributes:\n    schema_version: On-disk schema version.\n    robot_id: The ``robots/<robot_id>`` directory this unit belongs to.\n    unit: The unit name, equal to the file stem.\n    sensors: Overlays for the robot manifest's sensors.\n    serial: The unit's serial number (``$OPENRAL_UNIT_SERIAL`` wins); see\n        ``resolve_unit_identity``.\n    org_id: The organisation operating the unit (``$OPENRAL_ORG_ID`` wins).\n    gripper_joint_curve: ``{gripper joint: [(value, urdf value), \u2026]}``: this unit's\n        jaw calibration, replacing the joint's ``JointSpec.urdf_curve`` on a real\n        deploy (``unit_gripper_curves``) the way a sim scene's\n        ``backend_options.gripper_joint_curve`` does for its twin, so the kernel, the\n        self-filter and ``/tf`` pose the finger where this unit's servo puts it.\n\nExample:\n    >>> RobotUnit(robot_id=\"so101_follower\", unit=\"bench_laptop\").sensors\n    []",
+  "description": "One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.\n\nSelected by ``$OPENRAL_ROBOT_UNIT`` or ``DeployScene.robot_unit``; see\n``resolve_sensor_overlays``.\n\nAttributes:\n    schema_version: On-disk schema version.\n    robot_id: The ``robots/<robot_id>`` directory this unit belongs to.\n    unit: The unit name, equal to the file stem.\n    sensors: Overlays for the robot manifest's sensors.\n    serial: The unit's serial number (``$OPENRAL_UNIT_SERIAL`` wins); see\n        ``resolve_unit_identity``.\n    org_id: The organisation operating the unit (``$OPENRAL_ORG_ID`` wins).\n    gripper_joint_curve: ``{gripper joint: [(value, urdf value), \u2026]}``: this unit's\n        jaw calibration, replacing the joint's ``JointSpec.urdf_curve`` on a real\n        deploy (``unit_gripper_curves``) the way a sim scene's\n        ``backend_options.gripper_joint_curve`` does for its twin, so the kernel, the\n        self-filter and ``/tf`` pose the finger where this unit's servo puts it.\n    joint_curve: ``{joint: [(value, urdf value), \u2026]}``: the same for any joint, e.g.\n        a wrist roll whose calibrated zero is a quarter turn from the URDF's zero\n        (an offset is a two-point curve of slope 1). A joint is named in at most one\n        of the two maps.\n\nExample:\n    >>> RobotUnit(robot_id=\"so101_follower\", unit=\"bench_laptop\").sensors\n    []",
   "properties": {
     "schema_version": {
       "const": "0.1",
@@ -244,6 +244,26 @@
         "type": "array"
       },
       "title": "Gripper Joint Curve",
+      "type": "object"
+    },
+    "joint_curve": {
+      "additionalProperties": {
+        "items": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        "type": "array"
+      },
+      "title": "Joint Curve",
       "type": "object"
     }
   },
