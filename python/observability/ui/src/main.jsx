@@ -5,6 +5,7 @@ import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/console.css";
 import { createApi, createTokenClient, findRobot, websiteMinter } from "./lib/auth.js";
+import { robotLinks } from "./lib/viewer.js";
 import { connectSSE } from "./lib/sse.js";
 import { fmtAge, robotNow, setRobotNow } from "./lib/render.js";
 import { ActionBar } from "./ActionBar.jsx";
@@ -22,15 +23,18 @@ function useSession() {
     (async () => {
       let api = createApi();
       let robot = null;
+      let robots = [];
       if (id) {
         const r = await fetch("/api/robots", { credentials: "same-origin" });
         if (r.status === 401) throw new Error("Sign in to openral.com to see this robot.");
         if (!r.ok) throw new Error(`Couldn't load your robots from openral.com (HTTP ${r.status}).`);
-        robot = findRobot(await r.json(), id);
+        const list = await r.json();
+        robots = robotLinks(list);
+        robot = findRobot(list, id);
         if (!robot) throw new Error(`"${id}" isn't one of your robots, or it has no valid https address.`);
         api = createApi({ base: robot.base, auth: createTokenClient({ mint: websiteMinter(robot.url) }) });
       }
-      setS({ phase: "ready", api, robot });
+      setS({ phase: "ready", api, robot, robots });
     })().catch((e) => setS({ phase: "error", error: e.message }));
   }, []);
   return s;
@@ -158,7 +162,7 @@ function SafetyPill({ topics }) {
 
 const MODE_LABEL = { local: "local", lan: "LAN", remote: "remote" };
 
-function Robot({ api, robot }) {
+function Robot({ api, robot, robots }) {
   // GET /api/config decides mode and role; until it answers, least privilege.
   const c = usePolledJson(api, "/api/config").body;
   const text = (...vs) => vs.find((v) => typeof v === "string" && v);
@@ -191,7 +195,7 @@ function Robot({ api, robot }) {
   };
   return (
     <div className="app">
-      <Rail cfg={cfg} onWebsite={!!robot} robotId={robot?.id} robotName={name} reasonerModel={t.reasoner?.model} />
+      <Rail cfg={cfg} onWebsite={!!robot} robotId={robot?.id} robots={robots} robotName={name} reasonerModel={t.reasoner?.model} />
       <div className="app-body">
       <header className="top">
         <Header logo={false}>

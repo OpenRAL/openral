@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coverMap, jpegBlob, footprintToPixels, overlayColor, overlayFade, sparkGeometry, sevBucket, worldToPixel } from "./render.js";
+import { camAge, coverMap, jpegBlob, footprintToPixels, overlayColor, overlayFade, sparkGeometry, sevBucket, worldToPixel } from "./render.js";
 
 test("map: world → flipped pixel, footprint rotates with yaw", () => {
   assert.deepEqual(worldToPixel(1, 0, 0, 0, 0.5, 10), { px: 2, py: 9 });
@@ -36,4 +36,11 @@ test("a polled camera frame is always image/jpeg, whatever the robot claimed", (
   const b = jpegBlob(new Uint8Array([0xff, 0xd8]).buffer);
   assert.equal(b.type, "image/jpeg");
   assert.equal(b.size, 2);
+});
+
+test("camera age: the frame's age_ms while live, time since the last frame once stalled", () => {
+  assert.equal(camAge({ ts_unix: 100, age_ms: 33.4 }, 100.5), "age 33 ms");
+  assert.equal(camAge({ ts_unix: 100, age_ms: 33.4 }, 104.25), "age 4.3s");
+  assert.equal(camAge({ ts_unix: 100, age_ms: 33.4 }, 400), "age 5m");
+  assert.equal(camAge(null, 100), "—");
 });

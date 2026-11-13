@@ -8,6 +8,7 @@ import {
   jpegBlob,
   coverMap,
   eventMeta,
+  camAge,
   fmtAge,
   fmtMs,
   fmtNum,
@@ -371,7 +372,7 @@ function Camera({ panel, snap, api, cfg }) {
         {producers.length > 0 && <div className="cam-src">{producers.join(" · ")}</div>}
       </div>
       <p className="meta">
-        <span>{cam?.age_ms != null ? `age ${num(cam.age_ms, 0)} ms` : "—"}</span>
+        <span>{camAge(cam, now)}</span>
         {cam?.fps != null && <span className="right">{num(cam.fps, 0)} fps</span>}
       </p>
     </Card>

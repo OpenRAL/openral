@@ -29,29 +29,28 @@ function useOpen() {
 }
 
 // On the website the console is served same-origin under /robot-ui/, so the site's
-// own /api/dashboard says who is signed in and /api/robots which robots they reach.
-// On the robot there is no account.
-function useSite(onWebsite, path) {
-  const [body, setBody] = useState(null);
+// own /api/dashboard says who is signed in. On the robot there is no account.
+function useMe(onWebsite) {
+  const [me, setMe] = useState(null);
   useEffect(() => {
     if (!onWebsite) return;
     let live = true;
-    fetch(path, { credentials: "same-origin" })
+    fetch("/api/dashboard", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((b) => live && setBody(b), () => {});
+      .then((b) => live && setMe(b), () => {});
     return () => {
       live = false;
     };
-  }, [onWebsite, path]);
-  return body;
+  }, [onWebsite]);
+  return me;
 }
 
-export function Rail({ cfg, onWebsite, robotId, robotName, reasonerModel }) {
+// robots: robotLinks() of the list the session already loaded (none on the robot).
+export function Rail({ cfg, onWebsite, robotId, robots = [], robotName, reasonerModel }) {
   const [open, setOpen] = useOpen();
   const [menu, setMenu] = useState(false);
   const [settings, setSettings] = useState(false);
-  const me = useSite(onWebsite, "/api/dashboard");
-  const robots = useSite(onWebsite, "/api/robots")?.robots || [];
+  const me = useMe(onWebsite);
   const v = viewerLabel(me, cfg);
   const ws = workspaceLabel(me, cfg, robotName);
   const box = useRef(null);
@@ -98,13 +97,13 @@ export function Rail({ cfg, onWebsite, robotId, robotName, reasonerModel }) {
             <a
               key={r.id}
               className="rail-robot"
-              href={`/dashboard?robot=${encodeURIComponent(r.id)}#robots`}
+              href={r.href}
               target="_top"
               aria-current={r.id === robotId ? "page" : undefined}
               title={r.name}
             >
               <span className="rail-robot-icon" aria-hidden="true">
-                {(r.name || "?")[0].toUpperCase()}
+                {r.initial}
               </span>
               {open ? <span className="rail-robot-name">{r.name}</span> : <span className="sr-only">{r.name}</span>}
             </a>

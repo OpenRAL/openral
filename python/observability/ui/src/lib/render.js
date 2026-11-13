@@ -15,13 +15,21 @@ export const fmtTime = (ts) => (ts ? new Date(ts * 1000).toTimeString().slice(0,
 export const shortId = (s) => String(s).split("/").pop();
 export const str = (v, n) => (v == null || v === "" ? null : n ? String(v).slice(0, n) : String(v));
 
-export function fmtAge(ts) {
+export function fmtAge(ts, now = robotNow()) {
   if (!ts) return "—";
-  const dt = robotNow() - ts;
+  const dt = now - ts;
   if (dt < 1) return "now";
   if (dt < 60) return `${dt.toFixed(1)}s`;
   if (dt < 3600) return `${Math.floor(dt / 60)}m`;
   return `${Math.floor(dt / 3600)}h`;
+}
+
+// A camera card's age: the frame's own age_ms while frames arrive; a stalled stream
+// keeps its last age_ms, so past 2 s count from the last frame instead.
+export function camAge(cam, now = robotNow()) {
+  const ts = cam?.ts_unix;
+  if (ts && now - ts >= 2) return `age ${fmtAge(ts, now)}`;
+  return cam?.age_ms != null ? `age ${num(cam.age_ms, 0)} ms` : "—";
 }
 
 export function fmtNum(v) {
