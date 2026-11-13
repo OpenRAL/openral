@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from openral_cli.deploy_sim import _clean_stale_fastrtps_shm
+from openral_cli.deploy_sim import _clean_stale_fastrtps_shm, _in_initial_pid_namespace
 
 _PUB = r"""
 import rclpy
@@ -118,4 +118,9 @@ def test_live_participant_keeps_segments_and_still_delivers() -> None:
     _clean_stale_fastrtps_shm()
     segments = [p for p in owned if not Path(p).name.startswith("fastrtps_port")]
     assert segments
-    assert not [p for p in segments if Path(p).exists()]
+    if _in_initial_pid_namespace():
+        assert not [p for p in segments if Path(p).exists()]
+    else:
+        # In a container (the live CI lane) /proc/locks hides lock owners outside its PID
+        # namespace, so a participant there would look dead: the clean keeps everything.
+        assert all(Path(p).exists() for p in segments)

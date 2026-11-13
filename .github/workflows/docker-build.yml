@@ -258,6 +258,9 @@ jobs:
           # MUJOCO_GL=osmesa: the hosted runner has no GPU, and MuJoCo's EGL
           # backend needs a GPU device ("gladLoadGL error" on the camera-rendering
           # twins); the image ships libosmesa6 for this.
+          # Fast DDS is installed for this run only (5 packages, no upgrades), never
+          # baked: the image ships Cyclone, and the ADR-0130 enclave test's Fast DDS
+          # lane is where a reply-side keystore gap shows regardless of Cyclone.
           # OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1: a palette test whose VLA runtime
           # is missing fails here instead of skipping (tests/integration/conftest.py),
           # so a dependency group dropped from the image cannot pass as a skip.
@@ -273,6 +276,10 @@ jobs:
               echo "--- runtime ros-*:"; cat /opt/openral/ros-jazzy-versions.txt
               echo "--- builder ros-* (colcon overlay ABI):"
               cat /opt/openral/ros-jazzy-versions.builder.txt
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+                ros-jazzy-rmw-fastrtps-cpp || exit 1
+              echo "--- test-time ros-* (unpinned, like the apt layer):"
+              dpkg-query -W ros-jazzy-rmw-fastrtps-cpp ros-jazzy-fastrtps
               exec bash scripts/ros_live_tests.sh -q
             '
 
