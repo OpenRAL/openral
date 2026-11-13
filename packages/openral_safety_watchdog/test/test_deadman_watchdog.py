@@ -660,6 +660,7 @@ def test_an_announcement_for_another_goal_relaxes_nothing(ros_context: None) -> 
         harness.close()
 
 
+@pytest.mark.wall_clock
 @pytest.mark.parametrize("bound_s", [100.0, 0.0, float("nan")], ids=["capped", "zero", "nan"])
 def test_a_result_only_window_is_capped_and_a_bad_bound_is_ignored(
     ros_context: None, bound_s: float

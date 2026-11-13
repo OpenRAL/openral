@@ -541,4 +541,5 @@ addopts = "-ra --strict-markers --import-mode=importlib -p no:launch_testing -p 
 markers = [
     "sim: integration tests that load real HF weights and/or run a simulated robot (slow; opt-in via `pytest -m sim`)",
     "slow: tests that take >5s on the reference host",
+    "wall_clock: asserts a wall-clock bound a loaded CPU can miss; docker-build's live lane runs these alone after its parallel shards (scripts/ros_live_tests.sh)",
 ]

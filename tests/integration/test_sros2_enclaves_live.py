@@ -154,7 +154,7 @@ for kind, name in json.loads(sys.argv[1]):
         result[kind + " " + name] = True
     except Exception:  # rclpy raises RCLError when the access-control plugin refuses
         result[kind + " " + name] = False
-print(json.dumps(result))
+print("SROS2_PROBE_RESULT " + json.dumps(result), flush=True)
 """
 
 _TRAFFIC_PROBE = """
@@ -175,7 +175,7 @@ while time.monotonic() < deadline:
     if role == "pub":
         pub.publish(ActionChunk())
     rclpy.spin_once(node, timeout_sec=0.1)
-print(count[0])
+print("SROS2_PROBE_RESULT", count[0], flush=True)
 """
 
 
@@ -231,6 +231,19 @@ def secured_env(
     return env
 
 
+#: Tags a probe's result line. Fast DDS logs every access-control refusal to stdout from
+#: its own thread, so under load a log line can follow the result (docker-build run
+#: 43402624616 parsed "[DATA_READER Error] Problem creating associated Reader").
+_RESULT = "SROS2_PROBE_RESULT "
+
+
+def _result(stdout: str) -> str:
+    """The payload of the probe's one result line in ``stdout``."""
+    lines = [line for line in stdout.splitlines() if line.startswith(_RESULT)]
+    assert len(lines) == 1, stdout
+    return lines[0].removeprefix(_RESULT)
+
+
 def _run(env: dict[str, str], enclave: str | None, code: str, *args: str) -> str:
     probe_env = dict(env)
     if enclave is None:  # a participant without keys
@@ -246,7 +259,7 @@ def _run(env: dict[str, str], enclave: str | None, code: str, *args: str) -> str
         check=False,
     )
     assert done.returncode == 0, done.stdout + done.stderr
-    return done.stdout.strip().splitlines()[-1]
+    return _result(done.stdout)
 
 
 @pytest.mark.parametrize("enclave", sorted(_ALLOWED))
@@ -302,7 +315,7 @@ def test_kernel_chunks_reach_the_hal_and_no_keyless_participant(
     for name, proc in (("hal", hal), ("keyless", keyless), ("kernel", kernel)):
         out, err = proc.communicate(timeout=60)
         assert proc.returncode == 0, out + err
-        received[name] = int(out.strip().splitlines()[-1])
+        received[name] = int(_result(out))
     assert received["hal"] > 0
     assert received["keyless"] == 0
 
@@ -314,4 +327,4 @@ def test_kernel_chunks_reach_the_hal_and_no_keyless_participant(
     # The intruder must have published for real: a crashed publisher would also deliver 0.
     assert intruder.returncode == 0, intruder_out + intruder_err
     assert hal.returncode == 0, out + err
-    assert int(out.strip().splitlines()[-1]) == 0
+    assert int(_result(out)) == 0
