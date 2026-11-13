@@ -634,9 +634,10 @@ class RosControlTransport:
         request.deactivate_controllers = list(deactivate)
         request.strictness = strictness
         request.activate_asap = True
-        # The manager's own switch timeout stays the full budget: `0` would mean "wait
-        # forever" to controller_manager, and a manager that aborts a nearly-applied stop
-        # because *our* budget is nearly spent helps nobody. Our wait below is what is bounded.
+        # The manager's own switch timeout stays the full budget: `0` would mean its 1 s
+        # default (controller_manager 4.48.1 `switch_controller_cb`), and a manager that
+        # aborts a nearly-applied stop because *our* budget is nearly spent helps nobody.
+        # Our wait below is what is bounded.
         request.timeout.sec = int(timeout_s)
         request.timeout.nanosec = int((timeout_s - int(timeout_s)) * 1e9)
         future = self._switch_client.call_async(request)
