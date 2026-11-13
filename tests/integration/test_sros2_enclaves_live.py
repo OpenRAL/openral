@@ -26,6 +26,8 @@ import sys
 
 import pytest
 
+from tests.integration._ros_pkg import ros_pkg_available
+
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 pytestmark = pytest.mark.skipif(
     not _LIVE_ROS,
@@ -194,9 +196,8 @@ def secured_env(
     pytest.importorskip("trajectory_msgs.msg")
     if shutil.which("ros2") is None:
         pytest.skip("needs a sourced ROS 2 with sros2")
-    rmw = subprocess.run(["ros2", "pkg", "prefix", request.param], capture_output=True, check=False)
-    if rmw.returncode != 0:
-        # The openral:x86 image ships Cyclone only; a dev host with both runs both.
+    # Cyclone is OpenRAL's RMW: its lane fails, never skips, when the RMW is missing.
+    if request.param != "rmw_cyclonedds_cpp" and not ros_pkg_available(request.param):
         pytest.skip(f"{request.param} is not installed")
     keystore = tmp_path_factory.mktemp("sros2") / "franka_panda"
     init = subprocess.run(

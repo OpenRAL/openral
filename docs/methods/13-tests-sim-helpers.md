@@ -25,6 +25,11 @@ _A real `ros2_control` graph with only the motors left out — `controller_manag
 - `driver_node(name)` [contextmanager] — `(node, spin)` on a private rclpy context. (L254)
 - `wait_until(spin, predicate, timeout_s) -> bool` — Poll, never a bare sleep; DDS discovery takes a beat. (L286)
 
+### `tests/integration/_ros_pkg.py`
+_The skip probe for pure-ament packages (an RMW, a vendor launch package) that have no Python module to `importorskip`. Shared by the integration `conftest.py` (MoveIt demo), `test_cumotion_moveit_franka.py`, `test_large_cloud_transport_live.py` and `test_sros2_enclaves_live.py`._
+
+- `ros_pkg_available(name: str) -> bool` — Whether `ros2 pkg prefix name` resolves (10 s timeout); False without a `ros2` CLI on PATH. (L14)
+
 ### `packages/openral_rskill_ros/test/_launch_test_common.py`
 _The `deploy_e2e.launch.py` loader and launch walker for launch tests, plus the ROS scope those tests compose under. `tests/integration/test_real_bringup_graph_gate_live.py` loads it by path._
 
