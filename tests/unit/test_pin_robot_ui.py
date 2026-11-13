@@ -17,16 +17,9 @@ sys.modules["pin_robot_ui"] = tool
 _spec.loader.exec_module(tool)
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        # The builds on this repo's Releases, and the console's own releases repo.
-        "https://github.com/OpenRAL/openral/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz",
-        "https://github.com/OpenRAL/robot-ui-releases/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz",
-    ],
-)
-def test_the_pin_is_rewritten_in_place_and_parses(tmp_path: Path, url: str) -> None:
+def test_the_pin_is_rewritten_in_place_and_parses(tmp_path: Path) -> None:
     src = (_REPO / tool.UI_ASSETS).read_text(encoding="utf-8")
+    url = "https://github.com/OpenRAL/openral/releases/download/robot-ui-abc1234/openral-robot-ui-robot-ui-abc1234.tar.gz"
     out = tool.pin(src, "robot-ui-abc1234", url, "a" * 64, 184_000)
     changed = [(a, b) for a, b in zip(src.splitlines(), out.splitlines(), strict=True) if a != b]
     assert len(changed) == 4  # url, sha256, size, and the docstring's version

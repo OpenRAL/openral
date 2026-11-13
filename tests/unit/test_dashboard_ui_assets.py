@@ -15,7 +15,7 @@ from openral_observability.dashboard.ui_assets import PinnedAsset, ensure_ui_ass
 from structlog.testing import capture_logs
 
 _SHA = "a" * 64
-_URL = "https://github.com/OpenRAL/robot-ui-releases/releases/download/robot-ui-1/x.tar.gz"
+_URL = "https://github.com/OpenRAL/openral/releases/download/robot-ui-1/x.tar.gz"
 _Logs = list[MutableMapping[str, Any]]
 
 
