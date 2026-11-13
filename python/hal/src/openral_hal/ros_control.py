@@ -224,11 +224,14 @@ class ControllerSwapSeam(Protocol):
     (zero torque) for an unclaimed joint, so deactivating a standing humanoid's
     controllers drops it. Such a robot must hand its joints to a holding
     controller in the same request that releases them, so no control cycle
-    runs with the joints unclaimed. A swap is requested BEST_EFFORT, and the
-    manager keeps a swap's deactivations even when an activation is dropped
-    (a controller not ``inactive``) or fails (its ``on_activate`` errors), so
-    the seam also lists states, configures a controller, and activates one
-    alone — the pre-check and the retry ``UnitreeHgRealHAL`` runs (#566).
+    runs with the joints unclaimed. The swap is requested STRICT: a BEST_EFFORT
+    one drops an activation that cannot happen (a controller not ``inactive``)
+    yet applies the deactivations — the joints released. STRICT refuses the
+    whole request instead, so the seam also lists states and configures a
+    controller (the pre-check ``UnitreeHgRealHAL`` runs). A failure *inside*
+    the switch (an ``on_activate`` that errors) keeps the deactivations under
+    either strictness, so the seam also activates one controller alone — the
+    retry (#566).
     ``RosControlTransport`` and ``SimTransport`` both implement this; a HAL that
     needs it refuses a seam without it at ``attach_controller_stop`` time.
     """
@@ -240,7 +243,11 @@ class ControllerSwapSeam(Protocol):
         activate: Sequence[str],
         timeout_s: float,
     ) -> ControllerSwitchReport:
-        """Deactivate ``deactivate`` and activate ``activate`` in one switch, then confirm."""
+        """Deactivate ``deactivate`` and activate ``activate`` in one STRICT switch, then confirm.
+
+        ``states`` carries the post-switch listing of every named controller even when
+        the switch was refused.
+        """
         ...
 
     def activate_controllers(
