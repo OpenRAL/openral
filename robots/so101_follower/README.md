@@ -190,8 +190,11 @@ The HAL's E-stop is an IEC 60204-1 **category 0** stop: it writes
 drops under gravity — clear the space under it. The result is in the lifecycle
 node's log and `/diagnostics`: ERROR `hardware estop completed` when every servo
 confirmed torque off, FATAL `downstream_stop=unacknowledged` naming the servo
-that did not (a dark servo, a lost serial link). Recovery needs a lifecycle
-restart (`RESTART_REQUIRED`).
+that did not (a dark servo, a lost serial link). With torque proven off the bus
+stays open for reads only, so the dashboard keeps showing the arm while it is
+limp, and **Release e-stop** resumes it in place (`RESETTABLE`): torque comes back
+holding the arm's present pose, never driving to an old goal. If the stop was not
+proven, the bus is closed and recovery needs a lifecycle restart.
 
 If the HAL process itself dies (SIGKILL, OOM), a separate torque watcher the
 HAL armed at connect writes `Torque_Enable=0` to every servo (measured 118.6 ms
