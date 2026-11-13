@@ -107,7 +107,8 @@ There is no SO-100, G1 or RealSense HIL file.
    [repo state map](../docs/architecture/repo-state-map.html) needs source **and**
    tests on disk (CLAUDE.md §4.3).
 4. A live-ROS test goes in `tests/integration/`, in `scripts/ros_live_tests.sh`
-   `TARGETS` and in `docker-build.yml`'s `paths:`; a RoboCasa-gated sim test goes
+   `TARGETS` (`QUIET_TARGETS` if it asserts tight wall-clock bounds) and in
+   `docker-build.yml`'s `paths:`; a RoboCasa-gated sim test goes
    in `scripts/robocasa_sim_tests.sh`. `test_ros_live_targets.py` and
    `test_robocasa_sim_targets.py` fail the unit suite otherwise.
 5. A test needing a different optional stack from its file's neighbours gets its

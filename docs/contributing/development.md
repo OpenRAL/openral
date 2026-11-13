@@ -162,6 +162,16 @@ No GPU is required: the free-VRAM readings are pinned at the `nvidia-smi`
 process boundary. Pass extra pytest flags through the recipe, e.g.
 `just test-ros-live -k dispatch_watchdog`.
 
+The CI step runs the list as four parallel shards plus a quiet tail, each shard in
+its own container on its own Docker network: the `ISOLATED_TARGETS` assert on who
+is on the ROS graph, and on a shared network DDS discovery crosses containers.
+`OPENRAL_LIVE_SHARD=I/K` selects every K-th entry of `TARGETS` and
+`ISOLATED_TARGETS` from the I-th (`OPENRAL_LIVE_SHARD=2/4 just test-ros-live`
+reproduces a CI shard), and `OPENRAL_LIVE_SHARD=quiet` the `QUIET_TARGETS`: files
+asserting wall-clock bounds a loaded runner misses, run alone after the shards.
+Unset, the recipe runs every list in order. Each pytest process logs its wall time
+(`--- live: N s`), and the step lists the slowest, to rebalance the shards on.
+
 The reasoner's palette seed drops any rSkill whose policy runtime is not
 installed, so the tests that assert a VLA reaches the palette pass that rSkill's
 manifest to the `require_policy_runtime` fixture (`tests/integration/conftest.py`).
