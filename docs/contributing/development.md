@@ -162,6 +162,12 @@ No GPU is required: the free-VRAM readings are pinned at the `nvidia-smi`
 process boundary. Pass extra pytest flags through the recipe, e.g.
 `just test-ros-live -k dispatch_watchdog`.
 
+The reasoner's palette seed drops any rSkill whose policy runtime is not
+installed, so the tests that assert a VLA reaches the palette take the
+`require_policy_runtime` fixture (`tests/integration/conftest.py`) and skip,
+naming the missing `just sync --group`, in a venv without that family's group.
+`openral:x86` has `sim` (transformers, lerobot) and pyzmq, so they run on CI.
+
 On CI the step first prints the image's `ros-jazzy-*` versions, then runs the
 suite with core dumps enabled (`--ulimit core=-1`, host `core_pattern` pointed
 at a bind-mounted `/cores`, files named `core.<exe path, / as !>.<pid>`). If the

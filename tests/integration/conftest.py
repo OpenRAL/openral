@@ -5,6 +5,9 @@ Used by ``test_moveit_plan_arm_franka.py`` and
 spawns the upstream ``moveit_resources_panda_moveit_config`` demo (real
 ``move_group`` + ``ros2_control`` fake hardware + ``robot_state_publisher``)
 and skips — never fakes — when the package or a ROS workspace is absent.
+
+Also ``require_policy_runtime``, for the live reasoner tests that assert a VLA
+reaches the seeded palette.
 """
 
 from __future__ import annotations
@@ -35,6 +38,29 @@ def moveit_panda_demo_available() -> bool:
         timeout=10,
     )
     return result.returncode == 0 and result.stdout.strip() != ""
+
+
+@pytest.fixture
+def require_policy_runtime() -> Callable[[str], None]:
+    """Skip unless a policy family's runtime imports in this venv.
+
+    The reasoner's palette seed drops every rSkill whose ``model_family`` runtime
+    is not installed (``openral_sim.policy_deps.filter_importable_manifests``), so
+    whether a VLA reaches the palette depends on the venv's dependency groups: a
+    dev venv without ``--group sim`` (transformers) or ``behavior-groot`` (pyzmq)
+    drops what the ``openral:x86`` image admits. Call it before ``rclpy.init``.
+    """
+    from openral_sim.policy_deps import can_import_policy_family, model_family_install_hint
+
+    def require(family: str) -> None:
+        ok, reason = can_import_policy_family(family)
+        if not ok:
+            pytest.skip(
+                f"the reasoner palette drops {family!r} rSkills in this venv ({reason}). "
+                f"{model_family_install_hint(family)}"
+            )
+
+    return require
 
 
 @pytest.fixture(scope="session")

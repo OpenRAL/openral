@@ -18,6 +18,7 @@ Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -34,8 +35,9 @@ _ROBOT_YAML = _REPO_ROOT / "robots" / "openamrobot_v2" / "robot.yaml"
     "install/setup.bash first.",
 )
 def test_palette_admits_the_openarm_skill_and_drops_an_unaccounted_state(
-    tmp_path: Path,
+    tmp_path: Path, require_policy_runtime: Callable[[str], None]
 ) -> None:
+    require_policy_runtime("pi05")  # the kept skill's family
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_reasoner_ros import ReasonerNode

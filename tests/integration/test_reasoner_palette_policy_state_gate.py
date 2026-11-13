@@ -25,6 +25,7 @@ import os
 import pathlib
 import shutil
 import time
+from collections.abc import Callable
 
 import pytest
 
@@ -53,7 +54,10 @@ def _skill_dir(tmp_path: pathlib.Path, kind: str) -> pathlib.Path:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 @pytest.mark.parametrize("kind", ["vla", "wam"])
-def test_policy_state_skill_follows_the_publisher(tmp_path: pathlib.Path, kind: str) -> None:
+def test_policy_state_skill_follows_the_publisher(
+    tmp_path: pathlib.Path, kind: str, require_policy_runtime: Callable[[str], None]
+) -> None:
+    require_policy_runtime("gr00t_b1k")  # the radio skill's family
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_reasoner_ros import ReasonerNode

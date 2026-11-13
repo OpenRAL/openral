@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import pathlib
 import time
+from collections.abc import Callable
 
 import pytest
 
@@ -38,8 +39,13 @@ _EEF_POSE = "OpenRAL/rskill-moveit-multi-eef_pose"
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
-def test_capped_node_offers_top_k_skills_on_a_real_tick(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_capped_node_offers_top_k_skills_on_a_real_tick(
+    monkeypatch: pytest.MonkeyPatch, require_policy_runtime: Callable[[str], None]
+) -> None:
     """The client sees ``k`` skills chosen for the operator's ask; the palette is intact."""
+    # With no MoveIt server up the seeded franka palette is all VLAs, and without
+    # transformers only `act` and `xvla` load: not more than the cap.
+    require_policy_runtime("smolvla")
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_core import EmitPromptTool
