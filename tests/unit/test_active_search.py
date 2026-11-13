@@ -102,14 +102,14 @@ def test_object_query_recovery_carries_reason_workspace_and_bounded_observations
 
     assert len(evidence.observations) == 8
     assert evidence.observations[0].camera == "cam0"
-    step = object_query_step(evidence, attempts=1, max_attempts=3)
+    step = object_query_step(evidence, failures=1, max_attempts=3)
     assert step.rung == "recover"
     assert step.reason == "workspace_mismatch"
     assert "base bounds" in step.reflection
     assert "cam7@7:too_few_points" in step.reflection
     assert "re-ground" in step.reflection
     assert "handoff_prompt" not in step.model_dump()
-    blocked = object_query_step(evidence, attempts=3, max_attempts=3)
+    blocked = object_query_step(evidence, failures=3, max_attempts=3)
     assert blocked.rung == "blocked"
     assert "new operator goal" in blocked.reflection
 
@@ -129,7 +129,7 @@ def test_unavailable_observation_recovery_states_visibility_is_unknown() -> None
         ],
     )
 
-    step = object_query_step(evidence, attempts=0, max_attempts=3)
+    step = object_query_step(evidence, failures=0, max_attempts=3)
 
     assert step.reason == "no_camera_pose"
     assert "visibility is unknown" in step.reflection

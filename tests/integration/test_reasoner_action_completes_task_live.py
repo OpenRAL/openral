@@ -14,10 +14,16 @@ second prompt ran as an aside after which the first task resumed. Covers:
 3. A success nobody can verify lets the next operator prompt replace the mission.
 4. A Nav2 success that is one step of a longer task (``final_step=False``) completes only
    its step (#562).
+5. With a reward monitor, the reward gate's 3-attempt ladder counts only the dispatches it
+   judges not done: approach steps it never judges do not spend it, and a task fed
+   successes forever still terminates. The mission summary the dashboard reads carries
+   that failure count next to the dispatch count.
 
 Real reasoner node, real ``openral_msgs`` result types, the real in-tree Nav2 / VLA
 manifests and ``panda_mobile`` robot manifest (CLAUDE.md §1.11); the only double is the
-scripted LLM client ``on_configure`` needs. Gated on ``OPENRAL_TEST_ROS_LIVE=1``
+scripted LLM client ``on_configure`` needs. A reward verdict is the real
+``QueryTaskProgress.Response`` handed to the node's real response callback, as an action
+result is handed to ``_on_execute_rskill_result``. Gated on ``OPENRAL_TEST_ROS_LIVE=1``
 (``scripts/ros_live_tests.sh``); locally, after ``just ros2-build && source
 install/setup.bash``, run ``just test-ros-live -k action_completes``.
 """
@@ -337,5 +343,142 @@ def test_a_stale_success_does_not_complete_the_goal_that_replaced_its_mission() 
         )
         assert not second.is_complete(), "a stale success completed the new goal's task"
         assert reasoner._unverified_success is None
+    finally:
+        rclpy.try_shutdown()
+
+
+def _judge(
+    reasoner: Any,  # reason: ReasonerNode imports only with ROS sourced
+    call: ExecuteRskillTool,
+    *,
+    progress: float,
+) -> None:
+    """One dispatch the reward gate judges: the node marks the task verifying and the
+    monitor's ``QueryTaskProgress`` reply reaches its response callback."""
+    from openral_msgs.srv import QueryTaskProgress
+    from rclpy.task import Future
+
+    mission = reasoner._renderer.mission
+    mission.record_attempt(rskill_id=call.rskill_id)
+    mission.mark_verifying()
+    active = mission.active()
+    response = QueryTaskProgress.Response()
+    response.ok = True
+    response.progress_now = progress
+    response.success_now = progress
+    response.frames_seen = 30
+    future = Future()
+    future.set_result(response)
+    reasoner._on_mission_verify_response(
+        active.task_id, active.text, future, mission=mission, traceparent=None
+    )
+
+
+_NOT_DONE = 0.2  # below the reward gate's check floor: the ladder, no VLM adjudication
+
+
+def test_approach_steps_do_not_spend_the_reward_gates_failure_budget() -> None:
+    """#562 class, reward gate: "drive to the kitchen and pick up the cup" with a reward
+    monitor. Two approach drives (``final_step=False``) succeed without the gate judging
+    them; they must not use up the gate's three tries of the pick."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True  # a reward monitor judges the task
+        pick = ExecuteRskillTool(
+            rskill_id=next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        )
+        mission = MissionState.from_prompt("drive to the kitchen and pick up the cup")
+        reasoner._renderer.set_mission(mission)
+        for _ in range(2):
+            _settle(reasoner, ExecuteRskillTool(rskill_id=_NAV, final_step=False), succeeded=True)
+        assert _status(mission) == "active"
+        picks = 0
+        while not reasoner._subdivide_offered:
+            assert picks < 2 * DEFAULT_MAX_ATTEMPTS, "the gate never ended the pick"
+            _judge(reasoner, pick, progress=_NOT_DONE)
+            picks += 1
+        assert picks == DEFAULT_MAX_ATTEMPTS, f"the pick got {picks} of its 3 tries"
+        active = mission.active()
+        assert active is not None and active.failures == DEFAULT_MAX_ATTEMPTS
+    finally:
+        rclpy.try_shutdown()
+
+
+@pytest.mark.parametrize(
+    ("pattern", "dispatches"),
+    [
+        # Steps alone: the dispatch bound (10), its one subdivision offer, then abandon.
+        (("step",), 11),
+        # Every result judged not done: three failures, the offer, then abandon.
+        (("judged",), 4),
+        # Interleaved: the steps spend no failure budget, the judged results still end it.
+        (("step", "judged"), 8),
+    ],
+)
+def test_successes_fed_forever_terminate_under_the_reward_gate(
+    pattern: tuple[str, ...], dispatches: int
+) -> None:
+    """The ladder stays bounded with a reward monitor: dispatches that keep succeeding
+    (approach steps, or VLA runs the gate judges not done) end in the abandon path."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import DEFAULT_MAX_TASK_DISPATCHES, MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True
+        pick = ExecuteRskillTool(
+            rskill_id=next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        )
+        drive = ExecuteRskillTool(rskill_id=_NAV, final_step=False)
+        mission = MissionState.from_prompt("drive to the kitchen and pick up the cup")
+        reasoner._renderer.set_mission(mission)
+        sent = 0
+        while not mission.is_complete():
+            assert sent < 4 * DEFAULT_MAX_TASK_DISPATCHES, "unbounded success loop"
+            if pattern[sent % len(pattern)] == "step":
+                _settle(reasoner, drive, succeeded=True)
+            else:
+                _judge(reasoner, pick, progress=_NOT_DONE)
+            sent += 1
+        assert _status(mission) == "abandoned"
+        assert sent == dispatches
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_mission_summary_counts_failures_not_dispatches() -> None:
+    """The dashboard's per-task "n/3" reads the summary: a healthy task with five
+    successful dispatches and one failure is 1 failure of 3, not "6/3"."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.mission import (
+        DEFAULT_MAX_ATTEMPTS,
+        DEFAULT_MAX_TASK_DISPATCHES,
+        MissionState,
+    )
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        vla = next(s.rskill_id for s in reasoner._palette.skills if s.rskill_id != _NAV)
+        call = ExecuteRskillTool(rskill_id=vla)
+        mission = MissionState.from_prompt("pick up the cube and put it in the bin")
+        reasoner._renderer.set_mission(mission)
+        for succeeded in (True, True, False, True, True, True):
+            _settle(reasoner, call, succeeded=succeeded)
+        summary = mission.to_summary()
+        assert summary["max_attempts"] == DEFAULT_MAX_ATTEMPTS
+        assert summary["max_dispatches"] == DEFAULT_MAX_TASK_DISPATCHES
+        tasks = summary["tasks"]
+        assert isinstance(tasks, list)
+        assert (tasks[0]["attempts"], tasks[0]["failures"]) == (6, 1)
+        assert tasks[0]["status"] == "active"
     finally:
         rclpy.try_shutdown()

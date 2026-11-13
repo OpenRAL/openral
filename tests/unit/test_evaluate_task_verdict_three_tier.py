@@ -1,6 +1,6 @@
 """Three-tier evaluate_task_verdict tests (the completion gate plus its amendment).
 
-Tests the auto-pass / vlm_check / attempts-ladder logic of the completion gate.
+Tests the auto-pass / vlm_check / failure-ladder logic of the completion gate.
 The amendment gates the band on the PROGRESS head (task closeness) — the
 ``success_threshold`` / ``check_floor`` bars were calibrated against progress, not
 the compressed success head — and keeps ``success_now`` as a secondary
@@ -19,7 +19,7 @@ from openral_reasoner import evaluate_task_verdict
 def test_tier1_auto_pass_at_threshold() -> None:
     """Exact threshold value is an auto-pass (boundary is inclusive)."""
     action, verdict = evaluate_task_verdict(
-        ok=True, progress_now=0.8, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.8, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "complete"
     assert verdict == "progress=0.80"
@@ -28,7 +28,7 @@ def test_tier1_auto_pass_at_threshold() -> None:
 def test_tier1_auto_pass_above_threshold() -> None:
     """A high progress (0.91) auto-passes without needing VLM adjudication."""
     action, verdict = evaluate_task_verdict(
-        ok=True, progress_now=0.91, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.91, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "complete"
     assert "0.91" in verdict
@@ -37,7 +37,7 @@ def test_tier1_auto_pass_above_threshold() -> None:
 def test_tier1_auto_pass_ignores_attempt_count() -> None:
     """Auto-pass fires regardless of how many attempts were made."""
     action, _ = evaluate_task_verdict(
-        ok=True, progress_now=0.95, success_threshold=0.8, check_floor=0.5, attempts=5
+        ok=True, progress_now=0.95, success_threshold=0.8, check_floor=0.5, failures=5
     )
     assert action == "complete"
 
@@ -48,7 +48,7 @@ def test_tier1_auto_pass_ignores_attempt_count() -> None:
 def test_tier2_vlm_check_in_middle_band() -> None:
     """progress=0.65 sits in [0.5, 0.8) → vlm_check."""
     action, verdict = evaluate_task_verdict(
-        ok=True, progress_now=0.65, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.65, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "vlm_check"
     assert "0.65" in verdict
@@ -58,7 +58,7 @@ def test_tier2_vlm_check_in_middle_band() -> None:
 def test_tier2_vlm_check_at_floor_boundary() -> None:
     """Exact check_floor value falls into the ambiguous band (boundary is inclusive)."""
     action, _ = evaluate_task_verdict(
-        ok=True, progress_now=0.5, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.5, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "vlm_check"
 
@@ -66,7 +66,7 @@ def test_tier2_vlm_check_at_floor_boundary() -> None:
 def test_tier2_vlm_check_just_below_threshold() -> None:
     """One epsilon below success_threshold triggers vlm_check, not complete."""
     action, _ = evaluate_task_verdict(
-        ok=True, progress_now=0.799, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.799, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "vlm_check"
 
@@ -74,12 +74,12 @@ def test_tier2_vlm_check_just_below_threshold() -> None:
 def test_tier2_vlm_check_ignores_attempt_count() -> None:
     """vlm_check fires regardless of attempts (the ladder is bypassed in tier 2)."""
     action, _ = evaluate_task_verdict(
-        ok=True, progress_now=0.65, success_threshold=0.8, check_floor=0.5, attempts=10
+        ok=True, progress_now=0.65, success_threshold=0.8, check_floor=0.5, failures=10
     )
     assert action == "vlm_check"
 
 
-# ── Tier 3: attempts ladder (progress_now < check_floor) ──────────────────────
+# ── Tier 3: failure ladder (progress_now < check_floor) ───────────────────────
 
 
 def test_tier3_retry_below_floor() -> None:
@@ -89,11 +89,11 @@ def test_tier3_retry_below_floor() -> None:
         progress_now=0.40,
         success_threshold=0.8,
         check_floor=0.5,
-        attempts=1,
+        failures=1,
         max_attempts=3,
     )
     assert action == "retry"
-    assert "attempt 1/3" in verdict
+    assert "failed attempt 1/3" in verdict
 
 
 def test_tier3_abandon_below_floor_exhausted() -> None:
@@ -103,17 +103,17 @@ def test_tier3_abandon_below_floor_exhausted() -> None:
         progress_now=0.40,
         success_threshold=0.8,
         check_floor=0.5,
-        attempts=3,
+        failures=3,
         max_attempts=3,
     )
     assert action == "abandon"
-    assert "after 3 attempt(s)" in verdict
+    assert "after 3 failed attempt(s)" in verdict
 
 
 def test_tier3_just_below_floor_boundary() -> None:
     """One epsilon below check_floor → ladder, not vlm_check."""
     action, _ = evaluate_task_verdict(
-        ok=True, progress_now=0.499, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.499, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "retry"
 
@@ -124,7 +124,7 @@ def test_tier3_just_below_floor_boundary() -> None:
 def test_ok_false_never_complete_even_high_score() -> None:
     """When the reward is unavailable, a high progress must not auto-pass."""
     action, _ = evaluate_task_verdict(
-        ok=False, progress_now=0.99, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=False, progress_now=0.99, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action not in ("complete", "vlm_check")
 
@@ -132,7 +132,7 @@ def test_ok_false_never_complete_even_high_score() -> None:
 def test_ok_false_never_vlm_check_even_in_band() -> None:
     """When the reward is unavailable, a middle-band progress must not vlm_check."""
     action, _ = evaluate_task_verdict(
-        ok=False, progress_now=0.65, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=False, progress_now=0.65, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "retry"
 
@@ -141,13 +141,13 @@ def test_ok_false_retry_until_exhausted_then_abandon() -> None:
     """ok=False falls to the attempts ladder: retry then abandon."""
     assert (
         evaluate_task_verdict(
-            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=1
+            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, failures=1
         )[0]
         == "retry"
     )
     assert (
         evaluate_task_verdict(
-            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=3
+            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, failures=3
         )[0]
         == "abandon"
     )
@@ -163,7 +163,7 @@ def test_ok_false_retry_until_exhausted_then_abandon() -> None:
 def test_vlm_declined_in_band_degrades_to_retry_while_attempts_remain() -> None:
     # Ambiguous progress the VLM can't confirm, attempts not yet exhausted → retry.
     action, _ = evaluate_task_verdict(
-        ok=False, progress_now=0.5, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=False, progress_now=0.5, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert action == "retry"
 
@@ -171,7 +171,7 @@ def test_vlm_declined_in_band_degrades_to_retry_while_attempts_remain() -> None:
 def test_vlm_declined_in_band_abandons_once_attempts_exhausted() -> None:
     # Same ambiguous progress, attempts exhausted → abandon (not an infinite loop).
     action, _ = evaluate_task_verdict(
-        ok=False, progress_now=0.5, success_threshold=0.8, check_floor=0.5, attempts=3
+        ok=False, progress_now=0.5, success_threshold=0.8, check_floor=0.5, failures=3
     )
     assert action == "abandon"
 
@@ -193,7 +193,7 @@ def test_real_success_progress_auto_passes_despite_compressed_success() -> None:
         success_now=0.63,
         success_threshold=0.8,
         check_floor=0.5,
-        attempts=1,
+        failures=1,
     )
     assert action == "complete"
     # Progress is primary in the verdict; success is the corroborating annotation.
@@ -210,7 +210,7 @@ def test_gate_ignores_success_head_when_progress_is_low() -> None:
         success_now=0.95,
         success_threshold=0.8,
         check_floor=0.5,
-        attempts=1,
+        failures=1,
     )
     assert action == "retry"
 
@@ -218,7 +218,7 @@ def test_gate_ignores_success_head_when_progress_is_low() -> None:
 def test_success_corroboration_optional_in_verdict_text() -> None:
     """Omitting success_now leaves the verdict text progress-only (no annotation)."""
     _, verdict = evaluate_task_verdict(
-        ok=True, progress_now=0.85, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.85, success_threshold=0.8, check_floor=0.5, failures=1
     )
     assert verdict == "progress=0.85"
     assert "success=" not in verdict

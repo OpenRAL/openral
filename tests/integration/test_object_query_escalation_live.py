@@ -324,13 +324,26 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
     assert not prompts
 
 
-def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(spans: Any) -> None:
+@pytest.mark.parametrize(
+    ("prior_failures", "blocked"),
+    [
+        (2, True),  # two earlier dispatches failed: this one spends the three-try budget
+        (0, False),  # #562 class: two earlier dispatches succeeded (drive, look-at): recover
+    ],
+    ids=["prior-failures-block", "prior-successes-recover"],
+)
+def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
+    spans: Any, prior_failures: int, blocked: bool
+) -> None:
     """The reasoner dispatches a real goal to the real runner; its target is never found.
 
     The reasoner grounds a ``banana`` target into the action goal, the runner restamps and
     arms that declaration, the real tracker exhausts its query, and the runner ends the goal along
     its cancel path with ``FAILURE_OBJECT_NOT_FOUND`` / ``ROSObjectNotInMemory`` instead
     of running to the 30 s deadline. The reasoner records the typed result without handoff.
+
+    The task's third dispatch: the recovery budget counts its *failed* dispatches, so two
+    earlier successes leave recovery open while two earlier failures block the task.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
@@ -496,7 +509,8 @@ def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
     mission = MissionState.from_prompt("pick the banana")
     active = mission.active()
     assert active is not None
-    active.attempts = 2  # this dispatch spends the persisted three-attempt object-query budget
+    active.attempts = 2  # this goal is the task's third dispatch
+    active.failures = prior_failures
     reasoner._renderer.set_mission(mission)
     reasoner.set_parameters(
         [
@@ -569,13 +583,18 @@ def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(
     assert not prompts
     active = reasoner._renderer.mission.active()
     assert active is not None and active.attempts == 3
-    assert reasoner._object_query_blocked_task_id == active.task_id
+    assert (reasoner._object_query_blocked_task_id == active.task_id) is blocked, (
+        f"blocked={reasoner._object_query_blocked_task_id is not None} after "
+        f"{prior_failures} earlier failed dispatch(es)"
+    )
+    assert active.failures == prior_failures + 1, "the failed goal is a failed dispatch"
     assert elapsed < 20.0, f"the goal ran {elapsed:.1f} s, toward its 30 s deadline"
     object_query_records = [
         e for e in reasoner._renderer.executions if e.rskill_id == "(object-query)"
     ]
     assert object_query_records
-    assert "Recovery dispatch budget is 3/3" in (object_query_records[-1].reflection or "")
+    budget = f"Recovery budget is {prior_failures + 1}/3 failed dispatches"
+    assert budget in (object_query_records[-1].reflection or "")
     query_failures = [
         t
         for t in triggers

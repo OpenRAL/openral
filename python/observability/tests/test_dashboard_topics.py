@@ -453,7 +453,10 @@ def test_reasoner_tick_populates_reasoner_topic_with_mission() -> None:
     assert reasoner["tick_idx"] == 7
     mission_snap = reasoner["mission"]
     assert mission_snap["max_attempts"] == 3
+    assert mission_snap["max_dispatches"] == 10
     assert [t["status"] for t in mission_snap["tasks"]] == ["done", "active"]
+    # The card's per-task budget is failures of max_attempts, not dispatches (#562).
+    assert [(t["attempts"], t["failures"]) for t in mission_snap["tasks"]] == [(1, 0), (0, 0)]
     assert mission_snap["tasks"][0]["verdict"] == "success=0.91"
 
 
