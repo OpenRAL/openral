@@ -272,6 +272,7 @@ ISOLATED_TARGETS=(
     packages/openral_safety/test/test_urdf_lowering_geometry.py
     packages/openral_safety/test/test_urdf_lowering_lower_robot.py
     packages/openral_safety/test/test_urdf_lowering_sampling.py
+    packages/openral_safety_watchdog/test/test_deadman_watchdog.py
     packages/openral_safety_watchdog/test/test_deadman_watchdog_node_sigint_shape.py
     packages/openral_safety_watchdog/test/test_hardware_estop_node.py
     packages/openral_safety_watchdog/test/test_hardware_estop_node_sigint_shape.py
@@ -329,6 +330,7 @@ ISOLATED_TARGETS=(
     tests/integration/test_world_state_stamped_objects.py
     tests/sim/safety/test_kernel_graded_scaling_approach.py
     tests/sim/safety/test_kernel_h1_self_collision.py
+    tests/sim/safety/test_kernel_latency_soak.py
     tests/sim/safety/test_kernel_mjcf_lowered_self_collision.py
     tests/sim/safety/test_kernel_mobile_base_collision.py
     tests/sim/safety/test_kernel_per_mode_envelopes.py
@@ -344,6 +346,7 @@ ISOLATED_TARGETS=(
     tests/unit/test_deploy_e2e_coverage_ball.py
     tests/unit/test_deploy_e2e_voxel_resolution.py
     tests/unit/test_depth_convert.py
+    tests/unit/test_execution_budget.py
     tests/unit/test_hal_lifecycle_error_logging.py
     tests/unit/test_hal_lifecycle_manifest.py
     tests/unit/test_hal_lifecycle_shutdown_verdict.py
@@ -365,15 +368,6 @@ ISOLATED_TARGETS=(
     tests/unit/test_skill_runner_import_errors.py
     tests/unit/test_skill_runner_representation_dispatch.py
 )
-# Each in its own pytest process too, and run with the CPU to themselves: they assert
-# wall-clock bounds a loaded runner misses (the kernel's 25 ms p99 round trip, an
-# execution budget's 0.6 s window, the deadman's 0.8-2.5 s cap), so docker-build runs
-# them after its parallel shards finish.
-QUIET_TARGETS=(
-    tests/sim/safety/test_kernel_latency_soak.py
-    tests/unit/test_execution_budget.py
-    packages/openral_safety_watchdog/test/test_deadman_watchdog.py
-)
 # tests/unit/test_ros_live_targets.py asserts every OPENRAL_TEST_ROS_LIVE-gated
 # file under tests/integration/ appears above — a gated test missing from this
 # list runs on NO CI surface.
@@ -384,37 +378,55 @@ export OPENRAL_TEST_ROS_LIVE=1
 # container on its own Docker network (one ROS graph, /dev/shm, /tmp and PID space
 # per shard; on a shared network DDS discovery crosses containers):
 #   unset  every list in order (`just test-ros-live` on a dev host)
-#   i/K    every K-th entry of TARGETS (one process) and ISOLATED_TARGETS from the
-#          i-th, 1-based
-#   quiet  QUIET_TARGETS only
+#   I/K    every K-th TARGETS entry from the I-th (one process), and the I-th of K
+#          longest-first splits of ISOLATED_TARGETS; tests marked wall_clock deselected
+#   quiet  the wall_clock tests alone: every listed file that has one, one process each
+# Tests that assert a wall-clock bound a loaded runner misses carry
+# @pytest.mark.wall_clock, so docker-build runs them after the shards, on an idle CPU.
+# A -m of your own replaces the shard's marker filter.
 # OPENRAL_LIVE_LIST=1 prints the selection and runs nothing (test_ros_live_targets.py).
 shard="${OPENRAL_LIVE_SHARD:-}"
-pick() { # pick I K ENTRY...: every K-th entry from the I-th
-    local i=$1 k=$2 j=0
+# Wall seconds per ISOLATED_TARGETS file from a docker-build run (refresh it from the
+# step's "wall time per process" list); a file missing from it counts 5 s.
+declare -A cost=()
+while read -r secs file; do
+    if [[ "$secs" =~ ^[0-9]+$ ]]; then cost[$file]=$secs; fi
+done < scripts/ros_live_durations.txt
+balance() { # balance I K FILE...: shard I's files, each longest first onto the least-loaded
+    local i=$1 k=$2 s best c t
+    local -a load=()
     shift 2
-    for t in "$@"; do
-        j=$((j + 1))
-        if [ $(((j - i) % k)) -eq 0 ]; then printf '%s\n' "$t"; fi
-    done
+    for ((s = 1; s <= k; s++)); do load[s]=0; done
+    while read -r c t; do
+        best=1
+        for ((s = 2; s <= k; s++)); do
+            if ((load[s] < load[best])); then best=$s; fi
+        done
+        load[best]=$((load[best] + c))
+        if ((best == i)); then printf '%s\n' "$t"; fi
+    done < <(for t in "$@"; do printf '%s %s\n' "${cost[$t]:-5}" "$t"; done | LC_ALL=C sort -k1,1nr -k2,2)
 }
 case "$shard" in
     "")
         batch=("${TARGETS[@]}")
-        isolated=("${ISOLATED_TARGETS[@]}" "${QUIET_TARGETS[@]}")
+        isolated=("${ISOLATED_TARGETS[@]}")
+        marker=()
         ;;
     quiet)
         batch=()
-        isolated=("${QUIET_TARGETS[@]}")
+        mapfile -t isolated < <(grep -l -- 'pytest.mark.wall_clock' "${TARGETS[@]}" "${ISOLATED_TARGETS[@]}")
+        marker=(-m wall_clock)
         ;;
     *)
-        if ! [[ "$shard" =~ ^([0-9]+)/([0-9]+)$ ]] \
-            || [ "${BASH_REMATCH[1]}" -lt 1 ] || [ "${BASH_REMATCH[1]}" -gt "${BASH_REMATCH[2]}" ]; then
+        if ! [[ "$shard" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] \
+            || [ "${BASH_REMATCH[1]}" -gt "${BASH_REMATCH[2]}" ]; then
             echo "OPENRAL_LIVE_SHARD=$shard: expected I/K with 1 <= I <= K, or quiet" >&2
             exit 2
         fi
         i=${BASH_REMATCH[1]} k=${BASH_REMATCH[2]}
-        mapfile -t batch < <(pick "$i" "$k" "${TARGETS[@]}")
-        mapfile -t isolated < <(pick "$i" "$k" "${ISOLATED_TARGETS[@]}")
+        mapfile -t batch < <(printf '%s\n' "${TARGETS[@]}" | sed -n "${i}~${k}p")
+        mapfile -t isolated < <(balance "$i" "$k" "${ISOLATED_TARGETS[@]}")
+        marker=(-m "not wall_clock")
         ;;
 esac
 if [ -n "${OPENRAL_LIVE_LIST:-}" ]; then # print the selection, run nothing
@@ -423,9 +435,10 @@ if [ -n "${OPENRAL_LIVE_LIST:-}" ]; then # print the selection, run nothing
 fi
 
 # Exit 5 ("nothing collected") is expected under an explicit -k / -m selection,
-# which empties some runs, and for a file skipped whole at import -- pytest
-# reports a module-level importorskip as "1 skipped" yet exits 5. Otherwise it
-# means a target ran nothing, which fails the step.
+# which empties some runs, for a file skipped whole at import -- pytest
+# reports a module-level importorskip as "1 skipped" yet exits 5 -- and for a file
+# whose every test the shard's wall_clock filter deselected. Otherwise it means a
+# target ran nothing, which fails the step.
 filtered=0
 for a in "$@"; do
     case "$a" in -k | -k* | -m | -m*) filtered=1 ;; esac
@@ -438,7 +451,7 @@ run() { # run LABEL CMD...
     shift
     # pipefail (set above) makes the pipeline's status pytest's, not tee's.
     "$@" 2>&1 | tee "$out" || r=$?
-    if [ "$r" -eq 5 ] && { [ "$filtered" -eq 1 ] || grep -qE '[0-9]+ skipped' "$out"; }; then
+    if [ "$r" -eq 5 ] && { [ "$filtered" -eq 1 ] || grep -qE '[0-9]+ (skipped|deselected)' "$out"; }; then
         r=0
     fi
     # Wall time per process, to balance the shards on.
@@ -446,9 +459,9 @@ run() { # run LABEL CMD...
     [ "$r" -eq 0 ] || rc=$r
 }
 if [ "${#batch[@]}" -gt 0 ]; then
-    run "${#batch[@]} TARGETS in one process" python -m pytest "${batch[@]}" "$@"
+    run "${#batch[@]} TARGETS in one process" python -m pytest "${batch[@]}" "${marker[@]}" "$@"
 fi
 for t in "${isolated[@]}"; do
-    run "$t" env MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "$@"
+    run "$t" env MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "${marker[@]}" "$@"
 done
 exit "$rc"

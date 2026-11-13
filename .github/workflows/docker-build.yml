@@ -267,7 +267,11 @@ jobs:
             echo "--- test-time ros-* (unpinned, like the apt layer):"
             dpkg-query -W ros-jazzy-rmw-fastrtps-cpp ros-jazzy-fastrtps
           '
-          docker commit openral-live-base openral:x86-live > /dev/null
+          # Keep the base image's ENTRYPOINT/CMD: commit would record the bash override.
+          docker commit \
+            --change "ENTRYPOINT $(docker image inspect openral:x86 --format '{{json .Config.Entrypoint}}')" \
+            --change "CMD $(docker image inspect openral:x86 --format '{{json .Config.Cmd}}')" \
+            openral-live-base openral:x86-live > /dev/null
           docker rm openral-live-base > /dev/null
 
           # One container per slice of scripts/ros_live_tests.sh (OPENRAL_LIVE_SHARD),
@@ -294,8 +298,9 @@ jobs:
               -v "$PWD/scripts:/workspace/scripts:ro" \
               openral:x86-live bash scripts/ros_live_tests.sh -q
           }
-          # One shard per vCPU of the hosted runner (4), streamed with a prefix.
-          shards=4
+          # One shard per vCPU, streamed with a prefix; each also keeps its own log,
+          # uploaded on failure, since concurrent output can split a long line.
+          shards=$(nproc)
           shard() { # shard I
             local r=0 start=$SECONDS
             live "$1" "$1/$shards" 2>&1 | tee "$RUNNER_TEMP/live-$1.log" \
@@ -310,12 +315,14 @@ jobs:
           done
           rc=0
           for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
-          echo "--- slowest processes across the shards:"
-          grep -h -- '^--- live:' "$RUNNER_TEMP"/live-*.log | sort -k3 -rn | sed -n '1,20p'
-          echo "--- failures across the shards:"
+          # The tests marked wall_clock run alone, after, on an idle CPU.
+          live quiet quiet 2>&1 | tee "$RUNNER_TEMP/live-quiet.log" || rc=1
+          # In scripts/ros_live_durations.txt's format, to rebalance the shards on.
+          echo "--- wall time per process, all shards and the quiet tail (s file):"
+          grep -h -- '^--- live:' "$RUNNER_TEMP"/live-*.log \
+            | sed -E 's/^--- live: ([0-9]+) s, exit [0-9]+: /\1 /' | sort -k1,1rn || true
+          echo "--- failures across the shards and the quiet tail:"
           grep -hE '^(FAILED|ERROR) ' "$RUNNER_TEMP"/live-*.log || echo "(none)"
-          # QUIET_TARGETS assert wall-clock bounds, so they run alone, after.
-          live quiet quiet || rc=1
           exit "$rc"
 
       # The kernel writes cores as the crashing (root, in-container) uid with
@@ -330,7 +337,8 @@ jobs:
       # Symbolize any core from the step above. The image ships no gdb, so a
       # throwaway container installs it. Each core is read against the binary
       # that crashed, recovered from its %E filename (`!` -> `/`) inside the
-      # same image; only a python core whose path does not resolve falls back
+      # image the shards ran (openral:x86-live, so Fast DDS frames resolve);
+      # only a python core whose path does not resolve falls back
       # to the venv's python, and anything else is read core-only.
       # Diagnostic only: its own failure must not hide the real one, which
       # already failed the job.
@@ -345,7 +353,7 @@ jobs:
           fi
           docker run --rm --entrypoint /entrypoint.sh \
             -v "$RUNNER_TEMP/cores:/cores:ro" \
-            openral:x86 bash -c '
+            openral:x86-live bash -c '
               apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb > /dev/null
               for core in /cores/core.*; do
                 name="${core#/cores/core.}"
@@ -362,6 +370,15 @@ jobs:
                   ${exe:+"$exe"} -c "$core"
               done
             '
+
+      - name: Upload live-ROS shard logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: live-ros-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload live-ROS core dumps
         if: failure()
