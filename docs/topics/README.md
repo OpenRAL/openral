@@ -110,12 +110,13 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral_safety_kernel/change_state` | `lifecycle_msgs/ChangeState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 | `/openral_safety_kernel/get_state` | `lifecycle_msgs/GetState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 
-## Per-instance services (8)
+## Per-instance services (9)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
 | `/openral/{robot}/reset_episode` | `std_srvs/Trigger` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode._open_reset_episode_service) | — |
 | `/openral/{robot}/reset_to_pose` | `openral_msgs/ResetToPose` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode.on_configure_post_hal) | — |
+| `/{ns}/get_robot_info` | `interbotix_xs_msgs/RobotInfo` | — | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) |
 | `/{ns}/torque_enable` | `interbotix_xs_msgs/TorqueEnable` | — | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) |
 | `/{target}/set_parameters_atomically` | `rcl_interfaces/SetParametersAtomically` | — | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._begin_self_filter_period_handoff) |
 | `{lifecycle_node_name}/get_state` | `lifecycle_msgs/GetState` | — | tools/wait_for_action_and_signal_palette.py (_lifecycle_active) |

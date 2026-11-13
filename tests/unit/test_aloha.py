@@ -32,7 +32,7 @@ from openral_core import (
 )
 from openral_core.schemas import EmbodimentKind, Hand
 from openral_hal.aloha import ALOHA_DESCRIPTION, ALOHA_REAL_DESCRIPTION, AlohaHAL
-from openral_hal.sim_transport import SimTransport
+from openral_hal.sim_transport import SimTorqueSeam, SimTransport
 
 _N_JOINTS = len(ALOHA_DESCRIPTION.joints)
 
@@ -189,6 +189,9 @@ def _indexed_action(steps: int = 1) -> Action:
 
 
 def _sent(hal: AlohaHAL, transport: SimTransport, action: Action) -> dict[str, dict[str, object]]:
+    # The first command reads both arms' operating modes back; the default
+    # seam reports what upstream setup_follower_bot leaves a follower in.
+    hal.attach_torque_stop(SimTorqueSeam(arms=["follower_left", "follower_right"]))
     hal.connect()
     try:
         hal.send_action(action)
@@ -289,6 +292,64 @@ class TestSendActionSplit:
         sent = _sent(hal, transport, action)
         assert sent["/follower_left/commands/joint_single"]["cmd"] == pytest.approx(1.5)
         assert sent["/follower_right/commands/joint_single"]["cmd"] == pytest.approx(0.5)
+
+    def test_stock_linear_position_gripper_refuses_before_publishing(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        """Bring-up yaml mode: radians read as metres put a NaN on the gripper (flag 1)."""
+        hal.attach_torque_stop(
+            SimTorqueSeam(
+                arms=["follower_left", "follower_right"],
+                modes={"arm": "position", "gripper": "linear_position"},
+            )
+        )
+        hal.connect()
+        try:
+            with pytest.raises(ROSConfigError, match="current_based_position"):
+                hal.send_action(_zero_action())
+        finally:
+            hal.disconnect()
+        assert transport.calls == []
+
+    def test_unconfirmed_modes_refuse_without_a_seam(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        hal.connect()
+        try:
+            with pytest.raises(ROSConfigError, match="cannot confirm"):
+                hal.send_action(_zero_action())
+        finally:
+            hal.disconnect()
+        assert transport.calls == []
+
+    def test_unreachable_mode_service_refuses(self, hal: AlohaHAL, transport: SimTransport) -> None:
+        hal.attach_torque_stop(SimTorqueSeam(arms=["follower_left"]))  # right xs_sdk down
+        hal.connect()
+        try:
+            with pytest.raises(ROSRuntimeError, match="follower_right/get_robot_info"):
+                hal.send_action(_zero_action())
+        finally:
+            hal.disconnect()
+        assert transport.calls == []
+
+    def test_modes_are_reread_on_every_connect(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        """A relaunched xs_sdk comes back in the bring-up yaml's modes."""
+        sent = _sent(hal, transport, _zero_action())
+        assert len(sent) == 4
+        hal.attach_torque_stop(
+            SimTorqueSeam(
+                arms=["follower_left", "follower_right"],
+                modes={"arm": "position", "gripper": "linear_position"},
+            )
+        )
+        hal.connect()
+        try:
+            with pytest.raises(ROSConfigError, match="linear_position"):
+                hal.send_action(_zero_action())
+        finally:
+            hal.disconnect()
 
     def test_non_finite_target_rejected(self, hal: AlohaHAL) -> None:
         targets = [0.0] * _N_JOINTS
@@ -453,5 +514,35 @@ class TestStaleness:
         try:
             with pytest.raises(ROSPerceptionStale):
                 hal.read_state()
+        finally:
+            hal.disconnect()
+
+    def test_never_received_is_stale_not_fresh_at_connect(self, transport: SimTransport) -> None:
+        """``stamp_fn`` 0.0 (no arm reported yet) must not read as a fresh pose of zeros."""
+        hal = AlohaHAL(publish_fn=transport.publish, state_fn=transport.state, stamp_fn=lambda: 0.0)
+        hal.connect()
+        try:
+            with pytest.raises(ROSPerceptionStale, match="inf"):
+                hal.read_state()
+        finally:
+            hal.disconnect()
+
+    def test_age_follows_the_newest_sample_not_connect(self, transport: SimTransport) -> None:
+        """Freshness is the data's, so a live stream stays fresh long after connect()."""
+        stamps = [time.monotonic()]
+        hal = AlohaHAL(
+            publish_fn=transport.publish,
+            state_fn=transport.state,
+            stamp_fn=lambda: stamps[0],
+            staleness_limit_s=0.05,
+        )
+        hal.connect()
+        try:
+            time.sleep(0.1)
+            with pytest.raises(ROSPerceptionStale):
+                hal.read_state()  # the stream stopped: stale
+            stamps[0] = time.monotonic() - 0.02
+            state = hal.read_state()  # a sample arrived 20 ms ago: fresh
+            assert time.time_ns() - state.stamp_ns >= 20_000_000  # stamped at arrival
         finally:
             hal.disconnect()
