@@ -134,7 +134,6 @@ export function ActionBar({ api, cfg, actions, latched, topics, now, part, skipK
       return (
         <section className="actions" aria-label="Emergency stop">
           <ReleaseButton api={api} action={release} />
-          <span className="pill violation">e-stop latched</span>
         </section>
       );
     }
@@ -143,13 +142,16 @@ export function ActionBar({ api, cfg, actions, latched, topics, now, part, skipK
         {mine.map((a) => (
           <ActionForm key={a.id} api={api} action={a} />
         ))}
-        {latched && <span className="pill violation">e-stop latched</span>}
         {latched && !release && cfg.mode === "remote" && (
           <span className="actions-note">Release it at the robot: http://&lt;robot&gt;:4318.</span>
         )}
       </section>
     );
   }
+  // Reset lives in the header ("Release e-stop" in E-STOP's place). Here only as the
+  // fallback for a latch the header can't confirm (stale or missing safety status).
+  const releaseInHeader = releaseInPlaceOfStop(topics, now, all.shown.find((a) => a.kind === "estop_reset"));
+  const rest = mine.filter((a) => a.kind !== "estop_reset" || (latched && !releaseInHeader));
   const notes = [];
   if (hidden.role) notes.push(`Your role (${cfg.role}) can only watch and E-STOP.`);
   if (hidden.remote)
@@ -157,10 +159,10 @@ export function ActionBar({ api, cfg, actions, latched, topics, now, part, skipK
       "Off over the network on this robot: its site turns them on with OPENRAL_DASHBOARD_REMOTE_CONTROL=1. E-STOP always works.",
     );
   if (cfg.mode === "lan") notes.push("LAN view: full control is on the robot's own screen.");
-  if (!mine.length && !notes.length) return null;
+  if (!rest.length && !blocked.length && !notes.length) return null;
   return (
     <section className="actions" aria-label="Robot actions">
-      {mine.map((a) => (
+      {rest.map((a) => (
         <ActionForm key={a.id} api={api} action={a} />
       ))}
       {blocked.map((a) => (

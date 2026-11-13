@@ -63,7 +63,9 @@ read and written through the site's `/api/settings` on openral.com, and where th
 the robot); the header (robot, safety, Layout, **E-STOP**: while a fresh safety status says the
 kernel is latched and this session may run `estop_reset`, a green **Release e-stop** takes its
 place, pressable 1.5 s after it appears and after a confirm; over the network with remote control
-off, E-STOP stays and the header says to release it at the robot); the prompt bar
+off, E-STOP stays and the header says to release it at the robot. The safety pill is the one
+"E-STOP latched" label, and the right pane offers `estop_reset` only as the fallback for a latch
+the header can't confirm, such as a stale safety status); the prompt bar
 (the manifest's `prompt` action; it says why when prompting is unavailable, including when the
 reasoner's last lifecycle transition failed); a fixed-height
 row of cameras ordered left → center → right by their manifest `position` (only cameras that
