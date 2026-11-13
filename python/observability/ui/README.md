@@ -70,7 +70,9 @@ the header can't confirm, such as a stale safety status); the prompt bar
 reasoner's last lifecycle transition failed); a fixed-height
 row of cameras ordered left → center → right by their manifest `position` (only cameras that
 stream viewable frames, then the 2D occupancy map when the robot has a `map` panel); the 3D
-scene filling the rest; and a right pane that shows one tab at a time, scrolls on its own and
+scene filling the rest (its top left: a status dot, blinking green while the 3D stream is
+connected and red when it isn't, the word "3D", and an eye that shows the Layers card, hidden by
+default); and a right pane that shows one tab at a time, scrolls on its own and
 can be dragged wider. The 3D view is pinned to the world frame (`map`, else `odom`) when the
 robot has one, with a **Follow robot** toggle at its top right; its layers include the
 lidar scan and each depth camera's thinned cloud. Layout choices (tabs shown, order,

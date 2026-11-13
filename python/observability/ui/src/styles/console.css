@@ -636,10 +636,49 @@ main > .waiting {
   color: var(--muted);
   padding: 2px 4px 6px;
 }
-.scene-layers {
+/* top left: status dot, "3D", and the eye that shows the Layers card (hidden by default) */
+.scene-hd {
   position: absolute;
   left: 12px;
   top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+}
+.scene-title {
+  font: 600 12px/1 var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+.eye {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.eye:hover,
+.eye.on {
+  color: var(--text);
+  border-color: var(--hair);
+}
+.eye:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.scene-layers[hidden] {
+  display: none;
+}
+.scene-layers {
+  position: absolute;
+  left: 12px;
+  top: 56px;
   display: grid;
   gap: 2px;
   padding: 10px;
@@ -671,9 +710,9 @@ main > .waiting {
 .scene-views {
   position: absolute;
   right: 12px;
-  /* never under the layer list (left: 12px, ~200px wide): when the 3D view is narrow
+  /* never under the "3D" header (left: 12px, ~90px wide): when the 3D view is narrow
      (the settings pane open) the buttons wrap onto a second row instead of overlapping */
-  left: 232px;
+  left: 112px;
   top: 12px;
   display: flex;
   flex-wrap: wrap;
