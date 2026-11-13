@@ -45,6 +45,7 @@ from openral_sim._sidecar_common import (
     ensure_uv,
     make_isolated_env,
     run_cmd,
+    scrub_environ,
     torch_backend,
     write_sidecar_identity,
 )
@@ -316,6 +317,9 @@ def _ensure_venv(
 
 
 def main() -> int:
+    # Allowlist the environment before the fetch, the venv install and the exec: run
+    # by hand to pre-provision, upstream's install steps must not see an API key.
+    scrub_environ()
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

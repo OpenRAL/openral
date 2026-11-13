@@ -313,6 +313,11 @@ _OPERATOR_SECRETS = {
         ("da3_depth_sidecar", {"OPENRAL_DA3_DEPTH_SIDECAR_HOME": "/h"}, False),
         ("qwen_vlm_sidecar", {"OPENRAL_QWEN_VLM_SIDECAR_VENV": "/v"}, True),
         (
+            "lingbot_vla2_sidecar",
+            {"OPENRAL_LINGBOT_VLA2_SIDECAR_HOME": "/h", "OPENRAL_QWEN3VL_PATH": "/q"},
+            True,
+        ),
+        (
             "locateanything_sidecar",
             {"OPENRAL_LOCATEANYTHING_SIDECAR_HOME": "/h", "OPENRAL_ALLOW_REMOTE_CODE": "1"},
             True,
