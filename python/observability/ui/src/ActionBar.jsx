@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { coerceArgs, initialValues, runAction, schemaFields, visibleActions } from "./lib/actions.js";
+import { RELEASE_IDLE, releaseStep, releaseView } from "./lib/release.js";
 import { RELEASE_ARM_MS, RELEASE_HOLD_S, halLatched, releaseInPlaceOfStop } from "./lib/safety.js";
 
 // A press that must be confirmed, on the page: the first press asks (the caller shows
@@ -120,28 +121,37 @@ function ActionForm({ api, action }) {
 // action). Pressable only RELEASE_ARM_MS after it appears, then confirmed on the page
 // (`useConfirm`): the first press asks, a second releases.
 function ReleaseButton({ api, action }) {
-  const [armed, setArmed] = useState(false);
-  const [asking, confirm] = useConfirm();
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null);
+  // The logic lives in lib/release.js (releaseStep), tested without a DOM.
+  const [state, setState] = useState(RELEASE_IDLE);
+  const stateRef = useRef(state);
+  const dispatch = (event) => {
+    const [next, send] = releaseStep(stateRef.current, event);
+    stateRef.current = next;
+    setState(next);
+    if (send) runAction(api.call, action.id, {}).then((r) => dispatch({ type: "result", ok: r.ok, text: r.text }));
+  };
   useEffect(() => {
-    const t = setTimeout(() => setArmed(true), RELEASE_ARM_MS);
+    const t = setTimeout(() => dispatch({ type: "arm" }), RELEASE_ARM_MS);
     return () => clearTimeout(t);
-  }, []);
-  async function press() {
-    setResult(null);
-    if (!confirm()) return;
-    setBusy(true);
-    setResult(await runAction(api.call, action.id, {}));
-    setBusy(false);
-  }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!state.asking) return undefined;
+    const t = setTimeout(() => dispatch({ type: "timeout" }), CONFIRM_MS);
+    return () => clearTimeout(t);
+  }, [state.asking]); // eslint-disable-line react-hooks/exhaustive-deps
+  const view = releaseView(state);
   return (
     <div className="action action-release">
-      <button type="button" className={asking ? "btn release asking" : "btn release"} disabled={!armed || busy} onClick={press}>
-        {asking ? "Confirm release" : "Release e-stop"}
+      <button
+        type="button"
+        className={view.asking ? "btn release asking" : "btn release"}
+        disabled={view.disabled}
+        onClick={() => dispatch({ type: "press" })}
+      >
+        {view.label}
       </button>
       <span className="action-result err" role="status" aria-live="polite">
-        {result && !result.ok ? result.text : ""}
+        {view.error}
       </span>
     </div>
   );
