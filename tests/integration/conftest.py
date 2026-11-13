@@ -12,14 +12,18 @@ reaches the seeded palette.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import RSkillManifest
 
 
 def moveit_panda_demo_available() -> bool:
@@ -41,24 +45,32 @@ def moveit_panda_demo_available() -> bool:
 
 
 @pytest.fixture
-def require_policy_runtime() -> Callable[[str], None]:
-    """Skip unless a policy family's runtime imports in this venv.
+def require_policy_runtime() -> Callable[[RSkillManifest], None]:
+    """Skip unless an rSkill's policy runtime imports in this venv.
 
     The reasoner's palette seed drops every rSkill whose ``model_family`` runtime
     is not installed (``openral_sim.policy_deps.filter_importable_manifests``), so
     whether a VLA reaches the palette depends on the venv's dependency groups: a
-    dev venv without ``--group sim`` (transformers) or ``behavior-groot`` (pyzmq)
+    dev venv without ``--group sim`` (transformers) or ``sidecar-wire`` (pyzmq)
     drops what the ``openral:x86`` image admits. Call it before ``rclpy.init``.
-    """
-    from openral_sim.policy_deps import can_import_policy_family, model_family_install_hint
 
-    def require(family: str) -> None:
-        ok, reason = can_import_policy_family(family)
-        if not ok:
-            pytest.skip(
-                f"the reasoner palette drops {family!r} rSkills in this venv ({reason}). "
-                f"{model_family_install_hint(family)}"
-            )
+    With ``OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1`` (the docker-build workflow
+    sets it) a missing runtime fails instead: the image is meant to carry every
+    group these tests need, and a skip there would hide one dropped from it.
+    """
+    from openral_sim.policy_deps import can_import_policy_manifest, manifest_install_hint
+
+    def require(manifest: RSkillManifest) -> None:
+        ok, reason = can_import_policy_manifest(manifest)
+        if ok:
+            return
+        why = (
+            f"the reasoner palette drops {manifest.name!r} in this venv ({reason}). "
+            f"{manifest_install_hint(manifest)}"
+        )
+        if os.environ.get("OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES") == "1":
+            pytest.fail(why)
+        pytest.skip(why)
 
     return require
 
@@ -128,7 +140,6 @@ def move_group_subprocess() -> Iterator[None]:
         time.sleep(8.0)
         yield
     finally:
-        import os
         import signal as _signal
 
         with suppress(ProcessLookupError):

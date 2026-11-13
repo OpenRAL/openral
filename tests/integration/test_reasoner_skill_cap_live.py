@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable
 
 import pytest
+from openral_core import RSkillManifest
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _LIVE_ROS_REASON = (
@@ -32,6 +33,7 @@ _LIVE_ROS_REASON = (
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _RSKILLS = _REPO_ROOT / "rskills"
+_SMOLVLA_YAML = _RSKILLS / "smolvla-libero" / "rskill.yaml"
 _ROBOT_YAML = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
 _CAP = 2
 _ASK = "move the end-effector to the pre-grasp pose"
@@ -40,12 +42,12 @@ _EEF_POSE = "OpenRAL/rskill-moveit-multi-eef_pose"
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_capped_node_offers_top_k_skills_on_a_real_tick(
-    monkeypatch: pytest.MonkeyPatch, require_policy_runtime: Callable[[str], None]
+    monkeypatch: pytest.MonkeyPatch, require_policy_runtime: Callable[[RSkillManifest], None]
 ) -> None:
     """The client sees ``k`` skills chosen for the operator's ask; the palette is intact."""
     # With no MoveIt server up the seeded franka palette is all VLAs, and without
     # transformers only `act` and `xvla` load: not more than the cap.
-    require_policy_runtime("smolvla")
+    require_policy_runtime(RSkillManifest.from_yaml(str(_SMOLVLA_YAML)))
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_core import EmitPromptTool

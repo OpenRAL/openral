@@ -163,10 +163,13 @@ process boundary. Pass extra pytest flags through the recipe, e.g.
 `just test-ros-live -k dispatch_watchdog`.
 
 The reasoner's palette seed drops any rSkill whose policy runtime is not
-installed, so the tests that assert a VLA reaches the palette take the
-`require_policy_runtime` fixture (`tests/integration/conftest.py`) and skip,
-naming the missing `just sync --group`, in a venv without that family's group.
-`openral:x86` has `sim` (transformers, lerobot) and pyzmq, so they run on CI.
+installed, so the tests that assert a VLA reaches the palette pass that rSkill's
+manifest to the `require_policy_runtime` fixture (`tests/integration/conftest.py`).
+In a venv without the family's group they skip, naming the missing
+`just sync --group`. The CI step sets `OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1`,
+which turns that skip into a failure: `openral:x86` carries `sim` (transformers,
+lerobot) and pyzmq (via `lingbot` → `sidecar-wire`), and dropping one must not
+pass as a skip.
 
 On CI the step first prints the image's `ros-jazzy-*` versions, then runs the
 suite with core dumps enabled (`--ulimit core=-1`, host `core_pattern` pointed

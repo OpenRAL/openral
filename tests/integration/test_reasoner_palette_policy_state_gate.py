@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable
 
 import pytest
+from openral_core import RSkillManifest
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _LIVE_ROS_REASON = (
@@ -55,9 +56,10 @@ def _skill_dir(tmp_path: pathlib.Path, kind: str) -> pathlib.Path:
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 @pytest.mark.parametrize("kind", ["vla", "wam"])
 def test_policy_state_skill_follows_the_publisher(
-    tmp_path: pathlib.Path, kind: str, require_policy_runtime: Callable[[str], None]
+    tmp_path: pathlib.Path, kind: str, require_policy_runtime: Callable[[RSkillManifest], None]
 ) -> None:
-    require_policy_runtime("gr00t_b1k")  # the radio skill's family
+    skills = _skill_dir(tmp_path, kind)
+    require_policy_runtime(RSkillManifest.from_yaml(str(skills / _RADIO.name / "rskill.yaml")))
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_reasoner_ros import ReasonerNode
@@ -73,7 +75,7 @@ def test_policy_state_skill_follows_the_publisher(
             "-p",
             "grasp_target_voxel_m:=0.05",
             "-p",
-            f"rskill_search_paths:=[{_skill_dir(tmp_path, kind)}]",
+            f"rskill_search_paths:=[{skills}]",
         ],
     )
     hal_stand_in = None

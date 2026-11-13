@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from openral_core import RSkillManifest
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,9 +36,8 @@ _ROBOT_YAML = _REPO_ROOT / "robots" / "openamrobot_v2" / "robot.yaml"
     "install/setup.bash first.",
 )
 def test_palette_admits_the_openarm_skill_and_drops_an_unaccounted_state(
-    tmp_path: Path, require_policy_runtime: Callable[[str], None]
+    tmp_path: Path, require_policy_runtime: Callable[[RSkillManifest], None]
 ) -> None:
-    require_policy_runtime("pi05")  # the kept skill's family
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_reasoner_ros import ReasonerNode
@@ -46,6 +46,7 @@ def test_palette_admits_the_openarm_skill_and_drops_an_unaccounted_state(
     from tests.unit.test_openarm_skill_on_openamrobot_v2 import openarm_pi05_manifest
 
     keep = openarm_pi05_manifest()
+    require_policy_runtime(keep)
     # Same checkpoint contract with the gripper slots folded into whole-vector
     # joint actions: the 16-D state no longer names its joints, so on a 20-joint
     # robot it is the misfeed the filter exists to refuse.

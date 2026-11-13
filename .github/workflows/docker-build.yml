@@ -258,8 +258,12 @@ jobs:
           # MUJOCO_GL=osmesa: the hosted runner has no GPU, and MuJoCo's EGL
           # backend needs a GPU device ("gladLoadGL error" on the camera-rendering
           # twins); the image ships libosmesa6 for this.
+          # OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1: a palette test whose VLA runtime
+          # is missing fails here instead of skipping (tests/integration/conftest.py),
+          # so a dependency group dropped from the image cannot pass as a skip.
           docker run --rm --entrypoint /entrypoint.sh \
             -e MUJOCO_GL=osmesa -e PYOPENGL_PLATFORM=osmesa \
+            -e OPENRAL_TEST_REQUIRE_POLICY_RUNTIMES=1 \
             --ulimit core=-1 \
             -v "$RUNNER_TEMP/cores:/cores" \
             -v "$PWD/tests:/workspace/tests:ro" \
