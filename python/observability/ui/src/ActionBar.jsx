@@ -123,7 +123,6 @@ function ReleaseButton({ api, action }) {
   }
   return (
     <div className="action action-release">
-      {asking && <span className="release-warn">Torque comes back on; the arm holds its pose. Area clear?</span>}
       <button type="button" className={asking ? "btn release asking" : "btn release"} disabled={!armed || busy} onClick={press}>
         {asking ? "Confirm release" : "Release e-stop"}
       </button>

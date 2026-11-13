@@ -237,11 +237,6 @@ main > .actions {
   background: transparent;
   color: var(--live);
 }
-.release-warn {
-  font: 500 12px var(--body);
-  color: var(--text-2);
-  max-width: 260px;
-}
 .btn.release:disabled {
   opacity: 0.5;
   cursor: not-allowed;
