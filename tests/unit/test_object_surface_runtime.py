@@ -14,6 +14,10 @@ from tests.unit._tracker_scenes import RIGS, sphere, step
 pytest.importorskip("_openral_pcl_registration", reason="build native PCL registration module")
 
 
+# Frames for the per-frame clearing budget to have visited every cell at least once.
+_FRAMES_TO_COVER = 4
+
+
 @pytest.mark.parametrize("rig_name", tuple(RIGS))
 def test_tracker_clears_owned_surface_only_with_explicit_sensor_calibration(rig_name: str) -> None:
     rig = RIGS[rig_name]()
@@ -64,9 +68,15 @@ def test_tracker_clears_owned_surface_only_with_explicit_sensor_calibration(rig_
             track.object_id, track.epoch, np.vstack((points, ghost)), pose, 1_500_000_000
         )
         assert result == "accepted"
-        step(tracker, rig, [ball], stamp_ns=2_000_000_000, wall_s=20)
-        diagnostic = models.diagnostics()[track.object_id]
-        assert "stamp_ns=2000000000" in diagnostic
-        cleared.append(int(diagnostic.split("cleared_cells=")[1]))
+        # Clearing examines at most `max_points` pixels per frame and rotates through the
+        # cells across frames, so the ghost (added last) is reached within a few frames,
+        # not necessarily the first: how many depends on the rig's resolution.
+        seen = 0
+        for frame in range(2, 2 + _FRAMES_TO_COVER):
+            step(tracker, rig, [ball], stamp_ns=frame * 1_000_000_000, wall_s=10 * frame)
+            diagnostic = models.diagnostics()[track.object_id]
+            assert f"stamp_ns={frame * 1_000_000_000}" in diagnostic
+            seen = max(seen, int(diagnostic.split("cleared_cells=")[1]))
+        cleared.append(seen)
     assert cleared[0] == 0
     assert cleared[1] > 0
