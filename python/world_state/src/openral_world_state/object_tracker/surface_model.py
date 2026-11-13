@@ -47,6 +47,25 @@ class _Surface:
     free_cursor: int = 0
 
 
+def _as_rigid(transform: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``transform`` with its rotation projected onto SO(3) (nearest, by SVD)."""
+    u, _, vt = np.linalg.svd(transform[:3, :3])
+    if np.linalg.det(u @ vt) < 0:
+        u[:, -1] *= -1
+    out = np.eye(4)
+    out[:3, :3] = u @ vt
+    out[:3, 3] = transform[:3, 3]
+    return out
+
+
+def _rigid_inverse(pose: NDArray[np.float64]) -> NDArray[np.float64]:
+    """The inverse of a rigid ``pose``, exactly rigid (``R^T``, ``-R^T t``)."""
+    out = np.eye(4)
+    out[:3, :3] = pose[:3, :3].T
+    out[:3, 3] = -pose[:3, :3].T @ pose[:3, 3]
+    return out
+
+
 class ObjectSurfaceModels:
     """Observation-only models keyed by track identity and lifecycle generation.
 
@@ -135,7 +154,7 @@ class ObjectSurfaceModels:
                 rows, converged, rmse, overlap = self._registration.align(
                     p,
                     self._sample(target),
-                    np.asarray(np.linalg.inv(state.pose), dtype=np.float64),
+                    _rigid_inverse(state.pose),
                     self.config.max_correspondence_m,
                     self.config.max_iterations,
                 )
@@ -150,7 +169,10 @@ class ObjectSurfaceModels:
                 ):
                     state.reason = "registration_rejected"
                     return state.reason
-                pose = np.asarray(np.linalg.inv(transform), dtype=np.float64)
+                # PCL's ICP runs in float32: its result is a rotation only to ~1e-7, and
+                # inverting and storing it drifted the pose past the native rigidity check
+                # on the next registration. Snap it onto SE(3) first, invert rigidly.
+                pose = _rigid_inverse(_as_rigid(transform))
         local = (p - pose[:3, 3]) @ pose[:3, :3]
         with np.errstate(over="ignore", invalid="ignore"):
             scaled = np.floor(local / self.config.voxel_m)
