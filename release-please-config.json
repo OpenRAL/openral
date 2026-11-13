@@ -5,7 +5,7 @@
   "separate-pull-requests": false,
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
-  "commit-search-depth": 1000,
+  "commit-search-depth": 2000,
   "pull-request-title-pattern": "chore(release): v${version}",
   "group-pull-request-title-pattern": "chore(release): v${version}",
   "signoff": "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
