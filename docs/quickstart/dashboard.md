@@ -48,8 +48,10 @@ robot's status and an **E-STOP** button.
 **The console's license.**
 
 - The console is a prebuilt bundle. Its source is not in this repository (ADR-0131).
-- Builds published from `OpenRAL/robot-ui-releases` are proprietary (not Apache-2.0),
-  free to download and run with OpenRAL, and each carries its terms in `LICENSE.txt`.
+- Builds published from `OpenRAL/robot-ui-releases` are proprietary (not Apache-2.0).
+  They are free to download, to run with OpenRAL and to redistribute unmodified (in a
+  robot image, or on a mirror for an offline site). They may not be modified. Each
+  carries its terms in `LICENSE.txt`.
 - The `robot-ui-*` builds published on `OpenRAL/openral` Releases (up to
   `robot-ui-3047b18`) are Apache-2.0 and stay available.
 - Everything in this repository stays Apache-2.0, including the dashboard server, the
