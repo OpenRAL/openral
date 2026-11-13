@@ -297,12 +297,19 @@ def test_estopped_observable_real_hal_keeps_publishing_and_a_release_resumes_it(
     the latch (the 3D view follows the limp arm). ``/openral/estop_cleared`` then
     re-arms it in process, holding the present pose, and the node resumes.
     """
+    import sys
     import time
+    from pathlib import Path
 
     from openral_hal.so100_follower import SO100FollowerHAL
     from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
     from sensor_msgs.msg import JointState as RosJointState
 
+    # As _so101_hal_on_fake_bus: colcon runs this from the package, so the repo's tests
+    # tree (the serial-boundary fake) is not importable unless added here.
+    repo_root = str(Path(__file__).resolve().parents[3])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
     from tests.unit.fakes.fake_feetech_bus import SO_FOLLOWER_MOTORS, FakeFeetechBus
 
     rclpy.init()
