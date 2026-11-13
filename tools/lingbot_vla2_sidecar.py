@@ -35,8 +35,10 @@ import argparse
 import os
 import platform
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
+from typing import NamedTuple
 
 from openral_rskill.quantization_gate import sidecar_quantization_args
 from openral_sim._sidecar_common import (
@@ -67,6 +69,7 @@ _REPO_ENV = "OPENRAL_LINGBOT_VLA2_REPO"
 _REPO_URL_V1 = "https://github.com/robbyant/lingbot-vla.git"
 _PINNED_SHA_V1 = "4eb34b7693a0565c67433f8fac9c59a2e67eb60b"
 _DEFAULT_HOME_V1 = Path.home() / ".cache" / "openral" / "lingbot-vla-v1-sidecar"
+_HOME_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_HOME"
 _VENV_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON"
 _REPO_ENV_V1 = "OPENRAL_LINGBOT_VLA_REPO"
 
@@ -317,6 +320,99 @@ def _ensure_venv(
     )
 
 
+class _Variant(NamedTuple):
+    """Everything one ``--variant`` provisions from: its own repo, pin, home and env names."""
+
+    url: str
+    sha: str
+    home_env: str
+    default_home: Path
+    repo_env: str
+    venv_env: str
+    install: Callable[[str, Path], None] | None  # None: _ensure_venv's v2 installer
+    qwen_envs: tuple[str, ...]
+
+
+# v1 and v2 are different repos at different pins with different dependency
+# stacks, so nothing here is shared: one record per variant, no cross-reading.
+_VARIANTS: Mapping[str, _Variant] = MappingProxyType(
+    {
+        "v2": _Variant(
+            url=_REPO_URL,
+            sha=_PINNED_SHA,
+            home_env=_HOME_ENV,
+            default_home=_DEFAULT_HOME,
+            repo_env=_REPO_ENV,
+            venv_env=_VENV_ENV,
+            install=None,
+            qwen_envs=("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH"),
+        ),
+        "v1": _Variant(
+            url=_REPO_URL_V1,
+            sha=_PINNED_SHA_V1,
+            home_env=_HOME_ENV_V1,
+            default_home=_DEFAULT_HOME_V1,
+            repo_env=_REPO_ENV_V1,
+            venv_env=_VENV_ENV_V1,
+            install=_install_v1,
+            qwen_envs=("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH"),
+        ),
+    }
+)
+# Records which variant a home holds; see _claim_home.
+_VARIANT_MARKER = ".lingbot-variant"
+
+
+def _default_home(variant: str) -> Path:
+    """Sidecar home for ``variant`` when ``--home`` is not given.
+
+    The variant's own ``*_SIDECAR_HOME`` override (an empty value counts as unset,
+    ``~`` is expanded), else its cache dir. v1 used to read v2's
+    ``$OPENRAL_LINGBOT_VLA2_SIDECAR_HOME``; that is now ignored for v1, and said so.
+    """
+    v = _VARIANTS[variant]
+    override = os.environ.get(v.home_env)
+    if variant == "v1" and not override and os.environ.get(_HOME_ENV):
+        print(
+            f"[{_LABEL}] --variant v1 ignores ${_HOME_ENV} (v2 only); set ${_HOME_ENV_V1} "
+            f"to move the v1 home (using {v.default_home})",
+            flush=True,
+        )
+    return Path(override or v.default_home).expanduser()
+
+
+def _claim_home(home: Path, variant: str, *, mark: bool) -> None:
+    """Refuse a ``home`` another variant holds; with ``mark``, record it as ``variant``'s.
+
+    A shared home hands one variant the other's ``source/`` and ``.venv``; the pin
+    check catches the checkout, not the venv when ``$<repo_env>`` names an operator
+    checkout. Checked for every home, ``--home`` included: ``mark=False`` before the
+    fetch, ``mark=True`` once the checkout is verified and before the venv, so a
+    refused run never claims a home. A home neither the checkout nor the venv
+    lives in (both overrides set) is left untouched.
+    """
+    v = _VARIANTS[variant]
+    if os.environ.get(v.repo_env) and os.environ.get(v.venv_env):
+        return
+    marker = home / _VARIANT_MARKER
+    if mark and not marker.exists():
+        home.mkdir(parents=True, exist_ok=True)
+        tmp = home / f"{_VARIANT_MARKER}.{os.getpid()}"
+        tmp.write_text(f"{variant}\n", encoding="utf-8")
+        try:  # link is atomic and exclusive: never a half-written marker, one racer wins
+            os.link(tmp, marker)
+        except FileExistsError:
+            pass
+        finally:
+            tmp.unlink()
+    owner = marker.read_text(encoding="utf-8").strip() if marker.exists() else variant
+    if owner != variant:
+        raise SystemExit(
+            f"[{_LABEL}] {home} is held by LingBot variant {owner!r} ({marker}); give "
+            f"--variant {variant} its own home (--home or ${v.home_env})"
+        )
+
+
 def main() -> int:
     # Allowlist the environment before the fetch, the venv install and the exec: run
     # by hand to pre-provision, upstream's install steps must not see an API key.
@@ -343,7 +439,7 @@ def main() -> int:
     p.add_argument("--port", type=int, default=5555)
     p.add_argument(
         "--variant",
-        choices=("v2", "v1"),
+        choices=tuple(_VARIANTS),
         default="v2",
         help="Model family: v2 = 6B Qwen3-VL MoE; v1 = 4B Qwen2.5-VL dense expert "
         "(LingBot-VLA 1.0 / posttrain-robotwin). Selects the repo + venv + server variant.",
@@ -352,40 +448,24 @@ def main() -> int:
         "--home",
         type=Path,
         default=None,
-        help="Sidecar work directory (default depends on --variant).",
+        help=f"Sidecar work directory (default ${_HOME_ENV} for v2, ${_HOME_ENV_V1} for v1, "
+        "else a per-variant directory under ~/.cache/openral).",
     )
     args = p.parse_args()
 
     # Per-variant provisioning: repo URL/SHA, venv installer, home, env names.
-    if args.variant == "v1":
-        default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME_V1))
-        url, sha, repo_env, venv_env, install = (
-            _REPO_URL_V1,
-            _PINNED_SHA_V1,
-            _REPO_ENV_V1,
-            _VENV_ENV_V1,
-            _install_v1,
-        )
-        qwen_envs = ("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH")
-    else:
-        default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME))
-        url, sha, repo_env, venv_env, install = (
-            _REPO_URL,
-            _PINNED_SHA,
-            _REPO_ENV,
-            _VENV_ENV,
-            None,
-        )
-        qwen_envs = ("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH")
-    home = args.home or default_home
+    variant = _VARIANTS[args.variant]
+    home = args.home or _default_home(args.variant)
+    _claim_home(home, args.variant, mark=False)
 
-    source = _ensure_source(home, url=url, sha=sha, repo_env=repo_env)
+    source = _ensure_source(home, url=variant.url, sha=variant.sha, repo_env=variant.repo_env)
+    _claim_home(home, args.variant, mark=True)
     # Sub-16-bit needs OpenRAL Pro; ask before the venv build (ADR-0123).
     # CPU NF4 runs bf16 (no CPU 4-bit kernel; the server falls back), so only a
     # GPU sub-16-bit load needs Pro.
     effective = "none" if str(args.device) == "cpu" else str(args.quantization)
     quant_args = sidecar_quantization_args(effective, what="the LingBot sidecar", rewrites=True)
-    venv_py = _ensure_venv(home, source, install=install, venv_env=venv_env)
+    venv_py = _ensure_venv(home, source, install=variant.install, venv_env=variant.venv_env)
     venv = venv_py.parent.parent
 
     # Record which checkpoint this sidecar serves so the adapter's SidecarClient
@@ -399,8 +479,8 @@ def main() -> int:
     )
 
     env = make_isolated_env(venv)
-    env[repo_env] = str(source)
-    for qenv in qwen_envs:
+    env[variant.repo_env] = str(source)
+    for qenv in variant.qwen_envs:
         val = os.environ.get(qenv)
         if val:
             env[qenv] = val

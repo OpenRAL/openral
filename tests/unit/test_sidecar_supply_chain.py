@@ -9,8 +9,10 @@ operator credentials (reasoner API keys) away from remote-code sidecars. Real
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -153,6 +155,90 @@ def test_lingbot_checkout_is_verified_on_reuse_not_only_on_clone(
     with pytest.raises(SystemExit, match=r"no git checkout.*Delete"):
         lingbot._ensure_source(home, url=url, sha=first)
     assert not (home / "source.partial").exists()
+
+
+@_needs_git
+def test_lingbot_variants_never_share_a_checkout_under_the_home_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1 and v2 are different repos at different pins with different venvs: setting
+    the v2 home override must not hand v1 the v2 ``source/`` (refused as off-pin, or
+    run as the wrong repo before the pin was checked on reuse); v1 has its own."""
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # the *_DEFAULT_HOME* constants
+    lingbot = _tool("lingbot_vla2_sidecar")
+    for env in (lingbot._REPO_ENV, lingbot._REPO_ENV_V1, lingbot._HOME_ENV_V1):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv(lingbot._HOME_ENV, str(tmp_path / "v2-home"))
+    url, v2_pin, v1_pin = _upstream(tmp_path)
+    homes = {}
+    for variant, pin in (("v2", v2_pin), ("v1", v1_pin)):
+        homes[variant] = lingbot._default_home(variant)
+        lingbot._claim_home(homes[variant], variant, mark=False)
+        source = lingbot._ensure_source(homes[variant], url=url, sha=pin)
+        lingbot._claim_home(homes[variant], variant, mark=True)
+        assert source == homes[variant] / "source" and checkout_head(source) == pin
+    assert homes["v2"] == tmp_path / "v2-home" != homes["v1"]
+    # A home one variant holds is refused to the other, however it was named.
+    for mark in (False, True):
+        with pytest.raises(SystemExit, match="held by LingBot variant 'v2'"):
+            lingbot._claim_home(homes["v2"], "v1", mark=mark)
+
+
+@_needs_git
+def test_lingbot_boot_refuses_a_foreign_home_before_touching_it(tmp_path: Path) -> None:
+    """``main()`` end to end, no network: a home marked for the other variant is
+    refused before the fetch, and a home whose checkout fails the pin is refused
+    without being claimed (so the variant it really holds can still use it)."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("OPENRAL_LINGBOT_VLA", "OPENRAL_QWEN"))
+    }
+    env["HOME"] = str(tmp_path / "user")
+
+    def boot(variant: str, home: Path) -> subprocess.CompletedProcess[str]:
+        argv = [sys.executable, str(_TOOLS / "lingbot_vla2_sidecar.py"), "--model", "m"]
+        argv += ["--variant", variant, "--home", str(home)]
+        return subprocess.run(
+            argv, env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+
+    held = tmp_path / "held"
+    held.mkdir()
+    (held / ".lingbot-variant").write_text("v2\n")
+    run = boot("v1", held)
+    assert run.returncode != 0 and "held by LingBot variant 'v2'" in run.stderr
+    assert sorted(p.name for p in held.iterdir()) == [".lingbot-variant"]
+
+    url, first, _ = _upstream(tmp_path)  # a checkout that is not the v2 pin
+    legacy = tmp_path / "legacy"
+    _git("clone", "-q", url, str(legacy / "source"), cwd=tmp_path)
+    _git("checkout", "-q", first, cwd=legacy / "source")
+    run = boot("v2", legacy)
+    assert run.returncode != 0 and "not the pinned" in run.stderr
+    assert not (legacy / ".lingbot-variant").exists()
+
+
+def test_lingbot_home_override_is_per_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each variant reads only its own ``*_SIDECAR_HOME``, ``~``-expanded, an empty
+    value as unset; v1 says out loud that it no longer reads the v2 override."""
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    lingbot = _tool("lingbot_vla2_sidecar")
+    v1_default = tmp_path / "user" / ".cache" / "openral" / "lingbot-vla-v1-sidecar"
+    monkeypatch.setenv(lingbot._HOME_ENV, str(tmp_path / "v2-home"))
+    monkeypatch.delenv(lingbot._HOME_ENV_V1, raising=False)
+    assert lingbot._default_home("v1") == v1_default
+    assert f"ignores ${lingbot._HOME_ENV}" in capsys.readouterr().out
+    monkeypatch.setenv(lingbot._HOME_ENV_V1, "~/v1-home")
+    assert lingbot._default_home("v1") == tmp_path / "user" / "v1-home"
+    assert lingbot._default_home("v2") == tmp_path / "v2-home"
+    assert capsys.readouterr().out == ""
+    monkeypatch.setenv(lingbot._HOME_ENV_V1, "")
+    monkeypatch.setenv(lingbot._HOME_ENV, "")
+    assert lingbot._default_home("v1") == v1_default
+    assert lingbot._default_home("v2") == tmp_path / "user" / ".cache/openral/lingbot-vla2-sidecar"
 
 
 @_needs_git
@@ -337,7 +423,11 @@ _OPERATOR_SECRETS = {
         ("qwen_vlm_sidecar", {"OPENRAL_QWEN_VLM_SIDECAR_VENV": "/v"}, True),
         (
             "lingbot_vla2_sidecar",
-            {"OPENRAL_LINGBOT_VLA2_SIDECAR_HOME": "/h", "OPENRAL_QWEN3VL_PATH": "/q"},
+            {
+                "OPENRAL_LINGBOT_VLA2_SIDECAR_HOME": "/h",
+                "OPENRAL_LINGBOT_VLA_SIDECAR_HOME": "/h1",
+                "OPENRAL_QWEN3VL_PATH": "/q",
+            },
             True,
         ),
         (
