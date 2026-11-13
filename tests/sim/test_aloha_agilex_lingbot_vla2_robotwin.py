@@ -33,8 +33,9 @@ CLAUDE.md §1.9/§1.12). The test skips unless BOTH the openral-side wire
 (pyzmq/msgpack) is importable AND the sidecar interpreter + upstream checkout +
 a local checkpoint are resolvable via env overrides
 (``OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` / ``OPENRAL_LINGBOT_VLA2_REPO`` /
-``OPENRAL_LINGBOT_VLA2_CKPT``) or their cache defaults. A GPU-less CI runner is the
-legitimate skip path; a provisioned dev host with a GPU runs it for real.
+``OPENRAL_LINGBOT_VLA2_CKPT``) or the sidecar home
+(``OPENRAL_LINGBOT_VLA2_SIDECAR_HOME``, else its cache default). A GPU-less CI
+runner is the legitimate skip path; a provisioned dev host with a GPU runs it for real.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ import numpy as np
 import pytest
 from openral_rskill.quantization_gate import pro_quantization_installed
 
-from tests.sim.conftest import _robotwin_obs
+from tests.sim.conftest import _lingbot_sidecar_home, _robotwin_obs
 
 _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is None]
 
@@ -58,8 +59,7 @@ def _sidecar_python() -> Path | None:
     override = os.environ.get("OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON")
     if override:
         return Path(override) if Path(override).is_file() else None
-    cache = Path.home() / ".cache" / "openral" / "lingbot-vla2-sidecar"
-    default = cache / ".venv" / "bin" / "python"
+    default = _lingbot_sidecar_home("v2") / ".venv" / "bin" / "python"
     return default if default.is_file() else None
 
 
@@ -68,7 +68,7 @@ def _repo_checkout() -> Path | None:
     if override:
         p = Path(override)
         return p if (p / "lingbotvla").is_dir() else None
-    default = Path.home() / ".cache" / "openral" / "lingbot-vla2-sidecar" / "source"
+    default = _lingbot_sidecar_home("v2") / "source"
     return default if (default / "lingbotvla").is_dir() else None
 
 
