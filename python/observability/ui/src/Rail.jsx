@@ -3,7 +3,8 @@ import { viewerLabel, workspaceLabel } from "./lib/viewer.js";
 import { SettingsPane } from "./SettingsPane.jsx";
 
 // The left pane: whose workspace this is at the top (the org's logo or first letter,
-// and its name), the sections (none yet) and, at the bottom, the viewer with a ⋯ menu
+// and its name), then on the website the robots this account reaches (a click opens
+// that one on the dashboard) and, at the bottom, the viewer with a ⋯ menu
 // that opens the settings pane (and, on the website, the account page).
 // It starts closed (an icon rail) and remembers open/closed in this browser.
 const KEY = "openral.rail.open";
@@ -28,27 +29,29 @@ function useOpen() {
 }
 
 // On the website the console is served same-origin under /robot-ui/, so the site's
-// own /api/dashboard says who is signed in. On the robot there is no account.
-function useMe(onWebsite) {
-  const [me, setMe] = useState(null);
+// own /api/dashboard says who is signed in and /api/robots which robots they reach.
+// On the robot there is no account.
+function useSite(onWebsite, path) {
+  const [body, setBody] = useState(null);
   useEffect(() => {
     if (!onWebsite) return;
     let live = true;
-    fetch("/api/dashboard", { credentials: "same-origin" })
+    fetch(path, { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((b) => live && setMe(b), () => {});
+      .then((b) => live && setBody(b), () => {});
     return () => {
       live = false;
     };
-  }, [onWebsite]);
-  return me;
+  }, [onWebsite, path]);
+  return body;
 }
 
-export function Rail({ cfg, onWebsite, robotName, reasonerModel }) {
+export function Rail({ cfg, onWebsite, robotId, robotName, reasonerModel }) {
   const [open, setOpen] = useOpen();
   const [menu, setMenu] = useState(false);
   const [settings, setSettings] = useState(false);
-  const me = useMe(onWebsite);
+  const me = useSite(onWebsite, "/api/dashboard");
+  const robots = useSite(onWebsite, "/api/robots")?.robots || [];
   const v = viewerLabel(me, cfg);
   const ws = workspaceLabel(me, cfg, robotName);
   const box = useRef(null);
@@ -89,7 +92,24 @@ export function Rail({ cfg, onWebsite, robotName, reasonerModel }) {
             {open ? "‹" : "›"}
           </button>
         </div>
-        <nav className="rail-nav" aria-label="Sections" />
+        <nav className="rail-nav" aria-label="Robots">
+          {robots.map((r) => (
+            // The whole dashboard page (target _top) switches, so its heading names the same robot.
+            <a
+              key={r.id}
+              className="rail-robot"
+              href={`/dashboard?robot=${encodeURIComponent(r.id)}#robots`}
+              target="_top"
+              aria-current={r.id === robotId ? "page" : undefined}
+              title={r.name}
+            >
+              <span className="rail-robot-icon" aria-hidden="true">
+                {(r.name || "?")[0].toUpperCase()}
+              </span>
+              {open ? <span className="rail-robot-name">{r.name}</span> : <span className="sr-only">{r.name}</span>}
+            </a>
+          ))}
+        </nav>
         <div className="rail-profile" ref={box}>
           {menu && (
             <div className="rail-menu" role="menu" aria-label={v.name}>
