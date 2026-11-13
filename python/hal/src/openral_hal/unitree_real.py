@@ -48,7 +48,7 @@ the same tick is re-published instead of zero.
 
 **Base height is not commandable.** ``Action`` has no base-height field, and upstream's
 only height-carrying converter (``command/body/velocity_height`` at isaac_ros_deploy
-f3aa6b89) hardcodes 0.7 m — there is nothing to forward a height to.
+v4.6-0 3e84f85a) hardcodes 0.7 m — there is nothing to forward a height to.
 
 **E-stop.** ``UnitreeHgSystemInterface`` sends zero torque (motor mode 0) for any joint no
 controller claims, so the base ``RosControlHAL`` stop — deactivate the controllers — would

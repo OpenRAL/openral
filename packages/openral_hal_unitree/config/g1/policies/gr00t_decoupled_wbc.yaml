@@ -64,7 +64,9 @@ controllers:
       source_message_type:
         command/body/velocity: geometry_msgs/msg/Twist
       # OpenRAL addition, as for AGILE: a stale velocity command blanks the policy output
-      # and SafetyController holds the measured pose.
+      # and safety_controller holds the pose captured at stale entry. Enforced by
+      # openral_hal_unitree/GuardedInferenceController; the launch refuses these keys on
+      # any other inference_controller type.
       topic_input_timeout_ms: 500.0
 
   upper_body_forward_joint_command_controller:

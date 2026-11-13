@@ -48,8 +48,12 @@ controller_manager:
     safety_controller:
       type: openral_hal_unitree/GuardedSafetyController
     # The S0 whole-body policy (ONNX through Triton). Owns the legs; see policies/.
+    # NVIDIA's InferenceController through OpenRAL's guard (src/guarded_inference_controller.cpp,
+    # issue #565): the Jazzy release (v4.6) has no stale-input watchdog, so the guard adds
+    # v5.0's `topic_input_timeout_ms` — a stale velocity command invalidates the policy's
+    # output and safety_controller holds the pose captured at stale entry.
     inference_controller:
-      type: isaac_ros_deploy_ros2_control/InferenceController
+      type: openral_hal_unitree/GuardedInferenceController
     # What OpenRAL's Python HAL commands: the upper-body joints, nothing else.
     upper_body_forward_joint_command_controller:
       type: isaac_ros_deploy_ros2_control/ForwardJointCommandController

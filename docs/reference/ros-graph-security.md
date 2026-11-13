@@ -122,7 +122,7 @@ cell. A set before the first configure still works (nothing is supervised yet);
 see `packages/openral_safety_watchdog/README.md`.
 
 **Unitree G1: the blend parameters.** NVIDIA's `SafetyController`
-(`isaac_ros_deploy` f3aa6b89, `deps.repos`) declares `blend_ratio` and
+(`isaac_ros_deploy` v4.6-0 `3e84f85a`, `deps.repos`) declares `blend_ratio` and
 `max_blend_ratio_speed` with `read_only = false`, applies a runtime set on the next tick
 (range 0–10 /s), and on activation snaps the applied blend to its target with no ramp.
 The G1 bringup runs it as `openral_hal_unitree/GuardedSafetyController` (issue #548),

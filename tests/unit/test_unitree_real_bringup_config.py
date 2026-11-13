@@ -32,6 +32,7 @@ from openral_hal.unitree_real import UnitreeHgRealHAL
 from openral_hal.unitree_s0_policy import (
     load_s0_policy,
     policy_parameters,
+    require_watchdog_enforced,
     resolve_leapp_config,
     s0_policy_path,
 )
@@ -106,7 +107,8 @@ def test_whole_body_controllers_cover_exactly_the_manifest_joints() -> None:
 
 
 def test_every_declared_controller_type_is_a_known_plugin() -> None:
-    """Upstream plugins, except safety_controller, which runs through OpenRAL's guard."""
+    """Upstream plugins, except safety_controller and inference_controller, which run
+    through OpenRAL's guards (#548, #565)."""
     types_ = {
         name: spec["type"]
         for name, spec in _params(_yaml(_CONTROLLER_MANAGER), "controller_manager").items()
@@ -117,7 +119,7 @@ def test_every_declared_controller_type_is_a_known_plugin() -> None:
         "imu_sensor_broadcaster": "imu_sensor_broadcaster/IMUSensorBroadcaster",
         "freeze_controller": "isaac_ros_deploy_ros2_control/FreezeController",
         "safety_controller": "openral_hal_unitree/GuardedSafetyController",
-        "inference_controller": "isaac_ros_deploy_ros2_control/InferenceController",
+        "inference_controller": "openral_hal_unitree/GuardedInferenceController",
         "upper_body_forward_joint_command_controller": (
             "isaac_ros_deploy_ros2_control/ForwardJointCommandController"
         ),
@@ -147,8 +149,9 @@ def test_the_guarded_plugin_is_exported_under_the_configured_name() -> None:
     """The type the YAML names must be the class the plugin XML exports, in a library
     CMake builds; a mismatch is a controller that fails to load on the robot."""
     xml = (_PKG / "openral_hal_unitree_controllers.xml").read_text(encoding="utf-8")
-    assert 'name="openral_hal_unitree/GuardedSafetyController"' in xml
-    assert 'type="openral_hal_unitree::GuardedSafetyController"' in xml
+    for guard in ("GuardedSafetyController", "GuardedInferenceController"):
+        assert f'name="openral_hal_unitree/{guard}"' in xml
+        assert f'type="openral_hal_unitree::{guard}"' in xml
     library = re.search(r'<library path="([^"]+)"', xml)
     assert library is not None
     cmake = (_PKG / "CMakeLists.txt").read_text(encoding="utf-8")
@@ -272,6 +275,82 @@ def test_a_ready_policys_velocity_source_is_the_hal_twist_topic(policy: Path) ->
     assert 0.0 < inference["topic_input_timeout_ms"] <= 1000.0
     # config_path is the launch's to fill; an empty one fails the controller's configure.
     assert inference["config_path"] == ""
+
+
+# ── stale-input watchdog must be enforced, never silently ignored (#565) ──────
+
+
+@pytest.mark.parametrize("policy", _ready_policies(), ids=lambda p: p.stem)
+def test_a_shipped_policys_watchdog_is_enforced_by_the_configured_type(policy: Path) -> None:
+    require_watchdog_enforced(load_s0_policy(policy), _yaml(_CONTROLLER_MANAGER))
+
+
+def test_the_watchdog_keys_on_upstreams_inference_controller_are_refused() -> None:
+    """The pinned Jazzy isaac_ros_deploy (v4.6) accepts and ignores them."""
+    base = _yaml(_CONTROLLER_MANAGER)
+    base["controller_manager"]["ros__parameters"]["inference_controller"]["type"] = (
+        "isaac_ros_deploy_ros2_control/InferenceController"
+    )
+    policy = load_s0_policy(_G1_CONFIG / "policies" / "gr00t_decoupled_wbc.yaml")
+    with pytest.raises(ROSConfigError, match="typed"):
+        require_watchdog_enforced(policy, base)
+
+
+_UPSTREAM_TYPE = "isaac_ros_deploy_ros2_control/InferenceController"
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        # controller_manager's block in the policy file (it loads last)
+        {
+            "controller_manager": {
+                "ros__parameters": {"inference_controller": {"type": _UPSTREAM_TYPE}}
+            }
+        },
+        # the controller's own block: Jazzy's spawner sets the type from it too
+        {"inference_controller": {"ros__parameters": {"type": _UPSTREAM_TYPE}}},
+        # namespaced / wildcard keys
+        {"/inference_controller": {"ros__parameters": {"type": _UPSTREAM_TYPE}}},
+        {"/**": {"ros__parameters": {"inference_controller": {"type": _UPSTREAM_TYPE}}}},
+        # a node nested under a wildcard namespace: `/**/inference_controller`
+        {"/**": {"inference_controller": {"ros__parameters": {"type": _UPSTREAM_TYPE}}}},
+    ],
+    ids=["manager-block", "own-block", "namespaced", "wildcard", "nested-wildcard"],
+)
+def test_any_other_type_anywhere_in_the_policy_file_is_refused(
+    tmp_path: Path, override: dict[str, dict[str, object]]
+) -> None:
+    doc = _yaml(_G1_CONFIG / "policies" / "agile_velocity.yaml")
+    for key, block in override.items():
+        params = block.get("ros__parameters")
+        if key in doc["controllers"] and isinstance(params, dict):
+            doc["controllers"][key]["ros__parameters"].update(params)
+        else:
+            doc["controllers"][key] = block
+    path = tmp_path / "override.yaml"
+    path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ROSConfigError, match="typed"):
+        require_watchdog_enforced(load_s0_policy(path), _yaml(_CONTROLLER_MANAGER))
+
+
+@pytest.mark.parametrize(
+    "timeout", [None, 0.0, -1.0, 500], ids=["missing", "zero", "negative", "int"]
+)
+def test_a_policy_without_a_positive_float_timeout_is_refused(
+    tmp_path: Path, timeout: float | None
+) -> None:
+    """No watchdog on a real robot is refused, not silently accepted."""
+    doc = _yaml(_G1_CONFIG / "policies" / "gr00t_decoupled_wbc.yaml")
+    params = doc["controllers"]["inference_controller"]["ros__parameters"]
+    if timeout is None:
+        del params["topic_input_timeout_ms"]
+    else:
+        params["topic_input_timeout_ms"] = timeout
+    path = tmp_path / "timeout.yaml"
+    path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ROSConfigError, match="topic_input_timeout_ms is"):
+        require_watchdog_enforced(load_s0_policy(path), _yaml(_CONTROLLER_MANAGER))
 
 
 # ── launch file (pure helpers; no ROS) ────────────────────────────────────────
