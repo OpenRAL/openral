@@ -176,6 +176,7 @@ def _poll(budget: Any, wall_s: float) -> Any:
 # ── ExecutionBudget on a real sim-time node ──────────────────────────────────
 
 
+@pytest.mark.wall_clock
 def test_slow_sim_clock_does_not_lapse_the_budget_early(graph: _Graph) -> None:
     """(a) At 0.1x real time a 1 s budget survives 1.5 s of wall; wall-clock would not."""
     from openral_rskill.execution_budget import ExecutionBudget, graph_clock_fn
@@ -195,6 +196,7 @@ def test_slow_sim_clock_does_not_lapse_the_budget_early(graph: _Graph) -> None:
     assert "(wall clock)" in wall_miss.detail
 
 
+@pytest.mark.wall_clock
 def test_graph_clock_budget_lapses_on_sim_seconds(graph: _Graph) -> None:
     """A fast sim (5x) lapses a 1 s budget after ~0.2 s of wall, reporting graph seconds."""
     from openral_rskill.execution_budget import ExecutionBudget, graph_clock_fn
@@ -207,6 +209,7 @@ def test_graph_clock_budget_lapses_on_sim_seconds(graph: _Graph) -> None:
     assert "(graph clock)" in miss.detail
 
 
+@pytest.mark.wall_clock
 def test_stalled_clock_fails_closed(graph: _Graph) -> None:
     """(b) /clock goes silent mid-goal → ``clock_stalled`` after ``stall_s`` of wall time."""
     from openral_rskill.execution_budget import ExecutionBudget, graph_clock_fn
