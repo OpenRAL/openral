@@ -163,3 +163,11 @@ test("the 3D follow setting defaults off and survives a reload", () => {
   assert.equal(normalizePrefs({ follow: true }).follow, true);
   assert.equal(normalizePrefs({ follow: "yes" }).follow, false);
 });
+
+test("the Theme switch flips light/dark and lands on 'system' at the OS's own mode", async () => {
+  const { toggledTheme } = await import("./layout.js");
+  assert.equal(toggledTheme("dark", true), "light"); // OS dark: light is a choice
+  assert.equal(toggledTheme("light", true), "system"); // back to the OS's dark
+  assert.equal(toggledTheme("light", false), "dark");
+  assert.equal(toggledTheme("dark", false), "system");
+});

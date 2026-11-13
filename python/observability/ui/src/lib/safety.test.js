@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SAFETY_LIVENESS_S, releaseInPlaceOfStop, safetyVerdict } from "./safety.js";
+import { RELEASE_HOLD_S, SAFETY_LIVENESS_S, halLatched, releaseInPlaceOfStop, safetyVerdict } from "./safety.js";
 
 // Topic shapes as the dashboard store emits them (store.set_safety_status, safety.check spans).
 const NOW = 1_000;
@@ -45,10 +45,28 @@ test("E-STOP gives way to Release only on a fresh latched status this session ca
   // Not latched, or latched long ago (kernel gone): E-STOP stays.
   assert.equal(releaseInPlaceOfStop({ safety_status: status() }, NOW, reset), false);
   assert.equal(releaseInPlaceOfStop({ safety_status: status({ latched: true, ts_unix: NOW - SAFETY_LIVENESS_S - 0.5 }) }, NOW, reset), false);
-  // A status from the future (clock skew) is not trusted either.
+  // A status from the future beyond a second of skew is not trusted either.
   assert.equal(releaseInPlaceOfStop({ safety_status: status({ latched: true, ts_unix: NOW + 5 }) }, NOW, reset), false);
   // A latch learned only from an event, with no status feed: E-STOP stays.
   assert.equal(releaseInPlaceOfStop({ safety: { estopped: true } }, NOW, reset), false);
   assert.equal(releaseInPlaceOfStop({ safety_status: { latched: true } }, NOW, reset), false);
   assert.equal(releaseInPlaceOfStop(undefined, NOW, reset), false);
+});
+
+test("once shown, Release holds through a short stall in the status stream", () => {
+  const reset = { id: "estop_reset", kind: "estop_reset" };
+  const stalled = { safety_status: status({ latched: true, ts_unix: NOW - SAFETY_LIVENESS_S - 2 }) };
+  assert.equal(releaseInPlaceOfStop(stalled, NOW, reset), false); // not shown from stale
+  assert.equal(releaseInPlaceOfStop(stalled, NOW, reset, RELEASE_HOLD_S), true); // kept
+  const gone = { safety_status: status({ latched: true, ts_unix: NOW - RELEASE_HOLD_S - 1 }) };
+  assert.equal(releaseInPlaceOfStop(gone, NOW, reset, RELEASE_HOLD_S), false);
+});
+
+test("a HAL latch the kernel's release left behind still reads as stopped", () => {
+  const hal = (estopped, age = 0.5) => ({ hal_estop: { arm: { estopped, ts_unix: NOW - age } } });
+  assert.equal(halLatched(hal(true), NOW), true);
+  assert.equal(halLatched(hal(false), NOW), false);
+  assert.equal(halLatched(hal(true, SAFETY_LIVENESS_S + 1), NOW), false); // heartbeat gone
+  const released = { safety_status: status(), ...hal(true) };
+  assert.deepEqual(safetyVerdict(released, NOW), { state: "bad", label: "E-STOP latched (robot)" });
 });

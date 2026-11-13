@@ -10,7 +10,8 @@ import { connectSSE } from "./lib/sse.js";
 import { fmtAge, robotNow, setRobotNow } from "./lib/render.js";
 import { ActionBar } from "./ActionBar.jsx";
 import { Console, usePrefs, useTheme } from "./Console.jsx";
-import { safetyVerdict } from "./lib/safety.js";
+import { prefersDark, toggledTheme } from "./lib/layout.js";
+import { halLatched, safetyVerdict } from "./lib/safety.js";
 import { Boundary } from "./panels.jsx";
 
 // Mode comes from the location: `?robot=<id>` means we are www.openral.com's
@@ -191,7 +192,7 @@ function Robot({ api, robot, robots }) {
     api,
     cfg,
     actions: manifest?.actions,
-    latched: !!(t.safety_status?.latched || t.safety?.estopped),
+    latched: !!(t.safety_status?.latched || t.safety?.estopped) || halLatched(t, robotNow()),
     topics: t,
     now: robotNow(),
   };
@@ -205,7 +206,7 @@ function Robot({ api, robot, robots }) {
         robotName={name}
         reasonerModel={t.reasoner?.model}
         theme={theme}
-        toggleTheme={() => update((p) => ({ ...p, theme: theme === "dark" ? "light" : "dark" }))}
+        toggleTheme={() => update((p) => ({ ...p, theme: toggledTheme(theme, prefersDark()) }))}
       />
       <div className="app-body">
       <header className="top">

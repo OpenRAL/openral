@@ -261,7 +261,15 @@ function useBridge(api, needTicket, handlers) {
   return [ref, status];
 }
 
-const DOT_LABEL = { live: "3D stream connected", wait: "connecting to the 3D stream", error: "3D stream not connected" };
+const DOT_LABEL = {
+  live: "3D stream live",
+  paused: "3D stream connected, but the robot's pose is not updating",
+  wait: "connecting to the 3D stream",
+  error: "3D stream not connected",
+};
+// The robot's pose (/tf) older than this reads as paused: the stream is open but the
+// robot is not moving the model (a HAL that stopped publishing, a frozen render).
+const TF_STALE_MS = 5000;
 
 export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, bridgeOn, follow, setFollow }) {
   const host = useRef(null);
@@ -302,6 +310,7 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
       if (!w) return;
       w.dirty = true;
       if (topic === "/tf" || topic === "/tf_static") w.tf.addMessage(msg), (w.tfVersion += 1);
+      if (topic === "/tf") w.lastTfAt = Date.now();
       else if (COLLISION.has(topic)) markersFrom(w.collision, topic, msg);
       else if (PAYLOAD.has(topic)) markersFrom(w.payload, topic, msg);
       else if (ROBOT.has(topic) && typeof msg?.data === "string") loadRobot(msg.data);
@@ -799,7 +808,16 @@ export function Scene3D({ api, mode, manifest, snap, layers, setLayer, theme, br
   };
   const view = (name) => () => world.current && setView(world.current, name);
   // Like a camera's: blinking green while the 3D stream is open, red when it isn't.
-  const dotState = bridgeOn && status.state === "open" ? "live" : bridgeOn && status.state === "connecting" ? "wait" : "error";
+  const tfFresh = Date.now() - (world.current?.lastTfAt ?? 0) < TF_STALE_MS;
+  const dotState = !bridgeOn
+    ? "error"
+    : status.state === "open"
+      ? tfFresh
+        ? "live"
+        : "paused"
+      : status.state === "connecting"
+        ? "wait"
+        : "error";
 
   return (
     <section className="scene" aria-label="3D scene">

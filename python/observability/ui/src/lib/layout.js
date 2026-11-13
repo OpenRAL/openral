@@ -150,6 +150,15 @@ export function savePrefs(storage, robotId, prefs) {
 }
 
 // "system" follows the OS; the page sets data-theme on <html>.
+// The Theme switch: the other of light/dark; landing on the OS's own mode stores "system",
+// so the robot UI follows the OS again instead of pinning a mode forever.
+export function toggledTheme(resolved, prefersDark) {
+  const next = resolved === "dark" ? "light" : "dark";
+  return next === (prefersDark ? "dark" : "light") ? "system" : next;
+}
+
+export const prefersDark = () => globalThis.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
+
 export function resolveTheme(theme, prefersDark) {
   if (theme === "light" || theme === "dark") return theme;
   return prefersDark ? "dark" : "light";

@@ -1,6 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { coerceArgs, initialValues, runAction, schemaFields, visibleActions } from "./lib/actions.js";
-import { RELEASE_ARM_MS, releaseInPlaceOfStop } from "./lib/safety.js";
+import { RELEASE_ARM_MS, RELEASE_HOLD_S, halLatched, releaseInPlaceOfStop } from "./lib/safety.js";
+
+// A press that must be confirmed, on the page: the first press asks (the caller shows
+// `asking`), a second within CONFIRM_MS goes. Never window.confirm: an embedded browser and
+// a cross-origin frame (openral.com's robot view) suppress it, silently answering "no".
+const CONFIRM_MS = 5000;
+function useConfirm() {
+  const [asking, setAsking] = useState(false);
+  useEffect(() => {
+    if (!asking) return undefined;
+    const t = setTimeout(() => setAsking(false), CONFIRM_MS);
+    return () => clearTimeout(t);
+  }, [asking]);
+  // true when this press should go ahead
+  const confirm = () => {
+    if (asking) {
+      setAsking(false);
+      return true;
+    }
+    setAsking(true);
+    return false;
+  };
+  return [asking, confirm];
+}
 
 // One form per manifest action. Fields come from `args_schema`; an action
 // without fields is just its button.
@@ -13,14 +36,15 @@ function ActionForm({ api, action }) {
   const estop = action.kind === "estop";
   const label = typeof action.label === "string" && action.label ? action.label : action.id;
   const fid = (f) => `act-${action.id}-${f.name}`;
+  const needsConfirm = !estop && typeof action.confirm === "string" && !!action.confirm; // E-STOP never waits
+  const [asking, confirm] = useConfirm();
 
   async function submit(e) {
     e.preventDefault();
     const { args, errors: errs } = coerceArgs(fields, values);
     setErrors(errs);
     if (errs) return;
-    // E-STOP never waits on a dialog.
-    if (!estop && typeof action.confirm === "string" && action.confirm && !window.confirm(action.confirm)) return;
+    if (needsConfirm && !confirm()) return;
     setBusy(true);
     const res = await runAction(api.call, action.id, args);
     setResult(res);
@@ -80,8 +104,9 @@ function ActionForm({ api, action }) {
           )}
         </label>
       ))}
+      {asking && <span className="confirm-ask">{action.confirm}</span>}
       <button type="submit" className={estop ? "btn estop" : "btn"} disabled={busy}>
-        {label}
+        {asking ? `Confirm ${label}` : label}
       </button>
       <span className={`action-result${result && !result.ok ? " err" : ""}`} role="status" aria-live="polite">
         {/* A stop speaks through the header (the latched pill, Release); only its failures need words. */}
@@ -92,31 +117,20 @@ function ActionForm({ api, action }) {
 }
 
 // E-STOP's place while the kernel is latched: a green "Release e-stop" (the estop_reset
-// action). Pressable only RELEASE_ARM_MS after it appears, then confirmed on the page: the
-// first press asks, a second within RELEASE_CONFIRM_MS releases. Not window.confirm: an
-// embedded browser or a cross-origin frame (the website) suppresses it, answering "no".
-const RELEASE_CONFIRM_MS = 5000;
+// action). Pressable only RELEASE_ARM_MS after it appears, then confirmed on the page
+// (`useConfirm`): the first press asks, a second releases.
 function ReleaseButton({ api, action }) {
   const [armed, setArmed] = useState(false);
-  const [asking, setAsking] = useState(false);
+  const [asking, confirm] = useConfirm();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   useEffect(() => {
     const t = setTimeout(() => setArmed(true), RELEASE_ARM_MS);
     return () => clearTimeout(t);
   }, []);
-  useEffect(() => {
-    if (!asking) return undefined;
-    const t = setTimeout(() => setAsking(false), RELEASE_CONFIRM_MS);
-    return () => clearTimeout(t);
-  }, [asking]);
   async function press() {
-    if (!asking) {
-      setResult(null);
-      setAsking(true);
-      return;
-    }
-    setAsking(false);
+    setResult(null);
+    if (!confirm()) return;
     setBusy(true);
     setResult(await runAction(api.call, action.id, {}));
     setBusy(false);
@@ -142,9 +156,12 @@ export function ActionBar({ api, cfg, actions, latched, topics, now, part, skipK
   const { hidden } = all;
   const blocked = all.blocked.filter((a) => !skipKinds.includes(a.kind));
   const mine = all.shown.filter((a) => (a.kind === "estop") === (part === "estop") && !skipKinds.includes(a.kind));
+  const release = all.shown.find((a) => a.kind === "estop_reset");
+  // Shown from a fresh latch; once shown, held through a short stall in the stream.
+  const swapped = useRef(false);
+  swapped.current = releaseInPlaceOfStop(topics, now, release, swapped.current ? RELEASE_HOLD_S : undefined);
   if (part === "estop") {
-    const release = all.shown.find((a) => a.kind === "estop_reset");
-    if (releaseInPlaceOfStop(topics, now, release)) {
+    if (swapped.current) {
       return (
         <section className="actions" aria-label="Emergency stop">
           <ReleaseButton api={api} action={release} />
@@ -159,13 +176,15 @@ export function ActionBar({ api, cfg, actions, latched, topics, now, part, skipK
         {latched && !release && cfg.mode === "remote" && (
           <span className="actions-note">Release it at the robot: http://&lt;robot&gt;:4318.</span>
         )}
+        {!topics?.safety_status?.latched && halLatched(topics, now) && (
+          <span className="actions-note">The arm is still stopped: restart the deploy to resume.</span>
+        )}
       </section>
     );
   }
   // Reset lives in the header ("Release e-stop" in E-STOP's place). Here only as the
   // fallback for a latch the header can't confirm (stale or missing safety status).
-  const releaseInHeader = releaseInPlaceOfStop(topics, now, all.shown.find((a) => a.kind === "estop_reset"));
-  const rest = mine.filter((a) => a.kind !== "estop_reset" || (latched && !releaseInHeader));
+  const rest = mine.filter((a) => a.kind !== "estop_reset" || (latched && !swapped.current));
   const notes = [];
   if (hidden.role) notes.push(`Your role (${cfg.role}) can only watch and E-STOP.`);
   if (hidden.remote)

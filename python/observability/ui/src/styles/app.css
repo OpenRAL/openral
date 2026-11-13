@@ -233,6 +233,11 @@ main > .actions {
 .btn.release:hover:not(:disabled) {
   background: #7ccaa8;
 }
+.confirm-ask {
+  font: 500 12px var(--body);
+  color: var(--text-2);
+  max-width: 280px;
+}
 .btn.release.asking {
   background: transparent;
   color: var(--live);
