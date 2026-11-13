@@ -2999,6 +2999,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     description = description.model_copy(
         update={"sensors": apply_sensor_overlays(description.sensors, unit_overlays)}
     )
+    if hal_mode == "real":
+        # This unit's jaw calibration (`RobotUnit.gripper_joint_curve`): the kernel, the
+        # self-filter and /tf pose the real finger where its servo puts it, not where a sim
+        # twin's map would. A sim scene's own curve was applied above.
+        from openral_core import unit_gripper_curves
+
+        description = unit_gripper_curves(description, robot_yaml, scene_unit)
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     # Issue #418: the Layer-2 object tracker (off by default; checked here once).
     object_tracking, tracked_cameras = _object_tracking(

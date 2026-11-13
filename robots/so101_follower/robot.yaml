@@ -180,8 +180,10 @@ joints:
 # - up to ~10 deg off in MuJoCo, which maps -0.1745 + 1.9199 * f
 #   (`sim.grippers[].ctrl_range`): the jaw is posed up to 0.1745 rad more open
 #   than MuJoCo's at f = 0, converging to 0 at f = 1;
-# - UNVERIFIED on the real arm: SO100FollowerHAL maps f to lerobot's 0..100,
-#   whose angle depends on the servo calibration.
+# - on the real arm, NOT this map: SO100FollowerHAL maps f to lerobot's 0..100,
+#   whose angle depends on the servo calibration, so each unit declares its own
+#   `gripper_joint_curve` (units/<unit>.yaml, `unit_gripper_curves`), which a real
+#   deploy applies before this multiplier.
 # The kernel checks the jaw at the COMMANDED fraction, as for every link. NEEDS
 # Safety-WG review and a hazard-log row (CLAUDE.md §3) before it is relied on.
 mimic_joints:

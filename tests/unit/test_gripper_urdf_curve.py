@@ -10,6 +10,8 @@ tests drive the real ``robots/`` manifests through each consumer and require one
 
 from __future__ import annotations
 
+import json
+import math
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,6 +27,7 @@ from openral_core import (
     curve_slope,
     curve_value,
     sim_scene_description,
+    unit_gripper_curves,
 )
 from openral_core.assets import AssetFetchError, resolve_asset
 from openral_core.exceptions import ROSConfigError
@@ -130,6 +133,29 @@ def test_tf_kernel_and_core_fk_pose_the_openarm_finger_at_the_sims_angle(gripper
         at_sim = link_transform(desc, joint.parent_link, joint.child_link, {gripper: float(q)})
         expected = link_transform(plain, joint.parent_link, joint.child_link, {gripper: sim})
         np.testing.assert_allclose(at_sim, expected, atol=1e-12)
+
+
+def test_the_so101_bench_unit_poses_the_real_jaw_by_its_servo_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """lerobot's gripper 0..100 spans the unit's calibrated servo range, closed at the
+    URDF lower limit: /tf (the dashboard's 3D jaw) and the kernel follow it, not Isaac's
+    1.74533 f, which rendered the closed real jaw ~10 deg open."""
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
+    robot_yaml = _ROBOTS / "so101_follower" / "robot.yaml"
+    plain = RobotDescription.from_yaml(str(robot_yaml))
+    assert unit_gripper_curves(plain, robot_yaml, None) is plain
+    desc = unit_gripper_curves(plain, robot_yaml, "bench_laptop")
+    cal = json.loads((_ROOT / "scenes/deploy/calibration/so_follower.json").read_text())
+    span = (cal["gripper"]["range_max"] - cal["gripper"]["range_min"]) * 2 * math.pi / 4096
+    urdf = (_ROBOTS / "so101_follower" / "so101_follower.urdf").read_text()
+    params = collision_params_from_description(desc)
+    for f in (0.0, 0.2612, 1.0):
+        jaw = -0.174533 + span * f
+        name, tf = _tf_value(desc, urdf, "gripper", f)
+        assert name == "gripper"
+        assert tf == pytest.approx(jaw, abs=1e-4)
+        assert _kernel_link_value(params, "jaw", f) == pytest.approx(jaw, abs=1e-4)
 
 
 def test_the_sidecar_drives_the_finger_the_kernel_checks(_manifest_scene_mod: Any) -> None:

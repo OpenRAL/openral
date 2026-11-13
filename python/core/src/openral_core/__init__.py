@@ -347,6 +347,7 @@ from openral_core.schemas import (
     sim_scene_description,
     task_space_compatible,
     trace_ids_from_wire,
+    unit_gripper_curves,
 )
 from openral_core.time_base import (
     TIME_BASE_TOL,
@@ -707,5 +708,6 @@ __all__ = [
     "sim_scene_description",
     "task_space_compatible",
     "trace_ids_from_wire",
+    "unit_gripper_curves",
 ]
 __version__ = _pkg_version("openral-core")
