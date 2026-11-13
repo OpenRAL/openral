@@ -10,7 +10,13 @@ manifest order by prefixing each with its side (``left_`` / ``right_``).
 
 The gripper joint is read back in ``xs_sdk``'s units and normalised onto ``[0, 1]`` with the
 manifest's ``gripper_cmd_range`` — the inverse of what ``AlohaHAL.send_action`` applies — so
-a hold action built from ``read_state()`` commands the gripper where it already is.
+a hold action built from ``read_state()`` commands the gripper where it already is. Its
+velocity is scaled by the same span (normalised units per second). ``effort`` stays in
+``xs_sdk``'s unit for every joint — Dynamixel present current in mA, not a torque.
+
+``last_stamp`` is the *older* of the two arms' newest stamps (``0.0`` until both have
+reported), so one silent ``xs_sdk`` reads stale in ``AlohaHAL.read_state`` instead of
+hiding behind the other arm's stream.
 
 .. warning::
    Test-only, and not yet run against a rig (no ``lab-aloha`` runner, no physical ALOHA).
@@ -24,6 +30,7 @@ HIL-only; needs ``rclpy`` and ``interbotix_xs_msgs`` (CLAUDE.md §1.11: real com
 from __future__ import annotations
 
 import importlib.util
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -81,6 +88,7 @@ class AlohaHILTransport(_PolledJointStateMixin):
         self._joint_names = list(joint_names)
         self._latest: dict[str, tuple[float, float, float]] = {}
         self._last_stamp = 0.0
+        self._side_stamps: dict[str, float] = {}
         self._closed, self._open = (float(v) for v in gripper_cmd_range)
         self._publishers: dict[str, tuple[Any, Any]] = {}
         for side, ns in zip(_SIDES, arm_namespaces, strict=True):
@@ -96,6 +104,13 @@ class AlohaHILTransport(_PolledJointStateMixin):
             node.create_subscription(
                 RosJointState, f"/{ns}/joint_states", self._side_callback(side), _CONTROL_QOS
             )
+
+    @property
+    def last_stamp(self) -> float:
+        """Older arm's newest stamp; ``0.0`` until both arms reported (``AlohaHAL.stamp_fn``)."""
+        if len(self._side_stamps) < len(_SIDES):
+            return 0.0
+        return min(self._side_stamps.values())
 
     def publish(self, topic: str, msg: dict[str, object]) -> None:
         """Turn a HAL ``{name, cmd}`` payload into the matching ``interbotix_xs_msgs`` message."""
@@ -115,16 +130,21 @@ class AlohaHILTransport(_PolledJointStateMixin):
         def on_state(msg: Any) -> None:
             names = [f"{side}_{n}" for n in msg.name]
             positions = list(msg.position)
+            velocities = list(msg.velocity)
             gripper = f"{side}_gripper"
+            span = self._open - self._closed
             if gripper in names:
                 i = names.index(gripper)
-                positions[i] = (positions[i] - self._closed) / (self._open - self._closed)
+                positions[i] = (positions[i] - self._closed) / span
+                if i < len(velocities):
+                    velocities[i] /= span
             relabelled = RosJointState()
             relabelled.name = names
             relabelled.position = positions
-            relabelled.velocity = list(msg.velocity)
+            relabelled.velocity = velocities
             relabelled.effort = list(msg.effort)
             self._on_joint_state(relabelled)
+            self._side_stamps[side] = time.monotonic()
 
         return on_state
 

@@ -33,6 +33,7 @@ import importlib.util
 import os
 import time
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 from openral_core import Action, ControlMode
@@ -40,6 +41,9 @@ from openral_core.exceptions import (
     ROSEStopRequested,  # reason: re-exported for safety
 )
 from openral_hal.aloha import ALOHA_DESCRIPTION, AlohaHAL
+
+if TYPE_CHECKING:
+    from tests.hil._aloha_ros_transport import AlohaHILTransport
 
 ALOHA_LEFT_PORT = os.environ.get("ALOHA_LEFT_PORT", "/dev/ttyDXL_left")
 ALOHA_RIGHT_PORT = os.environ.get("ALOHA_RIGHT_PORT", "/dev/ttyDXL_right")
@@ -74,34 +78,57 @@ pytestmark = [
 
 
 @pytest.fixture()
-def aloha_hal() -> Iterator[AlohaHAL]:
-    """Connect an AlohaHAL bridged to the live Interbotix XS controllers."""
+def aloha_rig() -> Iterator[tuple[AlohaHAL, AlohaHILTransport]]:
+    """Connect an AlohaHAL bridged to the live Interbotix XS controllers.
+
+    The production ``InterbotixXSTransport`` is attached before connect so the
+    first ``send_action`` can read both arms' operating modes back; and the
+    fixture refuses to yield until all 14 joints have reported — the cache
+    zero-fills a silent arm, and a hold built from those zeros would drive it
+    to the zero pose at the stock ``profile_velocity: 0`` (unlimited).
+    """
+    from openral_hal.interbotix_transport import InterbotixXSTransport
+
     from tests.hil._aloha_ros_transport import make_aloha_hil_transport  # reason: HIL-only
 
-    _node, transport, cleanup = make_aloha_hil_transport(
+    node, transport, cleanup = make_aloha_hil_transport(
         node_name="openral_hil_aloha", arm_namespaces=ALOHA_NAMESPACES
     )
     hal = AlohaHAL(
         arm_namespaces=ALOHA_NAMESPACES,
         publish_fn=transport.publish,
         state_fn=transport.state,
+        stamp_fn=lambda: transport.last_stamp,
     )
+    stop = InterbotixXSTransport(node, arm_namespaces=hal.arm_namespaces())
+    hal.attach_torque_stop(stop)
     try:
         hal.connect()
-        assert transport.wait_for_first_state(deadline_s=2.0), (
-            "Interbotix XS published no joint state within 2 s — "
-            "is interbotix_xsarm_control running?"
+        assert transport.wait_for_every_joint(deadline_s=5.0), (
+            f"Interbotix XS never reported {transport.missing_joints()} within 5 s — "
+            "is interbotix_xsarm_control running for both follower arms?"
         )
-        yield hal
+        yield hal, transport
     finally:
         with contextlib.suppress(Exception):
             hal.disconnect()
         with contextlib.suppress(Exception):
+            stop.close()
+        with contextlib.suppress(Exception):
             cleanup()
 
 
+@pytest.fixture()
+def aloha_hal(aloha_rig: tuple[AlohaHAL, AlohaHILTransport]) -> AlohaHAL:
+    return aloha_rig[0]
+
+
 class TestAlohaHIL:
-    def test_connect_and_read_state_under_200ms(self, aloha_hal: AlohaHAL) -> None:
+    def test_connect_and_read_state_under_200ms(
+        self, aloha_rig: tuple[AlohaHAL, AlohaHILTransport]
+    ) -> None:
+        aloha_hal, transport = aloha_rig
+        transport.spin_for(0.05)  # freshness is the stream's, so keep it flowing
         t0 = time.monotonic()
         state = aloha_hal.read_state()
         elapsed_ms = (time.monotonic() - t0) * 1e3
@@ -113,7 +140,9 @@ class TestAlohaHIL:
         aloha_hal.disconnect()
         aloha_hal.disconnect()
 
-    def test_send_hold_action(self, aloha_hal: AlohaHAL) -> None:
+    def test_send_hold_action(self, aloha_rig: tuple[AlohaHAL, AlohaHILTransport]) -> None:
+        aloha_hal, transport = aloha_rig
+        transport.spin_for(0.05)
         state = aloha_hal.read_state()
         action = Action(
             control_mode=ControlMode.JOINT_POSITION,
@@ -122,7 +151,9 @@ class TestAlohaHIL:
             stamp_ns=time.time_ns(),
         )
         aloha_hal.send_action(action)
-        time.sleep(0.2)
+        # Spin, not sleep: without callbacks the cache never changes and "after"
+        # would equal "before" whatever the arm did.
+        transport.spin_for(0.2)
         state_after = aloha_hal.read_state()
         for before, after in zip(state.position, state_after.position, strict=True):
             assert abs(after - before) < 0.02, (

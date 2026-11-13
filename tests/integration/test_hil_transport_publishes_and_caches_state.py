@@ -224,6 +224,52 @@ def test_aloha_bridge_publishes_xs_sdk_messages_and_merges_state() -> None:
 
 
 @_needs_interbotix
+def test_aloha_bridge_one_silent_arm_is_stale_and_missing() -> None:
+    """Only the left ``xs_sdk`` streams: no freshness stamp, right joints listed missing.
+
+    ``state`` zero-fills the right arm, so a hold built now would command it to
+    the zero pose; ``last_stamp`` stays ``0.0`` (``AlohaHAL`` reads that as
+    infinitely stale) and ``wait_for_every_joint`` refuses. The gripper
+    velocity is scaled onto the normalised range like its position.
+    """
+    from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import JointState as RosJointState
+
+    from tests.hil._aloha_ros_transport import AlohaHILTransport
+
+    with _rclpy_session() as rclpy:
+        node = rclpy.create_node("openral_hil_aloha_bridge_silent_arm")
+        helper = rclpy.create_node("openral_hil_aloha_bridge_silent_arm_helper")
+        try:
+            transport = AlohaHILTransport(
+                node,
+                _ALOHA_JOINTS,
+                arm_namespaces=("s_left", "s_right"),
+                gripper_cmd_range=(1.0, 3.0),
+            )
+            qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
+            left = helper.create_publisher(RosJointState, "/s_left/joint_states", qos)
+            msg = RosJointState()
+            msg.name = [n.removeprefix("left_") for n in _ALOHA_JOINTS[:7]]
+            msg.position = [0.0] * 6 + [2.0]
+            msg.velocity = [0.0] * 6 + [1.0]
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and "left_gripper" not in transport._latest:
+                left.publish(msg)
+                transport.spin_once(timeout_sec=0.05)
+
+            assert transport.missing_joints() == _ALOHA_JOINTS[7:]
+            assert transport.last_stamp == 0.0
+            assert not transport.wait_for_every_joint(deadline_s=0.2)
+            velocity = transport.state()["velocity"]
+            assert isinstance(velocity, list)
+            assert velocity[6] == pytest.approx(0.5)  # 1 rad/s over a 2 rad span
+        finally:
+            helper.destroy_node()
+            node.destroy_node()
+
+
+@_needs_interbotix
 def test_aloha_bridge_rejects_unknown_topic() -> None:
     """An unknown topic must raise ``ValueError`` so HAL drift fails loudly."""
     from tests.hil._aloha_ros_transport import AlohaHILTransport
