@@ -228,7 +228,7 @@ class _XVLAAdapter:
 
 @POLICIES.register(
     "xvla",
-    install_groups=("sim",),
+    install_groups=("vla",),
     required_imports=("lerobot.policies.xvla.modeling_xvla",),
 )
 def _build_xvla(env_cfg: Any) -> _XVLAAdapter:

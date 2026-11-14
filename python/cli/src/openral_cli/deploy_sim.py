@@ -2481,6 +2481,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
             repo_root=repo_root,
             robot_yaml=Path(invocation.robot_yaml),
         )
+        _preflight_preload_rskill(invocation.preload_rskill_id)
         # VLA↔reward VRAM pair preflight (deploy run path). No-op
         # unless a reward monitor is active and the GPU budget is readable.
         if invocation.enable_reward_monitor and invocation.reward_monitor_manifest:
@@ -3494,6 +3495,45 @@ def _apply_palette_head_cam(matched: Iterable[RSkillManifest]) -> bool:
     return True
 
 
+def _preflight_preload_rskill(preload_rskill_id: str) -> None:
+    """Refuse the launch when the preloaded rSkill cannot load in this venv.
+
+    The runner loads ``preload_rskill_id`` only after the graph is up, and on
+    ``deploy run`` the graph coming up means the real HAL activating — the
+    OpenArm steps both arms to zero. A venv missing the policy's packages then
+    moves the arms for a deploy that rejects every goal (Thor, 2026-11-14:
+    ``No module named 'accelerate'`` after a bare sync). Checked here, before
+    bringup, with the same manifest resolve and import probe the runner and the
+    palette preflight use. Unlike the palette preflight this never installs:
+    the operator named this one skill, so a miss is a hard stop with the command.
+
+    Args:
+        preload_rskill_id: The scene's ``runtime.preload_rskill_id``; empty = no preload.
+
+    Raises:
+        typer.Exit: The manifest does not resolve, or its policy does not import.
+    """
+    if not preload_rskill_id:
+        return
+    from openral_rskill.loader import load_rskill_manifest
+    from openral_sim.policy_deps import can_import_policy_manifest, manifest_install_hint
+
+    try:
+        manifest = load_rskill_manifest(preload_rskill_id)
+    except ROSConfigError as exc:
+        _console.print(f"[red]refusing to launch:[/red] preload rSkill does not resolve: {exc}")
+        raise typer.Exit(code=1) from exc
+    ok, reason = can_import_policy_manifest(manifest)
+    if ok:
+        return
+    _console.print(
+        f"[red]refusing to launch:[/red] preload rSkill {preload_rskill_id!r} "
+        f"cannot load its policy: {reason}. "
+        f"{manifest_install_hint(manifest)}"
+    )
+    raise typer.Exit(code=1)
+
+
 def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow — split would obscure the prompt → install → re-probe contract
     *,
     repo_root: Path,
@@ -4268,6 +4308,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         repo_root=_repo_root_from(Path(__file__)),
         robot_yaml=Path(invocation.robot_yaml),
     )
+    _preflight_preload_rskill(invocation.preload_rskill_id)
 
     # VLA↔reward VRAM pair preflight. A VLA must run with its reward
     # model resident; verify the pair fits the GPU BEFORE bringing up

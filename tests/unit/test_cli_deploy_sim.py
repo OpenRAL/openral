@@ -31,6 +31,7 @@ from openral_cli.deploy_sim import (
     _cmdline_is_openral_graph_process,
     _derive_hal_spec,
     _preflight_palette_deps,
+    _preflight_preload_rskill,
     _prepare_launch_env,
     _resolve_clock_origin,
     _resolve_slam_backend,
@@ -1209,7 +1210,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     Real fixture: ``robots/franka_panda/robot.yaml`` matches several in-tree
     rSkills via ``build_tool_palette`` — the policy-extras-gated
     ``rskill-pi05-franka_panda-libero_spatial-int8`` (``model_family=pi05``, imports
-    ``transformers`` gated behind ``uv sync --group sim``/``--group libero``)
+    ``transformers`` gated behind the default ``vla`` group)
     and the family-less ``rskill-moveit-multi-joints``
     (``kind: ros_action``, no policy extras, always importable). Because a
     dispatchable skill survives a pi05 miss, the advisory preflight does
@@ -1271,8 +1272,8 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
         "uninstall trap is repaired; got:\n"
         f"{out}"
     )
-    # pi05 maps to (sim, libero); both groups must appear.
-    assert "--group libero" in out and "--group sim" in out, out
+    # pi05 maps to the default `vla` group.
+    assert "--group vla" in out, out
 
 
 @pytest.mark.usefixtures("_just_on_path")
@@ -1291,8 +1292,8 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     * goes through ``just sync --all-packages`` (NOT bare ``uv sync``),
       so workspace members survive AND the hf-libero distutils trap is
       repaired before+after;
-    * the pi05 family expands to BOTH ``--group libero`` and
-      ``--group sim`` (per the ``install_groups`` pi05 registers on ``POLICIES``);
+    * the pi05 family expands to ``--group vla`` (per the ``install_groups``
+      pi05 registers on ``POLICIES``);
     * the pre-fix command shape ``uv sync --group ...`` never appears.
     """
     import sys as _sys
@@ -1337,7 +1338,7 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
         "--group <X>`; got:\n"
         f"{cmd_line}"
     )
-    assert "--group libero" in cmd_line and "--group sim" in cmd_line, cmd_line
+    assert "--group vla" in cmd_line, cmd_line
     # Installing a policy group must be ADDITIVE — `--inexact` preserves
     # packages from sibling groups already in the venv (the omdet detector's
     # `timm`, robosuite, rldx's pyzmq/msgpack). Without it, `uv sync --group
@@ -3466,3 +3467,62 @@ def test_the_declared_target_seeds_the_query_its_placement_label_names() -> None
     )
     seeded = {q["label"]: "seed" in q for q in json.loads(_object_queries_json(relabelled, task))}
     assert seeded == {"fruit": True, "orange": False, "plate": False}
+
+
+_PI05_PRELOAD = _REPO_ROOT / "rskills" / "pi05-metal-pick-place"
+
+
+def test_preflight_preload_rskill_is_silent_without_a_preload() -> None:
+    """An empty ``preload_rskill_id`` (the scene default) is not a refusal."""
+    _preflight_preload_rskill("")
+
+
+def test_preflight_preload_rskill_refuses_an_unloadable_manifest(tmp_path: Path) -> None:
+    """A preload that does not resolve to a manifest stops the launch before bringup."""
+    import typer
+
+    (tmp_path / "rskill.yaml").write_text("name: [not, a, manifest\n", encoding="utf-8")
+    with pytest.raises(typer.Exit) as ei:
+        _preflight_preload_rskill(str(tmp_path))
+    assert ei.value.exit_code == 1
+
+
+def test_preflight_preload_rskill_passes_when_the_policy_imports() -> None:
+    """Real in-tree pi05 manifest + the default `vla` group installed → launch proceeds."""
+    from openral_sim.policy_deps import can_import_policy_family
+
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    ok, reason = can_import_policy_family("pi05")
+    if not ok:
+        pytest.skip(f"pi05 extras absent in this venv ({reason}); run `just sync`")
+    _preflight_preload_rskill(str(_PI05_PRELOAD))
+
+
+def test_preflight_preload_rskill_refuses_with_the_install_command(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Missing policy packages → exit 1 naming `just sync --all-packages --group vla`.
+
+    Regression for Thor 2026-11-14: a bare-synced venv lacked ``accelerate``, the
+    graph came up (the OpenArm stepped both arms to zero) and only then did the
+    preload fail. Forces the miss the same way as
+    ``test_bh_preflight_install_cmd_uses_just_sync_all_packages``.
+    """
+    import typer
+    from openral_sim import policy_deps as _pd
+
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    monkeypatch.setattr(
+        _pd,
+        "can_import_policy_family",
+        lambda _family: (False, "ModuleNotFoundError: No module named 'accelerate'"),
+    )
+    with pytest.raises(typer.Exit) as ei:
+        _preflight_preload_rskill(str(_PI05_PRELOAD))
+    assert ei.value.exit_code == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "refusing to launch" in out and "accelerate" in out, out
+    assert "just sync --all-packages --group vla" in out, out

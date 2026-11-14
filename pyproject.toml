@@ -22,6 +22,11 @@ dependencies = [
 members = ["python/*"]
 
 [tool.uv]
+# A bare `just sync` installs `vla` too: a real-robot `deploy run` loads lerobot
+# policies (π0.5 / SmolVLA / OpenVLA) in-process, and before this the only groups
+# carrying their deps were simulator groups — so a rig synced without `--group
+# sim` brought the arms up and then failed the policy preload.
+default-groups = ["dev", "vla"]
 # egl-probe is a transitive dep of robomimic→hf-libero→lerobot[libero].
 # It probes EGL at *build* time and fails on systems without EGL headers
 # during `uv sync`. The sim-* recipes set MUJOCO_GL=egl at *runtime* (which
@@ -224,6 +229,16 @@ dev = [
     "mujoco>=3.8.0",
     "robot-descriptions>=2.0.0",
     "types-protobuf>=7.34.1.20260518",
+]
+vla = [
+    # In-process lerobot policy runtime (π0.5 / SmolVLA / OpenVLA / xVLA) with no
+    # simulator attached — what a real-robot `deploy run` needs. lerobot itself is
+    # already a base dep (openral-hal's `lerobot[feetech]`). Default group (see
+    # `[tool.uv] default-groups`); the sim / libero / metaworld / maniskill3 /
+    # robocasa groups repeat these pins so a multi-group sync resolves to one version.
+    "transformers>=5.4.0,<5.6.0",  # reason: PaliGemma / SmolVLM / Florence-2 backbones; the <5.6 ceiling is load-bearing — see the libero group's note on pi05's renamed vision-tower keys.
+    "accelerate>=1.13.0",  # reason: init_empty_weights meta-init fast path in the pi05 / SmolVLA loaders.
+    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization.
 ]
 clip = [
     # Open-vocabulary object matching via OpenCLIP ViT-B/32 (MIT

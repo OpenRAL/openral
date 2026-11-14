@@ -73,11 +73,12 @@ def test_model_family_install_groups_returns_empty_for_unknown() -> None:
 
 
 def test_model_family_install_groups_returns_uv_groups_for_known_families() -> None:
-    """pi05 needs both sim + libero; rldx needs only rldx; act / smolvla / xvla need sim."""
-    assert set(model_family_install_groups("pi05")) == {"sim", "libero"}
+    """The lerobot VLAs need only the default `vla` group (no simulator); rldx needs rldx."""
+    for fam in ("pi05", "smolvla", "xvla", "openvla"):
+        assert model_family_install_groups(fam) == ("vla",)
     assert set(model_family_install_groups("rldx")) == {"rldx"}
     assert set(model_family_install_groups("xr1")) == {"sidecar-wire"}
-    for fam in ("smolvla", "act", "diffusion", "xvla", "openvla"):
+    for fam in ("act", "diffusion"):
         assert set(model_family_install_groups(fam)) == {"sim"}
     assert model_family_install_groups("molmoact2") == ("libero",)
     assert model_family_install_groups("lingbot_vla") == ("lingbot",)

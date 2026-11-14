@@ -3412,6 +3412,11 @@ simpler-env = [
     { name = "gymnasium" },
     { name = "mani-skill" },
 ]
+vla = [
+    { name = "accelerate" },
+    { name = "num2words" },
+    { name = "transformers" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -3560,6 +3565,11 @@ sim = [
 simpler-env = [
     { name = "gymnasium", specifier = ">=1.0.0" },
     { name = "mani-skill", specifier = ">=3.0.0b9" },
+]
+vla = [
+    { name = "accelerate", specifier = ">=1.13.0" },
+    { name = "num2words", specifier = ">=0.5.14" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 
 [[package]]

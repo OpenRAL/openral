@@ -818,7 +818,7 @@ def _seed_torch_for_sampling(torch: Any, seed: int | None) -> None:
 
 @POLICIES.register(
     "openvla",
-    install_groups=("sim",),
+    install_groups=("vla",),
     required_imports=("transformers",),
 )
 def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:

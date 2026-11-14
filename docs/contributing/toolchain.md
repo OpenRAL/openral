@@ -58,15 +58,26 @@ Upgrading an *existing* aarch64 venv also needs a one-time
 builds share the version string. Details:
 [aarch64 CUDA hosts](../reference/aarch64-support.md).
 
-**2. Opt-in dependency groups → `just sync --group <name>`.** The
+**2. Default groups: `dev` + `vla`.** `[tool.uv] default-groups` makes a bare
+`just sync` install `dev` and `vla`. `vla` is the in-process lerobot policy
+runtime with no simulator attached (`transformers>=5.4.0,<5.6.0`, `accelerate`,
+`num2words`; lerobot itself is a core dep). It is what a real-robot
+`openral deploy run` needs to load a π0.5 / SmolVLA / OpenVLA / xVLA rSkill, so a
+freshly synced robot host (Jetson Thor / Orin) runs those policies without naming
+a simulator group. `deploy run` / `deploy sim` also check the scene's
+`preload_rskill_id` before bringup and refuse to launch, with the install
+command, when its policy cannot import. A missing package then never costs a
+real-arm bringup.
+
+**3. Opt-in dependency groups → `just sync --group <name>`.** The
 `[dependency-groups]` in `pyproject.toml` define `sim`, `libero`, `robocasa`,
-`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps (`transformers>=5.4.0,<5.6.0`,
-`scipy`, `opencv`, robosuite) live in these groups, **not** in the core deps.
-A default sync (no `--group`) deliberately *removes* them, so VLA / sim work
+`metaworld`, `maniskill3`, `rldx`, … Simulators and their heavy deps (MuJoCo
+envs, robosuite, `scipy`, `opencv`) live in these groups, **not** in the core
+deps. A default sync (no `--group`) deliberately *removes* them, so sim work
 needs at least the `sim` group:
 
 ```bash
-just sync --group sim           # minimum working VLA / sim baseline
+just sync --group sim           # minimum working sim baseline (ACT / Diffusion / gym envs)
 just sync --group libero        # LIBERO suites
 just sync --group robocasa      # RoboCasa robosuite + supporting deps
 just sync --group metaworld     # MetaWorld
@@ -78,7 +89,7 @@ the wrapper supplies `--all-packages` so the editable `openral-*` members are
 never silently uninstalled (see the `openral_core` entry under
 [Tooling self-help](#tooling-self-help)).
 
-**3. The libero ↔ robocasa conflict — swap groups per task.** LIBERO pins
+**4. The libero ↔ robocasa conflict — swap groups per task.** LIBERO pins
 `robosuite==1.4` + a specific MuJoCo; RoboCasa needs `robosuite>=1.5` + a
 different MuJoCo. They are declared mutually exclusive in `pyproject.toml`
 (`[tool.uv] conflicts`) and **cannot** coexist in one resolution:
@@ -90,7 +101,7 @@ just sync --group robocasa      # before a RoboCasa run
 just sync --group sim           # (or --group libero) to go back to LIBERO/MuJoCo
 ```
 
-**4. RoboCasa itself is installed editable AT RUNTIME — not by `just sync`.**
+**5. RoboCasa itself is installed editable AT RUNTIME — not by `just sync`.**
 The `robocasa` group only provides robosuite + supporting deps. The RoboCasa
 kitchen fork (a GitHub repo, no PyPI release) is git-cloned and
 `uv pip install -e --no-deps`'d by
@@ -111,7 +122,7 @@ YAML is the only policy input.
 Do **not** hand-install `robocasa` / `robosuite`: that pulls the wrong robosuite
 and wrecks the managed env.
 
-**5. Pre-build to skip the in-`on_configure` install window,** so the lifecycle
+**6. Pre-build to skip the in-`on_configure` install window,** so the lifecycle
 transition doesn't stall on a first-run build:
 
 ```bash
@@ -120,7 +131,7 @@ OPENRAL_AUTO_INSTALL_DEPS=1 python -c \
   "from openral_sim._deps import ensure_backend_deps; ensure_backend_deps('robocasa_kitchen')"
 ```
 
-**6. Never `uv sync --all-packages` to "repair" the RoboCasa env.** Once the
+**7. Never `uv sync --all-packages` to "repair" the RoboCasa env.** Once the
 runtime-editable RoboCasa install is in place, a plain `uv sync --all-packages`
 *uninstalls* it (and the matching robosuite). Repair with
 `just sync --group robocasa` and, if RoboCasa itself was evicted, re-run the
