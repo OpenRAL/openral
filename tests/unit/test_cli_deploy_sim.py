@@ -3561,3 +3561,28 @@ def test_preflight_preload_rskill_reads_a_hub_id_at_its_pinned_revision(
 
     _preflight_preload_rskill(_HUB_ONLY_RSKILL, _BOGUS_REVISION)
     assert "does not resolve" in " ".join(capsys.readouterr().out.split())
+
+
+def test_preflight_preload_rskill_reads_the_pinned_snapshot_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The pin path without the Hub: a Hub-only id pinned to a commit sha resolves from
+    that sha's snapshot in the rSkill cache (``hf_hub_download`` returns a cached
+    commit-sha file without a request), and the snapshot's policy is probed."""
+    import openral_rskill.loader as _loader
+
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    repo_id = "OpenRAL/rskill-offline-pin-fixture"  # in no search path → the Hub branch
+    sha = "1" * 40
+    snapshot = tmp_path / "models--OpenRAL--rskill-offline-pin-fixture" / "snapshots" / sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "rskill.yaml").write_text(
+        (_PI05_PRELOAD / "rskill.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    monkeypatch.setattr(_loader, "_CACHE_HOME", tmp_path)
+
+    _preflight_preload_rskill(repo_id, sha)
+    assert "does not resolve" not in capsys.readouterr().out
