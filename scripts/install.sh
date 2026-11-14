@@ -192,6 +192,7 @@ Quick start:
   openral --help                  # list every subcommand
 
 Opt-in extras (installed into the same managed venv):
+  openral install vla             # in-process VLA runtime (pi0.5 / SmolVLA / xVLA / MolmoAct2 / OpenVLA)
   openral install sim             # gym-aloha + gym-pusht + MuJoCo (CPU sim)
   openral install libero          # LIBERO task suite (mutually exclusive with robocasa)
   openral install metaworld       # MetaWorld MT50 (Sawyer)
