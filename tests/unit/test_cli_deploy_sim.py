@@ -1230,23 +1230,19 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     preflight is meant to prevent. ``just sync`` also wraps the
     hf-libero distutils-uninstall repair around the sync.
     """
-    from openral_sim.policy_deps import can_import_policy_family
-
     franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
     if not franka_yaml.is_file():
         pytest.skip(f"missing fixture: {franka_yaml}")
-    ok, _ = can_import_policy_family("pi05")
-    if ok:
-        pytest.skip(
-            "pi05 extras already installed in this venv; this test "
-            "asserts the missing-extras branch — install the extras "
-            "to exercise the happy path elsewhere"
-        )
 
     # Force non-interactive without touching the underlying TTY of the
     # test runner. sys.stdin.isatty + sys.stdout.isatty both False →
     # preflight skips the typer.confirm prompt entirely.
     import sys as _sys
+
+    # pi05 is importable in every default env (the `vla` group), so hide
+    # transformers from the import system: ``sys.modules[name] = None`` is how it
+    # spells "absent", and the real probe then reports the miss.
+    monkeypatch.setitem(_sys.modules, "transformers", None)
 
     # The pi05 miss blocks rskill-pi05-franka_panda-libero_spatial-int8, but the family-less
     # rskill-moveit-multi-joints stays dispatchable → palette is
@@ -3477,14 +3473,15 @@ def test_preflight_preload_rskill_is_silent_without_a_preload() -> None:
     _preflight_preload_rskill("")
 
 
-def test_preflight_preload_rskill_refuses_an_unloadable_manifest(tmp_path: Path) -> None:
-    """A preload that does not resolve to a manifest stops the launch before bringup."""
-    import typer
-
+def test_preflight_preload_rskill_warns_on_an_unloadable_manifest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A preload that does not resolve warns and launches: the runner reports the same
+    failure and stays up, so a Hub blip must not take the whole deploy down."""
     (tmp_path / "rskill.yaml").write_text("name: [not, a, manifest\n", encoding="utf-8")
-    with pytest.raises(typer.Exit) as ei:
-        _preflight_preload_rskill(str(tmp_path))
-    assert ei.value.exit_code == 1
+    _preflight_preload_rskill(str(tmp_path))
+    out = " ".join(capsys.readouterr().out.split())
+    assert "does not resolve" in out and "launching anyway" in out, out
 
 
 def test_preflight_preload_rskill_passes_when_the_policy_imports() -> None:

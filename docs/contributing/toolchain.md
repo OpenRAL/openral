@@ -60,14 +60,22 @@ builds share the version string. Details:
 
 **2. Default groups: `dev` + `vla`.** `[tool.uv] default-groups` makes a bare
 `just sync` install `dev` and `vla`. `vla` is the in-process lerobot policy
-runtime with no simulator attached (`transformers>=5.4.0,<5.6.0`, `accelerate`,
-`num2words`; lerobot itself is a core dep). It is what a real-robot
-`openral deploy run` needs to load a π0.5 / SmolVLA / OpenVLA / xVLA rSkill, so a
-freshly synced robot host (Jetson Thor / Orin) runs those policies without naming
-a simulator group. `deploy run` / `deploy sim` also check the scene's
-`preload_rskill_id` before bringup and refuse to launch, with the install
-command, when its policy cannot import. A missing package then never costs a
-real-arm bringup.
+runtime with no simulator attached: lerobot's own per-policy extras
+(`lerobot[pi,smolvla,xvla,molmoact2,timm-dep]`, which pull `transformers`,
+`accelerate`, `num2words`, `scipy`, `peft` and `timm`) plus the `transformers<5.6`
+ceiling. It is what a real-robot `openral deploy run` needs to load a π0.5 /
+SmolVLA / xVLA / MolmoAct2 / OpenVLA rSkill, so a freshly synced robot host (Jetson
+Thor / Orin) runs those policies without naming a simulator group. The simulator
+groups (`sim`, `libero`, `metaworld`, `maniskill3`, `robocasa`) include `vla`
+rather than repeating its pins. ACT also points at `vla` (base lerobot suffices); Diffusion
+Policy needs `sim` (`diffusers`); GR00T needs `gr00t`.
+
+`deploy run` also checks the scene's `preload_rskill_id` before bringup and
+refuses to launch, with the install command, when its policy cannot import, so a
+missing package never costs a real-arm bringup. `deploy sim` installs the
+missing group instead (under `OPENRAL_AUTO_INSTALL_DEPS`, like its palette
+preflight). A preload that does not resolve (Hub unreachable) only warns. Set
+`HF_HUB_OFFLINE=1` on hosts whose Hub calls stall to keep that resolve cache-only.
 
 **3. Opt-in dependency groups → `just sync --group <name>`.** The
 `[dependency-groups]` in `pyproject.toml` define `sim`, `libero`, `robocasa`,

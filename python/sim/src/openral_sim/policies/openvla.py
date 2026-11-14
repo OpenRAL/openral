@@ -819,7 +819,8 @@ def _seed_torch_for_sampling(torch: Any, seed: int | None) -> None:
 @POLICIES.register(
     "openvla",
     install_groups=("vla",),
-    required_imports=("transformers",),
+    # timm: the trust_remote_code prismatic backbone imports it at load.
+    required_imports=("transformers", "timm"),
 )
 def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     """Load an OpenVLA / OpenVLA-OFT checkpoint as a transformers custom-code model."""

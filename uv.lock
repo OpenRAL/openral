@@ -62,7 +62,7 @@ wheels = [
 
 [[package]]
 name = "accelerate"
-version = "1.13.0"
+version = "1.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -75,9 +75,9 @@ dependencies = [
     { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' or (extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa')" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa') or (sys_platform != 'linux' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/14/787e5498cd062640f0f3d92ef4ae4063174f76f9afd29d13fc52a319daae/accelerate-1.13.0.tar.gz", hash = "sha256:d631b4e0f5b3de4aff2d7e9e6857d164810dfc3237d54d017f075122d057b236", size = 402835, upload-time = "2026-03-04T19:34:12.359Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/b5/1d3ed029ac71d3f2961346829a268da923698e9fd63f218f78841f216bfd/accelerate-1.15.0.tar.gz", hash = "sha256:5654f8c5eaa0d4fa68b33e287a97765da6849bf6d51dcac874e73fbbddfb6134", size = 422615, upload-time = "2026-09-09T13:04:49.078Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/46/02ac5e262d4af18054b3e922b2baedbb2a03289ee792162de60a865defc5/accelerate-1.13.0-py3-none-any.whl", hash = "sha256:cf1a3efb96c18f7b152eb0fa7490f3710b19c3f395699358f08decca2b8b62e0", size = 383744, upload-time = "2026-03-04T19:34:10.313Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/4c/34f0450479d01195027260da68d8a3880683f1640c3ca5adf64acb3185f1/accelerate-1.15.0-py3-none-any.whl", hash = "sha256:97eacca0b73e45cb867dbf8c5d5d4dc32219544300e0c8992c7334dc2ef33cec", size = 394295, upload-time = "2026-09-09T13:04:47.331Z" },
 ]
 
 [[package]]
@@ -1763,6 +1763,26 @@ libero = [
     { name = "torchcodec", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and platform_machine != 'arm64' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'group-17-openral-workspace-libero') or (platform_machine == 'arm64' and sys_platform == 'linux' and extra == 'group-17-openral-workspace-libero') or (sys_platform == 'win32' and extra == 'group-17-openral-workspace-libero') or (sys_platform != 'linux' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa')" },
     { name = "transformers" },
 ]
+molmoact2 = [
+    { name = "peft" },
+    { name = "scipy" },
+    { name = "transformers" },
+]
+pi = [
+    { name = "scipy" },
+    { name = "transformers" },
+]
+smolvla = [
+    { name = "accelerate" },
+    { name = "num2words" },
+    { name = "transformers" },
+]
+timm-dep = [
+    { name = "timm" },
+]
+xvla = [
+    { name = "transformers" },
+]
 
 [[package]]
 name = "librt"
@@ -3300,9 +3320,7 @@ isaacsim = [
     { name = "pyzmq" },
 ]
 libero = [
-    { name = "accelerate" },
-    { name = "lerobot", extra = ["libero"], marker = "extra == 'group-17-openral-workspace-libero'" },
-    { name = "num2words" },
+    { name = "lerobot", extra = ["libero", "molmoact2", "pi", "smolvla", "timm-dep", "xvla"], marker = "extra == 'group-17-openral-workspace-libero'" },
     { name = "transformers" },
 ]
 lingbot = [
@@ -3323,19 +3341,15 @@ lowering = [
     { name = "yourdfpy" },
 ]
 maniskill3 = [
-    { name = "accelerate" },
     { name = "gymnasium" },
-    { name = "lerobot" },
+    { name = "lerobot", extra = ["molmoact2", "pi", "smolvla", "timm-dep", "xvla"] },
     { name = "mani-skill" },
-    { name = "num2words" },
     { name = "transformers" },
 ]
 metaworld = [
-    { name = "accelerate" },
     { name = "gymnasium", extra = ["mujoco"] },
-    { name = "lerobot" },
+    { name = "lerobot", extra = ["molmoact2", "pi", "smolvla", "timm-dep", "xvla"] },
     { name = "mujoco" },
-    { name = "num2words" },
     { name = "transformers" },
 ]
 omdet = [
@@ -3368,12 +3382,10 @@ rldx = [
     { name = "pyzmq" },
 ]
 robocasa = [
-    { name = "accelerate" },
     { name = "h5py" },
     { name = "imageio", extra = ["ffmpeg"], marker = "extra == 'group-17-openral-workspace-robocasa'" },
-    { name = "lerobot" },
+    { name = "lerobot", extra = ["molmoact2", "pi", "smolvla", "timm-dep", "xvla"], marker = "extra == 'group-17-openral-workspace-robocasa'" },
     { name = "lxml" },
-    { name = "num2words" },
     { name = "robosuite", version = "1.5.2", source = { git = "https://github.com/ARISE-Initiative/robosuite.git?rev=5ce6643f3092639d08f7b0f90ed1c6a84f50552c#5ce6643f3092639d08f7b0f90ed1c6a84f50552c" } },
     { name = "robosuite-models" },
     { name = "transformers" },
@@ -3397,13 +3409,11 @@ sidecar-wire = [
     { name = "pyzmq" },
 ]
 sim = [
-    { name = "accelerate" },
     { name = "gym-aloha" },
     { name = "gym-pusht" },
     { name = "gymnasium", extra = ["mujoco"] },
-    { name = "lerobot", extra = ["diffusion"] },
+    { name = "lerobot", extra = ["diffusion", "molmoact2", "pi", "smolvla", "timm-dep", "xvla"] },
     { name = "mujoco" },
-    { name = "num2words" },
     { name = "pymunk" },
     { name = "robot-descriptions" },
     { name = "transformers" },
@@ -3413,8 +3423,7 @@ simpler-env = [
     { name = "mani-skill" },
 ]
 vla = [
-    { name = "accelerate" },
-    { name = "num2words" },
+    { name = "lerobot", extra = ["molmoact2", "pi", "smolvla", "timm-dep", "xvla"] },
     { name = "transformers" },
 ]
 
@@ -3461,9 +3470,8 @@ isaacsim = [
     { name = "pyzmq", specifier = ">=25" },
 ]
 libero = [
-    { name = "accelerate", specifier = ">=1.13.0" },
     { name = "lerobot", extras = ["libero"] },
-    { name = "num2words", specifier = ">=0.5.14" },
+    { name = "lerobot", extras = ["pi", "smolvla", "xvla", "molmoact2", "timm-dep"] },
     { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 lingbot = [
@@ -3484,19 +3492,17 @@ lowering = [
     { name = "yourdfpy", specifier = ">=0.0.56" },
 ]
 maniskill3 = [
-    { name = "accelerate", specifier = ">=1.13.0" },
     { name = "gymnasium", specifier = ">=1.0.0" },
     { name = "lerobot" },
+    { name = "lerobot", extras = ["pi", "smolvla", "xvla", "molmoact2", "timm-dep"] },
     { name = "mani-skill", specifier = ">=3.0.0b9" },
-    { name = "num2words", specifier = ">=0.5.14" },
     { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 metaworld = [
-    { name = "accelerate", specifier = ">=1.13.0" },
     { name = "gymnasium", extras = ["mujoco"], specifier = ">=1.3.0" },
     { name = "lerobot" },
+    { name = "lerobot", extras = ["pi", "smolvla", "xvla", "molmoact2", "timm-dep"] },
     { name = "mujoco", specifier = ">=3.8.0" },
-    { name = "num2words", specifier = ">=0.5.14" },
     { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 omdet = [
@@ -3525,12 +3531,11 @@ rldx = [
     { name = "pyzmq", specifier = ">=25" },
 ]
 robocasa = [
-    { name = "accelerate", specifier = ">=1.13.0" },
     { name = "h5py", specifier = ">=3.10" },
     { name = "imageio", extras = ["ffmpeg"], specifier = ">=2.34" },
     { name = "lerobot" },
+    { name = "lerobot", extras = ["pi", "smolvla", "xvla", "molmoact2", "timm-dep"] },
     { name = "lxml", specifier = ">=5" },
-    { name = "num2words", specifier = ">=0.5.14" },
     { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=5ce6643f3092639d08f7b0f90ed1c6a84f50552c" },
     { name = "robosuite-models", specifier = ">=1.0.0" },
     { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
@@ -3551,13 +3556,12 @@ sidecar-wire = [
     { name = "pyzmq", specifier = ">=25" },
 ]
 sim = [
-    { name = "accelerate", specifier = ">=1.13.0" },
     { name = "gym-aloha", specifier = ">=0.1.3" },
     { name = "gym-pusht", specifier = ">=0.1.6" },
     { name = "gymnasium", extras = ["mujoco"], specifier = ">=1.3.0" },
     { name = "lerobot", extras = ["diffusion"] },
+    { name = "lerobot", extras = ["pi", "smolvla", "xvla", "molmoact2", "timm-dep"] },
     { name = "mujoco", specifier = ">=3.8.0" },
-    { name = "num2words", specifier = ">=0.5.14" },
     { name = "pymunk", specifier = "<8" },
     { name = "robot-descriptions", specifier = ">=1.12.0" },
     { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
@@ -3567,8 +3571,7 @@ simpler-env = [
     { name = "mani-skill", specifier = ">=3.0.0b9" },
 ]
 vla = [
-    { name = "accelerate", specifier = ">=1.13.0" },
-    { name = "num2words", specifier = ">=0.5.14" },
+    { name = "lerobot", extras = ["pi", "smolvla", "xvla", "molmoact2", "timm-dep"] },
     { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 

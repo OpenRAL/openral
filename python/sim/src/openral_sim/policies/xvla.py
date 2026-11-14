@@ -229,7 +229,7 @@ class _XVLAAdapter:
 @POLICIES.register(
     "xvla",
     install_groups=("vla",),
-    required_imports=("lerobot.policies.xvla.modeling_xvla",),
+    required_imports=("transformers", "lerobot.policies.xvla.modeling_xvla"),
 )
 def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
     """Load an xVLA-LIBERO checkpoint + its four-stage processor pipeline."""

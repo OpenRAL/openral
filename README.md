@@ -167,9 +167,10 @@ source install/setup.bash
 uv run openral doctor
 ```
 
-> Sim / VLA work needs an opt-in dependency group: `just sync --group sim`
-> (or `--group libero` / `--group robocasa` / `--group metaworld` / `--group
-> maniskill3`). See [Managing the Python environment & dependency
+> `just sync` already installs the in-process VLA runtime (the default `vla`
+> group: π0.5 / SmolVLA / xVLA / MolmoAct2 / OpenVLA). Simulators need an opt-in
+> group: `just sync --group sim` (or `--group libero` / `--group robocasa` /
+> `--group metaworld` / `--group maniskill3`). See [Managing the Python environment & dependency
 > groups](docs/contributing/toolchain.md#managing-the-python-environment-dependency-groups)
 > — including the LIBERO ↔ RoboCasa group-swap and the RoboCasa runtime
 > auto-install.

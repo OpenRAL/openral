@@ -72,15 +72,32 @@ def test_model_family_install_groups_returns_empty_for_unknown() -> None:
     assert model_family_install_groups("random") == ()
 
 
+def test_every_install_group_is_a_real_dependency_group() -> None:
+    """Every group a family's install hint names exists in ``pyproject.toml`` — an
+    unknown group makes the printed ``just sync --group <g>`` fail outright."""
+    from pathlib import Path
+
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    groups = set(tomllib.loads(pyproject.read_text(encoding="utf-8"))["dependency-groups"])
+    unknown = {
+        family: missing
+        for family in POLICIES.names()
+        if (missing := set(model_family_install_groups(family)) - groups)
+    }
+    assert unknown == {}, f"install_groups naming no [dependency-groups] entry: {unknown}"
+
+
 def test_model_family_install_groups_returns_uv_groups_for_known_families() -> None:
     """The lerobot VLAs need only the default `vla` group (no simulator); rldx needs rldx."""
-    for fam in ("pi05", "smolvla", "xvla", "openvla"):
+    for fam in ("pi05", "smolvla", "xvla", "openvla", "molmoact2"):
         assert model_family_install_groups(fam) == ("vla",)
     assert set(model_family_install_groups("rldx")) == {"rldx"}
     assert set(model_family_install_groups("xr1")) == {"sidecar-wire"}
-    for fam in ("act", "diffusion"):
-        assert set(model_family_install_groups(fam)) == {"sim"}
-    assert model_family_install_groups("molmoact2") == ("libero",)
+    assert model_family_install_groups("act") == ("vla",)
+    assert model_family_install_groups("diffusion") == ("sim",)
+    assert model_family_install_groups("gr00t") == ("gr00t",)
     assert model_family_install_groups("lingbot_vla") == ("lingbot",)
 
 

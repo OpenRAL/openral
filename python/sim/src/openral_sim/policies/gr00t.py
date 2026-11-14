@@ -405,7 +405,7 @@ def _build_gr00t_b1k(env_cfg: Any) -> PolicyAdapter:
 
 @POLICIES.register(
     "gr00t",
-    install_groups=("sim", "gr00t"),
+    install_groups=("gr00t",),
     required_imports=(
         "transformers",
         # Imported lazily INSIDE GrootPolicy's build, not by modeling_groot —
@@ -478,7 +478,9 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # reason: staged loader
     image_input_keys = checkpoint_image_keys(ip, cam_keys)
 
     with _groot_phase("imports"):
-        torch, make_processors = lazy_import_lerobot("GR00T")
+        torch, make_processors = lazy_import_lerobot(
+            "GR00T", install_hint="just sync --all-packages --group gr00t"
+        )
         from openral_rskill import local_snapshot_dir
 
         GrootPolicy = _import_real_groot_policy()  # noqa: N806 — class object, not a value
