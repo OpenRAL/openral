@@ -3507,19 +3507,16 @@ def test_preflight_preload_rskill_refuses_with_the_install_command(
 
     Regression for Thor 2026-11-14: a bare-synced venv lacked ``accelerate``, the
     graph came up (the OpenArm stepped both arms to zero) and only then did the
-    preload fail. Forces the miss the same way as
-    ``test_bh_preflight_install_cmd_uses_just_sync_all_packages``.
+    preload fail. The real probe runs: ``sys.modules[name] = None`` is how the
+    import system spells "absent", so ``find_spec`` reports the miss.
     """
+    import sys as _sys
+
     import typer
-    from openral_sim import policy_deps as _pd
 
     if not (_PI05_PRELOAD / "rskill.yaml").is_file():
         pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
-    monkeypatch.setattr(
-        _pd,
-        "can_import_policy_family",
-        lambda _family: (False, "ModuleNotFoundError: No module named 'accelerate'"),
-    )
+    monkeypatch.setitem(_sys.modules, "accelerate", None)
     with pytest.raises(typer.Exit) as ei:
         _preflight_preload_rskill(str(_PI05_PRELOAD))
     assert ei.value.exit_code == 1

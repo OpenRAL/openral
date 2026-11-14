@@ -2481,7 +2481,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
             repo_root=repo_root,
             robot_yaml=Path(invocation.robot_yaml),
         )
-        _preflight_preload_rskill(invocation.preload_rskill_id)
+        _preflight_preload_rskill(invocation.preload_rskill_id, invocation.preload_rskill_revision)
         # VLA↔reward VRAM pair preflight (deploy run path). No-op
         # unless a reward monitor is active and the GPU budget is readable.
         if invocation.enable_reward_monitor and invocation.reward_monitor_manifest:
@@ -3495,7 +3495,7 @@ def _apply_palette_head_cam(matched: Iterable[RSkillManifest]) -> bool:
     return True
 
 
-def _preflight_preload_rskill(preload_rskill_id: str) -> None:
+def _preflight_preload_rskill(preload_rskill_id: str, preload_rskill_revision: str = "") -> None:
     """Refuse the launch when the preloaded rSkill cannot load in this venv.
 
     The runner loads ``preload_rskill_id`` only after the graph is up, and on
@@ -3509,17 +3509,24 @@ def _preflight_preload_rskill(preload_rskill_id: str) -> None:
 
     Args:
         preload_rskill_id: The scene's ``runtime.preload_rskill_id``; empty = no preload.
+        preload_rskill_revision: The scene's ``runtime.preload_rskill_revision``;
+            empty = the default branch.
 
     Raises:
         typer.Exit: The manifest does not resolve, or its policy does not import.
     """
     if not preload_rskill_id:
         return
-    from openral_rskill.loader import load_rskill_manifest
+    from openral_rskill.loader import load_rskill_manifest, resolve_rskill_local_dir, rSkill
     from openral_sim.policy_deps import can_import_policy_manifest, manifest_install_hint
 
     try:
-        manifest = load_rskill_manifest(preload_rskill_id)
+        # Same resolve as the runner: a local / in-tree skill wins; a Hub skill
+        # is read at the pinned revision the runner will load, not the default branch.
+        if preload_rskill_revision and resolve_rskill_local_dir(preload_rskill_id) is None:
+            manifest, _ = rSkill.fetch_manifest(preload_rskill_id, revision=preload_rskill_revision)
+        else:
+            manifest = load_rskill_manifest(preload_rskill_id)
     except ROSConfigError as exc:
         _console.print(f"[red]refusing to launch:[/red] preload rSkill does not resolve: {exc}")
         raise typer.Exit(code=1) from exc
@@ -4308,7 +4315,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         repo_root=_repo_root_from(Path(__file__)),
         robot_yaml=Path(invocation.robot_yaml),
     )
-    _preflight_preload_rskill(invocation.preload_rskill_id)
+    _preflight_preload_rskill(invocation.preload_rskill_id, invocation.preload_rskill_revision)
 
     # VLA↔reward VRAM pair preflight. A VLA must run with its reward
     # model resident; verify the pair fits the GPU BEFORE bringing up
