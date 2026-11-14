@@ -38,13 +38,13 @@ _CODE = base64.urlsafe_b64encode(json.dumps(_LINK).encode()).decode().rstrip("="
 
 @pytest.fixture
 def enrolment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    from openral_cli.robot import ACCOUNT_SETTINGS
+    from openral_cli.robot import ACCOUNT_SETTINGS, CONTROL_SETTINGS
     from openral_observability.dashboard import tunnel
 
     monkeypatch.setattr(tunnel, "CLOUDFLARED", {})  # never download in a unit test
     # apply_account_settings writes os.environ itself: record each variable's original
     # state first (setenv, then delenv), so teardown restores it and nothing leaks.
-    for var in ACCOUNT_SETTINGS:
+    for var in ACCOUNT_SETTINGS | CONTROL_SETTINGS:
         monkeypatch.setenv(var, "")
         monkeypatch.delenv(var)
     path = tmp_path / "config" / "robot.json"
@@ -240,22 +240,52 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
     assert os.environ["OPENRAL_REASONER_API_KEY"] == "sk-1"
 
 
-def test_account_settings_never_set_the_robots_own_switches(
+def test_account_settings_set_the_control_switches_but_the_robot_wins(
     enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Remote and write controls stay on the robot (Safety-WG), whatever the site sends."""
+    """ADR-0132: the account turns remote and write controls on or off; a set variable wins."""
     from openral_cli import robot
 
     _fake_cloudflared(tmp_path, monkeypatch)
     assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
-    monkeypatch.delenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", raising=False)
-    body = {"OPENRAL_DASHBOARD_REMOTE_CONTROL": "1", "OPENRAL_REASONER_MODEL": "m"}
+    body = {
+        "OPENRAL_DASHBOARD_REMOTE_CONTROL": "1",
+        "OPENRAL_DASHBOARD_WRITE_CONTROLS": "0",
+        "OPENRAL_REASONER_MODEL": "m",
+    }
+    calls: list[str] = []
+
+    def site(req: Any, timeout: float) -> _Resp:  # the openral.com boundary
+        calls.append(req.full_url)
+        return _Resp(json.dumps({"settings": body}).encode())
+
+    monkeypatch.setattr(robot, "_open", site)
+    # The site turned remote control on, but this robot's site forces it off.
+    monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", "0")
+    assert robot.apply_account_settings(echo=lambda _: None) == [
+        "OPENRAL_DASHBOARD_WRITE_CONTROLS",
+        "OPENRAL_REASONER_MODEL",
+    ]
+    assert os.environ["OPENRAL_DASHBOARD_REMOTE_CONTROL"] == "0"
+    assert os.environ["OPENRAL_DASHBOARD_WRITE_CONTROLS"] == "0"
+    # Both switches already set: `openral dashboard` doesn't ask the site again.
+    assert robot.apply_account_settings(echo=lambda _: None, names=robot.CONTROL_SETTINGS) == []
+    assert len(calls) == 1
+
+
+def test_a_control_switch_takes_only_0_or_1(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anything else ("true", "yes") is ignored, so the robot keeps its own default (off)."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    body = {"OPENRAL_DASHBOARD_REMOTE_CONTROL": "true", "OPENRAL_DASHBOARD_WRITE_CONTROLS": "1"}
     monkeypatch.setattr(
-        robot,
-        "_open",
-        lambda req, timeout: _Resp(json.dumps({"settings": body}).encode()),
+        robot, "_open", lambda req, timeout: _Resp(json.dumps({"settings": body}).encode())
     )
-    assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_MODEL"]
+    assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_DASHBOARD_WRITE_CONTROLS"]
     assert "OPENRAL_DASHBOARD_REMOTE_CONTROL" not in os.environ
 
 
@@ -313,7 +343,12 @@ def test_the_robots_own_key_never_meets_an_account_endpoint(
     assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
 
     def site(req: Any, timeout: float) -> _Resp:  # the openral.com boundary
-        body = {"settings": {"OPENRAL_REASONER_ENDPOINT": "https://evil.example/v1"}}
+        body = {
+            "settings": {
+                "OPENRAL_REASONER_ENDPOINT": "https://evil.example/v1",
+                "OPENRAL_DASHBOARD_REMOTE_CONTROL": "1",
+            }
+        }
         return _Resp(json.dumps(body).encode())
 
     monkeypatch.setattr(robot, "_open", site)
@@ -322,6 +357,7 @@ def test_the_robots_own_key_never_meets_an_account_endpoint(
     assert robot.apply_reasoner_settings(echo=lambda _: None) == [
         "OPENRAL_REASONER_API_KEY",
         "OPENRAL_REASONER_MODEL",
+        "OPENRAL_DASHBOARD_REMOTE_CONTROL",  # the switches carry no key: still applied
     ]
     assert "OPENRAL_REASONER_ENDPOINT" not in os.environ
     # Its variables already exported (an inherited environment): the console sets nothing,
