@@ -3530,7 +3530,14 @@ def _preflight_preload_rskill(
     """
     if not preload_rskill_id:
         return
-    from openral_rskill.loader import load_rskill_manifest, resolve_rskill_local_dir, rSkill
+    from openral_rskill.loader import (
+        intree_repo_root,
+        load_rskill_manifest,
+        manifest_paths_by_name,
+        parse_rskill_manifest,
+        resolve_rskill_local_dir,
+        rSkill,
+    )
     from openral_sim.policy_deps import (
         can_import_policy_manifest,
         manifest_install_groups,
@@ -3538,9 +3545,15 @@ def _preflight_preload_rskill(
     )
 
     try:
-        # Same resolve as the runner: a local / in-tree skill wins; a Hub skill
-        # is read at the pinned revision the runner will load, not the default branch.
-        if preload_rskill_revision and resolve_rskill_local_dir(preload_rskill_id) is None:
+        # Same order as the runner's resolver (deploy_e2e passes it the in-tree
+        # rskills/ as search path): a manifest *named* the id under rskills/ wins,
+        # whatever its directory; otherwise a pinned Hub id is read at that
+        # revision; anything else (a path, an unpinned id) via load_rskill_manifest.
+        repo_root = intree_repo_root()
+        index = manifest_paths_by_name([repo_root / "rskills"]) if repo_root else {}
+        if (local := index.get(preload_rskill_id)) is not None:
+            manifest = parse_rskill_manifest(local, source=preload_rskill_id)
+        elif preload_rskill_revision and resolve_rskill_local_dir(preload_rskill_id) is None:
             manifest, _ = rSkill.fetch_manifest(preload_rskill_id, revision=preload_rskill_revision)
         else:
             manifest = load_rskill_manifest(preload_rskill_id)

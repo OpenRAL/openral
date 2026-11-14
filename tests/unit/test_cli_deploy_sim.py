@@ -3520,3 +3520,44 @@ def test_preflight_preload_rskill_refuses_with_the_install_command(
     out = " ".join(capsys.readouterr().out.split())
     assert "refusing to launch" in out and "accelerate" in out, out
     assert "just sync --all-packages --group vla" in out, out
+
+
+_BOGUS_REVISION = "0" * 40
+_HUB_ONLY_RSKILL = "OpenRAL/rskill-rtdetr_v2_r50vd-any-coco-fp16"
+_HUB_ONLY_REVISION = "e46b9e1f13aecbc588b1997a7c44894bf49c7261"
+
+
+def test_preflight_preload_rskill_resolves_an_in_tree_name_before_the_hub(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An in-tree manifest is found by its ``name`` (not its directory) even with a
+    pinned revision, exactly as the runner's resolver does — so no Hub lookup runs.
+
+    The id names ``rskills/pi05-metal-pick-place``; with a revision that exists on no
+    repo, a Hub fetch would fail and print the "does not resolve" warning.
+    """
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    _preflight_preload_rskill(
+        "OpenRAL/rskill-pi05-makermods_metal-pick_place-bf16", _BOGUS_REVISION
+    )
+    assert "does not resolve" not in capsys.readouterr().out
+
+
+def test_preflight_preload_rskill_reads_a_hub_id_at_its_pinned_revision(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A Hub-only id is read at the scene's pinned revision: the real revision
+    resolves, and one that does not exist warns — the default branch would have
+    resolved, so the warning proves the pin reached the fetch."""
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    try:
+        huggingface_hub.HfApi().model_info(_HUB_ONLY_RSKILL, revision=_HUB_ONLY_REVISION)
+    except Exception as exc:  # any Hub / network failure means skip
+        pytest.skip(f"Hub unreachable: {exc}")
+
+    _preflight_preload_rskill(_HUB_ONLY_RSKILL, _HUB_ONLY_REVISION)
+    assert "does not resolve" not in capsys.readouterr().out
+
+    _preflight_preload_rskill(_HUB_ONLY_RSKILL, _BOGUS_REVISION)
+    assert "does not resolve" in " ".join(capsys.readouterr().out.split())
