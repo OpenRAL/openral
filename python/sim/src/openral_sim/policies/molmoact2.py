@@ -727,9 +727,10 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
 
 @POLICIES.register(
     "molmoact2",
-    install_groups=("libero",),
+    install_groups=("vla",),
     required_imports=(
         "transformers",
+        "scipy",  # lerobot's action tokenizer (scipy.fft) — lerobot[molmoact2] declares it
         "lerobot.policies.molmoact2.molmoact2_hf_model.modeling_molmoact2",
     ),
 )

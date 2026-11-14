@@ -153,7 +153,9 @@ class _DiffusionAdapter:
 @POLICIES.register(
     "diffusion",
     install_groups=("sim",),
-    required_imports=("lerobot.policies.diffusion.modeling_diffusion",),
+    # diffusers: the cheap probe checks top-level packages only, and lerobot's
+    # modeling_diffusion leaves its classes unset (not ImportError) without it.
+    required_imports=("diffusers", "lerobot.policies.diffusion.modeling_diffusion"),
 )
 def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
     """Load a Diffusion Policy checkpoint."""

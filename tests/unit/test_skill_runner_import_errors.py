@@ -107,4 +107,4 @@ def test_build_runtime_skill_translates_import_error(
     msg = str(ei.value)
     assert "smolvla" in msg
     assert "transformers" in msg
-    assert "just sync --all-packages --group sim" in msg
+    assert "just sync --all-packages --group vla" in msg

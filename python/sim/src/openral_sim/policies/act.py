@@ -332,7 +332,7 @@ def _maybe_build_act_nvmm(
 
 @POLICIES.register(
     "act",
-    install_groups=("sim",),
+    install_groups=("vla",),  # base lerobot suffices; `vla` (a default group) re-installs it
     required_imports=("lerobot.policies.act.modeling_act",),
 )
 def _build_act(env_cfg: Any) -> _ACTAdapter:

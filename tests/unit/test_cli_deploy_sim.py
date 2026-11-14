@@ -31,6 +31,7 @@ from openral_cli.deploy_sim import (
     _cmdline_is_openral_graph_process,
     _derive_hal_spec,
     _preflight_palette_deps,
+    _preflight_preload_rskill,
     _prepare_launch_env,
     _resolve_clock_origin,
     _resolve_slam_backend,
@@ -1209,7 +1210,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     Real fixture: ``robots/franka_panda/robot.yaml`` matches several in-tree
     rSkills via ``build_tool_palette`` — the policy-extras-gated
     ``rskill-pi05-franka_panda-libero_spatial-int8`` (``model_family=pi05``, imports
-    ``transformers`` gated behind ``uv sync --group sim``/``--group libero``)
+    ``transformers`` gated behind the default ``vla`` group)
     and the family-less ``rskill-moveit-multi-joints``
     (``kind: ros_action``, no policy extras, always importable). Because a
     dispatchable skill survives a pi05 miss, the advisory preflight does
@@ -1229,23 +1230,19 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     preflight is meant to prevent. ``just sync`` also wraps the
     hf-libero distutils-uninstall repair around the sync.
     """
-    from openral_sim.policy_deps import can_import_policy_family
-
     franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
     if not franka_yaml.is_file():
         pytest.skip(f"missing fixture: {franka_yaml}")
-    ok, _ = can_import_policy_family("pi05")
-    if ok:
-        pytest.skip(
-            "pi05 extras already installed in this venv; this test "
-            "asserts the missing-extras branch — install the extras "
-            "to exercise the happy path elsewhere"
-        )
 
     # Force non-interactive without touching the underlying TTY of the
     # test runner. sys.stdin.isatty + sys.stdout.isatty both False →
     # preflight skips the typer.confirm prompt entirely.
     import sys as _sys
+
+    # pi05 is importable in every default env (the `vla` group), so hide
+    # transformers from the import system: ``sys.modules[name] = None`` is how it
+    # spells "absent", and the real probe then reports the miss.
+    monkeypatch.setitem(_sys.modules, "transformers", None)
 
     # The pi05 miss blocks rskill-pi05-franka_panda-libero_spatial-int8, but the family-less
     # rskill-moveit-multi-joints stays dispatchable → palette is
@@ -1271,8 +1268,8 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
         "uninstall trap is repaired; got:\n"
         f"{out}"
     )
-    # pi05 maps to (sim, libero); both groups must appear.
-    assert "--group libero" in out and "--group sim" in out, out
+    # pi05 maps to the default `vla` group.
+    assert "--group vla" in out, out
 
 
 @pytest.mark.usefixtures("_just_on_path")
@@ -1291,8 +1288,8 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     * goes through ``just sync --all-packages`` (NOT bare ``uv sync``),
       so workspace members survive AND the hf-libero distutils trap is
       repaired before+after;
-    * the pi05 family expands to BOTH ``--group libero`` and
-      ``--group sim`` (per the ``install_groups`` pi05 registers on ``POLICIES``);
+    * the pi05 family expands to ``--group vla`` (per the ``install_groups``
+      pi05 registers on ``POLICIES``);
     * the pre-fix command shape ``uv sync --group ...`` never appears.
     """
     import sys as _sys
@@ -1337,7 +1334,7 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
         "--group <X>`; got:\n"
         f"{cmd_line}"
     )
-    assert "--group libero" in cmd_line and "--group sim" in cmd_line, cmd_line
+    assert "--group vla" in cmd_line, cmd_line
     # Installing a policy group must be ADDITIVE — `--inexact` preserves
     # packages from sibling groups already in the venv (the omdet detector's
     # `timm`, robosuite, rldx's pyzmq/msgpack). Without it, `uv sync --group
@@ -3466,3 +3463,126 @@ def test_the_declared_target_seeds_the_query_its_placement_label_names() -> None
     )
     seeded = {q["label"]: "seed" in q for q in json.loads(_object_queries_json(relabelled, task))}
     assert seeded == {"fruit": True, "orange": False, "plate": False}
+
+
+_PI05_PRELOAD = _REPO_ROOT / "rskills" / "pi05-metal-pick-place"
+
+
+def test_preflight_preload_rskill_is_silent_without_a_preload() -> None:
+    """An empty ``preload_rskill_id`` (the scene default) is not a refusal."""
+    _preflight_preload_rskill("")
+
+
+def test_preflight_preload_rskill_warns_on_an_unloadable_manifest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A preload that does not resolve warns and launches: the runner reports the same
+    failure and stays up, so a Hub blip must not take the whole deploy down."""
+    (tmp_path / "rskill.yaml").write_text("name: [not, a, manifest\n", encoding="utf-8")
+    _preflight_preload_rskill(str(tmp_path))
+    out = " ".join(capsys.readouterr().out.split())
+    assert "does not resolve" in out and "launching anyway" in out, out
+
+
+def test_preflight_preload_rskill_passes_when_the_policy_imports() -> None:
+    """Real in-tree pi05 manifest + the default `vla` group installed → launch proceeds."""
+    from openral_sim.policy_deps import can_import_policy_family
+
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    ok, reason = can_import_policy_family("pi05")
+    if not ok:
+        pytest.skip(f"pi05 extras absent in this venv ({reason}); run `just sync`")
+    _preflight_preload_rskill(str(_PI05_PRELOAD))
+
+
+def test_preflight_preload_rskill_refuses_with_the_install_command(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Missing policy packages → exit 1 naming `just sync --all-packages --group vla`.
+
+    Regression for Thor 2026-11-14: a bare-synced venv lacked ``accelerate``, the
+    graph came up (the OpenArm stepped both arms to zero) and only then did the
+    preload fail. The real probe runs: ``sys.modules[name] = None`` is how the
+    import system spells "absent", so ``find_spec`` reports the miss.
+    """
+    import sys as _sys
+
+    import typer
+
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    monkeypatch.setitem(_sys.modules, "accelerate", None)
+    with pytest.raises(typer.Exit) as ei:
+        _preflight_preload_rskill(str(_PI05_PRELOAD))
+    assert ei.value.exit_code == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "refusing to launch" in out and "accelerate" in out, out
+    assert "just sync --all-packages --group vla" in out, out
+
+
+_BOGUS_REVISION = "0" * 40
+_HUB_ONLY_RSKILL = "OpenRAL/rskill-rtdetr_v2_r50vd-any-coco-fp16"
+_HUB_ONLY_REVISION = "e46b9e1f13aecbc588b1997a7c44894bf49c7261"
+
+
+def test_preflight_preload_rskill_resolves_an_in_tree_name_before_the_hub(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An in-tree manifest is found by its ``name`` (not its directory) even with a
+    pinned revision, exactly as the runner's resolver does — so no Hub lookup runs.
+
+    The id names ``rskills/pi05-metal-pick-place``; with a revision that exists on no
+    repo, a Hub fetch would fail and print the "does not resolve" warning.
+    """
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    _preflight_preload_rskill(
+        "OpenRAL/rskill-pi05-makermods_metal-pick_place-bf16", _BOGUS_REVISION
+    )
+    assert "does not resolve" not in capsys.readouterr().out
+
+
+def test_preflight_preload_rskill_reads_a_hub_id_at_its_pinned_revision(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A Hub-only id is read at the scene's pinned revision: the real revision
+    resolves, and one that does not exist warns — the default branch would have
+    resolved, so the warning proves the pin reached the fetch."""
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    try:
+        huggingface_hub.HfApi().model_info(_HUB_ONLY_RSKILL, revision=_HUB_ONLY_REVISION)
+    except Exception as exc:  # any Hub / network failure means skip
+        pytest.skip(f"Hub unreachable: {exc}")
+
+    _preflight_preload_rskill(_HUB_ONLY_RSKILL, _HUB_ONLY_REVISION)
+    assert "does not resolve" not in capsys.readouterr().out
+
+    _preflight_preload_rskill(_HUB_ONLY_RSKILL, _BOGUS_REVISION)
+    assert "does not resolve" in " ".join(capsys.readouterr().out.split())
+
+
+def test_preflight_preload_rskill_reads_the_pinned_snapshot_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The pin path without the Hub: a Hub-only id pinned to a commit sha resolves from
+    that sha's snapshot in the rSkill cache (``hf_hub_download`` returns a cached
+    commit-sha file without a request), and the snapshot's policy is probed."""
+    import openral_rskill.loader as _loader
+
+    if not (_PI05_PRELOAD / "rskill.yaml").is_file():
+        pytest.skip(f"missing fixture: {_PI05_PRELOAD}")
+    repo_id = "OpenRAL/rskill-offline-pin-fixture"  # in no search path → the Hub branch
+    sha = "1" * 40
+    snapshot = tmp_path / "models--OpenRAL--rskill-offline-pin-fixture" / "snapshots" / sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "rskill.yaml").write_text(
+        (_PI05_PRELOAD / "rskill.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    monkeypatch.setattr(_loader, "_CACHE_HOME", tmp_path)
+
+    _preflight_preload_rskill(repo_id, sha)
+    assert "does not resolve" not in capsys.readouterr().out

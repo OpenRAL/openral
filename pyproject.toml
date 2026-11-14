@@ -22,6 +22,11 @@ dependencies = [
 members = ["python/*"]
 
 [tool.uv]
+# A bare `just sync` installs `vla` too: a real-robot `deploy run` loads lerobot
+# policies (π0.5 / SmolVLA / OpenVLA) in-process, and before this the only groups
+# carrying their deps were simulator groups — so a rig synced without `--group
+# sim` brought the arms up and then failed the policy preload.
+default-groups = ["dev", "vla"]
 # egl-probe is a transitive dep of robomimic→hf-libero→lerobot[libero].
 # It probes EGL at *build* time and fails on systems without EGL headers
 # during `uv sync`. The sim-* recipes set MUJOCO_GL=egl at *runtime* (which
@@ -225,6 +230,19 @@ dev = [
     "robot-descriptions>=2.0.0",
     "types-protobuf>=7.34.1.20260518",
 ]
+vla = [
+    # In-process lerobot policy runtime with no simulator attached — what a
+    # real-robot `deploy run` needs to load π0.5 / SmolVLA / xVLA / MolmoAct2 /
+    # OpenVLA. Default group (`[tool.uv] default-groups`), and included by the
+    # sim / libero / metaworld / maniskill3 / robocasa groups so a multi-group
+    # sync resolves to one version. lerobot's own per-policy extras are the
+    # source of truth for what each policy imports: `pi` (transformers, scipy),
+    # `smolvla` (transformers, num2words, accelerate), `xvla` (transformers),
+    # `molmoact2` (transformers, peft, scipy), `timm-dep` (OpenVLA's
+    # trust_remote_code prismatic backbone).
+    "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",
+    "transformers>=5.4.0,<5.6.0",  # reason: restates lerobot's `transformers-dep` ceiling so a lerobot upgrade cannot lift it silently. Above 5.6 the PaliGemma attention path changes and pi05's vision-tower keys are renamed; `PI05Policy.from_pretrained` *warns rather than raises*, so the policy loads with a randomly-initialized vision tower and emits confident, meaningless action chunks. Verified on a Jetson AGX Thor: 5.5.4 loads all 813 keys clean.
+]
 clip = [
     # Open-vocabulary object matching via OpenCLIP ViT-B/32 (MIT
     # code + weights). Optional / compute-gated: SpatialMemory works on label +
@@ -238,24 +256,21 @@ opencv = [
     "opencv-python>=4.8",  # reason: optional OpenCV camera/detector tests; matches openral-runner[opencv]
 ]
 sim = [
+    { include-group = "vla" },
     "gym-aloha>=0.1.3",  # reason: real MuJoCo ALOHA physics env for ACT closed-loop test
-    "accelerate>=1.13.0",
     "gym-pusht>=0.1.6",
     "gymnasium[mujoco]>=1.3.0",
     "mujoco>=3.8.0",
-    "num2words>=0.5.14",
     "pymunk<8",
     "robot-descriptions>=1.12.0",  # reason: SO-100 MJCF from DeepMind mujoco_menagerie for offscreen render
-    "transformers>=5.4.0,<5.6.0",
     "lerobot[diffusion]",  # reason: lerobot 0.6.0 moved `diffusers` behind the `diffusion` extra; the Diffusion Policy adapter (diffusion-pusht rSkill) imports lerobot.policies.diffusion which needs it. Bare lerobot (transitive) no longer carries diffusers.
 ]
 libero = [
+    { include-group = "vla" },
     "lerobot[libero]",  # reason: pulls hf-libero (linux-only) + LIBERO bddl task files + robosuite
-    "transformers>=5.4.0,<5.6.0",  # reason: lerobot 0.6.0's `transformers-dep` extra requires transformers>=5.4.0,<5.6.0. That bound is NOT enforced on us: we depend on `lerobot[feetech]`, so the extra is never activated and our own specifier is the only thing constraining the resolve. It must therefore carry lerobot's real ceiling. Above 5.6 the PaliGemma attention path changes (`create_causal_mask()` drops `cache_position=`) and pi05's vision-tower keys are renamed; `PI05Policy.from_pretrained` *warns rather than raises* on the mismatch, so the policy loads with a randomly-initialized vision tower and emits confident, meaningless action chunks. Verified on a Jetson AGX Thor: 5.5.4 loads all 813 keys clean. Stated explicitly here — matching the sim / metaworld / maniskill3 / robocasa groups — so a multi-group sync resolves to one version.
-    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
-    "accelerate>=1.13.0",  # reason: init_empty_weights meta-init fast path for NF4 prequant loads (molmoact2 / pi05 libero rSkills) — matches sim / metaworld / maniskill3 / robocasa groups
 ]
 metaworld = [
+    { include-group = "vla" },
     # The MetaWorld benchmark package itself (metaworld==3.0.0) is NOT listed here
     # because its transitive deps conflict with the workspace lock; install it
     # manually with `uv run pip install metaworld==3.0.0 --no-deps` (the
@@ -263,11 +278,9 @@ metaworld = [
     "lerobot",  # reason: provides lerobot.envs.metaworld used by the MetaWorld scene adapter
     "gymnasium[mujoco]>=1.3.0",  # reason: gym backend MetaWorldEnv is built on
     "mujoco>=3.8.0",  # reason: physics engine for MetaWorld scenes
-    "transformers>=5.4.0,<5.6.0",  # reason: SmolVLA backbone (pinned to match the sim group)
-    "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA
-    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
 ]
 maniskill3 = [
+    { include-group = "vla" },
     # Opt-in ManiSkill3 sim backend.
     # mani-skill is the PyPI distribution name; it pulls SAPIEN (Vulkan-backed
     # GPU physics, ~200 MB wheel) transitively. Bound at >=3.0.0b9 so SemVer-compatible
@@ -275,9 +288,6 @@ maniskill3 = [
     "mani-skill>=3.0.0b9",
     "gymnasium>=1.0.0",  # reason: gym backend ManiSkill envs are built on
     "lerobot",  # reason: every non-RLDX policy adapter (smolvla / pi05 / xvla / act / diffusion) imports lerobot.policies.* at load time. Pulled bare (no `[libero]`) to keep robosuite unconstrained — `mani-skill` carries SAPIEN, not robosuite, so there is no robosuite version pin to clash with. Once an MS3-specific rSkill ships in-tree this becomes load-bearing; today it future-proofs the group + matches the metaworld group's convention.
-    "transformers>=5.4.0,<5.6.0",  # reason: SmolVLA / π0.5 / xVLA / ACT / diffusion adapters all import transformers at load time (lerobot's own dep is too loose for the Py3.12 + lerobot compat path — see python/rskill/src/openral_rskill/_lerobot_compat.py). Pinned to match the sim + metaworld groups so a `--group sim --group maniskill3` sync resolves to a single transformers version.
-    "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 (matches metaworld group convention)
-    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization (matches metaworld group)
 ]
 simpler-env = [
     # Opt-in SimplerEnv real-to-sim correlator backend.
@@ -295,6 +305,7 @@ simpler-env = [
     "gymnasium>=1.0.0",
 ]
 robocasa = [
+    { include-group = "vla" },
     "lxml>=5",  # reason: robocasa-gr1 texture_swap imports lxml; the fork is installed --no-deps.
     "h5py>=3.10",  # reason: robocasa runtime logging/import path; fork is installed --no-deps.
     "robosuite-models>=1.0.0",  # reason: robosuite GR1 import warns/fails without model assets.
@@ -374,9 +385,6 @@ robocasa = [
     # pi05-vision-nf4 scene (and any future transformers-backed adapter on a
     # robosuite>=1.5 task).
     "lerobot",  # reason: policy adapters (smolvla / pi05 / xvla / act / diffusion) import lerobot.policies.* at load time. Pulled bare (no `[libero]`) — robosuite>=1.5 above is the RoboCasa pin and conflicts with libero's robosuite==1.4.
-    "transformers>=5.4.0,<5.6.0",  # reason: SmolVLA / π0.5 / xVLA backbones live in transformers (PaliGemma, Florence-2, SmolVLM). Pinned to match the sim / metaworld / maniskill3 groups so multi-group syncs resolve to a single version.
-    "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 init_empty_weights fast meta-init path.
-    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization.
     "imageio[ffmpeg]>=2.34",  # reason: robocasa's env_utils imports imageio at load (playback_dataset_hdf5), and openral_sim's --save-video writer uses imageio's ffmpeg plugin. Both rode in transitively via lerobot's video deps under 0.5.1; lerobot 0.6.0 modularized those behind extras, dropping imageio[ffmpeg] from the bare-lerobot robocasa closure — declare it here so the robocasa runtime env resolves both the module and its ffmpeg plugin.
 ]
 sidecar-wire = [

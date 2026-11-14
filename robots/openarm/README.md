@@ -180,6 +180,12 @@ openral rskill install <rskill_id> --non-commercial --yes
 openral rskill check <rskill_id> --robot robots/openarm/robot.yaml
 ```
 
+A plain `just sync` already installs the π0.5 runtime (the default `vla` group:
+`transformers`, `accelerate`, `num2words`); no simulator group is needed on the
+cell's host. `deploy run` checks the scene's `preload_rskill_id` against the venv
+before bringup and refuses to launch, with the install command, when the policy
+cannot import. A missing package therefore stops the deploy before the arms move.
+
 The cell's cameras are bound in `robot.yaml` itself (each sensor's `deploy_binding`, used
 only by `deploy run`), together with the calibrated `head_zed` mount
 (`static_transform_calibrated: true`) and the wrist Arducams' calibrated intrinsics: pinhole +

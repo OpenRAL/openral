@@ -604,7 +604,7 @@ def _config_with_local_backbone(repo_id: str, revision: str | None) -> tuple[Any
 
 @POLICIES.register(
     "smolvla",
-    install_groups=("sim",),
+    install_groups=("vla",),
     required_imports=("transformers", "lerobot.policies.smolvla.modeling_smolvla"),
 )
 def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:

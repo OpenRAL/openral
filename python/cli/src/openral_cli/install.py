@@ -48,53 +48,52 @@ from rich.table import Table
 # Each entry mirrors ``[dependency-groups].<group>``, handed straight to
 # ``uv pip install`` so PEP 508 markers are honoured.
 _GROUPS: Final[dict[str, list[str]]] = {
+    "vla": [
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",
+        "transformers>=5.4.0,<5.6.0",
+    ],
     "sim": [
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "transformers>=5.4.0,<5.6.0",
         "gym-aloha>=0.1.3",
-        "accelerate>=1.13.0",
         "gym-pusht>=0.1.6",
         "gymnasium[mujoco]>=1.3.0",
         "mujoco>=3.8.0",
-        "num2words>=0.5.14",
         "pymunk<8",
         "robot-descriptions>=1.12.0",
-        "transformers>=5.4.0,<5.6.0",
         "lerobot[diffusion]",
     ],
     "libero": [
-        "lerobot[libero]",
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
         "transformers>=5.4.0,<5.6.0",
-        "num2words>=0.5.14",
-        "accelerate>=1.13.0",
+        "lerobot[libero]",
     ],
     "metaworld": [
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "transformers>=5.4.0,<5.6.0",
         "lerobot",
         "gymnasium[mujoco]>=1.3.0",
         "mujoco>=3.8.0",
-        "transformers>=5.4.0,<5.6.0",
-        "accelerate>=1.13.0",
-        "num2words>=0.5.14",
     ],
     "maniskill3": [
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "transformers>=5.4.0,<5.6.0",
         "mani-skill>=3.0.0b9",
         "gymnasium>=1.0.0",
         "lerobot",
-        "transformers>=5.4.0,<5.6.0",
-        "accelerate>=1.13.0",
-        "num2words>=0.5.14",
     ],
     "simpler-env": [
         "mani-skill>=3.0.0b9",
         "gymnasium>=1.0.0",
     ],
     "robocasa": [
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "transformers>=5.4.0,<5.6.0",
         "robosuite>=1.5.2",
         "h5py>=3.10",
         "robosuite-models>=1.0.0",
         "lxml>=5",
         "lerobot",
-        "transformers>=5.4.0,<5.6.0",
-        "accelerate>=1.13.0",
-        "num2words>=0.5.14",
         "imageio[ffmpeg]>=2.34",
     ],
     "rldx": [

@@ -92,7 +92,7 @@ def load_manifest_for_spec(spec: Any) -> RSkillManifest | None:
 def lazy_import_lerobot(
     adapter_name: str,
     *,
-    install_hint: str = "just sync --all-packages --group libero",
+    install_hint: str = "just sync --all-packages --group vla",
 ) -> tuple[Any, Any]:
     """Import torch + lerobot's ``make_pre_post_processors`` factory.
 
@@ -107,7 +107,7 @@ def lazy_import_lerobot(
             ``"π0.5"`` / ...) inlined into the ``ROSConfigError`` so
             the operator sees which adapter triggered the failure.
         install_hint: Override the default
-            ``just sync --all-packages --group libero`` hint when an
+            ``just sync --all-packages --group vla`` hint when an
             adapter pulls a different optional group (e.g.
             ``"just sync --all-packages --group metaworld"``).
 

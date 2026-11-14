@@ -113,8 +113,9 @@ class TOPRewardMonitor:
             )
         except ImportError as exc:  # pragma: no cover — env-dependent
             raise ROSConfigError(
-                "TOPReward monitor needs lerobot 0.6.0 + transformers + bitsandbytes; "
-                "install with `uv sync --group topreward`."
+                "TOPReward monitor needs lerobot 0.6.0 + transformers; install with "
+                "`just sync --all-packages --group vla` (a default group; a 4-bit "
+                f"load also needs OpenRAL Pro, ADR-0123). Underlying: {exc}"
             ) from exc
 
         # success_threshold stays -inf (TOPRewardConfig default) so compute_reward

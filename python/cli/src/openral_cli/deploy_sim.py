@@ -2481,6 +2481,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
             repo_root=repo_root,
             robot_yaml=Path(invocation.robot_yaml),
         )
+        _preflight_preload_rskill(invocation.preload_rskill_id, invocation.preload_rskill_revision)
         # VLA↔reward VRAM pair preflight (deploy run path). No-op
         # unless a reward monitor is active and the GPU budget is readable.
         if invocation.enable_reward_monitor and invocation.reward_monitor_manifest:
@@ -3494,6 +3495,97 @@ def _apply_palette_head_cam(matched: Iterable[RSkillManifest]) -> bool:
     return True
 
 
+def _preflight_preload_rskill(
+    preload_rskill_id: str,
+    preload_rskill_revision: str = "",
+    *,
+    install_missing: bool = False,
+) -> None:
+    """Refuse the launch when the preloaded rSkill cannot load in this venv.
+
+    The runner loads ``preload_rskill_id`` only after the graph is up, and on
+    ``deploy run`` the graph coming up means the real HAL activating — the
+    OpenArm steps both arms to zero. A venv missing the policy's packages then
+    moves the arms for a deploy that rejects every goal (Thor, 2026-11-14:
+    ``No module named 'accelerate'`` after a bare sync). Checked here, before
+    bringup, with the same manifest resolve and import probe the runner and the
+    palette preflight use.
+
+    A manifest that does not resolve (Hub unreachable, gated repo) is a warning,
+    not a refusal: the runner meets the same failure, logs ``preload_failed`` and
+    stays up, so refusing here would take the dashboard down over a network blip.
+    The resolve reads the Hub when online; set ``HF_HUB_OFFLINE=1`` on hosts whose
+    Hub calls stall (Thor) to keep it cache-only.
+
+    Args:
+        preload_rskill_id: The scene's ``runtime.preload_rskill_id``; empty = no preload.
+        preload_rskill_revision: The scene's ``runtime.preload_rskill_revision``;
+            empty = the default branch.
+        install_missing: Install the policy's groups and re-probe instead of
+            refusing — ``deploy sim`` passes it when ``OPENRAL_AUTO_INSTALL_DEPS``
+            allows, matching its palette preflight. ``deploy run`` never does.
+
+    Raises:
+        typer.Exit: The policy does not import (and was not installed).
+    """
+    if not preload_rskill_id:
+        return
+    from openral_rskill.loader import (
+        intree_repo_root,
+        load_rskill_manifest,
+        manifest_paths_by_name,
+        parse_rskill_manifest,
+        resolve_rskill_local_dir,
+        rSkill,
+    )
+    from openral_sim.policy_deps import (
+        can_import_policy_manifest,
+        manifest_install_groups,
+        manifest_install_hint,
+    )
+
+    try:
+        # Same order as the runner's resolver (deploy_e2e passes it the in-tree
+        # rskills/ as search path): a manifest *named* the id under rskills/ wins,
+        # whatever its directory; otherwise a pinned Hub id is read at that
+        # revision; anything else (a path, an unpinned id) via load_rskill_manifest.
+        repo_root = intree_repo_root()
+        index = manifest_paths_by_name([repo_root / "rskills"]) if repo_root else {}
+        if (local := index.get(preload_rskill_id)) is not None:
+            manifest = parse_rskill_manifest(local, source=preload_rskill_id)
+        elif preload_rskill_revision and resolve_rskill_local_dir(preload_rskill_id) is None:
+            manifest, _ = rSkill.fetch_manifest(preload_rskill_id, revision=preload_rskill_revision)
+        else:
+            manifest = load_rskill_manifest(preload_rskill_id)
+    except ROSConfigError as exc:
+        _console.print(
+            f"[yellow]preflight:[/yellow] preload rSkill {preload_rskill_id!r} does not "
+            f"resolve ({exc}); launching anyway — the runner will report the same failure."
+        )
+        return
+    ok, reason = can_import_policy_manifest(manifest)
+    if ok:
+        return
+    groups = manifest_install_groups(manifest)
+    if install_missing and groups and shutil.which("just") is not None:
+        cmd = ["just", "sync", "--all-packages", "--inexact"]
+        for group in groups:
+            cmd += ["--group", group]
+        _console.print(f"[cyan]running:[/cyan] {shlex.join(cmd)}")
+        repo_root = _repo_root_from(Path(__file__))
+        if subprocess.run(cmd, check=False, cwd=str(repo_root)).returncode == 0:
+            importlib.invalidate_caches()
+            ok, reason = can_import_policy_manifest(manifest)
+            if ok:
+                return
+    _console.print(
+        f"[red]refusing to launch:[/red] preload rSkill {preload_rskill_id!r} "
+        f"cannot load its policy: {reason}. "
+        f"{manifest_install_hint(manifest)}"
+    )
+    raise typer.Exit(code=1)
+
+
 def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow — split would obscure the prompt → install → re-probe contract
     *,
     repo_root: Path,
@@ -4267,6 +4359,11 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
     _preflight_palette_deps(
         repo_root=_repo_root_from(Path(__file__)),
         robot_yaml=Path(invocation.robot_yaml),
+    )
+    _preflight_preload_rskill(
+        invocation.preload_rskill_id,
+        invocation.preload_rskill_revision,
+        install_missing=os.environ.get("OPENRAL_AUTO_INSTALL_DEPS", "1") == "1",
     )
 
     # VLA↔reward VRAM pair preflight. A VLA must run with its reward
