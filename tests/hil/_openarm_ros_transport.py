@@ -170,10 +170,6 @@ class OpenArmHILTransport(_JointStateCache):
         """Joint names that have actually appeared on ``/joint_states``."""
         return set(self._latest)
 
-    def missing_joints(self) -> list[str]:
-        """Expected joints that ``/joint_states`` has never reported."""
-        return [n for n in self._joint_names if n not in self._latest]
-
     def close(self) -> None:
         """Release the executor. The node and context belong to the caller."""
         self._executor.shutdown()

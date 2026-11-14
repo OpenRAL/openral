@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
 from openral_hal.ros_control import ControllerSwitchReport, TriggerReport
 
@@ -404,6 +404,12 @@ class SimTorqueSeam:
         faults: Per-arm exception ``torque_enable`` **raises** instead of
             answering — the rclpy-shaped fault a real service call can die
             with. The HAL must contain it and still stop the other arms.
+        modes: Operating mode ``get_robot_info`` reports per group / single
+            motor name, the same on every arm. Defaults to what upstream
+            ``real_env.setup_follower_bot`` leaves a follower in
+            (``arm``: ``position``, ``gripper``: ``current_based_position``);
+            pass the bring-up yaml's ``linear_position`` gripper to model a
+            rig nobody switched.
 
     Example:
         >>> from openral_hal.sim_transport import SimTorqueSeam
@@ -414,6 +420,8 @@ class SimTorqueSeam:
         False
         >>> seam.torque_enable("puppet", group="all", enable=False, timeout_s=1.0).success
         False
+        >>> seam.operating_mode("follower_left", cmd_type="single", name="gripper", timeout_s=1.0)
+        'current_based_position'
     """
 
     def __init__(
@@ -422,12 +430,16 @@ class SimTorqueSeam:
         arms: Sequence[str],
         failing: Sequence[str] = (),
         faults: Mapping[str, Exception] | None = None,
+        modes: Mapping[str, str] | None = None,
     ) -> None:
         """Every listed arm starts torqued on."""
         self._torque: dict[str, bool] = {arm: True for arm in arms}
         self._failing = set(failing)
         self._faults = dict(faults or {})
         self._calls: list[tuple[str, str, bool]] = []
+        self._modes = dict(
+            modes if modes is not None else {"arm": "position", "gripper": "current_based_position"}
+        )
 
     def torque_enable(
         self, robot_name: str, *, group: str, enable: bool, timeout_s: float
@@ -444,6 +456,12 @@ class SimTorqueSeam:
             return TriggerReport(success=False, message=f"/{robot_name}/torque_enable refused")
         self._torque[robot_name] = enable
         return TriggerReport(success=True, message=f"/{robot_name}/torque_enable {group}={enable}")
+
+    def operating_mode(self, robot_name: str, *, cmd_type: str, name: str, timeout_s: float) -> str:
+        """Report *name*'s mode; an absent arm or unknown name raises like the real service."""
+        if robot_name not in self._torque or name not in self._modes:
+            raise ROSRuntimeError(f"/{robot_name}/get_robot_info has no {cmd_type} {name!r}")
+        return self._modes[name]
 
     def torque(self, robot_name: str) -> bool:
         """Whether *robot_name* is currently torqued on."""

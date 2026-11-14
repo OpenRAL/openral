@@ -52,9 +52,9 @@ _CONTROL_QOS = QoSProfile(
 def _make_trajectory_publisher(node: Node, command_topic: str) -> Publisher:
     """Create a ``trajectory_msgs/JointTrajectory`` publisher with the HIL QoS.
 
-    Shared with ``tests.hil._aloha_ros_transport`` so the per-arm and
-    per-gripper publishers in the bimanual bridge use the same QoS profile
-    as the single-controller bridge.
+    Shared with ``tests.hil._openarm_ros_transport`` so the bimanual bridge's
+    per-controller publishers use the same QoS profile as the single-controller
+    bridge.
     """
     return node.create_publisher(JointTrajectory, command_topic, _CONTROL_QOS)
 
@@ -83,13 +83,18 @@ class _JointStateCache:
             efforts.append(e)
         return {"position": positions, "velocity": velocities, "effort": efforts}
 
+    def missing_joints(self) -> list[str]:
+        """Expected joints that no joint-state message has reported yet."""
+        return [n for n in self._joint_names if n not in self._latest]
+
 
 class _PolledJointStateMixin(_JointStateCache):
     """Adds the single-``rclpy.spin_once``-poll ``_on_joint_state``/``wait_for_first_state`` pair.
 
-    Shared by ``RosControlHILTransport`` and ``AlohaHILTransport``, whose
-    ``/joint_states`` merge-by-name callback and "has anything arrived yet"
-    poll are byte-identical. ``OpenArmHILTransport`` keeps its own
+    Shared by ``RosControlHILTransport`` and ``AlohaHILTransport`` (which
+    relabels each ``xs_sdk`` namespace's names first), whose merge-by-name
+    callback and "has anything arrived yet" poll are byte-identical.
+    ``OpenArmHILTransport`` keeps its own
     ``_on_joint_state``/``spin_once`` (it drives its own ``rclpy.Context``-bound
     executor and polls ``wait_for_every_joint`` — all 16, not just one
     message) so it inherits only ``_JointStateCache``.
@@ -104,6 +109,26 @@ class _PolledJointStateMixin(_JointStateCache):
     @property
     def last_stamp(self) -> float:
         return self._last_stamp
+
+    def spin_for(self, seconds: float) -> None:
+        """Pump callbacks for a wall-clock window (a plain sleep would freeze the cache)."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.spin_once(timeout_sec=0.01)
+
+    def wait_for_every_joint(self, deadline_s: float = 5.0) -> bool:
+        """Block until every expected joint has been reported at least once.
+
+        Not "any message": ``state`` zero-fills an unreported joint, so a
+        partial cache reads as a plausible pose with zeros in it — the one
+        input a hold or motion test must never command.
+        """
+        start = time.monotonic()
+        while time.monotonic() - start < deadline_s:
+            self.spin_once(timeout_sec=0.05)
+            if not self.missing_joints():
+                return True
+        return False
 
     def wait_for_first_state(self, deadline_s: float = 2.0) -> bool:
         """Return True once at least one joint-state message has been received."""

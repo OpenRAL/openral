@@ -1,30 +1,38 @@
 """Lab-runner-only ``rclpy`` bridge for the ALOHA bimanual real-HW HAL.
 
-``openral_hal.aloha.AlohaHAL`` splits a single 14-D ``openral_core.Action`` across four
-command topics — left arm, right arm, left gripper, right gripper. This bridge mirrors that
-fan-out: four ``trajectory_msgs/JointTrajectory`` publishers + one aggregated
-``sensor_msgs/JointState`` subscriber, dispatched by topic match.
+``openral_hal.aloha.AlohaHAL`` emits the ``interbotix_xs_sdk`` ``xs_sdk`` contract
+(issue #250): per follower namespace, a ``JointGroupCommand`` payload on
+``/<ns>/commands/joint_group`` (the 6-joint ``arm`` group) and a ``JointSingleCommand``
+payload on ``/<ns>/commands/joint_single`` (the ``gripper`` motor). This bridge turns those
+payloads into real ``interbotix_xs_msgs`` messages, and merges the two per-namespace
+``/<ns>/joint_states`` streams (unprefixed ``xs_sdk`` joint names) into the HAL's 14-DoF
+manifest order by prefixing each with its side (``left_`` / ``right_``).
+
+The gripper joint is read back in ``xs_sdk``'s units and normalised onto ``[0, 1]`` with the
+manifest's ``gripper_cmd_range`` — the inverse of what ``AlohaHAL.send_action`` applies — so
+a hold action built from ``read_state()`` commands the gripper where it already is. Its
+velocity is scaled by the same span (normalised units per second). ``effort`` stays in
+``xs_sdk``'s unit for every joint — Dynamixel present current in mA, not a torque.
+
+``last_stamp`` is the *older* of the two arms' newest stamps (``0.0`` until both have
+reported), so one silent ``xs_sdk`` reads stale in ``AlohaHAL.read_state`` instead of
+hiding behind the other arm's stream.
 
 .. warning::
-   This bridge mirrors ``AlohaHAL``'s **current** wire contract, and issue #250 established
-   that a real ALOHA exposes none of it. ``aloha_bringup.launch.py`` starts
-   ``interbotix_xs_sdk``'s ``xs_sdk`` node: no ``controller_manager``, no
-   ``JointTrajectoryController``, no ``/…/arm_controller/…`` topic, and no aggregated
-   ``/joint_states`` — each arm publishes under ``follower_left`` / ``follower_right`` and
-   is commanded with ``interbotix_xs_msgs/JointGroupCommand`` on
-   ``/<robot_name>/commands/joint_group``. So this file cannot be read as evidence of what
-   the rig accepts; it will be retargeted with the HAL, once the cell's namespaces and
-   ``motor_config`` groups have been read off the robot (#250).
+   Test-only, and not yet run against a rig (no ``lab-aloha`` runner, no physical ALOHA).
+   It is not the production transport: none exists yet, which is why ``AlohaHAL.connect()``
+   refuses without an injected ``publish_fn`` / ``state_fn`` (#250).
 
-HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
-(CLAUDE.md §1.11: real component or ``pytest.skip`` — nothing in between).
+HIL-only; needs ``rclpy`` and ``interbotix_xs_msgs`` (CLAUDE.md §1.11: real component or
+``pytest.skip`` — nothing in between).
 """
 
 from __future__ import annotations
 
 import importlib.util
-from collections.abc import Callable
-from typing import Any, cast
+import time
+from collections.abc import Callable, Sequence
+from typing import Any
 
 if importlib.util.find_spec("rclpy") is None:  # pragma: no cover
     raise RuntimeError(
@@ -33,57 +41,37 @@ if importlib.util.find_spec("rclpy") is None:  # pragma: no cover
     )
 
 import rclpy
+from interbotix_xs_msgs.msg import (  # ROS-only dep: interbotix_ros_xseries
+    JointGroupCommand,
+    JointSingleCommand,
+)
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState as RosJointState
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from tests.hil._ros_control_transport import _make_trajectory_publisher, _PolledJointStateMixin
+from tests.hil._ros_control_transport import _PolledJointStateMixin
 
 __all__ = ["AlohaHILTransport", "make_aloha_hil_transport"]
 
 
-_CONTROL_QOS = QoSProfile(
-    reliability=QoSReliabilityPolicy.RELIABLE,
-    depth=10,
-)
-
-# AlohaHAL exposes 14 joints in this canonical interleaved order
-# (left arm 6, left gripper 1, right arm 6, right gripper 1).  See
-# ``python/hal/src/openral_hal/aloha.py`` and
-# ``ALOHA_REAL_DESCRIPTION.joints`` — re-derived from the public manifest
-# by ``make_aloha_hil_transport``.
-_LEFT_ARM_SLICE = slice(0, 6)
-_LEFT_GRIPPER_INDEX = 6
-_RIGHT_ARM_SLICE = slice(7, 13)
-_RIGHT_GRIPPER_INDEX = 13
+_CONTROL_QOS = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
+_SIDES = ("left", "right")
 
 
 class AlohaHILTransport(_PolledJointStateMixin):
-    """4-way ``rclpy`` bridge for the bimanual ALOHA HIL test.
+    """``xs_sdk`` bridge for the bimanual ALOHA HIL test.
 
-    Owns one ``JointTrajectory`` publisher per controller (two arms + two
-    grippers) plus one ``JointState`` subscriber on the aggregated
-    ``joint_state_topic``.  Dispatch is by topic-string match against the
-    four constructor topics — unknown topics raise ``ValueError`` so that
-    a HAL-side contract drift fails loudly (CLAUDE.md §5).
+    Owns a ``JointGroupCommand`` and a ``JointSingleCommand`` publisher per follower
+    namespace plus one ``JointState`` subscriber per namespace. ``publish`` dispatches by
+    exact topic; unknown topics raise ``ValueError`` so HAL-side drift fails loudly.
 
     Args:
-        node: A live ``rclpy`` node owned by the test (cleanup is the test's
-            responsibility).
-        joint_names: All 14 ALOHA joint names in the canonical interleaved
-            order from ``ALOHA_REAL_DESCRIPTION.joints``.
-        left_arm_command_topic: Left-arm command topic, matching whatever
-            ``AlohaHAL`` is configured to publish (default
-            ``/left_arm/arm_controller/joint_trajectory`` — see the #250
-            warning above).
-        right_arm_command_topic: Same for the right arm.
-        left_gripper_command_topic: Left-gripper command topic (default
-            ``/left_arm/gripper_controller/command``).
-        right_gripper_command_topic: Same for the right gripper.
-        joint_state_topic: Aggregated ``sensor_msgs/JointState`` topic
-            (default ``"/joint_states"``). No real ALOHA publishes an
-            aggregated one (#250).
+        node: A live ``rclpy`` node owned by the test.
+        joint_names: All 14 ALOHA joint names in ``ALOHA_REAL_DESCRIPTION.joints`` order
+            (``left_waist`` … ``right_gripper``).
+        arm_namespaces: ``(left, right)`` ``xs_sdk`` namespaces, from
+            ``AlohaHAL.arm_namespaces()``.
+        gripper_cmd_range: ``(closed, open)`` used to normalise the gripper read-back.
     """
 
     def __init__(
@@ -91,131 +79,96 @@ class AlohaHILTransport(_PolledJointStateMixin):
         node: Node,
         joint_names: list[str],
         *,
-        left_arm_command_topic: str,
-        right_arm_command_topic: str,
-        left_gripper_command_topic: str,
-        right_gripper_command_topic: str,
-        joint_state_topic: str = "/joint_states",
+        arm_namespaces: Sequence[str],
+        gripper_cmd_range: Sequence[float],
     ) -> None:
         if len(joint_names) != 14:
             raise ValueError(f"AlohaHILTransport expects 14 joint names, got {len(joint_names)}.")
         self._node = node
         self._joint_names = list(joint_names)
-
-        # Pre-compute the per-publisher joint-name slices once.
-        self._left_arm_joints = self._joint_names[_LEFT_ARM_SLICE]
-        self._right_arm_joints = self._joint_names[_RIGHT_ARM_SLICE]
-        self._left_gripper_joints = [self._joint_names[_LEFT_GRIPPER_INDEX]]
-        self._right_gripper_joints = [self._joint_names[_RIGHT_GRIPPER_INDEX]]
-
-        # Four JointTrajectory publishers, dispatched by topic match.
-        self._left_arm_topic = left_arm_command_topic
-        self._right_arm_topic = right_arm_command_topic
-        self._left_gripper_topic = left_gripper_command_topic
-        self._right_gripper_topic = right_gripper_command_topic
-        self._left_arm_pub = _make_trajectory_publisher(node, left_arm_command_topic)
-        self._right_arm_pub = _make_trajectory_publisher(node, right_arm_command_topic)
-        self._left_gripper_pub = _make_trajectory_publisher(node, left_gripper_command_topic)
-        self._right_gripper_pub = _make_trajectory_publisher(node, right_gripper_command_topic)
-
         self._latest: dict[str, tuple[float, float, float]] = {}
         self._last_stamp = 0.0
-        node.create_subscription(
-            RosJointState,
-            joint_state_topic,
-            self._on_joint_state,
-            _CONTROL_QOS,
-        )
+        self._side_stamps: dict[str, float] = {}
+        self._closed, self._open = (float(v) for v in gripper_cmd_range)
+        self._publishers: dict[str, tuple[Any, Any]] = {}
+        for side, ns in zip(_SIDES, arm_namespaces, strict=True):
+            for suffix, msg_type in (
+                ("joint_group", JointGroupCommand),
+                ("joint_single", JointSingleCommand),
+            ):
+                topic = f"/{ns}/commands/{suffix}"
+                self._publishers[topic] = (
+                    msg_type,
+                    node.create_publisher(msg_type, topic, _CONTROL_QOS),
+                )
+            node.create_subscription(
+                RosJointState, f"/{ns}/joint_states", self._side_callback(side), _CONTROL_QOS
+            )
 
-    # -- Transport callables (injected into the HAL) --------------------------
+    @property
+    def last_stamp(self) -> float:
+        """Older arm's newest stamp; ``0.0`` until both arms reported (``AlohaHAL.stamp_fn``)."""
+        if len(self._side_stamps) < len(_SIDES):
+            return 0.0
+        return min(self._side_stamps.values())
 
     def publish(self, topic: str, msg: dict[str, object]) -> None:
-        """Dispatch a HAL publish call to the matching JointTrajectory publisher."""
-        if topic == self._left_arm_topic:
-            self._publish_arm(self._left_arm_pub, self._left_arm_joints, msg)
-        elif topic == self._right_arm_topic:
-            self._publish_arm(self._right_arm_pub, self._right_arm_joints, msg)
-        elif topic == self._left_gripper_topic:
-            self._publish_gripper(self._left_gripper_pub, self._left_gripper_joints, msg)
-        elif topic == self._right_gripper_topic:
-            self._publish_gripper(self._right_gripper_pub, self._right_gripper_joints, msg)
-        else:
+        """Turn a HAL ``{name, cmd}`` payload into the matching ``interbotix_xs_msgs`` message."""
+        entry = self._publishers.get(topic)
+        if entry is None:
             raise ValueError(f"AlohaHILTransport: unknown topic {topic!r}")
+        msg_type, publisher = entry
+        out = msg_type()
+        out.name = str(msg["name"])
+        cmd = msg["cmd"]
+        out.cmd = [float(v) for v in cmd] if isinstance(cmd, list) else float(cmd)  # type: ignore[arg-type]  # reason: payload values are untyped
+        publisher.publish(out)
 
-    # state/spin_once/last_stamp/wait_for_first_state come from
-    # _PolledJointStateMixin.
+    def _side_callback(self, side: str) -> Callable[[Any], None]:
+        """Prefix one namespace's unprefixed ``xs_sdk`` names, normalise the gripper, merge."""
 
-    # -- Internal publish helpers --------------------------------------------
+        def on_state(msg: Any) -> None:
+            names = [f"{side}_{n}" for n in msg.name]
+            positions = list(msg.position)
+            velocities = list(msg.velocity)
+            gripper = f"{side}_gripper"
+            span = self._open - self._closed
+            if gripper in names:
+                i = names.index(gripper)
+                positions[i] = (positions[i] - self._closed) / span
+                if i < len(velocities):
+                    velocities[i] /= span
+            relabelled = RosJointState()
+            relabelled.name = names
+            relabelled.position = positions
+            relabelled.velocity = velocities
+            relabelled.effort = list(msg.effort)
+            self._on_joint_state(relabelled)
+            self._side_stamps[side] = time.monotonic()
 
-    @staticmethod
-    def _publish_arm(publisher: Any, joint_names: list[str], msg: dict[str, object]) -> None:
-        """Emit a 6-DOF ``JointTrajectory`` for an arm chunk (last step only)."""
-        targets = msg.get("joint_targets")
-        if not isinstance(targets, list) or not targets:
-            return
-        last_step = targets[-1]
-        if not isinstance(last_step, list):
-            return
-        traj = JointTrajectory()
-        traj.joint_names = list(joint_names)
-        point = JointTrajectoryPoint()
-        point.positions = [float(v) for v in last_step]
-        point.time_from_start.sec = 0
-        point.time_from_start.nanosec = 100_000_000
-        traj.points.append(point)
-        publisher.publish(traj)
-
-    @staticmethod
-    def _publish_gripper(publisher: Any, joint_names: list[str], msg: dict[str, object]) -> None:
-        """Emit a 1-DOF ``JointTrajectory`` for a single-position gripper command."""
-        position = msg.get("position")
-        if position is None:
-            return
-        traj = JointTrajectory()
-        traj.joint_names = list(joint_names)
-        point = JointTrajectoryPoint()
-        point.positions = [float(cast(float, position))]
-        point.time_from_start.sec = 0
-        point.time_from_start.nanosec = 100_000_000
-        traj.points.append(point)
-        publisher.publish(traj)
-
-    # _on_joint_state comes from _PolledJointStateMixin.
+        return on_state
 
 
 def make_aloha_hil_transport(
-    node_name: str,
-    *,
-    left_arm_command_topic: str = "/left_arm/arm_controller/joint_trajectory",
-    right_arm_command_topic: str = "/right_arm/arm_controller/joint_trajectory",
-    left_gripper_command_topic: str = "/left_arm/gripper_controller/command",
-    right_gripper_command_topic: str = "/right_arm/gripper_controller/command",
-    joint_state_topic: str = "/joint_states",
+    node_name: str, *, arm_namespaces: Sequence[str]
 ) -> tuple[Node, AlohaHILTransport, Callable[[], None]]:
     """Initialise rclpy and return ``(node, transport, cleanup)`` for the ALOHA HIL test.
 
-    Joint names are derived from the public ``ALOHA_REAL_DESCRIPTION``
-    manifest so the bridge stays in lock-step with the HAL — no private
-    name imports across the hal-package boundary.
+    Joint names and the gripper range come from the public ``ALOHA_REAL_DESCRIPTION``
+    manifest so the bridge stays in lock-step with the HAL.
     """
     if not rclpy.ok():
         rclpy.init()
     node = rclpy.create_node(node_name)
 
-    # Imported lazily so ``importlib.util.find_spec("rclpy") is None``
-    # users (the off-lab skip path) never load the HAL package's heavy
-    # dependencies.
     from openral_hal.aloha import ALOHA_REAL_DESCRIPTION
 
-    joint_names = [j.name for j in ALOHA_REAL_DESCRIPTION.joints]
+    params = ALOHA_REAL_DESCRIPTION.hal.parameters
     transport = AlohaHILTransport(
         node,
-        joint_names,
-        left_arm_command_topic=left_arm_command_topic,
-        right_arm_command_topic=right_arm_command_topic,
-        left_gripper_command_topic=left_gripper_command_topic,
-        right_gripper_command_topic=right_gripper_command_topic,
-        joint_state_topic=joint_state_topic,
+        [j.name for j in ALOHA_REAL_DESCRIPTION.joints],
+        arm_namespaces=arm_namespaces,
+        gripper_cmd_range=params.defaults["gripper_cmd_range"],  # type: ignore[arg-type]  # reason: manifest defaults are untyped
     )
 
     def cleanup() -> None:
