@@ -444,13 +444,15 @@ def apply_account_settings(
     except ValueError as exc:
         echo(f"account settings: {exc}")
         return []
-    if enrolment is None or not secret_file.is_file() or all(k in os.environ for k in names):
+    skip = enrolment is None or not secret_file.is_file() or all(k in os.environ for k in names)
+    secret = None if skip else _robot_secret(secret_file, echo)
+    if not secret or enrolment is None:
         return []
     site = "{0.scheme}://{0.netloc}".format(urlsplit(enrolment.iss))
     request = urllib.request.Request(
         f"{site}/api/robot/settings",
         headers={
-            "Authorization": f"Bearer {secret_file.read_text(encoding='utf-8').strip()}",
+            "Authorization": f"Bearer {secret}",
             # Cloudflare refuses urllib's default "Python-urllib/x.y" (error 1010).
             "User-Agent": "openral-robot",
         },
@@ -471,6 +473,18 @@ def apply_account_settings(
     except (OSError, ValueError, KeyError) as exc:
         return _cached_settings(site, exc, echo, names)
     return _apply(settings, site, echo, names)
+
+
+def _robot_secret(path: Path, echo: Callable[[str], None]) -> str | None:
+    """The robot's credential, or ``None`` (said why) when it can't be read.
+
+    Account settings are optional: an unreadable credential must not stop a start.
+    """
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        echo(f"account settings: can't read {path}: {exc}")
+        return None
 
 
 def _cached_settings(
