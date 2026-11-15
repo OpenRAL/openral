@@ -33,6 +33,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.isaac_sim import (
     IsaacDomeLight,
     IsaacEnvironmentArchive,
+    IsaacLinkAttachment,
     IsaacSimOptions,
     IsaacStageObject,
     _environment_spec,
@@ -67,6 +68,7 @@ def test_the_shipped_scene_loads_and_validates() -> None:
 def test_default_options_change_nothing_for_existing_scenes() -> None:
     assert _environment_spec(IsaacSimOptions()) == {
         "stage_objects": [],
+        "link_attachments": [],  # empty: no stage prim rides the robot
         "strip_xform_colliders": False,
         "dome_light": None,
         "joint_effort_limits": {},
@@ -372,3 +374,24 @@ def test_models_export_a_json_schema(model: type[Any]) -> None:
     schema = model.model_json_schema()
     assert schema["title"] == model.__name__
     assert set(model.model_fields) <= set(schema["properties"])
+
+
+def test_a_link_attachment_reaches_the_robot_spec() -> None:
+    # The OpenAMRobot 2.0's lift carriage carries both arm bases: a tote on it keeps its
+    # offset to the arms wherever the base drives.
+    link = "lift_carriage_link"
+    urdf = (_REPO / "robots/openamrobot_v2/openamrobot_v2.urdf").read_text()
+    assert f'<link name="{link}"' in urdf
+    opts = IsaacSimOptions.model_validate({"link_attachments": [{"prim": "Tote", "link": link}]})
+    assert _environment_spec(opts)["link_attachments"] == [{"prim": "Tote", "link": link}]
+
+
+@pytest.mark.parametrize("prim", ["/World/Tote", "Tote/", "", "Tote bin"])
+def test_a_link_attachment_prim_is_a_path_below_the_environment(prim: str) -> None:
+    with pytest.raises(ValidationError):
+        IsaacLinkAttachment(prim=prim, link="lift_carriage_link")
+
+
+def test_a_link_attachment_names_a_link() -> None:
+    with pytest.raises(ValidationError):
+        IsaacLinkAttachment(prim="Tote", link="")

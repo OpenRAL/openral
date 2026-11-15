@@ -45,6 +45,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
                                        # optional; openral_sim...isaac_sim.IsaacCameraMount
       "initial_joint_positions": {manifest_joint: value},  # optional start pose
       "stage_objects": [{"name", "prim"}],  # rigid bodies inside the environment USD
+      "link_attachments": [{"prim", "link"}],  # environment prims a robot link carries
       "strip_xform_colliders": bool,     # drop CollisionAPI from Xform prims of the stage
       "dome_light": {"intensity", "color"} | null,  # for a stage that ships no lights
       "joint_effort_limits": {joint_regex: Nm},  # drive maxForce caps, fullmatch on joint name
@@ -1935,6 +1936,9 @@ class IsaacManifestScene(IsaacSceneBase):
         # placing (or kinematically driving) the robot moves that anchor rather
         # than fighting it. None on the < 6 command importer.
         self._anchor_joint: Any = None
+        # Environment prims a robot link carries (link_attachments), built in build():
+        # {"prim", "link", "xform_op", "parent_from_world", "link_from_prim", "root_from_link"}.
+        self._attachments: list[dict[str, Any]] = []
         self._ArticulationAction: Any = None
         self._euler_to_quat: Any = None
         # One Isaac Camera per manifest RGB/depth sensor, base-relative so they
@@ -2201,6 +2205,7 @@ class IsaacManifestScene(IsaacSceneBase):
             self._add_obstacles()
         self._add_objects()
         self._add_stage_objects()
+        self._add_link_attachments()
 
         # One Camera per planned sensor. A bare deploy scene with no RGB sensor
         # still gets a default camera1 so the obs always carries a frame.
@@ -2370,6 +2375,93 @@ class IsaacManifestScene(IsaacSceneBase):
                 f"{[round(float(v), 4) for v in pos]}",
                 flush=True,
             )
+
+    def _add_link_attachments(self) -> None:
+        """Make each ``link_attachments`` prim a kinematic body that rides its robot link.
+
+        The prim keeps the pose it is authored at relative to the link with the robot at
+        its spawn and the joints at the import pose. Kinematic, so PhysX gives it the
+        velocity of each move and what rests on it is carried by friction.
+
+        Raises:
+            RuntimeError: the prim is missing from the stage.
+            ValueError: the link is not in the imported robot.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = get_current_stage()
+        cache = UsdGeom.XformCache()
+        wx, wy, wz, wyaw = self._world_pose()
+        world_from_root = pose_matrix((wx, wy, wz), _yaw_quat(wyaw))
+        for att in self._spec.get("link_attachments") or []:
+            path = f"/World/environment/{att['prim']}"
+            prim = stage.GetPrimAtPath(path)
+            if not prim.IsValid():
+                raise RuntimeError(f"link attachment {path} is not in the stage")
+            link = str(att["link"])
+            # The link's own world pose, not root-relative: Isaac >= 6 places the links at
+            # the spawn while the root Xform stays at the import origin.
+            world_from_link = np.asarray(
+                cache.GetLocalToWorldTransform(stage.GetPrimAtPath(self._link_prim_path(link))),
+                dtype=np.float64,
+            ).T
+            world_from_prim = np.asarray(cache.GetLocalToWorldTransform(prim), dtype=np.float64).T
+            parent = np.asarray(
+                cache.GetLocalToWorldTransform(prim.GetParent()), dtype=np.float64
+            ).T
+            body = UsdPhysics.RigidBodyAPI.Apply(prim)
+            body.CreateKinematicEnabledAttr(True)
+            xform = UsdGeom.Xformable(prim)
+            xform.ClearXformOpOrder()
+            self._attachments.append(
+                {
+                    "prim": path,
+                    "link": link,
+                    "xform_op": xform.AddTransformOp(opSuffix="attachment"),
+                    "parent_from_world": np.linalg.inv(parent),
+                    "link_from_prim": np.linalg.inv(world_from_link) @ world_from_prim,
+                    "root_from_link": np.linalg.inv(world_from_root) @ world_from_link,
+                }
+            )
+            print(
+                f"[isaac_manifest_scene] {path} rides {link} (kinematic), at "
+                f"{np.round(world_from_prim[:3, 3], 4).tolist()}",
+                flush=True,
+            )
+        self._pose_attachments(world_from_root)
+
+    def _pose_attachments(self, world_from_root: NDArray[np.float64]) -> None:
+        """Put each link attachment on its link for a root at ``world_from_root``."""
+        from pxr import Gf
+
+        for att in self._attachments:
+            world = world_from_root @ att["root_from_link"] @ att["link_from_prim"]
+            att["xform_op"].Set(Gf.Matrix4d((att["parent_from_world"] @ world).T.tolist()))
+
+    def _follow_links(self) -> None:
+        """Re-read where PhysX holds each attachment's link (a lift moves it) and re-pose."""
+        if not self._attachments:
+            return
+        world_from_root = pose_matrix(*self._robot.get_world_pose())
+        root_from_world = np.linalg.inv(world_from_root)
+        for att in self._attachments:
+            world = self._physx_link_world(att["link"])
+            if world is not None:
+                att["root_from_link"] = root_from_world @ world
+        self._pose_attachments(world_from_root)
+
+    def _physx_link_world(self, link: str) -> NDArray[np.float64] | None:
+        """World pose of ``link`` as PhysX holds it, or ``None`` when the view lacks it."""
+        art = getattr(self._robot, "_articulation_view", None)
+        view = getattr(art, "_physics_view", None)
+        names = [str(b) for b in (getattr(art, "body_names", None) or [])]
+        if view is None or link not in names:
+            return None
+        p = np.asarray(view.get_link_transforms(), dtype=np.float64).reshape(len(names), 7)[
+            names.index(link)
+        ]  # x y z qx qy qz qw (PhysX tensor order)
+        return pose_matrix(p[:3], (p[6], p[3], p[4], p[5]))
 
     @staticmethod
     def _resolve_usd(usd: str) -> str:
@@ -3079,6 +3171,7 @@ class IsaacManifestScene(IsaacSceneBase):
         self._set_anchor(wx, wy, wz, wyaw)
         self._robot.set_world_pose(np.array([wx, wy, wz]), _yaw_quat(wyaw))
         self._update_camera_poses()
+        self._pose_attachments(pose_matrix((wx, wy, wz), _yaw_quat(wyaw)))
 
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
@@ -3188,6 +3281,7 @@ class IsaacManifestScene(IsaacSceneBase):
         )
 
     def _observe(self, *, with_frames: bool = True) -> dict[str, Any]:
+        self._follow_links()
         obs = super()._observe(with_frames=with_frames)
         if self._has_base:
             obs["base_pose"] = np.asarray(self._base_pose, dtype=np.float32)  # [x, y, yaw]
@@ -3730,19 +3824,11 @@ class IsaacManifestScene(IsaacSceneBase):
             n: {"position": float(q[i]), "target": float(target[i])} for i, n in enumerate(names)
         }
         base_from_world = np.asarray(np.linalg.inv(self._world_from_base()), dtype=np.float64)
-        physx: dict[str, NDArray[np.float64]] = {}
-        view = getattr(getattr(self._robot, "_articulation_view", None), "_physics_view", None)
-        body_names = getattr(getattr(self._robot, "_articulation_view", None), "body_names", None)
-        if view is not None and body_names:
-            tf = np.asarray(view.get_link_transforms(), dtype=np.float64).reshape(
-                len(body_names), 7
-            )
-            physx = {str(b): tf[i] for i, b in enumerate(body_names)}
         out: dict[str, Any] = {}
         for link in links:
-            if link in physx:
-                p = physx[link]  # x y z qx qy qz qw (PhysX tensor order)
-                world = pose_matrix(p[:3], (p[6], p[3], p[4], p[5]))
+            physx = self._physx_link_world(link)
+            if physx is not None:
+                world = physx
                 source = "physx"
             else:
                 try:

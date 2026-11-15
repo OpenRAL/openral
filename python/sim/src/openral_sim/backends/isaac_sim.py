@@ -956,6 +956,26 @@ class IsaacStageObject(BaseModel):
     prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
+class IsaacLinkAttachment(BaseModel):
+    """A prim of the environment USD carried rigidly by a robot link, e.g. a tote on a mobile base.
+
+    ``prim`` is its path below the environment's default prim, as for ``IsaacStageObject``.
+    The scene makes it a kinematic rigid body and keeps it at the pose it has, relative to
+    URDF ``link``, when the robot stands at its spawn with its joints at the import pose:
+    author it in the stage where it should ride. It follows every base move and joint
+    motion of ``link`` (a lift), and what rests on it rides along by friction.
+
+    Example:
+        >>> IsaacLinkAttachment(prim="Tote", link="lift_carriage_link").link
+        'lift_carriage_link'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
+    link: str = Field(min_length=1)
+
+
 class IsaacDomeLight(BaseModel):
     """A dome light for an environment USD that ships no lights (``dome_light``).
 
@@ -1388,6 +1408,8 @@ class IsaacSimOptions(BaseModel):
     objects: list[IsaacSceneObject] = Field(default_factory=list)
     # Rigid bodies the environment USD already holds (IsaacStageObject), graded in place.
     stage_objects: list[IsaacStageObject] = Field(default_factory=list)
+    # Environment prims carried by a robot link (IsaacLinkAttachment), e.g. a tote on the base.
+    link_attachments: list[IsaacLinkAttachment] = Field(default_factory=list)
     # The environment USD from a pinned archive instead of scene.assets_uri.
     environment_archive: IsaacEnvironmentArchive | None = None
     # Environment-USD load fixes for stages authored for older Isaac releases (both opt-in,
@@ -2789,13 +2811,15 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
 
     Example:
         >>> sorted(_environment_spec(IsaacSimOptions()))  # doctest: +NORMALIZE_WHITESPACE
-        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'link_box_colliders',
-         'physx_scene', 'rtx_settings', 'stage_objects', 'strip_xform_colliders']
+        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'link_attachments',
+         'link_box_colliders', 'physx_scene', 'rtx_settings', 'stage_objects',
+         'strip_xform_colliders']
     """
     return opts.model_dump(
         mode="json",
         include={
             "stage_objects",
+            "link_attachments",
             "strip_xform_colliders",
             "dome_light",
             "joint_effort_limits",
@@ -2988,6 +3012,7 @@ def _placement(
             "gripper_followers_track",
             "placement_success",
             "stage_objects",
+            "link_attachments",
             "strip_xform_colliders",
             "dome_light",
         },
