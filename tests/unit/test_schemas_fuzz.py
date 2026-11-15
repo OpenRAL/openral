@@ -60,6 +60,7 @@ from openral_core.schemas import (
     LinkCollisionGeometry,
     LinkInertial,
     MimicJoint,
+    NavGoal,
     ObjectQuery,
     ObjectQueryEvidence,
     ObjectRole,
@@ -403,6 +404,14 @@ _place_zone_st = st.builds(
     region=_grasp_region_st.map(
         lambda r: r.model_copy(update={"pose": r.pose.model_copy(update={"frame_id": r.frame_id})})
     ),
+)
+
+_nav_goal_st = st.builds(
+    NavGoal,
+    name=_zone_name,
+    aliases=st.lists(_zone_name, max_size=3).map(tuple),
+    pose=_pose6d_st.map(lambda p: p.model_copy(update={"frame_id": "map"})),
+    description=st.none() | _name,
 )
 
 _grasp_target_ref_st = st.builds(
@@ -814,6 +823,13 @@ def test_fuzz_place_declaration(instance: PlaceDeclaration) -> None:
 def test_fuzz_place_zone(instance: PlaceZone) -> None:
     """PlaceZone round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(PlaceZone, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_nav_goal_st)
+def test_fuzz_nav_goal(instance: NavGoal) -> None:
+    """NavGoal round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(NavGoal, instance)
 
 
 @_FUZZ_SETTINGS

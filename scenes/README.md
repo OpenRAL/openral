@@ -139,6 +139,11 @@ adapters. Quick reference:
   refuses them on a robot whose `embodiment_kind` is not `manipulator` / `bimanual`.
   Declared, not measured; Safety-WG review owed. `scenes/deploy/place_zones/` holds paste-in lists, e.g. the
   OpenArm restock shelf.
+- `nav_goals` names the cell's navigation stations (`NavGoal`, ADR-0133): a pose and heading in
+  the `map` frame Nav2 plans in (with SLAM, the map starts at the spawn), an optional
+  description. The reasoner resolves them by name (`resolve_place`) and lists them in its
+  context; the Nav2 rSkill drives there. Mobile bases only. See
+  `scenes/deploy/isaac_openamrobot_v2_warehouse.yaml`.
 - A `SimScene` is a `DeployScene` + required `task:` block (+ optional
   `n_episodes`, `record_video`, `save_dir`, `metadata`).
 - A `BenchmarkScene` is a `SimScene` with `metadata: BenchmarkMetadata`

@@ -2703,6 +2703,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
     object_queries_json = LaunchConfiguration("object_queries_json").perform(context)
     place_zones_json = LaunchConfiguration("place_zones_json").perform(context)
+    nav_goals_json = LaunchConfiguration("nav_goals_json").perform(context)
     declared_object_catalog_json = LaunchConfiguration("declared_object_catalog_json").perform(
         context
     )
@@ -3639,6 +3640,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # producer's WorldState.detected_objects (auto-creates an empty backend when
     # no path is preloaded).
     reasoner_params["spatial_memory_ingest"] = spatial_memory_ingest
+    # The cell's named navigation goals (ADR-0133), seeded as spatial-memory places.
+    if nav_goals_json:
+        reasoner_params["nav_goals_json"] = nav_goals_json
     reasoner_params["object_tracking"] = object_tracking
     # Offer the read-only locate_in_view tool to the LLM only when an on-demand
     # locator (``--object-detector-locator``) is actually in the graph.
@@ -5678,6 +5682,15 @@ def generate_launch_description() -> LaunchDescription:
                 "JSON list of openral_core.ObjectQuery (issue #418) the skill_runner "
                 "attaches to each goal's grasp (TARGET/CONTEXT) and place (DESTINATION) "
                 "declaration when object tracking is on. Empty = none."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "nav_goals_json",
+            default_value="",
+            description=(
+                "JSON list of openral_core.NavGoal (DeployScene.nav_goals, ADR-0133): the "
+                "cell's named navigation goals in the map frame. The reasoner seeds each as a "
+                "spatial-memory place (resolve_place, its context). Empty = none."
             ),
         ),
         DeclareLaunchArgument(

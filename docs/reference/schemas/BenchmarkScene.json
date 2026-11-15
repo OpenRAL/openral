@@ -1049,6 +1049,47 @@
       "title": "LaunchInclude",
       "type": "object"
     },
+    "NavGoal": {
+      "additionalProperties": false,
+      "description": "A named navigation goal a mobile robot drives to: a station of the cell (ADR-0133).\n\nDeclared task knowledge, not a measured pose: the cell names where its stations are\n(the pose in front of a shelf, a charging spot) so Nav2 can drive there and the reasoner\ncan pick one by name. It grants nothing; Nav2's costmaps and the kernel still check every\nmotion, and a goal that cannot be planned fails in Nav2. Not a ``PlaceZone`` (a put-down\nbox in the base frame).\n\nAttributes:\n    name: The goal's name, lower-case words joined by ``_`` (``s6``, ``shelf_6``).\n    aliases: Other names a prompt may use, same form.\n    pose: Where the base goes and its heading (the yaw), in the ``map`` frame Nav2 plans\n        in. With SLAM the map starts at the robot's spawn.\n    description: What the station is, for the reasoner (``\"in front of shelf 6\"``).\n\nExample:\n    >>> goal = NavGoal(\n    ...     name=\"s6\",\n    ...     aliases=(\"shelf_6\",),\n    ...     pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"map\"),\n    ...     description=\"in front of shelf 6\",\n    ... )\n    >>> goal.node_id\n    'nav_goal:s6'",
+      "properties": {
+        "name": {
+          "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "aliases": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "name",
+        "pose"
+      ],
+      "title": "NavGoal",
+      "type": "object"
+    },
     "ObjectQuery": {
       "additionalProperties": false,
       "description": "A class of objects a prompt names; never geometry the kernel uses (issue #418).\n\nRides ``GraspDeclaration.target_queries`` / ``PlaceDeclaration.destination_query``\ninto the Layer-2 object tracker, which keeps it as a standing query for the life of\nthe goal and grounds every instance of the class.\n\nAttributes:\n    label: Open-vocabulary label, e.g. ``\"orange\"``.\n    count: ``\"one\"`` still tracks every match (the policy chooses); ``\"all\"`` names\n        the whole class.\n    role: What the objects are to the task.\n    hand: Gripper joint name, a hint for the policy/reasoner only.\n    seed: Optional search hint (sim-derived or scene graph) in the grid frame or a\n        fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.\n    min_instances: CONFIRMED instances that make the query ``RESOLVED``; at most\n        ``TrackedObjectSet.MAX_OBJECTS``, the most the tracker can hold.\n    synonyms: Other names for the same class, sent with ``label`` to an\n        open-vocabulary locator as one class list (``\"box, carton\"``); empty = the\n        label alone. Additive (#418), never geometry.\n\nExample:\n    >>> query = ObjectQuery(label=\"orange\", count=\"all\", role=ObjectRole.TARGET)\n    >>> query.min_instances\n    1",
@@ -2762,6 +2803,13 @@
         "$ref": "#/$defs/PlaceZone"
       },
       "title": "Place Zones",
+      "type": "array"
+    },
+    "nav_goals": {
+      "items": {
+        "$ref": "#/$defs/NavGoal"
+      },
+      "title": "Nav Goals",
       "type": "array"
     },
     "task": {

@@ -2143,6 +2143,18 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             )
         zones = "[" + ",".join(z.model_dump_json() for z in deploy_scene.place_zones) + "]"
         argv_template.append(f"place_zones_json:={zones}")
+    # The cell's named navigation goals (ADR-0133): the reasoner seeds them as spatial-memory
+    # places, so resolve_place and its context know them. Only a robot that drives has any.
+    if deploy_scene is not None and deploy_scene.nav_goals:
+        from openral_hal.mobile_base_bridge import describes_mobile_base
+
+        if not describes_mobile_base(description):
+            raise ROSConfigError(
+                f"nav_goals on {robot_id!r}, which has no mobile base: a navigation goal is a "
+                "pose the base drives to (NavGoal, ADR-0133)."
+            )
+        goals = "[" + ",".join(g.model_dump_json() for g in deploy_scene.nav_goals) + "]"
+        argv_template.append(f"nav_goals_json:={goals}")
     # The grasp-phase sibling (real pick-and-place design §2.1), same path.
     if deploy_scene is not None and deploy_scene.grasp_declaration is not None:
         argv_template.append(

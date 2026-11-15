@@ -15,11 +15,12 @@ module does not import the Layer-2 ``openral_world_state`` package — the concr
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NamedTuple, Protocol
 
 from openral_core import (
     ApproachViewpoint,
+    NavGoal,
     RecallObjectQuery,
     RecallObjectResult,
     RecallObjectTool,
@@ -27,6 +28,8 @@ from openral_core import (
     ResolvePlaceResult,
     ResolvePlaceTool,
     SceneGraph,
+    SpatialNode,
+    SpatialNodeKind,
 )
 from openral_core.exceptions import ROSObjectNotInMemory
 
@@ -239,3 +242,38 @@ def run_spatial_query(
         from_node_id=from_node_id,
         refine_approach=refine_approach,
     ).text
+
+
+def nav_goal_places(goals: Sequence[NavGoal], stamp_ns: int = 0) -> list[SpatialNode]:
+    """The spatial-memory ``PLACE`` nodes a scene's navigation goals seed (ADR-0133).
+
+    One node per goal, ``node_id`` ``nav_goal:<name>``, its label the name, the aliases and
+    the description, so ``resolve_place`` finds it by any of them and returns the declared
+    map-frame pose.
+
+    Example:
+        >>> from openral_core import NavGoal, Pose6D
+        >>> goal = NavGoal(
+        ...     name="s6",
+        ...     aliases=("shelf_6",),
+        ...     pose=Pose6D(xyz=(1.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+        ...     description="in front of shelf 6",
+        ... )
+        >>> node = nav_goal_places([goal])[0]
+        >>> node.node_id, node.kind.value, node.label
+        ('nav_goal:s6', 'place', 's6 (shelf_6): in front of shelf 6')
+    """
+    nodes: list[SpatialNode] = []
+    for goal in goals:
+        names = goal.name + (f" ({', '.join(goal.aliases)})" if goal.aliases else "")
+        nodes.append(
+            SpatialNode(
+                node_id=goal.node_id,
+                kind=SpatialNodeKind.PLACE,
+                pose=goal.pose,
+                label=f"{names}: {goal.description}" if goal.description else names,
+                first_seen_ns=stamp_ns,
+                last_seen_ns=stamp_ns,
+            )
+        )
+    return nodes

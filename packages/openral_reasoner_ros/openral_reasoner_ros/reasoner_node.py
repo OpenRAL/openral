@@ -917,6 +917,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # perception → spatial-memory object-lift producer so ``recall_object`` recalls
         # what the robot has actually seen. Default false (preloaded-map only).
         self.declare_parameter("spatial_memory_ingest", False)
+        # The cell's named navigation goals (ADR-0133): JSON list of openral_core.NavGoal,
+        # seeded as spatial-memory places. "" = none.
+        self.declare_parameter("nav_goals_json", "")
         # Occupancy-grid-refined approach phase — occupancy-grid refinement of recall approach
         # poses. The reasoner subscribes the latched slam_toolbox map on this
         # topic and validates/snaps every ``recall_object`` approach viewpoint
@@ -2567,7 +2570,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         path = self.get_parameter("spatial_memory_path").get_parameter_value().string_value
         ingest = self.get_parameter("spatial_memory_ingest").get_parameter_value().bool_value
-        if not path and not ingest:
+        goals_json = self.get_parameter("nav_goals_json").get_parameter_value().string_value
+        if not path and not ingest and not goals_json:
             return
         from openral_world_state import SpatialMemory
 
@@ -2582,9 +2586,21 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             origin = f"loaded spatial memory from {path!r}"
         else:
             memory = SpatialMemory()
-            origin = "started empty spatial memory for live ingest"
+            origin = "started empty spatial memory" + (" for live ingest" if ingest else "")
+        if goals_json:
+            from openral_core import NavGoal
+            from openral_reasoner import nav_goal_places
+            from pydantic import TypeAdapter
+
+            # A malformed list raises: the CLI validated it as DeployScene.nav_goals, so a
+            # bad value here is a wiring fault, not a goal to drop silently.
+            goals = TypeAdapter(list[NavGoal]).validate_json(goals_json)
+            for place in nav_goal_places(goals, self.get_clock().now().nanoseconds):
+                memory.upsert_node(place)
+            origin += f", {len(goals)} declared navigation goals"
         self._spatial_memory = memory
-        self._spatial_memory_writer = memory
+        # Declared goals alone do not turn detection ingest on: only a path or ingest does.
+        self._spatial_memory_writer = memory if (path or ingest) else None
         if not self._palette.spatial_memory_available:
             self._palette = self._palette.model_copy(update={"spatial_memory_available": True})
         node_count = len(memory.to_scene_graph().nodes)

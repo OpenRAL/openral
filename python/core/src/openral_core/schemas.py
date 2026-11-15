@@ -4957,6 +4957,58 @@ class PlaceZone(BaseModel):
         return f"{self.TARGET_PREFIX}{self.name}"
 
 
+class NavGoal(BaseModel):
+    """A named navigation goal a mobile robot drives to: a station of the cell (ADR-0133).
+
+    Declared task knowledge, not a measured pose: the cell names where its stations are
+    (the pose in front of a shelf, a charging spot) so Nav2 can drive there and the reasoner
+    can pick one by name. It grants nothing; Nav2's costmaps and the kernel still check every
+    motion, and a goal that cannot be planned fails in Nav2. Not a ``PlaceZone`` (a put-down
+    box in the base frame).
+
+    Attributes:
+        name: The goal's name, lower-case words joined by ``_`` (``s6``, ``shelf_6``).
+        aliases: Other names a prompt may use, same form.
+        pose: Where the base goes and its heading (the yaw), in the ``map`` frame Nav2 plans
+            in. With SLAM the map starts at the robot's spawn.
+        description: What the station is, for the reasoner (``"in front of shelf 6"``).
+
+    Example:
+        >>> goal = NavGoal(
+        ...     name="s6",
+        ...     aliases=("shelf_6",),
+        ...     pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+        ...     description="in front of shelf 6",
+        ... )
+        >>> goal.node_id
+        'nav_goal:s6'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Spatial-memory ``node_id`` prefix of a declared goal.
+    NODE_PREFIX: ClassVar[str] = "nav_goal:"
+
+    name: Annotated[str, StringConstraints(pattern=_ZONE_NAME)]
+    aliases: tuple[Annotated[str, StringConstraints(pattern=_ZONE_NAME)], ...] = ()
+    pose: Pose6D
+    description: str | None = None
+
+    @model_validator(mode="after")
+    def _in_the_map_frame(self) -> Self:
+        if self.pose.frame_id != "map":
+            raise ValueError(
+                f"NavGoal {self.name!r}: pose.frame_id is {self.pose.frame_id!r}; navigation "
+                "goals are in the 'map' frame Nav2 plans in."
+            )
+        return self
+
+    @property
+    def node_id(self) -> str:
+        """The spatial-memory ``PLACE`` node this goal is seeded as."""
+        return f"{self.NODE_PREFIX}{self.name}"
+
+
 def place_zone_for_prompt(prompt: str, zones: Sequence[PlaceZone]) -> PlaceZone | None:
     """The one declared zone a prompt names, or ``None`` (fail closed).
 
@@ -13319,12 +13371,25 @@ class DeployScene(BaseModel):
     until Safety-WG sign-off). Names and aliases are unique across zones. Empty = no
     zone; a prompt naming none arms none. Declared, not measured: Safety-WG review owed."""
 
+    nav_goals: list[NavGoal] = Field(default_factory=list)
+    """Named navigation goals: the cell's stations a mobile robot drives to (ADR-0133).
+
+    ``openral deploy sim`` / ``deploy run`` forward them (``nav_goals_json``) to the
+    reasoner, which seeds each as a ``PLACE`` node of its spatial memory, so
+    ``resolve_place`` returns its pose and the context lists it; the Nav2 rSkill drives
+    there. Refused on a robot without a mobile base. Names and aliases are unique. Empty =
+    none."""
+
     @model_validator(mode="after")
     def _unique_zone_names(self) -> Self:
         names = [n for z in self.place_zones for n in (z.name, *z.aliases)]
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
             raise ValueError(f"place_zones names/aliases must be unique; repeated: {dupes}.")
+        goals = [n for g in self.nav_goals for n in (g.name, *g.aliases)]
+        dupes = sorted({n for n in goals if goals.count(n) > 1})
+        if dupes:
+            raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
         return self
 
     @model_validator(mode="before")

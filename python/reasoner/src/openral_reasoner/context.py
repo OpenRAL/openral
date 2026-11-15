@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from collections import Counter, deque
 
 from openral_core import (
@@ -29,6 +30,7 @@ from openral_core import (
     ControllerEvidence,
     FailureEvidence,
     GraspOutcomeEvidence,
+    NavGoal,
     ObjectDetection2D,
     ObjectsMetadata,
     PerceptionEventMetadata,
@@ -38,6 +40,7 @@ from openral_core import (
     TimeoutEvidence,
     WorldState,
 )
+from openral_core.geometry import quat_xyzw_to_yaw
 from pydantic import TypeAdapter, ValidationError
 
 from openral_reasoner.mission import MissionState, TaskState
@@ -1133,7 +1136,11 @@ class ContextRenderer:
         if world_state is None:
             # The camera-space in_view enumeration is depth-free and may
             # arrive before the first WorldState snapshot — surface it regardless.
-            parts = (self._render_memory_objects(), self._render_in_view())
+            parts = (
+                self._render_nav_goals(),
+                self._render_memory_objects(),
+                self._render_in_view(),
+            )
             extra = "\n".join(x for x in parts if x)
             return f"(no snapshot yet)\n{extra}" if extra else "(no snapshot yet)"
         lines: list[str] = [f"stamp_ns: {world_state.stamp_ns}"]
@@ -1188,6 +1195,9 @@ class ContextRenderer:
                     "to pin one as grasp_target, name the instance's memory_objects id as "
                     "grasp_target.object_id (recall_object it when it is not listed)."
                 )
+        nav_goals = self._render_nav_goals()
+        if nav_goals:
+            lines.append(nav_goals)
         memory = self._render_memory_objects()
         if memory:
             lines.append(memory)
@@ -1212,6 +1222,32 @@ class ContextRenderer:
                     (n.pose.frame_id, f"{n.label or '?'} id={n.node_id}", n.pose.xyz, n.bbox_3d, "")
                     for n in graph.nodes
                     if n.kind is SpatialNodeKind.OBJECT
+                ],
+            )
+        )
+
+    def _render_nav_goals(self) -> str:
+        """Render the cell's declared navigation goals as ``nav_goals[<frame>]``, or ``""``.
+
+        ``<label> id=<node_id>@(x,y,z) yaw=<deg>`` per spatial-memory place seeded from
+        ``DeployScene.nav_goals`` (ADR-0133): declared stations, not perceived ones.
+        """
+        graph = self._spatial_memory
+        if graph is None:
+            return ""
+        return "\n".join(
+            _render_instances(
+                "nav_goals",
+                [
+                    (
+                        n.pose.frame_id,
+                        f"{n.label} id={n.node_id}",
+                        n.pose.xyz,
+                        None,
+                        f" yaw={math.degrees(quat_xyzw_to_yaw(*n.pose.quat_xyzw)):.0f}deg",
+                    )
+                    for n in graph.nodes
+                    if n.kind is SpatialNodeKind.PLACE and n.node_id.startswith(NavGoal.NODE_PREFIX)
                 ],
             )
         )
