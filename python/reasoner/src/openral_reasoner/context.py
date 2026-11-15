@@ -30,7 +30,6 @@ from openral_core import (
     ControllerEvidence,
     FailureEvidence,
     GraspOutcomeEvidence,
-    NavGoal,
     ObjectDetection2D,
     ObjectsMetadata,
     PerceptionEventMetadata,
@@ -1227,30 +1226,36 @@ class ContextRenderer:
         )
 
     def _render_nav_goals(self) -> str:
-        """Render the cell's declared navigation goals as ``nav_goals[<frame>]``, or ``""``.
+        """Render the cell's declared navigation goals, one per line, or ``""`` (ADR-0133).
 
-        ``<label> id=<node_id>@(x,y,z) yaw=<deg>`` per spatial-memory place seeded from
-        ``DeployScene.nav_goals`` (ADR-0133): declared stations, not perceived ones.
+        A header that says how to use them, then per goal its name, aliases, frame, position,
+        heading (yaw and the exact quaternion the navigation skill takes) and description.
+        Only declared places (``SpatialNode.declared``), never perceived ones.
         """
         graph = self._spatial_memory
         if graph is None:
             return ""
-        return "\n".join(
-            _render_instances(
-                "nav_goals",
-                [
-                    (
-                        n.pose.frame_id,
-                        f"{n.label} id={n.node_id}",
-                        n.pose.xyz,
-                        None,
-                        f" yaw={math.degrees(quat_xyzw_to_yaw(*n.pose.quat_xyzw)):.0f}deg",
-                    )
-                    for n in graph.nodes
-                    if n.kind is SpatialNodeKind.PLACE and n.node_id.startswith(NavGoal.NODE_PREFIX)
-                ],
-            )
+        goals = sorted(
+            (n for n in graph.nodes if n.kind is SpatialNodeKind.PLACE and n.declared),
+            key=lambda n: n.node_id,
         )
+        if not goals:
+            return ""
+        lines = [
+            "nav_goals (declared stations, not perceived; to go to one, dispatch the "
+            "navigation skill with its exact position and quat_xyzw):"
+        ]
+        for n in goals:
+            q = n.pose.quat_xyzw
+            aliases = f" aliases={','.join(n.aliases)}" if n.aliases else ""
+            note = f' "{n.description}"' if n.description else ""
+            lines.append(
+                f"- {n.label} id={n.node_id}{aliases} {n.pose.frame_id}"
+                f"@({n.pose.xyz[0]:+.3f},{n.pose.xyz[1]:+.3f}) "
+                f"yaw={math.degrees(quat_xyzw_to_yaw(*q)):.0f}deg "
+                f"quat_xyzw=({q[0]:.4f},{q[1]:.4f},{q[2]:.4f},{q[3]:.4f}){note}"
+            )
+        return "\n".join(lines)
 
     def _render_in_view(self) -> str:
         """Render the camera-space ``in_view`` enumeration, or ``""``.

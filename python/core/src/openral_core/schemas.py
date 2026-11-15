@@ -4957,6 +4957,11 @@ class PlaceZone(BaseModel):
         return f"{self.TARGET_PREFIX}{self.name}"
 
 
+#: A navigation goal's off-plane tolerance (z, quaternion x/y) and unit-quaternion tolerance.
+_PLANAR_TOL: Final = 1e-6
+_UNIT_QUAT_TOL: Final = 1e-3
+
+
 class NavGoal(BaseModel):
     """A named navigation goal a mobile robot drives to: a station of the cell (ADR-0133).
 
@@ -4969,8 +4974,9 @@ class NavGoal(BaseModel):
     Attributes:
         name: The goal's name, lower-case words joined by ``_`` (``s6``, ``shelf_6``).
         aliases: Other names a prompt may use, same form.
-        pose: Where the base goes and its heading (the yaw), in the ``map`` frame Nav2 plans
-            in. With SLAM the map starts at the robot's spawn.
+        pose: Where the base goes and its heading (the yaw), in the robot's map frame
+            (``RobotDescription.map_frame``, checked by the deploy), the frame Nav2 plans in.
+            Planar: z = 0 and a unit yaw-only quaternion.
         description: What the station is, for the reasoner (``"in front of shelf 6"``).
 
     Example:
@@ -4995,18 +5001,37 @@ class NavGoal(BaseModel):
     description: str | None = None
 
     @model_validator(mode="after")
-    def _in_the_map_frame(self) -> Self:
-        if self.pose.frame_id != "map":
+    def _planar_pose_in_a_frame(self) -> Self:
+        x, y, z, w = self.pose.quat_xyzw
+        if not self.pose.frame_id:
+            raise ValueError(f"NavGoal {self.name!r}: pose.frame_id is empty.")
+        if not all(math.isfinite(v) for v in (*self.pose.xyz, x, y, z, w)):
+            raise ValueError(f"NavGoal {self.name!r}: the pose is not finite.")
+        if max(abs(self.pose.xyz[2]), abs(x), abs(y)) > _PLANAR_TOL:
             raise ValueError(
-                f"NavGoal {self.name!r}: pose.frame_id is {self.pose.frame_id!r}; navigation "
-                "goals are in the 'map' frame Nav2 plans in."
+                f"NavGoal {self.name!r}: a navigation goal is planar (z = 0, yaw only); got "
+                f"xyz {self.pose.xyz} quat_xyzw {self.pose.quat_xyzw}."
             )
+        if abs(math.hypot(z, w) - 1.0) > _UNIT_QUAT_TOL:
+            raise ValueError(f"NavGoal {self.name!r}: quat_xyzw is not a unit quaternion.")
         return self
 
     @property
     def node_id(self) -> str:
         """The spatial-memory ``PLACE`` node this goal is seeded as."""
         return f"{self.NODE_PREFIX}{self.name}"
+
+
+def repeated_nav_goal_names(goals: Sequence[NavGoal]) -> list[str]:
+    """Names or aliases used by more than one goal (or twice by one), sorted.
+
+    Example:
+        >>> pose = Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id="map")
+        >>> repeated_nav_goal_names([NavGoal(name="s1", pose=pose), NavGoal(name="s1", pose=pose)])
+        ['s1']
+    """
+    names = [n for g in goals for n in (g.name, *g.aliases)]
+    return sorted({n for n in names if names.count(n) > 1})
 
 
 def place_zone_for_prompt(prompt: str, zones: Sequence[PlaceZone]) -> PlaceZone | None:
@@ -6565,6 +6590,9 @@ class SpatialNode(BaseModel):
         last_seen_ns: Timestamp of the most recent observation, in nanoseconds;
             must be ``>= first_seen_ns``.
         observation_count: Number of times this node has been observed.
+        aliases: Other names the node answers to exactly (a declared station's aliases).
+        description: What the node is, for the reasoner (a declared station's description).
+        declared: Declared task knowledge (``DeployScene.nav_goals``), not perceived.
 
     Example:
         >>> node = SpatialNode(
@@ -6595,6 +6623,9 @@ class SpatialNode(BaseModel):
     first_seen_ns: int = Field(ge=0)
     last_seen_ns: int = Field(ge=0)
     observation_count: int = Field(default=1, ge=1)
+    aliases: tuple[str, ...] = ()
+    description: str = ""
+    declared: bool = False
 
     @model_validator(mode="after")
     def _check_node_invariants(self) -> SpatialNode:
@@ -13386,8 +13417,7 @@ class DeployScene(BaseModel):
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
             raise ValueError(f"place_zones names/aliases must be unique; repeated: {dupes}.")
-        goals = [n for g in self.nav_goals for n in (g.name, *g.aliases)]
-        dupes = sorted({n for n in goals if goals.count(n) > 1})
+        dupes = repeated_nav_goal_names(self.nav_goals)
         if dupes:
             raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
         return self

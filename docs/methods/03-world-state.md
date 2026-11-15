@@ -57,10 +57,10 @@ _SpatialMemory — persistent object-centric scene-graph memory (advisory; never
   - `ingest_detected_objects(objects, *, now_ns) -> list[str]` — Fold detections into object nodes, associating by `track_id` else label+proximity (`assoc_distance_m`); updates pose/last_seen/confidence (keeping the higher), embeds the label if set. Returns touched node ids. (L199)
   - `recall_object(query: RecallObjectQuery, *, now_ns) -> RecallObjectResult` — Rank object nodes by `max(label-match, CLIP-cosine)` × confidence, tiebreaking on proximity/recency; each match carries an `ApproachViewpoint` + `inside_container_id`. Empty result means unknown (caller may raise `ROSObjectNotInMemory`). (L290)
   - `resolve_place(query: ResolvePlaceQuery, *, from_node_id=None) -> ResolvePlaceResult` — Resolve a place/room/agent reference to a goal pose (an object resolves to its `at_place`) + a `traversable_to` BFS path. Raises `ROSObjectNotInMemory` when unresolved. (L341)
-  - `to_scene_graph() -> SceneGraph` — Snapshot the current graph. (L439)
-  - `from_scene_graph(graph, *, embedder=None) -> SpatialMemory` (classmethod) — Rebuild from a snapshot; re-embeds labels when an embedder is given (embeddings aren't serialized). (L444)
-  - `save(path) -> None` — JSON persistence via the `SceneGraph` contract. (L461)
-  - `load(path, *, embedder=None) -> SpatialMemory` (classmethod) — Inverse of `save`; re-embeds labels when an embedder is given. (L466)
+  - `to_scene_graph() -> SceneGraph` — Snapshot the current graph. (L440)
+  - `from_scene_graph(graph, *, embedder=None) -> SpatialMemory` (classmethod) — Rebuild from a snapshot; re-embeds labels when an embedder is given (embeddings aren't serialized). (L445)
+  - `save(path) -> None` — JSON persistence via the `SceneGraph` contract. (L462)
+  - `load(path, *, embedder=None) -> SpatialMemory` (classmethod) — Inverse of `save`; re-embeds labels when an embedder is given. (L467)
 - const `DEFAULT_ASSOC_DISTANCE_M` (L74) — Default `assoc_distance_m` (see field docstring in the source for calibration).
 - const `DEFAULT_STANDOFF_M` (L77) — Default `default_standoff_m`.
 - const `DEFAULT_CAMERA_FRAME` (L80) — Default `camera_frame_id`.

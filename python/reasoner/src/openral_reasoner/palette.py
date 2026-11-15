@@ -345,6 +345,10 @@ class ToolPalette(BaseModel):
     reasoner_node only when a spatial-memory scene-graph ``SpatialMemory`` query
     backend is wired (Phase 2); off by default so the tools never appear without
     a dispatcher."""
+    places_only: bool = False
+    """The spatial memory holds only declared places (``DeployScene.nav_goals``, ADR-0133): no
+    path was loaded and nothing is ingested, so ``recall_object`` could never find an object
+    and is not offered; ``resolve_place`` is."""
     detector_available: bool = False
     """When ``True`` the LLM additionally sees the **read-only**
     ``locate_in_view`` tool (ask a live VLM detector whether an object is in the

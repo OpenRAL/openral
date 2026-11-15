@@ -32,6 +32,7 @@ Never publishes ``openral_msgs/ActionChunk`` (reasoner+supervisor design §4:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime
 import json
 import os
@@ -736,6 +737,71 @@ def _camera_label(camera: str) -> str:
 # schema validator and this node's runtime execute gate so a skill never acts on
 # a quantified/plural set ("all the objects"); it must be enumerated from the live
 # ``scene_objects`` context and decomposed into one grounded subtask per object.
+
+
+@dataclasses.dataclass(frozen=True)
+class SpatialMemoryBuild:
+    """What ``build_spatial_memory`` set up: the memory (or none), and how to use it."""
+
+    memory: Any  # openral_world_state.SpatialMemory, imported lazily
+    writable: bool
+    places_only: bool
+    origin: str
+    warnings: tuple[str, ...] = ()
+
+
+def build_spatial_memory(
+    path: str, ingest: bool, goals_json: str, *, now_ns: int = 0
+) -> SpatialMemoryBuild:
+    """The reasoner's spatial memory from its three sources (ADR-0133 for the goals).
+
+    ``path`` loads a persisted scene graph; a load failure is a warning and the memory starts
+    empty (never a fabricated map, CLAUDE.md §1.2) so declared goals are still seeded.
+    ``ingest`` starts an empty memory that detections are folded into. ``goals_json`` (a JSON
+    list of ``NavGoal``) seeds one declared ``PLACE`` node per goal; a malformed list or a
+    repeated name raises, since the CLI validated it as ``DeployScene.nav_goals`` and a bad
+    value here is a wiring fault. Writable (detections ingested) only with a path or ingest;
+    ``places_only`` when the goals are the only source.
+
+    Raises:
+        pydantic.ValidationError: ``goals_json`` is not a list of ``NavGoal``.
+        ValueError: two goals share a name or alias.
+    """
+    if not path and not ingest and not goals_json:
+        return SpatialMemoryBuild(None, False, False, "no spatial memory")
+    from openral_world_state import SpatialMemory
+
+    warnings: list[str] = []
+    memory = None
+    origin = ""
+    if path:
+        try:
+            memory = SpatialMemory.load(path)
+            origin = f"loaded spatial memory from {path!r}"
+        except (OSError, ValueError) as exc:
+            warnings.append(f"spatial_memory_path={path!r} failed to load: {exc}")
+            if not ingest and not goals_json:
+                return SpatialMemoryBuild(None, False, False, "", tuple(warnings))
+    if memory is None:
+        memory = SpatialMemory()
+        origin = "started empty spatial memory" + (" for live ingest" if ingest else "")
+    if goals_json:
+        from openral_core import NavGoal, repeated_nav_goal_names
+        from openral_reasoner import nav_goal_places
+        from pydantic import TypeAdapter
+
+        goals = TypeAdapter(list[NavGoal]).validate_json(goals_json)
+        repeated = repeated_nav_goal_names(goals)
+        if repeated:
+            raise ValueError(f"nav_goals_json repeats names/aliases {repeated}")
+        for place in nav_goal_places(goals, now_ns):
+            memory.upsert_node(place)
+        origin += f", {len(goals)} declared navigation goals"
+    loaded = bool(path) and "loaded" in origin
+    writable = loaded or ingest
+    return SpatialMemoryBuild(
+        memory, writable, not writable and bool(goals_json), origin, tuple(warnings)
+    )
 
 
 class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
@@ -2553,60 +2619,40 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         return entries
 
     def _maybe_load_spatial_memory(self) -> None:
-        """Wire the persistent-spatial-memory backend at ``on_configure``.
+        """Wire the spatial-memory backend at ``on_configure`` (``build_spatial_memory``).
 
-        Used by active object search. No-op when a ``spatial_memory``
-        backend was injected at construction.
-        Otherwise: if ``spatial_memory_path`` is set, load that persisted scene
-        graph; else if ``spatial_memory_ingest`` is set, start an empty memory
-        that ``_on_tick`` accumulates from live ``WorldState.detected_objects``.
-        A path load failure degrades gracefully to no backend (logged at WARNING)
-        — never a fabricated map (CLAUDE.md §1.2). When the reasoner owns the
-        backend (either case) it keeps a concrete ``_spatial_memory_writer`` so
-        the tick can fold detections in; an injected read-only querier is left
-        un-owned and unmutated.
+        No-op when a ``spatial_memory`` backend was injected at construction (declared
+        ``nav_goals_json`` is then not seeded, and that is logged). When the reasoner owns
+        the backend it keeps a ``_spatial_memory_writer`` only if a path or live ingest
+        asked for one, so the tick folds detections in exactly then.
         """
-        if self._spatial_memory is not None:
-            return
         path = self.get_parameter("spatial_memory_path").get_parameter_value().string_value
         ingest = self.get_parameter("spatial_memory_ingest").get_parameter_value().bool_value
         goals_json = self.get_parameter("nav_goals_json").get_parameter_value().string_value
-        if not path and not ingest and not goals_json:
-            return
-        from openral_world_state import SpatialMemory
-
-        if path:
-            try:
-                memory = SpatialMemory.load(path)
-            except (OSError, ValueError) as exc:
+        if self._spatial_memory is not None:
+            if goals_json:
                 self.get_logger().warning(
-                    f"spatial_memory_path={path!r} failed to load; query tools disabled: {exc}",
+                    "nav_goals_json is set but a spatial_memory backend was injected: the "
+                    "declared navigation goals are NOT seeded into it",
                 )
-                return
-            origin = f"loaded spatial memory from {path!r}"
-        else:
-            memory = SpatialMemory()
-            origin = "started empty spatial memory" + (" for live ingest" if ingest else "")
-        if goals_json:
-            from openral_core import NavGoal
-            from openral_reasoner import nav_goal_places
-            from pydantic import TypeAdapter
-
-            # A malformed list raises: the CLI validated it as DeployScene.nav_goals, so a
-            # bad value here is a wiring fault, not a goal to drop silently.
-            goals = TypeAdapter(list[NavGoal]).validate_json(goals_json)
-            for place in nav_goal_places(goals, self.get_clock().now().nanoseconds):
-                memory.upsert_node(place)
-            origin += f", {len(goals)} declared navigation goals"
-        self._spatial_memory = memory
-        # Declared goals alone do not turn detection ingest on: only a path or ingest does.
-        self._spatial_memory_writer = memory if (path or ingest) else None
-        if not self._palette.spatial_memory_available:
-            self._palette = self._palette.model_copy(update={"spatial_memory_available": True})
-        node_count = len(memory.to_scene_graph().nodes)
+            return
+        built = build_spatial_memory(
+            path, ingest, goals_json, now_ns=self.get_clock().now().nanoseconds
+        )
+        for warning in built.warnings:
+            self.get_logger().warning(warning)
+        if built.memory is None:
+            return
+        self._spatial_memory = built.memory
+        self._spatial_memory_writer = built.memory if built.writable else None
+        self._palette = self._palette.model_copy(
+            update={"spatial_memory_available": True, "places_only": built.places_only}
+        )
+        node_count = len(built.memory.to_scene_graph().nodes)
+        tools = "resolve_place" if built.places_only else "recall_object / resolve_place"
         self.get_logger().info(
-            f"on_configure: {origin} ({node_count} nodes; ingest={ingest}); "
-            "recall_object / resolve_place tools enabled",
+            f"on_configure: {built.origin} ({node_count} nodes; ingest={ingest}); "
+            f"{tools} tools enabled",
         )
         # Publish the (possibly empty) map once now so the dashboard shows it
         # before the first heartbeat tick (which re-emits on the 0.2 Hz cadence).

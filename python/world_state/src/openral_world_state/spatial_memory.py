@@ -406,7 +406,8 @@ class SpatialMemory:
         for node in self._nodes.values():
             if kind is not None and node.kind is not kind:
                 continue
-            quality = _label_match_quality(node.label, ref)
+            # A declared station also answers to its aliases; the best of them counts.
+            quality = max(_label_match_quality(n, ref) for n in (node.label, *node.aliases))
             if quality > best_quality:
                 best_quality, best = quality, node
         return best

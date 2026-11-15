@@ -15,6 +15,7 @@ module does not import the Layer-2 ``openral_world_state`` package — the concr
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from typing import NamedTuple, Protocol
 
@@ -127,10 +128,17 @@ def format_recall_object_result(
 
 def format_resolve_place_result(reference: str, result: ResolvePlaceResult) -> str:
     """Render a ``ResolvePlaceResult`` as an LLM-readable text block."""
+    q = result.goal.quat_xyzw
+    yaw = math.degrees(
+        math.atan2(2.0 * (q[3] * q[2] + q[0] * q[1]), 1.0 - 2.0 * (q[1] ** 2 + q[2] ** 2))
+    )
     text = (
         f"spatial_memory: {reference!r} resolves to node {result.node_id} "
-        f"at map {_fmt_xyz(result.goal.xyz)}"
+        f"at {result.goal.frame_id} {_fmt_xyz(result.goal.xyz)} heading yaw={yaw:.0f}deg "
+        f"quat_xyzw=({q[0]:.4f},{q[1]:.4f},{q[2]:.4f},{q[3]:.4f})"
     )
+    if result.node_id.startswith(NavGoal.NODE_PREFIX):
+        text += " (a declared station: drive there with this pose AND orientation)"
     if result.path_node_ids:
         text += ". Path: " + " -> ".join(result.path_node_ids)
     return text
@@ -247,9 +255,8 @@ def run_spatial_query(
 def nav_goal_places(goals: Sequence[NavGoal], stamp_ns: int = 0) -> list[SpatialNode]:
     """The spatial-memory ``PLACE`` nodes a scene's navigation goals seed (ADR-0133).
 
-    One node per goal, ``node_id`` ``nav_goal:<name>``, its label the name, the aliases and
-    the description, so ``resolve_place`` finds it by any of them and returns the declared
-    map-frame pose.
+    One declared node per goal: ``node_id`` ``nav_goal:<name>``, labelled with the name so an
+    exact name scores an exact match, its aliases and description as typed fields.
 
     Example:
         >>> from openral_core import NavGoal, Pose6D
@@ -260,20 +267,20 @@ def nav_goal_places(goals: Sequence[NavGoal], stamp_ns: int = 0) -> list[Spatial
         ...     description="in front of shelf 6",
         ... )
         >>> node = nav_goal_places([goal])[0]
-        >>> node.node_id, node.kind.value, node.label
-        ('nav_goal:s6', 'place', 's6 (shelf_6): in front of shelf 6')
+        >>> node.node_id, node.kind.value, node.label, node.aliases, node.declared
+        ('nav_goal:s6', 'place', 's6', ('shelf_6',), True)
     """
-    nodes: list[SpatialNode] = []
-    for goal in goals:
-        names = goal.name + (f" ({', '.join(goal.aliases)})" if goal.aliases else "")
-        nodes.append(
-            SpatialNode(
-                node_id=goal.node_id,
-                kind=SpatialNodeKind.PLACE,
-                pose=goal.pose,
-                label=f"{names}: {goal.description}" if goal.description else names,
-                first_seen_ns=stamp_ns,
-                last_seen_ns=stamp_ns,
-            )
+    return [
+        SpatialNode(
+            node_id=goal.node_id,
+            kind=SpatialNodeKind.PLACE,
+            pose=goal.pose,
+            label=goal.name,
+            aliases=goal.aliases,
+            description=goal.description or "",
+            declared=True,
+            first_seen_ns=stamp_ns,
+            last_seen_ns=stamp_ns,
         )
-    return nodes
+        for goal in goals
+    ]

@@ -12,6 +12,7 @@ Run with:
 from __future__ import annotations
 
 import json
+import math
 from typing import get_args
 
 import jsonschema
@@ -410,7 +411,18 @@ _nav_goal_st = st.builds(
     NavGoal,
     name=_zone_name,
     aliases=st.lists(_zone_name, max_size=3).map(tuple),
-    pose=_pose6d_st.map(lambda p: p.model_copy(update={"frame_id": "map"})),
+    # Planar: z = 0 and a unit yaw-only quaternion (NavGoal refuses anything else).
+    pose=st.builds(
+        lambda x, y, yaw, frame: Pose6D(
+            xyz=(x, y, 0.0),
+            quat_xyzw=(0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
+            frame_id=frame,
+        ),
+        _safe_float,
+        _safe_float,
+        st.floats(min_value=-math.pi, max_value=math.pi),
+        _name,
+    ),
     description=st.none() | _name,
 )
 

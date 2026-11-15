@@ -2144,16 +2144,35 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         zones = "[" + ",".join(z.model_dump_json() for z in deploy_scene.place_zones) + "]"
         argv_template.append(f"place_zones_json:={zones}")
     # The cell's named navigation goals (ADR-0133): the reasoner seeds them as spatial-memory
-    # places, so resolve_place and its context know them. Only a robot that drives has any.
+    # places, so resolve_place and its context know them. Refused unless the robot drives, a
+    # navigation stack is running (ours or the platform's) and the goals are in its map frame.
     if deploy_scene is not None and deploy_scene.nav_goals:
-        from openral_hal.mobile_base_bridge import describes_mobile_base
+        from openral_core import NavGoal
+        from openral_hal.mobile_base_bridge import describes_mobile_base, platform_owns_navigation
+        from pydantic import TypeAdapter
 
-        if not describes_mobile_base(description):
+        if not (
+            describes_mobile_base(description)
+            or EmbodimentKind.MOBILE_BASE.value in description.capabilities.embodiment_tags
+        ):
             raise ROSConfigError(
                 f"nav_goals on {robot_id!r}, which has no mobile base: a navigation goal is a "
                 "pose the base drives to (NavGoal, ADR-0133)."
             )
-        goals = "[" + ",".join(g.model_dump_json() for g in deploy_scene.nav_goals) + "]"
+        if not (enable_nav2 or platform_owns_navigation(description, hal_mode=hal_mode)):
+            raise ROSConfigError(
+                f"nav_goals on {robot_id!r} with no navigation stack (Nav2 off and the platform "
+                "does not own navigation): nothing could drive to them. Enable Nav2."
+            )
+        wrong = sorted(
+            {g.name for g in deploy_scene.nav_goals if g.pose.frame_id != description.map_frame}
+        )
+        if wrong:
+            raise ROSConfigError(
+                f"nav_goals {wrong} are not in {robot_id!r}'s map frame "
+                f"{description.map_frame!r}, the frame Nav2 plans in."
+            )
+        goals = TypeAdapter(list[NavGoal]).dump_json(deploy_scene.nav_goals).decode()
         argv_template.append(f"nav_goals_json:={goals}")
     # The grasp-phase sibling (real pick-and-place design §2.1), same path.
     if deploy_scene is not None and deploy_scene.grasp_declaration is not None:

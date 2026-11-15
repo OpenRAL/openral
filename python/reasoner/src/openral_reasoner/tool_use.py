@@ -217,10 +217,7 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "When the read-only resolve_place tool is "
     "in the palette, use it to turn a place / room / agent reference "
     "(e.g. 'the kitchen', 'where I was standing') into a navigation goal "
-    "pose plus a traversable path. A nav_goals line lists the cell's declared "
-    "stations (name, map-frame pose, heading): to go to one, dispatch the "
-    "navigation skill at that pose and heading (resolve_place also returns it "
-    "by name). Do not dispatch a manipulation skill at "
+    "pose plus a traversable path. Do not dispatch a manipulation skill at "
     "an object the robot has not yet reached. "
     # ── (3+4) Frame the target, then verify it is in view ─────────────
     "Once within reach, FRAME the target before grasping it: when a "
@@ -1596,6 +1593,8 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             ),
         )
         for q_kind, q_cls, q_description in query_tools:
+            if q_kind == "recall_object" and palette.places_only:
+                continue  # a places-only memory holds no object to recall
             tools.append(
                 {
                     "name": q_kind,
