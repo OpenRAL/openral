@@ -721,6 +721,42 @@ def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
     return out
 
 
+def attachment_local_pose(
+    parent_from_world: NDArray[np.float64],
+    world_from_link: NDArray[np.float64],
+    link_from_prim: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """The local transform that holds a link attachment at its offset from its link.
+
+    The prim's world pose is ``world_from_link @ link_from_prim``; its parent's inverse
+    world pose turns that into the local transform its xform op takes.
+
+    Example:
+        >>> import numpy as np
+        >>> lift = np.eye(4)  # the link, driven 2 m along x
+        >>> lift[:3, 3] = (2.0, 0.0, 1.0)
+        >>> tote = np.eye(4)  # authored 0.3 m ahead of it and 0.5 m below
+        >>> tote[:3, 3] = (0.3, 0.0, -0.5)
+        >>> attachment_local_pose(np.eye(4), lift, tote)[:3, 3].tolist()
+        [2.3, 0.0, 0.5]
+    """
+    return np.asarray(parent_from_world @ world_from_link @ link_from_prim, dtype=np.float64)
+
+
+@dataclass
+class LinkAttachment:
+    """One ``link_attachments`` prim and what keeps it on its link (``_add_link_attachments``)."""
+
+    prim: str
+    link: str
+    xform_op: Any  # pxr UsdGeom.XformOp; the sidecar's pxr is untyped
+    parent_from_world: NDArray[np.float64]
+    link_from_prim: NDArray[np.float64]
+    root_from_link: NDArray[np.float64]
+    last_local: NDArray[np.float64] | None = None
+    warned: bool = False
+
+
 def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
     """A gripper command (its end effector's ``command_convention``) → its URDF leader target.
 
@@ -1936,9 +1972,10 @@ class IsaacManifestScene(IsaacSceneBase):
         # placing (or kinematically driving) the robot moves that anchor rather
         # than fighting it. None on the < 6 command importer.
         self._anchor_joint: Any = None
-        # Environment prims a robot link carries (link_attachments), built in build():
-        # {"prim", "link", "xform_op", "parent_from_world", "link_from_prim", "root_from_link"}.
-        self._attachments: list[dict[str, Any]] = []
+        # Environment prims a robot link carries (link_attachments), built in build().
+        self._attachments: list[LinkAttachment] = []
+        # True right after _place_robot posed them for a new root: the next follow is skipped.
+        self._attachments_follow_root = False
         self._ArticulationAction: Any = None
         self._euler_to_quat: Any = None
         # One Isaac Camera per manifest RGB/depth sensor, base-relative so they
@@ -2384,8 +2421,8 @@ class IsaacManifestScene(IsaacSceneBase):
         velocity of each move and what rests on it is carried by friction.
 
         Raises:
-            RuntimeError: the prim is missing from the stage.
-            ValueError: the link is not in the imported robot.
+            RuntimeError: the prim is missing, is an instance proxy (it cannot be authored
+                on), or the link is not in the imported robot.
         """
         from isaacsim.core.utils.stage import get_current_stage
         from pxr import UsdGeom, UsdPhysics
@@ -2399,69 +2436,106 @@ class IsaacManifestScene(IsaacSceneBase):
             prim = stage.GetPrimAtPath(path)
             if not prim.IsValid():
                 raise RuntimeError(f"link attachment {path} is not in the stage")
+            if prim.IsInstanceProxy():
+                raise RuntimeError(
+                    f"link attachment {path} is inside an instanceable prim: make that prim "
+                    "non-instanceable in the environment USD so the attachment can be authored"
+                )
             link = str(att["link"])
+            try:
+                link_path = self._link_prim_path(link)
+            except ValueError:
+                raise RuntimeError(
+                    f"link attachment {path}: link {link!r} is not in the imported robot"
+                ) from None
             # The link's own world pose, not root-relative: Isaac >= 6 places the links at
             # the spawn while the root Xform stays at the import origin.
             world_from_link = np.asarray(
-                cache.GetLocalToWorldTransform(stage.GetPrimAtPath(self._link_prim_path(link))),
-                dtype=np.float64,
+                cache.GetLocalToWorldTransform(stage.GetPrimAtPath(link_path)), dtype=np.float64
             ).T
             world_from_prim = np.asarray(cache.GetLocalToWorldTransform(prim), dtype=np.float64).T
             parent = np.asarray(
                 cache.GetLocalToWorldTransform(prim.GetParent()), dtype=np.float64
             ).T
-            body = UsdPhysics.RigidBodyAPI.Apply(prim)
-            body.CreateKinematicEnabledAttr(True)
+            UsdPhysics.RigidBodyAPI.Apply(prim).CreateKinematicEnabledAttr(True)
             xform = UsdGeom.Xformable(prim)
             xform.ClearXformOpOrder()
             self._attachments.append(
-                {
-                    "prim": path,
-                    "link": link,
-                    "xform_op": xform.AddTransformOp(opSuffix="attachment"),
-                    "parent_from_world": np.linalg.inv(parent),
-                    "link_from_prim": np.linalg.inv(world_from_link) @ world_from_prim,
-                    "root_from_link": np.linalg.inv(world_from_root) @ world_from_link,
-                }
+                LinkAttachment(
+                    prim=path,
+                    link=link,
+                    xform_op=xform.AddTransformOp(opSuffix="attachment"),
+                    parent_from_world=np.asarray(np.linalg.inv(parent), dtype=np.float64),
+                    link_from_prim=np.asarray(
+                        np.linalg.inv(world_from_link) @ world_from_prim, dtype=np.float64
+                    ),
+                    root_from_link=np.asarray(
+                        np.linalg.inv(world_from_root) @ world_from_link, dtype=np.float64
+                    ),
+                )
             )
             print(
                 f"[isaac_manifest_scene] {path} rides {link} (kinematic), at "
                 f"{np.round(world_from_prim[:3, 3], 4).tolist()}",
                 flush=True,
             )
-        self._pose_attachments(world_from_root)
+        for att in self._attachments:
+            self._set_attachment(att, world_from_root @ att.root_from_link)
 
-    def _pose_attachments(self, world_from_root: NDArray[np.float64]) -> None:
-        """Put each link attachment on its link for a root at ``world_from_root``."""
+    def _set_attachment(self, att: LinkAttachment, world_from_link: NDArray[np.float64]) -> None:
+        """Pose ``att`` on its link at ``world_from_link``; skip an unchanged pose."""
         from pxr import Gf
 
-        for att in self._attachments:
-            world = world_from_root @ att["root_from_link"] @ att["link_from_prim"]
-            att["xform_op"].Set(Gf.Matrix4d((att["parent_from_world"] @ world).T.tolist()))
+        local = attachment_local_pose(att.parent_from_world, world_from_link, att.link_from_prim)
+        if att.last_local is not None and np.allclose(local, att.last_local, atol=1e-9):
+            return
+        att.xform_op.Set(Gf.Matrix4d(local.T.tolist()))
+        att.last_local = local
 
     def _follow_links(self) -> None:
-        """Re-read where PhysX holds each attachment's link (a lift moves it) and re-pose."""
+        """Re-pose each attachment on its link where PhysX holds it (a lift moves it).
+
+        Runs before every physics substep. Skipped once right after a base move: the
+        link readback still shows the pre-teleport pose until physics steps, and
+        ``_place_robot`` has already posed the attachments for the new root.
+        """
         if not self._attachments:
             return
-        world_from_root = pose_matrix(*self._robot.get_world_pose())
-        root_from_world = np.linalg.inv(world_from_root)
+        if self._attachments_follow_root:
+            self._attachments_follow_root = False
+            return
+        wx, wy, wz, wyaw = self._world_pose()
+        root_from_world = np.linalg.inv(pose_matrix((wx, wy, wz), _yaw_quat(wyaw)))
+        links = self._physx_link_worlds([a.link for a in self._attachments])
         for att in self._attachments:
-            world = self._physx_link_world(att["link"])
-            if world is not None:
-                att["root_from_link"] = root_from_world @ world
-        self._pose_attachments(world_from_root)
+            world_from_link = links.get(att.link)
+            if world_from_link is None:
+                if not att.warned:
+                    print(
+                        f"[isaac_manifest_scene] WARNING: {att.link} is no articulation body; "
+                        f"{att.prim} follows the base only, not that link's joints",
+                        flush=True,
+                    )
+                    att.warned = True
+                continue
+            # Relative to the commanded root, the frame _place_robot composes it with.
+            att.root_from_link = np.asarray(root_from_world @ world_from_link, dtype=np.float64)
+            self._set_attachment(att, world_from_link)
 
-    def _physx_link_world(self, link: str) -> NDArray[np.float64] | None:
-        """World pose of ``link`` as PhysX holds it, or ``None`` when the view lacks it."""
+    def _physx_link_worlds(self, links: list[str]) -> dict[str, NDArray[np.float64]]:
+        """World pose of each named link as PhysX holds it (one tensor fetch); absent ones left out."""
         art = getattr(self._robot, "_articulation_view", None)
         view = getattr(art, "_physics_view", None)
         names = [str(b) for b in (getattr(art, "body_names", None) or [])]
-        if view is None or link not in names:
-            return None
-        p = np.asarray(view.get_link_transforms(), dtype=np.float64).reshape(len(names), 7)[
-            names.index(link)
-        ]  # x y z qx qy qz qw (PhysX tensor order)
-        return pose_matrix(p[:3], (p[6], p[3], p[4], p[5]))
+        if view is None or not names:
+            return {}
+        tf = np.asarray(view.get_link_transforms(), dtype=np.float64).reshape(len(names), 7)
+        out: dict[str, NDArray[np.float64]] = {}
+        for link in links:
+            if link in names:
+                p = tf[names.index(link)]  # x y z qx qy qz qw (PhysX tensor order)
+                out[link] = pose_matrix(p[:3], (p[6], p[3], p[4], p[5]))
+        return out
 
     @staticmethod
     def _resolve_usd(usd: str) -> str:
@@ -3117,6 +3191,11 @@ class IsaacManifestScene(IsaacSceneBase):
                 vx, vy, wz = (float(action[base_i + i]) for i in range(3))
                 self._integrate_base(*(0.0 if np.isnan(v) else v for v in (vx, vy, wz)))
 
+    def _before_render(self) -> None:
+        # Reset warmup steps physics through this hook only.
+        super()._before_render()
+        self._follow_links()
+
     def _before_substep(self) -> None:
         """With ``gripper_followers_track: "measured"``, re-target every mimic follower.
 
@@ -3128,6 +3207,7 @@ class IsaacManifestScene(IsaacSceneBase):
         leader. ``"measured"`` drives them toward the mimic of the MEASURED leader before
         each physics substep, so the linkage moves as one body under contact too.
         """
+        self._follow_links()
         if self._spec.get("gripper_followers_track", "target") != "measured" or not self._grippers:
             return
         if self._target is None:
@@ -3171,7 +3251,10 @@ class IsaacManifestScene(IsaacSceneBase):
         self._set_anchor(wx, wy, wz, wyaw)
         self._robot.set_world_pose(np.array([wx, wy, wz]), _yaw_quat(wyaw))
         self._update_camera_poses()
-        self._pose_attachments(pose_matrix((wx, wy, wz), _yaw_quat(wyaw)))
+        world_from_root = pose_matrix((wx, wy, wz), _yaw_quat(wyaw))
+        for att in self._attachments:
+            self._set_attachment(att, world_from_root @ att.root_from_link)
+        self._attachments_follow_root = bool(self._attachments)
 
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
@@ -3281,7 +3364,6 @@ class IsaacManifestScene(IsaacSceneBase):
         )
 
     def _observe(self, *, with_frames: bool = True) -> dict[str, Any]:
-        self._follow_links()
         obs = super()._observe(with_frames=with_frames)
         if self._has_base:
             obs["base_pose"] = np.asarray(self._base_pose, dtype=np.float32)  # [x, y, yaw]
@@ -3825,10 +3907,10 @@ class IsaacManifestScene(IsaacSceneBase):
         }
         base_from_world = np.asarray(np.linalg.inv(self._world_from_base()), dtype=np.float64)
         out: dict[str, Any] = {}
+        physx = self._physx_link_worlds(links)
         for link in links:
-            physx = self._physx_link_world(link)
-            if physx is not None:
-                world = physx
+            if link in physx:
+                world = physx[link]
                 source = "physx"
             else:
                 try:

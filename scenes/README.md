@@ -381,6 +381,14 @@ A dynamic object without physics gets a rigid body and convex-hull colliders;
 `object_positions` and `robot_position` (simulator ground truth, not a policy
 observation).
 
+**A prim that rides the robot** (a tote on a mobile base) is named in
+`backend_options.link_attachments`: `{prim, link}`, the prim's path below the USD's default
+prim and the URDF link that carries it. Author the prim where it should ride, with the robot at
+its spawn and its joints at the import pose: the scene makes it a kinematic body that keeps that
+offset from the link through every base move and joint motion (a lift), and what rests on it
+rides by friction. A prim may not repeat, sit inside another attachment, or also be a
+`stage_objects` entry; the link must be in the robot's URDF.
+
 **Objects the stage already holds** (rigid bodies authored inside the
 environment USD) are named, not spawned, in `backend_options.stage_objects`:
 `{name, prim}`, the prim's path below the USD's default prim (the stage is

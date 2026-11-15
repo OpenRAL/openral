@@ -369,7 +369,9 @@ def test_environment_archive_round_trips(sha: str, stem: str) -> None:
     assert IsaacEnvironmentArchive.model_validate_json(archive.model_dump_json()) == archive
 
 
-@pytest.mark.parametrize("model", [IsaacStageObject, IsaacDomeLight, IsaacEnvironmentArchive])
+@pytest.mark.parametrize(
+    "model", [IsaacStageObject, IsaacDomeLight, IsaacEnvironmentArchive, IsaacLinkAttachment]
+)
 def test_models_export_a_json_schema(model: type[Any]) -> None:
     schema = model.model_json_schema()
     assert schema["title"] == model.__name__
@@ -395,3 +397,39 @@ def test_a_link_attachment_prim_is_a_path_below_the_environment(prim: str) -> No
 def test_a_link_attachment_names_a_link() -> None:
     with pytest.raises(ValidationError):
         IsaacLinkAttachment(prim="Tote", link="")
+
+
+@pytest.mark.parametrize(
+    "attachments",
+    [
+        [{"prim": "Tote", "link": "lift_carriage_link"}, {"prim": "Tote", "link": "base_link"}],
+        [{"prim": "Tote", "link": "lift_carriage_link"}, {"prim": "Tote/Lid", "link": "base_link"}],
+    ],
+    ids=["repeated", "nested"],
+)
+def test_link_attachments_are_distinct_prims(attachments: list[dict[str, str]]) -> None:
+    with pytest.raises(ValidationError, match="link_attachments"):
+        IsaacSimOptions.model_validate({"link_attachments": attachments})
+
+
+def test_a_link_attachment_cannot_also_be_a_graded_stage_object() -> None:
+    with pytest.raises(ValidationError, match="overlapping a stage object"):
+        IsaacSimOptions.model_validate(
+            {
+                "stage_objects": [{"name": "tote", "prim": "Tote/Body"}],
+                "link_attachments": [{"prim": "Tote", "link": "lift_carriage_link"}],
+            }
+        )
+
+
+@given(
+    st.builds(
+        IsaacLinkAttachment,
+        prim=st.from_regex(
+            r"[A-Za-z_][A-Za-z0-9_]{0,8}(/[A-Za-z_][A-Za-z0-9_]{0,8}){0,2}", fullmatch=True
+        ),
+        link=st.text(min_size=1, max_size=20),
+    )
+)
+def test_link_attachment_round_trips(attachment: IsaacLinkAttachment) -> None:
+    assert IsaacLinkAttachment.model_validate_json(attachment.model_dump_json()) == attachment

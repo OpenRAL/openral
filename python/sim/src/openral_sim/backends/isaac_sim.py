@@ -1601,6 +1601,31 @@ class IsaacSimOptions(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _attachments_are_distinct(self) -> IsaacSimOptions:
+        """Each link attachment is its own prim: not twice, not nested, not also graded.
+
+        A stage object is reset to its authored pose by ``world.reset()``, which would fight
+        the kinematic attachment; a prim inside another attachment would move twice.
+        """
+        prims = [a.prim for a in self.link_attachments]
+        dupes = sorted({p for p in prims if prims.count(p) > 1})
+        nested = sorted({p for p in prims for q in prims if p != q and p.startswith(f"{q}/")})
+        graded = sorted(
+            {
+                o.prim
+                for o in self.stage_objects
+                for p in prims
+                if o.prim == p or o.prim.startswith(f"{p}/") or p.startswith(f"{o.prim}/")
+            }
+        )
+        if dupes or nested or graded:
+            raise ValueError(
+                f"link_attachments: repeated prims {dupes}, prims inside another attachment "
+                f"{nested}, prims overlapping a stage object {graded}."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _placements_name_scene_objects(self) -> IsaacSimOptions:
         """Every ``placement_success`` object must be a dynamic object of this scene.
 
@@ -2741,6 +2766,12 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
     urdf_links = set(re.findall(r'<link\s+name="([^"]+)"', Path(spec["urdf_path"]).read_text()))
+    # A link attachment rides a real URDF link: refused here, before a minutes-long Kit boot.
+    unknown = sorted({a["link"] for a in spec.get("link_attachments") or []} - urdf_links)
+    if unknown:
+        raise ROSConfigError(
+            f"link_attachments name links {unknown} that {desc.name!r}'s URDF does not have"
+        )
     urdf_links.add(desc.base_frame)
     camera_mounts = {
         **{
