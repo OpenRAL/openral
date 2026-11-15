@@ -1489,6 +1489,10 @@ if _ROS2_AVAILABLE:
                         mobile = getattr(self, "_mobile_base", None)
                         if mobile is not None:
                             mobile.publish_from_snapshot()
+                        bridge = getattr(self, "_bridge", None)
+                        frame = self._proprio.latest() if self._proprio is not None else None
+                        if bridge is not None and frame is not None:
+                            bridge.publish_scan_from_frame(frame)
                     except Exception as exc:  # reason: a publish hiccup must not kill the thread
                         self.get_logger().warn(f"proprio publisher thread: {exc}")
                     remaining = next_deadline - monotonic()
@@ -1541,6 +1545,10 @@ if _ROS2_AVAILABLE:
                 if policy_state_raw is not None
                 else None
             )
+            # A backend that returns its lidar fan with the observation (Isaac) is read
+            # here, so /scan can leave the executor thread with the rest of proprio.
+            read_scan = getattr(self._hal, "read_scan", None)
+            scan_raw = read_scan() if callable(read_scan) else None
             self._proprio.set(
                 ProprioFrame(
                     state=state,
@@ -1549,6 +1557,7 @@ if _ROS2_AVAILABLE:
                     base_twist=tuple(float(v) for v in twist),
                     sim_time_ns=sim_time_ns,
                     policy_state=policy_state,
+                    scan=tuple(float(r) for r in scan_raw) if scan_raw is not None else None,
                 )
             )
 
