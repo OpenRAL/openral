@@ -368,3 +368,16 @@ def test_workcell_self_collision_margin_tightens_but_never_loosens(
     # A NaN reads False on ``<``; it (and inf) must not pass as a tightening.
     for bad in (float("nan"), float("inf"), float("-inf")):
         assert effective(description, SafetyEnvelope(self_collision_margin_m=bad)) == robot_margin
+
+
+def test_a_robot_without_hands_sends_no_empty_hand_list(launch_module: ModuleType) -> None:
+    """launch_ros turns an empty list into () and refuses it, killing the whole launch."""
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/ur5e/robot.yaml"))
+    assert not description.hand_links()
+    collision = collision_params_from_description(description)
+    params = launch_module._self_filter_params(collision, description, "/joint_states", 0.02)
+    assert "robot_mask_hand_links" not in params

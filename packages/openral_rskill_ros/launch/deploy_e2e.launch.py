@@ -651,7 +651,9 @@ def _self_filter_params(
         params["joint_state_period_from_hal"] = True
         params["joint_state_period_s"] = 0.0
     hand_links = getattr(description, "hand_links", None)
-    params["robot_mask_hand_links"] = list(hand_links()) if callable(hand_links) else []
+    hands = list(hand_links()) if callable(hand_links) else []
+    if hands:  # omitted when empty: launch_ros rejects an empty list; the node defaults to none
+        params["robot_mask_hand_links"] = hands
     if robot_mask_cameras:
         params["robot_mask_enabled"] = True
         params["robot_mask_cameras"] = list(robot_mask_cameras)
