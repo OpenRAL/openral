@@ -991,3 +991,77 @@ TEST_F(SelfFilterNode, CloudOlderThanJointHistoryIsNotBackwardExtrapolated) {
   EXPECT_EQ(received_.load(), 0) << "a later pose cannot prove the robot's earlier geometry";
   EXPECT_GT(filter_->totals().dropped_no_state, 0U);
 }
+
+namespace {
+
+// A mobile manipulator: `world` -[base_x, prismatic]-> `base` -[j1]-> `l1`, the capsule at
+// x = 0.5 in l1. TF knows only `cam` -> `base` (a robot under its own odom): no `world`.
+class MobileBaseSelfFilterNode : public SelfFilterNode {
+protected:
+  std::vector<rclcpp::Parameter> extra_params() const override {
+    return {
+        {"collision_n_links", std::int64_t{3}},
+        {"collision_parent", std::vector<std::int64_t>{-1, 0, 1}},
+        {"collision_joint_kind", std::vector<std::int64_t>{0, 2, 1}},
+        {"collision_dof_index", std::vector<std::int64_t>{-1, 0, 1}},
+        {"collision_origin_xyzrpy", std::vector<double>(18, 0.0)},
+        {"collision_axis", std::vector<double>{0, 0, 1, 1, 0, 0, 0, 0, 1}},
+        {"collision_link_names", std::vector<std::string>{"world", "base", "l1"}},
+        {"collision_joint_names", std::vector<std::string>{"base_x", "j1"}},
+        {"collision_capsule_link", std::vector<std::int64_t>{2}},
+        {"collision_base_dofs", std::vector<std::int64_t>{0}},
+        {"base_frame", base_frame()},
+    };
+  }
+  virtual std::string base_frame() const { return "base"; }
+
+  void send_mobile_joint_state(double base_x, const rclcpp::Time& stamp) {
+    sensor_msgs::msg::JointState js;
+    js.header.stamp = stamp;
+    js.name = {"base_x", "j1"};
+    js.position = {base_x, 0.0};
+    js_pub_->publish(js);
+  }
+
+  void publish_cam_to_base() {
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.stamp = peer_->now();
+    tf.header.frame_id = "cam";
+    tf.child_frame_id = "base";
+    tf.transform.rotation.w = 1.0;
+    tf_->sendTransform(tf);
+    spin_for(200ms);
+  }
+};
+
+class MobileBaseWithoutBaseFrameNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return ""; }
+};
+
+}  // namespace
+
+TEST_F(MobileBaseSelfFilterNode, PosesTheArmInTheBaseFrameWithNoWorldFrameInTf) {
+  publish_cam_to_base();
+  const rclcpp::Time now = peer_->now();
+  // The base has driven 3 m along its odom: that is TF's to place, not the model's.
+  send_mobile_joint_state(3.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1) << "no `world` in TF must not drop the cloud";
+  ASSERT_EQ(last_.width, 1U) << "the arm is filtered where it is, the world point kept";
+  float x = 0.0F;
+  std::memcpy(&x, last_.data.data(), sizeof(float));
+  EXPECT_FLOAT_EQ(x, 2.0F);
+}
+
+TEST_F(MobileBaseWithoutBaseFrameNode, BaseDofsWithoutABaseFrameForwardNothing) {
+  publish_cam_to_base();
+  const rclcpp::Time now = peer_->now();
+  send_mobile_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0);
+}

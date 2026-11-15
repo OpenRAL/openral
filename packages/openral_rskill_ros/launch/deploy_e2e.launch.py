@@ -576,6 +576,23 @@ _SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
 _SELF_FILTERED_RGB_CLOUD_TOPIC = "/openral/world_cloud/self_filtered_rgb"
 
 
+def _collision_base_dofs(description: object) -> list[int]:
+    """Dof indices of the planar mobile-base joints (manifest ``base_joints``); empty on an arm.
+
+    The kernel and the robot self-filter both hold these at zero, so the collision model is
+    posed in ``base_frame`` and nothing above the base (``world``, a fleet map) is needed.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _collision_base_dofs(RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"))
+        [0, 1, 2]
+        >>> _collision_base_dofs(RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        []
+    """
+    base = set(getattr(description, "base_joints", None) or [])
+    return [i for i, j in enumerate(getattr(description, "joints", [])) if j.name in base]
+
+
 def _self_filter_params(
     collision_params: dict[str, object],
     description: object,
@@ -621,6 +638,10 @@ def _self_filter_params(
     params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
     params["joint_states_topic"] = joint_states_topic
     params["padding_m"] = padding_m
+    base_dofs = _collision_base_dofs(description)
+    if base_dofs:  # omitted when empty: launch_ros rejects an empty list (see the kernel's)
+        params["collision_base_dofs"] = base_dofs
+        params["base_frame"] = description.base_frame
     rate_hz = getattr(description, "control_rate_hz", None)
     if isinstance(rate_hz, float) and rate_hz > 0.0:
         params["joint_state_period_s"] = 1.0 / rate_hz
@@ -3156,12 +3177,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # passing it unconditionally crashed the whole launch before any node started. The kernel
     # declares its own ``[]`` default for this parameter, so omitting it means "no base dofs to
     # zero" (same semantics as the ``lifecycle_peer_node_ids`` guard 90 lines below).
-    _base_joint_set = set(getattr(description, "base_joints", None) or [])
-    _collision_base_dofs = [
-        i for i, j in enumerate(description.joints) if j.name in _base_joint_set
-    ]
-    if _collision_base_dofs:
-        kernel_params["collision_base_dofs"] = _collision_base_dofs
+    base_dofs = _collision_base_dofs(description)
+    if base_dofs:
+        kernel_params["collision_base_dofs"] = base_dofs
     # Predictive Cartesian: the EE control link for the
     # Jacobian look-ahead (deepest collision link = wrist/tip). -1 (no collision
     # model) leaves predictive Cartesian off; the reactive measured-config check
@@ -3173,7 +3191,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         _coverage_ball(
             collision_params,
             [j.position_limits for j in description.joints],
-            _collision_base_dofs,
+            base_dofs,
             _octomap_resolution(hal_mode),
         )
         if enable_octomap

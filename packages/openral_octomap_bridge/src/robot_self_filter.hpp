@@ -155,6 +155,15 @@ public:
         this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
     const auto world_state_topic =
         this->declare_parameter<std::string>("world_state_topic", "/openral/world_state_fast");
+    // A mobile manipulator's planar base joints (the kernel's `collision_base_dofs`): held at
+    // zero, as the kernel holds them, so the model is posed in `base_frame` and every TF
+    // lookup starts there. Nothing above the base (a `world`, a fleet map) has to exist in
+    // TF: a robot under its own `odom` is filtered the same as a fixed arm. Empty = a
+    // fixed-base arm, posed in the model's root link.
+    for (const auto d : declare_ints("collision_base_dofs")) {
+      base_dofs_.push_back(static_cast<std::size_t>(d));
+    }
+    const auto base_frame = this->declare_parameter<std::string>("base_frame", "");
 
     std::string error;
     if (!build_self_model(params, model_, error)) {
@@ -166,6 +175,20 @@ public:
                    error.c_str());
     } else {
       model_ok_ = true;
+    }
+    if (!base_dofs_.empty()) {
+      root_frame_ = base_frame;
+    } else if (!model_.link_names.empty()) {
+      root_frame_ = model_.link_names.front();
+    }
+    const bool base_dof_out_of_range =
+        std::any_of(base_dofs_.begin(), base_dofs_.end(),
+                    [&](std::size_t d) { return d >= joint_names.size(); });
+    if (!base_dofs_.empty() && (base_frame.empty() || base_dof_out_of_range)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "collision_base_dofs needs base_frame and dofs within collision_joint_names: "
+                   "forwarding NOTHING");
+      model_ok_ = false;
     }
     if (joint_names.size() < model_.required_dof) {
       RCLCPP_ERROR(this->get_logger(),
@@ -280,8 +303,8 @@ public:
                 "robot self-filter: %zu links, %zu primitives (%zu boxes refined by the "
                 "kernel's hull), padding %.3f m, root %s, joint states %s (skew <= %.3f s)",
                 model_.n_links(), model_.primitives.size(), hulled, padding_m_,
-                model_.link_names.empty() ? "?" : model_.link_names.front().c_str(),
-                joint_states_topic.c_str(), max_skew_s_);
+                root_frame_.empty() ? "?" : root_frame_.c_str(), joint_states_topic.c_str(),
+                max_skew_s_);
   }
 
   /// Totals since start, for tests and the stats log.
@@ -328,6 +351,11 @@ private:
       }
       q_[it->second] = msg->position[i];
       seen_[it->second] = 1;
+    }
+    for (const auto d : base_dofs_) {
+      if (d < q_.size()) {
+        q_[d] = 0.0;  // the base's own pose is TF's (odom), not the model's
+      }
     }
     if (!std::all_of(required_dofs_.begin(), required_dofs_.end(),
                      [this](std::size_t d) { return seen_[d] != 0; })) {
@@ -460,7 +488,7 @@ private:
       return;
     }
     tf2::Transform cloud_from_root;
-    const std::string& root = model_.link_names.front();
+    const std::string& root = root_frame_;
     try {
       const auto tf_msg = tf_buffer_->lookupTransform(
           msg->header.frame_id, root, stamp, rclcpp::Duration::from_seconds(tf_timeout_s_));
@@ -563,8 +591,8 @@ private:
     std::vector<SupportPatch> patches;  // the grid bridge's concern, not the cloud's
     for (const auto& object : state->attached_objects) {
       const char* why = "no_robot_root";
-      if (model_.link_names.empty() ||
-          identity_clearing_track(object, *state, model_.link_names.front(), &why) == nullptr) {
+      if (root_frame_.empty() ||
+          identity_clearing_track(object, *state, root_frame_, &why) == nullptr) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                              "payload %s evidence '%s' has no unique valid tracked-object "
                              "binding in the robot root frame (reason=%s); its sensor returns "
@@ -579,7 +607,7 @@ private:
       } else {
         try {
           const auto tf_msg =
-              tf_buffer_->lookupTransform(model_.link_names.front(), object.attach_link, stamp,
+              tf_buffer_->lookupTransform(root_frame_, object.attach_link, stamp,
                                           rclcpp::Duration::from_seconds(tf_timeout_s_));
           tf2::fromMsg(tf_msg.transform, root_from_link);
         } catch (const tf2::TransformException&) {
@@ -753,9 +781,8 @@ private:
     }
     tf2::Transform cam_from_root;
     try {
-      const auto tf_msg =
-          tf_buffer_->lookupTransform(img.header.frame_id, model_.link_names.front(), stamp,
-                                      rclcpp::Duration::from_seconds(0.0));
+      const auto tf_msg = tf_buffer_->lookupTransform(img.header.frame_id, root_frame_, stamp,
+                                                      rclcpp::Duration::from_seconds(0.0));
       tf2::fromMsg(tf_msg.transform, cam_from_root);
     } catch (const tf2::TransformException&) {
       RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
@@ -835,8 +862,10 @@ private:
   std::vector<double> q_;
   std::vector<std::uint8_t> seen_;
   std::deque<JointSample> history_;
-  std::vector<double> q_at_;     ///< the last interpolated pose
-  std::vector<double> qdot_at_;  ///< and its joint rate
+  std::vector<double> q_at_;            ///< the last interpolated pose
+  std::vector<double> qdot_at_;         ///< and its joint rate
+  std::vector<std::size_t> base_dofs_;  ///< planar base dofs, held at zero
+  std::string root_frame_;  ///< the TF frame the posed model's root is: base_frame on a mobile base
   std::vector<double> q_later_;
 
   double padding_m_{0.02};

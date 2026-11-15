@@ -448,7 +448,11 @@ margin is added. `velocity_padding_dt_s` (`0.02`), `trailing_sweep_s` (`0.0`),
 `tf_timeout_s` (`0.05`), `joint_state_history_s`
 (`2.0`), `attached_filter_enabled` (`true`, unique tracked-object bindings only), `tracked_clear_enabled` (`false`; the self-filter drops a bound payload's points only when true, i.e. `object_tracking: tracking` or `on`), `attached_state_timeout_s` (`0.5`),
 `joint_states_topic` (`/joint_states`), `world_state_topic`
-(`/openral/world_state_fast`), and the robot mask's `robot_mask_enabled`
+(`/openral/world_state_fast`), `collision_base_dofs` (`[]`) and `base_frame` (`""`: a
+mobile manipulator's planar base dofs, the kernel's own, held at zero so the model is posed
+in `base_frame` and every TF lookup starts there; no `world` or fleet map has to exist in TF,
+so each robot under its own `odom` is filtered like a fixed arm; base dofs without a
+`base_frame` forward nothing), and the robot mask's `robot_mask_enabled`
 (`false`), `robot_mask_cameras` / `robot_mask_depth_topics` /
 `robot_mask_camera_info_topics` / `robot_mask_topics` (parallel, `[]`),
 `robot_mask_hand_links` (`[]`), `robot_mask_uncertain_px` (`3`). With no
