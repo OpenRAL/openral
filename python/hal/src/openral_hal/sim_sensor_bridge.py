@@ -3650,9 +3650,9 @@ class SimSensorBridge:
         """Publish the scan a proprio frame carries, once per observation, at most at the rate.
 
         Called from the HAL's publisher thread (never touches the simulator): a frame
-        with a ``scan`` and a ``sim_time_ns`` is published, stamped with that sim time,
-        when ``scan_due`` says the configured period has passed in sim time. A repeated
-        frame (no new step) is never re-published with a fresher stamp.
+        with a ``scan`` and a ``sim_time_ns`` is published, stamped like ``/odom`` and its
+        TF (the node clock), when ``scan_due`` says the configured period has passed in
+        sim time. A repeated frame (no new step) is never re-published.
         """
         if self._scan_pub is None or not self._scan_from_snapshot:
             return
@@ -3663,13 +3663,13 @@ class SimSensorBridge:
         if not scan_due(self._scan_last_ns, frame.sim_time_ns, float(self._scan_rate_hz)):
             return
         self._scan_last_ns = frame.sim_time_ns
-        from builtin_interfaces.msg import Time
-
-        stamp = Time(
-            sec=int(frame.sim_time_ns // 1_000_000_000),
-            nanosec=int(frame.sim_time_ns % 1_000_000_000),
+        # Stamped like /odom and odom->base TF (the node clock), not with the frame's sim
+        # time: that can run one step ahead of the last /clock, and a consumer that
+        # transforms the scan at its stamp (Nav2's collision monitor) would then need TF
+        # from the future and drop the source (Spark, 2026-11-15).
+        self._scan_pub.publish(
+            self._scan_message(list(frame.scan), self._node.get_clock().now().to_msg())
         )
-        self._scan_pub.publish(self._scan_message(list(frame.scan), stamp))
 
     def _scan_message(self, ranges: list[float], stamp: Time) -> LaserScan:
         """A ``LaserScan`` of ``ranges`` (the bridge's -π..π fan) stamped ``stamp``."""
