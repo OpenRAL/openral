@@ -86,9 +86,13 @@ snapshots (`/api/camera/<sensor>/snapshot.jpg`), never video.
 
 Over the tunnel, every request carries a 5-minute token openral.com mints for that user
 and that robot only. **viewer** may read and press E-STOP; **operator** and **admin**
-may also reset the e-stop, prompt and run skills — but only when the robot's site sets
-`OPENRAL_DASHBOARD_REMOTE_CONTROL=1` (default off: IEC 60204-1 expects a reset where
-the hazard can be seen). E-STOP is always allowed, from every role and listener.
+may also reset the e-stop, prompt and run skills — but only with
+`OPENRAL_DASHBOARD_REMOTE_CONTROL=1`. A robot linked to openral.com gets it, and
+`OPENRAL_DASHBOARD_WRITE_CONTROLS=1`, from its account at deploy start (ADR-0132): both
+are on unless an org admin turns them off under **Settings** on openral.com. A value set
+on the robot wins, so a site that wants every reset done where the hazard can be seen
+(IEC 60204-1) sets `OPENRAL_DASHBOARD_REMOTE_CONTROL=0`. An unlinked robot keeps both
+off. E-STOP is always allowed, from every role and listener.
 **Remote E-STOP is best-effort, not a safety function**: the physical e-stop stays
 authoritative.
 

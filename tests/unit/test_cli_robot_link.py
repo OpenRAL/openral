@@ -13,13 +13,16 @@ import json
 import os
 import stat
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Any
 
 import pytest
 from openral_cli.main import app
 from openral_core import RobotEnrolment
 from typer.testing import CliRunner
+
+from tests.unit.fakes.fake_robot_settings_site import SettingsResponse, settings_site
 
 _TUNNEL = "eyJhIjoidHVubmVsLXNlY3JldCJ9"
 _LINK: dict[str, object] = {
@@ -38,13 +41,13 @@ _CODE = base64.urlsafe_b64encode(json.dumps(_LINK).encode()).decode().rstrip("="
 
 @pytest.fixture
 def enrolment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    from openral_cli.robot import ACCOUNT_SETTINGS
+    from openral_cli.robot import ACCOUNT_SETTINGS, CONTROL_SETTINGS
     from openral_observability.dashboard import tunnel
 
     monkeypatch.setattr(tunnel, "CLOUDFLARED", {})  # never download in a unit test
     # apply_account_settings writes os.environ itself: record each variable's original
     # state first (setenv, then delenv), so teardown restores it and nothing leaks.
-    for var in ACCOUNT_SETTINGS:
+    for var in ACCOUNT_SETTINGS | CONTROL_SETTINGS:
         monkeypatch.setenv(var, "")
         monkeypatch.delenv(var)
     path = tmp_path / "config" / "robot.json"
@@ -188,20 +191,6 @@ def test_the_dashboard_leaves_the_tunnel_to_a_running_service(
     assert not log.exists()  # no second cloudflared started
 
 
-class _Resp:
-    def __init__(self, body: bytes) -> None:
-        self.body = body
-
-    def __enter__(self) -> _Resp:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return self.body
-
-
 def test_deploy_start_applies_account_settings_env_first_cache_offline(
     enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -214,13 +203,8 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "local-wins")
     seen: list[tuple[str, str, str]] = []
-
-    def site(req: Any, timeout: float) -> _Resp:  # the openral.com boundary
-        seen.append((req.full_url, req.headers["Authorization"], req.get_header("User-agent")))
-        body = {"settings": {"OPENRAL_REASONER_API_KEY": "sk-1", "OPENRAL_REASONER_MODEL": "m"}}
-        return _Resp(json.dumps(body).encode())
-
-    monkeypatch.setattr(robot, "_open", site)
+    settings = {"OPENRAL_REASONER_API_KEY": "sk-1", "OPENRAL_REASONER_MODEL": "m"}
+    monkeypatch.setattr(robot, "_open", settings_site(settings, seen))
     assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_API_KEY"]
     # Not urllib's default agent, which Cloudflare refuses.
     assert seen == [
@@ -231,7 +215,7 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
     cache = enrolment.with_name("settings.json")
     assert stat.S_IMODE(cache.stat().st_mode) == 0o600
 
-    def offline(req: Any, timeout: float) -> _Resp:
+    def offline(req: urllib.request.Request, timeout: float) -> SettingsResponse:
         raise OSError("no route to host")
 
     monkeypatch.setattr(robot, "_open", offline)
@@ -240,22 +224,45 @@ def test_deploy_start_applies_account_settings_env_first_cache_offline(
     assert os.environ["OPENRAL_REASONER_API_KEY"] == "sk-1"
 
 
-def test_account_settings_never_set_the_robots_own_switches(
+def test_account_settings_set_the_control_switches_but_the_robot_wins(
     enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Remote and write controls stay on the robot (Safety-WG), whatever the site sends."""
+    """ADR-0132: the account turns remote and write controls on or off; a set variable wins."""
     from openral_cli import robot
 
     _fake_cloudflared(tmp_path, monkeypatch)
     assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
-    monkeypatch.delenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", raising=False)
-    body = {"OPENRAL_DASHBOARD_REMOTE_CONTROL": "1", "OPENRAL_REASONER_MODEL": "m"}
-    monkeypatch.setattr(
-        robot,
-        "_open",
-        lambda req, timeout: _Resp(json.dumps({"settings": body}).encode()),
-    )
-    assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_REASONER_MODEL"]
+    body = {
+        "OPENRAL_DASHBOARD_REMOTE_CONTROL": "1",
+        "OPENRAL_DASHBOARD_WRITE_CONTROLS": "0",
+        "OPENRAL_REASONER_MODEL": "m",
+    }
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(robot, "_open", settings_site(body, calls))
+    # The site turned remote control on, but this robot's site forces it off.
+    monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", "0")
+    assert robot.apply_account_settings(echo=lambda _: None) == [
+        "OPENRAL_DASHBOARD_WRITE_CONTROLS",
+        "OPENRAL_REASONER_MODEL",
+    ]
+    assert os.environ["OPENRAL_DASHBOARD_REMOTE_CONTROL"] == "0"
+    assert os.environ["OPENRAL_DASHBOARD_WRITE_CONTROLS"] == "0"
+    # Both switches already set: `openral dashboard` doesn't ask the site again.
+    assert robot.apply_account_settings(echo=lambda _: None, names=robot.CONTROL_SETTINGS) == []
+    assert len(calls) == 1
+
+
+def test_a_control_switch_takes_only_0_or_1(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anything else ("true", "yes") is ignored, so the robot keeps its own default (off)."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    body = {"OPENRAL_DASHBOARD_REMOTE_CONTROL": "true", "OPENRAL_DASHBOARD_WRITE_CONTROLS": "1"}
+    monkeypatch.setattr(robot, "_open", settings_site(body))
+    assert robot.apply_account_settings(echo=lambda _: None) == ["OPENRAL_DASHBOARD_WRITE_CONTROLS"]
     assert "OPENRAL_DASHBOARD_REMOTE_CONTROL" not in os.environ
 
 
@@ -263,8 +270,6 @@ def test_a_refused_credential_drops_the_cache_and_a_new_link_drops_the_old_robot
     enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A removed or re-keyed robot keeps no copy of its org's key; neither does a re-link."""
-    import urllib.error
-
     from openral_cli import robot
 
     _fake_cloudflared(tmp_path, monkeypatch)
@@ -273,7 +278,7 @@ def test_a_refused_credential_drops_the_cache_and_a_new_link_drops_the_old_robot
     cache.write_text('{"OPENRAL_REASONER_API_KEY": "sk-1"}')
     monkeypatch.delenv("OPENRAL_REASONER_API_KEY", raising=False)
 
-    def refused(req: Any, timeout: float) -> _Resp:
+    def refused(req: urllib.request.Request, timeout: float) -> SettingsResponse:
         raise urllib.error.HTTPError(req.full_url, 401, "Unknown robot credential", {}, None)  # type: ignore[arg-type]  # reason: no headers needed
 
     monkeypatch.setattr(robot, "_open", refused)
@@ -290,8 +295,6 @@ def test_a_refused_credential_drops_the_cache_and_a_new_link_drops_the_old_robot
 
 def test_the_settings_request_never_follows_a_redirect() -> None:
     """A redirect would carry the robot's credential to another host."""
-    import urllib.request
-
     from openral_cli import robot
 
     req = urllib.request.Request("https://www.openral.com/api/robot/settings")
@@ -312,16 +315,19 @@ def test_the_robots_own_key_never_meets_an_account_endpoint(
     _fake_cloudflared(tmp_path, monkeypatch)
     assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
 
-    def site(req: Any, timeout: float) -> _Resp:  # the openral.com boundary
-        body = {"settings": {"OPENRAL_REASONER_ENDPOINT": "https://evil.example/v1"}}
-        return _Resp(json.dumps(body).encode())
-
+    site = settings_site(
+        {
+            "OPENRAL_REASONER_ENDPOINT": "https://evil.example/v1",
+            "OPENRAL_DASHBOARD_REMOTE_CONTROL": "1",
+        }
+    )
     monkeypatch.setattr(robot, "_open", site)
     save_setting("ANTHROPIC_API_KEY", "sk-ant-robot-only-1111")
     save_setting("OPENRAL_REASONER_MODEL", "claude-sonnet-5-5")
     assert robot.apply_reasoner_settings(echo=lambda _: None) == [
         "OPENRAL_REASONER_API_KEY",
         "OPENRAL_REASONER_MODEL",
+        "OPENRAL_DASHBOARD_REMOTE_CONTROL",  # the switches carry no key: still applied
     ]
     assert "OPENRAL_REASONER_ENDPOINT" not in os.environ
     # Its variables already exported (an inherited environment): the console sets nothing,
@@ -333,3 +339,20 @@ def test_the_robots_own_key_never_meets_an_account_endpoint(
         monkeypatch.delenv(var)
     save_setting("OPENRAL_REASONER_MODEL", "")
     assert robot.apply_reasoner_settings(echo=lambda _: None) == ["OPENRAL_REASONER_ENDPOINT"]
+
+
+def test_an_unreadable_robot_credential_does_not_stop_the_start(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``openral dashboard`` and deploys start without account settings, saying why."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    secret = enrolment.with_name("robot.secret")
+    secret.write_bytes(b"\xff\xfe not utf-8")
+    said: list[str] = []
+    monkeypatch.setattr(robot, "_open", settings_site({"OPENRAL_DASHBOARD_REMOTE_CONTROL": "1"}))
+    assert robot.apply_account_settings(echo=said.append) == []
+    assert "OPENRAL_DASHBOARD_REMOTE_CONTROL" not in os.environ
+    assert said and "can't read" in said[0]

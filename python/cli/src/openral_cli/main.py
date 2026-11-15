@@ -3984,6 +3984,11 @@ def dashboard(
 
     # Its E-STOP reset and its `ros2` subprocesses act as the operator (ADR-0130).
     default_operator_enclave(os.environ)
+    # A linked robot's remote- and write-control switches from its openral.com account
+    # (ADR-0132); a deploy already applied them, and a variable set here wins.
+    from openral_cli.robot import CONTROL_SETTINGS, apply_account_settings
+
+    apply_account_settings(echo=typer.echo, names=CONTROL_SETTINGS)
 
     inprocess_cmd = shlex.split(inprocess) if inprocess else None
     try:

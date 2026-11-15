@@ -87,9 +87,11 @@ Authorization headers and viz tickets are never logged.
 
 Roles: **viewer** may press E-STOP; **operator** and **admin** may also reset, prompt
 and run skills (a manifest's `min_role` may raise an action above operator, never lower
-it: only E-STOP is a viewer's) — remotely only with `OPENRAL_DASHBOARD_REMOTE_CONTROL=1` (default off).
-Skills need `OPENRAL_DASHBOARD_WRITE_CONTROLS=1` everywhere (default off; only the exact
-value `1` counts). `GET /api/manifest` serves the actions as this dashboard enforces
+it: only E-STOP is a viewer's) — remotely only with `OPENRAL_DASHBOARD_REMOTE_CONTROL=1`.
+Skills need `OPENRAL_DASHBOARD_WRITE_CONTROLS=1` everywhere (only the exact value `1`
+counts). Both are off on the robot itself; a robot linked to openral.com gets them from its
+account, on unless an admin turns them off there, and a variable set on the robot wins
+(ADR-0132). `GET /api/manifest` serves the actions as this dashboard enforces
 them: no skills with write controls off, `remote` per the remote-control flag, only
 `estop` for a LAN client. The dashboard prints a `WARNING:` banner for either flag.
 **Pending safety-WG review**: the remote-control flag and its default, LAN read-only

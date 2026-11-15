@@ -36,6 +36,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
+from openral_core import REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV
+
 _PROVENANCE = (
     "<!-- Vendored by `openral robot vendor-urdf {id}` from {src}. Upstream license applies. -->\n"
 )
@@ -351,8 +353,16 @@ ACCOUNT_SETTINGS = frozenset(
         "OPENRAL_REASONER_DIALECT",
     }
 )
-"""What openral.com may set on a robot. Never the dashboard's write- or remote-control
-switches: those stay on the robot (ADR-0129, Safety-WG), whatever the site sends."""
+"""The reasoner settings openral.com may set on a linked robot."""
+
+CONTROL_SETTINGS = frozenset({REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV})
+"""The dashboard's remote- and write-control switches openral.com may set (ADR-0132).
+
+The account sends both, ``1`` unless an admin turned them off there. Only ``"0"`` and
+``"1"`` are applied, and a variable set on the robot still wins, so a site keeps the
+last word locally (``OPENRAL_DASHBOARD_REMOTE_CONTROL=0``). E-STOP is never gated."""
+
+_SWITCH_VALUES = frozenset({"0", "1"})
 
 
 def apply_console_settings(
@@ -365,7 +375,7 @@ def apply_console_settings(
     reasoner's variables (``reasoner_env``). The set applies whole or not at all: when
     the environment already sets any reasoner variable it wins outright, so the robot's
     key is never paired with an inherited model, endpoint or dialect it was not chosen
-    for. :func:`apply_reasoner_settings` skips the account's settings altogether when
+    for. :func:`apply_reasoner_settings` skips the account's reasoner settings when
     the console chooses a reasoner, so the robot's key is never paired with an
     account's endpoint either. ``console`` is the ``reasoner_env`` snapshot a caller
     already read (so one read decides and applies); ``None`` reads the file. Returns
@@ -401,19 +411,27 @@ def apply_reasoner_settings(*, echo: Callable[[str], None]) -> list[str]:
     # and the account's endpoint must still never pair with the robot's key.
     console = reasoner_env(load_settings())  # one snapshot decides and is applied
     if console:
-        return apply_console_settings(echo=echo, console=console)
+        # The control switches carry no key or URL, so the account's still apply.
+        applied = apply_console_settings(echo=echo, console=console)
+        return applied + apply_account_settings(echo=echo, names=CONTROL_SETTINGS)
     return apply_account_settings(echo=echo)
 
 
-def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
+def apply_account_settings(
+    *,
+    echo: Callable[[str], None],
+    names: frozenset[str] = ACCOUNT_SETTINGS | CONTROL_SETTINGS,
+) -> list[str]:
     """Put this robot's openral.com account settings into ``os.environ`` (ADR-0129).
 
     A linked robot (``openral robot link``) fetches its org's (or owner's) settings,
     e.g. ``OPENRAL_REASONER_API_KEY``, with its own credential from
     ``<site>/api/robot/settings``, and caches them (0600) for offline starts. A variable
-    already in the environment wins; only ``ACCOUNT_SETTINGS`` are applied. A refused
-    credential (the robot was removed, or given a new link code) deletes the cache.
-    Returns the names it set; never raises.
+    already in the environment wins; only ``names`` are applied (default: the reasoner's
+    ``ACCOUNT_SETTINGS`` and the dashboard's ``CONTROL_SETTINGS``), and nothing is
+    fetched when every one of them is already set. A refused credential (the robot was
+    removed, or given a new link code) deletes the cache. Returns the names it set;
+    never raises.
     """
     from urllib.parse import urlsplit
 
@@ -426,13 +444,15 @@ def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
     except ValueError as exc:
         echo(f"account settings: {exc}")
         return []
-    if enrolment is None or not secret_file.is_file():
+    skip = enrolment is None or not secret_file.is_file() or all(k in os.environ for k in names)
+    secret = None if skip else _robot_secret(secret_file, echo)
+    if not secret or enrolment is None:
         return []
     site = "{0.scheme}://{0.netloc}".format(urlsplit(enrolment.iss))
     request = urllib.request.Request(
         f"{site}/api/robot/settings",
         headers={
-            "Authorization": f"Bearer {secret_file.read_text(encoding='utf-8').strip()}",
+            "Authorization": f"Bearer {secret}",
             # Cloudflare refuses urllib's default "Python-urllib/x.y" (error 1010).
             "User-Agent": "openral-robot",
         },
@@ -445,17 +465,31 @@ def apply_account_settings(*, echo: Callable[[str], None]) -> list[str]:
         _write_private(_settings_cache(), json.dumps(settings) + "\n")
     except urllib.error.HTTPError as exc:
         if exc.code not in (401, 403):
-            return _cached_settings(site, exc, echo)
+            return _cached_settings(site, exc, echo, names)
         # Revoked: no cached copy outlives the credential.
         _settings_cache().unlink(missing_ok=True)
         echo(f"account settings: {site} refused this robot's credential; run a new link code")
         return []
     except (OSError, ValueError, KeyError) as exc:
-        return _cached_settings(site, exc, echo)
-    return _apply(settings, site, echo)
+        return _cached_settings(site, exc, echo, names)
+    return _apply(settings, site, echo, names)
 
 
-def _cached_settings(site: str, exc: Exception, echo: Callable[[str], None]) -> list[str]:
+def _robot_secret(path: Path, echo: Callable[[str], None]) -> str | None:
+    """The robot's credential, or ``None`` (said why) when it can't be read.
+
+    Account settings are optional: an unreadable credential must not stop a start.
+    """
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        echo(f"account settings: can't read {path}: {exc}")
+        return None
+
+
+def _cached_settings(
+    site: str, exc: Exception, echo: Callable[[str], None], names: frozenset[str]
+) -> list[str]:
     """The cached settings while ``site`` is unreachable (``exc``), else none."""
     try:
         cached = json.loads(_settings_cache().read_text(encoding="utf-8"))
@@ -463,14 +497,19 @@ def _cached_settings(site: str, exc: Exception, echo: Callable[[str], None]) -> 
         echo(f"account settings: {site} unreachable ({exc}); none cached")
         return []
     echo(f"account settings: {site} unreachable ({exc}); using the cached ones")
-    return _apply(cached if isinstance(cached, dict) else {}, site, echo)
+    return _apply(cached if isinstance(cached, dict) else {}, site, echo, names)
 
 
-def _apply(settings: dict[str, object], site: str, echo: Callable[[str], None]) -> list[str]:
+def _apply(
+    settings: dict[str, object], site: str, echo: Callable[[str], None], names: frozenset[str]
+) -> list[str]:
     applied = [
         k
         for k, v in settings.items()
-        if k in ACCOUNT_SETTINGS and isinstance(v, str) and k not in os.environ
+        if k in names
+        and isinstance(v, str)
+        and k not in os.environ
+        and (k not in CONTROL_SETTINGS or v in _SWITCH_VALUES)
     ]
     for name in applied:
         os.environ[name] = str(settings[name])
