@@ -53,6 +53,9 @@ class ProprioFrame:
             clock-less / wall-clock HAL. Captured here so the publisher
             thread can emit ``/clock`` without touching the simulator.
         policy_state: Optional simulator-native checkpoint state vector.
+        scan: The 2-D lidar ranges the backend returned with this step's observation
+            (``read_scan``; the Isaac scene's ray-cast fan), or ``None`` when it
+            returns none (MuJoCo backends ray-cast on the executor thread instead).
     """
 
     state: JointState
@@ -61,6 +64,7 @@ class ProprioFrame:
     base_twist: tuple[float, ...]
     sim_time_ns: int | None = None
     policy_state: tuple[float, ...] | None = None
+    scan: tuple[float, ...] | None = None
 
 
 class ProprioSnapshot:

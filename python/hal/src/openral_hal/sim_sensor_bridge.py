@@ -113,7 +113,11 @@ _ESTOP_EVIDENCE_WINDOW_NS = 500_000_000
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from builtin_interfaces.msg import Time
     from openral_core import RobotDescription
+    from sensor_msgs.msg import LaserScan
+
+    from openral_hal.proprio_snapshot import ProprioFrame
 
 __all__ = [
     "SimSensorBridge",
@@ -129,6 +133,7 @@ __all__ = [
     "kernel_checked_body_ids",
     "occupied_cell_keys",
     "preattach_verdict",
+    "scan_due",
     "scan_ranges_on_wire",
     "should_idle_step",
     "voxel_backing_record",
@@ -188,6 +193,25 @@ def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[flo
         [12.0, 12.0, 12.0]
     """
     return [float(max_range_m)] * int(n_beams)
+
+
+def scan_due(last_ns: int | None, now_ns: int, rate_hz: float) -> bool:
+    """Whether a scan observed at sim time ``now_ns`` is due, the last published at ``last_ns``.
+
+    Due on the first observation, then once one period (``1 / rate_hz``, sim time, less
+    1 % for integer-ns step rounding) has passed; never for the same or an earlier one.
+
+    Example:
+        >>> scan_due(None, 0, 10.0), scan_due(0, 50_000_000, 10.0), scan_due(0, 100_000_000, 10.0)
+        (True, False, True)
+        >>> scan_due(100_000_000, 100_000_000, 10.0)
+        False
+    """
+    if last_ns is None:
+        return True
+    period_ns = int(1e9 / max(rate_hz, 1.0))
+    # 1 % slack: integer-ns sim steps (3 x 33_333_333 ns at 30 Hz) land a few ns short.
+    return now_ns > last_ns and now_ns - last_ns >= period_ns - period_ns // 100
 
 
 def scan_ranges_on_wire(ranges: Sequence[float], *, max_range_m: float) -> list[float]:
@@ -2804,6 +2828,8 @@ class SimSensorBridge:
         self._idle_hold_ns = int(max(idle_hold_ms, 0.0) * 1_000_000)
         self._viewer_sync_rate_hz = viewer_sync_rate_hz
         self._scan_rate_hz = scan_rate_hz
+        self._scan_from_snapshot = False
+        self._scan_last_ns: int | None = None
         self._scan_n_beams = scan_n_beams
         self._scan_max_range_m = scan_max_range_m
         self._scan_min_range_m = scan_min_range_m
@@ -3583,12 +3609,23 @@ class SimSensorBridge:
             depth=5,
         )
         self._scan_pub = self._node.create_publisher(LaserScan, "/scan", scan_qos)
-        self._scan_timer = self._node.create_timer(
-            1.0 / max(self._scan_rate_hz, 1.0), self._publish_scan
-        )
+        # A backend that returns its lidar fan with each observation (Isaac: no MuJoCo
+        # handles, a `read_scan`) is published by the HAL's proprio publisher thread,
+        # once per new observation and stamped with its sim time
+        # (`publish_scan_from_frame`). On this executor thread, which env.step and
+        # render hold, a 10 Hz timer reached 1.5-3.3 Hz, past Nav2's collision-monitor
+        # source timeout. MuJoCo ray-casts MjData, so it stays on the executor thread.
+        self._scan_from_snapshot = getattr(
+            self._hal, "mujoco_handles", lambda: None
+        )() is None and callable(getattr(self._hal, "read_scan", None))
+        if not self._scan_from_snapshot:
+            self._scan_timer = self._node.create_timer(
+                1.0 / max(self._scan_rate_hz, 1.0), self._publish_scan
+            )
         lidar = self._description.lidar_sensor
         self._node.get_logger().info(
             f"SimSensorBridge: publishing /scan @ {self._scan_rate_hz:.1f} Hz "
+            f"({'per observation, publisher thread' if self._scan_from_snapshot else 'timer'}) "
             f"frame={lidar.frame_id} beams={self._scan_n_beams} "
             f"range=[{self._scan_min_range_m}, {self._scan_max_range_m}] m."
         )
@@ -3604,6 +3641,38 @@ class SimSensorBridge:
         """
         if self._scan_pub is None:
             return
+        n_beams = int(self._scan_n_beams)
+        max_range = float(self._scan_max_range_m)
+        ranges = self._compute_scan_ranges(n_beams=n_beams, max_range_m=max_range)
+        self._scan_pub.publish(self._scan_message(ranges, self._node.get_clock().now().to_msg()))
+
+    def publish_scan_from_frame(self, frame: ProprioFrame) -> None:
+        """Publish the scan a proprio frame carries, once per observation, at most at the rate.
+
+        Called from the HAL's publisher thread (never touches the simulator): a frame
+        with a ``scan`` and a ``sim_time_ns`` is published, stamped with that sim time,
+        when ``scan_due`` says the configured period has passed in sim time. A repeated
+        frame (no new step) is never re-published with a fresher stamp.
+        """
+        if self._scan_pub is None or not self._scan_from_snapshot:
+            return
+        if frame.scan is None or frame.sim_time_ns is None:
+            return
+        if len(frame.scan) != int(self._scan_n_beams):
+            return
+        if not scan_due(self._scan_last_ns, frame.sim_time_ns, float(self._scan_rate_hz)):
+            return
+        self._scan_last_ns = frame.sim_time_ns
+        from builtin_interfaces.msg import Time
+
+        stamp = Time(
+            sec=int(frame.sim_time_ns // 1_000_000_000),
+            nanosec=int(frame.sim_time_ns % 1_000_000_000),
+        )
+        self._scan_pub.publish(self._scan_message(list(frame.scan), stamp))
+
+    def _scan_message(self, ranges: list[float], stamp: Time) -> LaserScan:
+        """A ``LaserScan`` of ``ranges`` (the bridge's -π..π fan) stamped ``stamp``."""
         import math  # reason: stdlib defer
 
         from sensor_msgs.msg import LaserScan
@@ -3612,14 +3681,11 @@ class SimSensorBridge:
         max_range = float(self._scan_max_range_m)
         min_range = float(self._scan_min_range_m)
         scan_rate = float(self._scan_rate_hz)
-
-        ranges = self._compute_scan_ranges(n_beams=n_beams, max_range_m=max_range)
-
         lidar = self._description.lidar_sensor
         frame_id = lidar.frame_id if lidar is not None else "base_link"
 
         msg = LaserScan()
-        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = frame_id
         msg.angle_min = float(-math.pi)
         msg.angle_max = float(math.pi)
@@ -3630,7 +3696,7 @@ class SimSensorBridge:
         msg.range_max = max_range
         msg.ranges = scan_ranges_on_wire(ranges, max_range_m=max_range)
         msg.intensities = []
-        self._scan_pub.publish(msg)
+        return msg
 
     def _compute_scan_ranges(self, *, n_beams: int, max_range_m: float) -> list[float]:
         """Return scan ranges — live MJCF ray-cast if handles are bound, else no-hit fan.
