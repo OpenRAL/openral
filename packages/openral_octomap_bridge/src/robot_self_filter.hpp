@@ -160,10 +160,13 @@ public:
     // lookup starts there. Nothing above the base (a `world`, a fleet map) has to exist in
     // TF: a robot under its own `odom` is filtered the same as a fixed arm. Empty = a
     // fixed-base arm, posed in the model's root link.
-    for (const auto d : declare_ints("collision_base_dofs")) {
+    // Read once here, so read-only (as tracked_clear_enabled): a runtime set would report a
+    // frame the filter does not use.
+    for (const auto d : this->declare_parameter<std::vector<std::int64_t>>(
+             "collision_base_dofs", std::vector<std::int64_t>{}, startup_only)) {
       base_dofs_.push_back(static_cast<std::size_t>(d));
     }
-    const auto base_frame = this->declare_parameter<std::string>("base_frame", "");
+    const auto base_frame = this->declare_parameter<std::string>("base_frame", "", startup_only);
 
     std::string error;
     if (!build_self_model(params, model_, error)) {
@@ -259,8 +262,24 @@ public:
         required_dofs_.push_back(static_cast<std::size_t>(dof));
       }
     }
+    // The base dofs' values are never used (held at zero), so a joint-state stream that does
+    // not carry them (a ros2_control arm HAL, stale odometry) must not make every sample
+    // incomplete.
+    required_dofs_.erase(std::remove_if(required_dofs_.begin(), required_dofs_.end(),
+                                        [this](std::size_t d) {
+                                          return std::find(base_dofs_.begin(), base_dofs_.end(),
+                                                           d) != base_dofs_.end();
+                                        }),
+                         required_dofs_.end());
     q_.assign(std::max(model_.required_dof, joint_names.size()), 0.0);
     seen_.assign(q_.size(), 0);
+    if (model_ok_ && !base_dofs_.empty() && !base_frame_is_the_zeroed_root(base_frame)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "base_frame %s is not where the model's root lands with the base dofs at zero "
+                   "(the planar base chain must end at it with zero offsets): forwarding NOTHING",
+                   base_frame.c_str());
+      model_ok_ = false;
+    }
     const auto hand = declare_strings("robot_mask_hand_links");
     const std::unordered_set<std::string> hand_set(hand.begin(), hand.end());
     for (const int link : model_.primitive_link) {
@@ -374,6 +393,20 @@ private:
     while (!history_.empty() && history_.back().stamp_ns - history_.front().stamp_ns > horizon_ns) {
       history_.pop_front();
     }
+  }
+
+  /// Whether `base_frame` is a model link at the root's pose with every dof at zero, which is
+  /// what posing the model in `base_frame` (base dofs held at zero) assumes.
+  bool base_frame_is_the_zeroed_root(const std::string& base_frame) const {
+    const int link = model_.link_index(base_frame);
+    if (link < 0) {
+      return false;
+    }
+    const std::vector<double> zeros(q_.size(), 0.0);
+    std::vector<tf2::Transform> links;
+    self_forward_kinematics(model_, zeros.data(), zeros.size(), links);
+    const tf2::Transform& at = links[static_cast<std::size_t>(link)];
+    return at.getOrigin().length() < 1e-9 && std::abs(at.getRotation().getW()) > 1.0 - 1e-12;
   }
 
   /// Pose the robot at `stamp` into `q_at_` / `qdot_at_`, or count and warn why not.

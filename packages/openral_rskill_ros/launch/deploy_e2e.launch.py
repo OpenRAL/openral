@@ -613,6 +613,9 @@ def _self_filter_params(
     ros2_control HAL's rate-limited ``~/joint_states``, else ``/joint_states``),
     so the filter poses the robot from the same stream the runner acts on.
     ``padding_m`` is the rig's ``DeployRuntime.robot_self_filter_padding_m``.
+    On a mobile manipulator, ``collision_base_dofs`` (``_collision_base_dofs``, the kernel's)
+    and the manifest ``base_frame`` make the filter hold the planar base dofs at zero and pose
+    the model in ``base_frame``, so TF needs nothing above the base; omitted on a fixed arm.
     ``joint_state_period_s`` is ``1 / action_spec.control_freq_hz`` when the manifest
     declares it (the filter interpolates joint states at the cloud stamp and refuses a
     gap of more than two periods), else the node's own default.
@@ -641,7 +644,7 @@ def _self_filter_params(
     base_dofs = _collision_base_dofs(description)
     if base_dofs:  # omitted when empty: launch_ros rejects an empty list (see the kernel's)
         params["collision_base_dofs"] = base_dofs
-        params["base_frame"] = description.base_frame
+        params["base_frame"] = getattr(description, "base_frame", "")
     rate_hz = getattr(description, "control_rate_hz", None)
     if isinstance(rate_hz, float) and rate_hz > 0.0:
         params["joint_state_period_s"] = 1.0 / rate_hz

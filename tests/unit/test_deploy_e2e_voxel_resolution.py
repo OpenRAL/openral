@@ -381,3 +381,25 @@ def test_a_robot_without_hands_sends_no_empty_hand_list(launch_module: ModuleTyp
     collision = collision_params_from_description(description)
     params = launch_module._self_filter_params(collision, description, "/joint_states", 0.02)
     assert "robot_mask_hand_links" not in params
+
+
+def test_a_mobile_manipulator_filter_poses_the_model_in_its_base_frame(
+    launch_module: ModuleType,
+) -> None:
+    """The filter gets the kernel's base dofs and the manifest base_frame on a mobile base, so it
+    holds the planar joints at zero and needs no `world` in TF; a fixed arm gets neither."""
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    amr = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openamrobot_v2/robot.yaml"))
+    params = launch_module._self_filter_params(
+        collision_params_from_description(amr), amr, "/joint_states", 0.02
+    )
+    assert params["collision_base_dofs"] == launch_module._collision_base_dofs(amr) == [0, 1, 2]
+    assert params["base_frame"] == amr.base_frame == "base_footprint"
+    arm = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    fixed = launch_module._self_filter_params(
+        collision_params_from_description(arm), arm, "/joint_states", 0.02
+    )
+    assert "collision_base_dofs" not in fixed and "base_frame" not in fixed

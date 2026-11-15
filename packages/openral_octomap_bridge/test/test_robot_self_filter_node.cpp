@@ -1039,6 +1039,13 @@ protected:
   std::string base_frame() const override { return ""; }
 };
 
+// `base_link` is in TF (cam -> base_link) but not a model link: posing the model there would
+// misplace every primitive, so the filter refuses.
+class MobileBaseUnknownBaseFrameNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return "base_link"; }
+};
+
 }  // namespace
 
 TEST_F(MobileBaseSelfFilterNode, PosesTheArmInTheBaseFrameWithNoWorldFrameInTf) {
@@ -1064,4 +1071,39 @@ TEST_F(MobileBaseWithoutBaseFrameNode, BaseDofsWithoutABaseFrameForwardNothing) 
   cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
   spin_for(400ms);
   EXPECT_EQ(received_.load(), 0);
+  // Refused at configuration, not by a failed TF lookup on an empty frame.
+  EXPECT_EQ(filter_->totals().dropped_no_tf, 0U);
+}
+
+TEST_F(MobileBaseUnknownBaseFrameNode, ABaseFrameThatIsNotTheZeroedRootForwardsNothing) {
+  geometry_msgs::msg::TransformStamped tf;
+  tf.header.stamp = peer_->now();
+  tf.header.frame_id = "cam";
+  tf.child_frame_id = "base_link";
+  tf.transform.rotation.w = 1.0;
+  tf_->sendTransform(tf);
+  spin_for(200ms);
+  const rclcpp::Time now = peer_->now();
+  send_mobile_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0);
+  EXPECT_EQ(filter_->totals().dropped_no_tf, 0U);
+}
+
+TEST_F(MobileBaseSelfFilterNode, AJointStateWithoutTheBaseJointsStillPosesTheArm) {
+  // A ros2_control arm HAL publishes no planar base joints; their values are unused anyway.
+  publish_cam_to_base();
+  const rclcpp::Time now = peer_->now();
+  sensor_msgs::msg::JointState js;
+  js.header.stamp = now;
+  js.name = {"j1"};
+  js.position = {0.0};
+  js_pub_->publish(js);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1);
+  EXPECT_EQ(last_.width, 1U);
 }
