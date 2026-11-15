@@ -1,7 +1,7 @@
 """``/scan`` from an observation-fed backend (Isaac) leaves the HAL executor thread.
 
 The HAL's proprio publisher thread publishes the scan the step's observation carries
-(``ProprioFrame.scan``), stamped with that step's sim time and throttled in sim time by
+(``ProprioFrame.scan``), stamped like ``/odom`` and throttled in sim time by
 ``scan_due``. On the executor thread, which env.step and render hold, a 10 Hz timer
 delivered 1.5-3.3 Hz, past Nav2's collision-monitor source timeout (Spark, 2026-11-15).
 """
