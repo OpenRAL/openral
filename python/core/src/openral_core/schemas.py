@@ -30,6 +30,7 @@ from typing import (
     NamedTuple,
     Self,
     TypeAlias,
+    TypedDict,
     TypeVar,
 )
 
@@ -15646,8 +15647,9 @@ class ReasonerModel(BaseModel):
 OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
 
 # OpenRouter's OpenAI-compatible endpoint — the default gateway for the curated
-# GPT-5.x entries (a metered router, hence the max_tokens caps below).
-_OPENROUTER_ENDPOINT: str = "https://openrouter.ai/api/v1"
+# GPT-5.x entries and the OpenRouter-only cloud models (a metered router, hence the
+# max_tokens caps below).
+OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 
 # The Claude 5 generation runs adaptive thinking by default (Opus 5.5 cannot
 # turn it off), and thinking tokens count against ``max_tokens``: a 1024 cap can
@@ -15711,7 +15713,7 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         dialect="openai",
         hosting="cloud",
         served_model_id="openai/gpt-5.5",
-        default_endpoint=_OPENROUTER_ENDPOINT,
+        default_endpoint=OPENROUTER_BASE_URL,
         auth_required=True,
         max_tokens_default=16384,
     ),
@@ -15721,7 +15723,7 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         dialect="openai",
         hosting="cloud",
         served_model_id="openai/gpt-5.6",
-        default_endpoint=_OPENROUTER_ENDPOINT,
+        default_endpoint=OPENROUTER_BASE_URL,
         auth_required=True,
         max_tokens_default=16384,
     ),
@@ -15789,39 +15791,63 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
 
 
 #: The account-setting key each provider's models need (openral.com's Account →
-#: Settings and the robot console's settings pane hold these two).
+#: Settings and the robot console's settings pane hold these three).
 ANTHROPIC_KEY_SETTING = "ANTHROPIC_API_KEY"
 OPENAI_KEY_SETTING = "OPENAI_API_KEY"
+OPENROUTER_KEY_SETTING = "OPENROUTER_API_KEY"
 
 
-def reasoner_model_options() -> list[dict[str, str | None]]:
-    """The curated models a settings form offers: ``[{id, label, needs}]``, registry order.
+class ReasonerModelOption(TypedDict):
+    """One entry of a settings form's model drop-down (``reasoner_model_options``).
 
-    ``needs`` is the key setting a model reads: ``ANTHROPIC_API_KEY`` for an
-    Anthropic-dialect model, ``OPENAI_API_KEY`` for an OpenAI model (sent to OpenAI's own
-    API), ``None`` for one that runs on the robot. A cloud model of a provider neither key
-    serves (Gemini, xAI, ...) is left out.
+    Attributes:
+        id: The ``REASONER_MODELS`` key, the value of ``OPENRAL_REASONER_MODEL``.
+        label: Human label, with no provider suffix (the key names the provider).
+        needs: The first of ``keys``, or ``None`` for a model that runs on the robot.
+            Kept for consumers that predate ``keys``.
+        keys: Every key setting that serves the model, in preference order; any one
+            of them is enough. Empty for a model that runs on the robot.
+    """
+
+    id: str
+    label: str
+    needs: str | None
+    keys: list[str]
+
+
+def reasoner_model_options() -> list[ReasonerModelOption]:
+    """The curated models a settings form offers, in registry order.
+
+    ``keys`` are the key settings a model can run on: ``ANTHROPIC_API_KEY`` for an
+    Anthropic-dialect model; for a model on OpenRouter (its default endpoint)
+    ``OPENROUTER_API_KEY``, preceded by ``OPENAI_API_KEY`` for an ``openai/`` model
+    (OpenAI's own API serves it too, and wins when both are set); none for one that runs
+    on the robot. A cloud model none of these keys serves is left out.
 
     Example:
         >>> opts = {o["id"]: o for o in reasoner_model_options()}
         >>> claude, gpt, cosmos = (opts[k] for k in ("claude-opus-4-8", "gpt-5.5", "cosmos3-edge"))
-        >>> claude.get("needs"), gpt.get("label"), cosmos.get("needs") is None
-        ('ANTHROPIC_API_KEY', 'GPT-5.5', True)
+        >>> claude["keys"], gpt["keys"], gpt["label"], cosmos["needs"] is None
+        (['ANTHROPIC_API_KEY'], ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'], 'GPT-5.5', True)
     """
-    out: list[dict[str, str | None]] = []
+    out: list[ReasonerModelOption] = []
     for model in REASONER_MODELS.values():
-        needs: str | None
+        keys: list[str] = []
         if not model.auth_required:
-            needs = None
+            pass
         elif model.dialect == "anthropic":
-            needs = ANTHROPIC_KEY_SETTING
-        elif model.served_model_id.startswith("openai/"):
-            needs = OPENAI_KEY_SETTING
+            keys = [ANTHROPIC_KEY_SETTING]
+        elif model.default_endpoint == OPENROUTER_BASE_URL:
+            if model.served_model_id.startswith("openai/"):
+                keys.append(OPENAI_KEY_SETTING)
+            keys.append(OPENROUTER_KEY_SETTING)
         else:
             continue
         # The provider rides in the key it needs: "(Anthropic)", "(via OpenRouter)" would mislead.
         label = re.sub(r"\s*\((?:Anthropic|via OpenRouter|OpenAI)\)$", "", model.display_name)
-        out.append({"id": model.id, "label": label, "needs": needs})
+        out.append(
+            {"id": model.id, "label": label, "needs": keys[0] if keys else None, "keys": keys}
+        )
     return out
 
 
@@ -15829,7 +15855,7 @@ def reasoner_model_options() -> list[dict[str, str | None]]:
 # Exported so a deployment can reference the same constant the factory does
 # instead of retyping a URL; the properties each one implies (dialect, auth,
 # cold-start timeout, tool_choice) live in ``REASONER_ENDPOINT_PRESETS``.
-OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+# ``OPENROUTER_BASE_URL`` is defined above, next to the curated models it serves.
 # OpenAI's own API. It takes bare model ids (``gpt-5.5``, not OpenRouter's
 # ``openai/gpt-5.5``), and its reasoning models accept function tools only on
 # the Responses API (``/v1/responses``): Chat Completions answers "Function

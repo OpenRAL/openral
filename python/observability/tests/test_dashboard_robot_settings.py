@@ -153,7 +153,26 @@ def test_a_model_on_the_robots_ollama_needs_no_key_and_no_endpoint() -> None:
     from openral_core import reasoner_model_options
     from openral_observability.dashboard.robot_settings import reasoner_env, save_setting
 
-    assert {o["id"]: o["needs"] for o in reasoner_model_options()}["qwen3.5-4b"] is None
+    assert {o["id"]: o["keys"] for o in reasoner_model_options()}["qwen3.5-4b"] == []
     save_setting("ANTHROPIC_API_KEY", _KEY)
     values = save_setting("OPENRAL_REASONER_MODEL", "qwen3.5-4b")
     assert reasoner_env(values) == {"OPENRAL_REASONER_MODEL": "qwen3.5-4b"}
+
+
+def test_an_openrouter_key_runs_a_gpt_model_on_openrouter_and_the_openai_key_wins() -> None:
+    """GPT runs on either key: OpenRouter (its default endpoint) or, when set, OpenAI's API."""
+    from openral_observability.dashboard.robot_settings import reasoner_env, save_setting
+
+    save_setting("OPENROUTER_API_KEY", "sk-or-v1-routerkey-1234")
+    values = save_setting("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    # No endpoint: the model's registry default is OpenRouter.
+    assert reasoner_env(values) == {
+        "OPENRAL_REASONER_MODEL": "gpt-5.5",
+        "OPENRAL_REASONER_API_KEY": "sk-or-v1-routerkey-1234",
+    }
+    values = save_setting("OPENAI_API_KEY", "sk-openai-5678")
+    assert reasoner_env(values)["OPENRAL_REASONER_ENDPOINT"] == "openai"
+    assert reasoner_env(values)["OPENRAL_REASONER_API_KEY"] == "sk-openai-5678"
+    # An Anthropic model is never handed the OpenRouter key.
+    values = save_setting("OPENRAL_REASONER_MODEL", "claude-sonnet-5-5")
+    assert reasoner_env(values) == {}
