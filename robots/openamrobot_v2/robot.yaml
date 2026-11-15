@@ -221,6 +221,13 @@ joints:
     actuator_kind: "servo"
     role: "gripper"
     sim_joint_name: "openarm_left_finger_joint1"
+    # Position-stall grasp trigger: the same OpenArm v2 gripper mechanism, so OpenArm's
+    # measured robot-type constants (robots/openarm/robot.yaml, which documents them).
+    closure_calibration:
+      closed_position: 0.0
+      closed_rest_offset: 0.0086
+      stall_gap: 0.08
+      settle_tolerance: 0.001
   # ── right arm (OpenArm v2.0, 7 revolute + pinch gripper) ──
   - name: "right_joint1"
     origin_xyz: [0, -0.0625, 0]
@@ -327,6 +334,13 @@ joints:
     actuator_kind: "servo"
     role: "gripper"
     sim_joint_name: "openarm_right_finger_joint1"
+    # Position-stall grasp trigger: the same OpenArm v2 gripper mechanism, so OpenArm's
+    # measured robot-type constants (robots/openarm/robot.yaml, which documents them).
+    closure_calibration:
+      closed_position: 0.0
+      closed_rest_offset: 0.0116
+      stall_gap: 0.08
+      settle_tolerance: 0.001
 
 end_effectors:
   - name: "left_gripper"
