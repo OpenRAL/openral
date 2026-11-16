@@ -148,7 +148,10 @@ scene. A value the scene already declares wins unless `--replace`, which prints 
   prims of non-robot, non-dynamic fixtures (`static_colliders`); MuJoCo, every world-welded
   collision geom except the robot's own bodies (`openral_sim.backends.mujoco_geometry`). Each is
   a superset of its collider. Fixed-base robots only: on a mobile base, base-frame fixtures are
-  true only at the reset pose, so none are declared.
+  true only at the reset pose, so none are declared. (Declared place zones, `PlaceZone`, are
+  the exception that can follow a mobile base: a zone declared in the robot's `map` / `odom`
+  frame is re-expressed in the base frame through tf2 at the grid's stamp each publish, and
+  yields no region without that transform; a base-frame zone on a mobile robot is refused.)
 - **`search_box`** — the reasoner's own grounding (`ground_grasp_target`), fed the sim's object
   boxes as detections instead of perception's: the target's bound padded on every side.
 - **`workspace_box`** — `openral_reasoner.grounding.ground_workspace`: the hull of the source

@@ -30,10 +30,12 @@ owns the wire:
   ``workspace_box`` as ``workspace_region`` while the tracker's own grid confirms it
   (``TrackerSession.workspace_region``, the producer's rule), the place declaration's
   ``region`` (``TrackerSession.place_region``: a declared ``place_zones_json`` zone the
-  declaration names; in ``on`` also a tracked destination) and, in ``tracking`` only, the
-  grasp declaration's ``region`` (``TrackerSession.grasp_region``: the DECLARED
-  ``search_box`` while one target track sits in it, never a track's box; ``on``'s exemption
-  provider keys on track ids instead and gets none). Heartbeated only while joint states are fresh.
+  declaration names, a fixed-frame (``map`` / ``odom``) one re-expressed in the grid frame
+  through tf2 at the grid's stamp; in ``on`` also a tracked destination) and, in
+  ``tracking`` only, the grasp declaration's ``region`` (``TrackerSession.grasp_region``:
+  the DECLARED ``search_box`` while one target track sits in it, never a track's box;
+  ``on``'s exemption provider keys on track ids instead and gets none). Heartbeated only
+  while joint states are fresh.
 * **Revisions** are seeded from wall time (ns) at every activate plus the store's own
   counter, so they never regress across a node restart or re-activation (the kernel
   refuses a regressing ``tracked_objects`` revision, and the aggregator a regressing
@@ -879,11 +881,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             if zones_json:
                 zones = TypeAdapter(list[PlaceZone]).validate_json(zones_json)
                 self.session.place_zones = {z.target_id: z for z in zones}
+                # A zone in a fixed frame (map / odom: a docked mobile manipulator) is
+                # re-expressed in the grid frame through tf2 at the grid's stamp; no tf2
+                # there and the zone yields no region (`TrackerSession._zone_region`).
+                self.session.zone_transform = self._zone_lookup
                 slog.info(
                     "loaded declared place zones",
                     zones=sorted(z.name for z in zones),
-                    off_frame=sorted(
-                        z.name for z in zones if z.region.frame_id != self.session.frame_id
+                    fixed_frame=sorted(
+                        f"{z.name}@{z.region.frame_id}"
+                        for z in zones
+                        if z.region.frame_id != self.session.frame_id
                     ),
                 )
             raw = str(self._p("object_queries_json"))
@@ -1165,6 +1173,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             tf = self._tf_buffer.lookup_transform(self.session.frame_id, frame, at).transform
             t, q = tf.translation, tf.rotation
             return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
+
+        def _zone_lookup(self, frame: str, stamp_ns: int) -> NDArray[np.float64] | None:
+            """tf2 ``grid <- frame`` at ``stamp_ns`` for a fixed-frame place zone, or ``None``."""
+            return None if self._tf_buffer is None else self._lookup(frame, stamp_ns)
 
         # -- the frame loop --------------------------------------------------------------
 

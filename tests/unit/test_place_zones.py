@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 import yaml
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from openral_core import DeployScene, PlaceZone, place_zone_for_prompt
 from pydantic import TypeAdapter, ValidationError
 
@@ -75,3 +78,33 @@ def test_a_zone_refuses_a_pose_in_another_frame_than_its_region() -> None:
     region["pose"]["frame_id"] = "world"
     with pytest.raises(ValidationError, match="not the region's"):
         PlaceZone.model_validate({**zone.model_dump(), "region": region})
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    frame=st.sampled_from(["map", "odom"]),
+    x=st.floats(-50.0, 50.0),
+    y=st.floats(-50.0, 50.0),
+    yaw=st.floats(-3.14, 3.14),
+)
+def test_a_map_frame_zone_is_the_same_model_and_round_trips_in_a_deploy_scene(
+    frame: str, x: float, y: float, yaw: float
+) -> None:
+    """Station mode adds no field: the fixture's slot, redeclared in a fixed frame at any
+    yaw, validates and round-trips through JSON and a real deploy scene unchanged (the
+    frame is checked against the robot by the deploy, not here)."""
+    zone = _zones()[0]
+    pose = zone.region.pose.model_copy(
+        update={
+            "xyz": (x, y, 0.62),
+            "quat_xyzw": (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
+            "frame_id": frame,
+        }
+    )
+    region = zone.region.model_copy(update={"frame_id": frame, "pose": pose})
+    shelf = PlaceZone.model_validate({**zone.model_dump(), "region": region.model_dump()})
+    assert PlaceZone.model_validate_json(shelf.model_dump_json()) == shelf
+    scene = DeployScene.from_yaml(str(_ROOT / "scenes/deploy/openamrobot_v2_empty.yaml"))
+    data = scene.model_dump(exclude_unset=True)
+    with_zones = DeployScene.model_validate({**data, "place_zones": [shelf.model_dump()]})
+    assert DeployScene.model_validate_json(with_zones.model_dump_json()).place_zones == [shelf]

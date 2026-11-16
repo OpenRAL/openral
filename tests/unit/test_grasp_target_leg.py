@@ -30,6 +30,7 @@ from openral_core import (
     RobotDescription,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.geometry import rebase_box
 from openral_core.perception_geometry import (
     VoxelLattice,
     _in_region,
@@ -50,7 +51,6 @@ from openral_hal._grasp_target_leg import (
     _Refusal,
     _refused_fit,
     approach_box,
-    rebase_box,
     search_column,
 )
 from openral_hal.vision_attachment_bridge import (
