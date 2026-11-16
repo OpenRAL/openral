@@ -9893,3 +9893,67 @@ TEST_F(LifecycleKernelTest, AStillBaseLeavesTheReleaseWindowToItsOwnClose) {
   EXPECT_TRUE(r.passes(0.0)) << logs.joined();
   EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
 }
+
+// ── Station perception off: the base drives, the held payload stays known ───
+//
+// With a mobile base's station perception off the object tracker still publishes the
+// attachment set, carrying only the hands' held payloads and no declaration. These pin what
+// that stream means to the kernel: a BODY_TWIST candidate (a base policy; Nav2's /cmd_vel
+// bypasses the kernel through the HAL's MobileBaseBridge) passes, the carried payload is
+// still checked (its contact with the cell is refused: nothing exempts it), and a STALE
+// stream refuses even the base twist — why the tracker must keep publishing while driving.
+
+namespace {
+
+openral_msgs::msg::ActionChunk base_twist_chunk(double vx) {
+  openral_msgs::msg::ActionChunk c;
+  c.control_mode = 7;  // BODY_TWIST
+  c.horizon = 1;
+  c.n_dof = 6;
+  c.flat = {vx, 0.0, 0.0, 0.0, 0.0, 0.0};
+  c.rskill_id = "navigate";
+  return c;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, TheStationOffStreamLetsTheBaseDriveAndKeepsTheHeldPayloadChecked) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_off_stream", on_mobile_base(place_declaration_params()));
+  mount(rig, 0.0);
+  rig.voxels = declared_target_voxels();
+  rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = declared_carry_state(stream_ns, stream_ns, /*timeout_s=*/60.0);
+    msg.place_declaration_valid = false;  // station off: held payloads only, no declaration
+    msg.grasp_declaration_valid = false;
+    return msg;
+  };
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_TRUE(rig.send_once(nullptr, kGraspClearQ, base_twist_chunk(0.1))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  // The arm brings the carried payload onto the cell: no allowance, a violation.
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, with_base(declared_carry_chunk(), 0.0)));
+  EXPECT_TRUE(rig.node->fault_latched()) << "the held payload is still checked: " << logs.joined();
+  EXPECT_GE(logs.count("a=attached:sim:obj_main"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStaleAttachmentStreamRefusesEvenABaseTwist) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_stale_stream", on_mobile_base(place_declaration_params()));
+  mount(rig, 0.0);
+  rig.voxels = declared_target_voxels();
+  rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = declared_carry_state(stream_ns, stream_ns, /*timeout_s=*/60.0);
+    msg.place_declaration_valid = false;
+    return msg;
+  };
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 200);
+  ASSERT_TRUE(rig.send_once(nullptr, kGraspClearQ, base_twist_chunk(0.1))) << logs.joined();
+  rig.state_fn = nullptr;  // the attachment producer goes quiet (a deactivated tracker)
+  rig.warm(nullptr, kGraspClearQ, 400);  // past attached_collision_deadline_ms (200)
+  EXPECT_FALSE(rig.send_once(nullptr, kGraspClearQ, base_twist_chunk(0.1)));
+  EXPECT_FALSE(rig.node->fault_latched()) << "a drop, not a latch";
+  EXPECT_GE(logs.count("reason=attached_unavailable"), 1U) << logs.joined();
+}

@@ -125,21 +125,34 @@ a step that completes, or a goal cancelled, while a stop is latched ends `FAILUR
 
 ## Station mode: perception per skill on a mobile base
 
-On a mobile base with object tracking on, `deploy_e2e` launches `openral_segmenter` and
-`openral_object_tracker` configured but **inactive** and hands their names to the runner
-(`station_perception_nodes`); everywhere else (every fixed-base cell, tracking off) the
-parameter is empty and the nodes autostart active exactly as before. Per goal the runner
+On a mobile base with object tracking on, `deploy_e2e` launches `openral_segmenter`
+configured but **inactive** (`station_perception_nodes`) and the object tracker ACTIVE with
+its station perception off (`station_perception_service` =
+`/openral/object_tracker/station_perception`); everywhere else (every fixed-base cell,
+tracking off) both parameters are empty and the nodes autostart as before. Per goal the runner
 reads the skill's manifest (`station_perception_wanted`, from `actuators_required`, not an
-LLM decision): a skill that actuates an arm / gripper (pi0.5, MoveIt) gets them activated
-before the grounding wait; a base-only one (`body_twist` only: Nav2, a VLN policy) gets them
-deactivated before its goal is sent; a skill that actuates nothing leaves them as they are.
-Every goal end (success, failure, cancel, E-stop) deactivates them. Each transition is logged
+LLM decision): a skill that actuates an arm / gripper (pi0.5, MoveIt) gets the segmenter
+activated and the tracker's station perception switched on before the grounding wait; a
+base-only one (`body_twist` only: Nav2, a VLN policy) gets them off before its goal is sent;
+a skill that actuates nothing leaves them as they are. Every goal end (success, failure,
+cancel, E-stop) switches them off. Each transition is logged
 (`rskill_runner.station_perception*`); a required one that fails refuses the goal with
-`ROSPerceptionStale` naming the node. The tracker discards the previous station's tracks and
-released records on every activate / deactivate (`TrackerSession.leave_station`, held
-payloads kept). An inactive tracker publishes no `/openral/attachment_state`, so the kernel's
-attachment stream goes stale and it refuses every candidate and grants no allowance (fail
-closed). The reasoner's `vram_lifecycle_peers` (detector / locators) is a disjoint set.
+`ROSPerceptionStale` naming the node or service.
+
+Why the tracker is switched, not deactivated: Nav2's `/cmd_vel` reaches the base through the
+HAL's `MobileBaseBridge` (`_send_action_traced`, never `/openral/candidate_action`), so it
+never meets the kernel; but a base *policy*'s `BODY_TWIST` chunk does, and the kernel refuses
+every candidate once the attachment stream goes stale. Off, the tracker keeps that stream fresh
+with the hands' held payloads only (no declaration, no region, no tracked key: nothing the
+kernel can read as an allowance), so the base can drive and a payload in a hand stays known
+(the kernel, and Nav2's payload scan filter, which fails open on a stale set). The reasoner's
+`vram_lifecycle_peers` (detector / locators) is a disjoint set.
+
+Place zones at several stations: when the prompt matches the same slot declared at several
+map / odom-frame stations (`s<k>_<slot>` sharing an alias), the goal-scope place declaration
+names all of them (`zone_candidates_target_id`, `zone:<a>|<b>|...`) and the tracker keeps the
+one in reach at the base's pose; one match is named as before, and a fixed-base scene is
+unchanged.
 
 ## Composition (one shared `WorldStateAggregator`)
 

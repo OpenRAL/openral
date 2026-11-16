@@ -743,6 +743,13 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # The station's declared place zones (DeployScene.place_zones, a JSON list of
             # core.PlaceZone): a place declaration naming one gets its box as the region.
             self.declare_parameter("place_zones_json", "")
+            # Station-scoped zone choice: the robot's manipulation reach in the base / grid
+            # frame, the world map's coverage ball (the launch's ``_coverage_ball``: the
+            # kernel collision model's moving-link reach plus its margin). A candidate set of
+            # same-slot zones resolves to the one whose box centre lies inside it. Radius 0 =
+            # unknown: no candidate set ever resolves (fail closed).
+            self.declare_parameter("zone_reach_center", [0.0, 0.0, 0.0])
+            self.declare_parameter("zone_reach_radius_m", 0.0)
             self.declare_parameter("declared_object_catalog_json", "")
             self.declare_parameter("object_surface_model_json", "")
             self.declare_parameter("locate_service", "")
@@ -755,6 +762,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # escalates after search_start_s, is EXHAUSTED after search_max_s.
             self.declare_parameter("search_start_s", TrackerParams().search_start_s)
             self.declare_parameter("search_max_s", TrackerParams().search_max_s)
+            # Station mode (mobile base): whether the station's perception starts ON. Off, the
+            # node stays ACTIVE but consumes no frames and publishes the hands' held payloads
+            # only (no tracks but held ones, no released records, no grasp / place
+            # declaration, so no region and no tracked key reach the kernel), so the kernel's
+            # attachment stream stays fresh and a held payload stays known while the base
+            # drives. The skill runner switches it per skill on
+            # ``/openral/object_tracker/station_perception`` (std_srvs/SetBool). ``True`` (a
+            # fixed-base cell) is today's behaviour exactly.
+            self.declare_parameter("station_perception_initially_on", True)
+            self._station_on = True
+            self._station_srv: Any = None
             self._failure_bus: Any = None
             self._attempts: dict[tuple[str, str], int] = {}
             self.session: TrackerSession | None = None
@@ -885,6 +903,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 # re-expressed in the grid frame through tf2 at the grid's stamp; no tf2
                 # there and the zone yields no region (`TrackerSession._zone_region`).
                 self.session.zone_transform = self._zone_lookup
+                radius = float(self._p("zone_reach_radius_m"))
+                if radius > 0.0:
+                    cx, cy, cz = (float(v) for v in self._p("zone_reach_center"))
+                    self.session.zone_reach = ((cx, cy, cz), radius)
                 slog.info(
                     "loaded declared place zones",
                     zones=sorted(z.name for z in zones),
@@ -1001,6 +1023,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # Addendum G escalations reach the reasoner on the failure bus.
             self._failure_bus = FailureBusPublisher(self, FailureSource.WORLD_STATE)
             self._failure_bus.create_publisher()
+            from std_srvs.srv import SetBool
+
+            self._station_on = bool(self._p("station_perception_initially_on"))
+            self._station_srv = self.create_service(
+                SetBool, "/openral/object_tracker/station_perception", self._on_station_perception
+            )
             self._segment = self.create_client(SegmentInView, DEFAULT_SEGMENT_SERVICE)
             if self._p("locate_service"):
                 self._locate = self.create_client(LocateInView, str(self._p("locate_service")))
@@ -1059,6 +1087,27 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 f"kept_tracks={len(self.session.tracker.store.all())}"
             )
 
+        def _on_station_perception(self, request: Any, response: Any) -> Any:
+            """``std_srvs/SetBool``: switch the station's perception on (``data``) or off.
+
+            Either edge discards the previous station (``_leave_station``); off, ``_process``
+            consumes nothing and ``_publish_attachment`` carries held payloads only.
+            """
+            on = bool(request.data)
+            if on != self._station_on:
+                self._leave_station("station_on" if on else "station_off")
+                self._station_on = on
+                for cam in self._cams.values():
+                    cam.pending.clear()
+                self._answers.clear()
+                self._attach_key = None  # republish at once, in the new state
+                self._publish_tracked(force=True)
+                self._publish_attachment()
+            self.get_logger().info(f"object_tracker.station_perception on={on}")
+            response.success = True
+            response.message = f"station_perception={'on' if on else 'off'}"
+            return response
+
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
             for s in self._subs:
                 self.destroy_subscription(s)
@@ -1072,6 +1121,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 if cli is not None:
                     self.destroy_client(cli)
             self._pub_tracked = self._pub_attach = self._segment = self._locate = None
+            if self._station_srv is not None:
+                self.destroy_service(self._station_srv)
+                self._station_srv = None
             if self._failure_bus is not None:
                 self._failure_bus.destroy()
                 self._failure_bus = None
@@ -1203,6 +1255,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             if self.session is None or not self._active:
                 return
             self._fill.touch(time.monotonic())
+            if not self._station_on:
+                # Station perception off (the base drives): no frame is consumed, no query runs.
+                for cam in self._cams.values():
+                    cam.pending.clear()
+                self._answers.clear()
+                return
             # Service answers, one at a time, on this timer's (the node's default) group.
             while self._answers:
                 self._feed(*self._answers.popleft())
@@ -1583,11 +1641,15 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             msg.header.stamp = now.to_msg()
             msg.header.frame_id = s.frame_id
             msg.revision = self._rev_base + self._attach_rev
-            for obj in s.attachments():
+            # Station perception off: the hands' held payloads only. No released record, and no
+            # declaration (so no grasp / place / workspace region and no tracked key): nothing
+            # the kernel could read as an allowance while the base drives.
+            on = self._station_on
+            for obj in s.attachments() if on else s.held_attachments():
                 item = AttachedMsg()
                 obj.fill_idl(item, primitive_factory=PrimitiveMsg)
                 msg.objects.append(item)
-            grasp, place = s.grasp_declaration, s.place_declaration
+            grasp, place = (s.grasp_declaration, s.place_declaration) if on else (None, None)
             msg.grasp_declaration_valid = grasp is not None
             if grasp is not None:
                 # The producer's workspace confirmation, redone on the tracker's grid; the
@@ -1668,7 +1730,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         def _heartbeat(self) -> None:
             self._fill.touch(time.monotonic())
             self._publish_tracked(force=True)
-            if self.session is not None and self._active:
+            if self.session is not None and self._active and self._station_on:
                 self._pub_clear.publish(BoolMsg(data=self.session.hands_clear_of_targets()))
             self._publish_refusals()
             now = int(self.get_clock().now().nanoseconds)

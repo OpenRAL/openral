@@ -598,26 +598,47 @@ def _station_perception_nodes(
 ) -> list[str]:
     """The lifecycle nodes the skill runner toggles per skill (station mode); ``[]`` = none.
 
-    On a mobile base with object tracking on, the tracker's tracks (and the segmenter that
-    feeds it) live in the base frame and hold only while the base stands still: they are
-    launched configured but INACTIVE and the runner activates them around each skill that
-    actuates an arm / gripper (``station_perception_wanted``), in this order. A fixed-base robot,
+    On a mobile base with object tracking on, the tracker's tracks live in the base frame and
+    hold only while the base stands still. The segmenter (VRAM, no output of its own while the
+    tracker owns attachments) is launched configured but INACTIVE and the runner activates it
+    around each skill that actuates an arm / gripper (``station_perception_wanted``). The
+    tracker is NOT among them: it stays ACTIVE so it keeps publishing the held payloads while
+    the base drives, and the runner switches its station perception instead
+    (``_station_mode``, ``/openral/object_tracker/station_perception``). A fixed-base robot,
     or tracking off, gets ``[]``: the nodes autostart ACTIVE exactly as before.
 
     Example:
         >>> from openral_core import RobotDescription
         >>> amr = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
         >>> _station_perception_nodes(amr, "tracking", segmenter=True)
-        ['openral_segmenter', 'openral_object_tracker']
+        ['openral_segmenter']
         >>> _station_perception_nodes(amr, "off", segmenter=True)
         []
         >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
         >>> _station_perception_nodes(arm, "tracking", segmenter=True)
         []
     """
-    if object_tracking == "off" or not _collision_base_dofs(description):
-        return []
-    return (["openral_segmenter"] if segmenter else []) + ["openral_object_tracker"]
+    return (
+        ["openral_segmenter"] if segmenter and _station_mode(description, object_tracking) else []
+    )
+
+
+def _station_mode(description: object, object_tracking: str) -> bool:
+    """Station mode: a mobile base (``base_joints``) with object tracking on.
+
+    The tracker then starts with its station perception OFF (held payloads only) and the
+    runner switches it per skill on ``/openral/object_tracker/station_perception``.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _station_mode(
+        ...     RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"), "tracking"
+        ... )
+        True
+        >>> _station_mode(RobotDescription.from_yaml("robots/openarm/robot.yaml"), "tracking")
+        False
+    """
+    return object_tracking != "off" and bool(_collision_base_dofs(description))
 
 
 def _self_filter_params(
@@ -3083,6 +3104,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     station_nodes = _station_perception_nodes(
         description, object_tracking, segmenter=bool(vision_attachment_enabled)
     )
+    station = _station_mode(description, object_tracking)
     if object_surface_model_json and object_tracking == "off":
         from openral_core.exceptions import ROSConfigError
 
@@ -3996,6 +4018,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # Station mode: the perception nodes the runner toggles per skill (empty on a
                 # fixed base / tracking off; launch_ros refuses an empty list, hence [""]).
                 "station_perception_nodes": station_nodes or [""],
+                # ... and the tracker's station switch (empty = none: a fixed base).
+                "station_perception_service": (
+                    "/openral/object_tracker/station_perception" if station else ""
+                ),
                 # Issue #418 step 1.4: the runner waits for its TARGET queries to ground
                 # and, under grounding_required, refuses the goal. Checked present above
                 # (`_object_tracking`) whenever tracking is on.
@@ -5226,6 +5252,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 {
                     "robot_yaml": robot_yaml,
                     "mode": object_tracking,
+                    # Station mode: start with the station perception off (held payloads
+                    # only); the runner switches it on per manipulation skill.
+                    "station_perception_initially_on": not station,
                     "hal_mode": hal_mode,
                     "cameras": list(tracked_cameras),
                     "cell_m": _octomap_resolution(hal_mode),
@@ -5244,6 +5273,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # The station's declared place zones: the region of a place
                     # declaration naming one (`TrackerSession.place_region`).
                     "place_zones_json": place_zones_json,
+                    # ... and the reach a same-slot candidate set is chosen in: the world
+                    # map's coverage ball (tracking always composes the octomap leg).
+                    "zone_reach_center": list(coverage.centre) if coverage else [0.0, 0.0, 0.0],
+                    "zone_reach_radius_m": coverage.radius if coverage else 0.0,
                     "declared_object_catalog_json": declared_object_catalog_json,
                     "object_surface_model_json": object_surface_model_json,
                     # The declared static geometry (the kernel's cells file): a body wholly
@@ -5271,13 +5304,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="screen",
         )
         extra_nodes.append(tracker)
-        autostart.append(
-            _poll_autostart(
-                "openral_object_tracker",
-                60.0,
-                target="inactive" if "openral_object_tracker" in station_nodes else "active",
-            )
-        )
+        autostart.append(_poll_autostart("openral_object_tracker", 60.0))
         if instance_cells:
             # EXPERIMENT (pro#51, sim-only): SAM2.1 video masks of the tracker's TARGET /
             # DESTINATION tracks lifted to voxel cells on /openral/instance_cells.

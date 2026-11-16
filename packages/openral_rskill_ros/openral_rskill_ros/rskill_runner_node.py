@@ -558,10 +558,14 @@ if _ROS2_AVAILABLE:
             # default, every fixed-base cell) leaves perception exactly as launched. A required
             # activation that fails refuses the goal (ROSPerceptionStale naming the node).
             self.declare_parameter("station_perception_nodes", [""])
+            # ... and the object tracker's station switch (std_srvs/SetBool; "" = none). The
+            # tracker stays lifecycle-ACTIVE so its held payloads stay on attachment_state
+            # while the base drives; off, it publishes those only (no declaration, no region).
+            self.declare_parameter("station_perception_service", "")
             # Bound on one get_state / change_state round trip; the segmenter's first
             # activation loads and warms its model (the launch's autostart allows 120 s).
             self.declare_parameter("station_perception_timeout_s", 120.0)
-            self._station_clients: dict[str, tuple[Any, Any]] = {}
+            self._station_clients: dict[str, Any] = {}
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -2898,8 +2902,24 @@ if _ROS2_AVAILABLE:
             if raw and mode == "tracking":
                 zones = TypeAdapter(list[PlaceZone]).validate_json(raw)
                 zone = place_zone_for_prompt(prompt, zones)
+                # Station mode: the same slot declared at several stations, all in a fixed
+                # frame (map / odom), each matched by the prompt. The tracker, which has tf2,
+                # keeps the one in reach at the base's pose (`zone_candidates_target_id`).
+                matches = [z for z in zones if place_zone_for_prompt(prompt, [z]) is not None]
+                base = self._description.base_frame if self._description is not None else ""
                 if zone is not None:
                     target_id = zone.target_id
+                elif len(matches) > 1 and all(z.region.frame_id != base for z in matches):
+                    from openral_world_state.object_tracker.session import (
+                        zone_candidates_target_id,
+                    )
+
+                    target_id = zone_candidates_target_id(matches)
+                    self.get_logger().info(
+                        f"rskill_runner.place_zone_candidates: the prompt {prompt!r} names "
+                        f"{sorted(z.name for z in matches)} at several stations; the tracker "
+                        "keeps the one in reach"
+                    )
                 else:
                     self.get_logger().warning(
                         f"rskill_runner.place_zone_unnamed: the prompt {prompt!r} names no "
@@ -3102,7 +3122,8 @@ if _ROS2_AVAILABLE:
                 ROSPerceptionStale: A node did not reach the state (named in the message).
             """
             nodes = self._station_nodes()
-            if not nodes:
+            service = self._station_service()
+            if not nodes and not service:
                 return
             manifest = None
             resident = self._resident_skill
@@ -3124,12 +3145,18 @@ if _ROS2_AVAILABLE:
             )
             self.get_logger().info(
                 f"rskill_runner.station_perception skill={rskill_id} wanted={wanted} why={why} "
-                f"nodes={nodes}"
+                f"nodes={nodes} service={service or '-'}"
             )
             if wanted is None:
                 return
-            for node in nodes if wanted else reversed(nodes):
-                self._station_transition(node, active=wanted, raise_on_failure=True)
+            if wanted:
+                for node in nodes:  # the segmenter before the tracker that calls it
+                    self._station_transition(node, active=True, raise_on_failure=True)
+                self._station_switch(True, raise_on_failure=True)
+            else:
+                self._station_switch(False, raise_on_failure=True)
+                for node in reversed(nodes):
+                    self._station_transition(node, active=False, raise_on_failure=True)
 
         def _station_perception_after_goal(self) -> None:
             """Deactivate the station perception when a goal ends, however it ends.
@@ -3137,8 +3164,50 @@ if _ROS2_AVAILABLE:
             Best effort: the goal is already over, so a failure is logged (ERROR), and the next
             goal re-asserts the state it needs before it is sent (``_station_perception_for``).
             """
+            self._station_switch(False, raise_on_failure=False)
             for node in reversed(self._station_nodes()):
                 self._station_transition(node, active=False, raise_on_failure=False)
+
+        def _station_service(self) -> str:
+            return str(self.get_parameter("station_perception_service").value or "").strip()
+
+        def _station_switch(self, on: bool, *, raise_on_failure: bool) -> None:
+            """Switch the tracker's station perception (``station_perception_service``)."""
+            from openral_core.exceptions import ROSPerceptionStale
+            from std_srvs.srv import SetBool
+
+            service = self._station_service()
+            if not service:
+                return
+            timeout_s = float(self.get_parameter("station_perception_timeout_s").value)
+            client = self._station_clients.get(service)
+            if client is None:
+                client = self.create_client(SetBool, service, callback_group=self._action_cb_group)
+                self._station_clients[service] = client
+            req = SetBool.Request()
+            req.data = on
+            reply = self._station_call(client, req, timeout_s)
+            if reply is not None and bool(reply.success):
+                self.get_logger().info(
+                    f"rskill_runner.station_perception_switch service={service} on={on}"
+                )
+                return
+            reason = f"station perception switch {service!r} did not turn {'on' if on else 'off'}"
+            self.get_logger().error(f"rskill_runner.station_perception_failed: {reason}")
+            if raise_on_failure:
+                raise ROSPerceptionStale(reason)
+
+        def _station_call(self, client: Any, request: Any, timeout_s: float) -> Any:
+            """One service round trip on the reentrant group; ``None`` when it did not answer."""
+            if not client.wait_for_service(timeout_sec=timeout_s):
+                return None
+            done = threading.Event()
+            future = client.call_async(request)
+            future.add_done_callback(lambda _f: done.set())
+            if not done.wait(timeout_s):
+                future.cancel()
+                return None
+            return future.result()
 
         def _station_transition(self, node: str, *, active: bool, raise_on_failure: bool) -> None:
             """Drive ``node`` to ACTIVE (``active``) or INACTIVE; logs every transition."""
@@ -3162,15 +3231,7 @@ if _ROS2_AVAILABLE:
             get_client, change_client = clients
 
             def call(client: Any, request: Any) -> Any:
-                if not client.wait_for_service(timeout_sec=timeout_s):
-                    return None
-                done = threading.Event()
-                future = client.call_async(request)
-                future.add_done_callback(lambda _f: done.set())
-                if not done.wait(timeout_s):
-                    future.cancel()
-                    return None
-                return future.result()
+                return self._station_call(client, request, timeout_s)
 
             state = call(get_client, GetState.Request())
             current = None if state is None else int(state.current_state.id)

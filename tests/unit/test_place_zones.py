@@ -50,11 +50,28 @@ def test_the_restock_zones_lie_in_the_robot_base_frame_and_validate_in_a_deploy_
         {**data, "place_zones": [z.model_dump() for z in zones]}
     )
     assert with_zones.place_zones == zones
+    # A repeated alias among base-frame zones: the scene is one frame, so the robot-aware
+    # deploy refuses it (`_check_place_zone_frames`), as before such repeats were allowed.
+    from openral_cli.deploy_sim import _check_place_zone_frames
+    from openral_core import RobotDescription
+    from openral_core.exceptions import ROSConfigError
+
     clash = zones[0].model_copy(update={"name": "lower_slot_9", "aliases": ("upper_2",)})
-    with pytest.raises(ValidationError, match="unique"):
-        DeployScene.model_validate(
-            {**data, "place_zones": [z.model_dump() for z in (*zones, clash)]}
-        )
+    repeated = DeployScene.model_validate(
+        {**data, "place_zones": [z.model_dump() for z in (*zones, clash)]}
+    )
+    openarm = RobotDescription.from_yaml(str(_ROOT / "robots/openarm/robot.yaml"))
+    with pytest.raises(ROSConfigError, match="repeat the alias"):
+        _check_place_zone_frames(repeated.place_zones, openarm, "openarm")
+    # A repeated NAME, or an alias that is another zone's name, is refused by the scene itself.
+    for bad in (
+        zones[0].model_copy(update={"aliases": ()}),
+        zones[0].model_copy(update={"name": "lower_slot_9", "aliases": ("upper_slot_2",)}),
+    ):
+        with pytest.raises(ValidationError, match="unique"):
+            DeployScene.model_validate(
+                {**data, "place_zones": [z.model_dump() for z in (*zones, bad)]}
+            )
 
 
 def test_a_zone_refuses_a_malformed_name_and_target_geometry() -> None:
@@ -108,3 +125,116 @@ def test_a_map_frame_zone_is_the_same_model_and_round_trips_in_a_deploy_scene(
     data = scene.model_dump(exclude_unset=True)
     with_zones = DeployScene.model_validate({**data, "place_zones": [shelf.model_dump()]})
     assert DeployScene.model_validate_json(with_zones.model_dump_json()).place_zones == [shelf]
+
+
+def _station_zones(alias: str = "lower_1") -> list[PlaceZone]:
+    """The aisle's convention: the twin's slot at six shelves, ``s<k>_<twin name>``, in map."""
+    twin = next(z for z in _zones() if z.name == "lower_slot_1")
+    out = []
+    for k in range(1, 7):
+        pose = twin.region.pose.model_copy(update={"xyz": (2.0 * k, 0.0, 0.5), "frame_id": "map"})
+        region = twin.region.model_copy(update={"frame_id": "map", "pose": pose})
+        out.append(
+            PlaceZone.model_validate(
+                {"name": f"s{k}_lower_slot_1", "aliases": [alias], "region": region.model_dump()}
+            )
+        )
+    return out
+
+
+def test_one_slot_at_six_map_frame_stations_loads_and_an_alias_may_not_cross_frames() -> None:
+    scene = DeployScene.from_yaml(str(_ROOT / "scenes/deploy/openamrobot_v2_empty.yaml"))
+    data = scene.model_dump(exclude_unset=True)
+    zones = _station_zones()
+    loaded = DeployScene.model_validate({**data, "place_zones": [z.model_dump() for z in zones]})
+    assert [z.name for z in loaded.place_zones] == [z.name for z in zones]
+    from openral_cli.deploy_sim import _check_place_zone_frames
+    from openral_core import RobotDescription
+
+    amr = RobotDescription.from_yaml(str(_ROOT / "robots/openamrobot_v2/robot.yaml"))
+    _check_place_zone_frames(loaded.place_zones, amr, "openamrobot_v2")  # map: accepted
+    odom = zones[0].model_copy(
+        update={
+            "name": "s7_lower_slot_1",
+            "region": zones[0].region.model_copy(
+                update={
+                    "frame_id": "odom",
+                    "pose": zones[0].region.pose.model_copy(update={"frame_id": "odom"}),
+                }
+            ),
+        }
+    )
+    with pytest.raises(ValidationError, match="one frame"):
+        DeployScene.model_validate(
+            {**data, "place_zones": [z.model_dump() for z in (*zones, odom)]}
+        )
+
+
+@pytest.mark.parametrize(
+    ("prompt", "matched"),
+    [
+        ("restock box x1 into lower 1", 6),  # the twin's alias, repeated on every shelf
+        ("restock box x1 into lower slot 1", 0),  # the `s<k>_` prefix: no whole-word name hit
+        ("restock box x1 into lower 10", 0),  # whole words only
+    ],
+)
+def test_the_prefixed_station_names_match_the_prompt_only_through_an_alias(
+    prompt: str, matched: int
+) -> None:
+    """``place_zone_for_prompt`` matches a whole-word NAME or ALIAS. ``s3_lower_slot_1`` is not
+    a whole word of "... lower slot 1", so the trained prompt matches a station zone only if
+    the zone also carries the alias ``lower_slot_1`` (``test_..._with_the_slot_alias``)."""
+    zones = _station_zones()
+    assert sum(place_zone_for_prompt(prompt, [z]) is not None for z in zones) == matched
+
+
+def test_with_the_slot_alias_the_trained_prompt_matches_all_six_stations() -> None:
+    zones = [
+        z.model_copy(update={"aliases": ("lower_1", "lower_slot_1")}) for z in _station_zones()
+    ]
+    prompt = "restock box x1 into lower slot 1"
+    assert sum(place_zone_for_prompt(prompt, [z]) is not None for z in zones) == 6
+    assert place_zone_for_prompt(prompt, zones) is None  # several: the tracker chooses by reach
+
+
+_AISLE = Path("/home/allopart/workspace/openral-pro-amr-aisle/scenes/deploy/amr_restock_aisle.yaml")
+
+
+@pytest.mark.skipif(not _AISLE.exists(), reason="the private Pro aisle scene is not on this host")
+def test_the_pro_aisle_scene_loads_with_its_repeated_station_aliases() -> None:
+    scene = DeployScene.from_yaml(str(_AISLE))
+    zones = scene.place_zones
+    assert {z.region.frame_id for z in zones} == {"map"}
+    slot = [z for z in zones if z.name.endswith("_lower_slot_1")]
+    assert sorted(z.name for z in slot) == [f"s{k}_lower_slot_1" for k in range(1, 7)]
+    by_alias = [z for z in zones if place_zone_for_prompt("restock box x1 into lower 1", [z])]
+    assert sorted(z.name for z in by_alias) == sorted(z.name for z in slot)
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    stations=st.integers(2, 8),
+    frame=st.sampled_from(["map", "odom"]),
+    other=st.sampled_from(["odom", "openarm_base", "map"]),
+)
+def test_a_repeated_alias_round_trips_in_one_frame_and_is_refused_across_frames(
+    stations: int, frame: str, other: str
+) -> None:
+    scene = DeployScene.from_yaml(str(_ROOT / "scenes/deploy/openamrobot_v2_empty.yaml"))
+    data = scene.model_dump(exclude_unset=True)
+
+    def at(k: int, f: str) -> dict[str, object]:
+        z = _station_zones()[0]
+        pose = z.region.pose.model_copy(update={"xyz": (2.0 * k, 0.0, 0.5), "frame_id": f})
+        region = z.region.model_copy(update={"frame_id": f, "pose": pose})
+        return {"name": f"s{k}_lower_slot_1", "aliases": ["lower_1"], "region": region.model_dump()}
+
+    same = [at(k, frame) for k in range(1, stations + 1)]
+    loaded = DeployScene.model_validate({**data, "place_zones": same})
+    assert DeployScene.model_validate_json(loaded.model_dump_json()) == loaded
+    mixed = [*same, at(stations + 1, other)]
+    if other == frame:
+        DeployScene.model_validate({**data, "place_zones": mixed})
+    else:
+        with pytest.raises(ValidationError, match="one frame"):
+            DeployScene.model_validate({**data, "place_zones": mixed})

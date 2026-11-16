@@ -96,12 +96,13 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/prompt_in/{source}` | `openral_msgs/PromptStamped` | — | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure) |
 | `/{which}_costmap/costmap_raw` | `nav2_msgs/Costmap` | — | tools/_nav2_costmap_silhouette_probe.py (SilhouetteProbe.__init__) |
 
-## Services (10)
+## Services (11)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
 | `` | `octomap_msgs/BoundingBoxQuery` | — | packages/openral_octomap_bridge/src/octomap_voxel_bridge.hpp [param `payload_sweep_clear_service`] |
 | `/openral/estop_reset` | `std_srvs/Trigger` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | python/cli/src/openral_cli/estop.py (estop_reset_command) |
+| `/openral/object_tracker/station_perception` | `std_srvs/SetBool` | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._create_outputs) | — |
 | `/openral/perception/locate_in_view` | `openral_msgs/LocateInView` | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_configure) [param `locate_in_view_service`] | — |
 | `/openral/perception/query_scene` | `openral_msgs/QueryScene` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_query_scene) |
 | `/openral/perception/query_task_progress` | `openral_msgs/QueryTaskProgress` | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_query_task_progress)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._maybe_verify_active_mission_task) |
@@ -135,7 +136,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (52)
+## Unresolved endpoints (53)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -147,6 +148,7 @@ caller's argument). Shown as their source expression.
 | service | client | `self._config.service_name` | `openral_msgs/SegmentInView` | python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) |
 | service | client | `self._integration.interface_name` | `type_obj` | python/rskill/src/openral_rskill/ros_action_rskill.py (ROSActionRskill._configure_impl) |
 | service | client | `service` | `openral_msgs/LocateInView` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_locate_in_view) |
+| service | client | `service` | `std_srvs/SetBool` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode._station_switch) |
 | service | client | `service` | `std_srvs/Trigger` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | service | client | `service_name` | `srv_type` | tools/lifecycle_autostart.py (_wait_for_service) |
 | service | client | `str(self._p('locate_service'))` | `openral_msgs/LocateInView` | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._create_outputs) |

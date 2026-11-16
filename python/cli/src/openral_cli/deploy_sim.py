@@ -123,6 +123,19 @@ def _check_place_zone_frames(
     import math
 
     fixed = (description.map_frame, description.odom_frame)
+    # A repeated alias names the same slot at several stations; only a fixed-frame zone can
+    # be told apart by station (the tracker's reach choice). Among base-frame zones it is
+    # ambiguous at every pose: refused, as before such repeats were allowed at all.
+    base_aliases = [
+        a for z in zones if z.region.frame_id == description.base_frame for a in z.aliases
+    ]
+    repeated = sorted({a for a in base_aliases if base_aliases.count(a) > 1})
+    if repeated:
+        raise ROSConfigError(
+            f"place_zones of {robot_id!r} repeat the alias(es) {repeated} among zones in the "
+            f"base frame {description.base_frame!r}; only map / odom zones may share one "
+            "(PlaceZone)."
+        )
     for zone in zones:
         frame = zone.region.frame_id
         if frame == description.base_frame:

@@ -155,6 +155,46 @@ _JOINT_SAMPLE_MAX_AGE_NS = round(_R.joint_sample_max_age_s * _NS)
 _CLOCK_RESET_NS = 1_000_000_000
 
 
+def zone_candidates_target_id(zones: Sequence[PlaceZone]) -> str:
+    """The place ``target_id`` naming a candidate set of zones: ``zone:<a>|<b>|...``.
+
+    Station mode: a prompt ("restock box x1 into lower slot 1") names the same slot declared
+    at several stations (``s1_lower_slot_1`` ... ``s6_lower_slot_1``, each with the alias
+    ``lower_slot_1``, all in the map frame). The rSkill runner, which has the prompt but no
+    tf2, names every match; the object tracker, which has tf2 (``zone_transform``) and the
+    robot's reach, keeps the one in reach at the base's current pose
+    (``TrackerSession._zone_region``). Sorted, so the same matches always give the same id.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> box = PlaceRegion(
+        ...     frame_id="map",
+        ...     pose=Pose6D(xyz=(1.0, 0.0, 0.5), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
+        ...     half_extents=(0.1, 0.1, 0.1),
+        ... )
+        >>> zs = [PlaceZone(name=n, region=box) for n in ("s2_lower_slot_1", "s1_lower_slot_1")]
+        >>> zone_candidates_target_id(zs)
+        'zone:s1_lower_slot_1|s2_lower_slot_1'
+        >>> zone_candidate_names(zone_candidates_target_id(zs))
+        ['s1_lower_slot_1', 's2_lower_slot_1']
+        >>> zone_candidate_names("zone:upper_slot_2") is None
+        True
+    """
+    return PlaceZone.TARGET_PREFIX + ZONE_CANDIDATE_SEP.join(sorted(z.name for z in zones))
+
+
+def zone_candidate_names(target_id: str) -> list[str] | None:
+    """The zone names of a candidate-set ``target_id``; ``None`` for anything else."""
+    if not target_id.startswith(PlaceZone.TARGET_PREFIX):
+        return None
+    names = target_id[len(PlaceZone.TARGET_PREFIX) :].split(ZONE_CANDIDATE_SEP)
+    return names if len(names) > 1 else None
+
+
+#: Separates the zone names of a candidate-set place ``target_id`` (a zone name never holds it).
+ZONE_CANDIDATE_SEP = "|"
+
+
 @dataclass(frozen=True)
 class _LateAttachChoice:
     """Late-bind pose and tracks that must not fall through to ordinary ATTACH binding."""
@@ -343,6 +383,12 @@ class TrackerSession:
         # declared in a fixed frame (``map`` / ``odom``) in the grid frame. Unset: none resolve.
         self.zone_transform: Callable[[str, int], NDArray[np.float64] | None] | None = None
         self._zone_state: dict[str, str] = {}  # zone name -> last resolve state (log on change)
+        # Station-scoped zone choice (``zone_candidates_target_id``): the robot's manipulation
+        # reach in the grid frame, ``(centre, radius_m)`` -- the world map's coverage ball the
+        # launch measures from the kernel's collision model (``_coverage_ball``: the moving
+        # links' reach plus a margin). ``None``: no candidate set ever resolves.
+        self.zone_reach: tuple[tuple[float, float, float], float] | None = None
+        self._zone_choice_log: tuple[str, ...] = ()
         self.attachment_changes = 0  # bumped whenever the held set changes
         self._monitors: dict[str, JawReleaseMonitor] = {}
         self._attach_ns: dict[str, int] = {}
@@ -928,6 +974,15 @@ class TrackerSession:
         held = [b.held.attachment for b in self.binders.values() if b.held is not None]
         return held + [record for record, _ in self._released.values()]
 
+    def held_attachments(self) -> list[AttachedCollisionObject]:
+        """Every hand's held payload (joint order), without the released records.
+
+        What the node publishes while the station's perception is off (the base drives): a
+        payload in a hand rides it wherever the base goes; a released record is frozen in the
+        base frame and is wrong once it moves.
+        """
+        return [b.held.attachment for b in self.binders.values() if b.held is not None]
+
     def workspace_region(self) -> PlaceRegion | None:
         """The live grasp declaration's ``workspace_box``, map-confirmed, or ``None``.
 
@@ -1006,10 +1061,54 @@ class TrackerSession:
         A zone in another frame is re-expressed through ``zone_transform`` at the grid's
         ``source_stamp`` (where the base was when the map was built). ``None`` for an unknown
         zone, no transform at that stamp, or a tilted one: no region, no allowance.
+
+        A candidate set (``zone_candidates_target_id``: the prompt named the same slot at
+        several stations) resolves to the one candidate whose box centre, in the grid frame,
+        lies inside ``zone_reach``; none or several, and it is ``None`` (fail closed). Which
+        candidates were considered and why each was dropped is logged on every change.
         """
+        names = zone_candidate_names(target_id)
+        if names is not None:
+            return self._zone_choice(names, grid_frame)
         zone = self.place_zones.get(target_id)
         if zone is None:
             return None
+        return self._resolve_zone(zone, grid_frame)
+
+    def _zone_choice(self, names: Sequence[str], grid_frame: str) -> PlaceRegion | None:
+        """The one in-reach zone of a candidate set (``_zone_region``), or ``None``."""
+        kept: list[PlaceRegion] = []
+        why: list[str] = []
+        for name in names:
+            zone = self.place_zones.get(f"{PlaceZone.TARGET_PREFIX}{name}")
+            region = None if zone is None else self._resolve_zone(zone, grid_frame)
+            if region is None:
+                why.append(f"{name}:unresolved")
+                continue
+            if self.zone_reach is None:
+                why.append(f"{name}:no_reach")
+                continue
+            (cx, cy, cz), radius = self.zone_reach
+            x, y, z = region.pose.xyz
+            dist = math.dist((x, y, z), (cx, cy, cz))
+            if dist > radius:
+                why.append(f"{name}:out_of_reach({dist:.2f}>{radius:.2f})")
+                continue
+            why.append(f"{name}:in_reach({dist:.2f}<={radius:.2f})")
+            kept.append(region)
+        chosen = kept[0] if len(kept) == 1 else None
+        record = (*why, "chosen" if chosen is not None else "none")
+        if record != self._zone_choice_log:
+            self._zone_choice_log = record
+            event = "object_tracker.place_zone_chosen"
+            if chosen is None:
+                log.warning("object_tracker.place_zone_unchosen", candidates=why)
+            else:
+                log.info(event, zone=chosen.evidence_ref, candidates=why)
+        return chosen
+
+    def _resolve_zone(self, zone: PlaceZone, grid_frame: str) -> PlaceRegion | None:
+        """``zone``'s box in ``grid_frame``, stamped with the newest grid (``_zone_region``)."""
         region = zone.region
         if region.frame_id != grid_frame:
             t = None

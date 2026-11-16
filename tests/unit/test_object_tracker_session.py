@@ -946,3 +946,19 @@ def test_instance_cells_are_applied_only_on_an_axis_aligned_lattice(
         s.on_instance_cells(1, grid.frame_id, grid.origin, grid.resolution, {})
         s._apply_instance_cells(())
         assert ("object_tracker.instance_cells_lattice_rotated" in events) is refused, events
+
+
+def test_held_attachments_are_the_hands_payloads_without_released_records() -> None:
+    """Station perception off publishes ``held_attachments``: a released record (frozen in the
+    base frame) is not among them; a payload still in a hand is."""
+    s = _session("so101_follower")
+    _released(s)
+    assert s.attachments() and s.held_attachments() == []
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    _mint(s, centre, "apple")
+    s.on_joint_state(q, 2 * _S)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=2 * _S + 10)
+    held = s.held_attachments()
+    assert len(held) == 1 and held[0] in s.attachments()
+    assert held[0].released_by_link is None

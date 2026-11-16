@@ -13434,7 +13434,9 @@ class DeployScene(BaseModel):
     region while a payload is held (sim only: ``deploy run`` refuses every tracking mode
     until Safety-WG sign-off). A zone is in the robot base frame (fixed-base robots only) or
     in its map / odom frame (any robot; re-expressed through tf2): the deploy refuses
-    anything else (``PlaceZone``). Names and aliases are unique across zones. Empty = no
+    anything else (``PlaceZone``). Names are unique across zones; an alias may repeat only
+    across zones in one fixed frame (the same slot at several stations, chosen by reach at run
+    time; the deploy refuses a repeat among base-frame zones). Empty = no
     zone; a prompt naming none arms none. Declared, not measured: Safety-WG review owed."""
 
     nav_goals: list[NavGoal] = Field(default_factory=list)
@@ -13448,10 +13450,28 @@ class DeployScene(BaseModel):
 
     @model_validator(mode="after")
     def _unique_zone_names(self) -> Self:
-        names = [n for z in self.place_zones for n in (z.name, *z.aliases)]
-        dupes = sorted({n for n in names if names.count(n) > 1})
+        # Zone names are unique across the scene, and no alias is another zone's name. An
+        # alias may repeat only across zones that all share one frame: the same slot at
+        # several stations of a mobile robot, declared in its map / odom frame and told apart
+        # by the robot's reach at run time (`zone_candidates_target_id`). The deploy, which
+        # knows the robot, still refuses a repeat among base-frame zones
+        # (`_check_place_zone_frames`), so a fixed-base scene is refused exactly as before.
+        # Backward compatible: every file that loaded still loads.
+        names = [z.name for z in self.place_zones]
+        frames: dict[str, set[str]] = {}
+        for z in self.place_zones:
+            for a in z.aliases:
+                frames.setdefault(a, set()).add(z.region.frame_id)
+        dupes = sorted(
+            {n for n in names if names.count(n) > 1}
+            | {a for a in frames if a in names}
+            | {a for a, fs in frames.items() if len(fs) > 1}
+        )
         if dupes:
-            raise ValueError(f"place_zones names/aliases must be unique; repeated: {dupes}.")
+            raise ValueError(
+                f"place_zones names must be unique, no alias may be a zone name, and a "
+                f"repeated alias must stay in one frame; refused: {dupes}."
+            )
         dupes = repeated_nav_goal_names(self.nav_goals)
         if dupes:
             raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
