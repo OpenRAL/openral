@@ -31,6 +31,8 @@ from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 from openral_hal._vision_attachment_evidence import VisionAttachmentEvidenceProducer
 from openral_hal.vision_attachment_bridge import (
+    BASE_STILL_M,
+    BASE_STILL_RAD,
     ReleaseWindow,
     VisionAttachmentBridge,
     VisionAttachmentConfig,
@@ -279,3 +281,130 @@ def test_the_openarm_and_so101_touch_links_are_unchanged() -> None:
     so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     # This branch models the SO-101 jaw as a mimic link (`jaw`), already a touch link.
     assert VisionAttachmentEvidenceProducer(so101).touch_links == ("moving_jaw", "jaw")
+
+
+# ── OpenAMRobot 2.0: a mobile manipulator standing still is a fixed-base station ───────
+
+_AMR = Path("robots/openamrobot_v2/robot.yaml")
+
+
+@pytest.fixture(scope="module")
+def amr() -> RobotDescription:
+    return RobotDescription.from_yaml(str(_AMR))
+
+
+def test_a_base_frame_below_only_the_planar_base_joints_is_accepted(
+    amr: RobotDescription,
+) -> None:
+    """``world -> base_x -> base_y -> base_yaw -> base_footprint``: the kernel zeroes exactly
+    those dofs (``collision_base_dofs``) before its FK, so ``base_footprint`` never moves."""
+    assert amr.base_joints == ["base_x", "base_y", "base_yaw"]
+    assert _release_base_link(amr) == "base_footprint"
+
+
+def test_a_base_frame_below_a_lift_or_an_arm_joint_is_still_refused(
+    amr: RobotDescription,
+) -> None:
+    with pytest.raises(ROSConfigError, match="'lift_joint'"):
+        _release_base_link(amr.model_copy(update={"base_frame": "lift_carriage_link"}))
+    hand = next(j for j in amr.joints if j.name == "left_gripper").parent_link
+    with pytest.raises(ROSConfigError, match="not one of its planar base_joints"):
+        _release_base_link(amr.model_copy(update={"base_frame": hand}))
+    # A leaf link: nothing hangs off it, so nothing could be modelled in it.
+    with pytest.raises(ROSConfigError, match="not the root"):
+        _release_base_link(amr.model_copy(update={"base_frame": "nonexistent_link"}))
+
+
+def test_a_fixed_base_window_never_reads_base_motion(description: RobotDescription) -> None:
+    window = ReleaseWindow.open(
+        description,
+        _held(description),
+        base_link=_BASE,
+        t_base_from_link=_hand_at_zero(description),
+        now_s=0.0,
+    )
+    assert window.t_odom_from_base is None
+    assert not window.base_moved(None)
+    assert not window.base_moved(_xyz_rpy_matrix((5.0, 0.0, 0.0), (0.0, 0.0, 1.0)))
+
+
+def _amr_held(amr: RobotDescription) -> AttachedCollisionObject:
+    joint = next(j for j in amr.joints if j.name == "left_gripper")
+    producer = VisionAttachmentEvidenceProducer(amr, gripper_joint=joint.name)
+    held, _ = producer.on_grasp(
+        masks=[],
+        depth_m=np.zeros((0, 0)),
+        intrinsics=None,  # type: ignore[arg-type]  # reason: no masks, so the fit never reads intrinsics
+        t_link_from_cam=np.eye(4),
+        tcp_in_link=joint.origin_xyz,
+        object_id="grasped_payload:left_gripper",
+        stamp_ns=1_000,
+    )
+    assert held is not None
+    return held
+
+
+def test_a_mobile_window_ends_when_the_base_leaves_its_detach_pose(
+    amr: RobotDescription,
+) -> None:
+    odom = _xyz_rpy_matrix((3.0, -1.0, 0.0), (0.0, 0.0, 0.7))
+    window = ReleaseWindow.open(
+        amr,
+        _amr_held(amr),
+        base_link="base_footprint",
+        t_base_from_link=np.eye(4),
+        now_s=0.0,
+        t_odom_from_base=odom,
+    )
+    assert window.record.attach_link == "base_footprint"
+    assert not window.base_moved(odom)
+    jitter = BASE_STILL_M / 2
+    assert not window.base_moved(odom @ _xyz_rpy_matrix((jitter, 0.0, 0.0), (0.0, 0.0, 0.0)))
+    assert window.base_moved(odom @ _xyz_rpy_matrix((2 * BASE_STILL_M, 0.0, 0.0), (0, 0, 0)))
+    assert window.base_moved(odom @ _xyz_rpy_matrix((0.0, 0.0, 0.0), (0, 0, 2 * BASE_STILL_RAD)))
+    assert window.base_moved(None), "an unknown base pose is never still"
+
+
+def test_the_bridge_drops_the_frozen_record_when_the_base_drives(amr: RobotDescription) -> None:
+    """Live tf2: DETACH freezes the payload on ``base_footprint`` with the odometry pose; the
+    first poll after the base drives 5 cm closes the window (``base_moved``); with no
+    odometry at DETACH no window is opened at all."""
+    tf2_ros = pytest.importorskip("tf2_ros")
+    rclpy = pytest.importorskip("rclpy")
+    from geometry_msgs.msg import TransformStamped
+
+    held = _amr_held(amr)
+
+    def static(buffer: Any, parent: str, child: str, x: float) -> None:
+        t = TransformStamped()
+        t.header.frame_id, t.child_frame_id = parent, child
+        t.transform.translation.x = x
+        t.transform.rotation.w = 1.0
+        buffer.set_transform_static(t, "test")
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_amr_release_window")
+        try:
+            bridge = VisionAttachmentBridge(node, amr)
+            leg = next(leg for leg in bridge._legs if leg.joint_name == "left_gripper")
+            bridge._tf_buffer = tf2_ros.Buffer()
+            static(bridge._tf_buffer, "base_footprint", held.attach_link, 0.4)
+
+            leg.attachment = held
+            bridge._open_release(leg)
+            assert leg.release is None, "no odometry: the payload is dropped, never frozen"
+
+            static(bridge._tf_buffer, "odom", "base_footprint", 2.0)
+            bridge._open_release(leg)
+            assert leg.release is not None and leg.release.t_odom_from_base is not None
+            bridge._poll_releases()
+            assert leg.release is not None, "the base stood still: the window holds"
+
+            static(bridge._tf_buffer, "odom", "base_footprint", 2.05)
+            bridge._poll_releases()
+            assert leg.release is None, "the base drove: the frozen record is dropped"
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
