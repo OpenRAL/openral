@@ -747,6 +747,9 @@ class ContextRenderer:
         self._now_ns = now_ns
         # Latest /openral/safety_status; None until one arrives (no section).
         self._safety: SafetyStateRecord | None = None
+        # Whether that status was within SAFETY_STATUS_LIVENESS_S when ``seq`` was
+        # last read; crossing the boundary either way is an event (see ``seq``).
+        self._safety_was_fresh: bool | None = None
         # Latest ExecuteRskill feedback of the in-flight goal, rendered on the
         # in_flight line. Not an event: it never bumps ``seq``.
         self._inflight_feedback: str = ""
@@ -930,17 +933,32 @@ class ContextRenderer:
     def set_safety_status(self, status: SafetyStateRecord | None) -> None:
         """Set the latest ``/openral/safety_status``, rendered as ``## SAFETY``.
 
-        Bumps ``seq`` only when the latched flag or the reason changes; the 1 Hz
-        liveness refresh of an unchanged state is not an event.
+        Bumps ``seq`` when the latched flag or the reason changes, or when a
+        status arrives after the last one had gone stale (UNKNOWN → live); the
+        1 Hz liveness refresh of an unchanged, live state is not an event.
         """
         before = self._safety
         self._safety = status
+        fresh = self._safety_fresh()
         if (
             before is None
             or status is None
             or (before.latched, before.reason) != (status.latched, status.reason)
+            or fresh != self._safety_was_fresh
         ):
             self._seq += 1
+        self._safety_was_fresh = fresh if status is not None else None
+
+    def _safety_fresh(self) -> bool:
+        """Whether the last safety status is recent enough to trust.
+
+        ``False`` without a clock: freshness cannot be shown, and a status that
+        cannot be shown current is never rendered as "clear".
+        """
+        st = self._safety
+        if st is None or self._now_ns is None:
+            return False
+        return (self._now_ns() - st.stamp_ns) / 1e9 <= SAFETY_STATUS_LIVENESS_S
 
     @property
     def safety_latched(self) -> bool:
@@ -1254,13 +1272,16 @@ class ContextRenderer:
         """One line: latched / dropping / clear, or UNKNOWN when the topic went quiet."""
         st = self._safety
         assert st is not None  # render() guards `is not None` before calling
-        if self._now_ns is not None and st.stamp_ns > 0:
-            age_s = (self._now_ns() - st.stamp_ns) / 1e9
-            if age_s > SAFETY_STATUS_LIVENESS_S:
-                return (
-                    f"UNKNOWN — no safety status for {age_s:.0f}s; treat the robot as stopped "
-                    "and tell the operator rather than dispatching motion."
-                )
+        if not self._safety_fresh():
+            quiet = (
+                "no clock to tell whether the last safety status is current"
+                if self._now_ns is None
+                else f"no safety status for {(self._now_ns() - st.stamp_ns) / 1e9:.0f}s"
+            )
+            return (
+                f"UNKNOWN — {quiet}; treat the robot as stopped and tell the operator "
+                "rather than dispatching motion."
+            )
         if st.latched:
             return (
                 f"LATCHED reason={st.reason or '?'}{self._age(st.stamp_ns)} — every motion is "
@@ -1544,7 +1565,17 @@ class ContextRenderer:
 
         Not reset by ``drain_prompts`` — the buffer is empty
         afterwards but the renderer has still "seen" the prompt.
+
+        Reading it also checks the safety status against its liveness window:
+        a status that went stale (``## SAFETY`` turns UNKNOWN) bumps ``seq``
+        here, since no message arrives to announce that nothing arrived — so
+        the change reaches the model instead of being held as ``heartbeat_idle``.
         """
+        if self._safety is not None:
+            fresh = self._safety_fresh()
+            if fresh != self._safety_was_fresh:
+                self._safety_was_fresh = fresh
+                self._seq += 1
         return self._seq
 
     def drain_prompts(
