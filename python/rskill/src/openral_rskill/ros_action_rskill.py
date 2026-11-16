@@ -135,6 +135,8 @@ _REPLAY_SETTLE_TIMEOUT_S = 10.0
 # at 15 s so a slow first-boot doesn't false-fail; subsequent goals
 # accept in <1 s once the server is warm.
 _WAIT_FOR_SERVER_TIMEOUT_S = 15.0
+#: Per-call wait of the lifecycle-state probe that explains a rejected goal.
+_REJECTION_PROBE_TIMEOUT_S = 1.0
 
 # Mirror of ``action_msgs.msg.GoalStatus.STATUS_*`` for human-readable
 # failure messages. Constants are integers per the IDL; we don't import
@@ -949,6 +951,7 @@ class ROSActionRskill(rSkillBase):
         if goal_handle is None or not getattr(goal_handle, "accepted", False):
             raise ROSRuntimeError(
                 f"ROSActionRskill({self.name!r}): wrapped server rejected the goal."
+                + self._rejection_reason()
             )
 
         result_future = goal_handle.get_result_async()
@@ -1117,6 +1120,59 @@ class ROSActionRskill(rSkillBase):
         if response is None:
             raise ROSRuntimeError(f"ROSActionRskill({self.name!r}): wrapped service returned null.")
         return response
+
+    def _rejection_reason(self) -> str:
+        """Why the wrapped server refused the goal, as far as the ROS graph tells.
+
+        An action server hosted by a lifecycle node that is not ``active`` rejects every
+        goal (Nav2's ``bt_navigator`` after an aborted bring-up), which the bare rejection
+        does not say. Finds the node serving the action and reads its lifecycle state
+        (bounded by ``_REJECTION_PROBE_TIMEOUT_S`` per call); ``""`` when the graph cannot
+        tell (no node found, no lifecycle services).
+        """
+        try:
+            from lifecycle_msgs.srv import GetState  # noqa: PLC0415
+            from rclpy.action import (  # noqa: PLC0415
+                get_action_server_names_and_types_by_node,
+            )
+        except ImportError:
+            return ""
+        action = "/" + self._integration.interface_name.lstrip("/")
+        for node_name, namespace in self._node.get_node_names_and_namespaces():
+            try:
+                served = get_action_server_names_and_types_by_node(self._node, node_name, namespace)
+            except Exception as exc:  # reason: the node left the graph mid-scan
+                log.debug("ros_action_rskill.rejection_probe_skip", node=node_name, error=str(exc))
+                continue
+            if not any(name == action for name, _ in served):
+                continue
+            path = f"{namespace.rstrip('/')}/{node_name}"
+            client = self._node.create_client(GetState, f"{path}/get_state")
+            try:
+                if not client.wait_for_service(timeout_sec=_REJECTION_PROBE_TIMEOUT_S):
+                    return f" Its server node {path} is not a lifecycle node."
+                future = client.call_async(GetState.Request())
+                deadline = time.monotonic() + _REJECTION_PROBE_TIMEOUT_S
+                while not future.done() and time.monotonic() < deadline:
+                    time.sleep(_FUTURE_POLL_INTERVAL_S)
+                if not future.done() or future.result() is None:
+                    return f" Its server node {path} did not report its lifecycle state."
+                label = future.result().current_state.label
+            finally:
+                self._node.destroy_client(client)
+            if label != "active":
+                return (
+                    f" Its server node {path} is in lifecycle state {label!r}, not 'active', "
+                    "and an inactive server rejects every goal: the stack serving this skill "
+                    "is not up (for Nav2, its bring-up has not finished or was aborted and is "
+                    "being restarted). Retrying after a short wait can succeed; changing the "
+                    "goal will not."
+                )
+            return (
+                f" Its server node {path} is active, so it refused this goal itself: "
+                "check the goal parameters."
+            )
+        return ""
 
     def _poll_future(
         self,

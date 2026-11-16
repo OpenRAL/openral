@@ -589,3 +589,19 @@ def test_the_scenes_robot_unit_reaches_the_isaac_robot_spec(
     monkeypatch.setenv(ROBOT_UNIT_ENV, "no_such_unit")
     with pytest.raises(ROSConfigError):
         _write_robot_spec(env_cfg.model_copy(update={"robot_unit": None}), {})
+
+
+def test_the_gravity_feed_forward_reaches_the_robot_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_core import ROBOT_UNIT_ENV
+    from openral_sim.backends.isaac_sim import IsaacSimOptions, _write_robot_spec
+
+    monkeypatch.delenv(ROBOT_UNIT_ENV, raising=False)
+    opts = IsaacSimOptions(gravity_compensation={r"openarm_(left|right)_joint[1-7]": 1.0})
+    path, _desc = _write_robot_spec(
+        _openarm_env_cfg(), None, gravity_compensation=opts.gravity_compensation
+    )
+    try:
+        spec = json.loads(Path(path).read_text())
+    finally:
+        Path(path).unlink()
+    assert spec["gravity_compensation"] == {r"openarm_(left|right)_joint[1-7]": 1.0}

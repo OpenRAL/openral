@@ -1503,3 +1503,47 @@ def test_raycast_all_keeps_a_near_world_hit_and_misses_read_range_max(
         None, range_min_m=0.05, raycast_all=_world_all("/panda/base_link"), **_BEAM
     )
     assert empty == pytest.approx(12.0)
+
+
+def _amr_urdf_dof_names() -> list[str]:
+    """The OpenAMRobot 2.0 URDF's movable joints, in file order."""
+    import xml.etree.ElementTree as ET
+
+    urdf = Path(__file__).resolve().parents[2] / "robots/openamrobot_v2/openamrobot_v2.urdf"
+    root = ET.parse(urdf).getroot()
+    return [j.get("name", "") for j in root.iter("joint") if j.get("type") != "fixed"]
+
+
+def test_gravity_feed_forward_covers_the_amr_arms_and_nothing_else(
+    _manifest_scene_mod: object,
+) -> None:
+    """The AMR aisle scene's pattern feeds forward the 14 arm joints: not the lift, not
+    the fingers, not the planar base."""
+    gravity_feed_forward_dofs = _manifest_scene_mod.gravity_feed_forward_dofs  # type: ignore[attr-defined]
+
+    names = _amr_urdf_dof_names()
+    pairs = gravity_feed_forward_dofs({r"openarm_(left|right)_joint[1-7]": 1.0}, names)
+    assert sorted(names[i] for i, _ in pairs) == sorted(
+        f"openarm_{side}_joint{j}" for side in ("left", "right") for j in range(1, 8)
+    )
+    assert {k for _, k in pairs} == {1.0}
+
+
+def test_a_later_gravity_pattern_wins_like_joint_drive_gains(_manifest_scene_mod: object) -> None:
+    gravity_feed_forward_dofs = _manifest_scene_mod.gravity_feed_forward_dofs  # type: ignore[attr-defined]
+
+    names = _amr_urdf_dof_names()
+    pairs = dict(
+        gravity_feed_forward_dofs({r"openarm_.*_joint\d": 1.0, "openarm_left_joint4": 0.0}, names)
+    )
+    assert pairs[names.index("openarm_left_joint4")] == 0.0
+    assert pairs[names.index("openarm_right_joint4")] == 1.0
+
+
+def test_a_gravity_pattern_naming_no_urdf_joint_is_refused(_manifest_scene_mod: object) -> None:
+    """Manifest names (``left_joint4``) where URDF names belong must not switch it off quietly."""
+    gravity_feed_forward_dofs = _manifest_scene_mod.gravity_feed_forward_dofs  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="left_joint4"):
+        gravity_feed_forward_dofs({"left_joint4": 1.0}, _amr_urdf_dof_names())
+    assert gravity_feed_forward_dofs(None, _amr_urdf_dof_names()) == []

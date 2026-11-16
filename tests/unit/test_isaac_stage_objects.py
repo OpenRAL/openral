@@ -105,6 +105,12 @@ def test_an_effort_cap_must_be_positive() -> None:
         IsaacSimOptions(joint_effort_limits={"gripper": 0.0})
 
 
+@pytest.mark.parametrize(("pattern", "k"), [("joint[", 1.0), ("joint1", -0.1), ("joint1", 2.5)])
+def test_a_gravity_feed_forward_needs_a_regex_and_a_sane_scale(pattern: str, k: float) -> None:
+    with pytest.raises(ValueError, match="gravity_compensation"):
+        IsaacSimOptions(gravity_compensation={pattern: k})
+
+
 def test_spec_carries_the_stage_fixes_and_the_stage_objects() -> None:
     spec = _environment_spec(IsaacSimOptions.model_validate(_options()))
     assert spec["strip_xform_colliders"] is True

@@ -1394,6 +1394,10 @@ class IsaacPlacementSuccess(BaseModel):
         ]
 
 
+# A gravity feed-forward past 2x the model's gravity torque is a typo, not a calibration.
+_MAX_GRAVITY_FF_SCALE = 2.0
+
+
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
 
@@ -1489,14 +1493,22 @@ class IsaacSimOptions(BaseModel):
     depth_cameras: bool = True
     # Joint drive gains: URDF joint-name regex -> (stiffness Nm/rad, damping Nm*s/rad), in
     # pattern order, later matches winning. Unmatched joints keep the sidecar's stiff
-    # defaults (1000 / 100). Set them to the real motors' PD gains and the arm sags under
-    # gravity like the real one: a position-only MIT/PD loop holds (gravity torque / kp)
-    # below its command, which a policy trained on that robot has learnt to expect.
+    # defaults (1000 / 100). Set them to the real motors' PD gains: a position-only MIT/PD
+    # loop rests (gravity torque / kp) below its command, as a real arm without gravity
+    # feed-forward does. A controller that adds one is matched with `gravity_compensation`.
     joint_drive_gains: dict[str, tuple[float, float]] = Field(default_factory=dict)
     # Drive force caps: URDF joint-name regex (fullmatch) -> max effort (N*m angular, N
     # linear), overriding the URDF limit. For a task whose training sim gripped softer
     # than the motor can (LeIsaac: the SO-101 jaw at object mass / 0.15).
     joint_effort_limits: dict[str, float] = Field(default_factory=dict)
+    # Gravity feed-forward: URDF joint-name regex (fullmatch) -> scale k, in pattern order,
+    # later matches winning (as `joint_drive_gains`); a pattern matching no joint fails the
+    # boot. Each physics step adds k x the joint's gravity torque at the current pose (PhysX
+    # generalized gravity forces), clipped to its drive's effort cap, to its drive, as a real
+    # MIT/PD controller's gravity feed-forward does: with it the arm holds its command
+    # instead of resting gravity torque / stiffness below it. Pair it with that controller's
+    # kp/kd in `joint_drive_gains`. Unmatched joints: none.
+    gravity_compensation: dict[str, float] = Field(default_factory=dict)
     # Manifest gripper joint -> calibration curve [(manifest value, URDF finger value), ...],
     # piecewise linear, applied to commands (manifest -> finger) and joint states (finger ->
     # manifest). For a jaw whose reading is not its URDF finger angle: OpenArm's real jaw
@@ -1572,6 +1584,22 @@ class IsaacSimOptions(BaseModel):
                 raise ValueError(f"joint_effort_limits[{pattern!r}] is not a regex: {exc}") from exc
             if not cap > 0:
                 raise ValueError(f"joint_effort_limits[{pattern!r}] must be > 0")
+        return value
+
+    @field_validator("gravity_compensation")
+    @classmethod
+    def _gravity_compensation_valid(cls, value: dict[str, float]) -> dict[str, float]:
+        for pattern, k in value.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"gravity_compensation[{pattern!r}] is not a regex: {exc}"
+                ) from exc
+            if not 0.0 <= k <= _MAX_GRAVITY_FF_SCALE:
+                raise ValueError(
+                    f"gravity_compensation[{pattern!r}] must be in [0, {_MAX_GRAVITY_FF_SCALE:g}]"
+                )
         return value
 
     @field_validator("gripper_joint_curve")
@@ -2701,6 +2729,7 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
     gripper_followers_track: str = "target",
     environment_spec: dict[str, Any] | None = None,
     control_freq_hz: float | None = None,
+    gravity_compensation: dict[str, float] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -2773,6 +2802,7 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
+    spec["gravity_compensation"] = dict(gravity_compensation or {})
     # The scene's curves replace the manifest's (`_gripper_spec`) for this twin, as
     # `sim_scene_description` does for the kernel, the self-filter and /tf (issue #533).
     _curve_gripper_specs(spec, gripper_joint_curve or {})
@@ -3051,6 +3081,7 @@ def _placement(
             "depth_cameras",
             "joint_drive_gains",
             "joint_effort_limits",
+            "gravity_compensation",
             "physx_scene",
             "collision_approximation",
             "link_box_colliders",
@@ -3182,6 +3213,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         gripper_followers_track=opts.gripper_followers_track,
         environment_spec=_environment_spec(opts),
         control_freq_hz=opts.control_freq_hz,
+        gravity_compensation=opts.gravity_compensation,
     )
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
     if environment_usd is not None:

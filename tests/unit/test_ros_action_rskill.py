@@ -1060,3 +1060,58 @@ def test_cancel_without_a_terminal_result_is_bounded(
     with pytest.raises(ROSRuntimeError, match="not confirmed terminated"):
         skill._send_action_goal_and_await_result()
     assert time.monotonic() - t0 < 3.0
+
+
+# ── rejected goals name the server's lifecycle state ─────────────────────────
+
+
+@pytest.mark.parametrize(("activate", "expect"), [(False, "'inactive'"), (True, "is active")])
+def test_a_rejected_goal_names_its_servers_lifecycle_state(activate: bool, expect: str) -> None:
+    """Nav2's bt_navigator after an aborted bring-up (Spark, 2026-11-16) is a lifecycle node
+    left inactive: it rejects every goal. The reasoner must read that, not a bare rejection."""
+    rclpy = pytest.importorskip("rclpy")
+    lifecycle = pytest.importorskip("rclpy.lifecycle")
+    nav2_action = pytest.importorskip("nav2_msgs.action")
+    from rclpy.action import ActionServer, GoalResponse
+    from rclpy.executors import MultiThreadedExecutor
+
+    context = rclpy.Context()
+    rclpy.init(context=context, domain_id=93)
+    server = lifecycle.LifecycleNode("rejection_probe_bt_navigator", context=context)
+    client = rclpy.create_node("rejection_probe_client", context=context)
+    ActionServer(
+        server,
+        nav2_action.NavigateToPose,
+        "/navigate_to_pose",
+        execute_callback=lambda handle: nav2_action.NavigateToPose.Result(),
+        goal_callback=lambda goal: GoalResponse.REJECT,
+    )
+    server.trigger_configure()
+    if activate:
+        server.trigger_activate()
+    executor = MultiThreadedExecutor(context=context)
+    executor.add_node(server)
+    executor.add_node(client)
+    import threading
+
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
+    try:
+        skill = ROSActionRskill(
+            manifest=_result_only_manifest(),
+            ros_node=client,
+            robot_description=None,
+            prompt="test",
+            prompt_metadata_json="",
+        )
+        deadline = time.monotonic() + 5.0
+        reason = ""
+        while not reason and time.monotonic() < deadline:  # graph discovery
+            reason = skill._rejection_reason()
+        assert "/rejection_probe_bt_navigator" in reason
+        assert expect in reason
+    finally:
+        executor.shutdown()
+        server.destroy_node()
+        client.destroy_node()
+        rclpy.shutdown(context=context)
