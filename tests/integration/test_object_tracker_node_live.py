@@ -160,6 +160,10 @@ def test_the_tracker_loads_the_stations_declared_place_zones() -> None:
                 if ok:
                     assert "zone:upper_slot_2" in node.session.place_zones
                     assert len(node.session.place_zones) == len(zones)
+                    # Station mode: fixed-frame zones resolve through the node's own tf2;
+                    # nothing publishes map here, so the lookup is None (fail closed).
+                    assert node.session.zone_transform is not None
+                    assert node.session.zone_transform("map", 1) is None
             finally:
                 node.destroy_node()
 

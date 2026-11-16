@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -58,6 +58,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import (
     freeze_released_attachment,
     homogeneous_from_quat_xyz,
+    rebase_box,
     rotation_to_quat_wxyz,
 )
 from openral_core.kinematics import Box, box_gap_lower_bound_m
@@ -338,6 +339,10 @@ class TrackerSession:
         self.place_declaration: PlaceDeclaration | None = None
         # The station's declared place zones by ``PlaceZone.target_id`` (``place_region``).
         self.place_zones: dict[str, PlaceZone] = {}
+        # tf2 ``grid <- frame`` at a stamp, or ``None`` (the node's lookup): re-expresses a zone
+        # declared in a fixed frame (``map`` / ``odom``) in the grid frame. Unset: none resolve.
+        self.zone_transform: Callable[[str, int], NDArray[np.float64] | None] | None = None
+        self._zone_state: dict[str, str] = {}  # zone name -> last resolve state (log on change)
         self.attachment_changes = 0  # bumped whenever the held set changes
         self._monitors: dict[str, JawReleaseMonitor] = {}
         self._attach_ns: dict[str, int] = {}
@@ -582,7 +587,8 @@ class TrackerSession:
                 "object_tracker.place_zone_declared",
                 target_id=decl.target_id,
                 known=zone is not None,
-                frame_ok=zone is not None and zone.region.frame_id == self.frame_id,
+                zone_frame=None if zone is None else zone.region.frame_id,
+                grid_frame=self.frame_id,
             )
         queries = () if decl.destination_query is None else (decl.destination_query,)
         self._set_goal(
@@ -916,7 +922,10 @@ class TrackerSession:
 
         A declaration whose ``target_id`` names a declared zone (``zone:<name>``, a shelf slot
         no detector grounds) gets that ``PlaceZone``'s box, stamped with the newest grid's
-        ``source_stamp``; an unknown zone or one in another frame than the grid is ``None``.
+        ``source_stamp``; a zone declared in a fixed frame (``map`` / ``odom``, a docked
+        mobile manipulator) is re-expressed in the grid frame through tf2 at that stamp
+        (``rebase_box``). An unknown zone, or one with no tf2 at the grid's stamp or tilted past
+        the bound, is ``None`` (fail closed, logged once per change).
         A declared, not measured, region: Safety-WG review, a hazard-log row and an ADR-0097
         amendment owed. This is the only place region in ``tracking``.
 
@@ -958,13 +967,43 @@ class TrackerSession:
         )
 
     def _zone_region(self, target_id: str, grid_frame: str) -> PlaceRegion | None:
-        """The declared zone ``target_id`` names, stamped with the newest grid, or ``None``."""
+        """The declared zone ``target_id`` names, in the grid frame, stamped with the newest grid.
+
+        A zone in another frame is re-expressed through ``zone_transform`` at the grid's
+        ``source_stamp`` (where the base was when the map was built). ``None`` for an unknown
+        zone, no transform at that stamp, or a tilted one: no region, no allowance.
+        """
         zone = self.place_zones.get(target_id)
-        if zone is None or zone.region.frame_id != grid_frame:
+        if zone is None:
             return None
-        return zone.region.model_copy(
+        region = zone.region
+        if region.frame_id != grid_frame:
+            t = None
+            if self.zone_transform is not None:
+                t = self.zone_transform(region.frame_id, self.grid_stamp_ns)
+            if t is None:
+                self._zone_log(zone, "no_tf", grid_frame=grid_frame)
+                return None
+            try:
+                region = rebase_box(region, t, grid_frame)
+            except ROSConfigError as exc:
+                self._zone_log(zone, "rejected", grid_frame=grid_frame, error=str(exc))
+                return None
+            self._zone_log(zone, "resolved", grid_frame=grid_frame)
+        return region.model_copy(
             update={"stamp_ns": self.grid_stamp_ns, "evidence_ref": f"declared:{zone.name}"}
         )
+
+    def _zone_log(self, zone: PlaceZone, state: str, **kv: object) -> None:
+        """Log a fixed-frame zone's resolve ``state`` once per change (``place_region`` is hot)."""
+        if self._zone_state.get(zone.name) == state:
+            return
+        self._zone_state[zone.name] = state
+        event = f"object_tracker.place_zone_{state}"
+        if state == "resolved":
+            log.info(event, zone=zone.name, zone_frame=zone.region.frame_id, **kv)
+        else:
+            log.warning(event, zone=zone.name, zone_frame=zone.region.frame_id, **kv)
 
     def grasp_region(self) -> PlaceRegion | None:
         """The one target's box while it lies wholly inside the declared ``search_box``.

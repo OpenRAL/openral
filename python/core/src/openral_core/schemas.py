@@ -4383,7 +4383,10 @@ class PlaceRegion(BaseModel):
             frame — the frame ``OccupancyVoxels`` is published in. The kernel
             refuses a region whose frame does not match the occupancy grid's,
             because a region measured in one frame and applied in another is a
-            relaxation aimed at the wrong volume.
+            relaxation aimed at the wrong volume. (A ``PlaceZone`` or a declared
+            ``search_box`` / ``workspace_box`` may name a fixed frame — ``map`` /
+            ``odom`` — but its producer re-expresses it in the grid frame,
+            ``openral_core.geometry.rebase_box``, before the kernel sees it.)
         pose: Region box centre pose in ``frame_id``.
         half_extents: Box half-extents along its own axes (m), each in
             ``(0, MAX_HALF_EXTENT_M]``.
@@ -4902,14 +4905,28 @@ class PlaceZone(BaseModel):
     payload is held (``TrackerSession.place_region``). The zone arms nothing on its own.
 
     **A declared, not measured, region** — a deliberate exception to ADR-0097's
-    producer-measured rule, sound only for furniture fixed in the robot base frame (a
-    fixed-base station). Safety-WG review, a hazard-log row and an ADR amendment are owed.
+    producer-measured rule, sound only for furniture that does not move in the zone's frame.
+    Safety-WG review, a hazard-log row and an ADR amendment are owed.
+
+    **Two frames** (``region.frame_id``, checked against the robot by ``openral deploy``):
+
+    * the robot base frame (the voxel grid's) — a fixed-base station only (``manipulator`` /
+      ``bimanual``): on a moving base a base-frame box rides away from the furniture;
+    * the robot's ``map_frame`` / ``odom_frame`` ("station mode", any embodiment, e.g. one
+      set per shelf an AMR docks at), gravity-aligned (a yaw-only quaternion). The tracker
+      re-expresses it in the grid frame through tf2 at the grid's ``source_stamp`` every
+      publish (``rebase_box``, at most 0.5 deg of base tilt); no tf2 at that stamp, or more
+      tilt, and the zone yields no region. The kernel still receives a grid-frame region and
+      still refuses any other frame (``frame_mismatch``).
+
+    Any other frame is refused by the deploy. Schema-wise both are the same model: no field
+    was added, so every existing zone file loads unchanged.
 
     Attributes:
         name: The zone's name, lower-case words joined by ``_`` (``upper_slot_2``).
         aliases: Other names a prompt may use (``upper_2``), same form.
-        region: The zone's box in the robot base frame (the voxel grid's); ``geometry`` empty,
-            ``pose`` in ``region.frame_id``.
+        region: The zone's box in the robot base frame, or in its map / odom frame (above);
+            ``geometry`` empty, ``pose`` in ``region.frame_id``.
 
     Example:
         >>> zone = PlaceZone(
@@ -4927,6 +4944,22 @@ class PlaceZone(BaseModel):
         ... )
         >>> zone.target_id
         'zone:upper_slot_2'
+        >>> shelf = zone.model_copy(  # station mode: the same slot, fixed in the map
+        ...     update={
+        ...         "region": zone.region.model_copy(
+        ...             update={
+        ...                 "frame_id": "map",
+        ...                 "pose": Pose6D(
+        ...                     xyz=(4.2, -1.5, 0.62),
+        ...                     quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ...                     frame_id="map",
+        ...                 ),
+        ...             }
+        ...         )
+        ...     }
+        ... )
+        >>> PlaceZone.model_validate_json(shelf.model_dump_json()) == shelf
+        True
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -13399,7 +13432,9 @@ class DeployScene(BaseModel):
     goal-scope place declaration names the one zone the goal's prompt names
     (``place_zone_for_prompt``), and to the object tracker, which publishes it as the place
     region while a payload is held (sim only: ``deploy run`` refuses every tracking mode
-    until Safety-WG sign-off). Names and aliases are unique across zones. Empty = no
+    until Safety-WG sign-off). A zone is in the robot base frame (fixed-base robots only) or
+    in its map / odom frame (any robot; re-expressed through tf2): the deploy refuses
+    anything else (``PlaceZone``). Names and aliases are unique across zones. Empty = no
     zone; a prompt naming none arms none. Declared, not measured: Safety-WG review owed."""
 
     nav_goals: list[NavGoal] = Field(default_factory=list)

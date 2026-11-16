@@ -63,6 +63,7 @@ from rich.console import Console
 if TYPE_CHECKING:
     from openral_core import (
         DeployScene,
+        PlaceZone,
         RobotDescription,
         RSkillManifest,
         SensorOverlay,
@@ -103,6 +104,48 @@ class _HalSpec:
 _GENERIC_HAL_PACKAGE: Final = "openral_hal_node"
 #: Kinds whose base never moves, so a base-frame box stays on the furniture it names.
 _FIXED_BASE_KINDS: Final = frozenset({EmbodimentKind.MANIPULATOR, EmbodimentKind.BIMANUAL})
+
+
+def _check_place_zone_frames(
+    zones: Sequence[PlaceZone], description: RobotDescription, robot_id: str
+) -> None:
+    """Refuse a place zone in a frame its robot cannot hold it in (``PlaceZone``).
+
+    A zone's ``region.frame_id`` is the robot base frame (the voxel grid's) — only on a
+    fixed-base kind, where the base cannot carry the box away from the furniture — or the
+    robot's ``map_frame`` / ``odom_frame``, on any kind, gravity-aligned so the tracker can
+    re-express it yaw-only (``rebase_box``). Any other frame is refused.
+
+    Raises:
+        ROSConfigError: A zone in the base frame of a moving base, in an unknown frame, or a
+            fixed-frame zone that is not gravity-aligned.
+    """
+    import math
+
+    fixed = (description.map_frame, description.odom_frame)
+    for zone in zones:
+        frame = zone.region.frame_id
+        if frame == description.base_frame:
+            if description.embodiment_kind not in _FIXED_BASE_KINDS:
+                raise ROSConfigError(
+                    f"place_zones on a {description.embodiment_kind.value!r} robot "
+                    f"({robot_id!r}): zone {zone.name!r} is a box fixed in the robot base "
+                    f"frame {frame!r}, declared only for a fixed-base station; declare it in "
+                    f"the map frame {description.map_frame!r} instead (PlaceZone)."
+                )
+        elif frame in fixed:
+            x, y, _, _ = zone.region.pose.quat_xyzw
+            if not math.isclose(x, 0.0, abs_tol=1e-9) or not math.isclose(y, 0.0, abs_tol=1e-9):
+                raise ROSConfigError(
+                    f"place zone {zone.name!r} in {frame!r} must be gravity-aligned (a yaw-only "
+                    "quaternion): it is re-expressed in the base frame yaw-only (PlaceZone)."
+                )
+        else:
+            raise ROSConfigError(
+                f"place zone {zone.name!r} is in {frame!r}, which is neither {robot_id!r}'s "
+                f"base frame {description.base_frame!r} nor its map / odom frame {fixed} "
+                "(PlaceZone)."
+            )
 
 
 def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
@@ -2132,15 +2175,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
         )
     # The station's declared place zones (shelf slots): the runner names the one a goal's
-    # prompt names, the object tracker publishes its box as the place region. A zone is a
-    # base-frame box, sound only where the base cannot move (`PlaceZone`): refused otherwise.
+    # prompt names, the object tracker publishes its box as the place region. A base-frame
+    # zone is sound only where the base cannot move; a fixed-frame (map / odom) one the
+    # tracker re-expresses in the grid frame through tf2 every tick (`PlaceZone`).
     if deploy_scene is not None and deploy_scene.place_zones:
-        if description.embodiment_kind not in _FIXED_BASE_KINDS:
-            raise ROSConfigError(
-                f"place_zones on a {description.embodiment_kind.value!r} robot "
-                f"({robot_id!r}): a zone is a box fixed in the robot base frame, declared "
-                "only for a fixed-base station (PlaceZone)."
-            )
+        _check_place_zone_frames(deploy_scene.place_zones, description, robot_id)
         zones = "[" + ",".join(z.model_dump_json() for z in deploy_scene.place_zones) + "]"
         argv_template.append(f"place_zones_json:={zones}")
     # The cell's named navigation goals (ADR-0133): the reasoner seeds them as spatial-memory
