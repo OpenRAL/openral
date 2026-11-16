@@ -123,6 +123,24 @@ stayed alive and resumed after a reset. A latched stop outranks a cancel and a c
 a step that completes, or a goal cancelled, while a stop is latched ends `FAILURE_SAFETY_ESTOP`
 ("goal ended (…) while a safety stop was latched"), never as a success.
 
+## Station mode: perception per skill on a mobile base
+
+On a mobile base with object tracking on, `deploy_e2e` launches `openral_segmenter` and
+`openral_object_tracker` configured but **inactive** and hands their names to the runner
+(`station_perception_nodes`); everywhere else (every fixed-base cell, tracking off) the
+parameter is empty and the nodes autostart active exactly as before. Per goal the runner
+reads the skill's manifest (`station_perception_wanted`, from `actuators_required`, not an
+LLM decision): a skill that actuates an arm / gripper (pi0.5, MoveIt) gets them activated
+before the grounding wait; a base-only one (`body_twist` only: Nav2, a VLN policy) gets them
+deactivated before its goal is sent; a skill that actuates nothing leaves them as they are.
+Every goal end (success, failure, cancel, E-stop) deactivates them. Each transition is logged
+(`rskill_runner.station_perception*`); a required one that fails refuses the goal with
+`ROSPerceptionStale` naming the node. The tracker discards the previous station's tracks and
+released records on every activate / deactivate (`TrackerSession.leave_station`, held
+payloads kept). An inactive tracker publishes no `/openral/attachment_state`, so the kernel's
+attachment stream goes stale and it refuses every candidate and grants no allowance (fail
+closed). The reasoner's `vram_lifecycle_peers` (detector / locators) is a disjoint set.
+
 ## Composition (one shared `WorldStateAggregator`)
 
 Per the single-aggregator contract the world_state node is the **only** subscriber of

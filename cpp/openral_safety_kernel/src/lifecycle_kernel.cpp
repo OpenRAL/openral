@@ -642,6 +642,10 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // the local map. Empty for fixed-base arms (no-op).
   this->declare_parameter<std::vector<std::int64_t>>("collision_base_dofs",
                                                      std::vector<std::int64_t>{});
+  // Station mode (`update_station`): the base displacement past which every
+  // base-frame allowance is retired. Bounded (0, cap]; never off.
+  this->declare_parameter<double>("station_motion_translation_m", kDefaultStationTranslationM);
+  this->declare_parameter<double>("station_motion_rotation_rad", kDefaultStationRotationRad);
 
   // Phase 3 — predictive Cartesian look-ahead. EE collision-link index lets
   // the kernel build the arm Jacobian and reconstruct where a CARTESIAN_DELTA
@@ -1060,6 +1064,38 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
       collision_base_dofs_.push_back(static_cast<int>(d));
     }
   }
+  // Station mode. Validated whatever the robot (a fixed base never reads them).
+  station_translation_m_ = this->get_parameter("station_motion_translation_m").as_double();
+  station_rotation_rad_ = this->get_parameter("station_motion_rotation_rad").as_double();
+  if (!(std::isfinite(station_translation_m_) && station_translation_m_ > 0.0 &&
+        station_translation_m_ <= kMaxStationTranslationM) ||
+      !(std::isfinite(station_rotation_rad_) && station_rotation_rad_ > 0.0 &&
+        station_rotation_rad_ <= kMaxStationRotationRad)) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "station_motion_translation_m=%g must be in (0, %g] and "
+                 "station_motion_rotation_rad=%g in (0, %g]: past the cap a moved base would "
+                 "keep allowances declared at its previous pose",
+                 station_translation_m_, kMaxStationTranslationM, station_rotation_rad_,
+                 kMaxStationRotationRad);
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
+  // Per base dof: revolute (yaw, radians) or prismatic (metres), from the joint
+  // that dof drives in the collision model. Unknown reads as prismatic (metres):
+  // the tighter of the two for a yaw, since both caps are equal numbers.
+  base_dof_angular_.assign(collision_base_dofs_.size(), 0);
+  for (std::size_t k = 0; k < collision_base_dofs_.size(); ++k) {
+    for (std::size_t l = 0; l < collision_model_.n_links; ++l) {
+      if (collision_model_.dof_index[l] == collision_base_dofs_[k]) {
+        const JointKind kind = collision_model_.joint_kind[l];
+        base_dof_angular_[k] =
+            (kind == JointKind::kRevolute || kind == JointKind::kMimicRevolute) ? 1 : 0;
+      }
+    }
+  }
+  station_anchor_.assign(collision_base_dofs_.size(), 0.0);
+  station_anchor_set_ = false;
+  base_moved_ns_ = 0;
 
   // Phase 3 — predictive Cartesian scratch + params. dof_blocked_ marks
   // the base dofs so the arm Jacobian never realises an EE delta by "moving the
@@ -3081,9 +3117,104 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
   }
   q_meas_received_ = true;
   q_meas_stamp_ = this->now();
+  update_station(now_ns);
   if (force_observer_enabled_) {
     run_force_observer(src_ns > 0 ? src_ns : now_ns);
   }
+}
+
+void SafetyKernelLifecycleNode::update_station(std::int64_t now_ns) {
+  if (collision_base_dofs_.empty()) {
+    return;  // a fixed base is always at its station
+  }
+  for (const int d : collision_base_dofs_) {
+    if (!q_meas_seen_[static_cast<std::size_t>(d)]) {
+      return;  // no measured base pose: nothing to compare (FK fails closed on it)
+    }
+  }
+  if (!station_anchor_set_) {
+    for (std::size_t k = 0; k < collision_base_dofs_.size(); ++k) {
+      station_anchor_[k] = q_meas_[static_cast<std::size_t>(collision_base_dofs_[k])];
+    }
+    station_anchor_set_ = true;
+    return;
+  }
+  std::size_t moved = collision_base_dofs_.size();
+  double delta = 0.0;
+  for (std::size_t k = 0; k < collision_base_dofs_.size(); ++k) {
+    delta =
+        std::abs(q_meas_[static_cast<std::size_t>(collision_base_dofs_[k])] - station_anchor_[k]);
+    if (delta > (base_dof_angular_[k] != 0 ? station_rotation_rad_ : station_translation_m_)) {
+      moved = k;
+      break;
+    }
+  }
+  if (moved == collision_base_dofs_.size()) {
+    return;
+  }
+  for (std::size_t k = 0; k < collision_base_dofs_.size(); ++k) {
+    station_anchor_[k] = q_meas_[static_cast<std::size_t>(collision_base_dofs_[k])];
+  }
+  base_moved_ns_ = now_ns;
+  const bool had_place = place_region_.valid;
+  const bool had_workspace = workspace_region_.valid;
+  const bool had_grasp = grasp_identity_armed();
+  const bool had_tracked = tracked_decl_active_;
+  // K5 release windows (declared `apply_declared_release`, tracked `apply_tracked_release`):
+  // the released payload is frozen in the BASE frame, so a moving base carries the box with it
+  // while the real object stays put. Close every open window on this tick: no link is exempt
+  // against the box any more (a plain obstacle, exactly the windows' own close), and a closed
+  // window never reopens for the same record (the HAL/tracker's re-sent record keeps its key).
+  bool had_release = false;
+  for (auto& r : released_records_) {
+    if (r.used && !r.closed) {
+      r.closed = true;
+      had_release = true;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.released_payload_closed object=%s reason=base_moving: a plain "
+                  "obstacle from here",
+                  r.object_id.c_str());
+    }
+  }
+  for (auto& e : bound_) {
+    if (e.used && e.release == BoundPayload::Release::kWindow) {
+      e.release = BoundPayload::Release::kClosed;
+      had_release = true;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.tracked_release_closed object=%s epoch=%u reason=base_moving: a plain "
+                  "obstacle from here",
+                  e.object_id.c_str(), static_cast<unsigned>(e.epoch));
+    }
+  }
+  // The same tick: the model already resolved from the last message loses its exemptions now,
+  // not on the next world-state message.
+  for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
+    AttachedObject& obj = attached_model_.objects[i];
+    if (obj.attach_link < 0 && (obj.release_hand_link >= 0 || obj.touch_count > 0)) {
+      obj.release_hand_link = -1;
+      obj.touch_count = 0;
+      had_release = true;
+    }
+  }
+  if (had_place || had_workspace || had_grasp || had_tracked || had_release) {
+    RCLCPP_WARN(this->get_logger(),
+                "safety.station_left reason=base_moving dof=%d delta=%g limit=%g grasp=%d "
+                "place=%d workspace=%d tracked=%d release=%d",
+                collision_base_dofs_[moved], delta,
+                base_dof_angular_[moved] != 0 ? station_rotation_rad_ : station_translation_m_,
+                had_grasp ? 1 : 0, had_place ? 1 : 0, had_workspace ? 1 : 0, had_tracked ? 1 : 0,
+                had_release ? 1 : 0);
+  }
+  if (had_place) {
+    RCLCPP_WARN(this->get_logger(), "safety.place_region_dropped reason=base_moving target=%s",
+                place_declaration_target_.c_str());
+  }
+  place_region_ = PlaceApproachRegion{};
+  if (had_grasp) {
+    retire_grasp_declaration("base_moving");
+  }
+  drop_workspace("base_moving");
+  tracked_decl_active_ = false;
 }
 
 bool SafetyKernelLifecycleNode::measured_velocity_fresh(std::int64_t now_ns) const noexcept {
@@ -4982,6 +5113,16 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
     return;
   }
   const auto& region = declaration.region;
+  if (predates_base_motion(declaration.stamp_ns) || predates_base_motion(region.stamp_ns)) {
+    // Station mode: a region declared at the previous station allows nothing here; the
+    // force gate above is a refusal-only check and stays as declared.
+    announce_dropped("base_moved");
+    if (refusal_is_new("base_moved", declaration.target_id)) {
+      RCLCPP_WARN(this->get_logger(), "safety.place_region_rejected reason=base_moved target=%s",
+                  declaration.target_id.c_str());
+    }
+    return;
+  }
   if (!region_measurement_fresh(region.stamp_ns, place_region_max_age_s_)) {
     // A measurement older than the bound (or from the future) is not evidence
     // of where the receptacle is now: no allowance, the undeclared margins.
@@ -5819,6 +5960,12 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     announce_dropped("retired");
     return;
   }
+  if (predates_base_motion(declaration.stamp_ns) ||
+      (declaration.region_valid && predates_base_motion(declaration.region.stamp_ns))) {
+    // Station mode: declared (or measured) at a station the base has since left.
+    announce_dropped("base_moved");
+    return;
+  }
   if (!declaration.region_valid) {
     // Dispatch's own publication, and the state before the producer measures:
     // a declaration with no region exempts nothing. After its handover, the
@@ -6100,7 +6247,8 @@ void SafetyKernelLifecycleNode::ingest_tracked_declaration_key(
   // backstop, and never a declaration the kernel retired (HZ-0115-3).
   if (!d.active || d.target_id.empty() || !std::isfinite(d.timeout_s) || d.timeout_s <= 0.0 ||
       d.timeout_s > kMaxGraspDeclarationTimeoutS ||
-      grasp_retired_.contains(std::hash<std::string>{}(d.target_id), d.stamp_ns)) {
+      grasp_retired_.contains(std::hash<std::string>{}(d.target_id), d.stamp_ns) ||
+      predates_base_motion(d.stamp_ns)) {
     return;
   }
   // The tracker's `declaration_key(target_id, stamp_ns)`: "<target_id>@<stamp_ns>".
@@ -6416,6 +6564,11 @@ void SafetyKernelLifecycleNode::ingest_workspace_contact(
   const std::int64_t elapsed_ns = this->now().nanoseconds() - declaration.stamp_ns;
   if (elapsed_ns < 0 || elapsed_ns > static_cast<std::int64_t>(declaration.timeout_s * 1e9)) {
     drop_workspace("expired");
+    return;
+  }
+  if (predates_base_motion(declaration.stamp_ns) ||
+      predates_base_motion(declaration.workspace_region.stamp_ns)) {
+    reject("base_moved", declaration.target_id);  // station mode: a previous station's box
     return;
   }
   // A retired identity (handover exit, a release) ends its GRASP REGION, which

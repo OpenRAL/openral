@@ -461,6 +461,40 @@ class TrackerSession:
                 why = "hands_clear" if clear else "reacquired" if landed else "window"
                 log.info("object_tracker.released_track_retired", object_id=oid, why=why)
 
+    def leave_station(self) -> tuple[list[str], list[str]]:
+        """Discard what this station measured; keep what the hands still hold.
+
+        Station mode (the node calls it on every activate and deactivate): tracks, released
+        records and the grid are all in the base frame, so they hold only while the base stands
+        where they were measured. A released record frozen at the let-go pose would otherwise
+        ride the driving robot while the object stays put. Held bindings (``BOUND`` tracks and a
+        live hold's candidates) ride the hand, not the base, and are kept: dropping them would
+        publish "nothing carried" for a payload the robot still holds.
+
+        Returns:
+            The dropped track ids and the released records retired with them.
+        """
+        held = self._held_ids()
+        released = list(self._released)
+        for oid in released:
+            if (track := self.tracker.store.get(oid)) is not None:
+                self.tracker.queries.note_released(track)
+        self._released.clear()
+        self._known_at_release.clear()
+        self._off_hand.clear()
+        dropped = [
+            t.object_id
+            for t in self.tracker.store.all()
+            if t.object_id not in held and t.status is not TrackStatus.BOUND
+        ]
+        for oid in dropped:
+            self.tracker.store.drop(oid)
+        self.grid, self.grid_stamp_ns = None, 0
+        self._instance_cells = None
+        if released:
+            self.attachment_changes += 1
+        return dropped, released
+
     def open_standing_queries(self, queries: Sequence[ObjectQuery]) -> None:
         """The deploy's prompt-time queries (``object_queries_json``), goal ``deploy:deploy@0``.
 
