@@ -419,6 +419,13 @@ if _ROS2_AVAILABLE:
             # (see starting_pose_joint_bounds).
             self.declare_parameter("starting_pose_max_delta_per_s", 0.0)
             self.declare_parameter("starting_pose_tolerance", 0.0)
+            # Closed-loop starting pose (_wait_for_starting_pose): once the arm has
+            # settled `settle_s` outside tolerance, the command is offset by the measured
+            # residual, at most `passes` times and `max_correction_rad` per joint in total,
+            # each pass a kernel-checked ramp. 0 passes or 0 rad = open loop, as before.
+            self.declare_parameter("starting_pose_settle_s", 0.5)
+            self.declare_parameter("starting_pose_max_correction_rad", 0.15)
+            self.declare_parameter("starting_pose_correction_passes", 3)
             self.declare_parameter("estop_topic", "/openral/estop")
             # Deprecated launch input retained until the CLI stops forwarding it. Starting
             # poses now always move through candidate_action; this service is never called.
@@ -2335,22 +2342,46 @@ if _ROS2_AVAILABLE:
             goal_handle: Any,
             starting_pose_wall_ns: int,
         ) -> bool:
-            """Require a fresh observed starting pose before policy inference."""
+            """Require a fresh observed starting pose before policy inference, correcting sag.
+
+            A position-controlled arm under gravity settles short of its command (the
+            OpenArm elbows ~0.065 rad on the OpenAMRobot 2.0 in Isaac, past the 0.05 rad
+            envelope tolerance). Once fresh joint states show the arm settled outside
+            tolerance, the command is offset by the measured residual
+            (``starting_pose_correction``, capped per joint by
+            ``starting_pose_max_correction_rad``) and ramped again through the kernel, at
+            most ``starting_pose_correction_passes`` times. Still short: a typed failure
+            naming each joint, its residual and its tolerance. No fresh joint state at all:
+            ``ROSPerceptionStale``, as before.
+            """
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
             if not pose:
                 return True
             if self._aggregator is None:
                 return True
-            from openral_core.exceptions import ROSPerceptionStale
+            from openral_core.exceptions import ROSPerceptionStale, ROSRuntimeError
 
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
             bounds = self._starting_pose_bounds()
             description = self._description
-            deadline = time.monotonic() + float(
-                self.get_parameter("action_applied_timeout_s").value
-            )
+            timeout_s = float(self.get_parameter("action_applied_timeout_s").value)
+            settle_s = float(self.get_parameter("starting_pose_settle_s").value)
+            max_correction = float(self.get_parameter("starting_pose_max_correction_rad").value)
+            max_passes = int(self.get_parameter("starting_pose_correction_passes").value)
+            held: frozenset[str] = frozenset()
+            if len(pose) != len(names):
+                from openral_rskill._policy_io import slot_state_joint_names
+
+                held = frozenset(names) - frozenset(
+                    slot_state_joint_names(manifest, description) or ()
+                )
+            correction = [0.0] * len(names)
+            passes = 0
+            settled_since = time.monotonic()
+            deadline = settled_since + timeout_s
+            last_miss: tuple[list[float], list[float]] | None = None
             while time.monotonic() < deadline:
                 self._raise_if_safety_aborted("waiting for starting_pose verification")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
@@ -2361,19 +2392,50 @@ if _ROS2_AVAILABLE:
                     if js is not None and int(js.stamp_ns) >= starting_pose_wall_ns
                     else None
                 )
-                # A slot-subset pose holds the other joints at their measured value.
-                if measured is not None and starting_pose_reached(
-                    measured, expand_starting_pose(pose, manifest, description, measured), bounds
-                ):
-                    self.get_logger().info(
-                        "rskill_runner.starting_pose_verified "
-                        f"(age_ms={(time.time_ns() - int(js.stamp_ns)) / 1e6:.1f})"
-                    )
-                    return True
+                if measured is not None:
+                    # A slot-subset pose holds the other joints at their measured value.
+                    target = expand_starting_pose(pose, manifest, description, measured)
+                    if starting_pose_reached(measured, target, bounds):
+                        self.get_logger().info(
+                            "rskill_runner.starting_pose_verified "
+                            f"(age_ms={(time.time_ns() - int(js.stamp_ns)) / 1e6:.1f}, "
+                            f"correction_passes={passes}, "
+                            f"max_correction={max(abs(c) for c in correction):.3f})"
+                        )
+                        return True
+                    last_miss = (measured, target)
+                    if (
+                        passes < max_passes
+                        and max_correction > 0.0
+                        and time.monotonic() - settled_since >= settle_s
+                    ):
+                        correction = starting_pose_correction(
+                            correction, measured, target, max_correction
+                        )
+                        command = [t + c for t, c in zip(target, correction, strict=True)]
+                        passes += 1
+                        misses = starting_pose_misses(measured, target, bounds, names)
+                        self.get_logger().info(
+                            f"rskill_runner.starting_pose_correction pass={passes} misses={misses}"
+                        )
+                        failure = self._interpolate_starting_pose(
+                            command, goal_handle, held_joints=held
+                        )
+                        if failure is not None:
+                            return False
+                        starting_pose_wall_ns = time.time_ns()
+                        settled_since = time.monotonic()
+                        deadline = settled_since + timeout_s
                 time.sleep(0.005)
+            if last_miss is not None:
+                misses = starting_pose_misses(last_miss[0], last_miss[1], bounds, names)
+                raise ROSRuntimeError(
+                    f"starting_pose not reached after {passes} correction pass(es) "
+                    f"(max {max_correction:g} rad each joint): (joint, target - measured, "
+                    f"tolerance) {misses}"
+                )
             raise ROSPerceptionStale(
-                "no fresh joint state reached starting_pose within "
-                f"{float(self.get_parameter('action_applied_timeout_s').value):g} s"
+                f"no fresh joint state reached starting_pose within {timeout_s:g} s"
             )
 
         def _apply_starting_pose(self, skill: Any, goal_handle: Any) -> tuple[int, str] | None:
@@ -4223,6 +4285,51 @@ def starting_pose_reached(
         abs(end - start) <= tolerance
         for start, end, (_, tolerance) in zip(current, target, bounds, strict=True)
     )
+
+
+def starting_pose_misses(
+    current: Sequence[float],
+    target: Sequence[float],
+    bounds: Sequence[tuple[float, float]],
+    names: Sequence[str],
+) -> list[tuple[str, float, float]]:
+    """``(joint, target - measured, tolerance)`` for every joint outside its tolerance.
+
+    Example:
+        >>> starting_pose_misses(
+        ...     [0.0, 1.73], [0.0, 1.797], [(0.5, 0.05), (0.5, 0.05)], ["j1", "j4"]
+        ... )
+        [('j4', 0.067, 0.05)]
+    """
+    return [
+        (name, round(end - start, 4), tolerance)
+        for name, start, end, (_, tolerance) in zip(names, current, target, bounds, strict=True)
+        if abs(end - start) > tolerance
+    ]
+
+
+def starting_pose_correction(
+    correction: Sequence[float],
+    current: Sequence[float],
+    target: Sequence[float],
+    max_correction: float,
+) -> list[float]:
+    """The next command offset that cancels the measured residual, capped per joint.
+
+    A position-controlled arm under gravity settles ``torque / stiffness`` short of its
+    command; adding the residual to the command (the reset hold's correction) closes it.
+    The total offset per joint never exceeds ``max_correction``.
+
+    Example:
+        >>> starting_pose_correction([0.0, 0.0], [0.0, 1.73], [0.0, 1.797], 0.15)
+        [0.0, 0.067]
+        >>> starting_pose_correction([0.0, 0.12], [0.0, 1.70], [0.0, 1.797], 0.15)
+        [0.0, 0.15]
+    """
+    return [
+        round(max(-max_correction, min(max_correction, c + (end - start))), 6)
+        for c, start, end in zip(correction, current, target, strict=True)
+    ]
 
 
 def hold_action(
