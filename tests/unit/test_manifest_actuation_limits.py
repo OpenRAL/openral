@@ -362,3 +362,28 @@ def test_a_republished_runner_without_a_control_rate_is_refused(launch_module: o
     )
     with pytest.raises(ROSConfigError, match="control_freq_hz"):
         fn(bare, "real", republished=True)
+
+
+def test_a_sagging_elbow_is_named_with_its_residual_and_tolerance() -> None:
+    """The OpenAMRobot 2.0's elbows settle ~0.065 rad under their command in Isaac: the
+    failure names the joint, the residual and the tolerance, not 'no fresh joint state'."""
+    desc = _robot("openamrobot_v2")
+    names = [j.name for j in desc.joints]
+    bounds = runner.starting_pose_joint_bounds(0.0, 0.0, desc)
+    target = [0.0] * len(names)
+    target[names.index("left_joint4")] = 1.797
+    current = list(target)
+    current[names.index("left_joint4")] = 1.732
+    assert runner.starting_pose_misses(current, target, bounds, names) == [
+        ("left_joint4", 0.065, 0.05)
+    ]
+
+
+def test_the_correction_cancels_the_sag_and_stays_capped() -> None:
+    """Command + residual closes a gravity sag; the total offset never passes the cap."""
+    correction = runner.starting_pose_correction([0.0, 0.0], [0.0, 1.732], [0.0, 1.797], 0.15)
+    assert correction == [0.0, pytest.approx(0.065)]
+    for _ in range(10):  # an arm that never moves cannot push the offset past the cap
+        correction = runner.starting_pose_correction(correction, [0.0, 1.732], [0.0, 1.797], 0.15)
+    assert correction == [0.0, 0.15]
+    assert runner.starting_pose_correction([0.0], [0.5], [0.0], 0.15) == [-0.15]

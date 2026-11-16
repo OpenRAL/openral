@@ -385,7 +385,9 @@ def test_a_link_attachment_reaches_the_robot_spec() -> None:
     urdf = (_REPO / "robots/openamrobot_v2/openamrobot_v2.urdf").read_text()
     assert f'<link name="{link}"' in urdf
     opts = IsaacSimOptions.model_validate({"link_attachments": [{"prim": "Tote", "link": link}]})
-    assert _environment_spec(opts)["link_attachments"] == [{"prim": "Tote", "link": link}]
+    assert _environment_spec(opts)["link_attachments"] == [
+        {"prim": "Tote", "link": link, "carries": []}
+    ]
 
 
 @pytest.mark.parametrize("prim", ["/World/Tote", "Tote/", "", "Tote bin"])
@@ -433,3 +435,23 @@ def test_a_link_attachment_cannot_also_be_a_graded_stage_object() -> None:
 )
 def test_link_attachment_round_trips(attachment: IsaacLinkAttachment) -> None:
     assert IsaacLinkAttachment.model_validate_json(attachment.model_dump_json()) == attachment
+
+
+def test_an_attachment_carries_only_dynamic_scene_objects_once() -> None:
+    carton = {
+        "name": "carton",
+        "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
+        "xyz": [0.0, 0.0, 0.5],
+    }
+    tote = {"prim": "Tote", "link": "lift_carriage_link", "carries": ["carton"]}
+    opts = IsaacSimOptions.model_validate({"objects": [carton], "link_attachments": [tote]})
+    assert _environment_spec(opts)["link_attachments"][0]["carries"] == ["carton"]
+    with pytest.raises(ValidationError, match="not dynamic scene objects"):
+        IsaacSimOptions.model_validate(
+            {"objects": [{**carton, "dynamic": False}], "link_attachments": [tote]}
+        )
+    with pytest.raises(ValidationError, match="not dynamic scene objects"):
+        IsaacSimOptions.model_validate({"link_attachments": [tote]})
+    lid = {"prim": "Lid", "link": "lift_carriage_link", "carries": ["carton"]}
+    with pytest.raises(ValidationError, match="carried twice"):
+        IsaacSimOptions.model_validate({"objects": [carton], "link_attachments": [tote, lid]})

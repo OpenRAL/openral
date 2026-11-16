@@ -965,6 +965,12 @@ class IsaacLinkAttachment(BaseModel):
     author it in the stage where it should ride. It follows every base move and joint
     motion of ``link`` (a lift), and what rests on it rides along by friction.
 
+    ``carries`` names scene objects (``objects``) the attachment holds rigidly while the
+    robot drives: each one inside the prim's bounds at reset, or when a base twist is
+    commanded, is made kinematic at its offset in the prim; the first command to the arms
+    (a starting-pose ramp, a policy) releases them, dynamic again and at rest. Cartons
+    in a tote then ride the drive instead of sliding with every acceleration.
+
     Example:
         >>> IsaacLinkAttachment(prim="Tote", link="lift_carriage_link").link
         'lift_carriage_link'
@@ -974,6 +980,7 @@ class IsaacLinkAttachment(BaseModel):
 
     prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
     link: str = Field(min_length=1)
+    carries: list[str] = Field(default_factory=list)
 
 
 class IsaacDomeLight(BaseModel):
@@ -1622,6 +1629,15 @@ class IsaacSimOptions(BaseModel):
             raise ValueError(
                 f"link_attachments: repeated prims {dupes}, prims inside another attachment "
                 f"{nested}, prims overlapping a stage object {graded}."
+            )
+        movable = {o.name for o in self.objects if o.dynamic}
+        carried = [n for a in self.link_attachments for n in a.carries]
+        unknown = sorted(set(carried) - movable)
+        twice = sorted({n for n in carried if carried.count(n) > 1})
+        if unknown or twice:
+            raise ValueError(
+                f"link_attachments carries: {unknown} are not dynamic scene objects, "
+                f"{twice} are carried twice."
             )
         return self
 
