@@ -10,6 +10,7 @@ from openral_core import (
     AttachmentEvidenceKind,
     JointState,
     Pose6D,
+    RobotDescription,
     WorldState,
 )
 from openral_hal._vision_attachment_evidence import jaw_span_primitive
@@ -86,11 +87,36 @@ def test_safety_latched_renders_and_bumps_only_on_change() -> None:
 def test_quiet_safety_status_reads_unknown_never_clear() -> None:
     now = [0.0]
     r = _renderer(now)
-    r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=1))
+    # Received at clock time zero: zero is a receipt time like any other.
+    r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=0))
+    assert "## SAFETY\nclear" in r.render(world_state=None)
     now[0] = SAFETY_STATUS_LIVENESS_S + 1.0
     out = r.render(world_state=None)
     assert "## SAFETY\nUNKNOWN" in out
     assert "## SAFETY\nclear" not in out
+
+
+def test_safety_status_going_stale_and_coming_back_bumps_seq() -> None:
+    """No message announces silence: the liveness crossing itself must wake the model."""
+    now = [10.0]
+    r = _renderer(now)
+    r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(10 * _S)))
+    live = r.seq
+    assert r.seq == live  # reading again with nothing new is not an event
+    now[0] = 10.0 + SAFETY_STATUS_LIVENESS_S + 0.5
+    stale = r.seq
+    assert stale == live + 1
+    assert r.seq == stale
+    r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S)))
+    assert r.seq == stale + 1
+    assert "## SAFETY\nclear" in r.render(world_state=None)
+
+
+def test_safety_status_without_a_clock_is_never_clear() -> None:
+    r = ContextRenderer()
+    r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=1))
+    out = r.render(world_state=None)
+    assert "## SAFETY\nUNKNOWN — no clock" in out
 
 
 def test_inflight_line_shows_elapsed_and_feedback_without_waking() -> None:
@@ -125,19 +151,25 @@ def test_note_without_wake_is_rendered_but_does_not_bump_seq() -> None:
 
 
 def test_world_state_renders_age_base_pose_and_what_is_held() -> None:
+    # Joint and hand-link names from the real OpenArm manifest, not placeholders.
+    description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    joint = description.joints[0]
+    gripper = next(j for j in description.joints if j.role == "gripper")
     now = [5.0]
     r = _renderer(now)
     ws = WorldState(
         stamp_ns=int(4.5 * _S),
-        joint_state=JointState(name=["j1"], position=[0.1], stamp_ns=1),
+        joint_state=JointState(name=[joint.name], position=[0.1], stamp_ns=1),
         base_pose=Pose6D(xyz=(1.0, 2.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
         attached_objects=[
             AttachedCollisionObject(
                 object_id="milk_1",
-                attach_link="gripper",
-                touch_links=["finger_l"],
+                attach_link=gripper.parent_link,
+                touch_links=[gripper.child_link],
                 primitives=[jaw_span_primitive(object_id="milk_1", jaw_span_m=0.06)],
-                pose_in_link=Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id="gripper"),
+                pose_in_link=Pose6D(
+                    xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id=gripper.parent_link
+                ),
                 confidence=0.9,
                 evidence_kind=AttachmentEvidenceKind.GRIPPER_FORCE,
                 stamp_ns=1,
@@ -147,7 +179,7 @@ def test_world_state_renders_age_base_pose_and_what_is_held() -> None:
     out = r.render(world_state=ws)
     assert f"stamp_ns: {ws.stamp_ns} age=0.5s" in out
     assert "base_pose: xyz=(+1.000,+2.000,+0.000) frame=map" in out
-    assert "holding: milk_1 on gripper (confidence 0.90)" in out
+    assert f"holding: milk_1 on {gripper.parent_link} (confidence 0.90)" in out
 
 
 def test_an_age_from_another_clock_base_is_omitted() -> None:
