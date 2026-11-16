@@ -49,6 +49,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "strip_xform_colliders": bool,     # drop CollisionAPI from Xform prims of the stage
       "dome_light": {"intensity", "color"} | null,  # for a stage that ships no lights
       "joint_effort_limits": {joint_regex: Nm},  # drive maxForce caps, fullmatch on joint name
+      "gravity_compensation": {joint_regex: k},  # gravity feed-forward scale, fullmatch
       "physx_scene": {"friction_correlation_distance", "bounce_threshold"} | null,
       "collision_approximation": {link_regex: token},  # PhysX mesh approximation per link
       "link_box_colliders": {link: {"xyz", "half_extents"}},  # replace a link's colliders
@@ -2027,6 +2028,8 @@ class IsaacManifestScene(IsaacSceneBase):
         self._root_to_lidar: NDArray[np.float64] | None = None
         # DOF mapping, resolved post-reset once dof_names is populated.
         self._dof_index: dict[str, int] = {}
+        # (DOF indices, scales) of the gravity feed-forward, resolved on first use.
+        self._gravity_ff: tuple[NDArray[np.int64], NDArray[np.float32]] | None = None
         self._arm_dof_idx: list[int] = []
         # Commanded joint targets (full DOF vector). A NaN action slot keeps its
         # entry here, so holding never re-targets wherever gravity has dragged
@@ -3306,7 +3309,46 @@ class IsaacManifestScene(IsaacSceneBase):
     def _before_render(self) -> None:
         # Reset warmup steps physics through this hook only.
         super()._before_render()
+        self._compensate_gravity()
         self._follow_links()
+
+    def _compensate_gravity(self) -> None:
+        """Add the motors' gravity feed-forward: ``k`` x the gravity torque at the pose.
+
+        A real MIT/PD arm controller adds ``k * tau_gravity(q)`` to its PD torque, so the
+        joint lands on its command instead of resting gravity torque / kp below it. PhysX
+        computes the same generalized gravity forces from the imported URDF; set as joint
+        efforts before every physics step, they sum with the position drive just as the
+        controller's feed-forward sums with its PD term. ``gravity_compensation`` maps a
+        URDF joint-name regex (fullmatch) to ``k``; unmatched joints get none.
+        """
+        if self._gravity_ff is None:
+            scales = self._spec.get("gravity_compensation") or {}
+            if scales and not self._dof_index:
+                return  # before the first reset resolves the DOF names
+            import re
+
+            pairs = [
+                (i, float(k))
+                for name, i in self._dof_index.items()
+                for k in [next((v for p, v in scales.items() if re.fullmatch(p, name)), None)]
+                if k is not None
+            ]
+            self._gravity_ff = (
+                np.array([i for i, _ in pairs], dtype=np.int64),
+                np.array([k for _, k in pairs], dtype=np.float32),
+            )
+            if pairs:
+                print(
+                    f"[isaac_manifest_scene] gravity feed-forward on {len(pairs)} joint(s)",
+                    flush=True,
+                )
+        idx, k = self._gravity_ff
+        if not idx.size:
+            return
+        art = self._robot._articulation_view
+        tau = np.asarray(art.get_generalized_gravity_forces(joint_indices=idx), dtype=np.float32)
+        self._robot.set_joint_efforts(k * tau.reshape(-1), joint_indices=idx)
 
     def _before_substep(self) -> None:
         """With ``gripper_followers_track: "measured"``, re-target every mimic follower.
@@ -3319,6 +3361,7 @@ class IsaacManifestScene(IsaacSceneBase):
         leader. ``"measured"`` drives them toward the mimic of the MEASURED leader before
         each physics substep, so the linkage moves as one body under contact too.
         """
+        self._compensate_gravity()
         self._follow_links()
         if self._spec.get("gripper_followers_track", "target") != "measured" or not self._grippers:
             return
@@ -3471,6 +3514,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 self._ArticulationAction(joint_positions=self._target)
             )
             for _ in range(self._HOLD_SETTLE_STEPS):
+                self._compensate_gravity()
                 self._world.step(render=False)
         print(
             "[isaac_manifest_scene] hold target raised by up to "

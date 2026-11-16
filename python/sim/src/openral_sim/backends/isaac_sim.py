@@ -1394,6 +1394,10 @@ class IsaacPlacementSuccess(BaseModel):
         ]
 
 
+# A gravity feed-forward past 2x the model's gravity torque is a typo, not a calibration.
+_MAX_GRAVITY_FF_SCALE = 2.0
+
+
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
 
@@ -1497,6 +1501,12 @@ class IsaacSimOptions(BaseModel):
     # linear), overriding the URDF limit. For a task whose training sim gripped softer
     # than the motor can (LeIsaac: the SO-101 jaw at object mass / 0.15).
     joint_effort_limits: dict[str, float] = Field(default_factory=dict)
+    # Gravity feed-forward: URDF joint-name regex (fullmatch) -> scale k. Each physics step
+    # adds k x the joint's gravity torque at the current pose (PhysX generalized gravity
+    # forces) to its drive, as a real MIT/PD controller's gravity feed-forward does: with
+    # it the arm holds its command instead of sagging gravity torque / stiffness below it.
+    # Pair it with that controller's kp/kd in `joint_drive_gains`. Unmatched joints: none.
+    gravity_compensation: dict[str, float] = Field(default_factory=dict)
     # Manifest gripper joint -> calibration curve [(manifest value, URDF finger value), ...],
     # piecewise linear, applied to commands (manifest -> finger) and joint states (finger ->
     # manifest). For a jaw whose reading is not its URDF finger angle: OpenArm's real jaw
@@ -1572,6 +1582,20 @@ class IsaacSimOptions(BaseModel):
                 raise ValueError(f"joint_effort_limits[{pattern!r}] is not a regex: {exc}") from exc
             if not cap > 0:
                 raise ValueError(f"joint_effort_limits[{pattern!r}] must be > 0")
+        return value
+
+    @field_validator("gravity_compensation")
+    @classmethod
+    def _gravity_compensation_valid(cls, value: dict[str, float]) -> dict[str, float]:
+        for pattern, k in value.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"gravity_compensation[{pattern!r}] is not a regex: {exc}"
+                ) from exc
+            if not 0.0 <= k <= _MAX_GRAVITY_FF_SCALE:
+                raise ValueError(f"gravity_compensation[{pattern!r}] must be in [0, 2]")
         return value
 
     @field_validator("gripper_joint_curve")
@@ -2858,9 +2882,9 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
 
     Example:
         >>> sorted(_environment_spec(IsaacSimOptions()))  # doctest: +NORMALIZE_WHITESPACE
-        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'link_attachments',
-         'link_box_colliders', 'physx_scene', 'rtx_settings', 'stage_objects',
-         'strip_xform_colliders']
+        ['collision_approximation', 'dome_light', 'gravity_compensation', 'joint_effort_limits',
+         'link_attachments', 'link_box_colliders', 'physx_scene', 'rtx_settings',
+         'stage_objects', 'strip_xform_colliders']
     """
     return opts.model_dump(
         mode="json",
@@ -2870,6 +2894,7 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
             "strip_xform_colliders",
             "dome_light",
             "joint_effort_limits",
+            "gravity_compensation",
             "physx_scene",
             "collision_approximation",
             "link_box_colliders",
@@ -3051,6 +3076,7 @@ def _placement(
             "depth_cameras",
             "joint_drive_gains",
             "joint_effort_limits",
+            "gravity_compensation",
             "physx_scene",
             "collision_approximation",
             "link_box_colliders",
