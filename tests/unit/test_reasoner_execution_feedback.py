@@ -321,7 +321,7 @@ def test_a_grasp_miss_opens_a_reflection_line_for_that_hand() -> None:
         f"{reflect_on_grasp_miss(left[1], 'cell:pick_box', 0.031)}"
     ) in execution
     # The event itself is still on the failure buffer, like every other kind.
-    assert f"[hal] kind={KIND_GRASP_OUTCOME} severity={SEVERITY_FAIL}" in out
+    assert "[hal] kind=GRASP_OUTCOME severity=FAIL" in out
 
 
 def test_the_next_miss_on_a_hand_replaces_its_line() -> None:

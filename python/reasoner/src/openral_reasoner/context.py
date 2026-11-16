@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections import Counter, deque
+from collections.abc import Callable
 
 from openral_core import (
     CollisionEvidence,
@@ -38,6 +39,7 @@ from openral_core import (
     TimeoutEvidence,
     WorldState,
 )
+from openral_observability import failure_bus
 from pydantic import TypeAdapter, ValidationError
 
 from openral_reasoner.mission import MissionState, TaskState
@@ -45,12 +47,15 @@ from openral_reasoner.mission import MissionState, TaskState
 __all__ = [
     "DEFAULT_BUFFER_SIZE",
     "DEFAULT_PROMPT_PRIORITY",
+    "SAFETY_STATUS_LIVENESS_S",
     "ContextRenderer",
     "ExecutionEventRecord",
     "FailureEventRecord",
     "PerceptionEventRecord",
     "PromptRecord",
     "RewardStateRecord",
+    "SafetyStateRecord",
+    "failure_kind_name",
     "reflect_on_failure",
     "reflect_on_grasp_miss",
     "reflect_on_invalid_plan",
@@ -68,6 +73,40 @@ DEFAULT_BUFFER_SIZE: int = 8
 # in ``openral_prompt_router.DEFAULT_SOURCES``. Human
 # sources (CLI, dashboard) get 100; cascades stay at 10.
 DEFAULT_PROMPT_PRIORITY: int = 10
+
+#: ``/openral/safety_status`` is refreshed at 1 Hz (``SafetyStatus.msg``); a stamp
+#: older than this renders UNKNOWN, never "clear" (HZ-0096-1 mitigation 2/4).
+SAFETY_STATUS_LIVENESS_S: float = 3.0
+
+# Rendered event ages above this (or negative) mean the stamp is on another
+# clock base; the age is then left out (``ContextRenderer._age``).
+_MAX_PLAUSIBLE_AGE_S: float = 86_400.0
+
+# FailureTrigger KIND_* / SEVERITY_* numbers -> names, so the LLM reads
+# ``kind=COLLISION severity=ABORT`` instead of ``kind=10 severity=3``. Built from
+# the IDL mirror in ``openral_observability.failure_bus`` (pinned to the IDL by
+# tests/unit/test_failure_bus_idl_mirror.py).
+_KIND_NAMES: dict[int, str] = {
+    getattr(failure_bus, n): n.removeprefix("KIND_")
+    for n in failure_bus.__all__
+    if n.startswith("KIND_")
+}
+_SEVERITY_NAMES: dict[int, str] = {
+    getattr(failure_bus, n): n.removeprefix("SEVERITY_")
+    for n in failure_bus.__all__
+    if n.startswith("SEVERITY_")
+}
+
+
+def failure_kind_name(kind: int) -> str:
+    """Name of a FailureTrigger / SafetyStatus ``KIND_*`` number (``"KIND_<n>"`` if unknown).
+
+    Example:
+        >>> failure_kind_name(10), failure_kind_name(77)
+        ('COLLISION', 'KIND_77')
+    """
+    return _KIND_NAMES.get(kind, f"KIND_{kind}")
+
 
 _FAILURE_ADAPTER: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
 _PERCEPTION_ADAPTER: TypeAdapter[PerceptionEventMetadata] = TypeAdapter(PerceptionEventMetadata)
@@ -147,6 +186,25 @@ class ExecutionEventRecord:
     # ExecuteRskill.Result.evidence_json — one FailureEvidence variant, rendered as an
     # ``evidence=…`` summary after the outcome ("" = none).
     evidence_json: str = ""
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SafetyStateRecord:
+    """Latest ``/openral/safety_status`` (latched topic, ADR-0096), as the LLM sees it.
+
+    Attributes:
+        latched: A fault is latched; only an operator ``/openral/estop_reset``
+            clears it, so no skill can move the robot until then.
+        reason: ``drop_reason`` name (``failure_kind_name`` / ``DROP_*``), ``""``
+            when clear.
+        stamp_ns: When the reasoner received it, on the renderer's own clock
+            (``now_ns``) — liveness is judged on receipt, not on the publisher's
+            ``header.stamp``, whose clock base may differ (sim vs wall).
+    """
+
+    latched: bool
+    reason: str
+    stamp_ns: int
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -661,7 +719,11 @@ class ContextRenderer:
     """
 
     def __init__(
-        self, *, buffer_size: int = DEFAULT_BUFFER_SIZE, robot_model: str | None = None
+        self,
+        *,
+        buffer_size: int = DEFAULT_BUFFER_SIZE,
+        robot_model: str | None = None,
+        now_ns: Callable[[], int] | None = None,
     ) -> None:
         """Stash buffer capacity, the static robot self-model, and arm empty FIFOs.
 
@@ -671,6 +733,10 @@ class ContextRenderer:
                 ``render_robot_self_model``), rendered as the
                 ``## ROBOT`` section. ``None`` omits the section (e.g. before the
                 robot description is loaded).
+            now_ns: Clock (same time base as the records' ``stamp_ns``, i.e. the
+                node's graph clock). When set, every event line carries its
+                ``age=…s`` and the world-state snapshot its age, so the LLM can
+                tell a fresh failure from an old one. ``None`` renders no ages.
         """
         if buffer_size < 1:
             raise ValueError(
@@ -678,6 +744,12 @@ class ContextRenderer:
             )
         self._buffer_size = buffer_size
         self._robot_model = robot_model
+        self._now_ns = now_ns
+        # Latest /openral/safety_status; None until one arrives (no section).
+        self._safety: SafetyStateRecord | None = None
+        # Latest ExecuteRskill feedback of the in-flight goal, rendered on the
+        # in_flight line. Not an event: it never bumps ``seq``.
+        self._inflight_feedback: str = ""
         # The rendered `## MEMORY` block (the self-
         # maintained MEMORY.md), set via `set_memory_block`. None omits the section.
         self._memory_block: str | None = None
@@ -841,8 +913,39 @@ class ContextRenderer:
         """
         new = None if rskill_id is None else (rskill_id, stamp_ns, state)
         if new != self._inflight:
+            if new is None or self._inflight is None or new[0] != self._inflight[0]:
+                self._inflight_feedback = ""
             self._inflight = new
             self._seq += 1
+
+    def set_inflight_feedback(self, text: str) -> None:
+        """Latest progress of the in-flight goal (``ExecuteRskill`` feedback).
+
+        Rendered on the ``in_flight:`` line. A progress tick is not an event —
+        it never bumps ``seq`` (the in-flight backstop decides when the LLM
+        looks at it).
+        """
+        self._inflight_feedback = text
+
+    def set_safety_status(self, status: SafetyStateRecord | None) -> None:
+        """Set the latest ``/openral/safety_status``, rendered as ``## SAFETY``.
+
+        Bumps ``seq`` only when the latched flag or the reason changes; the 1 Hz
+        liveness refresh of an unchanged state is not an event.
+        """
+        before = self._safety
+        self._safety = status
+        if (
+            before is None
+            or status is None
+            or (before.latched, before.reason) != (status.latched, status.reason)
+        ):
+            self._seq += 1
+
+    @property
+    def safety_latched(self) -> bool:
+        """True while the last ``/openral/safety_status`` reported a latched fault."""
+        return self._safety is not None and self._safety.latched
 
     @property
     def inflight_skill(self) -> str | None:
@@ -997,17 +1100,33 @@ class ContextRenderer:
                 self._grasp_misses.pop(evidence.jaw_link, None)
         self._seq += 1
 
-    def append_execution(self, record: ExecutionEventRecord) -> None:
+    def append_execution(self, record: ExecutionEventRecord, *, wake: bool = True) -> None:
         """Push a skill execution outcome onto the rolling buffer.
 
         A completed skill is a meaningful event, so this bumps ``seq`` —
         the success/failure feedback should wake an otherwise-idle heartbeat.
+        ``wake=False`` records something the model already knows (what it just
+        said to the operator) without bumping ``seq``: it is in the next
+        snapshot, but does not by itself buy another LLM call.
         """
         self._executions.append(record)
-        self._seq += 1
+        if wake:
+            self._seq += 1
 
     def append_perception(self, record: PerceptionEventRecord) -> None:
-        """Push a perception event onto the rolling buffer."""
+        """Push a perception event onto the rolling buffer.
+
+        A record whose text repeats the newest one of the same ``kind`` is
+        dropped — no append, no ``seq`` bump. The continuous detector publishes
+        ``"N objects"`` every period; appending each copy filled the buffer with
+        duplicates and woke the LLM every heartbeat on unchanged content (the
+        same rule ``set_in_view`` applies to its frames).
+        """
+        for prev in reversed(self._perception):
+            if prev.kind == record.kind:
+                if prev.text == record.text:
+                    return
+                break
         self._perception.append(record)
         self._seq += 1
 
@@ -1080,8 +1199,9 @@ class ContextRenderer:
         Returns:
             A multi-section text block: optional ``## ROBOT`` self-model,
             ``## MEMORY``, ``## MISSION`` (the active task queue, when a
-            non-empty mission is set), and ``## REWARD`` (the latest two-head
-            reward assessment, when set) followed by ``## WORLD_STATE``,
+            non-empty mission is set), ``## SAFETY`` (the latched safety state,
+            once one arrived), and ``## REWARD`` (the latest two-head reward
+            assessment, when set) followed by ``## WORLD_STATE``,
             ``## EXECUTION``, ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS``.
         """
         sections: list[str] = []
@@ -1091,6 +1211,8 @@ class ContextRenderer:
             sections += [self._memory_block, ""]
         if self._mission is not None and not self._mission.is_empty():
             sections += ["## MISSION", self._mission.render(), ""]
+        if self._safety is not None:
+            sections += ["## SAFETY", self._render_safety(), ""]
         if self._reward_state is not None:
             sections += ["## REWARD", self._render_reward(), ""]
         sections += [
@@ -1111,6 +1233,47 @@ class ContextRenderer:
         ]
         return "\n".join(sections).rstrip() + "\n"
 
+    def _age(self, stamp_ns: int) -> str:
+        """`` age=<s>s`` for an event stamped ``stamp_ns``; ``""`` without a clock/stamp.
+
+        Also ``""`` when the age is negative or over a day: the stamp then comes
+        from another clock base (a sim-time publisher read by a wall-clock
+        reasoner — ``deploy_e2e`` gives the kernel ``use_sim_time`` but not the
+        reasoner), and a wrong age is worse than none.
+        """
+        if self._now_ns is None or stamp_ns <= 0:
+            return ""
+        age_s = (self._now_ns() - stamp_ns) / 1e9
+        # ponytail: plausibility window, not a clock-base check; exact once the
+        # reasoner shares the graph clock.
+        if not 0.0 <= age_s <= _MAX_PLAUSIBLE_AGE_S:
+            return ""
+        return f" age={age_s:.1f}s"
+
+    def _render_safety(self) -> str:
+        """One line: latched / dropping / clear, or UNKNOWN when the topic went quiet."""
+        st = self._safety
+        assert st is not None  # render() guards `is not None` before calling
+        if self._now_ns is not None and st.stamp_ns > 0:
+            age_s = (self._now_ns() - st.stamp_ns) / 1e9
+            if age_s > SAFETY_STATUS_LIVENESS_S:
+                return (
+                    f"UNKNOWN — no safety status for {age_s:.0f}s; treat the robot as stopped "
+                    "and tell the operator rather than dispatching motion."
+                )
+        if st.latched:
+            return (
+                f"LATCHED reason={st.reason or '?'}{self._age(st.stamp_ns)} — every motion is "
+                "refused until the operator resets the e-stop. Do not dispatch skills; tell "
+                "the operator what stopped and wait for their reply."
+            )
+        if st.reason:
+            return (
+                f"dropping motion reason={st.reason} (not latched) — the next motion may be "
+                "refused again until the cause clears."
+            )
+        return "clear"
+
     def _render_reward(self) -> str:
         """Render the two-head reward assessment.
 
@@ -1126,6 +1289,7 @@ class ContextRenderer:
             f"trend {r.progress_trend:+.3f}/frame), "
             f"success={r.success:.2f} (done-confidence, trend {r.success_trend:+.3f}/frame). "
             "Gate on progress for persist-vs-replan; success is a secondary done-ness cue."
+            f"{self._age(r.stamp_ns)}"
         )
 
     def _render_world_state(self, world_state: WorldState | None) -> str:
@@ -1136,7 +1300,13 @@ class ContextRenderer:
             parts = (self._render_memory_objects(), self._render_in_view())
             extra = "\n".join(x for x in parts if x)
             return f"(no snapshot yet)\n{extra}" if extra else "(no snapshot yet)"
-        lines: list[str] = [f"stamp_ns: {world_state.stamp_ns}"]
+        lines: list[str] = [f"stamp_ns: {world_state.stamp_ns}{self._age(world_state.stamp_ns)}"]
+        if world_state.base_pose is not None:
+            bx, by, bz = world_state.base_pose.xyz
+            lines.append(
+                f"base_pose: xyz=({bx:+.3f},{by:+.3f},{bz:+.3f}) "
+                f"frame={world_state.base_pose.frame_id}"
+            )
         if world_state.joint_state is not None:
             js = world_state.joint_state
             joints = ", ".join(
@@ -1153,6 +1323,14 @@ class ContextRenderer:
                     f"quat_xyzw=({qx:+.3f},{qy:+.3f},{qz:+.3f},{qw:+.3f}) "
                     f"frame={pose.frame_id}",
                 )
+        if world_state.attached_objects:
+            # What the robot is carrying right now (the safety kernel's
+            # attachment set) — the ground truth for "is the object in hand".
+            held = ", ".join(
+                f"{a.object_id} on {a.attach_link} (confidence {a.confidence:.2f})"
+                for a in world_state.attached_objects
+            )
+            lines.append(f"holding: {held}")
         if world_state.battery_pct is not None:
             lines.append(f"battery_pct: {world_state.battery_pct:.1f}")
         if world_state.diagnostics:
@@ -1254,7 +1432,9 @@ class ContextRenderer:
         for rec in self._failures:
             evidence_summary = _summarise_evidence_json(rec.evidence_json)
             lines.append(
-                f"[{rec.source}] kind={rec.kind} severity={rec.severity} "
+                f"[{rec.source}] kind={failure_kind_name(rec.kind)} "
+                f"severity={_SEVERITY_NAMES.get(rec.severity, rec.severity)}"
+                f"{self._age(rec.stamp_ns)} "
                 f"skill={rec.rskill_id or '-'} trace={rec.trace_id[:8] or '-'} {evidence_summary}",
             )
         return "\n".join(lines)
@@ -1278,15 +1458,22 @@ class ContextRenderer:
                 if state == "dispatching"
                 else "is RUNNING right now"
             )
+            elapsed = self._age(stamp_ns).replace(" age=", ", running for ")
+            feedback = (
+                f"; latest feedback: {self._inflight_feedback}" if self._inflight_feedback else ""
+            )
             lines.append(
                 f"in_flight: skill={rskill_id} {phase} "
-                f"(state={state}, dispatched at stamp_ns={stamp_ns}). Do not dispatch "
-                "another execute_rskill until it returns, and do not escalate to the "
-                "operator just because it has not finished; poll query_task_progress "
-                "or wait."
+                f"(state={state}, dispatched at stamp_ns={stamp_ns}{elapsed}{feedback}). "
+                "Do not dispatch another execute_rskill until it returns, and do not "
+                "escalate to the operator just because it has not finished; poll "
+                "query_task_progress or wait."
             )
         for rec in self._executions:
-            line = f"[{rec.outcome}] skill={rec.rskill_id or '-'}: {rec.summary}"
+            line = (
+                f"[{rec.outcome}] skill={rec.rskill_id or '-'}{self._age(rec.stamp_ns)}: "
+                f"{rec.summary}"
+            )
             if rec.evidence_json:
                 line += f" {_summarise_evidence_json(rec.evidence_json)}"
             if rec.reflection:
@@ -1309,7 +1496,9 @@ class ContextRenderer:
         """Render the perception buffer; one line per event, oldest first."""
         if not self._perception:
             return "(none)"
-        return "\n".join(f"[{rec.kind}] {rec.text}" for rec in self._perception)
+        return "\n".join(
+            f"[{rec.kind}]{self._age(rec.stamp_ns)} {rec.text}" for rec in self._perception
+        )
 
     def _render_prompts(self) -> str:
         """Render the pending-prompt buffer; one line per prompt.
