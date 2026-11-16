@@ -2509,7 +2509,8 @@ class SimAttachedHAL:
         A non-MuJoCo backend that ray-casts a 2-D lidar (the Isaac scene)
         surfaces the per-beam ranges (the lidar's own frame, ``angle_min=-π`` →
         ``angle_max=+π``, the bridge's convention) under the ``"scan"`` obs slot.
-        ``SimSensorBridge._compute_scan_ranges`` reads it for ``/scan``. ``None``
+        The lifecycle node captures it with each observation (``ProprioFrame.scan``)
+        and ``SimSensorBridge.publish_scan_from_frame`` publishes it on ``/scan``. ``None``
         when the backend renders no lidar (MuJoCo backends ray-cast instead).
         """
         if self._last_obs is None:

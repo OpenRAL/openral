@@ -26,6 +26,7 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from openral_core import CameraTopicKind, camera_topic, sensor_name_to_slot
 
 from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
@@ -119,6 +120,12 @@ if TYPE_CHECKING:
 
     from openral_hal.proprio_snapshot import ProprioFrame
 
+log = structlog.get_logger(__name__)
+
+#: At most one ``/scan`` problem warning of a kind per this many ns (the publisher thread
+#: would otherwise log one per observation).
+_SCAN_WARN_PERIOD_NS = 10_000_000_000
+
 __all__ = [
     "SimSensorBridge",
     "attached_model_slip",
@@ -131,9 +138,9 @@ __all__ = [
     "initial_configuration_stop_record",
     "isaac_estop_ground_truth_record",
     "kernel_checked_body_ids",
+    "next_scan_due",
     "occupied_cell_keys",
     "preattach_verdict",
-    "scan_due",
     "scan_ranges_on_wire",
     "should_idle_step",
     "voxel_backing_record",
@@ -195,23 +202,33 @@ def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[flo
     return [float(max_range_m)] * int(n_beams)
 
 
-def scan_due(last_ns: int | None, now_ns: int, rate_hz: float) -> bool:
-    """Whether a scan observed at sim time ``now_ns`` is due, the last published at ``last_ns``.
+def next_scan_due(next_due_ns: int | None, now_ns: int, rate_hz: float) -> int | None:
+    """When the scan after one observed at ``now_ns`` is due, or ``None`` if this one is not.
 
-    Due on the first observation, then once one period (``1 / rate_hz``, sim time, less
-    1 % for integer-ns step rounding) has passed; never for the same or an earlier one.
+    ``next_due_ns`` is what the previous call returned (``None`` before the first scan).
+    The schedule advances by whole periods (``1 / rate_hz``, sim time, due 1 % early for
+    integer-ns step rounding), so steps that do not divide the period still average the
+    configured rate instead of losing the remainder at every scan. It resyncs to
+    ``now_ns`` when it fell more than a period behind (a pause) and when sim time went
+    back past the last scan's slot (a reset), so neither bursts nor silences ``/scan``.
 
     Example:
-        >>> scan_due(None, 0, 10.0), scan_due(0, 50_000_000, 10.0), scan_due(0, 100_000_000, 10.0)
-        (True, False, True)
-        >>> scan_due(100_000_000, 100_000_000, 10.0)
-        False
+        >>> next_scan_due(None, 0, 10.0)
+        100000000
+        >>> next_scan_due(100_000_000, 50_000_000, 10.0) is None  # inside the period
+        True
+        >>> next_scan_due(100_000_000, 166_000_000, 10.0)  # late: the phase is kept
+        200000000
     """
-    if last_ns is None:
-        return True
     period_ns = int(1e9 / max(rate_hz, 1.0))
+    if next_due_ns is None or now_ns < next_due_ns - period_ns:
+        return now_ns + period_ns
     # 1 % slack: integer-ns sim steps (3 x 33_333_333 ns at 30 Hz) land a few ns short.
-    return now_ns > last_ns and now_ns - last_ns >= period_ns - period_ns // 100
+    slack_ns = period_ns // 100
+    if now_ns < next_due_ns - slack_ns:
+        return None
+    following = next_due_ns + period_ns
+    return following if following - slack_ns > now_ns else now_ns + period_ns
 
 
 def scan_ranges_on_wire(ranges: Sequence[float], *, max_range_m: float) -> list[float]:
@@ -2829,7 +2846,9 @@ class SimSensorBridge:
         self._viewer_sync_rate_hz = viewer_sync_rate_hz
         self._scan_rate_hz = scan_rate_hz
         self._scan_from_snapshot = False
-        self._scan_last_ns: int | None = None
+        self._scan_next_due_ns: int | None = None
+        self._scan_last_frame: ProprioFrame | None = None
+        self._scan_warned_ns: dict[str, int] = {}
         self._scan_n_beams = scan_n_beams
         self._scan_max_range_m = scan_max_range_m
         self._scan_min_range_m = scan_min_range_m
@@ -3623,11 +3642,13 @@ class SimSensorBridge:
                 1.0 / max(self._scan_rate_hz, 1.0), self._publish_scan
             )
         lidar = self._description.lidar_sensor
-        self._node.get_logger().info(
-            f"SimSensorBridge: publishing /scan @ {self._scan_rate_hz:.1f} Hz "
-            f"({'per observation, publisher thread' if self._scan_from_snapshot else 'timer'}) "
-            f"frame={lidar.frame_id} beams={self._scan_n_beams} "
-            f"range=[{self._scan_min_range_m}, {self._scan_max_range_m}] m."
+        log.info(
+            "sim_sensor_bridge.scan_publishing",
+            rate_hz=self._scan_rate_hz,
+            source="observation" if self._scan_from_snapshot else "timer",
+            frame=lidar.frame_id,
+            beams=self._scan_n_beams,
+            range_m=(self._scan_min_range_m, self._scan_max_range_m),
         )
 
     def _publish_scan(self) -> None:
@@ -3649,35 +3670,63 @@ class SimSensorBridge:
     def publish_scan_from_frame(self, frame: ProprioFrame) -> None:
         """Publish the scan a proprio frame carries, once per observation, at most at the rate.
 
-        Called from the HAL's publisher thread (never touches the simulator): a frame
-        with a ``scan`` and a ``sim_time_ns`` is published, stamped like ``/odom`` and its
-        TF (the node clock), when ``scan_due`` says the configured period has passed in
-        sim time. A repeated frame (no new step) is never re-published.
+        Called from the HAL's publisher thread (never touches the simulator; the range
+        conversion happens here, not on the executor thread): each new frame with a
+        ``scan`` is published, stamped like ``/odom`` and its TF (the node clock), when
+        ``next_scan_due`` says its slot has come, in sim time (``time.monotonic_ns`` for a
+        HAL with no sim clock). A frame already seen is never re-published. A frame
+        without a scan publishes nothing (no beams are made up) and warns, throttled; a
+        fan whose beam count differs from ``scan_n_beams`` is published as the sensor
+        gave it, its ``angle_increment`` from its own count, and warns, throttled.
         """
         if self._scan_pub is None or not self._scan_from_snapshot:
             return
-        if frame.scan is None or frame.sim_time_ns is None:
+        if frame is self._scan_last_frame:
             return
-        if len(frame.scan) != int(self._scan_n_beams):
+        self._scan_last_frame = frame
+        if frame.scan is None:
+            self._warn_scan(
+                "sim_sensor_bridge.scan_missing",
+                detail="the manifest declares a lidar_2d but the backend's observation "
+                "carries no scan; /scan is not published",
+            )
             return
-        if not scan_due(self._scan_last_ns, frame.sim_time_ns, float(self._scan_rate_hz)):
+        now_ns = frame.sim_time_ns if frame.sim_time_ns is not None else time.monotonic_ns()
+        next_due = next_scan_due(self._scan_next_due_ns, now_ns, float(self._scan_rate_hz))
+        if next_due is None:
             return
-        self._scan_last_ns = frame.sim_time_ns
+        self._scan_next_due_ns = next_due
+        ranges: list[float] = frame.scan.tolist()
+        if len(ranges) != int(self._scan_n_beams):
+            self._warn_scan(
+                "sim_sensor_bridge.scan_beam_count_mismatch",
+                configured_beams=int(self._scan_n_beams),
+                sensor_beams=len(ranges),
+                detail="published with the sensor's own beam count and angle_increment",
+            )
         # Stamped like /odom and odom->base TF (the node clock), not with the frame's sim
         # time: that can run one step ahead of the last /clock, and a consumer that
         # transforms the scan at its stamp (Nav2's collision monitor) would then need TF
         # from the future and drop the source (Spark, 2026-11-15).
-        self._scan_pub.publish(
-            self._scan_message(list(frame.scan), self._node.get_clock().now().to_msg())
-        )
+        self._scan_pub.publish(self._scan_message(ranges, self._node.get_clock().now().to_msg()))
+
+    def _warn_scan(self, event: str, **fields: object) -> None:
+        """Log a ``/scan`` problem at most once per ``_SCAN_WARN_PERIOD_NS`` per ``event``."""
+        now = time.monotonic_ns()
+        last = self._scan_warned_ns.get(event)
+        if last is not None and now - last < _SCAN_WARN_PERIOD_NS:
+            return
+        self._scan_warned_ns[event] = now
+        log.warning(event, **fields)
 
     def _scan_message(self, ranges: list[float], stamp: Time) -> LaserScan:
-        """A ``LaserScan`` of ``ranges`` (the bridge's -π..π fan) stamped ``stamp``."""
-        import math  # reason: stdlib defer
+        """A ``LaserScan`` of ``ranges`` (the bridge's -π..π fan) stamped ``stamp``.
 
+        ``angle_increment`` follows ``len(ranges)``, the beams actually cast.
+        """
         from sensor_msgs.msg import LaserScan
 
-        n_beams = int(self._scan_n_beams)
+        n_beams = len(ranges)
         max_range = float(self._scan_max_range_m)
         min_range = float(self._scan_min_range_m)
         scan_rate = float(self._scan_rate_hz)
@@ -3708,13 +3757,8 @@ class SimSensorBridge:
         """
         handle = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handle is None:
-            # Non-MuJoCo backend: use the ranges the HAL surfaces (Isaac lidar
-            # ray-cast), else an honest no-hit fan.
-            read = getattr(self._hal, "read_scan", None)
-            if callable(read):
-                scan = read()
-                if scan is not None and len(scan) == n_beams:
-                    return [float(r) for r in scan]
+            # The bare digital twin: no scene to ray-cast. (A backend that returns its
+            # fan with the observation is published by `publish_scan_from_frame`.)
             return constant_scan_no_hit_ranges(n_beams=n_beams, max_range_m=max_range_m)
         model, data = handle
         from openral_core import (  # reason: scoped to scan synthesis

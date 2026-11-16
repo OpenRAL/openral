@@ -67,6 +67,7 @@ from contextlib import contextmanager
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
+import numpy as np
 from openral_core import check_urdf_curve, curve_slope, curve_value
 
 from openral_hal.mobile_base_bridge import describes_mobile_base, platform_owns_navigation
@@ -1557,7 +1558,8 @@ if _ROS2_AVAILABLE:
                     base_twist=tuple(float(v) for v in twist),
                     sim_time_ns=sim_time_ns,
                     policy_state=policy_state,
-                    scan=tuple(float(r) for r in scan_raw) if scan_raw is not None else None,
+                    # One vectorised copy; the publisher thread converts it.
+                    scan=np.array(scan_raw, dtype=np.float32) if scan_raw is not None else None,
                 )
             )
 

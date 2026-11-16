@@ -1,50 +1,65 @@
 """``/scan`` from an observation-fed backend (Isaac) leaves the HAL executor thread.
 
 The HAL's proprio publisher thread publishes the scan the step's observation carries
-(``ProprioFrame.scan``), stamped like ``/odom`` and throttled in sim time by
-``scan_due``. On the executor thread, which env.step and render hold, a 10 Hz timer
+(``ProprioFrame.scan``), stamped like ``/odom`` and scheduled in sim time by
+``next_scan_due``. On the executor thread, which env.step and render hold, a 10 Hz timer
 delivered 1.5-3.3 Hz, past Nav2's collision-monitor source timeout (Spark, 2026-11-15).
+The bridge end of it (gate, publish, warnings) is in ``test_isaac_sim_sidecar_wire.py``.
 """
 
 from __future__ import annotations
 
+import itertools
+
+import numpy as np
 import pytest
 from openral_core import JointState
 from openral_hal.proprio_snapshot import ProprioFrame
-from openral_hal.sim_sensor_bridge import scan_due
+from openral_hal.sim_sensor_bridge import next_scan_due
 
 _PERIOD_10HZ = 100_000_000
 
 
 def test_the_first_observation_is_published() -> None:
-    assert scan_due(None, 0, 10.0)
+    assert next_scan_due(None, 0, 10.0) == _PERIOD_10HZ
 
 
 @pytest.mark.parametrize(
-    ("last", "now", "due"),
+    ("next_due", "now", "expect"),
     [
-        (0, _PERIOD_10HZ // 2, False),  # inside one period
-        (0, _PERIOD_10HZ, True),  # a full period of sim time later
-        (_PERIOD_10HZ, _PERIOD_10HZ, False),  # the same observation again (no new step)
-        (2 * _PERIOD_10HZ, _PERIOD_10HZ, False),  # sim time went back (a reset): wait
+        (_PERIOD_10HZ, _PERIOD_10HZ // 2, None),  # inside one period
+        (_PERIOD_10HZ, _PERIOD_10HZ, 2 * _PERIOD_10HZ),  # on time
+        (_PERIOD_10HZ, 0, None),  # the same observation again (no new step)
+        (_PERIOD_10HZ, 5 * _PERIOD_10HZ, 6 * _PERIOD_10HZ),  # after a pause: resync
+        (10 * _PERIOD_10HZ, _PERIOD_10HZ, 2 * _PERIOD_10HZ),  # sim time went back: resync
     ],
 )
-def test_scans_follow_sim_time_never_republishing_an_observation(
-    last: int, now: int, due: bool
-) -> None:
-    assert scan_due(last, now, 10.0) is due
+def test_scans_follow_sim_time(next_due: int, now: int, expect: int | None) -> None:
+    assert next_scan_due(next_due, now, 10.0) == expect
+
+
+def _published(step_ns: int, steps: int, rate_hz: float) -> list[int]:
+    next_due: int | None = None
+    sent = []
+    for k in range(steps):
+        due = next_scan_due(next_due, k * step_ns, rate_hz)
+        if due is not None:
+            sent.append(k)
+            next_due = due
+    return sent
 
 
 def test_a_slow_sim_publishes_every_step_that_is_a_period_apart() -> None:
     """At 30 Hz control a 10 Hz scan goes out every third step, whatever the wall rate."""
-    step = 1_000_000_000 // 30
-    last: int | None = None
-    sent = []
-    for k in range(10):
-        if scan_due(last, k * step, 10.0):
-            sent.append(k)
-            last = k * step
-    assert sent == [0, 3, 6, 9]
+    assert _published(1_000_000_000 // 30, 10, 10.0) == [0, 3, 6, 9]
+
+
+def test_steps_that_do_not_divide_the_period_still_average_the_rate() -> None:
+    """12 Hz steps, 10 Hz scans: resetting the phase at each scan gave every other step
+    (6 Hz). Keeping the schedule gives 10 scans a second."""
+    sent = _published(1_000_000_000 // 12, 12 * 10, 10.0)
+    assert len(sent) in (100, 101)
+    assert all(b - a in (1, 2) for a, b in itertools.pairwise(sent))
 
 
 def test_a_frame_carries_no_scan_unless_the_backend_returned_one() -> None:
@@ -59,6 +74,7 @@ def test_a_frame_carries_no_scan_unless_the_backend_returned_one() -> None:
         base_pose_6dof=None,
         base_twist=(0.0,) * 6,
         sim_time_ns=5,
-        scan=(1.0, 2.0),
+        scan=np.asarray([1.0, 2.0], dtype=np.float32),
     )
-    assert with_scan.scan == (1.0, 2.0)
+    assert with_scan.scan is not None
+    assert with_scan.scan.tolist() == [1.0, 2.0]
