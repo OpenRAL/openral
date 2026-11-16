@@ -16494,11 +16494,38 @@ class WaitTool(_ReasonerToolBase):
     because ``wait`` is exempt from the retry cap and a model stuck in prose
     would stall the mission silently.
 
+    One ``wait`` covers a whole wait (issue #620): ``ReasonerCore`` holds the
+    heartbeat until the ``until`` condition or ``timeout_s`` (always bounded —
+    the deadline fallback, CLAUDE.md §3). Any event tick (safety, failure,
+    operator prompt, skill result) breaks the hold early.
+
     Attributes:
         tool: Discriminator (always ``"wait"``).
+        until: What ends the wait — ``next_event`` (any new context: perception,
+            reward, failure, prompt), ``skill_result`` (the in-flight skill's
+            terminal result; ignores perception churn), ``operator`` (only an
+            operator prompt or another event tick), or ``timeout`` (only the
+            timeout).
+        timeout_s: Upper bound on the wait, seconds. The reasoner re-decides
+            when it lapses.
     """
 
     tool: Literal["wait"] = "wait"
+    until: Literal["next_event", "skill_result", "operator", "timeout"] = Field(
+        default="next_event",
+        description=(
+            "What ends the wait: 'next_event' = any new information in the snapshot; "
+            "'skill_result' = the in-flight skill finishing (ignores perception churn); "
+            "'operator' = an operator reply; 'timeout' = only timeout_s. Safety stops, "
+            "failures and operator prompts always end a wait early."
+        ),
+    )
+    timeout_s: float = Field(
+        default=30.0,
+        gt=0.0,
+        le=300.0,
+        description="Re-decide after this many seconds even if nothing happened.",
+    )
 
 
 ReasonerToolCall: TypeAlias = Annotated[

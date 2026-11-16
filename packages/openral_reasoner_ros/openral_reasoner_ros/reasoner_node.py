@@ -268,6 +268,22 @@ _QOS_REGISTRY_CHANGED = QoSProfile(
 # The occupancy-grid-refined approach phase — the slam_toolbox map is latched (description/static
 # QoS class): RELIABLE + TRANSIENT_LOCAL so a late-joining reasoner still receives the current grid
 # snapshot.
+# Timer-beat suppressions that are the steady state, not news (issue #620): logged at
+# DEBUG, and they leave the one-shot retry_cap warn latch alone (no LLM call ran).
+_QUIET_SUPPRESSIONS = frozenset(
+    {
+        "min_interval",
+        "heartbeat_idle",
+        "retry_cap_hold",
+        "backstop_not_due",
+        "wait_hold",
+        "no_goal",
+        "safety_latched",
+        "llm_error_backoff",
+        "mission_finished",
+    }
+)
+
 _QOS_MAP = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
@@ -3140,13 +3156,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def _handle_suppressed_tick(self, result: Any) -> None:
         """Log a suppressed tick and reflect on an exhausted retry streak.
 
-        `min_interval` fires every fractional second and would spam at INFO;
-        `heartbeat_idle` is the steady-state on a quiet system (one suppression
-        per heartbeat period); both stay at DEBUG. Everything else is rare and
+        The timer-beat gates (``_QUIET_SUPPRESSIONS``: `min_interval`,
+        `heartbeat_idle`, `backstop_not_due`, `wait_hold`, …) fire on most beats
+        of a healthy run and stay at DEBUG. Everything else is rare and
         operationally important — `retry_cap` in particular used to be silent
         and left operators wondering why their prompt did nothing.
         """
-        if result.suppressed_reason in ("min_interval", "heartbeat_idle", "retry_cap_hold"):
+        if result.suppressed_reason in _QUIET_SUPPRESSIONS:
             # retry_cap_hold is the steady-state after a capped streak whose
             # context has not moved (the LLM call is skipped entirely) —
             # debug-level like the other quiet suppressions. None of these
