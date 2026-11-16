@@ -1126,18 +1126,20 @@ class ROSActionRskill(rSkillBase):
 
         An action server hosted by a lifecycle node that is not ``active`` rejects every
         goal (Nav2's ``bt_navigator`` after an aborted bring-up), which the bare rejection
-        does not say. Finds the node serving the action and reads its lifecycle state
-        (bounded by ``_REJECTION_PROBE_TIMEOUT_S`` per call); ``""`` when the graph cannot
-        tell (no node found, no lifecycle services).
+        does not say. Finds the node serving the action (its name resolved like the
+        ``ActionClient``'s: node namespace and remaps) and reads its lifecycle state, each
+        wait bounded by ``_REJECTION_PROBE_TIMEOUT_S``. A node the graph lists no
+        ``get_state`` service for is reported as not a lifecycle node; one that lists it
+        but does not answer in time, as of unknown state. ``""`` when no node on the
+        graph serves the action.
         """
         try:
-            from lifecycle_msgs.srv import GetState  # noqa: PLC0415
             from rclpy.action import (  # noqa: PLC0415
                 get_action_server_names_and_types_by_node,
             )
         except ImportError:
             return ""
-        action = "/" + self._integration.interface_name.lstrip("/")
+        action = self._node.resolve_topic_name(self._integration.interface_name)
         for node_name, namespace in self._node.get_node_names_and_namespaces():
             try:
                 served = get_action_server_names_and_types_by_node(self._node, node_name, namespace)
@@ -1147,32 +1149,60 @@ class ROSActionRskill(rSkillBase):
             if not any(name == action for name, _ in served):
                 continue
             path = f"{namespace.rstrip('/')}/{node_name}"
-            client = self._node.create_client(GetState, f"{path}/get_state")
-            try:
-                if not client.wait_for_service(timeout_sec=_REJECTION_PROBE_TIMEOUT_S):
-                    return f" Its server node {path} is not a lifecycle node."
-                future = client.call_async(GetState.Request())
-                deadline = time.monotonic() + _REJECTION_PROBE_TIMEOUT_S
-                while not future.done() and time.monotonic() < deadline:
-                    time.sleep(_FUTURE_POLL_INTERVAL_S)
-                if not future.done() or future.result() is None:
-                    return f" Its server node {path} did not report its lifecycle state."
-                label = future.result().current_state.label
-            finally:
-                self._node.destroy_client(client)
+            service = f"{path}/get_state"
+            label = self._lifecycle_label(path)
+            if label is None:
+                if not self._serves(node_name, namespace, service):
+                    return f" Its server node {path} is not a lifecycle node (no {service})."
+                return (
+                    f" Its server node {path} did not report its lifecycle state within "
+                    f"{_REJECTION_PROBE_TIMEOUT_S:.0f} s, so whether it is active is unknown."
+                )
             if label != "active":
                 return (
                     f" Its server node {path} is in lifecycle state {label!r}, not 'active', "
-                    "and an inactive server rejects every goal: the stack serving this skill "
-                    "is not up (for Nav2, its bring-up has not finished or was aborted and is "
-                    "being restarted). Retrying after a short wait can succeed; changing the "
-                    "goal will not."
+                    "and a server that is not active rejects every goal: the stack serving "
+                    "this skill is not up. Retrying after a short wait can succeed if the "
+                    "stack comes up; changing the goal will not."
                 )
             return (
                 f" Its server node {path} is active, so it refused this goal itself: "
                 "check the goal parameters."
             )
         return ""
+
+    def _lifecycle_label(self, path: str) -> str | None:
+        """The lifecycle label node ``path`` reports; ``None`` if none came in time."""
+        from lifecycle_msgs.srv import GetState  # noqa: PLC0415  # reason: ships with rclpy
+
+        client = self._node.create_client(GetState, f"{path}/get_state")
+        try:
+            if not client.wait_for_service(timeout_sec=_REJECTION_PROBE_TIMEOUT_S):
+                return None
+            future = client.call_async(GetState.Request())
+            try:
+                self._poll_future(
+                    future,
+                    deadline_s=_REJECTION_PROBE_TIMEOUT_S,
+                    what="get_state call",
+                    graph_clock=False,
+                    stoppable=False,
+                )
+            except ROSDeadlineMissed:
+                return None
+            response = future.result()
+            return None if response is None else str(response.current_state.label)
+        finally:
+            self._node.destroy_client(client)
+
+    def _serves(self, node_name: str, namespace: str, service: str) -> bool:
+        """Whether the graph lists ``service`` on the node; ``False`` if it left the graph."""
+        try:
+            services = self._node.get_service_names_and_types_by_node(node_name, namespace)
+        except Exception as exc:  # reason: the node left the graph mid-probe
+            log.debug("ros_action_rskill.rejection_probe_skip", node=node_name, error=str(exc))
+            return False
+        return any(name == service for name, _ in services)
 
     def _poll_future(
         self,
