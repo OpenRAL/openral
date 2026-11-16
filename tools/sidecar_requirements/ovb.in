@@ -1,0 +1,24 @@
+# Source requirements for the Open Vision Banana sidecar venv (Python 3.12).
+# Pins follow the upstream OpenVisionBanana requirements.txt (commit
+# 94845cab7ffd0f7f9316a32ec38997adf9607091): diffusers==0.39.0 is the first
+# release with Flux2KleinPipeline as OVB uses it, and transformers==4.57.6 is the
+# version OVB validated the Qwen3 text encoder on. The runtime's transformers>=5
+# cannot host it, hence the separate venv. Regenerate the locks with:
+#   uv pip compile tools/sidecar_requirements/ovb.in --no-config \
+#     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
+#     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
+#     -o tools/sidecar_requirements/ovb.lock
+#   uv pip compile tools/sidecar_requirements/ovb.in --no-config \
+#     --python-platform aarch64-manylinux_2_28 --torch-backend=cu130 --generate-hashes \
+#     --python-version 3.12 --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
+#     -o tools/sidecar_requirements/ovb-aarch64.lock
+diffusers==0.39.0
+transformers==4.57.6
+torch==2.11.0
+accelerate==1.14.0
+safetensors==0.8.0
+huggingface-hub==0.34.3
+sentencepiece==0.2.1
+pillow
+pyzmq
+msgpack

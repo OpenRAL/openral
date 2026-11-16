@@ -4952,10 +4952,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 man = yaml.safe_load(handle) or {}
             # Throttle by the detector engine so the single-threaded callback never
             # backs up: the VLM sidecar (LocateAnything) is slow (~1-2 s / frame),
-            # the in-process OmDet-Turbo zero-shot backend is ~hundreds of ms, and
-            # the RT-DETR ONNX path is fast. See the manifest's DetectorEngine.
+            # the in-process OmDet-Turbo zero-shot backend is ~hundreds of ms, the
+            # RT-DETR ONNX path is fast, and the OVB diffusion sidecar (28 denoising
+            # steps) is slowest — 0.1 Hz is the node's floor. See DetectorEngine.
             engine: str = (man.get("detector") or {}).get("engine") or ""
-            max_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(engine, 5.0)
+            max_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0, "ovb_sidecar": 0.1}.get(
+                engine, 5.0
+            )
             det_params = {
                 "image_topic": det_image_topic,
                 "sensor_id": det_camera,
@@ -5034,7 +5037,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             _tracked_camera_infos(tracked_cameras, publishing, hal_mode),
         )
         for spec in locator_specs:
-            locator_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(spec["engine"], 5.0)
+            locator_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0, "ovb_sidecar": 0.1}.get(
+                spec["engine"], 5.0
+            )
             locator_params = {
                 "image_topic": det_image_topic,
                 "sensor_id": det_camera,

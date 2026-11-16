@@ -3958,7 +3958,9 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "namespaced locate_in_view node the reasoner picks via the tool's "
             "'detector' field. Default = omdet-turbo-locator when the detector is "
             "on and the omdet deps are present; LocateAnything is opt-in (NVIDIA "
-            "non-commercial, 5 GB VRAM, needs the sidecar venv)."
+            "non-commercial, 5 GB VRAM, needs the sidecar venv), as is "
+            "'open-vision-banana-4b' (FLUX non-commercial, referring segmentation, "
+            "seconds per query)."
         ),
     ),
     enable_octomap: bool | None = typer.Option(

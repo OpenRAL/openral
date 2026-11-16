@@ -6686,6 +6686,17 @@
               ],
               "default": null,
               "title": "Max Side"
+            },
+            "ovb": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OvbDetectorConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -6695,11 +6706,12 @@
           "type": "object"
         },
         "DetectorEngine": {
-          "description": "Backend that executes a ``kind: \"detector\"`` rSkill.\n\nSelects which runtime detector class ``build_manifest_detector``\nconstructs. ``None`` (the default on ``DetectorContract``) preserves\nthe legacy ``runtime``-keyed dispatch: ``runtime: onnx``/``tensorrt`` \u2192\nRT-DETR ONNX, ``runtime: pytorch`` \u2192 the LocateAnything VLM sidecar. Set it\nexplicitly to opt into a backend that the ``runtime`` value alone cannot\ndisambiguate (e.g. an in-process Transformers open-vocabulary detector,\nwhich is also ``runtime: pytorch``).\n\nAttributes:\n    RTDETR_ONNX: Fixed-label RT-DETR / D-FINE ONNX export (CPU / NVMM\n        tiers). Equivalent to leaving ``engine`` unset with an\n        ``onnx``/``tensorrt`` runtime.\n    VLM_SIDECAR: Out-of-process open-vocabulary visual-grounding VLM\n        (LocateAnything-3B). Equivalent to leaving ``engine`` unset with a\n        ``pytorch`` runtime. Query-driven (prompted).\n    ZEROSHOT_HF: In-process Transformers open-vocabulary detector\n        (``AutoModelForZeroShotObjectDetection`` \u2014 e.g. OmDet-Turbo). Runs\n        against a **fixed** class vocabulary (the manifest ``labels``)\n        every frame, so it behaves like a large closed-vocabulary detector\n        that needs no prompting \u2014 an unprompted background producer that\n        populates the world object list with far more than the 80 COCO\n        classes.\n\nExample:\n    >>> DetectorEngine.ZEROSHOT_HF.value\n    'zeroshot_hf'",
+          "description": "Backend that executes a ``kind: \"detector\"`` rSkill.\n\nSelects which runtime detector class ``build_manifest_detector``\nconstructs. ``None`` (the default on ``DetectorContract``) preserves\nthe legacy ``runtime``-keyed dispatch: ``runtime: onnx``/``tensorrt`` \u2192\nRT-DETR ONNX, ``runtime: pytorch`` \u2192 the LocateAnything VLM sidecar. Set it\nexplicitly to opt into a backend that the ``runtime`` value alone cannot\ndisambiguate (e.g. an in-process Transformers open-vocabulary detector,\nwhich is also ``runtime: pytorch``).\n\nAttributes:\n    RTDETR_ONNX: Fixed-label RT-DETR / D-FINE ONNX export (CPU / NVMM\n        tiers). Equivalent to leaving ``engine`` unset with an\n        ``onnx``/``tensorrt`` runtime.\n    VLM_SIDECAR: Out-of-process open-vocabulary visual-grounding VLM\n        (LocateAnything-3B). Equivalent to leaving ``engine`` unset with a\n        ``pytorch`` runtime. Query-driven (prompted).\n    OVB_SIDECAR: Out-of-process Open Vision Banana generative perception\n        model (FLUX.2 [klein] fine-tuned to paint referring-segmentation\n        masks). Query-driven: the query becomes a referring expression, the\n        painted mask is decoded in the main env and each connected region\n        becomes one box. Needs the ``DetectorContract.ovb`` block.\n    ZEROSHOT_HF: In-process Transformers open-vocabulary detector\n        (``AutoModelForZeroShotObjectDetection`` \u2014 e.g. OmDet-Turbo). Runs\n        against a **fixed** class vocabulary (the manifest ``labels``)\n        every frame, so it behaves like a large closed-vocabulary detector\n        that needs no prompting \u2014 an unprompted background producer that\n        populates the world object list with far more than the 80 COCO\n        classes.\n\nExample:\n    >>> DetectorEngine.ZEROSHOT_HF.value\n    'zeroshot_hf'",
           "enum": [
             "rtdetr_onnx",
             "vlm_sidecar",
-            "zeroshot_hf"
+            "zeroshot_hf",
+            "ovb_sidecar"
           ],
           "title": "DetectorEngine",
           "type": "string"
@@ -6850,6 +6862,46 @@
           ],
           "title": "JointUnits",
           "type": "string"
+        },
+        "OvbDetectorConfig": {
+          "additionalProperties": false,
+          "description": "Diffusion settings for an ``engine: ovb_sidecar`` detector.\n\nOpen Vision Banana ships a fine-tuned FLUX.2 [klein] *transformer* only; the\nsidecar assembles it into the base ``Flux2KleinPipeline`` (text encoder,\nVAE, scheduler). The manifest's ``weights_uri`` names the OVB repo, this\nblock names the base pipeline and the transformer subfolder inside the OVB\nrepo, both pinned so a trace replays the exact weights (CLAUDE.md \u00a71.8).\n\nAttributes:\n    base_pipeline_uri: ``hf://<repo>@<40-hex sha>`` of the base FLUX.2\n        [klein] pipeline the OVB transformer was fine-tuned from.\n    transformer_subfolder: Path of the fine-tuned ``transformer/`` folder\n        inside the ``weights_uri`` repo.\n    num_inference_steps: Denoising steps per query (upstream default 28).\n    guidance_scale: Classifier-free guidance scale (upstream default 3.5).\n    seed: Generator seed, fixed so a query is reproducible.\n\nExample:\n    >>> c = OvbDetectorConfig(\n    ...     base_pipeline_uri=\"hf://black-forest-labs/FLUX.2-klein-base-4B@\"\n    ...     \"a3b4f4849157f664bdbc776fd7453c2783562f4d\",\n    ...     transformer_subfolder=\"final_models/4B/zeroshot/\"\n    ...     \"checkpoint-87500-95000-w25/transformer\",\n    ... )\n    >>> c.num_inference_steps\n    28",
+          "properties": {
+            "base_pipeline_uri": {
+              "pattern": "^hf:\\/\\/[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+@[0-9a-f]{40}$",
+              "title": "Base Pipeline Uri",
+              "type": "string"
+            },
+            "transformer_subfolder": {
+              "pattern": "^[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)*$",
+              "title": "Transformer Subfolder",
+              "type": "string"
+            },
+            "num_inference_steps": {
+              "default": 28,
+              "exclusiveMinimum": 0,
+              "title": "Num Inference Steps",
+              "type": "integer"
+            },
+            "guidance_scale": {
+              "default": 3.5,
+              "minimum": 0.0,
+              "title": "Guidance Scale",
+              "type": "number"
+            },
+            "seed": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Seed",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "base_pipeline_uri",
+            "transformer_subfolder"
+          ],
+          "title": "OvbDetectorConfig",
+          "type": "object"
         },
         "PlaybookContract": {
           "additionalProperties": false,
@@ -7056,6 +7108,7 @@
             "nvidia_open_model",
             "rlwrld_non_commercial",
             "cc-by-nc-sa-4.0",
+            "flux_non_commercial",
             "proprietary",
             "unknown"
           ],

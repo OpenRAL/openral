@@ -48,6 +48,7 @@ _LICENSE_MAP: dict[RSkillLicensePosture, tuple[str, str | None]] = {
     RSkillLicensePosture.NVIDIA_NON_COMMERCIAL: ("other", "nvidia-non-commercial"),
     RSkillLicensePosture.NVIDIA_OPEN_MODEL: ("other", "nvidia-open-model-license"),
     RSkillLicensePosture.RLWRLD_NON_COMMERCIAL: ("other", "rlwrld-non-commercial"),
+    RSkillLicensePosture.FLUX_NON_COMMERCIAL: ("other", "flux-non-commercial-license"),
     RSkillLicensePosture.PROPRIETARY: ("other", "proprietary"),
     RSkillLicensePosture.UNKNOWN: ("other", None),
 }
