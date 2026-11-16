@@ -50,7 +50,7 @@ SETTINGS: dict[str, dict[str, object]] = {
     MODEL_SETTING: {
         "label": "Reasoner model",
         "secret": False,
-        "options": reasoner_model_options(),
+        "options": [o.model_dump() for o in reasoner_model_options()],
     },
 }
 
@@ -93,7 +93,7 @@ def save_setting(name: str, value: str, path: Path | None = None) -> dict[str, s
     value = value.strip()
     if len(value) > _MAX_VALUE:
         raise ValueError("that value is too long")
-    if name == MODEL_SETTING and value and value not in {o["id"] for o in reasoner_model_options()}:
+    if name == MODEL_SETTING and value and value not in {o.id for o in reasoner_model_options()}:
         raise ValueError("pick one of the models listed")
     target = path or settings_path()
     current = load_settings(target)
@@ -165,13 +165,13 @@ def reasoner_env(values: dict[str, str]) -> dict[str, str]:
         {}
     """
     chosen = values.get(MODEL_SETTING)
-    model = next((o for o in reasoner_model_options() if o["id"] == chosen), None)
+    model = next((o for o in reasoner_model_options() if o.id == chosen), None)
     if model is None:
         return {}
-    out = {MODEL_SETTING: model["id"]}
-    if not model["keys"]:
+    out = {MODEL_SETTING: model.id}
+    if not model.keys:
         return out
-    key = next((k for k in model["keys"] if values.get(k)), None)
+    key = next((k for k in model.keys if values.get(k)), None)
     if key is None:
         return {}
     out["OPENRAL_REASONER_API_KEY"] = values[key]

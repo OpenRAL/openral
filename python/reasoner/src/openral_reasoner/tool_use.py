@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
@@ -826,6 +827,22 @@ def _ollama_context_length(base_url: str | None, model_id: str) -> int | None:
     return None
 
 
+_OLLAMA_CLOUD_HOST: str = urllib.parse.urlsplit(OLLAMA_CLOUD_BASE_URL).hostname or ""
+
+
+def _is_ollama_cloud(base_url: str | None) -> bool:
+    """Whether ``base_url`` is on Ollama Cloud's host (any case, ``www.``, path or port).
+
+    Example:
+        >>> _is_ollama_cloud("https://WWW.Ollama.com/v1/"), _is_ollama_cloud(None)
+        (True, False)
+        >>> _is_ollama_cloud("http://localhost:11434/v1")
+        False
+    """
+    host = urllib.parse.urlsplit(base_url or "").hostname or ""
+    return host.removeprefix("www.") == _OLLAMA_CLOUD_HOST
+
+
 def _truncation_error(
     response: object, request: list[object], *, model_id: str, base_url: str | None = None
 ) -> ROSPlanningError | None:
@@ -837,8 +854,9 @@ def _truncation_error(
     prompt is 9-26K tokens, so on a default ``ollama serve`` the model never sees
     most of its tools or the system prompt's rules — and still answers. Other
     servers refuse an over-long prompt with a 400, so only a reply carrying
-    Ollama's ``system_fingerprint`` is checked. Returned, not raised, so a caller
-    inside a broad SDK ``try`` raises it unwrapped.
+    Ollama's ``system_fingerprint`` is checked, and never one from Ollama Cloud
+    (``_is_ollama_cloud``), which loads every model with its full window. Returned,
+    not raised, so a caller inside a broad SDK ``try`` raises it unwrapped.
 
     Returns:
         A ``ROSPlanningError`` when the reply's prompt tokens are under one per
@@ -851,7 +869,7 @@ def _truncation_error(
         return None
     # Ollama Cloud loads every model with its full window (262K-1M tokens), and its
     # /api/ps is not this account's: a denser tokenizer must not read as a cut.
-    if (base_url or "").rstrip("/") == OLLAMA_CLOUD_BASE_URL:
+    if _is_ollama_cloud(base_url):
         return None
     chars = len(json.dumps(request, ensure_ascii=False))  # escapes would inflate the count
     if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
@@ -937,6 +955,21 @@ _EndpointPreset = ReasonerEndpointPreset
 _ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = REASONER_ENDPOINT_PRESETS
 
 
+def _curated_hint() -> str:
+    """The measured registry ids, and how many unmeasured ones there are, for an error.
+
+    Example:
+        >>> "claude-opus-4-8" in _curated_hint() and "unmeasured" in _curated_hint()
+        True
+    """
+    measured = ", ".join(sorted(k for k, m in REASONER_MODELS.items() if m.measured))
+    unmeasured = sum(not m.measured for m in REASONER_MODELS.values())
+    return (
+        f"{measured}; plus {unmeasured} unmeasured *-openrouter / *-cloud models, "
+        "see packages/openral_reasoner_ros/README.md"
+    )
+
+
 def build_tool_use_client_from_env() -> ToolUseClient:
     """Build a ``ToolUseClient`` from the model-first env (ADR-0088).
 
@@ -945,7 +978,8 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     * ``OPENRAL_REASONER_MODEL`` (**required**) — a curated registry key
       (``REASONER_MODELS``: ``claude-opus-4-8`` / ``claude-opus-5-5`` /
       ``claude-sonnet-5-5`` / ``claude-haiku-5-5`` / ``gpt-5.5`` / ``gpt-5.6``
-      / ``cosmos3-edge`` / ``qwen3.5-4b`` / ``qwen3.5-9b`` / the ``*-cloud`` Ollama Cloud
+      / ``cosmos3-edge`` / ``qwen3.5-4b`` / ``qwen3.5-9b`` / the unmeasured ``*-openrouter``
+      and ``*-cloud``
       models), or a raw model id for the uncurated
       escape hatch.
     * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a named endpoint
@@ -993,7 +1027,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     if not model_key:
         raise ROSConfigError(
             f"{REASONER_MODEL_ENV} is unset; set it to a curated model "
-            f"({sorted(REASONER_MODELS)}), or to a raw model id plus "
+            f"({_curated_hint()}), or to a raw model id plus "
             f"{REASONER_ENDPOINT_ENV} (a named endpoint "
             f"{sorted(_ENDPOINT_PRESETS)}, or a URL plus {REASONER_DIALECT_ENV}) "
             "for an uncurated endpoint. The open-core path has no default — tests use "
@@ -1156,13 +1190,27 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
             f"model. Use a URL for a proxy that translates."
         )
     endpoint_override = preset.url if preset is not None else raw_endpoint
+    # The env override, else a slow model's own allowance, else the endpoint's or
+    # the hosting default.
     env_timeout = _env_float(REASONER_TIMEOUT_ENV)
     timeout_s = (
         env_timeout
         if env_timeout is not None
+        else entry.timeout_s
+        if entry.timeout_s is not None
         else (preset.timeout_s if preset is not None else _reasoner_timeout_s(entry.hosting))
     )
     max_tokens = _reasoner_max_tokens(entry)
+    if not entry.measured:
+        log.warning(
+            "reasoner.model.unmeasured",
+            model=entry.id,
+            detail=(
+                f"{entry.id!r} is offered on its provider's declared tool and vision "
+                "capability and has not been measured against the reasoner bar; its "
+                "tool calls and latency are unverified."
+            ),
+        )
 
     if entry.dialect == "anthropic":
         if api_key is None:
@@ -1282,7 +1330,7 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
     if endpoint is None or dialect not in {"anthropic", "openai"}:
         raise ROSConfigError(
             f"{REASONER_MODEL_ENV}={model_key!r} is not a curated model "
-            f"({sorted(REASONER_MODELS)}); for an uncurated endpoint set "
+            f"({_curated_hint()}); for an uncurated endpoint set "
             f"{REASONER_ENDPOINT_ENV} to a named endpoint "
             f"({sorted(_ENDPOINT_PRESETS)}) or to a URL plus "
             f"{REASONER_DIALECT_ENV} (anthropic|openai)."
@@ -1292,7 +1340,7 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
         model=model_key,
         detail=(
             f"{model_key!r} is not on the curated robotics tool-calling list "
-            f"({sorted(REASONER_MODELS)}); tool-call reliability is unverified."
+            f"({_curated_hint()}); tool-call reliability is unverified."
         ),
     )
     api_key = os.environ.get(REASONER_API_KEY_ENV, "").strip() or None
@@ -2309,6 +2357,10 @@ class OpenAICompatibleToolUseClient:
         self.last_prompt_tokens: int | None = None
         """Prompt tokens the endpoint reported for the most recent
         ``select_tool`` call; read by ``ReasonerCore.run_prepared_llm``."""
+        self.served_model: str | None = None
+        """The model the endpoint reported serving on the last reply. Differs from
+        ``model_id`` for an alias such as OpenRouter's ``~google/gemini-pro-latest``;
+        logged as ``reasoner.model.served`` whenever it changes."""
         # SDK client built once on first use and reused across ticks (see
         # AnthropicToolUseClient._client for the rationale).
         self._sdk_client: Any = None
@@ -2405,6 +2457,17 @@ class OpenAICompatibleToolUseClient:
         call = choices[0].message.tool_calls[0]
         return _decode_function_call(call.function.name, call.function.arguments, palette)
 
+    def _note_served_model(self, response: object) -> None:
+        """Record the model the reply names, logging ``reasoner.model.served`` on a change.
+
+        An alias (``~<vendor>/<family>-latest``) resolves server-side, so the trace
+        needs the model that actually answered, not the alias that was sent.
+        """
+        served = getattr(response, "model", None)
+        if isinstance(served, str) and served and served != self.served_model:
+            log.info("reasoner.model.served", requested=self.model_id, served=served)
+            self.served_model = served
+
     def _complete(
         self,
         client: Any,  # noqa: ANN401  # reason: provider SDK boundary — openai.OpenAI
@@ -2460,6 +2523,7 @@ class OpenAICompatibleToolUseClient:
                     error=str(refusals[-1]),
                 )
                 self._max_tokens_param = max_tokens_param
+            self._note_served_model(response)
             return _openai_choices(response), response
         raise ROSPlanningError(  # pragma: no cover — each adaptation fires at most once
             "OpenAI-compatible call: endpoint kept refusing after adapting tool_choice/max_tokens"

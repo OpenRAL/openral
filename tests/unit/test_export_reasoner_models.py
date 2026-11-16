@@ -32,7 +32,8 @@ def test_every_offered_model_is_curated_and_needs_a_key_the_website_has() -> Non
         # ``needs`` is the first key, for consumers that predate ``keys``.
         assert m["needs"] == (m["keys"][0] if m["keys"] else None)
         assert (not m["keys"]) == (not entry.auth_required)
-        # The provider rides in the key it needs, never in the label.
+        # The key names the provider, so its suffix is dropped; "(OpenRouter)" and
+        # "(Ollama Cloud)" stay because the same family is offered on both.
         assert not any(p in m["label"] for p in ("(Anthropic)", "(via OpenRouter)", "(OpenAI)"))
     # Every model a robot runs with an Anthropic, OpenAI or OpenRouter key, or none, is offered.
     labels = {m["id"]: m["label"] for m in models}
@@ -49,3 +50,28 @@ def test_every_offered_model_is_curated_and_needs_a_key_the_website_has() -> Non
     # Every other model on OpenRouter runs on the OpenRouter key alone.
     assert by_id["kimi-latest-openrouter"] == ["OPENROUTER_API_KEY"]
     assert labels["kimi-latest-openrouter"] == "Kimi, latest (OpenRouter)"
+
+
+def test_the_sync_workflow_accepts_the_export(tmp_path: Path) -> None:
+    """``reasoner-models.yml`` checks the export's shape before it reaches the website.
+
+    Runs the workflow's own ``check the list`` script on the real export, so a new
+    field the check does not know fails here, not on master.
+    """
+    import subprocess
+
+    import yaml
+
+    workflow = yaml.safe_load((_REPO / ".github/workflows/reasoner-models.yml").read_text())
+    step = next(s for s in workflow["jobs"]["sync"]["steps"] if s.get("name") == "check the list")
+    script = step["run"].split("<<'PY'\n", 1)[1].rsplit("PY", 1)[0]
+    exported = tmp_path / "reasoner-models.json"
+    exported.write_text(json.dumps(tool.export()))
+    result = subprocess.run(
+        [sys.executable, "-", str(exported)],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

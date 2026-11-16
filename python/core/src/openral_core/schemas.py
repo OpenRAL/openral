@@ -30,7 +30,6 @@ from typing import (
     NamedTuple,
     Self,
     TypeAlias,
-    TypedDict,
     TypeVar,
 )
 
@@ -15554,15 +15553,14 @@ REASONER_MANAGED_ENDPOINT: str = "managed"
 class ReasonerModel(BaseModel):
     """A curated reasoner LLM — a member of ``REASONER_MODELS`` (ADR-0088).
 
-    Membership in ``REASONER_MODELS`` *is* the "tested for robotics tool
-    calling" signal: every entry has been validated to reliably emit the
-    discriminated ``ReasonerToolCall`` union (per-skill ``execute_rskill__*``
-    tools, nested ``GroundedSubtask``, ``tool_choice`` honoured) — except the
-    ``*-openrouter`` and ``*-cloud`` entries, offered on their declared tool and vision
-    capability and not yet measured (``_OPENROUTER_MODELS``, ``_OLLAMA_CLOUD_MODELS``). There is
-    deliberately no ``robotics_tool_calling`` flag — an untested model is simply
-    not in the registry, and is reachable only through the uncurated escape hatch
-    with a warning.
+    Membership in ``REASONER_MODELS`` with ``measured=True`` *is* the "tested for
+    robotics tool calling" signal: every such entry has been validated to reliably
+    emit the discriminated ``ReasonerToolCall`` union (per-skill ``execute_rskill__*``
+    tools, nested ``GroundedSubtask``, ``tool_choice`` honoured). The ``*-openrouter``
+    and ``*-cloud`` entries carry ``measured=False``: offered on their provider's
+    declared tool and vision capability, not yet measured, and said so at runtime.
+    Any other untested model is not in the registry, and is reachable only through
+    the uncurated escape hatch with a warning.
 
     This model reorganises reasoner selection away from the location-leaking
     ``OPENRAL_REASONER_LLM_PROVIDER`` enum it replaced (ADR-0088; that spelling
@@ -15613,6 +15611,14 @@ class ReasonerModel(BaseModel):
         weights_license: Informational weights-license posture for local models
             (§1.9), e.g. ``"OpenMDW-1.1"``. ``None`` for cloud API models
             (OpenRAL never holds their weights).
+        measured: ``False`` for an entry offered on its provider's declared tool
+            and vision capability without a measured run against the reasoner
+            bar (the ``*-openrouter`` and ``*-cloud`` sets). The client logs
+            ``reasoner.model.unmeasured`` when it builds one, and ``openral doctor``
+            warns.
+        timeout_s: Per-call timeout for a model measured slower than its hosting
+            default (10 s cloud); ``None`` keeps the default.
+            ``OPENRAL_REASONER_TIMEOUT_S`` still wins.
 
     Example:
         >>> m = REASONER_MODELS["cosmos3-edge"]
@@ -15637,6 +15643,8 @@ class ReasonerModel(BaseModel):
     min_gpu_vram_gb: float | None = None
     required_dtype: QuantizationDtype | None = None
     weights_license: str | None = None
+    measured: bool = True
+    timeout_s: float | None = Field(default=None, gt=0)
 
     @property
     def is_local(self) -> bool:
@@ -15697,8 +15705,9 @@ _OLLAMA_CLOUD_MODELS: tuple[tuple[str, str, str], ...] = (
 # newest flagship and newest fast tier of each major vendor, while the account had no
 # credit. Measured on so101_follower before the credit ran out (2026-11-15): MiniMax
 # M3.1 Flash 16/16 valid (median 2.0 s), Muse Ember 12/12 (3.5 s), DeepSeek V4.1 Flash
-# 8/8 (one tick 12.9 s), Mistral Small 23/23 (8 were ``wait``), Qwen 3.8 Flash only
-# on ``auto`` (it 400s on ``required``, 2/5 under 10 s), GLM-5.3 Flash 18-33 s.
+# 8/8 (one tick 12.9 s), Mistral Small 23/23 (8 were ``wait``), Qwen 3.8 Flash 5/5 on
+# ``auto`` with a median of 11.6 s, 2/5 under 10 s (it 400s on ``required``), GLM-5.3
+# Flash 2/2 at 18-33 s.
 # Measure each against the #494 bar and drop those that miss it.
 _OPENROUTER_MODELS: tuple[tuple[str, str, str, Literal["required", "auto"]], ...] = (
     # ``~<vendor>/<family>-latest``: OpenRouter's aliases that always serve the newest
@@ -15745,10 +15754,48 @@ _OPENROUTER_MODELS: tuple[tuple[str, str, str, Literal["required", "auto"]], ...
     ),
 )
 
-# The curated set. Adding a model = adding one entry here after it clears the
+# Per-call timeouts for models measured slower than the 10 s cloud default
+# (2026-11-15, so101_follower via OpenRouter): GLM-5.3 Flash 18-33 s (the same model
+# on Ollama Cloud gets the same allowance), Qwen 3.8 Flash up to 16.5 s.
+_SLOW_MODEL_TIMEOUT_S: dict[str, float] = {
+    "glm-flash-latest-openrouter": 60.0,
+    "glm-5.3-flash-cloud": 60.0,
+    "qwen3.8-flash-openrouter": 30.0,
+}
+
+
+def _merge_registry(*parts: dict[str, ReasonerModel]) -> dict[str, ReasonerModel]:
+    """``parts`` as one dict; an id in two parts is an error, never a silent override.
+
+    Example:
+        >>> m = ReasonerModel(
+        ...     id="a",
+        ...     display_name="A",
+        ...     dialect="openai",
+        ...     hosting="cloud",
+        ...     served_model_id="a",
+        ...     auth_required=True,
+        ... )
+        >>> list(_merge_registry({"a": m}))
+        ['a']
+        >>> _merge_registry({"a": m}, {"a": m})
+        Traceback (most recent call last):
+        ...
+        ValueError: REASONER_MODELS ids defined twice: ['a']
+    """
+    out: dict[str, ReasonerModel] = {}
+    for part in parts:
+        twice = sorted(set(out) & set(part))
+        if twice:
+            raise ValueError(f"REASONER_MODELS ids defined twice: {twice}")
+        out.update(part)
+    return out
+
+
+# The measured set. Adding a model = adding one entry here after it clears the
 # reasoner tool-calling bar; curation lives in this one reviewable place. The
-# exceptions are the OpenRouter and Ollama Cloud sets above, offered unmeasured.
-REASONER_MODELS: dict[str, ReasonerModel] = {
+# OpenRouter and Ollama Cloud sets above join it unmeasured (``measured=False``).
+_MEASURED_REASONER_MODELS: dict[str, ReasonerModel] = {
     "claude-opus-4-8": ReasonerModel(
         id="claude-opus-4-8",
         display_name="Claude Opus 4.8 (Anthropic)",
@@ -15876,7 +15923,11 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         min_gpu_vram_gb=12.0,
         weights_license="Apache-2.0",
     ),
-    **{
+}
+
+REASONER_MODELS: dict[str, ReasonerModel] = _merge_registry(
+    _MEASURED_REASONER_MODELS,
+    {
         model_id: ReasonerModel(
             id=model_id,
             display_name=f"{name} (Ollama Cloud)",
@@ -15890,10 +15941,12 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
             tool_choice="auto",
             # Thinking models; thinking tokens count against the cap.
             max_tokens_default=16384,
+            measured=False,
+            timeout_s=_SLOW_MODEL_TIMEOUT_S.get(model_id),
         )
         for model_id, tag, name in _OLLAMA_CLOUD_MODELS
     },
-    **{
+    {
         model_id: ReasonerModel(
             id=model_id,
             display_name=f"{name} (OpenRouter)",
@@ -15905,10 +15958,12 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
             tool_choice=tool_choice,
             # A metered router reserves the cap up front, as for the GPT entries.
             max_tokens_default=16384,
+            measured=False,
+            timeout_s=_SLOW_MODEL_TIMEOUT_S.get(model_id),
         )
         for model_id, served, name, tool_choice in _OPENROUTER_MODELS
     },
-}
+)
 
 
 #: The account-setting key each provider's models need (openral.com's Account →
@@ -15919,23 +15974,50 @@ OPENROUTER_KEY_SETTING = "OPENROUTER_API_KEY"
 OLLAMA_KEY_SETTING = "OLLAMA_API_KEY"
 
 
-class ReasonerModelOption(TypedDict):
+class ReasonerModelOption(BaseModel):
     """One entry of a settings form's model drop-down (``reasoner_model_options``).
+
+    The shape openral.com's ``server/reasoner-models.json`` and the robot console's
+    ``GET /api/settings`` carry (as ``model_dump()``).
 
     Attributes:
         id: The ``REASONER_MODELS`` key, the value of ``OPENRAL_REASONER_MODEL``.
-        label: Human label, with no provider suffix (the key names the provider).
+        label: Human label. The suffixes "(Anthropic)", "(OpenAI)" and "(via
+            OpenRouter)" are dropped (the key names the provider); "(OpenRouter)",
+            "(Ollama Cloud)" and "(Ollama, on the robot)" stay, because the same
+            model family is offered on more than one of them.
         needs: The first of ``keys``, or ``None`` for a model that runs on the robot.
             Kept for consumers that predate ``keys``.
         keys: Every key setting that serves the model, in preference order; any one
             of them is enough. Empty for a model that runs on the robot (including
             on the robot's own Ollama, which needs no key).
+
+    Example:
+        >>> ReasonerModelOption(id="m", label="M", needs=None, keys=[]).model_dump()
+        {'id': 'm', 'label': 'M', 'needs': None, 'keys': []}
     """
 
-    id: str
-    label: str
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
     needs: str | None
     keys: list[str]
+
+
+def _model_keys(model: ReasonerModel) -> list[str] | None:
+    """The key settings ``model`` runs on, in preference order; ``None``: none serves it."""
+    if not model.auth_required:
+        return []
+    if model.dialect == "anthropic":
+        return [ANTHROPIC_KEY_SETTING]
+    if model.default_endpoint == OPENROUTER_BASE_URL:
+        # OpenAI's own API serves an ``openai/`` model too, and wins when both are set.
+        openai = [OPENAI_KEY_SETTING] if model.served_model_id.startswith("openai/") else []
+        return [*openai, OPENROUTER_KEY_SETTING]
+    if model.default_endpoint == OLLAMA_CLOUD_BASE_URL:
+        return [OLLAMA_KEY_SETTING]
+    return None
 
 
 def reasoner_model_options() -> list[ReasonerModelOption]:
@@ -15949,33 +16031,21 @@ def reasoner_model_options() -> list[ReasonerModelOption]:
     of these keys serves is left out.
 
     Example:
-        >>> opts = {o["id"]: o for o in reasoner_model_options()}
+        >>> opts = {o.id: o for o in reasoner_model_options()}
         >>> claude, gpt, cosmos = (opts[k] for k in ("claude-opus-4-8", "gpt-5.5", "cosmos3-edge"))
-        >>> claude["keys"], gpt["keys"], gpt["label"], cosmos["needs"] is None
+        >>> claude.keys, gpt.keys, gpt.label, cosmos.needs is None
         (['ANTHROPIC_API_KEY'], ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'], 'GPT-5.5', True)
-        >>> opts["kimi-k3-cloud"]["keys"], opts["kimi-k3-cloud"]["label"]
+        >>> opts["kimi-k3-cloud"].keys, opts["kimi-k3-cloud"].label
         (['OLLAMA_API_KEY'], 'Kimi K3 (Ollama Cloud)')
     """
     out: list[ReasonerModelOption] = []
     for model in REASONER_MODELS.values():
-        keys: list[str] = []
-        if not model.auth_required:
-            pass
-        elif model.dialect == "anthropic":
-            keys = [ANTHROPIC_KEY_SETTING]
-        elif model.default_endpoint == OPENROUTER_BASE_URL:
-            if model.served_model_id.startswith("openai/"):
-                keys.append(OPENAI_KEY_SETTING)
-            keys.append(OPENROUTER_KEY_SETTING)
-        elif model.default_endpoint == OLLAMA_CLOUD_BASE_URL:
-            keys = [OLLAMA_KEY_SETTING]
-        else:
+        keys = _model_keys(model)
+        if keys is None:
             continue
-        # The provider rides in the key it needs: "(Anthropic)", "(via OpenRouter)" would mislead.
         label = re.sub(r"\s*\((?:Anthropic|via OpenRouter|OpenAI)\)$", "", model.display_name)
-        out.append(
-            {"id": model.id, "label": label, "needs": keys[0] if keys else None, "keys": keys}
-        )
+        needs = keys[0] if keys else None
+        out.append(ReasonerModelOption(id=model.id, label=label, needs=needs, keys=keys))
     return out
 
 

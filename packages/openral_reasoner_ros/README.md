@@ -565,6 +565,14 @@ served), valid ticks / median:
 Measure each against the bar (≥ 17/20 on `so101_follower` and on `franka_panda`'s full
 palette, frames, under the 10 s cloud timeout) and drop those that miss it.
 
+At runtime the `*-openrouter` and `*-cloud` entries carry `measured=False`: the client
+logs `reasoner.model.unmeasured` when it builds one, and `openral doctor` reports it as a
+warning. The two measured as slower than the 10 s cloud default get their own timeout
+(`ReasonerModel.timeout_s`): GLM Flash, latest and `glm-5.3-flash-cloud` 60 s, Qwen 3.8
+Flash 30 s; `OPENRAL_REASONER_TIMEOUT_S` still wins. An alias resolves server-side, so
+the client logs `reasoner.model.served` with the model that actually answered whenever
+it changes, and the tick span carries it as `reasoner.served_model`.
+
 ### Ollama Cloud — the `*-cloud` models (not yet measured)
 
 Ollama Cloud (ollama.com) serves large models over the same OpenAI-compatible API as a

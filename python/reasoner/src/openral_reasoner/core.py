@@ -197,6 +197,9 @@ class PreparedTick:
     prompt_tokens: int | None = None
     """Provider-reported prompt-token count for that call, or ``None`` when
     the client does not surface usage."""
+    served_model: str | None = None
+    """The model the endpoint reported serving the call (an alias resolves
+    server-side), or ``None`` when the client does not surface it."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -807,6 +810,7 @@ class ReasonerCore:
                 # surface provider usage, hence getattr rather than a
                 # Protocol member every implementation would have to carry.
                 prep.prompt_tokens = getattr(self._client, "last_prompt_tokens", None)
+                prep.served_model = getattr(self._client, "served_model", None)
 
     def _record_llm_error(self, error: ROSPlanningError, seq: int) -> None:
         """Bookkeeping for an LLM call that returned no usable tool call."""
@@ -878,8 +882,11 @@ class ReasonerCore:
             # capped tick still burned the LLM round-trip, and those are the
             # ticks worth attributing.
             span.set_attribute(semconv.REASONER_LLM_S, round(prep.llm_s, 4))
-            if prep.prompt_tokens is not None:
-                span.set_attribute(semconv.REASONER_PROMPT_TOKENS, prep.prompt_tokens)
+            usage = {
+                semconv.REASONER_PROMPT_TOKENS: prep.prompt_tokens,
+                semconv.REASONER_SERVED_MODEL: prep.served_model,
+            }
+            span.set_attributes({k: v for k, v in usage.items() if v is not None})
             # Every outcome below spent an LLM call at ``prep.started``.
             self._last_llm_s = self._last_tick_s = prep.started
             self._skipped_since_llm = 0

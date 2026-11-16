@@ -237,6 +237,10 @@ REASONER_LLM_S: Final[str] = "reasoner.llm_s"
 REASONER_PROMPT_TOKENS: Final[str] = "reasoner.prompt_tokens"
 """Provider-reported prompt (input) tokens for the tick's call, cache reads
 included. Absent when the client does not surface usage."""
+REASONER_SERVED_MODEL: Final[str] = "reasoner.served_model"
+"""The model the endpoint reported serving the tick's call, which an alias
+(OpenRouter's ``~<vendor>/<family>-latest``) resolves server-side. Absent when
+the client does not surface it."""
 # The active MissionState task queue, serialized as JSON
 # (``MissionState.to_summary``) so the live dashboard renders the task
 # checklist (status / attempts / verdict) rather than only the text ledger.
@@ -501,6 +505,7 @@ __all__ = [
     "REASONER_RATIONALE",
     "REASONER_RATIONALE_MAX",
     "REASONER_RSKILL_ID",
+    "REASONER_SERVED_MODEL",
     "REASONER_SKIPPED_SINCE_LAST",
     "REASONER_SUPPRESSED_REASON",
     "REASONER_TICK_IDX",

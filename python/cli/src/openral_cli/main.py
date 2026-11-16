@@ -759,7 +759,8 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     except ROSConfigError as exc:
         return [CheckResult("Reasoner LLM", "fail", str(exc))]
 
-    curated = sorted(REASONER_MODELS)
+    curated = [k for k, m in REASONER_MODELS.items() if m.measured]
+    unmeasured = len(REASONER_MODELS) - len(curated)
     entry = REASONER_MODELS.get(model_key)
     endpoint_override = os.environ.get("OPENRAL_REASONER_ENDPOINT", "").strip()
     api_key = os.environ.get("OPENRAL_REASONER_API_KEY", "").strip()
@@ -782,7 +783,8 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
                     "Reasoner LLM",
                     "fail",
                     f"OPENRAL_REASONER_MODEL={model_key!r} is not a curated model "
-                    f"({', '.join(curated)}); set OPENRAL_REASONER_ENDPOINT to a named "
+                    f"({', '.join(sorted(curated))}, or one of {unmeasured} unmeasured "
+                    "*-openrouter / *-cloud models); set OPENRAL_REASONER_ENDPOINT to a named "
                     f"endpoint ({', '.join(sorted(REASONER_ENDPOINT_PRESETS))}) or to a "
                     "URL plus OPENRAL_REASONER_DIALECT (anthropic|openai) to use an "
                     "uncurated endpoint.",
@@ -850,7 +852,13 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
                 f"OPENRAL_REASONER_API_KEY unset — required for model {model_key!r}.",
             )
         )
-    rows.append(CheckResult("Reasoner LLM", "warn" if incomplete else "ok", summary))
+    if not entry.measured:
+        summary += (
+            " — offered on declared tool and vision capability, not yet measured: "
+            "tool calls and latency unverified."
+        )
+    status = "warn" if incomplete or not entry.measured else "ok"
+    rows.append(CheckResult("Reasoner LLM", status, summary))
     rows.extend(incomplete)
 
     if _is_local_base_url(endpoint):
@@ -872,7 +880,7 @@ def _check_reasoner_llm() -> list[CheckResult]:
     from openral_core import REASONER_MODELS  # local import: keep doctor import graph flat
 
     model_key = os.environ.get("OPENRAL_REASONER_MODEL", "").strip()
-    curated = ", ".join(sorted(REASONER_MODELS))
+    curated = ", ".join(sorted(k for k, m in REASONER_MODELS.items() if m.measured))
     if not model_key:
         return [
             CheckResult(

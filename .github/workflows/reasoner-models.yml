@@ -86,10 +86,14 @@ jobs:
           assert isinstance(models, list) and 0 < len(models) <= 100, "not a non-empty list"
           token = re.compile(r"[A-Za-z0-9._:/(), -]{1,80}")
           for m in models:
-              assert isinstance(m, dict) and set(m) <= {"id", "label", "needs"}, m
+              assert isinstance(m, dict) and set(m) <= {"id", "label", "needs", "keys"}, m
               assert {"id", "label"} <= set(m), m
-              for v in m.values():
-                  assert v is None or (isinstance(v, str) and token.fullmatch(v)), m
+              for k, v in m.items():
+                  if k == "keys":  # the key settings a model runs on, any one enough
+                      assert isinstance(v, list) and len(v) <= 8, m
+                      assert all(isinstance(x, str) and token.fullmatch(x) for x in v), m
+                  else:
+                      assert v is None or (isinstance(v, str) and token.fullmatch(v)), m
           print(f"{len(models)} models")
           PY
       - name: website dev

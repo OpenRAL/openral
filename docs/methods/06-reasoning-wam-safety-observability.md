@@ -936,6 +936,7 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 - `const REASONER_FORCE: str = "reasoner.force"` (L230)
 - `const REASONER_LLM_S: str = "reasoner.llm_s"` (L235)
 - `const REASONER_PROMPT_TOKENS: str = "reasoner.prompt_tokens"` (L237)
+- `const REASONER_SERVED_MODEL: str = "reasoner.served_model"` (L240) — the model the endpoint reported serving the tick's call (an OpenRouter `~…-latest` alias resolves server-side); set from `OpenAICompatibleToolUseClient.served_model`.
 - `const REASONER_MISSION_JSON: str = "reasoner.mission_json"` (L243)
 - `const REASONER_OFFERED_SKILLS: str = "reasoner.offered_skills"` (L244) — skill ids offered on the tick when a skill-tool cap narrows the palette (#494); absent without a cap.
 - `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L251)

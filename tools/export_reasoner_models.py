@@ -3,8 +3,9 @@
 The website offers ``REASONER_MODELS`` as its model drop-down and asks for a key each
 one runs on (``keys``, any one enough): ``ANTHROPIC_API_KEY`` for an Anthropic-dialect
 model, ``OPENAI_API_KEY`` or ``OPENROUTER_API_KEY`` for an ``openai/`` model,
-``OPENROUTER_API_KEY`` for any other model on OpenRouter, none for one that runs on the
-robot. ``.github/workflows/reasoner-models.yml`` writes this to the website's
+``OPENROUTER_API_KEY`` for any other model on OpenRouter, ``OLLAMA_API_KEY`` for a
+model on Ollama Cloud, none for one that runs on the robot.
+``.github/workflows/reasoner-models.yml`` writes this to the website's
 ``server/reasoner-models.json`` whenever the list changes on master.
 
 Usage: python tools/export_reasoner_models.py > reasoner-models.json
@@ -15,10 +16,10 @@ from __future__ import annotations
 import json
 import sys
 
-from openral_core import ReasonerModelOption, reasoner_model_options
+from openral_core import reasoner_model_options
 
 
-def export() -> list[ReasonerModelOption]:
+def export() -> list[dict[str, object]]:
     """``[{id, label, needs, keys}]`` in the registry's order.
 
     Example:
@@ -27,7 +28,7 @@ def export() -> list[ReasonerModelOption]:
         >>> next(m for m in export() if m["id"] == "gpt-5.5")["label"]
         'GPT-5.5'
     """
-    return reasoner_model_options()
+    return [option.model_dump() for option in reasoner_model_options()]
 
 
 if __name__ == "__main__":

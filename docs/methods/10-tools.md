@@ -992,7 +992,7 @@ _Force/contact layer (#373) feasibility tools on the MuJoCo OpenArm v2 right arm
 ### `tools/export_reasoner_models.py`
 _Exports `openral_core.reasoner_model_options()` (the curated `REASONER_MODELS` with the keys each runs on) for openral.com's Account → Settings model drop-down. `.github/workflows/reasoner-models.yml` writes it to the website's `server/reasoner-models.json`. `python tools/export_reasoner_models.py > reasoner-models.json`._
 
-- `export() -> list[dict[str, Any]]` (L21) — `[{id, label, needs, keys}]` in registry order; `keys` are the API-key variables the website asks for, any one enough (`[]` for an on-robot model), `needs` the first; providers the website has no key for are left out.
+- `export() -> list[dict[str, Any]]` (L22) — `[{id, label, needs, keys}]` in registry order; `keys` are the API-key variables the website asks for, any one enough (`[]` for an on-robot model), `needs` the first; providers the website has no key for are left out.
 
 ### `tools/pin_robot_ui.py`
 _Pins the dashboard's robot console to one prebuilt build by sha256 (ADR-0129, ADR-0131); the console's release workflow (its source is not in this repo) runs it and opens the pin bump here as a PR. CLI: `python3 tools/pin_robot_ui.py <tag> <url> <sha256> <size>`._

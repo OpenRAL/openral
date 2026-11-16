@@ -652,3 +652,81 @@ def test_an_ollama_cloud_reply_is_never_read_as_a_cut_prompt() -> None:
     assert cloud is None
     # The same reply from a local Ollama with no window to report is a cut.
     assert _truncation_error(reply, request, model_id="kimi-k3", base_url=None) is not None
+
+
+def test_an_unmeasured_model_says_so_and_a_measured_one_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import structlog
+    from openral_reasoner import tool_use as tool_use_module
+    from structlog.testing import CapturingLogger
+
+    sink = CapturingLogger()
+    monkeypatch.setattr(
+        tool_use_module,
+        "log",
+        structlog.wrap_logger(sink, wrapper_class=structlog.BoundLogger, processors=[]),
+    )
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "key")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "kimi-k3-cloud")
+    build_tool_use_client_from_env()
+    assert [c.kwargs["event"] for c in sink.calls] == ["reasoner.model.unmeasured"]
+    sink.calls.clear()
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    build_tool_use_client_from_env()
+    assert sink.calls == []
+
+
+@pytest.mark.parametrize(
+    ("model_key", "env_timeout", "expected"),
+    [
+        ("glm-flash-latest-openrouter", None, 60.0),  # measured 18-33 s
+        ("qwen3.8-flash-openrouter", None, 30.0),  # measured up to 16.5 s
+        ("kimi-latest-openrouter", None, 10.0),  # the cloud default
+        ("glm-flash-latest-openrouter", "12", 12.0),  # the env override still wins
+    ],
+)
+def test_a_slow_model_gets_its_own_timeout(
+    monkeypatch: pytest.MonkeyPatch, model_key: str, env_timeout: str | None, expected: float
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model_key)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-or-secret")
+    if env_timeout is not None:
+        monkeypatch.setenv("OPENRAL_REASONER_TIMEOUT_S", env_timeout)
+    client = build_tool_use_client_from_env()
+    assert client._timeout_s == expected  # type: ignore[attr-defined]  # reason: client-private
+
+
+def test_the_model_an_alias_resolved_to_is_recorded_and_logged_on_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``~google/gemini-pro-latest`` is sent; the model that answered is what the trace keeps."""
+    import structlog
+    from openral_core import WaitTool
+    from openral_reasoner import tool_use as tool_use_module
+    from openral_reasoner.palette import ToolPalette
+    from structlog.testing import CapturingLogger
+
+    sink = CapturingLogger()
+    monkeypatch.setattr(
+        tool_use_module,
+        "log",
+        structlog.wrap_logger(sink, wrapper_class=structlog.BoundLogger, processors=[]),
+    )
+    replies = []
+    for model in ("google/gemini-4-carbon", "google/gemini-4-carbon", "google/gemini-5-pro"):
+        status, body = openai_tool_call("wait", {"rationale": "ok"})
+        body["model"] = model
+        replies.append((status, body))
+    with FakeLLMServer(replies) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="~google/gemini-pro-latest", base_url=server.openai_base_url
+        )
+        for _ in replies:
+            tool = client.select_tool(context_text="go", palette=ToolPalette(skills=()))
+            assert isinstance(tool, WaitTool)
+    assert client.served_model == "google/gemini-5-pro"
+    logged = [
+        c.kwargs["served"] for c in sink.calls if c.kwargs["event"] == "reasoner.model.served"
+    ]
+    assert logged == ["google/gemini-4-carbon", "google/gemini-5-pro"]  # once per change
