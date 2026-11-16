@@ -69,9 +69,47 @@ if TYPE_CHECKING:
     from openral_rskill.ros_action_rskill import ROSActionRskill
     from openral_world_state import WorldStateAggregator
 
-__all__ = ["RskillRunnerNode", "main"]
+__all__ = ["RskillRunnerNode", "main", "station_perception_wanted"]
 
 log = structlog.get_logger(__name__)
+
+
+# Station mode: the control modes that move only the mobile base (TaskSpaceFamily.BASE).
+_BASE_ONLY_MODES = frozenset({ControlMode.BODY_TWIST, ControlMode.FOOT_PLACEMENT})
+
+
+def station_perception_wanted(manifest: RSkillManifest) -> bool | None:
+    """Whether a skill needs the station's perception (object tracker + segmenter) active.
+
+    Station mode on a mobile manipulator: tracks are in the base frame, valid only while the base
+    stands still, so the perception runs only around skills that actuate an arm, a gripper or a
+    hand, and is off around skills that only drive the base. Decided from the manifest's
+    ``actuators_required`` (the same field ``check_manifest_gates`` matches against the robot),
+    never by the reasoner.
+
+    Args:
+        manifest: The gated manifest of the skill about to run.
+
+    Returns:
+        ``True`` when any actuator is not a base mode (arm / gripper / hand / Cartesian),
+        ``False`` when every actuator is a base mode (``body_twist`` / ``foot_placement``: Nav2,
+        a VLN policy), ``None`` when it actuates nothing (perception left as it is).
+
+    Example:
+        >>> from openral_rskill.loader import parse_rskill_manifest
+        >>> station_perception_wanted(
+        ...     parse_rskill_manifest(Path("rskills/rskill-nav2-navigate-to-pose/rskill.yaml"))
+        ... )
+        False
+        >>> station_perception_wanted(
+        ...     parse_rskill_manifest(Path("rskills/pi05-metal-pick-place/rskill.yaml"))
+        ... )
+        True
+    """
+    kinds = {a.kind for a in manifest.actuators_required}
+    if not kinds:
+        return None
+    return not kinds <= _BASE_ONLY_MODES
 
 
 def _cuda_allocated_mb() -> float | None:
@@ -513,6 +551,17 @@ if _ROS2_AVAILABLE:
             # Spark restock 2026-10-28: a hidden neighbour pinned every episode at the full
             # 20 s (~62 s wall) and the wait grounded one more carton in 1 of 6 episodes.
             self.declare_parameter("grounding_context_wait_s", 2.0)
+            # Station mode (mobile base, object tracking on): the lifecycle nodes the runner
+            # activates around a skill that actuates an arm / gripper and keeps inactive around
+            # a base-only one (`station_perception_wanted`), in activation order (deactivated in
+            # reverse). The launch sets them only on a mobile base with tracking on; empty (the
+            # default, every fixed-base cell) leaves perception exactly as launched. A required
+            # activation that fails refuses the goal (ROSPerceptionStale naming the node).
+            self.declare_parameter("station_perception_nodes", [""])
+            # Bound on one get_state / change_state round trip; the segmenter's first
+            # activation loads and warms its model (the launch's autostart allows 120 s).
+            self.declare_parameter("station_perception_timeout_s", 120.0)
+            self._station_clients: dict[str, tuple[Any, Any]] = {}
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -1401,6 +1450,7 @@ if _ROS2_AVAILABLE:
                     # normal path's retraction is not doubled.
                     self._retract_place_declaration()
                     self._retract_grasp_declaration()
+                    self._station_perception_after_goal()
 
         def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0912, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
@@ -1467,6 +1517,10 @@ if _ROS2_AVAILABLE:
                         trace_id=result.trace_id,
                         invocation_id=invocation_id,
                     )
+                    # Station mode: perception on for an arm / gripper skill (before the
+                    # grounding wait reads its tracks), off for a base-only one (before its
+                    # goal is sent). A failed transition refuses the goal (ROSPerceptionStale).
+                    self._station_perception_for(rskill_id=rskill_id, revision=revision)
                     # Issue #418: wait for the armed TARGET queries to ground; refuses the
                     # goal (ROSPerceptionStale) under grounding_required. Before the skill
                     # loads: no motion on a refusal, and the detector is not yet evicted.
@@ -3030,6 +3084,122 @@ if _ROS2_AVAILABLE:
                 f"rskill_runner.object_not_found goal={evidence.goal_id} "
                 f"label={evidence.label!r}: ending the goal (FAILURE_OBJECT_NOT_FOUND)"
             )
+
+        def _station_nodes(self) -> list[str]:
+            """``station_perception_nodes`` without the declaration placeholder."""
+            raw = self.get_parameter("station_perception_nodes").value or []
+            return [str(n).strip().lstrip("/") for n in raw if str(n).strip()]
+
+        def _station_perception_for(self, *, rskill_id: str, revision: str) -> None:
+            """Put the station perception in the state this skill's manifest needs.
+
+            No-op without ``station_perception_nodes``. The manifest is the resident skill's
+            when it is the requested one, else the resolver's (no weights load). A skill whose
+            manifest cannot be read here (an opaque resolver) is treated as a manipulation
+            skill: perception on, the kernel retiring every allowance once the base moves.
+
+            Raises:
+                ROSPerceptionStale: A node did not reach the state (named in the message).
+            """
+            nodes = self._station_nodes()
+            if not nodes:
+                return
+            manifest = None
+            resident = self._resident_skill
+            if resident is not None and self._resident_key[:1] == (rskill_id,):
+                manifest = getattr(resident, "manifest", None)
+            if manifest is None:
+                resolver = self._skill_resolver
+                if isinstance(resolver, TwoPhaseSkillResolver):
+                    manifest = resolver.resolve(rskill_id=rskill_id, revision=revision).manifest
+            wanted = station_perception_wanted(manifest) if manifest is not None else True
+            why = (
+                "manifest_unavailable"
+                if manifest is None
+                else "no_actuators"
+                if wanted is None
+                else "actuates_arm"
+                if wanted
+                else "base_only"
+            )
+            self.get_logger().info(
+                f"rskill_runner.station_perception skill={rskill_id} wanted={wanted} why={why} "
+                f"nodes={nodes}"
+            )
+            if wanted is None:
+                return
+            for node in nodes if wanted else reversed(nodes):
+                self._station_transition(node, active=wanted, raise_on_failure=True)
+
+        def _station_perception_after_goal(self) -> None:
+            """Deactivate the station perception when a goal ends, however it ends.
+
+            Best effort: the goal is already over, so a failure is logged (ERROR), and the next
+            goal re-asserts the state it needs before it is sent (``_station_perception_for``).
+            """
+            for node in reversed(self._station_nodes()):
+                self._station_transition(node, active=False, raise_on_failure=False)
+
+        def _station_transition(self, node: str, *, active: bool, raise_on_failure: bool) -> None:
+            """Drive ``node`` to ACTIVE (``active``) or INACTIVE; logs every transition."""
+            from lifecycle_msgs.msg import State, Transition
+            from lifecycle_msgs.srv import ChangeState, GetState
+            from openral_core.exceptions import ROSPerceptionStale
+
+            target = "active" if active else "inactive"
+            timeout_s = float(self.get_parameter("station_perception_timeout_s").value)
+            clients = self._station_clients.get(node)
+            if clients is None:
+                clients = (
+                    self.create_client(
+                        GetState, f"/{node}/get_state", callback_group=self._action_cb_group
+                    ),
+                    self.create_client(
+                        ChangeState, f"/{node}/change_state", callback_group=self._action_cb_group
+                    ),
+                )
+                self._station_clients[node] = clients
+            get_client, change_client = clients
+
+            def call(client: Any, request: Any) -> Any:
+                if not client.wait_for_service(timeout_sec=timeout_s):
+                    return None
+                done = threading.Event()
+                future = client.call_async(request)
+                future.add_done_callback(lambda _f: done.set())
+                if not done.wait(timeout_s):
+                    future.cancel()
+                    return None
+                return future.result()
+
+            state = call(get_client, GetState.Request())
+            current = None if state is None else int(state.current_state.id)
+            goal_id = State.PRIMARY_STATE_ACTIVE if active else State.PRIMARY_STATE_INACTIVE
+            if current == goal_id:
+                self.get_logger().info(
+                    f"rskill_runner.station_perception_unchanged node={node} state={target}"
+                )
+                return
+            ok = False
+            if current in (State.PRIMARY_STATE_ACTIVE, State.PRIMARY_STATE_INACTIVE):
+                req = ChangeState.Request()
+                req.transition.id = (
+                    Transition.TRANSITION_ACTIVATE if active else Transition.TRANSITION_DEACTIVATE
+                )
+                reply = call(change_client, req)
+                ok = reply is not None and bool(reply.success)
+            if ok:
+                self.get_logger().info(
+                    f"rskill_runner.station_perception_transition node={node} state={target}"
+                )
+                return
+            reason = (
+                f"station perception node {node!r} did not reach {target} "
+                f"(state_id={current}, timeout_s={timeout_s:g})"
+            )
+            self.get_logger().error(f"rskill_runner.station_perception_failed: {reason}")
+            if raise_on_failure:
+                raise ROSPerceptionStale(reason)
 
         def _await_grounding(self, goal_handle: Any) -> None:
             """Wait for the armed TARGET (``grounding_wait_s``) and CONTEXT queries to ground.

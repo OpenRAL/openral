@@ -281,6 +281,38 @@ def test_a_released_binding_stays_on_the_wire_until_its_window_runs_out() -> Non
     assert s.attachments() == [] and s.attachment_changes == changes + 1
 
 
+def test_leaving_the_station_retires_released_records_and_world_tracks() -> None:
+    """Station mode: a frozen released record and the world tracks are base-frame state; once
+    the base drives they describe the wrong place. ``leave_station`` drops them at once (no
+    3 s window) and records the change so the next ``attachment_state`` carries it."""
+    s = _session("so101_follower")
+    _, oid, _ = _released(s)
+    other = _mint(s, np.array([0.3, 0.1, 0.05]))
+    assert s.attachments() and s.tracker.store.get(other) is not None
+    changes = s.attachment_changes
+    dropped, released = s.leave_station()
+    assert released == [oid] and set(dropped) == {oid, other}
+    assert s.attachments() == [] and s.tracker.store.all() == []
+    assert s.grid is None and s.attachment_changes == changes + 1
+
+
+def test_leaving_the_station_keeps_the_payload_the_hand_still_holds() -> None:
+    """A held payload rides the hand, not the base: dropping it would publish "nothing carried"
+    for a payload the robot still holds (the unsafe direction)."""
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    s = _session("so101_follower")
+    oid = _mint(s, centre)
+    s.on_joint_state(q, 10)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=20)
+    [held] = s.attachments()
+    _mint(s, np.array([0.3, 0.1, 0.05]), "apple")
+    dropped, released = s.leave_station()
+    assert released == [] and oid not in dropped and len(dropped) == 1
+    assert s.attachments() == [held] and s.binders[joint].held is not None
+    assert s.tracker.store.get(oid).status is TrackStatus.BOUND  # type: ignore[union-attr]
+
+
 def test_a_released_payload_is_frozen_where_it_was_let_go() -> None:
     """Spark restock 2026-11-01: a released record left on the hand rode the retreating hand
     1.0-1.5 s (up to 20 cm) in ``tracking``; it is re-expressed on the base frame at the

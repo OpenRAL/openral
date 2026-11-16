@@ -593,6 +593,33 @@ def _collision_base_dofs(description: object) -> list[int]:
     return [i for i, j in enumerate(getattr(description, "joints", [])) if j.name in base]
 
 
+def _station_perception_nodes(
+    description: object, object_tracking: str, *, segmenter: bool
+) -> list[str]:
+    """The lifecycle nodes the skill runner toggles per skill (station mode); ``[]`` = none.
+
+    On a mobile base with object tracking on, the tracker's tracks (and the segmenter that
+    feeds it) live in the base frame and hold only while the base stands still: they are
+    launched configured but INACTIVE and the runner activates them around each skill that
+    actuates an arm / gripper (``station_perception_wanted``), in this order. A fixed-base robot,
+    or tracking off, gets ``[]``: the nodes autostart ACTIVE exactly as before.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> amr = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+        >>> _station_perception_nodes(amr, "tracking", segmenter=True)
+        ['openral_segmenter', 'openral_object_tracker']
+        >>> _station_perception_nodes(amr, "off", segmenter=True)
+        []
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> _station_perception_nodes(arm, "tracking", segmenter=True)
+        []
+    """
+    if object_tracking == "off" or not _collision_base_dofs(description):
+        return []
+    return (["openral_segmenter"] if segmenter else []) + ["openral_object_tracker"]
+
+
 def _self_filter_params(
     collision_params: dict[str, object],
     description: object,
@@ -1227,8 +1254,12 @@ def _after_hal_active(
     )
 
 
-def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProcess:
-    """Drive ``/<node_name>`` to ACTIVE with the poll-based ``tools/lifecycle_autostart.py``.
+def _poll_autostart(
+    node_name: str, transition_timeout_s: float, *, target: str = "active"
+) -> ExecuteProcess:
+    """Drive ``/<node_name>`` to ``target`` (ACTIVE, or INACTIVE = configured only) by polling.
+
+    Uses the poll-based ``tools/lifecycle_autostart.py``.
 
     For nodes whose silent INACTIVE breaks a feature; exits after initial ACTIVE
     so later runtime deactivation remains possible. The event-driven
@@ -1246,7 +1277,7 @@ def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProce
             "--node",
             f"/{node_name}",
             "--target",
-            "active",
+            target,
             "--service-timeout-s",
             "60.0",
             "--transition-timeout-s",
@@ -3048,6 +3079,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         depth_cameras=[s.name for s in publishing if s.modality == "depth"],
         exemption_provider=exemption_provider,
     )
+    # Station mode (mobile base + tracking): the runner toggles these per skill.
+    station_nodes = _station_perception_nodes(
+        description, object_tracking, segmenter=bool(vision_attachment_enabled)
+    )
     if object_surface_model_json and object_tracking == "off":
         from openral_core.exceptions import ROSConfigError
 
@@ -3958,6 +3993,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # names the one the prompt names (`zone:<name>`).
                 "place_zones_json": place_zones_json,
                 "object_tracking": object_tracking,
+                # Station mode: the perception nodes the runner toggles per skill (empty on a
+                # fixed base / tracking off; launch_ros refuses an empty list, hence [""]).
+                "station_perception_nodes": station_nodes or [""],
                 # Issue #418 step 1.4: the runner waits for its TARGET queries to ground
                 # and, under grounding_required, refuses the goal. Checked present above
                 # (`_object_tracking`) whenever tracking is on.
@@ -5155,7 +5193,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="screen",
         )
         extra_nodes.append(segmenter)
-        autostart.append(_poll_autostart("openral_segmenter", 120.0))
+        # Station mode: configured only on a mobile base with tracking on; the runner
+        # activates it per manipulation skill (`station_perception_nodes`).
+        autostart.append(
+            _poll_autostart(
+                "openral_segmenter",
+                120.0,
+                target="inactive" if "openral_segmenter" in station_nodes else "active",
+            )
+        )
 
     instance_cells = LaunchConfiguration("instance_cells").perform(context).lower() in (
         "1",
@@ -5225,7 +5271,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="screen",
         )
         extra_nodes.append(tracker)
-        autostart.append(_poll_autostart("openral_object_tracker", 60.0))
+        autostart.append(
+            _poll_autostart(
+                "openral_object_tracker",
+                60.0,
+                target="inactive" if "openral_object_tracker" in station_nodes else "active",
+            )
+        )
         if instance_cells:
             # EXPERIMENT (pro#51, sim-only): SAM2.1 video masks of the tracker's TARGET /
             # DESTINATION tracks lifted to voxel cells on /openral/instance_cells.

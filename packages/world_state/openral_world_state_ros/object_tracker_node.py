@@ -1007,6 +1007,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._fill_group = MutuallyExclusiveCallbackGroup()
             self._answers.clear()
             self._attach_key = None
+            self._leave_station("activate")
             self._active = True
             self._timers = [
                 self.create_timer(1.0 / _PROCESS_HZ, self._process),
@@ -1025,12 +1026,30 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
 
         def on_deactivate(self, state: object) -> TransitionCallbackReturn:
             self._active = False
+            self._leave_station("deactivate")
             if self._failure_bus is not None:
                 self._failure_bus.stop()
             for t in self._timers:
                 self.destroy_timer(t)
             self._timers = []
             return TransitionCallbackReturn.SUCCESS
+
+        def _leave_station(self, transition: str) -> None:
+            """Station mode: discard the previous station's tracks and released records.
+
+            Tracks and frozen released records live in the base frame; on a mobile base they
+            are wrong once it drives, and the skill runner toggles this node per skill
+            (``station_perception_nodes``). Held payloads stay (``TrackerSession.leave_station``).
+            Logged on every transition, empty or not (CLAUDE.md §1.4).
+            """
+            if self.session is None:
+                return
+            dropped, released = self.session.leave_station()
+            self.get_logger().info(
+                f"object_tracker.station_reset transition={transition} "
+                f"dropped_tracks={len(dropped)} released_records={len(released)} "
+                f"kept_tracks={len(self.session.tracker.store.all())}"
+            )
 
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
             for s in self._subs:
