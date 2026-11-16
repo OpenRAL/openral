@@ -324,6 +324,7 @@ def test_a_reset_returns_the_scene_to_its_boot_rubric(scene_mod: Any) -> None:
     sidecar). The real `_on_reset` / `set_task` on a scene built without Isaac."""
     scene = object.__new__(scene_mod.IsaacManifestScene)
     scene._objects = []  # no pose_noise object to redraw
+    scene._attachments = []  # no link attachment carries anything
     scene._boot_placement_success = None
     scene._placement_by_prompt = {"put it there": {"placements": [], "grades": _RUBRIC}}
     scene._rest_window = {}
