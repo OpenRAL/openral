@@ -386,7 +386,10 @@ observation).
 prim and the URDF link that carries it. Author the prim where it should ride, with the robot at
 its spawn and its joints at the import pose: the scene makes it a kinematic body that keeps that
 offset from the link through every base move and joint motion (a lift), and what rests on it
-rides by friction. A prim may not repeat, sit inside another attachment, or also be a
+rides by friction. `carries: [object, …]` holds named `objects` rigidly in it while the
+robot drives (each one inside the prim's bounds, at reset and whenever a base twist is
+commanded) and releases them at the first arm command, so cartons in a tote don't slide
+during a drive. A prim may not repeat, sit inside another attachment, or also be a
 `stage_objects` entry; the link must be in the robot's URDF.
 
 **Objects the stage already holds** (rigid bodies authored inside the

@@ -62,7 +62,7 @@ import math
 import time
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -721,6 +721,32 @@ def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
     return out
 
 
+def matrix_quat_wxyz(m: NDArray[np.float64]) -> NDArray[np.float64]:
+    """The ``(w, x, y, z)`` unit quaternion of a 4x4 pose's rotation (Shepperd's method).
+
+    Example:
+        >>> import numpy as np
+        >>> np.round(matrix_quat_wxyz(pose_matrix((0, 0, 0), _yaw_quat(np.pi / 2))), 6).tolist()
+        [0.707107, 0.0, 0.0, 0.707107]
+    """
+    r = np.asarray(m, dtype=np.float64)[:3, :3]
+    trace = float(np.trace(r))
+    if trace > 0.0:
+        s = 2.0 * np.sqrt(trace + 1.0)
+        q = [0.25 * s, (r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s]
+    else:
+        i = int(np.argmax(np.diag(r)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s = 2.0 * np.sqrt(1.0 + r[i, i] - r[j, j] - r[k, k])
+        v = [0.0, 0.0, 0.0]
+        v[i] = 0.25 * s
+        v[j] = (r[j, i] + r[i, j]) / s
+        v[k] = (r[k, i] + r[i, k]) / s
+        q = [(r[k, j] - r[j, k]) / s, *v]
+    out = np.asarray(q, dtype=np.float64)
+    return out / np.linalg.norm(out)
+
+
 def attachment_local_pose(
     parent_from_world: NDArray[np.float64],
     world_from_link: NDArray[np.float64],
@@ -755,6 +781,11 @@ class LinkAttachment:
     root_from_link: NDArray[np.float64]
     last_local: NDArray[np.float64] | None = None
     warned: bool = False
+    carries: tuple[str, ...] = ()
+    # Prim-local axis-aligned bounds (min, max): a carried object is captured only inside.
+    local_bounds: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
+    # Carried objects held rigidly now: name -> pose in the attachment prim's frame.
+    held: dict[str, NDArray[np.float64]] = field(default_factory=dict)
 
 
 def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
@@ -2425,7 +2456,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 on), or the link is not in the imported robot.
         """
         from isaacsim.core.utils.stage import get_current_stage
-        from pxr import UsdGeom, UsdPhysics
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = get_current_stage()
         cache = UsdGeom.XformCache()
@@ -2458,6 +2489,11 @@ class IsaacManifestScene(IsaacSceneBase):
                 cache.GetLocalToWorldTransform(prim.GetParent()), dtype=np.float64
             ).T
             UsdPhysics.RigidBodyAPI.Apply(prim).CreateKinematicEnabledAttr(True)
+            box = (
+                UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+                .ComputeLocalBound(prim)
+                .GetRange()
+            )
             xform = UsdGeom.Xformable(prim)
             xform.ClearXformOpOrder()
             self._attachments.append(
@@ -2471,6 +2507,11 @@ class IsaacManifestScene(IsaacSceneBase):
                     ),
                     root_from_link=np.asarray(
                         np.linalg.inv(world_from_root) @ world_from_link, dtype=np.float64
+                    ),
+                    carries=tuple(att.get("carries") or ()),
+                    local_bounds=(
+                        np.asarray(box.GetMin(), dtype=np.float64),
+                        np.asarray(box.GetMax(), dtype=np.float64),
                     ),
                 )
             )
@@ -2491,6 +2532,67 @@ class IsaacManifestScene(IsaacSceneBase):
             return
         att.xform_op.Set(Gf.Matrix4d(local.T.tolist()))
         att.last_local = local
+        if att.held:
+            world_from_prim = world_from_link @ att.link_from_prim
+            for name, prim_from_object in att.held.items():
+                world = world_from_prim @ prim_from_object
+                self._object_prims[name].set_world_pose(
+                    position=world[:3, 3], orientation=matrix_quat_wxyz(world)
+                )
+
+    def _object_world(self, name: str) -> NDArray[np.float64]:
+        """World pose of scene object ``name`` as PhysX holds it."""
+        return pose_matrix(*self._object_prims[name].get_world_pose())
+
+    def _set_kinematic(self, name: str, kinematic: bool) -> None:
+        """Make scene object ``name`` kinematic (carried) or dynamic again (released)."""
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import UsdPhysics
+
+        prim = get_current_stage().GetPrimAtPath(self._object_prims[name].prim_path)
+        UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Set(kinematic)
+
+    def _capture_carried(self) -> None:
+        """Hold each ``carries`` object that lies inside its attachment, rigidly, where it is.
+
+        Run at reset and whenever the base is commanded to drive: a carton resting in the
+        tote then rides it exactly instead of sliding with every acceleration. An object
+        outside the attachment's bounds (already placed on a shelf) is left free.
+        """
+        for att in self._attachments:
+            if not att.carries or att.local_bounds is None or att.last_local is None:
+                continue
+            world_from_prim = np.linalg.inv(att.parent_from_world) @ att.last_local
+            prim_from_world = np.linalg.inv(world_from_prim)
+            lo, hi = att.local_bounds
+            for name in att.carries:
+                if name in att.held:
+                    continue
+                prim_from_object = prim_from_world @ self._object_world(name)
+                if not np.all((lo <= prim_from_object[:3, 3]) & (prim_from_object[:3, 3] <= hi)):
+                    continue
+                self._set_kinematic(name, True)
+                att.held[name] = prim_from_object
+            if att.held:
+                print(
+                    f"[isaac_manifest_scene] {att.prim} carries {sorted(att.held)} rigidly",
+                    flush=True,
+                )
+
+    def _release_carried(self) -> None:
+        """Release every carried object: dynamic again, at rest where it was held."""
+        for att in self._attachments:
+            if not att.held:
+                continue
+            for name in att.held:
+                self._set_kinematic(name, False)
+                self._object_prims[name].set_linear_velocity(np.zeros(3))
+                self._object_prims[name].set_angular_velocity(np.zeros(3))
+            print(
+                f"[isaac_manifest_scene] {att.prim} releases {sorted(att.held)}: the arms move",
+                flush=True,
+            )
+            att.held.clear()
 
     def _follow_links(self) -> None:
         """Re-pose each attachment on its link where PhysX holds it (a lift moves it).
@@ -3168,6 +3270,16 @@ class IsaacManifestScene(IsaacSceneBase):
         if self._target is None:
             self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
         target = self._target
+        if self._attachments:
+            # The arms commanded (the starting-pose ramp, the policy): carried objects go
+            # free. Only a base twist commanded: they are held again for the drive.
+            base_i = len(self._slot_plan)
+            if bool(np.any(~np.isnan(action[:base_i]))):
+                self._release_carried()
+            elif self._has_base and action.shape[0] >= base_i + 3:
+                twist = np.nan_to_num(action[base_i : base_i + 3])
+                if bool(np.any(np.abs(twist) > 0.0)):
+                    self._capture_carried()
         self._write_slots(target, action)
         margin = self._spec.get("gripper_finger_coupling_rad")
         if margin:
@@ -3260,6 +3372,8 @@ class IsaacManifestScene(IsaacSceneBase):
         # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
         self._activate_placement_success(self._boot_placement_success)
+        # world.reset() returns every object, dynamic, to its declared pose.
+        self._release_carried()
         # A reset teleports the robot: no finite-difference link speed across it.
         self._body_positions = {}
         self._prev_body_positions = {}
@@ -3313,6 +3427,8 @@ class IsaacManifestScene(IsaacSceneBase):
         # world.reset() puts the pinned root back at its import pose (the
         # origin); move it to the spawn before the warmup steps settle physics.
         self._place_robot()
+        # Carried objects start held in their attachment (a tote's cartons ride the drive).
+        self._capture_carried()
         # Hold the reset pose until the first command arrives: the URDF's zero pose, with
         # the scene's initial_joint_positions teleported in (no motion to get there).
         self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
