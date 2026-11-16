@@ -452,7 +452,15 @@ margin is added. `velocity_padding_dt_s` (`0.02`), `trailing_sweep_s` (`0.0`),
 mobile manipulator's planar base dofs, the kernel's own, held at zero so the model is posed
 in `base_frame` and every TF lookup starts there; no `world` or fleet map has to exist in TF,
 so each robot under its own `odom` is filtered like a fixed arm; base dofs without a
-`base_frame` forward nothing), and the robot mask's `robot_mask_enabled`
+`base_frame` forward nothing, and so does a `base_frame` that is not the end of the model's
+planar base chain: the chain from the model root to `base_frame` must be identity-origin
+links that are fixed or plain revolute / prismatic, with no calibration curve, moving on
+exactly `collision_base_dofs`, and no other link may use a base dof. That refuses the root
+itself (`world`), a frame under an arm joint, an extra or missing base dof and any offset.
+The launch refuses the same manifest before either the kernel or the filter starts
+(`_collision_base_dofs`). The base joints are never read from a joint state nor required
+in one; a moving base adds no velocity padding, since the model and every depth camera
+mounted on the robot move with it), and the robot mask's `robot_mask_enabled`
 (`false`), `robot_mask_cameras` / `robot_mask_depth_topics` /
 `robot_mask_camera_info_topics` / `robot_mask_topics` (parallel, `[]`),
 `robot_mask_hand_links` (`[]`), `robot_mask_uncertain_px` (`3`). With no

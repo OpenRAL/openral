@@ -249,34 +249,30 @@ public:
                    padding_m_, kMaxSelfFilterPaddingM);
       model_ok_ = false;
     }
+    // The base dofs are held at zero: never read from a joint state (a base-only message
+    // poses nothing) and never required (a ros2_control arm HAL does not publish them).
     for (std::size_t d = 0; d < joint_names.size(); ++d) {
-      dof_of_name_.emplace(joint_names[d], d);
+      if (!is_base_dof(d)) {
+        dof_of_name_.emplace(joint_names[d], d);
+      }
     }
     for (std::size_t d = 0; d < joint_aliases.size() && d < joint_names.size(); ++d) {
-      if (!joint_aliases[d].empty()) {
+      if (!is_base_dof(d) && !joint_aliases[d].empty()) {
         dof_of_name_.emplace(joint_aliases[d], d);  // never overrides a manifest name
       }
     }
     for (const int dof : model_.dof_index) {
-      if (dof >= 0) {
+      if (dof >= 0 && !is_base_dof(static_cast<std::size_t>(dof))) {
         required_dofs_.push_back(static_cast<std::size_t>(dof));
       }
     }
-    // The base dofs' values are never used (held at zero), so a joint-state stream that does
-    // not carry them (a ros2_control arm HAL, stale odometry) must not make every sample
-    // incomplete.
-    required_dofs_.erase(std::remove_if(required_dofs_.begin(), required_dofs_.end(),
-                                        [this](std::size_t d) {
-                                          return std::find(base_dofs_.begin(), base_dofs_.end(),
-                                                           d) != base_dofs_.end();
-                                        }),
-                         required_dofs_.end());
     q_.assign(std::max(model_.required_dof, joint_names.size()), 0.0);
     seen_.assign(q_.size(), 0);
-    if (model_ok_ && !base_dofs_.empty() && !base_frame_is_the_zeroed_root(base_frame)) {
+    if (model_ok_ && !base_dofs_.empty() && !base_chain_is_the_base_dofs(base_frame)) {
       RCLCPP_ERROR(this->get_logger(),
-                   "base_frame %s is not where the model's root lands with the base dofs at zero "
-                   "(the planar base chain must end at it with zero offsets): forwarding NOTHING",
+                   "base_frame %s is not the end of a root chain that moves on exactly the "
+                   "collision_base_dofs, with zero offsets and no mimic or curve: forwarding "
+                   "NOTHING",
                    base_frame.c_str());
       model_ok_ = false;
     }
@@ -375,11 +371,6 @@ private:
           carries_a_required_dof || std::find(required_dofs_.begin(), required_dofs_.end(),
                                               it->second) != required_dofs_.end();
     }
-    for (const auto d : base_dofs_) {
-      if (d < q_.size()) {
-        q_[d] = 0.0;  // the base's own pose is TF's (odom), not the model's
-      }
-    }
     // A message that carries none of the model's joints says nothing about the robot at its
     // stamp: appending it would re-stamp the last pose there (a stale arm, qdot = 0). A model
     // with no joint to pose (all fixed) has nothing to go stale.
@@ -403,18 +394,49 @@ private:
     }
   }
 
-  /// Whether `base_frame` is a model link at the root's pose with every dof at zero, which is
-  /// what posing the model in `base_frame` (base dofs held at zero) assumes.
-  bool base_frame_is_the_zeroed_root(const std::string& base_frame) const {
+  bool is_base_dof(std::size_t d) const {
+    return std::find(base_dofs_.begin(), base_dofs_.end(), d) != base_dofs_.end();
+  }
+
+  /// Whether the model's root -> `base_frame` chain is exactly the planar base, which posing
+  /// the model in `base_frame` with the base dofs at zero assumes: every link on it (root
+  /// included) has an identity origin and is fixed or a plain revolute / prismatic joint with
+  /// no calibration curve, the dofs it moves on are exactly `collision_base_dofs` (each once),
+  /// and no other link uses a base dof. Anything else (the root itself, a link under an arm
+  /// joint, an extra or missing base dof, an offset) would misplace the filter's blind shell.
+  /// The launch refuses the same manifests (`_collision_base_dofs`).
+  bool base_chain_is_the_base_dofs(const std::string& base_frame) const {
     const int link = model_.link_index(base_frame);
     if (link < 0) {
       return false;
     }
-    const std::vector<double> zeros(q_.size(), 0.0);
-    std::vector<tf2::Transform> links;
-    self_forward_kinematics(model_, zeros.data(), zeros.size(), links);
-    const tf2::Transform& at = links[static_cast<std::size_t>(link)];
-    return at.getOrigin().length() < 1e-9 && std::abs(at.getRotation().getW()) > 1.0 - 1e-12;
+    std::vector<bool> on_chain(model_.n_links(), false);
+    std::vector<std::size_t> chain_dofs;
+    for (int l = link; l >= 0; l = model_.parent[static_cast<std::size_t>(l)]) {
+      const auto i = static_cast<std::size_t>(l);
+      on_chain[i] = true;
+      const tf2::Transform& o = model_.origin[i];
+      const SelfJointKind kind = model_.joint_kind[i];
+      if (o.getOrigin().length() > 1e-9 || std::abs(o.getRotation().getW()) < 1.0 - 1e-12 ||
+          !(kind == SelfJointKind::kFixed || kind == SelfJointKind::kRevolute ||
+            kind == SelfJointKind::kPrismatic) ||
+          (i < model_.curves.size() && !model_.curves[i].empty())) {
+        return false;
+      }
+      if (model_.dof_index[i] >= 0) {
+        chain_dofs.push_back(static_cast<std::size_t>(model_.dof_index[i]));
+      }
+    }
+    for (std::size_t i = 0; i < model_.n_links(); ++i) {
+      const int d = model_.dof_index[i];
+      if (!on_chain[i] && d >= 0 && is_base_dof(static_cast<std::size_t>(d))) {
+        return false;
+      }
+    }
+    std::vector<std::size_t> base = base_dofs_;
+    std::sort(base.begin(), base.end());
+    std::sort(chain_dofs.begin(), chain_dofs.end());
+    return chain_dofs == base;
   }
 
   /// Pose the robot at `stamp` into `q_at_` / `qdot_at_`, or count and warn why not.

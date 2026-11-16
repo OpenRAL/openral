@@ -576,11 +576,22 @@ _SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
 _SELF_FILTERED_RGB_CLOUD_TOPIC = "/openral/world_cloud/self_filtered_rgb"
 
 
-def _collision_base_dofs(description: object) -> list[int]:
+def _collision_base_dofs(
+    description: object, collision_params: Mapping[str, object] | None = None
+) -> list[int]:
     """Dof indices of the planar mobile-base joints (manifest ``base_joints``); empty on an arm.
 
     The kernel and the robot self-filter both hold these at zero, so the collision model is
     posed in ``base_frame`` and nothing above the base (``world``, a fleet map) is needed.
+    That is only true when the collision model's chain from its root to ``base_frame`` is
+    exactly the base: every link on it has a zero origin, is fixed or moves on a base dof
+    (no mimic, no calibration curve), its dofs are exactly these, and no other link uses
+    one. Given ``collision_params`` (the model both consumers get), anything else raises,
+    so a bad manifest is refused at launch for the kernel and the filter alike (the filter
+    holds the same rule at runtime).
+
+    Raises:
+        ROSConfigError: the base chain does not match the base dofs.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -590,7 +601,50 @@ def _collision_base_dofs(description: object) -> list[int]:
         []
     """
     base = set(getattr(description, "base_joints", None) or [])
-    return [i for i, j in enumerate(getattr(description, "joints", [])) if j.name in base]
+    dofs = [i for i, j in enumerate(getattr(description, "joints", [])) if j.name in base]
+    params = collision_params or {}
+    names = list(cast("list[str]", params.get("collision_link_names", [])))
+    if dofs and names:
+        _check_base_chain(params, names, dofs, getattr(description, "base_frame", ""))
+    return dofs
+
+
+def _check_base_chain(
+    params: Mapping[str, object], names: list[str], dofs: list[int], base_frame: str
+) -> None:
+    """Raise unless the root -> ``base_frame`` chain is exactly the planar base (see above)."""
+    from openral_core.exceptions import ROSConfigError
+
+    parent = cast("list[int]", params["collision_parent"])
+    kind = cast("list[int]", params["collision_joint_kind"])
+    dof = cast("list[int]", params["collision_dof_index"])
+    origin = cast("list[float]", params["collision_origin_xyzrpy"])
+    curve = cast("list[int]", params.get("collision_curve_point_first", []))
+    if base_frame not in names:
+        raise ROSConfigError(f"base_frame {base_frame!r} is not a collision-model link")
+    chain: list[int] = []
+    link = names.index(base_frame)
+    while link >= 0:
+        chain.append(link)
+        link = parent[link]
+    for link in chain:
+        if (
+            any(abs(v) > 1e-9 for v in origin[6 * link : 6 * link + 6])
+            or kind[link] not in (0, 1, 2)
+            or (link < len(curve) and curve[link] >= 0)
+        ):
+            raise ROSConfigError(
+                f"collision link {names[link]!r} on the root -> {base_frame!r} chain has an "
+                "offset, a mimic or a calibration curve: the model cannot be posed in "
+                f"{base_frame!r} with the base dofs held at zero"
+            )
+    on_chain = sorted(dof[link] for link in chain if dof[link] >= 0)
+    users = sorted(dof[i] for i in range(len(names)) if dof[i] in dofs)
+    if on_chain != sorted(dofs) or users != on_chain:
+        raise ROSConfigError(
+            f"the root -> {base_frame!r} chain moves on dofs {on_chain}, but base_joints are "
+            f"dofs {sorted(dofs)}: they must be the same, and used by no other link"
+        )
 
 
 def _self_filter_params(
@@ -600,6 +654,7 @@ def _self_filter_params(
     padding_m: float,
     robot_mask_cameras: tuple[str, ...] = (),
     *,
+    base_dofs: list[int] | None = None,
     runtime_period_from_hal: bool = False,
 ) -> dict[str, object]:
     """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
@@ -613,9 +668,10 @@ def _self_filter_params(
     ros2_control HAL's rate-limited ``~/joint_states``, else ``/joint_states``),
     so the filter poses the robot from the same stream the runner acts on.
     ``padding_m`` is the rig's ``DeployRuntime.robot_self_filter_padding_m``.
-    On a mobile manipulator, ``collision_base_dofs`` (``_collision_base_dofs``, the kernel's)
-    and the manifest ``base_frame`` make the filter hold the planar base dofs at zero and pose
-    the model in ``base_frame``, so TF needs nothing above the base; omitted on a fixed arm.
+    On a mobile manipulator, ``base_dofs`` (``_collision_base_dofs``, the kernel's, computed
+    once by the caller) become ``collision_base_dofs`` and, with the manifest ``base_frame``,
+    make the filter hold the planar base dofs at zero and pose the model in ``base_frame``, so
+    TF needs nothing above the base; omitted on a fixed arm.
     ``joint_state_period_s`` is ``1 / action_spec.control_freq_hz`` when the manifest
     declares it (the filter interpolates joint states at the cloud stamp and refuses a
     gap of more than two periods), else the node's own default.
@@ -641,7 +697,6 @@ def _self_filter_params(
     params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
     params["joint_states_topic"] = joint_states_topic
     params["padding_m"] = padding_m
-    base_dofs = _collision_base_dofs(description)
     if base_dofs:  # omitted when empty: launch_ros rejects an empty list (see the kernel's)
         params["collision_base_dofs"] = base_dofs
         params["base_frame"] = getattr(description, "base_frame", "")
@@ -3182,7 +3237,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # passing it unconditionally crashed the whole launch before any node started. The kernel
     # declares its own ``[]`` default for this parameter, so omitting it means "no base dofs to
     # zero" (same semantics as the ``lifecycle_peer_node_ids`` guard 90 lines below).
-    base_dofs = _collision_base_dofs(description)
+    base_dofs = _collision_base_dofs(description, collision_params)
     if base_dofs:
         kernel_params["collision_base_dofs"] = base_dofs
     # Predictive Cartesian: the EE control link for the
@@ -4787,6 +4842,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                         ]
                                     )
                                 ),
+                                base_dofs=base_dofs,
                                 runtime_period_from_hal=self_filter_period_from_hal,
                             ),
                             "trailing_sweep_s": _self_filter_trailing_sweep_s(hal_mode),

@@ -1027,11 +1027,30 @@ protected:
         {"collision_link_names", std::vector<std::string>{"world", "base", "l1"}},
         {"collision_joint_names", std::vector<std::string>{"base_x", "j1"}},
         {"collision_capsule_link", std::vector<std::int64_t>{2}},
-        {"collision_base_dofs", std::vector<std::int64_t>{0}},
+        {"collision_base_dofs", base_dofs()},
         {"base_frame", base_frame()},
     };
   }
   virtual std::string base_frame() const { return "base"; }
+  virtual std::vector<std::int64_t> base_dofs() const { return {0}; }
+
+  /// With TF able to place `frame`, the filter still forwards nothing: refused at configuration.
+  void expect_refused_with_tf_to(const std::string& frame) {
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.stamp = peer_->now();
+    tf.header.frame_id = "cam";
+    tf.child_frame_id = frame;
+    tf.transform.rotation.w = 1.0;
+    tf_->sendTransform(tf);
+    spin_for(200ms);
+    const rclcpp::Time now = peer_->now();
+    send_mobile_joint_state(0.0, now);
+    spin_for(100ms);
+    cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+    spin_for(400ms);
+    EXPECT_EQ(received_.load(), 0) << "base_frame " << frame;
+    EXPECT_EQ(filter_->totals().dropped_no_tf, 0U) << "refused at configuration, not by TF";
+  }
 
   void send_mobile_joint_state(double base_x, const rclcpp::Time& stamp) {
     sensor_msgs::msg::JointState js;
@@ -1064,7 +1083,40 @@ protected:
   std::string base_frame() const override { return "base_link"; }
 };
 
+// `l1` sits at the zeroed root's pose with every dof at zero, but it hangs under the arm's
+// j1, not the base: the model would be posed in a frame that turns with the arm.
+class MobileBaseFrameUnderAnArmJointNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return "l1"; }
+};
+
+// The model root itself: the base dof is above it, so TF would place the model at the base's
+// odom origin, not on the base.
+class MobileBaseFrameIsTheModelRootNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return "world"; }
+};
+
+// One base dof too many (the arm's j1, held at zero as a base dof): the arm would be frozen
+// in the model while it moves.
+class MobileBaseExtraBaseDofNode : public MobileBaseSelfFilterNode {
+protected:
+  std::vector<std::int64_t> base_dofs() const override { return {0, 1}; }
+};
+
 }  // namespace
+
+TEST_F(MobileBaseFrameUnderAnArmJointNode, ABaseFrameUnderANonBaseJointForwardsNothing) {
+  expect_refused_with_tf_to("l1");
+}
+
+TEST_F(MobileBaseFrameIsTheModelRootNode, TheModelRootAsBaseFrameForwardsNothing) {
+  expect_refused_with_tf_to("world");
+}
+
+TEST_F(MobileBaseExtraBaseDofNode, ABaseDofOffTheBaseChainForwardsNothing) {
+  expect_refused_with_tf_to("base");
+}
 
 TEST_F(MobileBaseSelfFilterNode, PosesTheArmInTheBaseFrameWithNoWorldFrameInTf) {
   publish_cam_to_base();
@@ -1093,7 +1145,7 @@ TEST_F(MobileBaseWithoutBaseFrameNode, BaseDofsWithoutABaseFrameForwardNothing) 
   EXPECT_EQ(filter_->totals().dropped_no_tf, 0U);
 }
 
-TEST_F(MobileBaseUnknownBaseFrameNode, ABaseFrameThatIsNotTheZeroedRootForwardsNothing) {
+TEST_F(MobileBaseUnknownBaseFrameNode, ABaseFrameThatIsNotAModelLinkForwardsNothing) {
   geometry_msgs::msg::TransformStamped tf;
   tf.header.stamp = peer_->now();
   tf.header.frame_id = "cam";
