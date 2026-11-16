@@ -18,6 +18,7 @@ _COLLISION = CollisionEvidence(
     link_b_or_object="voxel_431037",
     horizon_step=-1,
     min_distance_m=-0.0257,
+    place_allowance_active=False,
     grasp_exemption_active=True,
     grasp_exemption_source="tracked",
     workspace_contact_active=False,
@@ -49,7 +50,7 @@ def test_collision_stop_reads_as_one_operator_line() -> None:
     assert entry["text"] == (
         "world collision: openarm_left_ee_link1 hit voxel_431037 · 25.7 mm deep"
         " · cell 0.41 m forward, 0.09 m right, 0.85 m up of the robot base"
-        " · allowances: grasp on (tracked), workspace off"
+        " · allowances: place off, grasp on (tracked), workspace off"
         " · stopped rskill-pick-openarm · latched: needs an operator reset"
     )
     assert entry["kind"] == "collision"
@@ -87,3 +88,10 @@ def test_subscriber_writes_a_real_failure_trigger() -> None:
     entry = store.snapshot()["topics"]["safety_failure"]
     assert entry["kind"] == "collision"
     assert entry["latched"] is True
+
+
+def test_place_allowance_names_its_target() -> None:
+    ev = _COLLISION.model_copy(update={"place_allowance_active": True, "place_target": "shelf_2"})
+    assert "allowances: place on (shelf_2), grasp on" in str(
+        _record(TelemetryStore(), ev.model_dump_json())["text"]
+    )

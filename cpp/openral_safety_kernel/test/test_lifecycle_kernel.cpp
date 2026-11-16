@@ -1961,6 +1961,10 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
       << stop_evidence;
   EXPECT_NE(stop_evidence.find(R"("depth_is_box_bound":false)"), std::string::npos)
       << stop_evidence;
+  // No place declaration: the allowance is disclosed as off, with no target.
+  EXPECT_NE(stop_evidence.find(R"("place_allowance_active":false)"), std::string::npos)
+      << stop_evidence;
+  EXPECT_EQ(stop_evidence.find(R"("place_target")"), std::string::npos) << stop_evidence;
   const int step = std::stoi(evidence_field(stop_evidence, "horizon_step"));
   ASSERT_GE(step, 0) << "this must be a predicted step, not the reactive floor: " << stop_evidence;
 

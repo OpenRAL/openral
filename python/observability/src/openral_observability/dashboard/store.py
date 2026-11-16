@@ -1807,12 +1807,15 @@ def _collision_text(ev: CollisionEvidence) -> list[str]:
         return f"{name} {'?' if on is None else 'on' if on else 'off'}{extra}"
 
     source = f" ({ev.grasp_exemption_source})" if ev.grasp_exemption_source else ""
-    # ponytail: the kernel's place_allowance_active is not in CollisionEvidence yet, so
-    # the place allowance cannot be shown; add it here when the schema carries it.
     parts.append(
         "allowances: "
         + ", ".join(
             (
+                flag(
+                    "place",
+                    ev.place_allowance_active,
+                    f" ({ev.place_target})" if ev.place_target else "",
+                ),
                 flag("grasp", ev.grasp_exemption_active, source),
                 flag("workspace", ev.workspace_contact_active),
             )
