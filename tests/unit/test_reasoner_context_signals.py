@@ -190,3 +190,42 @@ def test_an_age_from_another_clock_base_is_omitted() -> None:
         PerceptionEventRecord(kind="motion", text="arm moved", metadata_json="", stamp_ns=42 * _S)
     )
     assert "[motion] arm moved" in r.render(world_state=None)
+
+
+def test_a_status_expiring_during_the_render_is_not_marked_seen() -> None:
+    """``prepare_tick`` snapshots ``seq`` before rendering: a mid-render crossing stays unseen."""
+    from openral_core import EmitPromptTool
+    from openral_reasoner import MissionState, ReasonerCore, ToolPalette
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    now = [10.0]
+    renderer = ContextRenderer(now_ns=lambda: int(now[0] * _S))
+    renderer.set_mission(MissionState.from_prompt("pick the cube"))
+    renderer.set_safety_status(
+        SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S))
+    )
+    render = renderer.render
+
+    def render_then_expire(**kwargs: object) -> str:
+        text = render(**kwargs)  # type: ignore[arg-type]  # reason: pass-through
+        now[0] += SAFETY_STATUS_LIVENESS_S + 1.0  # the status expires right after
+        return text
+
+    renderer.render = render_then_expire  # type: ignore[method-assign]  # reason: inject the race
+    core = ReasonerCore(
+        client=FakeToolUseClient(
+            responses=[
+                EmitPromptTool(target_topic="/openral/prompt", text=str(i)) for i in range(2)
+            ]
+        ),
+        min_interval_s=0.0,
+    )
+    palette = ToolPalette(execute_rskill_ids=frozenset({"openral/rskill-pick"}))
+    first = core.tick(world_state=None, renderer=renderer, palette=palette, force=True)
+    assert first.tool_call is not None
+    renderer.render = render  # type: ignore[method-assign]  # reason: restore
+    # The model was shown "clear"; the next beat must show it UNKNOWN, not idle.
+    second = core.tick(world_state=None, renderer=renderer, palette=palette)
+    assert second.suppressed_reason != "heartbeat_idle"
+    assert second.tool_call is not None
