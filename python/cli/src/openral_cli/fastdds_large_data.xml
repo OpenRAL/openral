@@ -12,7 +12,8 @@
   540 KB 3/40, 720 KB and up 0/40. The deploy graph's depth clouds are 2.4-2.8 MB (Isaac
   512x384), its depth/colour images 0.6-3.7 MB. With this profile: 2.8 MB 60/60.
 
-  What changes: only the shared-memory segment size. The transports are the builtin
+  What changes: the shared-memory segment size, and the UDP transport's localhost
+  discovery reach (maxInitialPeersRange, below). The transports are otherwise the builtin
   defaults (SHM for same-host peers, UDPv4 for discovery and other hosts), declared
   explicitly because replacing the segment size means replacing the builtin set.
 
@@ -34,6 +35,18 @@
     <transport_descriptor>
       <transport_id>openral_udpv4</transport_id>
       <type>UDPv4</type>
+      <!--
+        Localhost discovery reach. With ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST there is
+        no multicast: a participant announces itself only to the unicast ports of the
+        first N participant ids on the host. Measured on Jazzy (2026-11-16, 60 one-node
+        processes): a new process found services on processes 1-30 and none on 34-60, so
+        two late participants never meet. A deploy sim graph is ~50 processes, and Nav2
+        starts last: bt_navigator never found planner_server / behavior_server, the
+        lifecycle manager aborted the bring-up and every navigate goal was rejected. 128
+        covers the graph with room for helper processes; the same 60-process probe then
+        finds all 60.
+      -->
+      <maxInitialPeersRange>128</maxInitialPeersRange>
     </transport_descriptor>
   </transport_descriptors>
   <!--
