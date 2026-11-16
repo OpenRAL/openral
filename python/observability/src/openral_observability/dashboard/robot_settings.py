@@ -20,6 +20,7 @@ from pathlib import Path
 
 from openral_core import (
     ANTHROPIC_KEY_SETTING,
+    OLLAMA_KEY_SETTING,
     OPENAI_KEY_SETTING,
     OPENROUTER_KEY_SETTING,
     enrolment_path,
@@ -44,6 +45,8 @@ SETTINGS: dict[str, dict[str, object]] = {
     ANTHROPIC_KEY_SETTING: {"label": "Anthropic API key", "secret": True},
     OPENAI_KEY_SETTING: {"label": "OpenAI API key", "secret": True},
     OPENROUTER_KEY_SETTING: {"label": "OpenRouter API key", "secret": True},
+    # ollama.com's (Ollama Cloud); the robot's own Ollama needs none.
+    OLLAMA_KEY_SETTING: {"label": "Ollama API key", "secret": True},
     MODEL_SETTING: {
         "label": "Reasoner model",
         "secret": False,
@@ -147,7 +150,8 @@ def reasoner_env(values: dict[str, str]) -> dict[str, str]:
 
     The model, the first of its keys that is set as ``OPENRAL_REASONER_API_KEY``, and
     for the OpenAI key OpenAI's own API (openral's default for those models is
-    OpenRouter, which an OpenRouter key reaches with no endpoint set). Nothing without a
+    OpenRouter, which an OpenRouter key reaches with no endpoint set; an Ollama key
+    reaches Ollama Cloud, its models' default, the same way). Nothing without a
     curated model, or without a key that model runs on: an incomplete choice must not
     stand in for the account's settings.
 

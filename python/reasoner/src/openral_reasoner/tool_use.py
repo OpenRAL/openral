@@ -42,6 +42,7 @@ from openral_core import (
     GEMINI_BASE_URL,
     HUGGINGFACE_BASE_URL,
     OLLAMA_BASE_URL,
+    OLLAMA_CLOUD_BASE_URL,
     OPENAI_BASE_URL,
     OPENROUTER_BASE_URL,
     REASONER_ENDPOINT_PRESETS,
@@ -74,6 +75,7 @@ __all__ = [
     "GEMINI_BASE_URL",
     "HUGGINGFACE_BASE_URL",
     "OLLAMA_BASE_URL",
+    "OLLAMA_CLOUD_BASE_URL",
     "OPENAI_BASE_URL",
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
@@ -847,6 +849,10 @@ def _truncation_error(
     prompt_tokens = _prompt_tokens(response)
     if getattr(response, "system_fingerprint", None) != _OLLAMA_FINGERPRINT or not prompt_tokens:
         return None
+    # Ollama Cloud loads every model with its full window (262K-1M tokens), and its
+    # /api/ps is not this account's: a denser tokenizer must not read as a cut.
+    if (base_url or "").rstrip("/") == OLLAMA_CLOUD_BASE_URL:
+        return None
     chars = len(json.dumps(request, ensure_ascii=False))  # escapes would inflate the count
     if prompt_tokens * _MAX_CHARS_PER_PROMPT_TOKEN >= chars:
         return None
@@ -939,11 +945,12 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     * ``OPENRAL_REASONER_MODEL`` (**required**) — a curated registry key
       (``REASONER_MODELS``: ``claude-opus-4-8`` / ``claude-opus-5-5`` /
       ``claude-sonnet-5-5`` / ``claude-haiku-5-5`` / ``gpt-5.5`` / ``gpt-5.6``
-      / ``cosmos3-edge`` / ``qwen3.5-4b`` / ``qwen3.5-9b``), or a raw model id for the uncurated
+      / ``cosmos3-edge`` / ``qwen3.5-4b`` / ``qwen3.5-9b`` / the ``*-cloud`` Ollama Cloud
+      models), or a raw model id for the uncurated
       escape hatch.
     * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a named endpoint
-      (``_ENDPOINT_PRESETS``: ``openai`` / ``openrouter`` / ``ollama`` / ``vllm`` /
-      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` / ``anthropic``), a
+      (``_ENDPOINT_PRESETS``: ``openai`` / ``openrouter`` / ``ollama`` / ``ollama_cloud`` /
+      ``vllm`` / ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` / ``anthropic``), a
       URL, the ``managed`` sentinel, or unset (the model's registry default).
       The only axis that carries local-vs-cloud, and it does so literally.
     * ``OPENRAL_REASONER_API_KEY`` (conditional) — required iff the resolved

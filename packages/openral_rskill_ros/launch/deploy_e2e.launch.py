@@ -6050,8 +6050,8 @@ def generate_launch_description() -> LaunchDescription:
             default_value=os.environ.get("OPENRAL_REASONER_ENDPOINT") or "",
             description=(
                 "Optional OPENRAL_REASONER_ENDPOINT override — a named endpoint "
-                "(openrouter / ollama / vllm / gemini / xai / deepseek / huggingface "
-                "/ anthropic) or a URL. Empty uses the curated model's registry "
+                "(openrouter / ollama / ollama_cloud / vllm / gemini / xai / deepseek / "
+                "huggingface / anthropic) or a URL. Empty uses the curated model's registry "
                 "default."
             ),
         ),

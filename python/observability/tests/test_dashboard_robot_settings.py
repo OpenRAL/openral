@@ -176,3 +176,21 @@ def test_an_openrouter_key_runs_a_gpt_model_on_openrouter_and_the_openai_key_win
     # An Anthropic model is never handed the OpenRouter key.
     values = save_setting("OPENRAL_REASONER_MODEL", "claude-sonnet-5-5")
     assert reasoner_env(values) == {}
+
+
+def test_an_ollama_key_runs_an_ollama_cloud_model_and_never_the_robots_own_ollama() -> None:
+    """The Ollama key goes to an Ollama Cloud model with no endpoint (its default)."""
+    from openral_observability.dashboard.robot_settings import reasoner_env, save_setting
+
+    save_setting("OLLAMA_API_KEY", "ollama-cloud-key-5678")
+    values = save_setting("OPENRAL_REASONER_MODEL", "kimi-k3-cloud")
+    assert reasoner_env(values) == {
+        "OPENRAL_REASONER_MODEL": "kimi-k3-cloud",
+        "OPENRAL_REASONER_API_KEY": "ollama-cloud-key-5678",
+    }
+    # A model on the robot's own Ollama needs no key, so it is never handed this one.
+    values = save_setting("OPENRAL_REASONER_MODEL", "qwen3.5-4b")
+    assert reasoner_env(values) == {"OPENRAL_REASONER_MODEL": "qwen3.5-4b"}
+    # GPT is not served by Ollama Cloud: the Ollama key alone leaves it unconfigured.
+    values = save_setting("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    assert reasoner_env(values) == {}

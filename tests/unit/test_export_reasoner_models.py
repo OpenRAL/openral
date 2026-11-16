@@ -25,7 +25,7 @@ def test_every_offered_model_is_curated_and_needs_a_key_the_website_has() -> Non
     assert json.loads(json.dumps(models)) == models
     ids = [m["id"] for m in models]
     assert len(ids) == len(set(ids)) and set(ids) <= set(REASONER_MODELS)
-    keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"}
+    keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "OLLAMA_API_KEY"}
     for m in models:
         entry = REASONER_MODELS[m["id"]]
         assert set(m["keys"]) <= keys and len(set(m["keys"])) == len(m["keys"])
@@ -42,3 +42,7 @@ def test_every_offered_model_is_curated_and_needs_a_key_the_website_has() -> Non
     # OpenAI's own API first (the website sends it there), OpenRouter (the default) too.
     assert by_id["gpt-5.5"] == ["OPENAI_API_KEY", "OPENROUTER_API_KEY"]
     assert by_id["cosmos3-edge"] == []
+    # Ollama Cloud models run on the Ollama key alone; the robot's own Ollama on none.
+    assert by_id["kimi-k3-cloud"] == ["OLLAMA_API_KEY"]
+    assert by_id["qwen3.5-4b"] == []
+    assert labels["kimi-k3-cloud"] == "Kimi K3 (Ollama Cloud)"

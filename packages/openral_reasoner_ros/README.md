@@ -285,6 +285,7 @@ auth requirement, hosting mode, and local-compute floor.
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
 | `qwen3.5-4b` | `qwen3.5:4b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
 | `qwen3.5-9b` | `qwen3.5:9b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
+| `<name>-cloud` (14, below) | the Ollama tag | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | Ollama Cloud, `https://ollama.com/v1` | ollama.com API key |
 
 The env contract is:
 
@@ -411,7 +412,7 @@ old provider value maps onto a model plus an endpoint:
 |---|---|
 | `anthropic` | curated `claude-opus-4-8` / `claude-opus-5-5` / `claude-sonnet-5-5` / `claude-haiku-5-5`, or `ENDPOINT=anthropic` + a raw model id |
 | `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` (an OpenAI key: `ENDPOINT=openai`) |
-| `ollama` / `vllm` | `ENDPOINT=<name>` (no key) |
+| `ollama` / `vllm` | `ENDPOINT=<name>` (no key); Ollama Cloud: `ENDPOINT=ollama_cloud` + `API_KEY` |
 | `cosmos` | curated `cosmos3-edge` (managed autostart included) |
 | `openai-compatible` | `ENDPOINT=<url>` + `DIALECT=openai` |
 
@@ -526,6 +527,44 @@ plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
 > JIT sampler needs CUDA toolkit headers a JetPack image does not ship, so the
 > sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0`. Full findings in the
 > [assessment page](../../docs/reference/cosmos3-edge-reasoner.md).
+
+### Ollama Cloud — the `*-cloud` models (not yet measured)
+
+Ollama Cloud (ollama.com) serves large models over the same OpenAI-compatible API as a
+local Ollama, behind an ollama.com API key: set `OPENRAL_REASONER_API_KEY` to it (the
+website's and the robot console's **Ollama API key** setting does this for you) and pick
+a `*-cloud` model. Any other ollama.com tag runs uncurated with
+`OPENRAL_REASONER_ENDPOINT=ollama_cloud`.
+
+**These 14 are offered unmeasured**, unlike every other registry entry: on 2026-11-16
+the maintainer chose every ollama.com model whose `/api/show` declares both `tools`
+and `vision`, while the account had no Ollama Cloud credit to run them. Latency against
+the 10 s cloud timeout is unknown. Two were measured through OpenRouter the day before
+on `so101_follower` (MiniMax M3.1 Flash 16/16 valid, median 2.0 s; DeepSeek V4.1 Flash
+8/8, 3–6 s). Measure each on Ollama Cloud against the bar (≥ 17/20 on `so101_follower`
+and on `franka_panda`'s full palette) and drop those that miss it.
+
+| `OPENRAL_REASONER_MODEL` | Ollama tag | size |
+|---|---|---|
+| `deepseek-v4.1-flash-cloud` | `deepseek-v4.1-flash` | 763B, FP8 |
+| `gemma4-31b-cloud` | `gemma4:31b` | 33B, BF16 |
+| `glm-5.3-flash-cloud` | `glm-5.3-flash` | 321B, FP8 |
+| `inkling-2-small-cloud` | `inkling-2-small` | 594B, NVFP4 |
+| `kimi-k2.6-cloud` | `kimi-k2.6` | 1.0T, INT4 |
+| `kimi-k2.7-code-cloud` | `kimi-k2.7-code` | 1.0T, INT4 |
+| `kimi-k3-cloud` | `kimi-k3` | 2.8T, MXFP4 |
+| `kimi-k3.1-pro-cloud` | `kimi-k3.1-pro` | 2.8T, MXFP4 |
+| `mimo-v2.6-flash-cloud` | `mimo-v2.6-flash` | 309B, FP8 |
+| `mimo-v2.6-pro-cloud` | `mimo-v2.6-pro` | 1.0T, FP8 |
+| `minimax-m3-cloud` | `minimax-m3` | — |
+| `minimax-m3.1-flash-cloud` | `minimax-m3.1-flash` | 428B |
+| `mistral-large-4-cloud` | `mistral-large-4` | 1.05T |
+| `muse-spark-open-cloud` | `muse-spark-open` | 822B, FP8 |
+
+Ollama Cloud ignores `tool_choice` like a local Ollama (the entries and the
+`ollama_cloud` preset send `auto`), and it loads every model with its full window
+(262K–1M tokens), so the client's truncated-prompt check, which guards a local
+Ollama's 4096-token default, is off for it.
 
 ### On the robot — Qwen 3.5 4B / 9B via Ollama
 

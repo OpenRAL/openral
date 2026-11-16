@@ -2,7 +2,7 @@
 
 Drives the model-first env factory (ADR-0088) through every branch — curated
 registry models, the named endpoints (`anthropic` / `openai` / `openrouter` / `gemini` /
-`xai` / `deepseek` / `huggingface` / `ollama` / `vllm`), a bare URL plus an
+`xai` / `deepseek` / `huggingface` / `ollama` / `ollama_cloud` / `vllm`), a bare URL plus an
 explicit dialect, and each missing-required case — with ``monkeypatch.setenv``
 only. No mocks of openral types per CLAUDE.md §1.11; we inspect the constructed
 object's attributes directly.
@@ -20,6 +20,7 @@ from openral_reasoner.tool_use import (
     GEMINI_BASE_URL,
     HUGGINGFACE_BASE_URL,
     OLLAMA_BASE_URL,
+    OLLAMA_CLOUD_BASE_URL,
     OPENROUTER_BASE_URL,
     VLLM_BASE_URL,
     XAI_BASE_URL,
@@ -136,6 +137,32 @@ def test_curated_openrouter_models(monkeypatch: pytest.MonkeyPatch, model_key: s
     assert client.model_id == REASONER_MODELS[model_key].served_model_id
     assert client._base_url == OPENROUTER_BASE_URL
     assert client._max_tokens == 16384
+
+
+def test_curated_ollama_cloud_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``*-cloud`` model runs on ollama.com with the Ollama key, sending its Ollama tag."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "kimi-k3-cloud")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "ollama-key")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == "kimi-k3"
+    assert client._base_url == OLLAMA_CLOUD_BASE_URL
+    assert client._tool_choice == "auto"  # Ollama ignores tool_choice
+    assert client._max_tokens == 16384
+    monkeypatch.delenv("OPENRAL_REASONER_API_KEY")
+    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_API_KEY"):
+        build_tool_use_client_from_env()
+
+
+def test_ollama_cloud_endpoint_serves_an_uncurated_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``ENDPOINT=ollama_cloud`` reaches any ollama.com tag, with a key, on ``auto``."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-oss:120b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama_cloud")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "ollama-key")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client.model_id, client._base_url) == ("gpt-oss:120b", OLLAMA_CLOUD_BASE_URL)
+    assert client._tool_choice == "auto"
 
 
 def test_curated_openrouter_without_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -589,3 +616,16 @@ def test_a_malformed_api_ps_body_falls_back_to_the_ratio(ps: object) -> None:
         )
         with pytest.raises(ROSPlanningError, match="cut the prompt"):
             client.select_tool(context_text="x" * 31_000, palette=ToolPalette(skills=()))
+
+
+def test_an_ollama_cloud_reply_is_never_read_as_a_cut_prompt() -> None:
+    """ollama.com loads every model with its full window: the local-Ollama ratio check is off."""
+    from openai.types.chat import ChatCompletion
+    from openral_reasoner.tool_use import _truncation_error
+
+    reply = ChatCompletion.model_validate(_ollama_reply(4096, "fp_ollama")[1])
+    request: list[object] = ["x" * 31_000]
+    cloud = _truncation_error(reply, request, model_id="kimi-k3", base_url=OLLAMA_CLOUD_BASE_URL)
+    assert cloud is None
+    # The same reply from a local Ollama with no window to report is a cut.
+    assert _truncation_error(reply, request, model_id="kimi-k3", base_url=None) is not None

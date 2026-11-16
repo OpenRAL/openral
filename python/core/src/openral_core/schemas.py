@@ -15557,7 +15557,9 @@ class ReasonerModel(BaseModel):
     Membership in ``REASONER_MODELS`` *is* the "tested for robotics tool
     calling" signal: every entry has been validated to reliably emit the
     discriminated ``ReasonerToolCall`` union (per-skill ``execute_rskill__*``
-    tools, nested ``GroundedSubtask``, ``tool_choice`` honoured). There is
+    tools, nested ``GroundedSubtask``, ``tool_choice`` honoured) — except the
+    ``*-cloud`` Ollama Cloud entries, offered on their declared tool and vision
+    capability and not yet measured (``_OLLAMA_CLOUD_MODELS``). There is
     deliberately no ``robotics_tool_calling`` flag — an untested model is simply
     not in the registry, and is reachable only through the uncurated escape hatch
     with a warning.
@@ -15646,6 +15648,11 @@ class ReasonerModel(BaseModel):
 # default endpoint of the curated Ollama models below, and the ``ollama`` preset.
 OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
 
+# Ollama Cloud (ollama.com): the same OpenAI-compatible API, hosted, with an
+# ollama.com API key. The default endpoint of the ``*-cloud`` models below, and the
+# ``ollama_cloud`` preset.
+OLLAMA_CLOUD_BASE_URL: str = "https://ollama.com/v1"
+
 # OpenRouter's OpenAI-compatible endpoint — the default gateway for the curated
 # GPT-5.x entries and the OpenRouter-only cloud models (a metered router, hence the
 # max_tokens caps below).
@@ -15657,8 +15664,35 @@ OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 # reservation — Anthropic bills the tokens actually generated.
 _CLAUDE5_MAX_TOKENS: int = 16000
 
+# Ollama Cloud models offered with an Ollama API key: (registry id, Ollama tag, label).
+# NOT measured against the reasoner tool-calling bar, unlike every other entry: on
+# 2026-11-16 the maintainer chose to offer every ollama.com model whose ``/api/show``
+# declares both ``tools`` and ``vision`` (14 of the 24 hosted; ``deepseek-v4.1-flash:1017``,
+# a dated copy of ``deepseek-v4.1-flash``, left out) while the account had no Ollama
+# Cloud credit to run them. Two were measured through OpenRouter the day before
+# (so101_follower: minimax-m3.1-flash 16/16 valid, deepseek-v4.1-flash 8/8). Measure
+# each on Ollama Cloud (#494 bar: 17/20 on so101_follower and franka_panda) and
+# drop those that miss it. Their latency against the 10 s cloud timeout is unknown.
+_OLLAMA_CLOUD_MODELS: tuple[tuple[str, str, str], ...] = (
+    ("deepseek-v4.1-flash-cloud", "deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+    ("gemma4-31b-cloud", "gemma4:31b", "Gemma 4 31B"),
+    ("glm-5.3-flash-cloud", "glm-5.3-flash", "GLM-5.3 Flash"),
+    ("inkling-2-small-cloud", "inkling-2-small", "Inkling 2 Small"),
+    ("kimi-k2.6-cloud", "kimi-k2.6", "Kimi K2.6"),
+    ("kimi-k2.7-code-cloud", "kimi-k2.7-code", "Kimi K2.7 Code"),
+    ("kimi-k3-cloud", "kimi-k3", "Kimi K3"),
+    ("kimi-k3.1-pro-cloud", "kimi-k3.1-pro", "Kimi K3.1 Pro"),
+    ("mimo-v2.6-flash-cloud", "mimo-v2.6-flash", "MiMo V2.6 Flash"),
+    ("mimo-v2.6-pro-cloud", "mimo-v2.6-pro", "MiMo V2.6 Pro"),
+    ("minimax-m3-cloud", "minimax-m3", "MiniMax M3"),
+    ("minimax-m3.1-flash-cloud", "minimax-m3.1-flash", "MiniMax M3.1 Flash"),
+    ("mistral-large-4-cloud", "mistral-large-4", "Mistral Large 4"),
+    ("muse-spark-open-cloud", "muse-spark-open", "Muse Spark Open"),
+)
+
 # The curated set. Adding a model = adding one entry here after it clears the
-# reasoner tool-calling bar; curation lives in this one reviewable place.
+# reasoner tool-calling bar; curation lives in this one reviewable place. The one
+# exception is the Ollama Cloud set above, offered unmeasured.
 REASONER_MODELS: dict[str, ReasonerModel] = {
     "claude-opus-4-8": ReasonerModel(
         id="claude-opus-4-8",
@@ -15787,14 +15821,32 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
         min_gpu_vram_gb=12.0,
         weights_license="Apache-2.0",
     ),
+    **{
+        model_id: ReasonerModel(
+            id=model_id,
+            display_name=f"{name} (Ollama Cloud)",
+            dialect="openai",
+            hosting="cloud",
+            served_model_id=tag,
+            default_endpoint=OLLAMA_CLOUD_BASE_URL,
+            auth_required=True,
+            # Ollama ignores tool_choice (as the local ``ollama`` preset notes):
+            # ``auto`` keeps the client's one nudge on a prose reply.
+            tool_choice="auto",
+            # Thinking models; thinking tokens count against the cap.
+            max_tokens_default=16384,
+        )
+        for model_id, tag, name in _OLLAMA_CLOUD_MODELS
+    },
 }
 
 
 #: The account-setting key each provider's models need (openral.com's Account →
-#: Settings and the robot console's settings pane hold these three).
+#: Settings and the robot console's settings pane hold these four).
 ANTHROPIC_KEY_SETTING = "ANTHROPIC_API_KEY"
 OPENAI_KEY_SETTING = "OPENAI_API_KEY"
 OPENROUTER_KEY_SETTING = "OPENROUTER_API_KEY"
+OLLAMA_KEY_SETTING = "OLLAMA_API_KEY"
 
 
 class ReasonerModelOption(TypedDict):
@@ -15806,7 +15858,8 @@ class ReasonerModelOption(TypedDict):
         needs: The first of ``keys``, or ``None`` for a model that runs on the robot.
             Kept for consumers that predate ``keys``.
         keys: Every key setting that serves the model, in preference order; any one
-            of them is enough. Empty for a model that runs on the robot.
+            of them is enough. Empty for a model that runs on the robot (including
+            on the robot's own Ollama, which needs no key).
     """
 
     id: str
@@ -15821,14 +15874,17 @@ def reasoner_model_options() -> list[ReasonerModelOption]:
     ``keys`` are the key settings a model can run on: ``ANTHROPIC_API_KEY`` for an
     Anthropic-dialect model; for a model on OpenRouter (its default endpoint)
     ``OPENROUTER_API_KEY``, preceded by ``OPENAI_API_KEY`` for an ``openai/`` model
-    (OpenAI's own API serves it too, and wins when both are set); none for one that runs
-    on the robot. A cloud model none of these keys serves is left out.
+    (OpenAI's own API serves it too, and wins when both are set); ``OLLAMA_API_KEY``
+    for a model on Ollama Cloud; none for one that runs on the robot. A cloud model none
+    of these keys serves is left out.
 
     Example:
         >>> opts = {o["id"]: o for o in reasoner_model_options()}
         >>> claude, gpt, cosmos = (opts[k] for k in ("claude-opus-4-8", "gpt-5.5", "cosmos3-edge"))
         >>> claude["keys"], gpt["keys"], gpt["label"], cosmos["needs"] is None
         (['ANTHROPIC_API_KEY'], ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'], 'GPT-5.5', True)
+        >>> opts["kimi-k3-cloud"]["keys"], opts["kimi-k3-cloud"]["label"]
+        (['OLLAMA_API_KEY'], 'Kimi K3 (Ollama Cloud)')
     """
     out: list[ReasonerModelOption] = []
     for model in REASONER_MODELS.values():
@@ -15841,6 +15897,8 @@ def reasoner_model_options() -> list[ReasonerModelOption]:
             if model.served_model_id.startswith("openai/"):
                 keys.append(OPENAI_KEY_SETTING)
             keys.append(OPENROUTER_KEY_SETTING)
+        elif model.default_endpoint == OLLAMA_CLOUD_BASE_URL:
+            keys = [OLLAMA_KEY_SETTING]
         else:
             continue
         # The provider rides in the key it needs: "(Anthropic)", "(via OpenRouter)" would mislead.
@@ -15962,6 +16020,9 @@ REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
     # (docs.ollama.com/api/openai-compatibility), so ``required`` forced nothing
     # and only skipped the client's one nudge on a prose reply.
     "ollama": ReasonerEndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "auto"),
+    # Ollama Cloud: the same API hosted at ollama.com, behind an API key; it ignores
+    # ``tool_choice`` like the local daemon.
+    "ollama_cloud": ReasonerEndpointPreset(OLLAMA_CLOUD_BASE_URL, "openai", True, 10.0, "auto"),
     "vllm": ReasonerEndpointPreset(VLLM_BASE_URL, "openai", False, 60.0, "required"),
 }
 
