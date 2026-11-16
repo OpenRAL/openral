@@ -1,11 +1,12 @@
 """Unit tests for ``AlohaHAL`` — the Trossen ALOHA bimanual adapter.
 
 The ALOHA exposes a 14-DoF action vector (left arm 6 + left gripper 1 +
-right arm 6 + right gripper 1) split across four command topics. Those
-topic names are ros2_control names that no real ALOHA exposes (issue #250 —
-bring-up starts ``xs_sdk``); the assertions below pin what ``AlohaHAL``
-publishes today, not what the rig accepts, and move with the #250 fix.
-This file pins:
+right arm 6 + right gripper 1) split into the ``xs_sdk`` command contract
+(issue #250): each arm as a ``JointGroupCommand`` payload on
+``/<ns>/commands/joint_group``, each gripper as a ``JointSingleCommand``
+payload on ``/<ns>/commands/joint_single``, for the stock follower
+namespaces. No production transport carries these yet, so ``connect()``
+refuses without injected ``publish_fn`` / ``state_fn``. This file pins:
 
 - the ``ALOHA_DESCRIPTION`` joint inventory + bimanual capability;
 - the manifest pointer (closed_with_api → ``AlohaHAL``);
@@ -31,7 +32,7 @@ from openral_core import (
 )
 from openral_core.schemas import EmbodimentKind, Hand
 from openral_hal.aloha import ALOHA_DESCRIPTION, ALOHA_REAL_DESCRIPTION, AlohaHAL
-from openral_hal.sim_transport import SimTransport
+from openral_hal.sim_transport import SimTorqueSeam, SimTransport
 
 _N_JOINTS = len(ALOHA_DESCRIPTION.joints)
 
@@ -177,80 +178,201 @@ class TestProtocolConformance:
 # ── send_action: 4-way command split ──────────────────────────────────────────
 
 
+def _indexed_action(steps: int = 1) -> Action:
+    """Step ``k`` carries ``k * 100 + joint_index`` so slices and steps are both visible."""
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=steps,
+        joint_targets=[[float(k * 100 + i) for i in range(_N_JOINTS)] for k in range(steps)],
+        stamp_ns=time.time_ns(),
+    )
+
+
+def _sent(hal: AlohaHAL, transport: SimTransport, action: Action) -> dict[str, dict[str, object]]:
+    # The first command reads both arms' operating modes back; the default
+    # seam reports what upstream setup_follower_bot leaves a follower in.
+    hal.attach_torque_stop(SimTorqueSeam(arms=["follower_left", "follower_right"]))
+    hal.connect()
+    try:
+        hal.send_action(action)
+    finally:
+        hal.disconnect()
+    by_topic = {topic: msg for topic, msg in transport.calls}
+    assert len(by_topic) == len(transport.calls) == 4, transport.calls
+    return by_topic
+
+
 class TestSendActionSplit:
-    def test_publishes_to_all_four_controllers(
+    def test_publishes_the_xs_sdk_contract(self, hal: AlohaHAL, transport: SimTransport) -> None:
+        sent = _sent(hal, transport, _indexed_action())
+        assert set(sent) == {
+            "/follower_left/commands/joint_group",
+            "/follower_left/commands/joint_single",
+            "/follower_right/commands/joint_group",
+            "/follower_right/commands/joint_single",
+        }
+        for topic, msg in sent.items():
+            assert isinstance(msg, dict)
+            assert msg["name"] == ("arm" if topic.endswith("joint_group") else "gripper")
+
+    def test_arms_get_indices_0_to_5_and_7_to_12(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        sent = _sent(hal, transport, _indexed_action())
+        assert sent["/follower_left/commands/joint_group"]["cmd"] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+        assert sent["/follower_right/commands/joint_group"]["cmd"] == [
+            7.0,
+            8.0,
+            9.0,
+            10.0,
+            11.0,
+            12.0,
+        ]
+
+    def test_a_chunk_sends_its_first_step_not_its_last(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        """One-target messages: jumping to the chunk's end would skip the planned path."""
+        sent = _sent(hal, transport, _indexed_action(steps=3))
+        assert sent["/follower_left/commands/joint_group"]["cmd"] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+
+    def test_gripper_maps_normalised_onto_the_command_range(self, transport: SimTransport) -> None:
+        hal = AlohaHAL(
+            publish_fn=transport.publish, state_fn=transport.state, gripper_cmd_range=(0.5, 1.5)
+        )
+        targets = [0.0] * _N_JOINTS
+        targets[6], targets[13] = 1.0, 0.25  # left fully open, right a quarter
+        action = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[targets])
+        sent = _sent(hal, transport, action)
+        assert sent["/follower_left/commands/joint_single"]["cmd"] == pytest.approx(1.5)
+        assert sent["/follower_right/commands/joint_single"]["cmd"] == pytest.approx(0.75)
+
+    def test_default_gripper_range_is_upstream_aloha(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        """Interbotix aloha/constants.py FOLLOWER_GRIPPER_JOINT_{CLOSE,OPEN}."""
+        sent = _sent(hal, transport, _zero_action())
+        assert sent["/follower_left/commands/joint_single"]["cmd"] == pytest.approx(0.6197)
+
+    def test_connect_refuses_without_a_transport(self, transport: SimTransport) -> None:
+        """``build_hal(mode="real")`` injects nothing: commands would go nowhere (#250)."""
+        for kwargs in ({}, {"publish_fn": transport.publish}, {"state_fn": transport.state}):
+            hal = AlohaHAL(**kwargs)
+            with pytest.raises(ROSConfigError, match="no production xs_sdk"):
+                hal.connect()
+
+    def test_the_manifest_built_real_hal_refuses_to_connect(self) -> None:
+        """The real ``deploy run`` path: manifest params reach the HAL, no transport does."""
+        from pathlib import Path
+
+        from openral_core import RobotDescription
+        from openral_hal import build_hal
+
+        manifest = Path(__file__).resolve().parents[2] / "robots/aloha_bimanual/robot.yaml"
+        hal = build_hal(RobotDescription.from_yaml(str(manifest)), mode="real")
+        assert isinstance(hal, AlohaHAL)
+        assert hal.arm_namespaces() == ["follower_left", "follower_right"]
+        with pytest.raises(ROSConfigError, match="publish_fn / state_fn"):
+            hal.connect()
+
+    def test_bad_gripper_range_rejected(self) -> None:
+        for bad in ((1.0,), (1.0, 1.0), (0.5, float("nan")), (float("inf"), 1.0)):
+            with pytest.raises(ROSConfigError, match="closed, open"):
+                AlohaHAL(gripper_cmd_range=bad)
+
+    def test_gripper_overshoot_is_clamped_to_the_calibrated_stops(
+        self, transport: SimTransport
+    ) -> None:
+        hal = AlohaHAL(
+            publish_fn=transport.publish, state_fn=transport.state, gripper_cmd_range=(0.5, 1.5)
+        )
+        targets = [0.0] * _N_JOINTS
+        targets[6], targets[13] = 1.3, -0.2
+        action = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[targets])
+        sent = _sent(hal, transport, action)
+        assert sent["/follower_left/commands/joint_single"]["cmd"] == pytest.approx(1.5)
+        assert sent["/follower_right/commands/joint_single"]["cmd"] == pytest.approx(0.5)
+
+    def test_stock_linear_position_gripper_refuses_before_publishing(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        """Bring-up yaml mode: radians read as metres put a NaN on the gripper (flag 1)."""
+        hal.attach_torque_stop(
+            SimTorqueSeam(
+                arms=["follower_left", "follower_right"],
+                modes={"arm": "position", "gripper": "linear_position"},
+            )
+        )
+        hal.connect()
+        try:
+            with pytest.raises(ROSConfigError, match="current_based_position"):
+                hal.send_action(_zero_action())
+        finally:
+            hal.disconnect()
+        assert transport.calls == []
+
+    def test_unconfirmed_modes_refuse_without_a_seam(
         self, hal: AlohaHAL, transport: SimTransport
     ) -> None:
         hal.connect()
         try:
-            hal.send_action(_zero_action())
+            with pytest.raises(ROSConfigError, match="cannot confirm"):
+                hal.send_action(_zero_action())
         finally:
             hal.disconnect()
-        topics = [topic for topic, _ in transport.calls]
-        assert "/left_arm/arm_controller/joint_trajectory" in topics
-        assert "/right_arm/arm_controller/joint_trajectory" in topics
-        assert "/left_arm/gripper_controller/command" in topics
-        assert "/right_arm/gripper_controller/command" in topics
+        assert transport.calls == []
 
-    def test_left_arm_gets_indices_0_to_5(self, hal: AlohaHAL, transport: SimTransport) -> None:
-        action = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[float(i) for i in range(_N_JOINTS)]],
-            stamp_ns=time.time_ns(),
+    def test_unreachable_mode_service_refuses(self, hal: AlohaHAL, transport: SimTransport) -> None:
+        hal.attach_torque_stop(SimTorqueSeam(arms=["follower_left"]))  # right xs_sdk down
+        hal.connect()
+        try:
+            with pytest.raises(ROSRuntimeError, match="follower_right/get_robot_info"):
+                hal.send_action(_zero_action())
+        finally:
+            hal.disconnect()
+        assert transport.calls == []
+
+    def test_modes_are_reread_on_every_connect(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        """A relaunched xs_sdk comes back in the bring-up yaml's modes."""
+        sent = _sent(hal, transport, _zero_action())
+        assert len(sent) == 4
+        hal.attach_torque_stop(
+            SimTorqueSeam(
+                arms=["follower_left", "follower_right"],
+                modes={"arm": "position", "gripper": "linear_position"},
+            )
         )
         hal.connect()
         try:
-            hal.send_action(action)
+            with pytest.raises(ROSConfigError, match="linear_position"):
+                hal.send_action(_zero_action())
         finally:
             hal.disconnect()
-        for topic, msg in transport.calls:
-            if topic == "/left_arm/arm_controller/joint_trajectory":
-                targets = msg["joint_targets"]
-                assert isinstance(targets, list)
-                assert targets == [[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]]
-                return
-        pytest.fail("left arm trajectory was not published")
 
-    def test_right_arm_gets_indices_7_to_12(self, hal: AlohaHAL, transport: SimTransport) -> None:
-        action = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[float(i) for i in range(_N_JOINTS)]],
-            stamp_ns=time.time_ns(),
-        )
+    def test_non_finite_target_rejected(self, hal: AlohaHAL) -> None:
+        targets = [0.0] * _N_JOINTS
+        targets[13] = float("nan")
+        action = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[targets])
         hal.connect()
         try:
-            hal.send_action(action)
+            with pytest.raises(ROSConfigError, match="non-finite"):
+                hal.send_action(action)
         finally:
             hal.disconnect()
-        for topic, msg in transport.calls:
-            if topic == "/right_arm/arm_controller/joint_trajectory":
-                targets = msg["joint_targets"]
-                assert isinstance(targets, list)
-                assert targets == [[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]]
-                return
-        pytest.fail("right arm trajectory was not published")
 
-    def test_grippers_get_singleton_positions(self, hal: AlohaHAL, transport: SimTransport) -> None:
-        action = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[float(i) for i in range(_N_JOINTS)]],
-            stamp_ns=time.time_ns(),
-        )
-        hal.connect()
-        try:
-            hal.send_action(action)
-        finally:
-            hal.disconnect()
-        gripper_msgs = {
-            topic: msg
-            for topic, msg in transport.calls
-            if topic.endswith("/gripper_controller/command")
-        }
-        assert gripper_msgs["/left_arm/gripper_controller/command"]["position"] == 6.0
-        assert gripper_msgs["/right_arm/gripper_controller/command"]["position"] == 13.0
+    def test_single_namespace_rejected(self) -> None:
+        """One namespace would collide both arms onto one command topic."""
+        for bad in (
+            ["follower_left"],
+            ["follower_left", "follower_left"],
+            [],
+            "lr",
+            ["", "/"],
+        ):
+            with pytest.raises(ROSConfigError, match="two distinct"):
+                AlohaHAL(arm_namespaces=bad)
 
     def test_wrong_action_dim_rejected(self, hal: AlohaHAL) -> None:
         bad = Action(
@@ -392,5 +514,35 @@ class TestStaleness:
         try:
             with pytest.raises(ROSPerceptionStale):
                 hal.read_state()
+        finally:
+            hal.disconnect()
+
+    def test_never_received_is_stale_not_fresh_at_connect(self, transport: SimTransport) -> None:
+        """``stamp_fn`` 0.0 (no arm reported yet) must not read as a fresh pose of zeros."""
+        hal = AlohaHAL(publish_fn=transport.publish, state_fn=transport.state, stamp_fn=lambda: 0.0)
+        hal.connect()
+        try:
+            with pytest.raises(ROSPerceptionStale, match="inf"):
+                hal.read_state()
+        finally:
+            hal.disconnect()
+
+    def test_age_follows_the_newest_sample_not_connect(self, transport: SimTransport) -> None:
+        """Freshness is the data's, so a live stream stays fresh long after connect()."""
+        stamps = [time.monotonic()]
+        hal = AlohaHAL(
+            publish_fn=transport.publish,
+            state_fn=transport.state,
+            stamp_fn=lambda: stamps[0],
+            staleness_limit_s=0.05,
+        )
+        hal.connect()
+        try:
+            time.sleep(0.1)
+            with pytest.raises(ROSPerceptionStale):
+                hal.read_state()  # the stream stopped: stale
+            stamps[0] = time.monotonic() - 0.02
+            state = hal.read_state()  # a sample arrived 20 ms ago: fresh
+            assert time.time_ns() - state.stamp_ns >= 20_000_000  # stamped at arrival
         finally:
             hal.disconnect()
