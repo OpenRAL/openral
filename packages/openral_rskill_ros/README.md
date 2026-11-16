@@ -255,9 +255,9 @@ must therefore read `failure_kind == FAILURE_NONE` on a failed result as
 | `FAILURE_NONE` | 0 | Success (also the pre-field default) |
 | `FAILURE_CONFIG_ERROR` | 1 | `ROSConfigError` — bad manifest, non-ACTIVE resolver result, unusable MoveIt approach manifest |
 | `FAILURE_CAPABILITY_MISMATCH` | 2 | `ROSCapabilityMismatch` — a dispatch gate (`check_manifest_gates`): not an ExecuteRskill kind, an actuating skill tagged `any`, embodiment, capability flags, sensors, gripper encoding; or a manifest-less skill not declaring `role: s1` |
-| `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. `ROSQuantizationError` / `ROSGPUMemoryError`), plus a labelled torch OOM / dtype failure |
+| `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. `ROSQuantizationError` / `ROSGPUMemoryError`), plus a labelled torch OOM / dtype failure; `starting_pose not reached within … s: (joint, target - measured, tolerance) [...]` when a fresh joint state measured after the starting-pose move still misses it |
 | `FAILURE_SAFETY_ESTOP` | 4 | `ROSEStopRequested` |
-| `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale` |
+| `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale`, incl. `no fresh joint state reached starting_pose within … s` (no measured joint state after the move, or the stream stalled) |
 | `FAILURE_PLANNING_ERROR` | 6 | `ROSPlanningError` — the MoveIt starting-pose approach |
 | `FAILURE_DEADLINE_MISSED` | 7 | The execution budget lapsed (`deadline_exceeded: …`) or the graph clock stalled under `use_sim_time` (`clock_stalled: …`); `ROSDeadlineMissed` |
 | `FAILURE_CANCELLED` | 8 | Cancel honoured (no exception) |
@@ -286,7 +286,7 @@ result):
 | `FAILURE_PERCEPTION_STALE` | The kernel's `PerceptionStaleEvidence` (which input, its age, the limit) when a stale input stalled the action |
 | `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, or `"rskill.execute:grasp_declaration:deadline_exceeded"` when the grasp declaration expires first; budget, elapsed) |
 | `FAILURE_OBJECT_NOT_FOUND` | The tracker's exhausted `ObjectQueryEvidence` |
-| `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when the cause is known: `state=gpu_out_of_memory` / `quantization_mismatch` (the skill's own typed fault), or the kernel drop that left the action unapplied (`drop_envelope_unconfigured`, `drop_voxel_overflow`, `drop_attached_overflow`). Empty otherwise |
+| `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when the cause is known: `state=gpu_out_of_memory` / `quantization_mismatch` (the skill's own typed fault), or the kernel drop that left the action unapplied (`drop_envelope_unconfigured`, `drop_voxel_overflow`, `drop_attached_overflow`), or `controller_name=rskill_runner`, `state=starting_pose_not_reached` with `detail` a JSON list of `{joint, residual, tolerance}` for each joint that missed the starting pose. Empty otherwise |
 | anything else | Empty: `failure_reason` says it all |
 
 A safety stop's report and its latch travel on two topics, so the latch can wake the goal first. The failed Result waits up to 1 s (`_SAFETY_EVIDENCE_WAIT_S`) for the report of the kind the latched `SafetyStatus` names, and logs `rskill_runner.safety_evidence_missing` when none arrives. The robot is already stopped; only the Result is delayed. The `/openral/failure/safety` subscription has its own callback group, so it never queues behind the stop's own `/openral/estop` callback.

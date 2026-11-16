@@ -573,6 +573,22 @@ class WorldStateAggregator:
         with self._lock:
             self._forced_errors.pop(component, None)
 
+    def fresh_joint_state(self) -> JointState | None:
+        """The received joint state while its diagnostic reads ``"ok"``, else ``None``.
+
+        ``None`` before the first reading (where ``snapshot`` substitutes zeros), once the
+        reading is older than ``staleness_limit_s``, and while ``"joint_state"`` carries a
+        latched status. No span or metric: for a caller polling one stream in a tight loop.
+        """
+        with self._lock:
+            if (
+                self._joint_state is None
+                or "joint_state" in self._forced_errors
+                or self._clock_fn() - self._joint_state_stamp_ns > self._staleness_limit_ns
+            ):
+                return None
+            return self._joint_state
+
     # ── Snapshot (hot path) ───────────────────────────────────────────────────
 
     def snapshot(self) -> WorldState:

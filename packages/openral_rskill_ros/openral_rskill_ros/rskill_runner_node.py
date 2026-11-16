@@ -34,6 +34,7 @@ single-process invocation is a thin wrapper that sends a goal to this server.
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import os
 import secrets
@@ -2337,9 +2338,14 @@ if _ROS2_AVAILABLE:
         ) -> bool:
             """Require a fresh observed starting pose before policy inference.
 
-            Fresh joint states that never reach the pose fail naming each joint, its
-            residual and its tolerance (``starting_pose_misses``), so the reasoner sees which
-            joint fell short; no fresh joint state at all is ``ROSPerceptionStale``.
+            Only a measured frame counts: the aggregator's ``fresh_joint_state`` (never the
+            zeros ``snapshot`` substitutes before the first reading, so a near-zero pose is
+            not "verified" by an arm nobody measured). When the newest frame at the timeout
+            is fresh and stamped after the move ended and still misses, the goal fails
+            ``ROSRuntimeError`` naming each joint, its residual and its tolerance
+            (``starting_pose_misses``, also stamped as ``ControllerEvidence``
+            ``state=starting_pose_not_reached``); otherwise (no fresh frame, or the stream
+            stalled) it is ``ROSPerceptionStale``.
             """
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
@@ -2347,26 +2353,28 @@ if _ROS2_AVAILABLE:
                 return True
             if self._aggregator is None:
                 return True
+            from openral_core import ControllerEvidence
             from openral_core.exceptions import ROSPerceptionStale, ROSRuntimeError
+            from openral_msgs.action import ExecuteRskill
 
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
             bounds = self._starting_pose_bounds()
             description = self._description
             timeout_s = float(self.get_parameter("action_applied_timeout_s").value)
+            # The move has returned: a residual is only the arm's if measured after now.
+            move_ended_ns = time.time_ns()
             deadline = time.monotonic() + timeout_s
             last_miss: tuple[list[float], list[float]] | None = None
             while time.monotonic() < deadline:
                 self._raise_if_safety_aborted("waiting for starting_pose verification")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return False
-                js = self._aggregator.snapshot().joint_state
-                measured = (
-                    self._joint_positions_in_manifest_order(js, names)
-                    if js is not None and int(js.stamp_ns) >= starting_pose_wall_ns
-                    else None
-                )
-                if measured is not None:
+                # No snapshot(): it opens a span per call, one every 5 ms poll.
+                js = self._aggregator.fresh_joint_state()
+                last_miss = None
+                if js is not None and int(js.stamp_ns) >= starting_pose_wall_ns:
+                    measured = self._joint_positions_in_manifest_order(js, names)
                     # A slot-subset pose holds the other joints at their measured value.
                     target = expand_starting_pose(pose, manifest, description, measured)
                     if starting_pose_reached(measured, target, bounds):
@@ -2375,16 +2383,30 @@ if _ROS2_AVAILABLE:
                             f"(age_ms={(time.time_ns() - int(js.stamp_ns)) / 1e6:.1f})"
                         )
                         return True
-                    last_miss = (measured, target)
+                    if int(js.stamp_ns) >= move_ended_ns:
+                        last_miss = (measured, target)
                 time.sleep(0.005)
-            if last_miss is not None:
-                misses = starting_pose_misses(last_miss[0], last_miss[1], bounds, names)
-                raise ROSRuntimeError(
-                    f"starting_pose not reached within {timeout_s:g} s: "
-                    f"(joint, target - measured, tolerance) {misses}"
+            if last_miss is None:
+                raise ROSPerceptionStale(
+                    f"no fresh joint state reached starting_pose within {timeout_s:g} s"
                 )
-            raise ROSPerceptionStale(
-                f"no fresh joint state reached starting_pose within {timeout_s:g} s"
+            misses = starting_pose_misses(last_miss[0], last_miss[1], bounds, names)
+            self._goal_evidence = (
+                int(ExecuteRskill.Result.FAILURE_RUNTIME_ERROR),
+                ControllerEvidence(
+                    controller_name="rskill_runner",
+                    state="starting_pose_not_reached",
+                    detail=json.dumps(
+                        [
+                            {"joint": name, "residual": residual, "tolerance": tolerance}
+                            for name, residual, tolerance in misses
+                        ]
+                    ),
+                ).model_dump_json(),
+            )
+            raise ROSRuntimeError(
+                f"starting_pose not reached within {timeout_s:g} s: "
+                f"(joint, target - measured, tolerance) {misses}"
             )
 
         def _apply_starting_pose(self, skill: Any, goal_handle: Any) -> tuple[int, str] | None:
@@ -4244,17 +4266,26 @@ def starting_pose_misses(
 ) -> list[tuple[str, float, float]]:
     """``(joint, target - measured, tolerance)`` for every joint outside its tolerance.
 
+    The complement of ``starting_pose_reached``: a non-finite residual is a miss (``nan``).
+    Residuals are rounded to 4 decimals unless that would print a miss as within its
+    tolerance (0.050004 against 0.05 stays unrounded).
+
     Example:
         >>> starting_pose_misses(
-        ...     [0.0, 1.73], [0.0, 1.797], [(0.5, 0.05), (0.5, 0.05)], ["j1", "j4"]
+        ...     [0.0, 1.73, 0.0], [0.0, 1.797, 0.050004], [(0.5, 0.05)] * 3, ["j1", "j4", "j5"]
         ... )
-        [('j4', 0.067, 0.05)]
+        [('j4', 0.067, 0.05), ('j5', 0.050004, 0.05)]
+        >>> starting_pose_misses([float("nan")], [0.0], [(0.5, 0.05)], ["j1"])
+        [('j1', nan, 0.05)]
     """
-    return [
-        (name, round(end - start, 4), tolerance)
-        for name, start, end, (_, tolerance) in zip(names, current, target, bounds, strict=True)
-        if abs(end - start) > tolerance
-    ]
+    misses: list[tuple[str, float, float]] = []
+    for name, start, end, (_, tolerance) in zip(names, current, target, bounds, strict=True):
+        residual = end - start
+        if abs(residual) <= tolerance:
+            continue
+        shown = round(residual, 4)
+        misses.append((name, shown if abs(shown) > tolerance else residual, tolerance))
+    return misses
 
 
 def hold_action(

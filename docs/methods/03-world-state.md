@@ -42,9 +42,10 @@ _WorldStateAggregator — tf2-aware, injectable snapshot producer._
   - `use_tracked_clock(clock_fn: Callable[[], int]) -> None` — Age the tracked set on the clock its producer heartbeats on (the node passes its ROS clock, sim time under `use_sim_time`); a wall-clock age dropped live sets on a sim below real time (Isaac R23/R26). (L511)
   - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L551)
   - `clear_error(component) -> None` — Remove a forced diagnostic. (L567)
-  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L578)
+  - `fresh_joint_state() -> JointState | None` — The received joint state while its diagnostic reads `"ok"`; `None` before the first reading (where `snapshot` substitutes zeros), once stale, or while `joint_state` carries a latched status. No span or metric: for poll loops (the runner's starting-pose wait). (L576)
+  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L594)
   - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set (thread-safe); the next `snapshot()` reflects it. Called by the world-state lifecycle node's memory tick. (L400)
-  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L716)
+  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L732)
 
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._
