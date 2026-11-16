@@ -365,16 +365,32 @@ def test_a_republished_runner_without_a_control_rate_is_refused(launch_module: o
 
 
 def test_a_sagging_elbow_is_named_with_its_residual_and_tolerance() -> None:
-    """An arm resting short of its starting pose (OpenAMRobot 2.0's elbows, 0.065 rad on
-    position gains alone): the failure names the joint, the residual and the tolerance,
-    not 'no fresh joint state'."""
+    """A joint resting short of its starting pose: the failure names the joint, the residual
+    and the tolerance, not 'no fresh joint state'."""
     desc = _robot("openamrobot_v2")
     names = [j.name for j in desc.joints]
     bounds = runner.starting_pose_joint_bounds(0.0, 0.0, desc)
     target = [0.0] * len(names)
     target[names.index("left_joint4")] = 1.797
     current = list(target)
-    current[names.index("left_joint4")] = 1.732
+    current[names.index("left_joint4")] = 1.697
     assert runner.starting_pose_misses(current, target, bounds, names) == [
-        ("left_joint4", 0.065, 0.05)
+        ("left_joint4", 0.1, 0.08)
     ]
+
+
+def test_the_amr_elbow_sag_on_position_gains_counts_as_arrived() -> None:
+    """The OpenAMRobot 2.0's elbows settle 0.064-0.065 rad short of the restock starting
+    pose on position gains without gravity feed-forward (q5090, 2026-11-16): within the
+    manifest's 0.08 rad, so a re-dispatched skill starts instead of failing the check."""
+    desc = _robot("openamrobot_v2")
+    names = [j.name for j in desc.joints]
+    bounds = runner.starting_pose_joint_bounds(0.0, 0.0, desc)
+    target = [0.0] * len(names)
+    target[names.index("left_joint4")] = 1.797
+    target[names.index("right_joint4")] = 1.917
+    current = list(target)
+    current[names.index("left_joint4")] = 1.797 - 0.0651
+    current[names.index("right_joint4")] = 1.917 - 0.064
+    assert runner.starting_pose_misses(current, target, bounds, names) == []
+    assert runner.starting_pose_reached(current, target, bounds)

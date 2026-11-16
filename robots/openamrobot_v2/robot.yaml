@@ -395,11 +395,15 @@ safety:
   # linear also confirmed by the OpenAMRobot project lead, openral#497, 2026-11-07).
   max_base_linear_speed_m_s: 0.2
   max_base_angular_speed_rad_s: 0.5
-  # Runner ramp to a skill's starting_pose: the OpenArm manifest's values for the
+  # Runner ramp to a skill's starting_pose: the OpenArm manifest's speed for the
   # revolute joints; the prismatic pair covers the lift (DOLD datasheet 0.018 m/s,
   # halved) and the planar base slides, which a starting pose never moves.
   starting_pose_max_joint_speed_rad_s: 0.5
-  starting_pose_tolerance_rad: 0.05
+  # Wider than the OpenArm cell's 0.05: the arms run position gains without gravity
+  # feed-forward (the restock policy was trained on that sag; with feed-forward it
+  # fails), so a ramp to the restock starting pose settles both elbows (joint4)
+  # 0.064-0.065 rad short (q5090, 2026-11-16). 0.08 admits that sag with margin.
+  starting_pose_tolerance_rad: 0.08
   starting_pose_max_joint_speed_m_s: 0.009
   starting_pose_tolerance_m: 0.005
   # Real-path joint-state freshness: the OpenArm's measured window (robots/openarm,
