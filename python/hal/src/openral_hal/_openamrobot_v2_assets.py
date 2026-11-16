@@ -21,8 +21,8 @@ once per URDF revision and caches the result under
 * add the mimic-finger equality, the wrist cameras on the URDF optical frames
   (OpenArm's wrist mount),
   and a visual-only floor. The head ZED is spliced by the generic camera rig
-  from the manifest's ``sim_placement``, on upstream's ``head_camera_link`` (not
-  OpenArm's measured mount, which lands inside the Getac tablet here).
+  from the manifest's ``sim_placement``, on ``openarm_left_base_link`` at the OpenArm
+  restock cell's head-camera pose (not upstream's ``head_camera_link``).
 
 Robot geoms collide with the world but not with each other (``contype`` 2 /
 ``conaffinity`` 1), as in the bare OpenArm twin. Self-collision is the safety

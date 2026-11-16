@@ -91,15 +91,22 @@ new carriage masses.
 ## Head camera
 
 The head camera is a ZED Mini (`head_zed` depth + `top` RGB, the key OpenArm rSkills
-read as `observation.images.top`) with OpenArm's intrinsics, on upstream's head mount
-(`head_camera_link`, on its bracket above the lift carriage, pitched 30° down). OpenArm's
-own measured mount cannot carry over. The arm bases sit on the lift carriage as on the
-OpenArm body, so the same mount relative to the arms puts the camera inside upstream's
-Getac tablet: their centres are 1.5 cm apart, and every depth ray hit the tablet. The
-view is therefore not OpenArm's: about 13 cm higher, and pitched 30° down instead of
-65.6°. An OpenArm rSkill sees its workspace from another angle than it was trained on.
-`tests/unit/test_openamrobot_v2_head_zed.py` checks the intrinsics, the TF/sim agreement,
-and that no pixel of the view lands on the robot.
+read as `observation.images.top`) with OpenArm's intrinsics, at the fixed OpenArm restock
+cell's head-camera pose relative to the arm bases: 65.6° down, at the tote the robot
+carries on its lift carriage and at the shelf. The robot owner confirmed the real head ZED
+looks down at the tote and shelf like the cell's; the pose is a corrected design pose, not
+measured on a robot (`static_transform_calibrated: false`). The arm bases sit on the lift
+carriage at y = ±0.031 m with OpenArm's orientation, so the cell's `openarm_base` (their
+midpoint) mount becomes `openarm_left_base_link` + (0.077587, -0.003761, 0.099276) with
+OpenArm's measured rpy, and the camera rides the lift with the arms. Upstream's own
+`head_camera_link` (on its bracket above the carriage, pitched 30° down) saw only the shelf,
+with the tote below the image; the URDF still carries upstream's ZED placeholder there.
+The lens sits on the front face of upstream's Getac placeholder box (0.01 mm inside it):
+the twin's depth cast passes through robot bodies and the renderers clip it at the near
+plane. On the real robot, check that the tablet clears the camera.
+`tests/unit/test_openamrobot_v2_head_zed.py` checks the intrinsics, that TF, the Isaac
+mount and the MuJoCo twin place the camera at one pose, that it looks down and forward,
+and that the policy camera sees no robot but the base's front deck.
 
 ## Costmap clearing
 

@@ -477,16 +477,23 @@ hal:
           #     params: {controller_name: "lift_controller"}
 
 # Head: a ZED Mini with OpenArm's intrinsics (robots/openarm/robot.yaml `head_zed` and
-# `top`, so the policy raster and field of view match), on upstream's own head mount:
-# `head_camera_link`, on its bracket above the lift carriage, pitched 30 deg down.
-# OpenArm's measured mount, re-expressed from the arm bases, puts the camera inside
-# upstream's Getac tablet (1.5 cm between centres; every depth ray hit the tablet),
-# so it cannot carry over. The view is therefore not OpenArm's: about 13 cm higher
-# and 35 deg shallower than OpenArm's 65.6 deg down-pitch, so an OpenArm rSkill sees
-# its workspace from a different angle than it was trained on.
-# Upstream models the ZED body behind `head_camera_link`'s origin (its front face is
-# at x = 0), so the lens sits 5 mm ahead of it, looking along +x
-# (tests/unit/test_openamrobot_v2_head_zed_matches_openarm.py).
+# `top`, so the policy raster and field of view match), looking DOWN at the tote and the
+# shelf as on the fixed OpenArm restock cell: the robot owner confirmed the real head ZED
+# looks down at the tote and shelf, like the cell's head camera. The mount is the cell's
+# head-camera pose relative to the arm bases (the restock cell's deploy scene, `top` and
+# `head_zed` `camera_mounts` on `openarm_base`, the arm-base midpoint: xyz (0.077587,
+# 0.027239, 0.099276), quat_wxyz (0.840353, -0.013577, 0.541869, -0.000244) with
+# `axes: world` = x forward, z up). That quaternion is exactly OpenArm's measured rpy
+# (-0.055916, 1.145014, -0.036625): 65.6 deg down. The arm bases sit on
+# lift_carriage_link at y = +/-0.031 with the cell's orientation (openamrobot_v2.urdf
+# `openarm_*_base_link_mount_joint`, as openarm.urdf's), so on `openarm_left_base_link`
+# the pose is the same with y - 0.031. A corrected design pose, NOT measured on a robot.
+# It rides the lift with the arms. Upstream's `head_camera_link` (on its bracket above
+# the carriage, pitched 30 deg down) is not the camera: that view saw only the shelf, the
+# carried tote below the image. The URDF still carries upstream's ZED placeholder there,
+# and its Getac placeholder's front face is where this lens is (0.01 mm behind it);
+# robot bodies are transparent to the twin's depth cast and the renderers clip it
+# (tests/unit/test_openamrobot_v2_head_zed.py pins the TF / Isaac / MuJoCo agreement).
 # Wrists: frames in the URDF at the OpenArm twin's wrist-camera mount (upstream's
 # placeholder poses looked sideways, README step 6); the twin's
 # MJCF carries a camera of each name on the matching optical frame
@@ -495,9 +502,10 @@ sensors:
   - name: "head_zed"
     modality: "depth"
     frame_id: "zed_camera_link"
-    parent_frame: "head_camera_link"
-    static_transform_xyz_rpy: [0.005, 0.0, 0.0, 0.0, 0.0, 0.0]
-    # Upstream's CAD mount (placeholder bracket), not measured on a robot.
+    parent_frame: "openarm_left_base_link"
+    static_transform_xyz_rpy: [0.077587, -0.003761, 0.099276, -0.055916, 1.145014, -0.036625]
+    # Matched to the OpenArm restock cell's head-camera pose relative to the arm bases,
+    # confirmed by the robot owner to look down at the tote and shelf; not measured.
     static_transform_calibrated: false
     rate_hz: 10.0
     intrinsics:
@@ -511,11 +519,13 @@ sensors:
     catalog_id: "stereolabs/zed_mini"
     vendor: "StereoLabs"
     model: "ZED Mini"
+    # The mount above for the twin's camera rig: `target` one metre along its x axis,
+    # `up` its z axis.
     sim_placement:
-      parent_body: "head_camera_link"
-      pos: [0.005, 0.0, 0.0]
-      target: [1.005, 0.0, 0.0]
-      up: [0.0, 0.0, 1.0]
+      parent_body: "openarm_left_base_link"
+      pos: [0.077587, -0.003761, 0.099276]
+      target: [0.4903, -0.0189, -0.8114]
+      up: [0.9107, 0.0226, 0.4124]
     deploy_binding:
       backend: ros2_image
       backend_params:
@@ -549,11 +559,13 @@ sensors:
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200
+    # The mount above for the twin's camera rig: `target` one metre along its x axis,
+    # `up` its z axis.
     sim_placement:
-      parent_body: "head_camera_link"
-      pos: [0.005, 0.0, 0.0]
-      target: [1.005, 0.0, 0.0]
-      up: [0.0, 0.0, 1.0]
+      parent_body: "openarm_left_base_link"
+      pos: [0.077587, -0.003761, 0.099276]
+      target: [0.4903, -0.0189, -0.8114]
+      up: [0.9107, 0.0226, 0.4124]
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "left_wrist_camera_optical_frame"
