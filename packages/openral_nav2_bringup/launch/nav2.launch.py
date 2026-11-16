@@ -381,19 +381,6 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
             ],
         )
     ]
-    if LaunchConfiguration("autostart").perform(context).strip().lower() in ("true", "1", "yes"):
-        from launch_ros.actions import Node  # reason: launch-time only
-
-        # Re-runs the bring-up the manager aborts (nav2_bringup_watchdog_node docstring).
-        actions.append(
-            Node(
-                package="openral_nav2_bringup",
-                executable="nav2_bringup_watchdog_node.py",
-                name="openral_nav2_bringup_watchdog",
-                output="screen",
-                parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
-            )
-        )
     payload_scan_filter = LaunchConfiguration("payload_scan_filter").perform(context)
     if payload_scan_filter.strip().lower() in ("true", "1", "yes"):
         use_sim_time = LaunchConfiguration("use_sim_time").perform(context)

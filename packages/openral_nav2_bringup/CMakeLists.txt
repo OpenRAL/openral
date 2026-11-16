@@ -17,7 +17,6 @@ ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS
   ${PROJECT_NAME}/payload_scan_filter_node.py
   ${PROJECT_NAME}/twist_to_action_relay_node.py
-  ${PROJECT_NAME}/nav2_bringup_watchdog_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -29,9 +28,6 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_nav2_launch test/test_nav2_launch.py
-    TIMEOUT 30
-  )
-  ament_add_pytest_test(test_nav2_bringup_watchdog test/test_nav2_bringup_watchdog.py
     TIMEOUT 30
   )
   ament_add_pytest_test(test_payload_scan_filter test/test_payload_scan_filter.py
