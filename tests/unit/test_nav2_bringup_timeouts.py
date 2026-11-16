@@ -18,4 +18,4 @@ _CONFIG = Path(__file__).resolve().parents[2] / "packages/openral_nav2_bringup/c
 @pytest.mark.parametrize("name", ["nav2_panda_mobile.yaml", "nav2_visual.yaml"])
 def test_bt_navigator_waits_ten_seconds_for_its_servers(name: str) -> None:
     params = yaml.safe_load((_CONFIG / name).read_text())["bt_navigator"]["ros__parameters"]
-    assert params["wait_for_service_timeout"] >= 10_000
+    assert params["wait_for_service_timeout"] >= 30_000
