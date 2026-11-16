@@ -95,6 +95,8 @@ def test_reflect_on_failure_picks_the_hint_from_the_typed_kind_and_evidence() ->
     assert "collision" in stop and "change the approach" in stop
     # A kernel latch is sticky: nothing runs until an operator resets it.
     assert "until an operator resets it" in stop
+    # The kernel's voxel coordinates are robot-base-frame, never map coordinates.
+    assert "robot base, not a map position" in stop
     operator = reflect_on_failure(
         "aborted", "safety_estop:...", failure_kind="FAILURE_SAFETY_ESTOP"
     )

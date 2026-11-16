@@ -334,9 +334,10 @@ def _reflect_on_collision(evidence: CollisionEvidence) -> str:
         )
     return (
         "the safety kernel stopped a collision (see evidence: which link, against "
-        "what) — the stop stays latched until an operator resets it, so no goal runs "
-        "before that; then change the approach or clear the obstacle, repeating the "
-        "same motion will stop again."
+        "what; a cell_center_in_robot_base_frame_m is metres forward, left and up of "
+        "the robot base, not a map position) — the stop stays latched until an "
+        "operator resets it, so no goal runs before that; then change the approach or "
+        "clear the obstacle, repeating the same motion will stop again."
     )
 
 
@@ -1472,6 +1473,14 @@ _PROMPT_EXCLUDED_FIELDS = frozenset({"joint_positions_rad", "joint_names"})
 _PROMPT_FIELD_BUDGET = 48
 _COLLISION_IDENTIFIER_BUDGET = 256
 
+#: Prompt keys for the collision evidence's voxel coordinates. The wire names say
+#: ``world_`` (a world-collision voxel) but the values are in the robot base frame
+#: (``base_footprint``: x forward, y left, z up), never the map frame.
+_COLLISION_BASE_FRAME_KEYS = {
+    "world_cell_center_m": "cell_center_in_robot_base_frame_m",
+    "world_grid_origin_m": "grid_origin_in_robot_base_frame_m",
+}
+
 
 def _render_instances(
     key: str,
@@ -1551,6 +1560,11 @@ def _summarise_evidence_json(payload: str) -> str:
             for k, v in summary_fields.items()
             if v is not None
         }
+        # The kernel's voxel grid is in the robot base frame, not the map: rename the
+        # schema's `world_*` keys so the planner cannot read them as map coordinates.
+        for wire_key, prompt_key in _COLLISION_BASE_FRAME_KEYS.items():
+            if wire_key in summary_fields:
+                summary_fields[prompt_key] = summary_fields.pop(wire_key)
         summary_fields["check"] = "measured" if evidence.horizon_step == -1 else "predicted"
         summary = f"evidence={json.dumps(summary_fields, sort_keys=True)}"
     else:

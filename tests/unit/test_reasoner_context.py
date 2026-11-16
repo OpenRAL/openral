@@ -791,3 +791,27 @@ def test_collision_summary_retains_workspace_and_payload_denial_details() -> Non
     assert '"link_a": "openarm_left_link7"' in summary
     assert '"link_b_or_object": "voxel_189"' in summary
     assert '"sweep_min_distance_m": -0.00761643' in summary
+
+
+def test_collision_summary_labels_voxel_coordinates_as_robot_base_frame() -> None:
+    """The kernel's voxel grid is the robot base frame; the prompt must not say world/map.
+
+    The schema keeps its ``world_`` wire names; only the rendered keys change, so a
+    reasoner cannot tell an operator that a cell 0.61 m ahead of the robot is at map
+    position (0.61, 0.07, 0.73).
+    """
+    evidence = CollisionEvidence(
+        collision_kind="world",
+        link_a="openarm_left_ee_link2",
+        link_b_or_object="voxel_189",
+        horizon_step=CollisionEvidence.REACTIVE_HORIZON_STEP,
+        min_distance_m=-0.00909,
+        world_grid_origin_m=(-0.825, -0.825, -0.825),
+        world_cell_center_m=(0.6096, 0.0721, 0.7275),
+    )
+    summary = _summarise_evidence_json(evidence.model_dump_json())
+    assert '"cell_center_in_robot_base_frame_m": [0.6096, 0.0721, 0.7275]' in summary
+    assert '"grid_origin_in_robot_base_frame_m": [-0.825, -0.825, -0.825]' in summary
+    assert "world_cell_center_m" not in summary
+    assert "world_grid_origin_m" not in summary
+    assert "map" not in summary
