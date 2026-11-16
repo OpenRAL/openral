@@ -27,6 +27,7 @@
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
 
   <!-- The payload scan filter: reads the attachment set (openral_msgs) and the live attach-link
        TF, projects the carried geometry, and publishes a filtered sensor_msgs/LaserScan. -->

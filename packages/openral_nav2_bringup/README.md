@@ -99,6 +99,38 @@ A related trigger, fixed earlier, is documented on `collision_monitor` in
 `panda_mobile` HAL never publishes wedged it in a TF-lookup loop, stopping its
 heartbeat and cascading the same way.
 
+## An aborted bring-up is restarted (`nav2_bringup_watchdog_node.py`)
+
+`lifecycle_manager_navigation` brings the servers up once. If one fails to activate, it logs
+`Failed to bring up all requested nodes. Aborting bringup.` and stops there, with no retry:
+
+- the servers it already activated stay active;
+- the rest stay inactive;
+- `bt_navigator` rejects every goal as "action server inactive".
+
+On Spark (Isaac + π0.5, 2026-11-16), 2 of 12 runs hit this. `bt_navigator`'s BT never
+discovered the already-active `behavior_server`'s `spin` server within
+`wait_for_service_timeout`; a healthy run finds it in 80 ms. That timeout is now 30 s
+(`config/*.yaml`).
+
+With `autostart:=true`, `nav2.launch.py` also starts `openral_nav2_bringup_watchdog`. It reads
+the manager's `/rosout` lines. On that abort it:
+
+1. returns every managed server to `unconfigured`: deactivate the active ones, clean up the
+   inactive ones, in reverse bring-up order (`recovery_plan`);
+2. calls the manager's `manage_nodes` `STARTUP` again;
+3. repeats up to `max_attempts` (3) times, `retry_delay_s` (5 s) apart, and logs every step.
+
+The manager's own `RESET` cannot do this: it stops at the first server whose transition is
+invalid, and an aborted bring-up always leaves one behind.
+
+A goal the inactive stack rejects meanwhile fails with the server's lifecycle state in the
+reason (`ROSActionRskill`), so the reasoner retries instead of rewriting the goal.
+
+Verified locally against the real Jazzy `lifecycle_manager`, `bt_navigator` and
+`behavior_server`: `spin` was missing at the first bring-up, and the stack was active after
+restart 1.
+
 ## The Nav2 ↔ safety-kernel boundary
 
 Two independent world models run side by side. Neither covers for the other.

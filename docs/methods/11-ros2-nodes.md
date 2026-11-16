@@ -76,6 +76,12 @@ _EXPERIMENT (pro#51, sim-only; `DeployRuntime.instance_cells`). `openral_instanc
 - `twist_to_action_relay_node.py` — Opt-in (`nav2.launch.py cmd_vel_relay:=true`) relay of Nav2's `/cmd_vel` onto `/openral/candidate_action` as horizon-1 `BODY_TWIST` chunks via `ROSPublishingHAL`, so the safety kernel bounds base speed. Refuses (`ROSConfigError`) a manifest declaring `base_joints` (`MobileBaseBridge` owns that `/cmd_vel`, ADR-0040/0099) or lacking `body_twist` or either `max_base_*` speed bound; after `cmd_vel_timeout_s` (default 0.5 s, wall clock) of silence following a non-zero command it publishes one zero twist.
 - `twist_to_body_twist_row(msg) -> tuple[float, ...]` (twist_to_action_relay_node.py L45) — `Twist` → `[linear.x, linear.y, 0, 0, 0, angular.z]`, the same mapping as `MobileBaseBridge._on_cmd_vel`.
 - `main(args=None) -> None` (twist_to_action_relay_node.py L57) — ROS 2 entry point; defines `TwistToActionRelayNode` lazily inside.
+- `nav2_bringup_watchdog_node.py` — Started by `nav2.launch.py` with `autostart:=true`. On `lifecycle_manager_navigation`'s `/rosout` line `Failed to bring up all requested nodes` it returns every managed server to `unconfigured` and calls `manage_nodes` `STARTUP` again, up to `max_attempts` (3) times, `retry_delay_s` (5 s) apart. Parameters: `manager`, `service_timeout_s`, `startup_timeout_s`.
+- `ABORT_MARKER` (nav2_bringup_watchdog_node.py L29) — The manager's abort line the watchdog reacts to.
+- `TRANSITION_CLEANUP` (nav2_bringup_watchdog_node.py L32) — `lifecycle_msgs/Transition` id 2, the recovery plan's cleanup.
+- `TRANSITION_DEACTIVATE` (nav2_bringup_watchdog_node.py L33) — `lifecycle_msgs/Transition` id 4, the recovery plan's deactivate.
+- `recovery_plan(states, order) -> list[tuple[str, int]]` (nav2_bringup_watchdog_node.py L36) — Lifecycle transitions, in reverse bring-up order, that return every server to `unconfigured`: deactivate (`TRANSITION_DEACTIVATE`) each `active` one, then clean up (`TRANSITION_CLEANUP`) each `active` or `inactive` one.
+- `main() -> None` (nav2_bringup_watchdog_node.py L59) — ROS 2 entry point; defines `Nav2BringupWatchdog` lazily inside.
 
 ### `packages/openral_nav2_bringup/launch/nav2.launch.py`
 
@@ -83,7 +89,7 @@ _EXPERIMENT (pro#51, sim-only; `DeployRuntime.instance_cells`). `openral_instanc
 - `_cap_speeds(params, max_linear_m_s, max_angular_rad_s) -> None` (L245) — Lowers `velocity_smoother.max_velocity`/`min_velocity` (the `(vx, vy)` corner scaled onto the `‖v‖` disk) and MPPI `vx_max`/`wz_max` in place to the kernel `BODY_TWIST` bounds; never raises a limit.
 - `_speed_capped_params_file(params_file, max_linear_m_s, max_angular_rad_s) -> str` (L292) — `params_file` unchanged when neither bound is set, else a temp copy with `_cap_speeds` applied (Jazzy `RewrittenYaml` cannot set a list element).
 - `BOND_TIMEOUT_S` (L60) — `30.0`; how long a Nav2 lifecycle manager waits on a bond heartbeat before treating a descheduled server as dead. Not disabled (`0.0`), so a server that really dies is still caught.
-- `DEFAULT_PARAMS_PATH` (L402) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
+- `DEFAULT_PARAMS_PATH` (L415) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
 
 ### `packages/openral_perception_ros/openral_perception_ros/`
 
