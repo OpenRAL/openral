@@ -102,6 +102,42 @@ def drive_gain_overrides(
     return stiffness, damping
 
 
+def gravity_feed_forward_dofs(
+    scales: dict[str, float] | None, dof_names: list[str]
+) -> list[tuple[int, float]]:
+    """``(DOF index, k)`` for every DOF a ``gravity_compensation`` pattern fullmatches.
+
+    Patterns apply in order, later matches winning, like ``joint_drive_gains``. A
+    pattern that matches no DOF is refused: a manifest joint name (``left_joint4``)
+    written where the URDF name (``openarm_left_joint4``) belongs would otherwise switch
+    the feed-forward off without a word.
+
+    Example:
+        >>> gravity_feed_forward_dofs(
+        ...     {"arm_j.*": 1.0, "arm_j2": 0.0}, ["base_x", "arm_j1", "arm_j2"]
+        ... )
+        [(1, 1.0), (2, 0.0)]
+    """
+    import re
+
+    scales = scales or {}
+    unmatched = [p for p in scales if not any(re.fullmatch(p, n) for n in dof_names)]
+    if unmatched:
+        raise RuntimeError(
+            f"gravity_compensation patterns {unmatched} match no DOF of the imported robot "
+            f"(URDF joint names: {dof_names})"
+        )
+    pairs: list[tuple[int, float]] = []
+    for i, name in enumerate(dof_names):
+        k = None
+        for pattern, value in scales.items():
+            if re.fullmatch(pattern, name):
+                k = float(value)
+        if k is not None:
+            pairs.append((i, k))
+    return pairs
+
+
 # Coulomb friction of the robot's finger colliders. The URDF importer authors no physics
 # material, so the fingers get PhysX's default (~0.5) and a lifted object slips out of a
 # closed, stalled jaw (Isaac i58/i59: jaw squeezing at its 7 Nm effort cap, can sliding).
@@ -2028,8 +2064,12 @@ class IsaacManifestScene(IsaacSceneBase):
         self._root_to_lidar: NDArray[np.float64] | None = None
         # DOF mapping, resolved post-reset once dof_names is populated.
         self._dof_index: dict[str, int] = {}
-        # (DOF indices, scales) of the gravity feed-forward, resolved on first use.
-        self._gravity_ff: tuple[NDArray[np.int64], NDArray[np.float32]] | None = None
+        # Gravity feed-forward: DOF indices, their k, the gravity-force column offset
+        # (6 on a floating base, whose root wrench leads the vector) and effort caps.
+        self._gravity_idx: NDArray[np.int64] = np.zeros(0, dtype=np.int64)
+        self._gravity_k: NDArray[np.float32] = np.zeros(0, dtype=np.float32)
+        self._gravity_col_offset = 0
+        self._gravity_cap: NDArray[np.float32] = np.zeros(0, dtype=np.float32)
         self._arm_dof_idx: list[int] = []
         # Commanded joint targets (full DOF vector). A NaN action slot keeps its
         # entry here, so holding never re-targets wherever gravity has dragged
@@ -3248,6 +3288,24 @@ class IsaacManifestScene(IsaacSceneBase):
         if missing:
             raise RuntimeError(f"URDF joints {missing} are not DOFs of the imported robot.")
         self._arm_dof_idx = [self._dof_index[n] for n in self._arm_names]
+        pairs = gravity_feed_forward_dofs(self._spec.get("gravity_compensation"), dof_names)
+        self._gravity_idx = np.array([i for i, _ in pairs], dtype=np.int64)
+        self._gravity_k = np.array([k for _, k in pairs], dtype=np.float32)
+        if pairs:
+            art = self._robot._articulation_view
+            # A floating base's gravity forces lead with its 6 root components: the vector
+            # is wider than the DOFs by exactly those.
+            width = np.asarray(art._physics_view.get_gravity_compensation_forces()).shape[-1]
+            self._gravity_col_offset = int(width) - len(dof_names)
+            # The drive's effort cap (URDF effort / joint_effort_limits) bounds the
+            # feed-forward too, as a real motor's torque limit bounds its controller's.
+            caps = np.asarray(art.get_max_efforts(), dtype=np.float32).reshape(-1)
+            self._gravity_cap = caps[self._gravity_idx]
+            print(
+                f"[isaac_manifest_scene] gravity feed-forward on {len(pairs)} joint(s), "
+                f"{'floating' if self._gravity_col_offset else 'fixed'} base",
+                flush=True,
+            )
 
     # ── IsaacSceneBase template methods ──────────────────────────────────────
 
@@ -3309,7 +3367,6 @@ class IsaacManifestScene(IsaacSceneBase):
     def _before_render(self) -> None:
         # Reset warmup steps physics through this hook only.
         super()._before_render()
-        self._compensate_gravity()
         self._follow_links()
 
     def _compensate_gravity(self) -> None:
@@ -3318,37 +3375,22 @@ class IsaacManifestScene(IsaacSceneBase):
         A real MIT/PD arm controller adds ``k * tau_gravity(q)`` to its PD torque, so the
         joint lands on its command instead of resting gravity torque / kp below it. PhysX
         computes the same generalized gravity forces from the imported URDF; set as joint
-        efforts before every physics step, they sum with the position drive just as the
-        controller's feed-forward sums with its PD term. ``gravity_compensation`` maps a
-        URDF joint-name regex (fullmatch) to ``k``; unmatched joints get none.
+        efforts before every physics step (``_before_substep``), they sum with the position
+        drive just as the controller's feed-forward sums with its PD term. Each joint's
+        feed-forward is clipped to its drive's effort cap.
         """
-        if self._gravity_ff is None:
-            scales = self._spec.get("gravity_compensation") or {}
-            if scales and not self._dof_index:
-                return  # before the first reset resolves the DOF names
-            import re
-
-            pairs = [
-                (i, float(k))
-                for name, i in self._dof_index.items()
-                for k in [next((v for p, v in scales.items() if re.fullmatch(p, name)), None)]
-                if k is not None
-            ]
-            self._gravity_ff = (
-                np.array([i for i, _ in pairs], dtype=np.int64),
-                np.array([k for _, k in pairs], dtype=np.float32),
-            )
-            if pairs:
-                print(
-                    f"[isaac_manifest_scene] gravity feed-forward on {len(pairs)} joint(s)",
-                    flush=True,
-                )
-        idx, k = self._gravity_ff
-        if not idx.size:
+        if not self._gravity_idx.size:
             return
-        art = self._robot._articulation_view
-        tau = np.asarray(art.get_generalized_gravity_forces(joint_indices=idx), dtype=np.float32)
-        self._robot.set_joint_efforts(k * tau.reshape(-1), joint_indices=idx)
+        view = getattr(getattr(self._robot, "_articulation_view", None), "_physics_view", None)
+        forces = None if view is None else view.get_gravity_compensation_forces()
+        if forces is None:  # the physics view is invalid (stage reloading): no feed-forward
+            return
+        row = np.asarray(forces, dtype=np.float32).reshape(-1)  # one robot: one row
+        tau = self._gravity_k * row[self._gravity_idx + self._gravity_col_offset]
+        # ponytail: clips the feed-forward alone; drive + feed-forward together can still
+        # reach twice the cap. Clamp the sum if a task ever saturates a joint.
+        tau = np.clip(tau, -self._gravity_cap, self._gravity_cap)
+        self._robot.set_joint_efforts(tau, joint_indices=self._gravity_idx)
 
     def _before_substep(self) -> None:
         """With ``gripper_followers_track: "measured"``, re-target every mimic follower.
@@ -3495,11 +3537,11 @@ class IsaacManifestScene(IsaacSceneBase):
         """Raise the hold target until the drives hold the reset pose under gravity.
 
         A position drive rests gravity torque / stiffness below its target. With real
-        motor gains (``joint_drive_gains``) the teleported start pose would sag by
-        centimetres, and the policy would open on an arm lower than the real robot's
-        measured start state, which is already a sagged pose held by a higher command.
-        Iterating ``target += pose - measured`` converges on that command; stiff
-        drives make it a no-op.
+        motor gains (``joint_drive_gains``) and no ``gravity_compensation`` the teleported
+        start pose would sag by centimetres, and the policy would open on an arm lower than
+        the real robot's measured start state. Iterating ``target += pose - measured``
+        converges on the command that holds it; stiff drives or a gravity feed-forward make
+        it (nearly) a no-op.
         """
         if self._target is None:
             return

@@ -72,7 +72,6 @@ def test_default_options_change_nothing_for_existing_scenes() -> None:
         "strip_xform_colliders": False,
         "dome_light": None,
         "joint_effort_limits": {},
-        "gravity_compensation": {},  # empty: no joint gets a gravity feed-forward
         "physx_scene": None,
         "collision_approximation": {},
         "link_box_colliders": {},  # empty: no link's colliders are replaced
@@ -104,13 +103,6 @@ def test_the_pick_orange_scene_caps_the_jaw_at_leisaacs_orange_effort() -> None:
 def test_an_effort_cap_must_be_positive() -> None:
     with pytest.raises(ValueError, match="must be > 0"):
         IsaacSimOptions(joint_effort_limits={"gripper": 0.0})
-
-
-def test_the_gravity_feed_forward_reaches_the_sidecar_spec() -> None:
-    opts = IsaacSimOptions(gravity_compensation={r"openarm_(left|right)_joint[1-7]": 1.0})
-    assert _environment_spec(opts)["gravity_compensation"] == {
-        r"openarm_(left|right)_joint[1-7]": 1.0
-    }
 
 
 @pytest.mark.parametrize(("pattern", "k"), [("joint[", 1.0), ("joint1", -0.1), ("joint1", 2.5)])
