@@ -992,6 +992,24 @@ TEST_F(SelfFilterNode, CloudOlderThanJointHistoryIsNotBackwardExtrapolated) {
   EXPECT_GT(filter_->totals().dropped_no_state, 0U);
 }
 
+TEST_F(SelfFilterNode, AJointStateCarryingNoModelJointDoesNotReStampTheArm) {
+  // A message for joints the model does not use (another publisher on the topic) says nothing
+  // about the arm at its stamp: it must not re-stamp the last arm pose and bracket the cloud.
+  const auto t0 = peer_->now();
+  send_joint_state(-M_PI / 4.0, t0 - rclcpp::Duration(20ms));
+  send_joint_state(0.0, t0);
+  const auto captured = t0 + rclcpp::Duration(20ms);
+  sensor_msgs::msg::JointState other;
+  other.header.stamp = captured;
+  other.name = {"not_a_model_joint"};
+  other.position = {1.0};
+  js_pub_->publish(other);
+  spin_for(20ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, captured));
+  spin_for(100ms);
+  EXPECT_EQ(received_.load(), 0) << "no arm state at the capture stamp proves the arm's pose";
+}
+
 namespace {
 
 // A mobile manipulator: `world` -[base_x, prismatic]-> `base` -[j1]-> `l1`, the capsule at

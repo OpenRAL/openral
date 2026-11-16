@@ -549,7 +549,10 @@ Clouds and robot-mask images wait for joint history to cover their capture stamp
 retention is bounded to two buffers of at most 32 MiB each; a shared 5 ms timer
 retries only within the existing `max_joint_state_skew_s` wall deadline. Overflow
 and expiry refuse the sensor frame. Existing interpolation gap/skew checks,
-TF requirements and padding are unchanged.
+TF requirements and padding are unchanged. Only a joint-state message that carries
+at least one of the model's posed joints adds a history sample: a message for
+other joints (a second publisher on the topic) would otherwise re-stamp the last
+arm pose at its own stamp and bracket a cloud with a stale, motionless arm.
 
 The recorded R9 fixture reproduces 3/16 gripper returns surviving forward
 extrapolation; all 16 disappear when the matching state arrives 5.1 ms later.

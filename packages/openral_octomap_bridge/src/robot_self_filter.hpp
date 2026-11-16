@@ -363,6 +363,7 @@ private:
       return;
     }
     const std::size_t n = std::min(msg->name.size(), msg->position.size());
+    bool carries_a_required_dof = false;
     for (std::size_t i = 0; i < n; ++i) {
       const auto it = dof_of_name_.find(msg->name[i]);
       if (it == dof_of_name_.end() || it->second >= q_.size()) {
@@ -370,13 +371,20 @@ private:
       }
       q_[it->second] = msg->position[i];
       seen_[it->second] = 1;
+      carries_a_required_dof =
+          carries_a_required_dof || std::find(required_dofs_.begin(), required_dofs_.end(),
+                                              it->second) != required_dofs_.end();
     }
     for (const auto d : base_dofs_) {
       if (d < q_.size()) {
         q_[d] = 0.0;  // the base's own pose is TF's (odom), not the model's
       }
     }
-    if (!std::all_of(required_dofs_.begin(), required_dofs_.end(),
+    // A message that carries none of the model's joints says nothing about the robot at its
+    // stamp: appending it would re-stamp the last pose there (a stale arm, qdot = 0). A model
+    // with no joint to pose (all fixed) has nothing to go stale.
+    if ((!carries_a_required_dof && !required_dofs_.empty()) ||
+        !std::all_of(required_dofs_.begin(), required_dofs_.end(),
                      [this](std::size_t d) { return seen_[d] != 0; })) {
       return;  // an incomplete sample poses nothing
     }
