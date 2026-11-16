@@ -177,6 +177,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import (
         Action,
         AttachedCollisionObject,
+        FixedAttachment,
         GraspDeclaration,
         IntrinsicsPinhole,
         JointState,
@@ -187,6 +188,8 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core.schemas import TightCollisionGeometry
 
 __all__ = [
+    "BASE_STILL_M",
+    "BASE_STILL_RAD",
     "DEFAULT_SEGMENT_SERVICE",
     "MAX_RELEASE_CLEAR_M",
     "ReleaseWindow",
@@ -749,6 +752,13 @@ def primitive_poses(
     ]
 
 
+#: How far a mobile base may drift in odometry (m / rad) while a release window is
+#: open before the frozen record is dropped (``ReleaseWindow.base_moved``). Calibration
+#: points: above sim odometry jitter at standstill; 0.01 rad is 1 cm at a 1 m reach.
+BASE_STILL_M = 0.01
+BASE_STILL_RAD = 0.01
+
+
 @dataclass(frozen=True)
 class ReleaseWindow:
     """One gripper's released payload, frozen in the base frame until the jaws are clear.
@@ -759,8 +769,8 @@ class ReleaseWindow:
     the first retreat chunk stops on it. Instead the payload stays a published,
     fully checked attached record (``freeze_released_attachment``) — which also
     keeps the octomap bridge clearing its cells — until the hand and jaws it
-    exempts are proven ``release_clear_m`` away, ``release_timeout_s`` passes, or
-    the gripper grasps again.
+    exempts are proven ``release_clear_m`` away, ``release_timeout_s`` passes, the
+    gripper grasps again, or a mobile base leaves its DETACH pose (``base_moved``).
 
     Attributes:
         record: The frozen record, attached to the base link.
@@ -778,6 +788,10 @@ class ReleaseWindow:
             clearance is unknown, never clear.
         urdf_curves: Each curved jaw joint's ``JointSpec.urdf_curve`` by name: a jaw
             position goes through it before posing (issue #533).
+        t_odom_from_base: A mobile base's ``odom <- base_frame`` at DETACH, ``None`` on a
+            fixed base. The record is frozen in ``base_frame``, which rides the base
+            while the released object stays in the world: ``base_moved`` ends the
+            window as soon as the base leaves this pose.
     """
 
     record: AttachedCollisionObject
@@ -788,6 +802,7 @@ class ReleaseWindow:
         tuple[tuple[tuple[Any, NDArray[np.float64]], ...] | None, tuple[_FramedBox, ...]], ...
     ]
     urdf_curves: Mapping[str, tuple[tuple[float, float], ...]] = field(default_factory=dict)
+    t_odom_from_base: NDArray[np.float64] | None = None
 
     @classmethod
     def open(
@@ -798,6 +813,7 @@ class ReleaseWindow:
         base_link: str,
         t_base_from_link: NDArray[np.float64],
         now_s: float,
+        t_odom_from_base: NDArray[np.float64] | None = None,
     ) -> ReleaseWindow:
         """Freeze ``held`` and collect the geometry the separation test needs.
 
@@ -807,6 +823,8 @@ class ReleaseWindow:
             base_link: The collision model's root link.
             t_base_from_link: The hand's pose in ``base_link`` at DETACH.
             now_s: Monotonic seconds at DETACH.
+            t_odom_from_base: A mobile base's odometry pose at DETACH; ``None`` on a
+                fixed base.
 
         Returns:
             The open window.
@@ -828,7 +846,29 @@ class ReleaseWindow:
             hand_boxes=_link_boxes(description, held.attach_link),
             jaws=jaws,
             urdf_curves={j.name: j.urdf_curve for j in description.joints if j.urdf_curve},
+            t_odom_from_base=t_odom_from_base,
         )
+
+    def base_moved(self, t_odom_from_base: NDArray[np.float64] | None) -> bool:
+        """Whether a mobile base has left its DETACH pose, so the frozen record is wrong.
+
+        Always ``False`` on a fixed base. On a mobile one an unknown pose counts as
+        moved: dropping the record is the fail-closed side (the object is again
+        voxels the kernel avoids, and the voxel bridge stops clearing its box).
+
+        Args:
+            t_odom_from_base: The base's odometry pose now, or ``None`` when unknown.
+
+        Returns:
+            ``True`` past ``BASE_STILL_M`` / ``BASE_STILL_RAD`` or with no pose.
+        """
+        if self.t_odom_from_base is None:
+            return False
+        if t_odom_from_base is None:
+            return True
+        delta = np.linalg.inv(self.t_odom_from_base) @ t_odom_from_base
+        cos = np.clip((np.trace(delta[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)
+        return bool(np.linalg.norm(delta[:3, 3]) > BASE_STILL_M or math.acos(cos) > BASE_STILL_RAD)
 
     def clearance_m(
         self,
@@ -914,18 +954,45 @@ def _tree_links(description: RobotDescription) -> tuple[set[str], set[str]]:
 
 
 def _release_base_link(description: RobotDescription) -> str:
-    """The manifest's ``base_frame``, proven to be the root of the kinematic tree.
+    """The manifest's ``base_frame``, proven to be a link the kernel's collision FK never moves.
 
-    The kernel's collision model is rooted there at the identity frame, so a
-    record attached to it stays put in every predicted configuration.
+    That is the root of the kinematic tree, or — on a mobile manipulator — a link
+    reached from the root only through the manifest's planar ``base_joints``: the
+    same dofs the deploy launch passes as the kernel's ``collision_base_dofs``,
+    which it zeroes before the base-relative FK (and the kernel's ``link_static_``
+    rule for a frozen payload's link). Either way the collision model is rooted at
+    ``base_frame``, so a record attached to it stays put in every predicted
+    configuration. On a mobile base that holds only while the base stands still:
+    ``ReleaseWindow.base_moved`` drops the frozen record when it drives.
+
+    Raises:
+        ROSConfigError: ``base_frame`` has no child link, or a joint other than a
+            planar base joint (a lift, an arm joint) or a fixed attachment lies
+            between it and the root.
     """
     base = description.base_frame
     parents, children = _tree_links(description)
-    if base in children or base not in parents:
+    if base not in parents or (base in children and not description.base_joints):
         raise ROSConfigError(
             f"vision attachment: base_frame {base!r} of {description.name!r} is not the root "
             "of its kinematic tree, so a released payload cannot be frozen on it."
         )
+    planar = set(description.base_joints or ())
+    edges: dict[str, JointSpec | FixedAttachment] = {
+        e.child_link: e for e in description.fixed_attachments
+    }
+    edges.update({j.child_link: j for j in description.joints})
+    link = base
+    while link in edges:
+        edge = edges[link]
+        if not isinstance(edge, JointSpec) or edge.name not in planar:
+            raise ROSConfigError(
+                f"vision attachment: base_frame {base!r} of {description.name!r} hangs below "
+                f"{edge.name!r} (parent {edge.parent_link!r}), which is not one of its planar "
+                f"base_joints {sorted(planar)}: the kernel's collision FK moves it, so a "
+                "released payload cannot be frozen on it."
+            )
+        link = edge.parent_link
     return base
 
 
@@ -3080,12 +3147,23 @@ class VisionAttachmentBridge:
                 "dropping its attachment"
             )
             return
+        t_odom_from_base = self._base_odom_pose()
+        if self._description.base_joints and t_odom_from_base is None:
+            # A mobile base whose odometry is unknown could drive away under the frozen
+            # record unseen: drop it now, as without the hand's pose.
+            self._node.get_logger().warning(
+                f"release window not opened for {leg.joint_name}: no tf2 "
+                f"{self._description.odom_frame} <- {self.tf_frame(self._base_link)}; "
+                "dropping its attachment"
+            )
+            return
         window = ReleaseWindow.open(
             self._description,
             held,
             base_link=self._base_link,
             t_base_from_link=t_base_from_link,
             now_s=time.monotonic(),
+            t_odom_from_base=t_odom_from_base,
         )
         leg.release = window
         self._node.get_logger().info(
@@ -3107,6 +3185,12 @@ class VisionAttachmentBridge:
             # A re-ATTACH is a new grasp of the same hand, not the hand emptying.
             self._grasp_target.on_hand_settled(leg.jaw_link)
 
+    def _base_odom_pose(self) -> NDArray[np.float64] | None:
+        """A mobile base's ``odom <- base_frame`` from tf2; ``None`` on a fixed base or unknown."""
+        if not self._description.base_joints:
+            return None
+        return self._lookup(self._description.odom_frame, self.tf_frame(self._base_link))
+
     @_locked
     def _poll_releases(self) -> None:
         """Close every window whose jaws are clear or whose time is up; publish if any did."""
@@ -3116,14 +3200,19 @@ class VisionAttachmentBridge:
             window = leg.release
             if window is None:
                 continue
-            t_hand = self._lookup(self.tf_frame(self._base_link), self.tf_frame(window.hand_link))
-            clearance = None if t_hand is None else window.clearance_m(t_hand, self._positions)
-            reason = window.close_reason(
-                now_s=now_s,
-                clearance_m=clearance,
-                clear_m=self._config.release_clear_m,
-                timeout_s=self._config.release_timeout_s,
-            )
+            if window.base_moved(self._base_odom_pose()):
+                reason = "base_moved"
+            else:
+                t_hand = self._lookup(
+                    self.tf_frame(self._base_link), self.tf_frame(window.hand_link)
+                )
+                clearance = None if t_hand is None else window.clearance_m(t_hand, self._positions)
+                reason = window.close_reason(
+                    now_s=now_s,
+                    clearance_m=clearance,
+                    clear_m=self._config.release_clear_m,
+                    timeout_s=self._config.release_timeout_s,
+                )
             if reason:
                 self._close_release(leg, reason)
                 closed = True
