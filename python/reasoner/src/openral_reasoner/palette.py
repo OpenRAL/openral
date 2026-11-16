@@ -276,6 +276,9 @@ class RSkillToolEntry(BaseModel):
         completes_task_on_success: Mirrors
             ``RosIntegration.completes_task_on_success``: the goal's success
             completes the reasoner's active mission task. Not shown to the LLM.
+        max_execution_s: The manifest's ``latency_budget.max_execution_s``
+            (``None`` when unset). Sizes the reasoner's in-flight backstop
+            (``inflight_backstop_s``). Not shown to the LLM.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -289,6 +292,7 @@ class RSkillToolEntry(BaseModel):
     quantization_dtype: QuantizationDtype = QuantizationDtype.FP32
     result_only: bool = False
     completes_task_on_success: bool = False
+    max_execution_s: float | None = None
 
 
 class ToolPalette(BaseModel):
@@ -584,6 +588,7 @@ def build_tool_palette(
                 quantization_dtype=skill.quantization.dtype,
                 result_only=ros is not None and ros.result_trajectory_field is None,
                 completes_task_on_success=ros is not None and ros.completes_task_on_success,
+                max_execution_s=skill.latency_budget.max_execution_s,
             ),
         )
     # Stable order so tool schemas are deterministic across builds.

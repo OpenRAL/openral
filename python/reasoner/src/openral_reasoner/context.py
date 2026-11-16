@@ -1265,7 +1265,7 @@ class ContextRenderer:
             return (
                 f"LATCHED reason={st.reason or '?'}{self._age(st.stamp_ns)} — every motion is "
                 "refused until the operator resets the e-stop. Do not dispatch skills; tell "
-                "the operator what stopped and wait for their reply."
+                "the operator what stopped and wait(until='operator')."
             )
         if st.reason:
             return (
@@ -1467,7 +1467,7 @@ class ContextRenderer:
                 f"(state={state}, dispatched at stamp_ns={stamp_ns}{elapsed}{feedback}). "
                 "Do not dispatch another execute_rskill until it returns, and do not "
                 "escalate to the operator just because it has not finished; poll "
-                "query_task_progress or wait."
+                "query_task_progress, or wait(until='skill_result') — its result wakes you."
             )
         for rec in self._executions:
             line = (

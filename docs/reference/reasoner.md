@@ -19,14 +19,39 @@ It decides *what to do next*; it never drives motors itself.
 
 ## Cadence & event model
 
-The reasoner is event-driven with a slow heartbeat:
+The reasoner calls the LLM when something happens, never on a fixed timer
+(issue #620):
 
-- **Heartbeat** — a periodic timer ticks at `tick_hz` (default **0.2 Hz**, one
-  tick every 5 s). A heartbeat tick that sees no new event since the last
-  successful tick is short-circuited inside `ReasonerCore` with
-  `suppressed_reason="heartbeat_idle"` (no LLM call, no span).
-- **Event preemption** is the primary trigger, subject to a hard 100 ms
-  min-interval between ticks (`min_interval_s`):
+- **Events** force a tick at once (table below), plus the reasoner's own: an
+  `execute_rskill` result (`skill_result`), a tool result republished as a
+  cascade prompt (`tool_result:<source>`), a task verdict or mission advance, and
+  a new latch on `/openral/safety_status` (`safety_latched`, Tier A). Requests
+  that arrive while a tick is in flight coalesce into one replay; their names
+  ride on it as `reasoner.tick.coalesced_triggers`. Forced ticks are not subject
+  to the 100 ms `min_interval_s` (it only spaces timer beats).
+- **The timer beat** (`tick_hz` ROS parameter, default **0.2 Hz**) only runs
+  gates; a beat reaches the LLM only when one of these holds, recorded as its
+  trigger:
+
+  | Trigger | When |
+  |---|---|
+  | `context_changed` | nothing in flight, a mission or prompt is pending, and the context moved |
+  | `backstop` | a skill is in flight and `clamp(max_execution_s / 4, 15 s, 30 s)` passed since the last LLM call (perception churn during a skill is bounded by the same period) |
+  | `wait_timeout` | the model's `wait(timeout_s=…)` lapsed with a skill in flight or a task active |
+  | `llm_error_retry` | the last LLM call failed in transport; retried after 5, 10, 20 s, then the reasoner hands off to the operator |
+
+  Otherwise it is suppressed with no LLM call and no span: `heartbeat_idle`,
+  `backstop_not_due`, `wait_hold`, `no_goal` (no mission, no prompt, nothing in
+  flight), `safety_latched`, `mission_finished`, `llm_error_backoff`,
+  `retry_cap_hold`, `min_interval`.
+- **`wait(until=…, timeout_s=…)`** lets one decision cover a whole wait:
+  `skill_result` ignores perception churn until the skill ends, `operator` waits
+  for a reply, `next_event` ends on any new context, `timeout` only on the
+  timeout. Any forced tick ends a wait early; `timeout_s` is bounded (≤ 300 s).
+
+Every `reasoner.tick` span carries `reasoner.tick.trigger`,
+`reasoner.tick.coalesced_triggers`, `reasoner.tick.skipped_since_last` and, for a
+`wait`, `reasoner.wait.until` / `reasoner.wait.timeout_s`.
 
 | Tier | Source | Preempts on |
 |---|---|---|
@@ -37,7 +62,10 @@ The reasoner is event-driven with a slow heartbeat:
 | **D — operator** | `/openral/prompt` | always |
 
 `/openral/perception/{motion,objects,ocr,scene_change}` events are informational
-context (not preemptive on their own).
+context (not preemptive on their own); a record that repeats the previous one of
+its kind is dropped and does not count as new context. The reasoner ignores the
+FailureTriggers it publishes itself on `/openral/failure/rskill` (their outcome is
+already in `## EXECUTION`).
 
 ---
 
