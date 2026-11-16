@@ -1765,6 +1765,40 @@ the payload's returns from the scan, reading the same
 can never act on different attachments. Its README carries the full boundary
 table.
 
+### Station mode: base motion retires every base-frame allowance
+
+The kernel still does not bound base motion, but it **reads** it. On a mobile
+manipulator (`collision_base_dofs` non-empty) a still base is a fixed-base station;
+every allowance it holds — the grasp declaration / region (ADR-0115), the place region
+(ADR-0097), the #349 workspace, the tracked grasp key (#418) and an open K5 release
+window (declared `released_by_link` records and provider tracked releases) — is
+declared in the base frame the voxel grid lives in, so it is valid only at the pose it
+was declared at. `update_station` (fed from `/joint_states`, no TF, no new input) keeps
+an anchor of the base dofs' measured positions; once one leaves it by more than
+`station_motion_translation_m` (prismatic dof, default 0.02 m) or
+`station_motion_rotation_rad` (revolute dof, default 0.02 rad ≈ 20 mm at 1 m reach),
+on that tick:
+
+- `safety.station_left reason=base_moving dof=… delta=… limit=…` (WARN, only when an
+  allowance was live), then `safety.grasp_region_dropped reason=base_moving`,
+  `safety.place_region_dropped reason=base_moving`,
+  `safety.workspace_region_dropped reason=base_moving`,
+  `safety.released_payload_closed … reason=base_moving` /
+  `safety.tracked_release_closed … reason=base_moving` as applicable;
+- the grasp identity joins the retired set; every open release window closes (the frozen
+  box stays a plain obstacle, nothing exempt against it); the anchor moves to the new pose;
+- the time is stamped: any grasp / place / workspace declaration or region measurement
+  stamped at or before it is refused afterwards (`reason=base_moved`). A stop does **not**
+  restore an allowance: only a fresh declaration (stamped after the drive) arms again.
+
+Displacement from an anchor, not per-tick velocity: standstill noise (encoders do not tick
+at rest, sim jitter is sub-mm) never accumulates into a trip, and a drive trips within its
+first 20 mm (one voxel, the grasp region's own tolerance). Both thresholds are refused at
+configure outside `(0, 0.05]` — tunable per robot, never off. A fixed-base robot (no base
+dofs) never runs the rule: behaviour unchanged. Strictly more conservative; Safety-WG
+review, a hazard-log row and a decision record are owed, sim-only until then. Tests:
+`test_lifecycle_kernel.cpp` "Station mode".
+
 ## Link geometry for the world-voxel check (staged 26-DOP → convex hull)
 
 The arm-link↔world-voxel narrow phase is **staged** for any link whose manifest

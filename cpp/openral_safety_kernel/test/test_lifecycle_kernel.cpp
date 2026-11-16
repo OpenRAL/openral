@@ -8389,8 +8389,9 @@ openral_msgs::msg::WorldStateStamped producer_state(bool released, const std::st
 }
 
 struct DeclaredReleaseRig : ReleaseRig {
-  explicit DeclaredReleaseRig(const std::string& name)
-      : ReleaseRig(name, declared_release_params()) {
+  explicit DeclaredReleaseRig(const std::string& name,
+                              std::vector<rclcpp::Parameter> params = declared_release_params())
+      : ReleaseRig(name, std::move(params)) {
     rig.state_fn = [](std::int64_t stream_ns) {
       auto msg = producer_state(false, "", "");
       msg.attachment_stamp_ns = stream_ns;
@@ -9654,4 +9655,241 @@ TEST_F(LifecycleKernelTest, MisShapedOrUnsoundCurveParamsFailConfigure) {
                                              std::vector<std::int64_t>{-1, 4294967296, 0}))),
             CR::FAILURE)
       << "an offset past int range must not narrow to a valid one";
+}
+
+// ── Station mode: allowances retire when the mobile base moves ──────────────
+//
+// A mobile manipulator standing still is a fixed-base station. Every contact
+// allowance (grasp region, place region, #349 workspace, the tracked grasp key)
+// is declared in the base frame the voxel grid lives in, so it is valid only
+// while the base holds the pose it had when the allowance was declared. These
+// rigs mount the 1-dof finger rigs above on a prismatic base dof (`base_x`,
+// dof 1, `collision_base_dofs={1}`); FK zeroes it, so the geometry is exactly
+// the fixed-base rig's and only the measured base displacement differs.
+
+namespace {
+
+std::vector<rclcpp::Parameter> on_mobile_base(std::vector<rclcpp::Parameter> p) {
+  const auto set = [&](const char* name, const rclcpp::ParameterValue& v) {
+    p = with_param(p, name, v);
+  };
+  set("n_dof", rclcpp::ParameterValue(std::int64_t{2}));
+  set("joint_position_min", rclcpp::ParameterValue(std::vector<double>{-3.14, -10.0}));
+  set("joint_position_max", rclcpp::ParameterValue(std::vector<double>{3.14, 10.0}));
+  set("joint_velocity_max", rclcpp::ParameterValue(std::vector<double>{3.15, 10.0}));
+  set("joint_torque_max", rclcpp::ParameterValue(std::vector<double>{5.0, 100.0}));
+  set("collision_n_links", rclcpp::ParameterValue(std::int64_t{2}));
+  set("collision_parent", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0}));
+  // base_x prismatic along x (dof 1), the finger link revolute about z (dof 0).
+  set("collision_joint_kind", rclcpp::ParameterValue(std::vector<std::int64_t>{2, 1}));
+  set("collision_dof_index", rclcpp::ParameterValue(std::vector<std::int64_t>{1, 0}));
+  set("collision_origin_xyzrpy", rclcpp::ParameterValue(std::vector<double>(12, 0.0)));
+  set("collision_axis", rclcpp::ParameterValue(std::vector<double>{1, 0, 0, 0, 0, 1}));
+  set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{1}));
+  set("collision_link_names",
+      rclcpp::ParameterValue(std::vector<std::string>{"base_x_link", "link0"}));
+  set("collision_joint_names", rclcpp::ParameterValue(std::vector<std::string>{"j0", "base_x"}));
+  set("collision_base_dofs", rclcpp::ParameterValue(std::vector<std::int64_t>{1}));
+  return p;
+}
+
+// `chunk` (a 1-dof finger row) with the base dof held at `base`.
+openral_msgs::msg::ActionChunk with_base(openral_msgs::msg::ActionChunk chunk, double base) {
+  chunk.n_dof = 2;
+  chunk.flat = {chunk.flat.at(0), base};
+  return chunk;
+}
+
+void mount(GraspRig& rig, double base) {
+  rig.js_names = {"j0", "base_x"};
+  rig.js_tail = {base};
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AStillMobileBaseKeepsTheGraspExemptionThroughOdometryNoise) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_still", on_mobile_base(grasp_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  // Standstill jitter of +/-5 mm on the base: under the 20 mm default.
+  for (int i = 0; i < 40; ++i) {
+    rig.js_tail = {(i % 2 == 0) ? 0.005 : -0.005};
+    rig.beat(&b, 0.0);
+  }
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), -0.005)))
+      << "a still base is a station: the declared finger is exempt as on a fixed base; "
+      << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseRetiresTheGraspExemptionAndAStopDoesNotRestoreIt) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_grasp", on_mobile_base(grasp_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0))) << logs.joined();
+  // The base drives 50 mm and stops there; the producer keeps heartbeating the
+  // SAME declaration (its stamp predates the drive).
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("reason=base_moving target=cell:cube"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched())
+      << "the same contact is a violation again once the base has moved";
+}
+
+TEST_F(LifecycleKernelTest, AFreshDeclarationAfterTheBaseStopsArmsAgain) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_fresh", on_mobile_base(grasp_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, kGraspClearQ, 200);
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 200);
+  ASSERT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+  // At the new station: a new declaration (stamped after the drive) arms.
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  EXPECT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05))) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ATurningBaseRetiresTheGraspExemption) {
+  // The same rig with the base dof revolute (base_yaw): 0.05 rad > 0.02 rad.
+  LogCapture logs;
+  auto params = on_mobile_base(grasp_params());
+  params = with_param(params, "collision_joint_kind",
+                      rclcpp::ParameterValue(std::vector<std::int64_t>{1, 1}));
+  params = with_param(params, "collision_axis",
+                      rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 0, 0, 1}));
+  GraspRig rig("kernel_station_turn", params);
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0))) << logs.joined();
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseRetiresTheConfirmedWorkspace) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_ws", on_mobile_base(workspace_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0))) << logs.joined();
+  ASSERT_EQ(logs.count("safety.workspace_region_armed target=cell:cube"), 1U) << logs.joined();
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=base_moving"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_armed target=cell:cube"), 1U)
+      << "the stale declaration's workspace never re-arms at the new pose";
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseRetiresThePlaceRegion) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_place", on_mobile_base(place_declaration_params()));
+  mount(rig, 0.0);
+  rig.voxels = declared_target_voxels();
+  const std::int64_t measured_ns = rig.now_ns();
+  rig.state_fn = [measured_ns](std::int64_t stream_ns) {
+    return declared_carry_state(stream_ns, measured_ns, /*timeout_s=*/60.0);
+  };
+  rig.start();
+  rig.warm(nullptr, 0.0, 100);
+  ASSERT_TRUE(rig.offer_chunk(nullptr, 0.0, with_base(declared_carry_chunk(), 0.0), 300))
+      << logs.joined();
+  rig.js_tail = {0.05};
+  rig.warm(nullptr, 0.0, 300);
+  EXPECT_EQ(logs.count("safety.place_region_dropped reason=base_moving"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, with_base(declared_carry_chunk(), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched())
+      << "a place region declared at the previous station allows nothing here";
+}
+
+TEST_F(LifecycleKernelTest, AFixedBaseArmNeverLeavesItsStation) {
+  // No collision_base_dofs: the arm swinging through its whole range is not a
+  // base motion; the exemption stands exactly as before station mode.
+  LogCapture logs;
+  GraspRig rig("kernel_station_fixed");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  for (double q = -1.5; q <= 1.5; q += 0.25) {
+    rig.beat(&b, q);
+  }
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("station"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, StationMotionThresholdsAreBoundedAtConfigure) {
+  // Tunable, never off: a threshold that is not finite, not positive, or past
+  // the cap would let a moved base keep its allowances.
+  int n = 0;
+  for (const char* name : {"station_motion_translation_m", "station_motion_rotation_rad"}) {
+    for (const double v : {0.0, -0.01, std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(), 0.051}) {
+      GraspRig rig(std::string("kernel_") + name + "_" + std::to_string(n++),
+                   with_param(on_mobile_base(grasp_params()), name, rclcpp::ParameterValue(v)));
+      EXPECT_FALSE(rig.configure()) << name << "=" << v;
+    }
+    GraspRig cap(std::string("kernel_") + name + "_cap",
+                 with_param(on_mobile_base(grasp_params()), name, rclcpp::ParameterValue(0.05)));
+    EXPECT_TRUE(cap.configure()) << name << " at the cap";
+  }
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseClosesAnOpenReleaseWindowOnTheSameTick) {
+  // The released record is frozen in the BASE frame: once the base drives, the box rides with
+  // the robot while the object stays put. The window closes on the tick the motion is seen (the
+  // HAL's own close follows on its 0.2 s heartbeat), so the touching finger is no longer exempt.
+  // `j2` (the root-level prismatic `other`) is the mobile-base dof here.
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_station_release",
+                       with_param(declared_release_params(), "collision_base_dofs",
+                                  rclcpp::ParameterValue(std::vector<std::int64_t>{2})));
+  r.jaw(0.30, 300);
+  r.let_go();  // 200 ms into the 0.4 s window
+  ASSERT_EQ(logs.count("safety.released_payload object=grasped_payload:hand by=hand"), 1U)
+      << logs.joined();
+  r.rig.js_tail = {0.988, 0.05};  // the base drives 50 mm
+  r.rig.warm(nullptr, 0.0, 60);
+  EXPECT_EQ(logs.count("safety.released_payload_closed object=grasped_payload:hand "
+                       "reason=base_moving"),
+            1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("reason=timeout"), 0U) << "closed by the drive, not the timeout";
+  EXPECT_FALSE(r.passes(0.0, 0.05)) << logs.joined();
+  EXPECT_EQ(logs.count("b=finger step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStillBaseLeavesTheReleaseWindowToItsOwnClose) {
+  // Control for the test above: the same rig, base still, the finger touching inside the window
+  // is exempt exactly as on a fixed base.
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_station_release_still",
+                       with_param(declared_release_params(), "collision_base_dofs",
+                                  rclcpp::ParameterValue(std::vector<std::int64_t>{2})));
+  r.jaw(0.30, 300);
+  r.let_go();
+  EXPECT_TRUE(r.passes(0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
 }
