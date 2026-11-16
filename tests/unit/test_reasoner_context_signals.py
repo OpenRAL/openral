@@ -229,3 +229,49 @@ def test_a_status_expiring_during_the_render_is_not_marked_seen() -> None:
     second = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert second.suppressed_reason != "heartbeat_idle"
     assert second.tool_call is not None
+
+
+def test_a_status_expiring_mid_render_then_refreshed_wakes_the_next_beat() -> None:
+    """Reverse race: the model is shown UNKNOWN, then a live status returns before ``seq``
+    is read again. It must not stay on UNKNOWN behind ``heartbeat_idle``."""
+    from openral_core import EmitPromptTool
+    from openral_reasoner import MissionState, ReasonerCore, ToolPalette
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    now = [10.0]
+    renderer = ContextRenderer(now_ns=lambda: int(now[0] * _S))
+    renderer.set_mission(MissionState.from_prompt("pick the cube"))
+    renderer.set_safety_status(
+        SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S))
+    )
+
+    class _ExpireAfterSnapshot(ContextRenderer):
+        expire_next_read = True
+
+        @property
+        def seq(self) -> int:
+            value = super().seq
+            if self.expire_next_read:  # the status expires right after the snapshot
+                self.expire_next_read = False
+                now[0] += SAFETY_STATUS_LIVENESS_S + 1.0
+            return value
+
+    renderer.__class__ = _ExpireAfterSnapshot
+    contexts: list[str] = []
+
+    def select(context: str, _palette: ToolPalette) -> EmitPromptTool:
+        contexts.append(context)
+        return EmitPromptTool(target_topic="/openral/prompt", text=str(len(contexts)))
+
+    core = ReasonerCore(client=FakeToolUseClient(selector=select), min_interval_s=0.0)
+    palette = ToolPalette(execute_rskill_ids=frozenset({"openral/rskill-pick"}))
+    core.tick(world_state=None, renderer=renderer, palette=palette, force=True)
+    assert "## SAFETY\nUNKNOWN" in contexts[-1]
+    # An unchanged live status arrives before seq is read again.
+    renderer.set_safety_status(
+        SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S))
+    )
+    second = core.tick(world_state=None, renderer=renderer, palette=palette)
+    assert second.suppressed_reason != "heartbeat_idle"
+    assert "## SAFETY\nclear" in contexts[-1]
