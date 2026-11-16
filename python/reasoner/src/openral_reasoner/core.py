@@ -560,8 +560,14 @@ class ReasonerCore:
         offered = self.offered_palette(palette, renderer)
         if self._max_skill_tools is not None:
             span.set_attribute(semconv.REASONER_OFFERED_SKILLS, sorted(offered.execute_rskill_ids))
+        # Snapshot seq BEFORE rendering: reading it can bump it (a safety status
+        # crossing its liveness window), and a crossing during the render must
+        # stay unseen so the next beat shows the model the new state. Taken
+        # after, a status expiring mid-render would be marked seen while the
+        # model was shown the old one.
+        seq = renderer.seq
         context_text = renderer.render(world_state=world_state)
-        # Snapshot seq + the rendered prompt records NOW: anything appended
+        # Snapshot the rendered prompt records NOW too: anything appended
         # while the LLM phase is in flight was not in the model's context,
         # so finish_tick must neither mark it seen nor drain it.
         return PreparedTick(
@@ -571,7 +577,7 @@ class ReasonerCore:
             renderer=renderer,
             span=span,
             started=started,
-            seq=renderer.seq,
+            seq=seq,
             prompts=renderer.prompts,
             force=force,
             tier=tier,

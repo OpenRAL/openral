@@ -320,8 +320,8 @@ _`ReasonerCore`, the transport-agnostic orchestrator. The ROS-side `reasoner_nod
   - `reset_kind_streak(self) -> None` (L354) — reset the consecutive-call counter used by the retry-cap gate.
   - `tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat') -> ReasonerTickResult` (L365) — Synchronous composition of the phased API (prepare → off-thread LLM call → finish) so the executor is never starved. Enforces the min-interval and retry cap (search tools + `wait` are exempt); short-circuits on a finished mission or idle heartbeat. `force=True` bypasses every gate but the retry cap. Wraps the tick in a `reasoner.tick` OTel span.
   - `prepare_tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat') -> PreparedTick | ReasonerTickResult` (L426) — Phase 1 of a tick: run the suppression gates and render the context; must run on the owning/executor thread.
-  - `run_prepared_llm(self, prep) -> ReasonerToolCall` (L580) — Phase 2 of a tick: the blocking `select_tool` round-trip; the ONLY phase safe off-thread.
-  - `finish_tick(self, prep, *, call=None, error=None) -> ReasonerTickResult` (L612) — Phase 3 of a tick: retry-cap ladder + bookkeeping + span close, back on the owning thread.
+  - `run_prepared_llm(self, prep) -> ReasonerToolCall` (L586) — Phase 2 of a tick: the blocking `select_tool` round-trip; the ONLY phase safe off-thread.
+  - `finish_tick(self, prep, *, call=None, error=None) -> ReasonerTickResult` (L618) — Phase 3 of a tick: retry-cap ladder + bookkeeping + span close, back on the owning thread.
 
 ### `python/reasoner/src/openral_reasoner/critic_watchdog.py`
 _Tier-C critic progress-stall / success watchdog — default decision core for the reserved `/openral/failure/critic` source. Pure logic, import-safe (no rclpy). Source-agnostic: any reward model emitting a higher-is-better scalar drives the same watchdog; the critic producer node routes samples through `CriticWatchdogGroup` and publishes to the failure bus on a fire. Fires on stall OR success, waking the reasoner promptly when an attempt is likely done._
