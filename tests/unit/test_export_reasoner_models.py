@@ -47,5 +47,5 @@ def test_every_offered_model_is_curated_and_needs_a_key_the_website_has() -> Non
     assert by_id["qwen3.5-4b"] == []
     assert labels["kimi-k3-cloud"] == "Kimi K3 (Ollama Cloud)"
     # Every other model on OpenRouter runs on the OpenRouter key alone.
-    assert by_id["kimi-k3.1-pro-openrouter"] == ["OPENROUTER_API_KEY"]
-    assert labels["kimi-k3.1-pro-openrouter"] == "Kimi K3.1 Pro (OpenRouter)"
+    assert by_id["kimi-latest-openrouter"] == ["OPENROUTER_API_KEY"]
+    assert labels["kimi-latest-openrouter"] == "Kimi, latest (OpenRouter)"

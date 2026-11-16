@@ -142,7 +142,9 @@ def test_curated_openrouter_models(monkeypatch: pytest.MonkeyPatch, model_key: s
 @pytest.mark.parametrize(
     ("model_key", "served", "tool_choice"),
     [
-        ("gemini-4-hydrogen-openrouter", "google/gemini-4-hydrogen", "required"),
+        # An OpenRouter alias that always serves the family's newest model, sent as is.
+        ("gemini-pro-latest-openrouter", "~google/gemini-pro-latest", "required"),
+        ("mistral-large-4-openrouter", "mistralai/mistral-large-4-0", "required"),
         # Qwen 3.8 Flash 400s on a forced tool call (measured on OpenRouter).
         ("qwen3.8-flash-openrouter", "qwen/qwen3.8-flash", "auto"),
     ],

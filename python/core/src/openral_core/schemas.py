@@ -15701,20 +15701,31 @@ _OLLAMA_CLOUD_MODELS: tuple[tuple[str, str, str], ...] = (
 # on ``auto`` (it 400s on ``required``, 2/5 under 10 s), GLM-5.3 Flash 18-33 s.
 # Measure each against the #494 bar and drop those that miss it.
 _OPENROUTER_MODELS: tuple[tuple[str, str, str, Literal["required", "auto"]], ...] = (
-    ("gemini-4-hydrogen-openrouter", "google/gemini-4-hydrogen", "Gemini 4 Hydrogen", "required"),
-    ("gemini-3.8-flash-openrouter", "google/gemini-3.8-flash", "Gemini 3.8 Flash", "required"),
-    ("grok-4.7-openrouter", "x-ai/grok-4.7", "Grok 4.7", "required"),
+    # ``~<vendor>/<family>-latest``: OpenRouter's aliases that always serve the newest
+    # model of the family, used wherever one passes the filter above (checked
+    # 2026-11-16). An alias can later point at a model without vision or tools
+    # (``~deepseek/deepseek-v4-flash-latest`` already has no vision).
+    ("gemini-pro-latest-openrouter", "~google/gemini-pro-latest", "Gemini Pro, latest", "required"),
     (
-        "deepseek-v4.1-flash-openrouter",
-        "deepseek/deepseek-v4.1-flash",
-        "DeepSeek V4.1 Flash",
+        "gemini-flash-latest-openrouter",
+        "~google/gemini-flash-latest",
+        "Gemini Flash, latest",
         "required",
     ),
+    ("grok-latest-openrouter", "~x-ai/grok-latest", "Grok, latest", "required"),
+    (
+        "deepseek-flash-latest-openrouter",
+        "~deepseek/deepseek-flash-latest",
+        "DeepSeek Flash, latest",
+        "required",
+    ),
+    ("kimi-latest-openrouter", "~moonshotai/kimi-latest", "Kimi, latest", "required"),
+    ("glm-flash-latest-openrouter", "~z-ai/glm-flash-latest", "GLM Flash, latest", "required"),
+    # No alias for these families: the newest model as of 2026-11-16.
     ("qwen3.8-max-prime-openrouter", "qwen/qwen3.8-max-prime", "Qwen 3.8 Max Prime", "required"),
+    # Qwen 3.8 Flash 400s on a forced tool call (measured 2026-11-15).
     ("qwen3.8-flash-openrouter", "qwen/qwen3.8-flash", "Qwen 3.8 Flash", "auto"),
-    ("kimi-k3.1-pro-openrouter", "moonshotai/kimi-k3.1-pro", "Kimi K3.1 Pro", "required"),
     ("glm-5.3-flashx-openrouter", "z-ai/glm-5.3-flashx", "GLM-5.3 FlashX", "required"),
-    ("glm-5.3-flash-openrouter", "z-ai/glm-5.3-flash", "GLM-5.3 Flash", "required"),
     ("mistral-large-4-openrouter", "mistralai/mistral-large-4-0", "Mistral Large 4", "required"),
     ("mistral-small-4-openrouter", "mistralai/mistral-small-2603", "Mistral Small 4", "required"),
     ("muse-wonder-openrouter", "meta/muse-wonder", "Muse Wonder", "required"),
