@@ -19,6 +19,7 @@ publisher, no service client, no authority over the robot.
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,8 @@ __all__ = [
     "SafetyStatusSubscriber",
     "drop_reason_label",
 ]
+
+_LOG = logging.getLogger(__name__)
 
 SAFETY_STATUS_TOPIC = "/openral/safety_status"
 # The safety kernel's typed stops (``FailureTrigger``); the console's trace shows each.
@@ -64,7 +67,9 @@ class SafetyStatusSubscriber:
         self._owns_rclpy = False
         try:
             self._start()
-        except Exception:  # reason: a ROS hiccup must never break the dashboard
+        except Exception as exc:  # reason: a ROS hiccup must never break the dashboard
+            # Loud, not silent: an inert subscriber means no safety state and no stop rows.
+            _LOG.warning("dashboard.safety_subscriber_start_failed error=%r", exc)
             self.close()
 
     def _start(self) -> None:
@@ -134,17 +139,36 @@ class SafetyStatusSubscriber:
         )
 
     def _on_failure(self, msg: Any) -> None:  # reason: ROS message is untyped
-        """Write one kernel ``FailureTrigger`` into the store (runs on the spin thread)."""
-        stamp = msg.header.stamp
-        cls = type(msg)
-        self._store.record_safety_failure(
-            kind_label=drop_reason_label(int(msg.kind), cls, ("KIND_",)),
-            severity_label=drop_reason_label(int(msg.severity), cls, ("SEVERITY_",)),
-            evidence_json=str(msg.evidence_json),
-            rskill_id=str(msg.rskill_id),
-            trace_id=str(msg.trace_id),
-            stamp_unix=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
-        )
+        """Write one kernel ``FailureTrigger`` into the store (runs on the spin thread).
+
+        Never raises: an exception escaping a callback ends the executor's spin thread,
+        which silently stops every later status and stop. It is logged instead.
+        """
+        try:
+            stamp = msg.header.stamp
+            cls = type(msg)
+            kind = drop_reason_label(int(msg.kind), cls, ("KIND_",))
+            _LOG.warning(
+                "dashboard.safety_failure kind=%s rskill_id=%s evidence=%.200s",
+                kind,
+                msg.rskill_id,
+                msg.evidence_json,
+            )
+            self._store.record_safety_failure(
+                kind_label=kind,
+                severity_label=drop_reason_label(int(msg.severity), cls, ("SEVERITY_",)),
+                evidence_json=str(msg.evidence_json),
+                rskill_id=str(msg.rskill_id),
+                trace_id=str(msg.trace_id),
+                stamp_unix=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+            )
+        except Exception as exc:  # reason: see docstring; the failure is logged, not lost
+            _LOG.warning(
+                "dashboard.safety_failure_dropped error=%r kind=%s evidence=%.200s",
+                exc,
+                getattr(msg, "kind", "?"),
+                getattr(msg, "evidence_json", ""),
+            )
 
     def _on_diagnostics(self, msg: Any) -> None:  # reason: ROS message is untyped
         """Record each HAL heartbeat's ``estopped`` (runs on the spin thread)."""

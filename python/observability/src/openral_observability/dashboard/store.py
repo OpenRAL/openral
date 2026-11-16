@@ -743,6 +743,11 @@ class TelemetryStore:
             stamp_unix: ``header.stamp`` as Unix seconds.
         """
         latched = severity_label in ("severity_fail", "severity_abort")
+        try:
+            text = _safety_failure_text(kind_label, evidence_json, rskill_id, latched=latched)
+        except Exception as exc:  # reason: a text bug must not drop the stop; the row stays
+            _logger.warning("dashboard.safety_failure_text_failed", error=repr(exc))
+            text = f"{kind_label.removeprefix('kind_')} safety stop (text failed: {exc!r})"
         entry = {
             "kind": kind_label.removeprefix("kind_"),
             "severity": severity_label.removeprefix("severity_"),
@@ -750,7 +755,7 @@ class TelemetryStore:
             "rskill_id": rskill_id,
             "trace_id": trace_id,
             "stamp_unix": float(stamp_unix),
-            "text": _safety_failure_text(kind_label, evidence_json, rskill_id, latched=latched),
+            "text": text,
             # Same clock as the reasoner ticks the console interleaves this with.
             "ts_unix": time.time(),
         }

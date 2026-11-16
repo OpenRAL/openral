@@ -95,3 +95,84 @@ def test_place_allowance_names_its_target() -> None:
     assert "allowances: place on (shelf_2), grasp on" in str(
         _record(TelemetryStore(), ev.model_dump_json())["text"]
     )
+
+
+def test_api_state_serves_the_stop() -> None:
+    """The store -> ``/api/state`` contract the console's trace reads."""
+    import asyncio
+
+    import httpx
+    from openral_observability.dashboard import create_app
+
+    store = TelemetryStore()
+    _record(store, _COLLISION.model_dump_json())
+
+    async def get() -> dict[str, object]:
+        transport = httpx.ASGITransport(app=create_app(store))
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
+            state: dict[str, object] = (await c.get("/api/state")).json()
+            return state
+
+    stop = asyncio.run(get())["topics"]["safety_failure"]  # type: ignore[index]  # reason: JSON
+    assert stop["kind"] == "collision"
+    assert stop["text"].startswith("world collision: openarm_left_ee_link1 hit voxel_431037")
+    assert isinstance(stop["ts_unix"], float)
+
+
+def test_a_callback_failure_is_logged_not_lost(caplog: pytest.LogCaptureFixture) -> None:
+    """An exception in ``_on_failure`` would end the spin thread; it must log instead."""
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import FailureTrigger
+    from openral_observability.dashboard.safety_status_subscriber import SafetyStatusSubscriber
+
+    subscriber = SafetyStatusSubscriber.__new__(SafetyStatusSubscriber)
+    subscriber._store = None  # type: ignore[assignment]  # reason: force the store write to raise
+    msg = FailureTrigger()
+    msg.kind = FailureTrigger.KIND_COLLISION
+    msg.evidence_json = _COLLISION.model_dump_json()
+    subscriber._on_failure(msg)  # reason: must not raise
+    assert "dashboard.safety_failure_dropped" in caplog.text
+
+
+def test_live_pub_sub_reaches_the_store() -> None:
+    """A real ``FailureTrigger`` published on the ROS graph lands in the store.
+
+    Kernel-format evidence with the ``attached:pinch:...`` link the live stop named.
+    """
+    pytest.importorskip("openral_msgs")
+    import time
+
+    import rclpy
+    from openral_msgs.msg import FailureTrigger
+    from openral_observability.dashboard.safety_status_subscriber import (
+        SAFETY_FAILURE_TOPIC,
+        SafetyStatusSubscriber,
+    )
+
+    store = TelemetryStore()
+    subscriber = SafetyStatusSubscriber(store)
+    assert subscriber.available
+    node = rclpy.create_node("test_safety_failure_pub")
+    pub = node.create_publisher(FailureTrigger, SAFETY_FAILURE_TOPIC, 50)
+    msg = FailureTrigger()
+    msg.kind = FailureTrigger.KIND_COLLISION
+    msg.severity = FailureTrigger.SEVERITY_ABORT
+    msg.rskill_id = "OpenRAL/rskill-pi05-openarm-restock_subtasks-bf16"
+    msg.evidence_json = _COLLISION.model_copy(
+        update={
+            "link_a": "attached:pinch:left_gripper@44750002334",
+            "link_b_or_object": "voxel_534370",
+        }
+    ).model_dump_json()
+    try:
+        deadline = time.monotonic() + 10
+        while not store.snapshot()["topics"]["safety_failure"] and time.monotonic() < deadline:
+            pub.publish(msg)
+            time.sleep(0.2)
+        entry = store.snapshot()["topics"]["safety_failure"]
+        assert entry["text"].startswith(
+            "world collision: attached:pinch:left_gripper@44750002334 hit voxel_534370"
+        )
+    finally:
+        node.destroy_node()
+        subscriber.close()
