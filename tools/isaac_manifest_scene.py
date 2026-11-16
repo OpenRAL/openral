@@ -747,6 +747,29 @@ def matrix_quat_wxyz(m: NDArray[np.float64]) -> NDArray[np.float64]:
     return out / np.linalg.norm(out)
 
 
+def prim_own_bounds(
+    prim: Any,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:  # reason: pxr.Usd.Prim
+    """``(min, max)`` of ``prim``'s geometry in its OWN frame (its transform not applied).
+
+    The frame ``_capture_carried`` tests a carried object in. USD's ``ComputeLocalBound``
+    is in the PARENT's frame: for a tote 0.9 m from its parent's origin it gave a box
+    around x = 0.7..1.0 m while the cartons inside sit near x = 0 in the tote's frame,
+    so nothing was ever carried (q5090, 2026-11-16).
+    """
+    from pxr import Usd, UsdGeom
+
+    box = (
+        UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+        .ComputeUntransformedBound(prim)
+        .ComputeAlignedRange()
+    )
+    return (
+        np.asarray(box.GetMin(), dtype=np.float64),
+        np.asarray(box.GetMax(), dtype=np.float64),
+    )
+
+
 def attachment_local_pose(
     parent_from_world: NDArray[np.float64],
     world_from_link: NDArray[np.float64],
@@ -2456,7 +2479,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 on), or the link is not in the imported robot.
         """
         from isaacsim.core.utils.stage import get_current_stage
-        from pxr import Usd, UsdGeom, UsdPhysics
+        from pxr import UsdGeom, UsdPhysics
 
         stage = get_current_stage()
         cache = UsdGeom.XformCache()
@@ -2489,11 +2512,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 cache.GetLocalToWorldTransform(prim.GetParent()), dtype=np.float64
             ).T
             UsdPhysics.RigidBodyAPI.Apply(prim).CreateKinematicEnabledAttr(True)
-            box = (
-                UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
-                .ComputeLocalBound(prim)
-                .GetRange()
-            )
+            lo, hi = prim_own_bounds(prim)
             xform = UsdGeom.Xformable(prim)
             xform.ClearXformOpOrder()
             self._attachments.append(
@@ -2509,10 +2528,7 @@ class IsaacManifestScene(IsaacSceneBase):
                         np.linalg.inv(world_from_root) @ world_from_link, dtype=np.float64
                     ),
                     carries=tuple(att.get("carries") or ()),
-                    local_bounds=(
-                        np.asarray(box.GetMin(), dtype=np.float64),
-                        np.asarray(box.GetMax(), dtype=np.float64),
-                    ),
+                    local_bounds=(lo, hi),
                 )
             )
             print(

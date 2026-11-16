@@ -1503,3 +1503,27 @@ def test_raycast_all_keeps_a_near_world_hit_and_misses_read_range_max(
         None, range_min_m=0.05, raycast_all=_world_all("/panda/base_link"), **_BEAM
     )
     assert empty == pytest.approx(12.0)
+
+
+def test_a_tote_away_from_its_parents_origin_still_contains_its_cartons(
+    _manifest_scene_mod: object,
+) -> None:
+    """The carry test is done in the tote's own frame, so its bounds must be too.
+
+    q5090, 2026-11-16: with the bound in the parent's frame a tote at x = 0.88 m got a box
+    around x = 0.7..1.0 m, its cartons (near the tote's origin) were "outside", and the
+    tote never carried them.
+    """
+    pytest.importorskip("pxr")
+    from pxr import Gf, Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    tote = UsdGeom.Xform.Define(stage, "/World/Tote")
+    tote.AddTranslateOp().Set(Gf.Vec3d(0.88, -1.14, 0.2585))
+    wall = UsdGeom.Cube.Define(stage, "/World/Tote/Walls")
+    wall.CreateSizeAttr(1.0)
+    wall.AddScaleOp().Set(Gf.Vec3f(0.28, 0.40, 0.14))
+    lo, hi = _manifest_scene_mod.prim_own_bounds(tote.GetPrim())  # type: ignore[attr-defined]
+    assert lo == pytest.approx([-0.14, -0.20, -0.07]) and hi == pytest.approx([0.14, 0.20, 0.07])
+    carton_in_tote = [0.044, 0.094, 0.0]  # the stock carton, in the tote's frame
+    assert all(a <= c <= b for a, c, b in zip(lo, carton_in_tote, hi, strict=True))
