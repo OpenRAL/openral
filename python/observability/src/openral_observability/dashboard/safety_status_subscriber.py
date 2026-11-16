@@ -30,12 +30,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DIAGNOSTICS_TOPIC",
+    "SAFETY_FAILURE_TOPIC",
     "SAFETY_STATUS_TOPIC",
     "SafetyStatusSubscriber",
     "drop_reason_label",
 ]
 
 SAFETY_STATUS_TOPIC = "/openral/safety_status"
+# The safety kernel's typed stops (``FailureTrigger``); the console's trace shows each.
+SAFETY_FAILURE_TOPIC = "/openral/failure/safety"
 # The HAL lifecycle node's 1 Hz heartbeat carries its own e-stop latch (``estopped``):
 # a kernel release does not release a HAL that needs a restart, or whose re-arm failed.
 DIAGNOSTICS_TOPIC = "/diagnostics"
@@ -55,6 +58,7 @@ class SafetyStatusSubscriber:
         self._node: Any = None
         self._subscription: Any = None
         self._diagnostics: Any = None
+        self._failures: Any = None
         self._executor: Any = None
         self._thread: threading.Thread | None = None
         self._owns_rclpy = False
@@ -65,7 +69,7 @@ class SafetyStatusSubscriber:
 
     def _start(self) -> None:
         import rclpy
-        from openral_msgs.msg import SafetyStatus
+        from openral_msgs.msg import FailureTrigger, SafetyStatus
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.node import Node
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -84,6 +88,13 @@ class SafetyStatusSubscriber:
         )
         self._subscription = self._node.create_subscription(
             SafetyStatus, SAFETY_STATUS_TOPIC, self._on_status, qos
+        )
+        # The kernel's publisher profile (RELIABLE, VOLATILE); depth absorbs a burst.
+        self._failures = self._node.create_subscription(
+            FailureTrigger,
+            SAFETY_FAILURE_TOPIC,
+            self._on_failure,
+            QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=50),
         )
         try:
             from diagnostic_msgs.msg import DiagnosticArray
@@ -117,6 +128,19 @@ class SafetyStatusSubscriber:
             drop_reason=int(msg.drop_reason),
             drop_reason_label=drop_reason_label(int(msg.drop_reason), type(msg)),
             detail=str(msg.detail),
+            rskill_id=str(msg.rskill_id),
+            trace_id=str(msg.trace_id),
+            stamp_unix=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+        )
+
+    def _on_failure(self, msg: Any) -> None:  # reason: ROS message is untyped
+        """Write one kernel ``FailureTrigger`` into the store (runs on the spin thread)."""
+        stamp = msg.header.stamp
+        cls = type(msg)
+        self._store.record_safety_failure(
+            kind_label=drop_reason_label(int(msg.kind), cls, ("KIND_",)),
+            severity_label=drop_reason_label(int(msg.severity), cls, ("SEVERITY_",)),
+            evidence_json=str(msg.evidence_json),
             rskill_id=str(msg.rskill_id),
             trace_id=str(msg.trace_id),
             stamp_unix=float(stamp.sec) + float(stamp.nanosec) * 1e-9,

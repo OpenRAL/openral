@@ -132,7 +132,11 @@ class FailureSource(str, Enum):
     WORLD_STATE = "world_state"  # issue #418: the object tracker's query escalations
 
 
-def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message class is untyped
+def drop_reason_label(
+    code: int,
+    status_cls: Any,  # reason: ROS message class is untyped
+    prefixes: tuple[str, ...] = ("KIND_", "DROP_"),
+) -> str:
     """Name a ``SafetyStatus.drop_reason`` from the IDL's own constants.
 
     Reverse-maps the value against the generated message class's ``KIND_*`` /
@@ -143,7 +147,10 @@ def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message
 
     Args:
         code: The ``drop_reason`` value received on the wire.
-        status_cls: The generated ``openral_msgs.msg.SafetyStatus`` class.
+        status_cls: The generated ``openral_msgs.msg.SafetyStatus`` class (or
+            ``FailureTrigger``, whose ``kind`` / ``severity`` map the same way).
+        prefixes: Constant-name prefixes to match (``("SEVERITY_",)`` for a
+            ``FailureTrigger.severity``).
 
     Returns:
         The constant's name lower-cased (e.g. ``"kind_collision"``), or
@@ -159,7 +166,7 @@ def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message
         'drop_reason_200'
     """
     for name in dir(status_cls):
-        if not name.startswith(("KIND_", "DROP_")):
+        if not name.startswith(prefixes):
             continue
         if getattr(status_cls, name, None) == code:
             return name.lower()

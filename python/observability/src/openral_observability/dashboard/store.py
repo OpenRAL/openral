@@ -33,11 +33,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
-from openral_core import RobotManifest
+from openral_core import CollisionEvidence, FailureEvidence, RobotManifest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs
 from opentelemetry.proto.metrics.v1.metrics_pb2 import Metric, ResourceMetrics
 from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, Span
+from pydantic import TypeAdapter, ValidationError
 
 from openral_observability import semconv
 
@@ -452,6 +453,10 @@ class TelemetryStore:
             # workspace sourced shows forever; the card renders "waiting", never
             # a fabricated "clear".
             "safety_status": {},
+            # The last safety-kernel ``FailureTrigger`` from /openral/failure/safety
+            # (``record_safety_failure``): the console's trace shows it as an error
+            # row. Empty until a kernel stops something.
+            "safety_failure": {},
             "system": {},  # populated by metrics ingest (gpu/cpu/ram)
             # Live 2D SLAM occupancy map from slam_toolbox (and any
             # future Reasoner-managed mapping service). Populated by
@@ -710,6 +715,47 @@ class TelemetryStore:
                 self._topics["safety"]["estopped"] = True
             elif was_latched:
                 self._topics["safety"]["estopped"] = False
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
+    def record_safety_failure(
+        self,
+        *,
+        kind_label: str,
+        severity_label: str,
+        evidence_json: str,
+        rskill_id: str,
+        trace_id: str,
+        stamp_unix: float,
+    ) -> None:
+        """Record one safety-kernel ``FailureTrigger`` for the console's trace.
+
+        Called from ``SafetyStatusSubscriber``'s spin thread for every message on
+        ``/openral/failure/safety``. The one-line ``text`` is built here, not in the
+        console, so its wording changes with the dashboard rather than a console release.
+
+        Args:
+            kind_label: The ``kind`` constant's name (e.g. ``"kind_collision"``).
+            severity_label: The ``severity`` constant's name (e.g. ``"severity_fail"``).
+            evidence_json: The serialized ``openral_core.FailureEvidence``.
+            rskill_id: The skill the kernel stopped, if known.
+            trace_id: W3C traceparent for correlation, if any.
+            stamp_unix: ``header.stamp`` as Unix seconds.
+        """
+        latched = severity_label in ("severity_fail", "severity_abort")
+        entry = {
+            "kind": kind_label.removeprefix("kind_"),
+            "severity": severity_label.removeprefix("severity_"),
+            "latched": latched,
+            "rskill_id": rskill_id,
+            "trace_id": trace_id,
+            "stamp_unix": float(stamp_unix),
+            "text": _safety_failure_text(kind_label, evidence_json, rskill_id, latched=latched),
+            # Same clock as the reasoner ticks the console interleaves this with.
+            "ts_unix": time.time(),
+        }
+        with self._lock:
+            self._topics["safety_failure"] = entry
             payload = self._snapshot_locked()
         self._publish(payload)
 
@@ -1734,6 +1780,73 @@ def _reasoner_detail(attrs: dict[str, Any]) -> str | None:
     if rationale := " ".join(str(attrs.get(semconv.REASONER_RATIONALE) or "").split()):
         line = f"{line} — {rationale}" if line else rationale
     return line or None
+
+
+_FAILURE_EVIDENCE: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+
+
+def _signed(value: float, positive: str, negative: str) -> str:
+    return f"{abs(value):.2f} m {positive if value >= 0 else negative}"
+
+
+def _collision_text(ev: CollisionEvidence) -> list[str]:
+    """``<link> hit <other> · <depth> mm deep · cell … · allowances …`` for one stop."""
+    parts = [f"{ev.collision_kind} collision: {ev.link_a} hit {ev.link_b_or_object}"]
+    if ev.min_distance_m < 0:
+        parts.append(f"{-ev.min_distance_m * 1000:.1f} mm deep")
+    else:
+        parts.append(f"{ev.min_distance_m * 1000:.1f} mm clearance")
+    if ev.world_cell_center_m is not None:
+        x, y, z = ev.world_cell_center_m
+        parts.append(
+            f"cell {_signed(x, 'forward', 'back')}, {_signed(y, 'left', 'right')}, "
+            f"{_signed(z, 'up', 'down')} of the robot base"
+        )
+
+    def flag(name: str, on: bool | None, extra: str = "") -> str:
+        return f"{name} {'?' if on is None else 'on' if on else 'off'}{extra}"
+
+    source = f" ({ev.grasp_exemption_source})" if ev.grasp_exemption_source else ""
+    # ponytail: the kernel's place_allowance_active is not in CollisionEvidence yet, so
+    # the place allowance cannot be shown; add it here when the schema carries it.
+    parts.append(
+        "allowances: "
+        + ", ".join(
+            (
+                flag("grasp", ev.grasp_exemption_active, source),
+                flag("workspace", ev.workspace_contact_active),
+            )
+        )
+    )
+    return parts
+
+
+def _safety_failure_text(
+    kind_label: str, evidence_json: str, rskill_id: str, *, latched: bool
+) -> str:
+    """One line saying what the safety kernel stopped and why, for the trace row.
+
+    Decodes ``evidence_json`` with the core ``FailureEvidence`` union; a payload that
+    does not decode is shown raw (truncated) rather than dropped.
+    """
+    parts: list[str] = []
+    try:
+        ev = _FAILURE_EVIDENCE.validate_json(evidence_json) if evidence_json else None
+    except ValidationError:
+        ev = None
+        parts.append(f"{kind_label.removeprefix('kind_')}: evidence={evidence_json[:120]!r}")
+    if isinstance(ev, CollisionEvidence):
+        parts.extend(_collision_text(ev))
+    elif ev is not None:
+        fields = {k: v for k, v in ev.model_dump(exclude_none=True).items() if k != "kind"}
+        parts.append(f"{ev.kind}: " + ", ".join(f"{k}={v}" for k, v in fields.items() if v != []))
+    elif not parts:
+        parts.append(kind_label.removeprefix("kind_"))
+    if rskill_id:
+        parts.append(f"stopped {rskill_id.rsplit('/', 1)[-1]}")
+    if latched:
+        parts.append("latched: needs an operator reset")
+    return " · ".join(parts)
 
 
 def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str:
