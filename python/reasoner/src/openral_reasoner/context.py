@@ -939,15 +939,31 @@ class ContextRenderer:
         """
         before = self._safety
         self._safety = status
-        fresh = self._safety_fresh()
-        if (
-            before is None
-            or status is None
-            or (before.latched, before.reason) != (status.latched, status.reason)
-            or fresh != self._safety_was_fresh
-        ):
+        if status is None:
+            self._safety_was_fresh = None
             self._seq += 1
-        self._safety_was_fresh = fresh if status is not None else None
+            return
+        changed = before is None or (before.latched, before.reason) != (
+            status.latched,
+            status.reason,
+        )
+        if not self._note_safety_freshness(self._safety_fresh()) and changed:
+            self._seq += 1
+
+    def _note_safety_freshness(self, fresh: bool) -> bool:
+        """Record the safety status's freshness; bump ``seq`` when it changed.
+
+        The one place freshness is tracked: receiving a status, reading ``seq``
+        and rendering ``## SAFETY`` all report what they saw here, so the state
+        the model was last shown and the state ``seq`` tracks cannot disagree
+        (a status expiring mid-render, then refreshed, must still wake the next
+        beat). Returns whether it bumped.
+        """
+        if fresh == self._safety_was_fresh:
+            return False
+        self._safety_was_fresh = fresh
+        self._seq += 1
+        return True
 
     def _safety_fresh(self) -> bool:
         """Whether the last safety status is recent enough to trust.
@@ -1272,7 +1288,11 @@ class ContextRenderer:
         """One line: latched / dropping / clear, or UNKNOWN when the topic went quiet."""
         st = self._safety
         assert st is not None  # render() guards `is not None` before calling
-        if not self._safety_fresh():
+        fresh = self._safety_fresh()
+        # What is rendered here is what the model is shown: record it, so a
+        # crossing seen only by the render still wakes the next beat.
+        self._note_safety_freshness(fresh)
+        if not fresh:
             quiet = (
                 "no clock to tell whether the last safety status is current"
                 if self._now_ns is None
@@ -1572,10 +1592,7 @@ class ContextRenderer:
         the change reaches the model instead of being held as ``heartbeat_idle``.
         """
         if self._safety is not None:
-            fresh = self._safety_fresh()
-            if fresh != self._safety_was_fresh:
-                self._safety_was_fresh = fresh
-                self._seq += 1
+            self._note_safety_freshness(self._safety_fresh())
         return self._seq
 
     def drain_prompts(
