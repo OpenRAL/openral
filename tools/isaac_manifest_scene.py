@@ -2595,9 +2595,23 @@ class IsaacManifestScene(IsaacSceneBase):
             world_from_prim = world_from_link @ att.link_from_prim
             for name, prim_from_object in att.held.items():
                 world = world_from_prim @ prim_from_object
-                self._object_prims[name].set_world_pose(
-                    position=world[:3, 3], orientation=matrix_quat_wxyz(world)
-                )
+                position, orientation = world[:3, 3], matrix_quat_wxyz(world)
+                self._object_prims[name].set_world_pose(position=position, orientation=orientation)
+                # The physics-view write above moves the body in PhysX only; RTX renders the
+                # stage's transform, which a kinematic body never writes back, so a carried
+                # carton stayed drawn where it was captured while PhysX moved it (q5090,
+                # 2026-11-16: PhysX read back the commanded pose for the whole drive). Write
+                # the stage transform too, as the tote's own xform op does.
+                self._carried_xform(name).set_world_pose(position=position, orientation=orientation)
+
+    def _carried_xform(self, name: str) -> Any:  # reason: isaacsim.core.prims.SingleXFormPrim
+        """A stage-transform (USD) handle on scene object ``name``, created on first use."""
+        handles = self.__dict__.setdefault("_carried_xforms", {})
+        if name not in handles:
+            from isaacsim.core.prims import SingleXFormPrim
+
+            handles[name] = SingleXFormPrim(self._object_prims[name].prim_path)
+        return handles[name]
 
     def _object_world(self, name: str) -> NDArray[np.float64]:
         """World pose of scene object ``name`` as PhysX holds it."""
@@ -2624,6 +2638,7 @@ class IsaacManifestScene(IsaacSceneBase):
             world_from_prim = np.linalg.inv(att.parent_from_world) @ att.last_local
             prim_from_world = np.linalg.inv(world_from_prim)
             lo, hi = att.local_bounds
+            captured = False
             for name in att.carries:
                 if name in att.held:
                     continue
@@ -2632,7 +2647,8 @@ class IsaacManifestScene(IsaacSceneBase):
                     continue
                 self._set_kinematic(name, True)
                 att.held[name] = prim_from_object
-            if att.held:
+                captured = True
+            if captured:
                 print(
                     f"[isaac_manifest_scene] {att.prim} carries {sorted(att.held)} rigidly",
                     flush=True,
