@@ -194,3 +194,17 @@ def test_an_ollama_key_runs_an_ollama_cloud_model_and_never_the_robots_own_ollam
     # GPT is not served by Ollama Cloud: the Ollama key alone leaves it unconfigured.
     values = save_setting("OPENRAL_REASONER_MODEL", "gpt-5.5")
     assert reasoner_env(values) == {}
+
+
+def test_an_openrouter_only_model_runs_on_the_openrouter_key_alone() -> None:
+    """A ``*-openrouter`` model takes the OpenRouter key, never the OpenAI one."""
+    from openral_observability.dashboard.robot_settings import reasoner_env, save_setting
+
+    save_setting("OPENAI_API_KEY", "sk-openai-5678")
+    values = save_setting("OPENRAL_REASONER_MODEL", "minimax-m3.1-flash-openrouter")
+    assert reasoner_env(values) == {}
+    values = save_setting("OPENROUTER_API_KEY", "sk-or-v1-routerkey-1234")
+    assert reasoner_env(values) == {
+        "OPENRAL_REASONER_MODEL": "minimax-m3.1-flash-openrouter",
+        "OPENRAL_REASONER_API_KEY": "sk-or-v1-routerkey-1234",
+    }

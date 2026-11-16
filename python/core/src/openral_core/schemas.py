@@ -15558,8 +15558,8 @@ class ReasonerModel(BaseModel):
     calling" signal: every entry has been validated to reliably emit the
     discriminated ``ReasonerToolCall`` union (per-skill ``execute_rskill__*``
     tools, nested ``GroundedSubtask``, ``tool_choice`` honoured) — except the
-    ``*-cloud`` Ollama Cloud entries, offered on their declared tool and vision
-    capability and not yet measured (``_OLLAMA_CLOUD_MODELS``). There is
+    ``*-openrouter`` and ``*-cloud`` entries, offered on their declared tool and vision
+    capability and not yet measured (``_OPENROUTER_MODELS``, ``_OLLAMA_CLOUD_MODELS``). There is
     deliberately no ``robotics_tool_calling`` flag — an untested model is simply
     not in the registry, and is reachable only through the uncurated escape hatch
     with a warning.
@@ -15690,9 +15690,53 @@ _OLLAMA_CLOUD_MODELS: tuple[tuple[str, str, str], ...] = (
     ("muse-spark-open-cloud", "muse-spark-open", "Muse Spark Open"),
 )
 
+# OpenRouter models offered with an OpenRouter API key: (registry id, OpenRouter id,
+# label, tool_choice). NOT measured against the reasoner tool-calling bar either: on
+# 2026-11-16 the maintainer chose, of the 182 OpenRouter models whose catalog entry
+# declares tools, tool_choice, image input and a >= 32K window (none expiring), the
+# newest flagship and newest fast tier of each major vendor, while the account had no
+# credit. Measured on so101_follower before the credit ran out (2026-11-15): MiniMax
+# M3.1 Flash 16/16 valid (median 2.0 s), Muse Ember 12/12 (3.5 s), DeepSeek V4.1 Flash
+# 8/8 (one tick 12.9 s), Mistral Small 23/23 (8 were ``wait``), Qwen 3.8 Flash only
+# on ``auto`` (it 400s on ``required``, 2/5 under 10 s), GLM-5.3 Flash 18-33 s.
+# Measure each against the #494 bar and drop those that miss it.
+_OPENROUTER_MODELS: tuple[tuple[str, str, str, Literal["required", "auto"]], ...] = (
+    ("gemini-4-hydrogen-openrouter", "google/gemini-4-hydrogen", "Gemini 4 Hydrogen", "required"),
+    ("gemini-3.8-flash-openrouter", "google/gemini-3.8-flash", "Gemini 3.8 Flash", "required"),
+    ("grok-4.7-openrouter", "x-ai/grok-4.7", "Grok 4.7", "required"),
+    (
+        "deepseek-v4.1-flash-openrouter",
+        "deepseek/deepseek-v4.1-flash",
+        "DeepSeek V4.1 Flash",
+        "required",
+    ),
+    ("qwen3.8-max-prime-openrouter", "qwen/qwen3.8-max-prime", "Qwen 3.8 Max Prime", "required"),
+    ("qwen3.8-flash-openrouter", "qwen/qwen3.8-flash", "Qwen 3.8 Flash", "auto"),
+    ("kimi-k3.1-pro-openrouter", "moonshotai/kimi-k3.1-pro", "Kimi K3.1 Pro", "required"),
+    ("glm-5.3-flashx-openrouter", "z-ai/glm-5.3-flashx", "GLM-5.3 FlashX", "required"),
+    ("glm-5.3-flash-openrouter", "z-ai/glm-5.3-flash", "GLM-5.3 Flash", "required"),
+    ("mistral-large-4-openrouter", "mistralai/mistral-large-4-0", "Mistral Large 4", "required"),
+    ("mistral-small-4-openrouter", "mistralai/mistral-small-2603", "Mistral Small 4", "required"),
+    ("muse-wonder-openrouter", "meta/muse-wonder", "Muse Wonder", "required"),
+    ("muse-ember-openrouter", "meta/muse-ember", "Muse Ember", "required"),
+    ("minimax-m3-openrouter", "minimax/minimax-m3", "MiniMax M3", "required"),
+    (
+        "minimax-m3.1-flash-openrouter",
+        "minimax/minimax-m3.1-flash",
+        "MiniMax M3.1 Flash",
+        "required",
+    ),
+    (
+        "nemotron-3.5-super-vl-openrouter",
+        "nvidia/nemotron-3.5-super-vl",
+        "Nemotron 3.5 Super VL",
+        "required",
+    ),
+)
+
 # The curated set. Adding a model = adding one entry here after it clears the
-# reasoner tool-calling bar; curation lives in this one reviewable place. The one
-# exception is the Ollama Cloud set above, offered unmeasured.
+# reasoner tool-calling bar; curation lives in this one reviewable place. The
+# exceptions are the OpenRouter and Ollama Cloud sets above, offered unmeasured.
 REASONER_MODELS: dict[str, ReasonerModel] = {
     "claude-opus-4-8": ReasonerModel(
         id="claude-opus-4-8",
@@ -15837,6 +15881,21 @@ REASONER_MODELS: dict[str, ReasonerModel] = {
             max_tokens_default=16384,
         )
         for model_id, tag, name in _OLLAMA_CLOUD_MODELS
+    },
+    **{
+        model_id: ReasonerModel(
+            id=model_id,
+            display_name=f"{name} (OpenRouter)",
+            dialect="openai",
+            hosting="cloud",
+            served_model_id=served,
+            default_endpoint=OPENROUTER_BASE_URL,
+            auth_required=True,
+            tool_choice=tool_choice,
+            # A metered router reserves the cap up front, as for the GPT entries.
+            max_tokens_default=16384,
+        )
+        for model_id, served, name, tool_choice in _OPENROUTER_MODELS
     },
 }
 

@@ -139,6 +139,27 @@ def test_curated_openrouter_models(monkeypatch: pytest.MonkeyPatch, model_key: s
     assert client._max_tokens == 16384
 
 
+@pytest.mark.parametrize(
+    ("model_key", "served", "tool_choice"),
+    [
+        ("gemini-4-hydrogen-openrouter", "google/gemini-4-hydrogen", "required"),
+        # Qwen 3.8 Flash 400s on a forced tool call (measured on OpenRouter).
+        ("qwen3.8-flash-openrouter", "qwen/qwen3.8-flash", "auto"),
+    ],
+)
+def test_curated_openrouter_only_models(
+    monkeypatch: pytest.MonkeyPatch, model_key: str, served: str, tool_choice: str
+) -> None:
+    """An ``*-openrouter`` model runs on OpenRouter with the OpenRouter key, vendor id as is."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model_key)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-or-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client.model_id, client._base_url) == (served, OPENROUTER_BASE_URL)
+    assert client._tool_choice == tool_choice
+    assert client._max_tokens == 16384
+
+
 def test_curated_ollama_cloud_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """A ``*-cloud`` model runs on ollama.com with the Ollama key, sending its Ollama tag."""
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "kimi-k3-cloud")
