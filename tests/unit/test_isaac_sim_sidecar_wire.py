@@ -645,6 +645,61 @@ class TestImageTime:
                 rclpy.shutdown()
                 hal.env.close()
 
+    def test_the_rgb_camera_info_carries_the_rendered_k_in_the_mount_optical_frame(
+        self,
+    ) -> None:
+        """``top`` (``shares_mount_with: head_zed``) publishes a ``CameraInfo`` in Isaac: the
+        K the sidecar renders it with, scaled to the frame, in ``zed_camera_link_optical_frame``
+        (TF places it), so the detector stamps a liftable frame + K. It used to be advertised
+        but silent (no MuJoCo handles), leaving the lift the manifest's frame ``world``."""
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
+        from openral_core import (
+            CameraTopicKind,
+            IntrinsicsPinhole,
+            camera_topic,
+            scale_intrinsics_to,
+        )
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import CameraInfo
+
+        render_k = IntrinsicsPinhole(width=400, height=224, fx=312.1, fy=310.7, cx=195.0, cy=112.3)
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            hal.env.rendered_intrinsics = {"top": render_k}  # type: ignore[attr-defined]
+            rclpy.init()
+            node = rclpy.create_node("test_isaac_rgb_camera_info")
+            bridge = SimSensorBridge(
+                node=node, hal=hal, description=hal.description, viewer_enabled=False
+            )
+            got: list[Any] = []
+            node.create_subscription(
+                CameraInfo,
+                camera_topic("top", CameraTopicKind.CAMERA_INFO),
+                got.append,
+                qos_profile_sensor_data,
+            )
+            try:
+                hal.connect()
+                bridge._setup_cameras()
+                bridge._publish_images()
+                deadline = time.monotonic() + 5.0
+                while not got and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                assert got, "no CameraInfo for top"
+                info = got[0]
+                want = scale_intrinsics_to(render_k, 48, 64)  # the (64, 48) frame
+                assert info.header.frame_id == "zed_camera_link_optical_frame"
+                assert (info.width, info.height) == (48, 64)
+                assert list(info.k) == pytest.approx(
+                    [want.fx, 0.0, want.cx, 0.0, want.fy, want.cy, 0.0, 0.0, 1.0]
+                )
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()
+
     def test_on_the_sim_clock_each_frame_is_stamped_with_its_sim_time(self) -> None:
         """Issue #418: on ``use_sim_time`` the stamp is the frame time itself.
 

@@ -83,8 +83,9 @@ def depth_optical_frame_id(spec: Any) -> str:
         >>> depth_optical_frame_id(SimpleNamespace(frame_id="front_depth_optical_frame"))
         'front_depth_optical_frame'
     """
-    frame = str(spec.frame_id)
-    return frame if frame.endswith("_optical_frame") else f"{frame}_optical_frame"
+    from openral_core.depth_extrinsic import optical_frame_id
+
+    return optical_frame_id(spec.frame_id)
 
 
 def mjcf_camera_name(spec: Any) -> str:

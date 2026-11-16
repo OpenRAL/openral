@@ -406,6 +406,12 @@ class _IsaacSimSidecar(SidecarSimRollout):
     # ``backend_options.keep_alive``: ``close`` leaves the sidecar running for the
     # next run of the same scene to adopt (``launch_id`` identity) instead of ending it.
     keep_alive: bool = False
+    # RGB camera -> the K the sidecar renders it with (``_rendered_rgb_intrinsics``).
+    rendered_intrinsics: dict[str, IntrinsicsPinhole] = field(default_factory=dict)
+
+    def camera_intrinsics(self) -> dict[str, IntrinsicsPinhole]:
+        """Each RGB camera's rendered pinhole K at its render raster (the bridge's CameraInfo)."""
+        return self.rendered_intrinsics
 
     def close(self) -> None:
         """End the sidecar, or with ``keep_alive`` leave it running for the next run.
@@ -3111,7 +3117,8 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         environment_spec=_environment_spec(opts),
         control_freq_hz=opts.control_freq_hz,
     )
-    robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
+    robot_spec_bytes = Path(robot_spec_path).read_bytes()
+    robot_spec_hash = hashlib.sha256(robot_spec_bytes).hexdigest()
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
     if env_cfg.base_pose is not None:
@@ -3172,7 +3179,38 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         _client=client,
         layout=IsaacActionLayout.from_description(desc),
         keep_alive=opts.keep_alive,
+        rendered_intrinsics=_rendered_rgb_intrinsics(json.loads(robot_spec_bytes)),
     )
+
+
+def _rendered_rgb_intrinsics(spec: dict[str, Any]) -> dict[str, IntrinsicsPinhole]:
+    """Each RGB camera's K as the sidecar renders it, from the robot spec it boots with.
+
+    ``isaac_manifest_scene._configure_rgb_projection`` applies the spec sensor's
+    intrinsics (manifest, unit overlay, ``camera_intrinsics`` override and
+    ``camera_render_height`` scaling already folded in) scaled per axis to the render
+    raster. A camera whose mount sets ``hfov_deg`` renders an ideal pinhole from that field
+    of view instead, so it is left out (no K is claimed for it).
+
+    Example:
+        >>> k = {"width": 448, "height": 224, "fx": 312.4, "fy": 310.7, "cx": 195.2, "cy": 112.4}
+        >>> spec = {
+        ...     "sensors": [
+        ...         {"name": "top", "modality": "rgb", "intrinsics": k},
+        ...         {"name": "side", "modality": "rgb", "intrinsics": k},
+        ...         {"name": "head_zed", "modality": "depth", "intrinsics": k},
+        ...     ],
+        ...     "camera_mounts": {"side": {"hfov_deg": 70.0}},
+        ... }
+        >>> {n: (v.height, v.fx) for n, v in _rendered_rgb_intrinsics(spec).items()}
+        {'top': (224, 312.4)}
+    """
+    hfov = {n for n, m in (spec.get("camera_mounts") or {}).items() if (m or {}).get("hfov_deg")}
+    return {
+        s["name"]: IntrinsicsPinhole(**s["intrinsics"])
+        for s in spec.get("sensors", [])
+        if s.get("modality") == "rgb" and s.get("intrinsics") and s["name"] not in hfov
+    }
 
 
 #: Sidecar source files whose content is part of ``_launch_id`` (beside the script).

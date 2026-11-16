@@ -3279,27 +3279,52 @@ class SimSensorBridge:
         return type(now)(nanoseconds=ns, clock_type=now.clock_type).to_msg()
 
     def _rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:
-        """Pinhole ``CameraInfo`` for an RGB camera, from its MJCF ``fovy``.
+        """Pinhole ``CameraInfo`` for an RGB camera's ``width`` x ``height`` frame, or None.
 
-        cuVSLAM builds its rig from these intrinsics and nvblox frames the mono
-        depth against the camera's ``*_optical_frame``. MuJoCo cameras are square-
-        pixel with a vertical ``fovy``, so ``fy = (h/2)/tan(fovy/2)``, ``fx = fy``,
-        principal point at the image centre. No-op for non-MuJoCo backends or an
-        unresolvable MJCF camera (warned once by the TF path).
+        cuVSLAM builds its rig from these intrinsics, nvblox frames the mono depth against
+        the camera's ``*_optical_frame``, and the object detector stamps frame + K on its
+        detections for the world-state lift. MuJoCo: its cameras are square-pixel with a
+        vertical ``fovy``, so ``fy = (h/2)/tan(fovy/2)``, ``fx = fy``, principal point at
+        the image centre. A backend that reports the K it renders each camera with
+        (``camera_intrinsics()``, Isaac) gets that K scaled per axis to the frame. None for
+        any other backend, a camera the backend reports no K for or one with lens
+        distortion (this message is pinhole), or an unresolvable MJCF camera.
+
+        Stamped in ``image_frame_id``: a camera sharing another sensor's mount (the
+        AMR's ``top`` on ``head_zed``) is in that mount's optical frame, which TF places.
         """
         import math
 
         spec = self._camera_info_specs.get(name)
         if spec is None:
             return None
+        from openral_core.depth_extrinsic import image_frame_id
+
+        from openral_hal.depth_cloud import camera_info_from_intrinsics, mjcf_camera_name
+
+        frame = image_frame_id(spec, self._description.sensors)
         handle = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handle is None:
-            return None
+            from openral_core import scale_intrinsics_to
+
+            reported = getattr(self._hal, "camera_intrinsics", None)
+            k = (reported() if reported is not None else {}).get(name)
+            if k is None or any(k.distortion_coeffs):
+                return None
+            k = scale_intrinsics_to(k, width, height)
+            return camera_info_from_intrinsics(
+                width=width,
+                height=height,
+                fx=k.fx,
+                fy=k.fy,
+                cx=k.cx,
+                cy=k.cy,
+                frame_id=frame,
+                stamp=stamp,
+            )
         model, _ = handle
 
         import mujoco
-
-        from openral_hal.depth_cloud import camera_info_from_intrinsics, mjcf_camera_name
 
         cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, mjcf_camera_name(spec))
         if cam_id < 0:
@@ -3313,7 +3338,7 @@ class SimSensorBridge:
             fy=fy,
             cx=width / 2.0,
             cy=height / 2.0,
-            frame_id=spec.frame_id,
+            frame_id=frame,
             stamp=stamp,
         )
 

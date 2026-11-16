@@ -2270,6 +2270,15 @@ class SimAttachedHAL:
         """
         return self._mujoco_handles()
 
+    def camera_intrinsics(self) -> dict[str, Any]:
+        """The env's rendered RGB camera intrinsics (name -> ``IntrinsicsPinhole``), or ``{}``.
+
+        For a backend that renders each camera from a known K but exposes no MuJoCo
+        handles (Isaac): ``SimSensorBridge`` publishes its ``CameraInfo`` from it.
+        """
+        getter = getattr(self._env, "camera_intrinsics", None)
+        return dict(getter()) if getter is not None else {}
+
     @property
     def last_applied_action(self) -> Action | None:
         """The command the simulator was last stepped with (``None`` = none, or unreadable).

@@ -830,18 +830,15 @@ if _ROS2_AVAILABLE:
             q = tf.transform.rotation
             return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
 
-        def _sensor_spec(self, sensor_id: str) -> SensorSpec | None:
-            """Find a SensorSpec by name across sensors + sensor_bundles."""
+        def _all_sensors(self) -> list[SensorSpec]:
+            """The robot's sensors + every sensor_bundle's."""
             assert self._aggregator is not None
             desc = self._aggregator.description
-            for s in desc.sensors:
-                if s.name == sensor_id:
-                    return s
-            for bundle in desc.sensor_bundles:
-                for s in bundle.sensors:
-                    if s.name == sensor_id:
-                        return s
-            return None
+            return [*desc.sensors, *(s for b in desc.sensor_bundles for s in b.sensors)]
+
+        def _sensor_spec(self, sensor_id: str) -> SensorSpec | None:
+            """Find a SensorSpec by name across sensors + sensor_bundles."""
+            return next((s for s in self._all_sensors() if s.name == sensor_id), None)
 
         def _camera_geometry(self, md: ObjectsMetadata) -> tuple[str, IntrinsicsPinhole] | None:
             """The (optical frame, K) a detection batch's pixels project through.
@@ -859,14 +856,19 @@ if _ROS2_AVAILABLE:
             if spec is None or spec.intrinsics is None:
                 self.get_logger().debug(f"no intrinsics for sensor '{sid}'")
                 return None
+            # A camera sharing another sensor's mount (the AMR's `top` on head_zed) is
+            # placed by that mount's optical frame, not its own (sim stand-in) frame_id.
+            from openral_core.depth_extrinsic import image_frame_id
+
+            frame = image_frame_id(spec, self._all_sensors())
             if sid not in self._manifest_fallback_logged:
                 self._manifest_fallback_logged.add(sid)
                 self.get_logger().warning(
                     f"object lift: detections from '{sid}' carry no CameraInfo frame/K; "
                     f"projecting through the manifest SensorSpec (frame "
-                    f"'{spec.frame_id}', fx={spec.intrinsics.fx})"
+                    f"'{frame}', fx={spec.intrinsics.fx})"
                 )
-            return (spec.frame_id, spec.intrinsics)
+            return (frame, spec.intrinsics)
 
         def _on_objects(self, msg: object) -> None:  # PromptStamped
             """Decode detections, lift to 3D, buffer candidates (best-effort)."""
@@ -898,7 +900,16 @@ if _ROS2_AVAILABLE:
             t_cam_from_base = self._lookup_4x4(cam_frame, base_frame)
             t_map_from_base = self._lookup_4x4(self._map_frame, base_frame)
             if t_cam_from_base is None or t_map_from_base is None:
-                return  # best-effort: missing TF => skip
+                # Best-effort skip, but never silent: an unresolvable camera frame
+                # empties spatial memory for every detection of that camera.
+                missing = cam_frame if t_cam_from_base is None else self._map_frame
+                self.get_logger().warning(
+                    f"object lift: dropping '{md.sensor_id}' detections, no TF "
+                    f"{missing} <- {base_frame} (camera frame '{cam_frame}', "
+                    f"map frame '{self._map_frame}')",
+                    throttle_duration_sec=10.0,
+                )
+                return
             # Prefer the octomap voxel grid (filtered, persistent); fall back to
             # the raw depth point cloud when no fresh grid exists (#11) so the
             # lift — and thus spatial-memory ingest + recall_object — works even
