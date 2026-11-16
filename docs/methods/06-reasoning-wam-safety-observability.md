@@ -302,20 +302,20 @@ _`ContextRenderer` builds the structured text snapshot the LLM consumes per tick
 ### `python/reasoner/src/openral_reasoner/core.py`
 _`ReasonerCore`, the transport-agnostic orchestrator. The ROS-side `reasoner_node` wraps this with rclpy._
 
-- `class ReasonerTickResult` (frozen dataclass) (L122) — Tick outcome; fields `tool_call`, `error`, `elapsed_s`, `suppressed_reason` (`""`, `"min_interval"`, `"heartbeat_idle"`, `"mission_finished"`, `"retry_cap"`, `"palette_empty"`), `traceparent` (`None` when no real `TracerProvider` is installed).
+- `class ReasonerTickResult` (frozen dataclass) (L130) — Tick outcome; fields `tool_call`, `error`, `elapsed_s`, `suppressed_reason` (`""`, `"min_interval"`, `"heartbeat_idle"`, `"mission_finished"`, `"retry_cap"`, `"palette_empty"`), `traceparent` (`None` when no real `TracerProvider` is installed).
 - `_call_identity(call) -> str` — Canonical retry-cap identity of a tool call: the full argument payload minus `rationale` (rephrasing rationale between identical retries must not dodge the cap), JSON-serialised with sorted keys.
-- `class PreparedTick` (dataclass) (L87) — In-flight state of a phased tick between `prepare_tick` and `finish_tick`: LLM inputs (`context_text`, `palette`, `system_prompt`) plus prepare-time snapshots (`started`, `seq`, `prompts`, an unattached OTel `span`, `renderer`, `force`, `tier`). The `seq`/`prompts` snapshots bound `finish_tick` to only what the model actually saw. `llm_s`/`prompt_tokens` are the only fields the LLM phase writes back, so tick latency can be attributed to the provider vs. reasoner-side overhead.
-- module constant `_RETRY_CAP_EXEMPT_TOOLS: frozenset[str]` (L69) — `{"recall_object", "resolve_place", "locate_in_view", "wait"}`, the tool kinds transparent to the retry cap (see `ReasonerCore` below).
-- `class ReasonerCore` (L152) — Orchestrator.
-  - `max_skill_tools(self) -> int | None` (L260) — the configured per-tick skill-tool cap, or `None` (read-only).
-  - `offered_palette(self, palette, renderer) -> ToolPalette` (L264) — The palette the LLM sees this tick: `palette` narrowed by `select_skill_subset` to `max_skill_tools` skills, ranked against the active mission task plus every pending prompt (when both are empty — mission finished, prompt drained — the last non-empty query is kept rather than ranking on nothing). The in-flight skill is `sticky`; the newest prompt of the top-priority band is the `focus` (offered on the tick it arrives, before `finish_tick` drains it); the task's last dispatched skill is `recent` (outside a mission, the last `ExecuteRskillTool` this core returned); the task's `tried_rskill_ids` are demoted among equal scores. Recomputed only when the palette object, query or sticky / tried ids change, reusing the previous palette object while the offered set is unchanged so the clients' per-palette tool render and the provider prefix cache hold. Each recompute logs `reasoner.skill_subset` (query, every score, kept and tried ids, `max_score`); with a cap set, `prepare_tick` stamps `reasoner.offered_skills` on every tick span (absent without a cap). Without a cap, returns `palette` unchanged.
-  - `retry_cap(self) -> int` (L345) — the configured consecutive-identical-call cap (read-only).
-  - `streak_tool(self) -> str` (L350) — tool kind of the current consecutive-call streak (`""` when none).
-  - `reset_kind_streak(self) -> None` (L354) — reset the consecutive-call counter used by the retry-cap gate.
-  - `tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat') -> ReasonerTickResult` (L365) — Synchronous composition of the phased API (prepare → off-thread LLM call → finish) so the executor is never starved. Enforces the min-interval and retry cap (search tools + `wait` are exempt); short-circuits on a finished mission or idle heartbeat. `force=True` bypasses every gate but the retry cap. Wraps the tick in a `reasoner.tick` OTel span.
-  - `prepare_tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat') -> PreparedTick | ReasonerTickResult` (L426) — Phase 1 of a tick: run the suppression gates and render the context; must run on the owning/executor thread.
-  - `run_prepared_llm(self, prep) -> ReasonerToolCall` (L580) — Phase 2 of a tick: the blocking `select_tool` round-trip; the ONLY phase safe off-thread.
-  - `finish_tick(self, prep, *, call=None, error=None) -> ReasonerTickResult` (L612) — Phase 3 of a tick: retry-cap ladder + bookkeeping + span close, back on the owning thread.
+- `class PreparedTick` (dataclass) (L95) — In-flight state of a phased tick between `prepare_tick` and `finish_tick`: LLM inputs (`context_text`, `palette`, `system_prompt`) plus prepare-time snapshots (`started`, `seq`, `prompts`, an unattached OTel `span`, `renderer`, `force`, `tier`). The `seq`/`prompts` snapshots bound `finish_tick` to only what the model actually saw. `llm_s`/`prompt_tokens` are the only fields the LLM phase writes back, so tick latency can be attributed to the provider vs. reasoner-side overhead.
+- module constant `_RETRY_CAP_EXEMPT_TOOLS: frozenset[str]` (L77) — `{"recall_object", "resolve_place", "locate_in_view", "wait"}`, the tool kinds transparent to the retry cap (see `ReasonerCore` below).
+- `class ReasonerCore` (L160) — Orchestrator.
+  - `max_skill_tools(self) -> int | None` (L268) — the configured per-tick skill-tool cap, or `None` (read-only).
+  - `offered_palette(self, palette, renderer) -> ToolPalette` (L272) — The palette the LLM sees this tick: `palette` narrowed by `select_skill_subset` to `max_skill_tools` skills, ranked against the active mission task plus every pending prompt (when both are empty — mission finished, prompt drained — the last non-empty query is kept rather than ranking on nothing). The in-flight skill is `sticky`; the newest prompt of the top-priority band is the `focus` (offered on the tick it arrives, before `finish_tick` drains it); the task's last dispatched skill is `recent` (outside a mission, the last `ExecuteRskillTool` this core returned); the task's `tried_rskill_ids` are demoted among equal scores. Recomputed only when the palette object, query or sticky / tried ids change, reusing the previous palette object while the offered set is unchanged so the clients' per-palette tool render and the provider prefix cache hold. Each recompute logs `reasoner.skill_subset` (query, every score, kept and tried ids, `max_score`); with a cap set, `prepare_tick` stamps `reasoner.offered_skills` on every tick span (absent without a cap). Without a cap, returns `palette` unchanged.
+  - `retry_cap(self) -> int` (L353) — the configured consecutive-identical-call cap (read-only).
+  - `streak_tool(self) -> str` (L358) — tool kind of the current consecutive-call streak (`""` when none).
+  - `reset_kind_streak(self) -> None` (L362) — reset the consecutive-call counter used by the retry-cap gate.
+  - `tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat') -> ReasonerTickResult` (L373) — Synchronous composition of the phased API (prepare → off-thread LLM call → finish) so the executor is never starved. Enforces the min-interval and retry cap (search tools + `wait` are exempt); short-circuits on a finished mission or idle heartbeat. `force=True` bypasses every gate but the retry cap. Wraps the tick in a `reasoner.tick` OTel span.
+  - `prepare_tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat') -> PreparedTick | ReasonerTickResult` (L434) — Phase 1 of a tick: run the suppression gates and render the context; must run on the owning/executor thread.
+  - `run_prepared_llm(self, prep) -> ReasonerToolCall` (L590) — Phase 2 of a tick: the blocking `select_tool` round-trip; the ONLY phase safe off-thread.
+  - `finish_tick(self, prep, *, call=None, error=None) -> ReasonerTickResult` (L622) — Phase 3 of a tick: retry-cap ladder + bookkeeping + span close, back on the owning thread.
 
 ### `python/reasoner/src/openral_reasoner/critic_watchdog.py`
 _Tier-C critic progress-stall / success watchdog — default decision core for the reserved `/openral/failure/critic` source. Pure logic, import-safe (no rclpy). Source-agnostic: any reward model emitting a higher-is-better scalar drives the same watchdog; the critic producer node routes samples through `CriticWatchdogGroup` and publishes to the failure bus on a fire. Fires on stall OR success, waking the reasoner promptly when an attempt is likely done._
@@ -813,7 +813,7 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 - `const RECORD_ID: str = "openral.record.id"` (L88)
 - `const RECORD_SCHEMA_VERSION: str = "openral.schema.version"` (L89)
 - `const RECORD_RETENTION_CLASS: str = "openral.retention.class"` (L90)
-- `const METRIC_FAILURE_COUNT: str = "openral.failure.count"` (L334)
+- `const METRIC_FAILURE_COUNT: str = "openral.failure.count"` (L340)
 
 **openral.tick.* — runner cadence**
 - `const TICK_IDX: str = "openral.tick.idx"` (L94)
@@ -913,75 +913,78 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 - `const REASONER_OFFERED_SKILLS: str = "reasoner.offered_skills"` (L244) — skill ids offered on the tick when a skill-tool cap narrows the palette (#494); absent without a cap.
 - `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L251)
 - `const REASONER_TIER: str = "reasoner.tier"` (L256)
-- `const SPAN_SIM_RUN: str = "sim.run"` (L258)
-- `const SPAN_SIM_STEP: str = "sim.step"` (L259)
-- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L260)
+- `const REASONER_RATIONALE: str = "reasoner.rationale"` (L257) — the selected call's rationale, capped at `REASONER_RATIONALE_MAX`; the dashboard folds it into `topics.reasoner.detail`.
+- `const REASONER_RATIONALE_MAX: int = 500` (L260)
+- `const REASONER_INFLIGHT_SKILL: str = "reasoner.inflight_skill"` (L261) — rskill_id in flight when the tick ran.
+- `const SPAN_SIM_RUN: str = "sim.run"` (L264)
+- `const SPAN_SIM_STEP: str = "sim.step"` (L265)
+- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L266)
 
 **Span-event names**
-- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L278)
-- `const EVENT_ROBOT_MANIFEST: str = "openral.robot.manifest"` (L281) — `event_name` of the OTLP log record carrying the robot manifest (ADR-0129), emitted by `producer.emit_robot_manifest`.
-- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L282)
-- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L283)
-- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L284)
-- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L285)
-- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L288)
-- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L289)
-- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L296)
-- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L300)
-- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L301)
-- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L306)
+- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L284)
+- `const EVENT_ROBOT_MANIFEST: str = "openral.robot.manifest"` (L287) — `event_name` of the OTLP log record carrying the robot manifest (ADR-0129), emitted by `producer.emit_robot_manifest`.
+- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L288)
+- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L289)
+- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L290)
+- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L291)
+- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L294)
+- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L295)
+- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L302)
+- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L306)
+- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L307)
+- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L312)
 
 **Metric instrument names**
-- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L310)
-- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L311)
-- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L312)
-- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L313)
-- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L314)
-- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L315)
-- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L316)
-- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L317)
-- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L318)
-- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L319)
-- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L320)
-- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L321)
-- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L322)
-- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L323)
-- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L327)
-- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L328)
-- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L329)
-- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L330)
-- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L331)
-- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L332)
-- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L333)
+- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L316)
+- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L317)
+- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L318)
+- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L319)
+- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L320)
+- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L321)
+- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L322)
+- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L323)
+- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L324)
+- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L325)
+- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L326)
+- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L327)
+- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L328)
+- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L329)
+- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L333)
+- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L334)
+- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L335)
+- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L336)
+- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L337)
+- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L338)
+- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L339)
 
 **Closed-set label vocabularies (for metric labels)**
-- `const LABEL_RSKILL_ID: str = "rskill.id"` (L341)
-- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L342)
-- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L343)
-- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L344)
-- `const LABEL_CONTROL_MODE: str = "control_mode"` (L345)
-- `const LABEL_ENGINE: str = "engine"` (L346)
-- `const LABEL_DEVICE: str = "device"` (L347)
-- `const LABEL_KIND: str = "kind"` (L348)
-- `const LABEL_MODALITY: str = "modality"` (L349)
-- `const LABEL_CHECK_NAME: str = "check_name"` (L350)
-- `const LABEL_SEVERITY: str = "severity"` (L351)
-- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L352)
-- `const LABEL_COMPONENT: str = "component"` (L353)
-- `const LABEL_REASON: str = "reason"` (L354)
-- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L360)
-- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L366)
-- `const THRESHOLD_DIR_UPPER: str = "upper"` (L367)
-- `const THRESHOLD_DIR_LOWER: str = "lower"` (L368)
+- `const LABEL_RSKILL_ID: str = "rskill.id"` (L347)
+- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L348)
+- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L349)
+- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L350)
+- `const LABEL_CONTROL_MODE: str = "control_mode"` (L351)
+- `const LABEL_ENGINE: str = "engine"` (L352)
+- `const LABEL_DEVICE: str = "device"` (L353)
+- `const LABEL_KIND: str = "kind"` (L354)
+- `const LABEL_MODALITY: str = "modality"` (L355)
+- `const LABEL_CHECK_NAME: str = "check_name"` (L356)
+- `const LABEL_SEVERITY: str = "severity"` (L357)
+- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L358)
+- `const LABEL_COMPONENT: str = "component"` (L359)
+- `const LABEL_REASON: str = "reason"` (L360)
+- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L366)
+- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L372)
+- `const THRESHOLD_DIR_UPPER: str = "upper"` (L373)
+- `const THRESHOLD_DIR_LOWER: str = "lower"` (L374)
 
 **Run-mode enum (closed set for openral.run.mode)**
-- `const RUN_MODE_SIM: str = "sim"` (L372)
-- `const RUN_MODE_HARDWARE: str = "hardware"` (L373)
-- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L374)
+- `const RUN_MODE_SIM: str = "sim"` (L378)
+- `const RUN_MODE_HARDWARE: str = "hardware"` (L379)
+- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L380)
 
 **Safety kernel enum (closed set for safety.kernel — see SAFETY_KERNEL)**
-- `const SAFETY_KERNEL_NULL: str = "null"` (L378)
-- `const SAFETY_KERNEL_CPP: str = "cpp"` (L379)
+- `const SAFETY_KERNEL_NULL: str = "null"` (L384)
+- `const SAFETY_KERNEL_CPP: str = "cpp"` (L385)
 
 
 ### `python/observability/src/openral_observability/metrics.py`

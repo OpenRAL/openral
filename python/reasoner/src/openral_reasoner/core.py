@@ -53,6 +53,14 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
         span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
 
 
+def _stamp_rationale(span: Span, call: ReasonerToolCall) -> None:
+    """Stamp the call's rationale (capped) so the dashboard trace can say why it chose it."""
+    if call.rationale:
+        span.set_attribute(
+            semconv.REASONER_RATIONALE, call.rationale[: semconv.REASONER_RATIONALE_MAX]
+        )
+
+
 # Read-only search tools (recall_object/resolve_place/locate_in_view) are
 # TRANSPARENT to the retry cap — each has its own bound (SearchProgress's
 # miss budget, the per-task TaskLocateBudget) terminating in an explicit
@@ -529,6 +537,8 @@ class ReasonerCore:
             force=force,
         )
         span.set_attribute(semconv.REASONER_TIER, tier)
+        if renderer.inflight_skill:
+            span.set_attribute(semconv.REASONER_INFLIGHT_SKILL, renderer.inflight_skill)
         # Stamp the active mission queue on every tick span so
         # the dashboard can render the task checklist. Set before the gate
         # short-circuits below so suppressed (retry_cap / error) ticks still
@@ -655,6 +665,7 @@ class ReasonerCore:
                 )
             if call is None:
                 raise ValueError("finish_tick: pass exactly one of `call` or `error`")
+            _stamp_rationale(span, call)  # before the retry-cap branch: a capped tick says why too
             # retry-cap ("bounded retry counter per failure kind") — keyed
             # on the full call identity (tool + args minus rationale), so
             # only a *verbatim* repeat accumulates; a different skill /

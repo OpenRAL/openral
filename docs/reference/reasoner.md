@@ -222,7 +222,11 @@ Every `ReasonerCore.tick` opens an OTel span `reasoner.tick` (via
 `reasoner.model`, `reasoner.force`, `reasoner.tool`, `reasoner.rskill_id`,
 `reasoner.tier` (`A`/`B`/`C`/`D`/`heartbeat`), and `reasoner.suppressed_reason`
 (`min_interval` / `retry_cap` / `retry_cap_hold` / `mission_finished` /
-`heartbeat_idle` / `palette_empty`). The captured `traceparent` is
+`heartbeat_idle` / `palette_empty`), `reasoner.llm_s`, `reasoner.inflight_skill` (the skill
+in flight, if any) and `reasoner.rationale` (the model's stated why, capped at 500 chars). The
+dashboard store folds the last four into `topics.reasoner.detail`, one line such as
+`restock running · heartbeat · 2.3s — The restock skill is running…` (rationale cut at 120 chars),
+which the console's reasoner trace shows under each tick. The captured `traceparent` is
 threaded onto outbound `emit_prompt` payloads so the bag↔OTel correlator can join a
 published prompt back to the producing tick. Watch it live on `openral dashboard`.
 

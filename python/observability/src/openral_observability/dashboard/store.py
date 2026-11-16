@@ -1325,6 +1325,11 @@ class TelemetryStore:
                 "suppressed_reason": attrs.get("reasoner.suppressed_reason"),
                 "error_kind": attrs.get("reasoner.error_kind"),
                 "mission": mission,
+                "tier": attrs.get(semconv.REASONER_TIER),
+                "llm_s": attrs.get(semconv.REASONER_LLM_S),
+                "inflight_skill": attrs.get(semconv.REASONER_INFLIGHT_SKILL),
+                "rationale": attrs.get(semconv.REASONER_RATIONALE),
+                "detail": _reasoner_detail(attrs),
             }
         )
 
@@ -1683,6 +1688,35 @@ def _log_level(severity_number: int, severity_text: str) -> str:
     if severity_number >= 1:  # DEBUG band (>=5) + TRACE (1-4) floor to debug.
         return "debug"
     return _TEXT_LEVEL_ALIASES.get(severity_text.strip().lower(), "info")
+
+
+# Rationale chars kept in the trace's one-line ``detail``; the full text (up to
+# ``semconv.REASONER_RATIONALE_MAX``) rides on ``topics.reasoner.rationale``.
+_DETAIL_RATIONALE_MAX = 120
+
+
+def _reasoner_detail(attrs: dict[str, Any]) -> str | None:
+    """One short line saying why a tick did what it did, for the console's trace row.
+
+    ``"<skill> running · <tier> · <llm_s>s — <rationale>"``, each part only when
+    present; ``None`` when there is nothing to say. Built here, not in the console,
+    so its wording changes with the dashboard rather than with a console release.
+    """
+    parts: list[str] = []
+    if inflight := attrs.get(semconv.REASONER_INFLIGHT_SKILL):
+        parts.append(f"{str(inflight).rsplit('/', 1)[-1]} running")
+    if tier := attrs.get(semconv.REASONER_TIER):
+        parts.append(str(tier))
+    llm_s = attrs.get(semconv.REASONER_LLM_S)
+    if isinstance(llm_s, int | float) and llm_s > 0:
+        parts.append(f"{llm_s:.1f}s")
+    line = " · ".join(parts)
+    rationale = " ".join(str(attrs.get(semconv.REASONER_RATIONALE) or "").split())
+    if rationale:
+        if len(rationale) > _DETAIL_RATIONALE_MAX:
+            rationale = rationale[: _DETAIL_RATIONALE_MAX - 1].rstrip() + "…"
+        line = f"{line} — {rationale}" if line else rationale
+    return line or None
 
 
 def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str:
