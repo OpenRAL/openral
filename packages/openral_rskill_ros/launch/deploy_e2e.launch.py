@@ -1277,11 +1277,16 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
 def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
     """The RGB sensor the perception legs default to, or ``""`` when there is none.
 
-    Prefers an optical-framed RGB camera (its intrinsics/extrinsics resolve directly), else
-    the first RGB sensor. Shared by the object detector's ``locate_in_view`` camera and the
-    reasoner's completion camera so both watch the same view — a hard-coded name is a dead
-    topic on every robot that spells its cameras differently. Pass ``publishing_sensors``,
-    not the raw manifest: on a real deploy only bound cameras have a topic.
+    In order: the colour stream of the robot's depth camera — an RGB camera that
+    ``shares_mount_with`` a cloud source (``SensorSpec.is_cloud_source``): it sees what the
+    world map's depth sees, from that declared mount (the OpenAMRobot's
+    and OpenArm's ``top`` on ``head_zed``; its ``frame_id: world`` is a sim stand-in, so
+    the optical-frame rule alone fell through to a wrist camera); else an optical-framed
+    RGB camera (its intrinsics/extrinsics resolve directly); else the first RGB sensor.
+    Shared by the object detector's ``locate_in_view`` camera and the reasoner's
+    completion camera so both watch the same view — a hard-coded name is a dead topic on
+    every robot that spells its cameras differently. Pass ``publishing_sensors``, not the
+    raw manifest: on a real deploy only bound cameras have a topic.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -1291,11 +1296,18 @@ def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
         >>> so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
         >>> _primary_rgb_camera(so101.sensors)
         'top'
+        >>> amr = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+        >>> _primary_rgb_camera(amr.sensors)
+        'top'
     """
     rgb = [s for s in sensors if s.modality == "rgb"]
+    clouds = {s.name for s in sensors if s.is_cloud_source}
     return next(
-        (s.name for s in rgb if s.frame_id.endswith("_optical_frame")),
-        rgb[0].name if rgb else "",
+        (s.name for s in rgb if s.shares_mount_with in clouds),
+        next(
+            (s.name for s in rgb if s.frame_id.endswith("_optical_frame")),
+            rgb[0].name if rgb else "",
+        ),
     )
 
 
@@ -4910,13 +4922,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # byte-for-byte unchanged. Do NOT hoist this import to the module top.
         import yaml
 
-        # Cross-frame lift: detect on (and stamp the detection with) the robot's first
-        # *liftable* RGB camera — one whose frame_id is a dedicated ``*_optical_frame`` (the
-        # SimSensorBridge broadcasts its live extrinsics, so the world-state lifter can project
-        # the world voxel map into it). The detection's ``sensor_id`` MUST be that camera, not a
-        # depth sensor, so the lifter resolves the right intrinsics/extrinsics. Generic over
-        # robots; prefers an optical-frame RGB camera but falls back to the robot's first RGB
-        # camera so the detector still gets frames. (franka_panda publishes ``top``/``wrist``,
+        # Cross-frame lift: detect on (and stamp the detection with) ``_primary_rgb_camera``:
+        # the depth camera's colour stream, else an RGB camera whose frame_id is a dedicated
+        # ``*_optical_frame`` (the SimSensorBridge broadcasts its live extrinsics, so the
+        # world-state lifter can project the world voxel map into it), else the first RGB
+        # camera so the detector still gets frames. The detection's ``sensor_id`` MUST be
+        # that camera, not a depth sensor, so the lifter resolves the right
+        # intrinsics/extrinsics. (franka_panda publishes ``top``/``wrist``,
         # neither optical-framed; the old hardcoded ``agentview_left`` fallback was a dead
         # topic — no cached frame, every ``locate_in_view`` returned found=False, looping the
         # reasoner.)
