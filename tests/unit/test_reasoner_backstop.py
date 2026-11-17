@@ -329,3 +329,14 @@ def test_an_explicit_wait_timeout_re_decides_a_bare_prompt() -> None:
     result = rig.tick()
     assert result.trigger == "wait_timeout"
     assert result.tool_call is not None
+
+
+def test_a_scheduled_retry_is_not_dropped_by_an_empty_palette() -> None:
+    """A bare reasoner's failed event call (no skills, sensors, nodes or prompts) still retries."""
+    rig = _Rig(ROSPlanningError("503"), _emit("retried"), palette=ToolPalette())
+    assert rig.tick(force=True, trigger="failure:safety").error is not None
+    rig.now += LLM_ERROR_BACKOFF_S[0]
+    retried = rig.tick()
+    assert retried.suppressed_reason == ""
+    assert retried.trigger == "llm_error_retry"
+    assert retried.tool_call == _emit("retried")

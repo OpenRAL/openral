@@ -708,8 +708,12 @@ class ReasonerCore:
         # can pick ``EmitPromptTool`` to escalate to the operator;
         # gating here would silently swallow SEVERITY_FAIL preemptions on a
         # bare reasoner.
+        # A scheduled transport retry re-sends a call an event already demanded
+        # (its deadline was cleared when it became due), so it is not dropped
+        # here either: suppressing it would lose the retry for good.
         if (
             not force
+            and trigger != "llm_error_retry"
             and not palette.execute_rskill_ids
             and not (palette.sensor_ids or palette.node_ids or renderer.prompts)
         ):
