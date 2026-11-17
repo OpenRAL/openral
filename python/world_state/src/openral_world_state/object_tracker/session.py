@@ -246,6 +246,12 @@ class _Goal:
     #: The grasp declaration's ``search_box`` (grid frame): its TARGET queries' instances
     #: are the tracks centred in it (``StandingQuery.within``).
     within: PlaceRegion | None = None
+    #: The TARGET query's ``seed`` when it names one instance (a memory node's box, often in
+    #: ``map``; issue #631): re-expressed in the grid frame on every grid into ``within``, which
+    #: it overrides. Unresolvable (no tf2) leaves ``within`` in the seed's frame, which no track
+    #: is centred in: the query fails closed instead of binding a same-label neighbour.
+    scope: PlaceRegion | None = None
+    scope_resolved: bool | None = None  # last logged resolve state of ``scope``
 
     def owns(self, track: TrackedObject) -> bool:
         """Whether ``track`` is an instance of one of this goal's queries."""
@@ -669,6 +675,7 @@ class TrackerSession:
             return
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
+            self._rescope()
             self._tick(source_stamp_ns)
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
@@ -735,6 +742,11 @@ class TrackerSession:
                 why="the search box is not in the grid frame; the target query is not scoped",
             )
             within = None
+        # A TARGET query's seed names the instance (a recalled memory node, #631): it scopes
+        # the query like the search box does, through tf2 (`_rescope`). One seed only: two
+        # TARGET queries seeded apart name no single instance.
+        seeds = [q.seed for q in decl.target_queries if q.role is ObjectRole.TARGET and q.seed]
+        scope = seeds[0] if tracking and decl.active and len(seeds) == 1 else None
         self._set_goal(
             "grasp",
             decl.target_id,
@@ -743,6 +755,7 @@ class TrackerSession:
             decl.target_queries,
             invocation_id=decl.invocation_id,
             within=within,
+            scope=scope,
         )
 
     def on_place_declaration(self, decl: PlaceDeclaration) -> None:
@@ -1340,16 +1353,18 @@ class TrackerSession:
         *,
         invocation_id: str = "",
         within: PlaceRegion | None = None,
+        scope: PlaceRegion | None = None,
     ) -> None:
         key = declaration_key(target_id, stamp_ns)
-        scope = f"#{invocation_id}" if invocation_id else ""
-        goal_id = f"{kind}:{key}{scope}"
+        suffix = f"#{invocation_id}" if invocation_id else ""
+        goal_id = f"{kind}:{key}{suffix}"
         query_tuple = tuple(queries)
         old = self._goals[kind]
         if old is not None and (
             old.goal_id != goal_id
             or old.queries != query_tuple
-            or old.within != within
+            or old.scope != scope
+            or (scope is None and old.within != within)
             or not active
         ):
             self.tracker.close_goal(old.goal_id)
@@ -1360,8 +1375,15 @@ class TrackerSession:
             self._rekey_live_tracks()
             return
         goal = self._goals[kind] = _Goal(
-            goal_id, key, None, query_tuple, invocation_id=invocation_id, within=within
+            goal_id,
+            key,
+            None,
+            query_tuple,
+            invocation_id=invocation_id,
+            within=scope or within,
+            scope=scope,
         )
+        self._rescope()
         self._rekey_live_tracks()
         if self._now_ns > 0:
             self._start(goal, self._now_ns)
@@ -1383,6 +1405,37 @@ class TrackerSession:
                 within=goal.within if query.role is ObjectRole.TARGET else None,
             )
         goal.start_ns = stamp_ns
+
+    def _rescope(self) -> None:
+        """Re-express each goal's ``scope`` in the grid frame (the base moves under ``map``).
+
+        Through ``zone_transform`` at the newest grid's stamp; no tf2 (or a tilted transform)
+        keeps the scope in its own frame, where ``centre_within`` matches no track: fail closed.
+        """
+        for goal in self._goals.values():
+            if goal is None or goal.scope is None:
+                continue
+            scope, within = goal.scope, goal.scope
+            if scope.frame_id != self.frame_id and self.zone_transform is not None:
+                t = self.zone_transform(scope.frame_id, self.grid_stamp_ns)
+                try:
+                    within = scope if t is None else rebase_box(scope, t, self.frame_id)
+                except ROSConfigError:
+                    within = scope
+            resolved = within.frame_id == self.frame_id
+            if resolved != goal.scope_resolved:
+                goal.scope_resolved = resolved
+                (log.info if resolved else log.warning)(
+                    "object_tracker.goal_scope",
+                    goal_id=goal.goal_id,
+                    scope_frame=scope.frame_id,
+                    grid_frame=self.frame_id,
+                    resolved=resolved,
+                )
+            goal.within = within
+            for q in self.tracker.queries.queries:
+                if q.goal_id == goal.goal_id and q.query.role is ObjectRole.TARGET:
+                    q.within = within
 
     def _clear_declaration_scope(self, key: str) -> None:
         """Remove a closed declaration's ownership key from its tracks."""

@@ -118,8 +118,8 @@ def _locate(
     base_frame: str,
     pad_m: float,
     several_ok: bool = False,
-) -> tuple[str, PlaceRegion | None, int]:
-    """``(target id stem, padded search box, live matches)`` for a named object or surface.
+) -> tuple[str, PlaceRegion | None, int, PlaceRegion | None]:
+    """``(target id stem, padded search box, live matches, instance scope)`` for a named object.
 
     ``node_id`` set → that spatial-memory node's 3D box; else the single live lifted
     detection whose label equals ``label`` (case-insensitive). ``field`` names the
@@ -128,6 +128,11 @@ def _locate(
     and keeps looking for a label no camera sees yet (#418 Addendum G); and a box in
     another frame than ``base_frame`` (the lift's ``map``), or no box at all, is dropped
     with a ``reasoner.grounding_seed_dropped`` warning instead of refusing.
+
+    The instance scope (object tracking with ``node_id`` only, else ``None``) is the node's
+    padded box in the node's own frame (``map`` for a lifted node; around its pose when it has
+    no box): the TARGET query's ``seed``, which the tracker re-expresses through tf2 and gates
+    the query's matches on, so a same-label neighbour never binds in its place (issue #631).
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds (unless ``several_ok``), several instances
@@ -165,14 +170,21 @@ def _locate(
                 "recall_object first and pass a returned node_id."
             )
         node = nodes[0]
-        box = seed(node.bbox_3d, node.pose.frame_id, f"memory node {node_id!r}")
-        return node_id, box, 1
+        what = f"memory node {node_id!r}"
+        box = seed(node.bbox_3d, node.pose.frame_id, what)
+        scope = None
+        if several_ok:
+            x, y, z = node.pose.xyz
+            frame = node.pose.frame_id
+            bbox = node.bbox_3d or (x, y, z, x, y, z)
+            scope = _box(bbox, frame, what=what, base_frame=frame, pad_m=pad_m)
+        return node_id, box, 1, scope
     key = label.strip().casefold()
     matches = [o for o in live_objects if o.label.strip().casefold() == key]
     if not matches and several_ok:
         # Addendum G: the tracker's standing query keeps looking (passive every frame,
         # then find-object) and escalates to EXHAUSTED itself; never a first-frame refusal.
-        return key, None, 0
+        return key, None, 0, None
     if not matches:
         seen = sorted({o.label for o in live_objects}) or ["nothing"]
         raise ROSReasonerInvalidPlan(
@@ -180,14 +192,14 @@ def _locate(
             f"(perception sees: {', '.join(seen)}). Look for it or recall_object it first."
         )
     if len(matches) > 1 and several_ok:
-        return key, None, len(matches)
+        return key, None, len(matches), None
     if len(matches) > 1:
         raise ROSReasonerInvalidPlan(
             f"{field} {label!r} is ambiguous: {len(matches)} live detections carry "
             "that label. recall_object it and pass the instance's node_id as object_id."
         )
     box = seed(matches[0].bbox_3d, matches[0].pose.frame_id, f"detection {label!r}")
-    return key, box, 1
+    return key, box, 1, None
 
 
 def ground_grasp_target(
@@ -226,10 +238,12 @@ def ground_grasp_target(
         pad_m: Padding added to each half-extent, > 0.
         object_tracking: The deploy runs the Layer-2 object tracker (issue #418): the
             declaration also carries ``target_queries=[ObjectQuery(label, count, TARGET,
-            hand)]``, ``count="all"`` when several live detections carry the label —
+            hand, seed)]``, ``count="all"`` when several live detections carry the label —
             which then grounds (no ``search_box``) instead of being refused. A label no
             live detection carries grounds too (``count="one"``, no ``search_box``): the
-            tracker's standing query keeps looking and escalates itself (Addendum G).
+            tracker's standing query keeps looking and escalates itself (Addendum G). With
+            ``ref.object_id`` the query's ``seed`` is the node's padded box in its own frame:
+            the tracker matches only a track centred in it (issue #631).
         hand: The grasping hand's gripper joint (``hand_joint``), a hint on the query.
         declared_hand: The deployment's declared grasping hand (the deploy scene's grasp
             declaration ``contact_links``, the reasoner's ``grasp_contact_links``): used when
@@ -267,7 +281,7 @@ def ground_grasp_target(
         >>> d.region is None, d.target_id, d.timeout_s
         (True, 'obj:box', 70.0)
     """
-    target, seed, matches = _locate(
+    target, seed, matches, scope = _locate(
         "grasp_target",
         ref.label,
         ref.object_id,
@@ -325,6 +339,7 @@ def ground_grasp_target(
                     count="all" if matches > 1 else "one",
                     role=ObjectRole.TARGET,
                     hand=hand,
+                    seed=scope,
                 ),
             )
             if object_tracking
@@ -401,7 +416,7 @@ def ground_place_target(
     """
     node_id = ref.object_id if ref.object_id is not None else ref.place_node_id
     try:
-        target, seed, _ = _locate(
+        target, seed, _, _ = _locate(
             "place_target",
             ref.label,
             node_id,

@@ -4595,7 +4595,10 @@ class ObjectQuery(BaseModel):
         role: What the objects are to the task.
         hand: Gripper joint name, a hint for the policy/reasoner only.
         seed: Optional search hint (sim-derived or scene graph) in the grid frame or a
-            fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.
+            fixed tf2 frame. Seeds prompts; ``geometry`` must be empty. On a grasp
+            declaration's one seeded TARGET query (a recalled memory node, issue #631) it
+            also scopes the query in ``tracking``: only a track centred in it, re-expressed
+            through tf2, is an instance; no tf2 and none is. Never kernel geometry.
         min_instances: CONFIRMED instances that make the query ``RESOLVED``; at most
             ``TrackedObjectSet.MAX_OBJECTS``, the most the tracker can hold.
         synonyms: Other names for the same class, sent with ``label`` to an
