@@ -581,11 +581,13 @@ def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes() -> 
         base_link=_BASE,
         t_base_from_link=t_base_link,
         now_s=0.0,
-        stamp_ns=held.stamp_ns,
+        stamp_ns=held.stamp_ns + 500 * _MS,  # the DETACH sample, after the held stamp
     )
     leg.attachment = None
     record = leg.release.record
-    assert (record.object_id, record.stamp_ns) == (obj.object_id, obj.stamp_ns), "key preserved"
+    assert record.object_id == obj.object_id and record.stamp_ns > obj.stamp_ns
+    tracker.on_released(held, record)  # what the bridge does as it opens the window
+    assert tracker.payload_key == (record.object_id, record.stamp_ns), "the patch rides too"
     assert record.support_contact is None, "the grasp-time witness rode the frozen record"
     assert not tracker.attest(
         _witness_candidates([leg], lambda _: t_base_link), now_ns=now + 100 * _MS
