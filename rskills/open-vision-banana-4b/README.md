@@ -35,6 +35,17 @@ openral:
 > **No actuators.** The upstream weights are under the **FLUX Non-Commercial
 > License**.
 
+## Preview
+
+Real output at the default (1 step, 224 px) on a live ZED-M frame of a restock
+shelf, from the Jetson AGX Orin measurement run (2026-11-17). Red = the box
+OpenRAL decoded from OVB's painted mask; the caption is query, setting and
+end-to-end latency.
+
+| "the orange light bulb box" | "the transparent plastic bin" |
+| --- | --- |
+| ![bulb box](media/bulb_box_1step_224.jpg) | ![bin](media/bin_1step_224.jpg) |
+
 ## Quick Start
 
 The model runs in its own sidecar venv (`diffusers==0.39.0`,
