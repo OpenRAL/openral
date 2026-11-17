@@ -1884,6 +1884,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._spatial_memory = self._injected_spatial_memory
         self._spatial_memory_writer = None
         self._spatial_places_only = False
+        # The batch stamp belongs to the memory session just dropped.
+        self._latest_batch_ns = None
         self._palette = self._palette.model_copy(
             update={
                 "spatial_memory_available": self._spatial_memory is not None,
@@ -2823,6 +2825,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._spatial_memory = None
         self._spatial_memory_writer = None
         self._spatial_places_only = False
+        # A rebuilt memory has seen no batch yet; an old stamp would mark loaded
+        # objects "seen now".
+        self._latest_batch_ns = None
         self._palette = self._palette.model_copy(
             update={"spatial_memory_available": False, "places_only": False}
         )
@@ -2913,7 +2918,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Fold a snapshot's ``detected_objects`` into the owned SpatialMemory.
 
         No-op unless the reasoner owns a writable backend (``spatial_memory_ingest``
-        or a preloaded map) and the snapshot carries detections. Accrual is
+        or a preloaded map) and the snapshot carries a detection list; an empty list
+        ingests nothing but still advances the latest-batch stamp. Accrual is
         advisory: failures degrade at DEBUG so a hiccup never disturbs the tick.
         Uses the snapshot's ``stamp_ns`` for recency (deterministic in sim),
         falling back to wall-clock.
@@ -2922,10 +2928,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if writer is None or world_state is None:
             return
         objects = getattr(world_state, "detected_objects", None)
-        if not objects:
+        if objects is None:
             return
         try:
             now_ns = int(getattr(world_state, "stamp_ns", 0)) or time.time_ns()
+            if not objects:
+                # An empty batch saw nothing: no object is "seen now" any more.
+                self._latest_batch_ns = now_ns
+                return
             touched = writer.ingest_detected_objects(objects, now_ns=now_ns)
             self._latest_batch_ns = now_ns
             self.get_logger().debug(

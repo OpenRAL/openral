@@ -8,18 +8,28 @@ collector still repopulates.
 
 Real ``SpatialMemory`` from the ``home_scene_graph.json`` fixture + a real
 in-memory OTel exporter (CLAUDE.md §1.11), same harness as
-``test_scene_objects_span.py``; the node method is bound to a minimal holder
-(no ROS context), same trick as ``test_skill_runner_deadline.py``.
+``test_scene_objects_span.py``. The key-gate tests bind the node method to a
+minimal holder (no ROS context), same trick as ``test_skill_runner_deadline.py``;
+the "seen now" tests drive a real ``ReasonerNode`` through its ingest path.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import MethodType
 from typing import Any
 
 import pytest
-from openral_core import Pose6D, SceneGraph, SpatialNode, SpatialNodeKind
+from openral_core import (
+    DetectedObject,
+    JointState,
+    Pose6D,
+    SceneGraph,
+    SpatialNode,
+    SpatialNodeKind,
+    WorldState,
+)
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 pytest.importorskip("rclpy")
@@ -118,26 +128,94 @@ def test_keepalive_reemits_unchanged_scene(memory_exporter: InMemorySpanExporter
     assert len(memory_exporter.get_finished_spans()) == 2
 
 
-def test_seen_now_change_emits_but_new_batch_stamp_alone_does_not(
-    memory_exporter: InMemorySpanExporter,
-) -> None:
-    """A batch that changes WHICH objects are seen re-emits; a same-set batch does not."""
+@pytest.fixture
+def ingesting_node() -> Iterator[ReasonerNode]:
+    """A real ``ReasonerNode`` owning a live-ingest spatial memory (not configured).
+
+    ``_maybe_load_spatial_memory`` is the ``on_configure`` step that builds it; the
+    rest of ``on_configure`` (LLM client, subscriptions) plays no part here.
+    """
+    import rclpy
+    from rclpy.parameter import Parameter
+
+    rclpy.init()
+    node = ReasonerNode(node_name="test_scene_objects_gate")
+    try:
+        node.set_parameters([Parameter("spatial_memory_ingest", Parameter.Type.BOOL, True)])
+        node._maybe_load_spatial_memory()
+        yield node
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def _snapshot(stamp_ns: int, *labels_x: tuple[str, float]) -> WorldState:
+    return WorldState(
+        stamp_ns=stamp_ns,
+        joint_state=JointState(name=[], position=[], stamp_ns=stamp_ns),
+        detected_objects=[
+            DetectedObject(
+                label=label,
+                confidence=0.9,
+                pose=Pose6D(frame_id="map", xyz=(x, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0)),
+                bbox_3d=(0.0, 0.0, 0.0, 0.1, 0.1, 0.1),
+                track_id=i,
+            )
+            for i, (label, x) in enumerate(labels_x)
+        ],
+    )
+
+
+def _tick(node: ReasonerNode, world_state: WorldState) -> None:
+    """The two spatial-memory steps of ``_on_tick``, in its order."""
+    node._ingest_detected_objects(world_state)
+    node._emit_scene_objects_span()
+
+
+def _seen_now(span: Any) -> dict[str, bool]:
     import json
 
     from openral_observability import semconv
 
-    holder = _make_holder()
-    holder._spatial_memory.upsert_node(_object_node("obj-a", 1.0))
-    holder.emit()
-    seen5 = _object_node("obj-a", 1.0).model_copy(update={"last_seen_ns": 5})
-    holder._spatial_memory.upsert_node(seen5)
-    holder._latest_batch_ns = 5  # obj-a now in the latest batch
-    holder.emit()
-    seen6 = _object_node("obj-a", 1.0).model_copy(update={"last_seen_ns": 6})
-    holder._spatial_memory.upsert_node(seen6)
-    holder._latest_batch_ns = 6  # newer batch, same seen set
-    holder.emit()
+    rows = json.loads(str(span.attributes[semconv.WORLD_SCENE_OBJECTS_LIST]))
+    return {r["label"]: r["in_latest_batch"] for r in rows}
+
+
+def test_seen_now_change_emits_but_new_batch_stamp_alone_does_not(
+    memory_exporter: InMemorySpanExporter, ingesting_node: ReasonerNode
+) -> None:
+    """A batch that changes WHICH objects are seen re-emits; a same-set batch does not."""
+    _tick(ingesting_node, _snapshot(5, ("cup", 1.0)))
+    _tick(ingesting_node, _snapshot(6, ("cup", 1.0)))  # newer batch, same seen set
     spans = memory_exporter.get_finished_spans()
-    assert len(spans) == 2
-    rows = json.loads(str(spans[1].attributes[semconv.WORLD_SCENE_OBJECTS_LIST]))  # type: ignore[index]
-    assert {r["id"]: r["in_latest_batch"] for r in rows}["obj-a"] is True
+    assert len(spans) == 2  # the empty map at load, then the cup
+    assert _seen_now(spans[1]) == {"cup": True}
+
+
+def test_an_empty_batch_clears_seen_now(
+    memory_exporter: InMemorySpanExporter, ingesting_node: ReasonerNode
+) -> None:
+    """The cup stays remembered but is no longer "seen now", and that re-emits at once."""
+    _tick(ingesting_node, _snapshot(100, ("cup", 1.0)))
+    _tick(ingesting_node, _snapshot(200))
+    spans = memory_exporter.get_finished_spans()
+    assert len(spans) == 3
+    assert _seen_now(spans[-1]) == {"cup": False}
+
+
+def test_a_rebuilt_memory_does_not_inherit_the_batch_stamp(
+    memory_exporter: InMemorySpanExporter, ingesting_node: ReasonerNode, tmp_path: Path
+) -> None:
+    """Cleanup + configure reloads the saved map; nothing in it is "seen now"."""
+    from rclpy.parameter import Parameter
+
+    _tick(ingesting_node, _snapshot(100, ("cup", 1.0)))
+    saved = tmp_path / "scene.json"
+    assert ingesting_node._spatial_memory_writer is not None
+    ingesting_node._spatial_memory_writer.save(saved)
+    ingesting_node.on_cleanup(None)
+    ingesting_node.set_parameters(
+        [Parameter("spatial_memory_path", Parameter.Type.STRING, str(saved))]
+    )
+    ingesting_node._maybe_load_spatial_memory()
+    assert _seen_now(memory_exporter.get_finished_spans()[-1]) == {"cup": False}
