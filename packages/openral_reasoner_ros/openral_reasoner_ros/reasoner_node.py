@@ -152,6 +152,7 @@ from openral_reasoner.mission import (
     DEFAULT_MAX_SUBDIVIDE_DEPTH,
     DEFAULT_MAX_TASK_DISPATCHES,
     MissionState,
+    StepOutcome,
     TaskLocateBudget,
     TaskState,
     evaluate_task_verdict,
@@ -838,6 +839,11 @@ def build_spatial_memory(
     return SpatialMemoryBuild(
         memory, writable, not writable and bool(goals), origin, tuple(warnings)
     )
+
+
+# action_msgs/GoalStatus of a finished ExecuteRskill goal → its Mission card step outcome
+# (STATUS_CANCELED=5, the rest, reads "cancelled").
+_STEP_OUTCOME_BY_STATUS: dict[int, StepOutcome] = {4: "ok", 6: "failed"}
 
 
 class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
@@ -4697,7 +4703,6 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
             entry = self._palette.skill(call.rskill_id)
             dispatch_completes_task = entry is not None and entry.completes_task_on_success
-        mission.settle_step(succeeded=succeeded)  # the Mission card's per-step row
         if not succeeded:  # counted once, here; the reward gate never counts it again
             self._count_failure(active)
         step = task_step_without_verifier(
@@ -4990,6 +4995,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             traceparent=traceparent,
         )
 
+    def _settle_dispatch_step(self, outcome: StepOutcome, *, task_id: str | None = None) -> None:
+        """Close the running step of the task a goal was dispatched for (default: in flight)."""
+        mission = self._renderer.mission
+        task_id = task_id or self._active_dispatch_task_id
+        if mission is not None and task_id is not None:
+            mission.settle_step(outcome, task_id=task_id)
+
     def _count_failure(self, active: TaskState, *, persist: bool = True) -> None:
         """Count one failed dispatch against the active task (``TaskState.failures``).
 
@@ -5002,6 +5014,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         writes the ladder state itself right after.
         """
         active.failures += 1
+        active.settle_step("failed", overwrite=True)  # the Mission card's step row agrees
         if persist:
             self._persist_ladder_state()
 
@@ -5318,7 +5331,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     ok=False,
                 )
                 return
-            new_mission = MissionState(call.rendered_subtasks())
+            # Keep the operator goal the subtasks serve: the Mission card shows it above them.
+            new_mission = MissionState(
+                call.rendered_subtasks(), goal=mission.goal if mission is not None else None
+            )
             if new_mission.is_empty():
                 return
             self._renderer.set_mission(new_mission)
@@ -6411,6 +6427,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"execute_rskill send_goal failed rskill_id={call.rskill_id!r}: "
                 f"{type(exc).__name__}: {exc}",
             )
+            self._settle_dispatch_step("failed")
             self._publish_skill_failure(
                 kind=_KIND_CONTROLLER,
                 rskill_id=call.rskill_id,
@@ -6427,6 +6444,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().warning(
                 f"execute_rskill goal rejected rskill_id={call.rskill_id!r}",
             )
+            self._settle_dispatch_step("failed")
             self._publish_skill_failure(
                 kind=_KIND_CONTROLLER,
                 rskill_id=call.rskill_id,
@@ -6531,7 +6549,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if (ticks, verifies) == (self._tick_requests, self._verify_queries):
             self._on_tick(force=True, tier="C", trigger="skill_result")
 
-    def _handle_execute_rskill_result(
+    def _handle_execute_rskill_result(  # noqa: PLR0915  # reason: linear terminal-result handling (VRAM, deadline, step row, object query, outcome kinds); splitting scatters the early returns
         self,
         call: ExecuteRskillTool,
         goal_id: bytes,
@@ -6572,6 +6590,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"execute_rskill result fetch failed rskill_id={call.rskill_id!r}: "
                 f"{type(exc).__name__}: {exc}",
             )
+            self._settle_dispatch_step("failed", task_id=dispatch_task_id)
             self._publish_skill_failure(
                 kind=_KIND_CONTROLLER,
                 rskill_id=call.rskill_id,
@@ -6592,6 +6611,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         result = wrapped.result
         status = int(wrapped.status)
         now_ns = self.get_clock().now().nanoseconds
+        # The Mission card's row for this dispatch. The ladder may still turn an
+        # ``ok`` into ``failed`` (a reward gate scoring it not done, via _count_failure).
+        self._settle_dispatch_step(
+            _STEP_OUTCOME_BY_STATUS.get(status, "cancelled"), task_id=dispatch_task_id
+        )
         if self._handle_object_query_result(
             call,
             result,

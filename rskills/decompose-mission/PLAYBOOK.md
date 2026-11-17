@@ -26,13 +26,15 @@ Either of:
   done-condition; a reward monitor (`query_task_progress`) may also be up.
 
 ## Steps
-1. **Decompose FIRST.** Before any `execute_rskill`, call `decompose_mission`
+1. **Decompose before acting.** Before any `execute_rskill`, call `decompose_mission`
    with an EMPTY `target_task_id` and the ordered subtasks: one per
    skill-sized step, each naming its one object or place (e.g.
    `[{object_ref: "shelf S3", text: "navigate to the dock pose in front of shelf S3"},
    {object_ref: "box", text: "restock box x1 into lower slot 1"}]`). The node
    refuses this whole-queue write once a task has been attempted, so it must
-   be the first call for the goal. Do NOT keep the plan only in memory or in
+   come before the goal's first `execute_rskill`; read-only looks may come
+   first (a collective target is grounded with `locate_in_view` before it is
+   split, per the Trigger above). Do NOT keep the plan only in memory or in
    your rationale: a plan outside the ledger gets no per-step verdict,
    retry budget or dashboard row.
 2. **Execute the active subtask.** Dispatch the matching skill toward it:
