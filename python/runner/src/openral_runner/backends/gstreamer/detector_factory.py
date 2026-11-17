@@ -16,6 +16,9 @@ falls back to the legacy ``runtime``-based selection:
   detector (``ObjectsDetector`` CPU tier or
   ``NvmmObjectsDetector`` NVMM tier), built from the
   caller-resolved ``onnx_path``.
+* ``engine: ovb_sidecar`` → the out-of-process Open Vision Banana referring-
+  segmentation locator (``OpenVisionBananaDetector``, ``OVB_SIDECAR``); its
+  base pipeline and transformer subfolder come from ``DetectorContract.ovb``.
 * ``runtime: pytorch`` (or ``engine: vlm_sidecar``) → the out-of-process
   open-vocabulary VLM detector
   (``LocateAnythingDetector``,
@@ -169,6 +172,30 @@ def build_manifest_detector(
             score_threshold=contract.score_threshold,
         )
         return zs, DetectorTier.ZEROSHOT_HF
+
+    if contract.engine is DetectorEngine.OVB_SIDECAR:
+        # Lazy import: keeps zmq/numpy/PIL off the path for ONNX-only runners.
+        from openral_runner.backends.gstreamer.ovb_detector import (  # noqa: PLC0415
+            OpenVisionBananaDetector,
+        )
+
+        ovb = contract.ovb
+        assert ovb is not None  # DetectorContract._check_ovb_block guarantees it
+        ovb_kwargs: dict[str, Any] = {}
+        if contract.max_side is not None:
+            ovb_kwargs["max_side"] = contract.max_side
+        ovb_detector = OpenVisionBananaDetector(
+            labels=contract.labels,
+            model_id=manifest.name,
+            weights_source=weights_source_from_manifest(manifest),
+            base_pipeline=ovb.base_pipeline_uri.removeprefix("hf://"),
+            transformer_subfolder=ovb.transformer_subfolder,
+            num_inference_steps=ovb.num_inference_steps,
+            guidance_scale=ovb.guidance_scale,
+            seed=ovb.seed,
+            **ovb_kwargs,
+        )
+        return ovb_detector, DetectorTier.OVB_SIDECAR
 
     if manifest.runtime is RSkillRuntime.PYTORCH:
         # Lazy import: keeps zmq/numpy/PIL off the path for ONNX-only runners.

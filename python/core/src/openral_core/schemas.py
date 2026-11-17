@@ -7074,6 +7074,7 @@ class RSkillLicensePosture(str, Enum):
     NVIDIA_OPEN_MODEL = "nvidia_open_model"  # GR00T N1.7+ — Open Model License, commercial OK
     RLWRLD_NON_COMMERCIAL = "rlwrld_non_commercial"  # RLDX-1 weights
     CC_BY_NC_SA_4_0 = "cc-by-nc-sa-4.0"  # InternVLA-N1 weights (InternRobotics)
+    FLUX_NON_COMMERCIAL = "flux_non_commercial"  # Open Vision Banana (FLUX.2 [klein]) weights
     PROPRIETARY = "proprietary"  # Helix, Skild, Gemini Robotics
     UNKNOWN = "unknown"
 
@@ -9285,6 +9286,11 @@ class DetectorEngine(str, Enum):
         VLM_SIDECAR: Out-of-process open-vocabulary visual-grounding VLM
             (LocateAnything-3B). Equivalent to leaving ``engine`` unset with a
             ``pytorch`` runtime. Query-driven (prompted).
+        OVB_SIDECAR: Out-of-process Open Vision Banana generative perception
+            model (FLUX.2 [klein] fine-tuned to paint referring-segmentation
+            masks). Query-driven: the query becomes a referring expression, the
+            painted mask is decoded in the main env and each connected region
+            becomes one box. Needs the ``DetectorContract.ovb`` block.
         ZEROSHOT_HF: In-process Transformers open-vocabulary detector
             (``AutoModelForZeroShotObjectDetection`` — e.g. OmDet-Turbo). Runs
             against a **fixed** class vocabulary (the manifest ``labels``)
@@ -9301,6 +9307,7 @@ class DetectorEngine(str, Enum):
     RTDETR_ONNX = "rtdetr_onnx"
     VLM_SIDECAR = "vlm_sidecar"
     ZEROSHOT_HF = "zeroshot_hf"
+    OVB_SIDECAR = "ovb_sidecar"
 
 
 class DetectorMode(str, Enum):
@@ -9337,6 +9344,46 @@ class DetectorMode(str, Enum):
 
     CONTINUOUS = "continuous"
     ON_DEMAND = "on_demand"
+
+
+class OvbDetectorConfig(BaseModel):
+    """Diffusion settings for an ``engine: ovb_sidecar`` detector.
+
+    Open Vision Banana ships a fine-tuned FLUX.2 [klein] *transformer* only; the
+    sidecar assembles it into the base ``Flux2KleinPipeline`` (text encoder,
+    VAE, scheduler). The manifest's ``weights_uri`` names the OVB repo, this
+    block names the base pipeline and the transformer subfolder inside the OVB
+    repo, both pinned so a trace replays the exact weights (CLAUDE.md §1.8).
+
+    Attributes:
+        base_pipeline_uri: ``hf://<repo>@<40-hex sha>`` of the base FLUX.2
+            [klein] pipeline the OVB transformer was fine-tuned from.
+        transformer_subfolder: Path of the fine-tuned ``transformer/`` folder
+            inside the ``weights_uri`` repo.
+        num_inference_steps: Denoising steps per query (upstream default 28).
+        guidance_scale: Classifier-free guidance scale (upstream default 3.5).
+        seed: Generator seed, fixed so a query is reproducible.
+
+    Example:
+        >>> c = OvbDetectorConfig(
+        ...     base_pipeline_uri="hf://black-forest-labs/FLUX.2-klein-base-4B@"
+        ...     "a3b4f4849157f664bdbc776fd7453c2783562f4d",
+        ...     transformer_subfolder="final_models/4B/zeroshot/"
+        ...     "checkpoint-87500-95000-w25/transformer",
+        ... )
+        >>> c.num_inference_steps
+        28
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    base_pipeline_uri: str = Field(
+        pattern=r"^hf:\/\/[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+@[0-9a-f]{40}$"
+    )
+    transformer_subfolder: str = Field(pattern=r"^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$")
+    num_inference_steps: int = Field(default=28, gt=0)
+    guidance_scale: float = Field(default=3.5, ge=0.0)
+    seed: int = Field(default=0, ge=0)
 
 
 class DetectorContract(BaseModel):
@@ -9396,6 +9443,22 @@ class DetectorContract(BaseModel):
     # reward model on a small GPU); higher = sharper. ``None`` keeps the
     # backend default (1024). Ignored by ONNX/zero-shot detectors.
     max_side: int | None = Field(default=None, gt=0)
+    # Base pipeline + transformer subfolder for ``engine: ovb_sidecar``; required
+    # for that engine and forbidden for every other one.
+    ovb: OvbDetectorConfig | None = None
+
+    @model_validator(mode="after")
+    def _check_ovb_block(self) -> DetectorContract:
+        """``ovb`` is present iff ``engine`` is ``ovb_sidecar``."""
+        is_ovb = self.engine is DetectorEngine.OVB_SIDECAR
+        if is_ovb and self.ovb is None:
+            raise ValueError("DetectorContract: engine 'ovb_sidecar' needs an `ovb` block.")
+        if not is_ovb and self.ovb is not None:
+            raise ValueError(
+                f"DetectorContract: `ovb` is only valid with engine 'ovb_sidecar' "
+                f"(engine={self.engine!r})."
+            )
+        return self
 
     @field_validator("input_size")
     @classmethod
@@ -10691,6 +10754,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "robometer_4b",
         "topreward_qwen3vl_4b",
         "locateanything_3b",
+        "open_vision_banana_4b",  # Open Vision Banana 4B referring-segmentation locator
         "qwen35_4b",
         # ROS wrapped-action tool tokens (ros_action / ros_service).
         "moveit",

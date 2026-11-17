@@ -64,6 +64,7 @@ from openral_core.schemas import (
     ObjectQueryEvidence,
     ObjectRole,
     OccupancyGridRef,
+    OvbDetectorConfig,
     PhysicsBackend,
     PlaceDeclaration,
     PlaceRegion,
@@ -1780,3 +1781,24 @@ def test_fuzz_rskill_eval_result(instance: RSkillEvalResult) -> None:
 def test_fuzz_ros_integration(instance: RosIntegration) -> None:
     """RosIntegration (incl. the opt-in completes_task_on_success) round-trips."""
     _round_trip_and_validate(RosIntegration, instance)
+
+
+_ovb_detector_config_st = st.builds(
+    OvbDetectorConfig,
+    base_pipeline_uri=st.from_regex(
+        r"hf://[A-Za-z0-9][A-Za-z0-9._-]{0,15}/[A-Za-z0-9._-]{1,15}@[0-9a-f]{40}", fullmatch=True
+    ),
+    transformer_subfolder=st.from_regex(
+        r"[A-Za-z0-9._-]{1,12}(/[A-Za-z0-9._-]{1,12}){0,3}", fullmatch=True
+    ),
+    num_inference_steps=st.integers(min_value=1, max_value=200),
+    guidance_scale=st.floats(min_value=0.0, max_value=20.0, allow_nan=False),
+    seed=st.integers(min_value=0, max_value=2**31),
+)
+
+
+@_FUZZ_SETTINGS
+@given(_ovb_detector_config_st)
+def test_fuzz_ovb_detector_config(instance: OvbDetectorConfig) -> None:
+    """OvbDetectorConfig (DetectorContract.ovb) round-trips + validates its schema."""
+    _round_trip_and_validate(OvbDetectorConfig, instance)

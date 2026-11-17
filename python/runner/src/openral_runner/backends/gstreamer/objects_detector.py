@@ -98,6 +98,9 @@ class DetectorTier(str, Enum):
             large closed-vocabulary detector. Selected for manifests whose
             ``detector.engine`` is ``zeroshot_hf``; consumes the same
             system-memory BGR appsink branch as ``CPU_ONNX``.
+        OVB_SIDECAR: Out-of-process Open Vision Banana referring-segmentation
+            locator reached over ZMQ. Selected for manifests whose
+            ``detector.engine`` is ``ovb_sidecar``; on-demand only.
 
     Example:
         >>> DetectorTier.CPU_ONNX.value
@@ -110,6 +113,8 @@ class DetectorTier(str, Enum):
         'vlm_sidecar'
         >>> DetectorTier.ZEROSHOT_HF.value
         'zeroshot_hf'
+        >>> DetectorTier.OVB_SIDECAR.value
+        'ovb_sidecar'
     """
 
     CPU_ONNX = "cpu_onnx"
@@ -117,6 +122,7 @@ class DetectorTier(str, Enum):
     NVMM_AGGREGATOR = "nvmm_aggregator"
     VLM_SIDECAR = "vlm_sidecar"
     ZEROSHOT_HF = "zeroshot_hf"
+    OVB_SIDECAR = "ovb_sidecar"
 
 
 # ── Tier selection ─────────────────────────────────────────────────────────────

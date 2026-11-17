@@ -471,6 +471,14 @@ locateanything = [
     # install here is the detector-node-side sidecar transport.
     { include-group = "sidecar-wire" },
 ]
+ovb = [
+    # Opt-in Open Vision Banana referring-segmentation locator.
+    #
+    # The model runs in its OWN diffusers==0.39 / transformers==4.57.6 venv
+    # (`tools/ovb_sidecar.py`, provisioned on first use); what we install here
+    # is the detector-node-side sidecar transport.
+    { include-group = "sidecar-wire" },
+]
 qwen-vlm = [
     # Opt-in Qwen3.5-4B scene VLM for the reasoner's query_scene tool.
     #

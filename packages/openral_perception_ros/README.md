@@ -88,7 +88,9 @@ its **own** lifecycle node serving a namespaced
 `/openral/perception/<alias>/locate_in_view`, so the reasoner picks a model via
 `LocateInViewTool.detector`. Default = `omdet-turbo-locator` (when the omdet deps
 import); add more with the repeatable `--object-detector-locator <manifest|alias>`
-(LocateAnything is opt-in — NVIDIA non-commercial, 5 GB, needs the sidecar venv).
+(LocateAnything is opt-in — NVIDIA non-commercial, 5 GB, needs the sidecar venv;
+so is `open-vision-banana-4b`, an Open Vision Banana referring-segmentation locator —
+FLUX non-commercial, one 1-step diffusion run per query — ~2 s on Jetson AGX Orin — throttled to 0.3 Hz).
 Each locator is an independent lifecycle + VRAM peer (per the single-resident-skill VRAM eviction policy), so the reasoner
 can evict it before a co-resident VLA.
 

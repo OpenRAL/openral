@@ -1,0 +1,89 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-open_vision_banana_4b-any-refseg-bf16"
+version: "0.1.0"
+# OVB weights are distributed under the FLUX Non-Commercial License (model card
+# `license_name: flux-non-commercial-license`, README "License" section), even
+# though the 4B base pipeline itself is Apache-2.0. The loader gates this
+# posture behind OPENRAL_ALLOW_NONCOMMERCIAL=1.
+license: "flux_non_commercial"
+role: "s1"
+kind: "detector"
+
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (perception kind)
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 256
+    min_height: 256
+
+actuators_required: []
+
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# Sum of the bf16 components with no CPU offload: OVB transformer 7.75 GB
+# (3.9 B params) + Qwen3 text encoder 8.0 GB + VAE 0.17 GB, plus activations.
+# The sidecar defaults to diffusers model CPU offload, whose peak is the largest
+# single component. Not yet measured on hardware.
+min_vram_gb:
+  bf16: 17.0
+
+weights_uri: "hf://FunAILab/Open-Vision-Banana@be5da66250cc385ff9c75ebbe4114e13ec305848"
+
+chunk_size: 1
+latency_budget:
+  # Measured 2026-11-17 on Jetson AGX Orin (bf16, no offload), live ZED-M
+  # 1920x1080 frames: median 2.04 s per query (12 queries, 2.00-2.09 s) at
+  # 1 step / 224 px, end to end through OpenVisionBananaDetector. 2x headroom.
+  per_chunk_ms: 5000.0
+
+detector:
+  # On-demand only: one query is a full diffusion run (seconds), so it is a
+  # prompted locator behind locate_in_view, never the continuous producer.
+  mode: "on_demand"
+  engine: "ovb_sidecar"
+  # Frames are capped at 224 px longest edge before generation. Measured on
+  # Orin + live ZED-M: 224 px / 1 step keeps the objects it finds at 512 px /
+  # 4 steps (10.6 s) with looser boxes, at 2.0 s. Raise both for tighter boxes.
+  max_side: 224
+  # Default referring expression when no query is given; the reasoner's
+  # locate_in_view query replaces it per call.
+  labels:
+    - "object"
+  # Unused by the OVB tier (it paints at the frame's own size); kept because
+  # DetectorContract requires it.
+  input_size: [640, 640]
+  # Does not apply: OVB paints a mask and emits no score (each region is 1.0).
+  score_threshold: 0.5
+  ovb:
+    base_pipeline_uri: "hf://black-forest-labs/FLUX.2-klein-base-4B@a3b4f4849157f664bdbc776fd7453c2783562f4d"
+    # The zero-shot 4B checkpoint (excludes benchmark training splits) — the
+    # one the paper reports zero-shot numbers for.
+    transformer_subfolder: "final_models/4B/zeroshot/checkpoint-87500-95000-w25/transformer"
+    # One step, not upstream's 28: at 224 px one step painted the bulb box, bin
+    # and keyboard; two steps missed two of them (non-monotonic — measured).
+    num_inference_steps: 1
+    guidance_scale: 3.5
+    seed: 0
+
+paper_url: "https://arxiv.org/abs/2611.15844"
+source_repo: "hf://FunAILab/Open-Vision-Banana@be5da66250cc385ff9c75ebbe4114e13ec305848"
+
+description: >
+  Open Vision Banana 4B (zero-shot) — FLUX.2 [klein] fine-tuned to paint
+  perception answers — packaged as an on-demand referring-segmentation locator.
+  Given an RGB frame and a free-text description it paints the matching region,
+  which is decoded into one box per connected region. No actuators.
+
+actions:
+  - "detect"
+
+objects:
+  - "open-vocabulary object"
+  - "referring expression"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"

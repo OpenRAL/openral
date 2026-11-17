@@ -3369,6 +3369,10 @@ onnx-export = [
 opencv = [
     { name = "opencv-python" },
 ]
+ovb = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
 qwen-vlm = [
     { name = "msgpack" },
     { name = "pyzmq" },
@@ -3518,6 +3522,10 @@ onnx-export = [
     { name = "transformers", specifier = ">=4.45" },
 ]
 opencv = [{ name = "opencv-python", specifier = ">=4.8" }]
+ovb = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
+]
 qwen-vlm = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
