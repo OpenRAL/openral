@@ -385,11 +385,14 @@ def placement_boxes_at(
             "max": [round(o + hi, 12) for o, hi in zip(c, box["max"], strict=True)],
         }
 
-    return {
+    posed = {
         **placement,
         "target": at(placement["target"]),
         "adjacent": [at(b) for b in placement.get("adjacent", [])],
     }
+    if "also_targets" in placement:
+        posed["also_targets"] = [at(b) for b in placement["also_targets"]]
+    return posed
 
 
 def _quat_angle(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
@@ -424,8 +427,8 @@ def placement_grade(
 ) -> str:
     """Grade one resting object against a placement by the scene's rubric.
 
-    ``placement`` is one entry of the spec's ``placements``: ``target`` and
-    ``adjacent`` boxes (``{"min": xyz, "max": xyz}``, world frame, or box-frame ones under
+    ``placement`` is one entry of the spec's ``placements``: ``target`` (or any of its
+    ``also_targets``) and ``adjacent`` boxes (``{"min": xyz, "max": xyz}``, world frame, or box-frame ones under
     a ``world_from_box`` pose: ``placement_boxes_at``). ``grades`` is the
     rubric (``IsaacPlacementSuccess.grades``: ``name``, ``score``, ``region`` =
     ``target`` / ``adjacent``, ``requires_upright``), tried in order; the object is
@@ -448,6 +451,9 @@ def placement_grade(
         'complete'
         >>> placement_grade(np.array([0.5, 1.5, 0.5]), level, up, slot, 20.0, rubric)
         'semi'
+        >>> aisle = {**slot, "also_targets": [{"min": [5, 0, 0], "max": [6, 1, 1]}]}
+        >>> placement_grade(np.array([5.5, 0.5, 0.5]), level, up, aisle, 20.0, rubric)
+        'complete'
         >>> on_side = _rpy_quat(np.pi / 2, 0.0, 0.0)
         >>> placement_grade(np.array([0.5, 0.5, 0.5]), on_side, up, slot, 20.0, rubric)
         'partial'
@@ -461,7 +467,9 @@ def placement_grade(
     upright = tilt <= upright_tol_deg
     pos = np.asarray(position, dtype=np.float64)
     inside = {
-        "target": _in_box(pos, placement["target"]),
+        "target": any(
+            _in_box(pos, b) for b in (placement["target"], *placement.get("also_targets", ()))
+        ),
         "adjacent": any(_in_box(pos, b) for b in placement.get("adjacent", ())),
     }
     for grade in grades:
@@ -3855,7 +3863,11 @@ class IsaacManifestScene(IsaacSceneBase):
         """``placement`` with its ``relative_to`` boxes at their reference objects' full poses now."""
         refs = {
             str(b["relative_to"])
-            for b in (placement["target"], *placement.get("adjacent", []))
+            for b in (
+                placement["target"],
+                *placement.get("also_targets", []),
+                *placement.get("adjacent", []),
+            )
             if b.get("relative_to")
         }
         poses = {r: self._object_prims[r].get_world_pose() for r in refs}
