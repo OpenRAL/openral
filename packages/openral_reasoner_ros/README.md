@@ -12,10 +12,13 @@ Subscribes to:
 - `/openral/failure/{hal,sensor,rskill,safety,wam,critic,world_state}` (`openral_msgs/FailureTrigger`)
 - `/openral/perception/{motion,objects,ocr,scene_change}` (`openral_msgs/PromptStamped`)
 - `/openral/prompt` (`openral_msgs/PromptStamped`)
+- `/openral/safety_status` (`openral_msgs/SafetyStatus`, latched) — read-only; rendered
+  as `## SAFETY`, a new latch forces a Tier-A tick
 
-Since the 2026-05-25 amendment the reasoner is **event-driven** with a slow
-heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
-5 s). Event preemption is the primary trigger:
+The reasoner calls the LLM when something happens (issue #620; full trigger table
+in [`docs/reference/reasoner.md`](../../docs/reference/reasoner.md#cadence-event-model)).
+The timer beat (`tick_hz` ROS parameter, default 0.2 Hz) only runs gates. Event
+preemption is the primary trigger:
 
 - `/openral/failure/safety` (Tier A) preempts on `severity ≥ SEVERITY_WARN`.
 - `/openral/failure/{hal,sensor,rskill,wam,critic}` (Tier B/C) preempts
@@ -40,15 +43,31 @@ different skill), dropped by an `attach` for that hand (`SEVERITY_INFO`: its own
 or another hand attaching the same target), an e-stop clear or a task change. It is a reflection only — no new rung: the node decides
 nothing on it beyond the usual preemption.
 
-All preemptions are subject to the 100 ms min-interval.
-Heartbeat ticks that see no new event since the last successful tick
+An `execute_rskill` result forces its own tick (`skill_result`) unless its handling
+already forced one or started a reward verify. An `execute_rskill` or `decompose_mission`
+planned for a mission task that ended while its LLM call was in flight is not sent; a
+`not sent` line in `## EXECUTION` says so. The FailureTriggers the node publishes
+itself on `/openral/failure/rskill` are dropped on the way back in.
+
+Forced ticks skip the 100 ms min-interval (it only spaces timer beats).
+Timer beats that see no new event since the last successful tick
 are short-circuited inside `ReasonerCore` with
-`suppressed_reason="heartbeat_idle"` — **except while an
-`execute_rskill` goal is in flight**, when the heartbeat stays live so
-the reasoner can poll `query_task_progress` mid-execution. A *result-only*
+`suppressed_reason="heartbeat_idle"`. **While an `execute_rskill` goal is in
+flight** the beat is a backstop: at most one LLM call per
+`clamp(max_execution_s / 4, 15 s, 30 s)` (`backstop_not_due` in between), so the
+reasoner can still poll `query_task_progress` mid-execution. A *result-only*
 skill (a wrapped ROS action with no `result_trajectory_field`, e.g. Nav2
-`NavigateToPose`) has no progress to poll, so it does not keep the heartbeat
-live unless a reward monitor (`query_task_progress`) is wired; its terminal result, prompts and safety events still wake the next tick.
+`NavigateToPose`) has no progress to poll, so an unchanged context keeps it quiet
+unless a reward monitor (`query_task_progress`) is wired; its terminal result, prompts
+and safety events still wake the next tick. The model's own
+`wait(until=…, timeout_s=…)` holds the beat until that event or the timeout
+(`wait_hold`). With no mission, no prompt and nothing in flight the beat never calls
+the LLM (`no_goal`); nor while `/openral/safety_status` is latched and nothing new arrived
+(`safety_latched`). A latch forces its own Tier-A tick, unless a safety FailureTrigger already
+forced one in the last 2 s (the same kernel stop).
+A transport failure of the LLM call is retried after 5, 10 and 20 s
+(`llm_error_backoff` / `llm_error_retry`); after the last the reasoner tells the
+operator on `/openral/prompt` and stops retrying until the next event.
 The retry
 cap is keyed on the **identical tool call** (same tool + same
 arguments): a healthy navigate → pick → place sequence never trips it,
@@ -613,7 +632,11 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.force` | Always | `True` when the tick was preempted by `FailureTrigger.severity ≥ FAIL` or a new operator prompt. |
 | `reasoner.tool` | Successful + retry-cap suppressed ticks | The `tool` discriminator of the `ReasonerToolCall` variant the LLM picked (e.g. `execute_rskill`). |
 | `reasoner.rskill_id` | When the call carries a `rskill_id` (`execute_rskill`) | Skill id the LLM chose. |
-| `reasoner.suppressed_reason` | Suppressed ticks | `palette_empty` or `retry_cap`. The `min_interval`, `retry_cap_hold`, `mission_finished` and `heartbeat_idle` gates fire BEFORE the span opens (so dashboards don't show noise). |
+| `reasoner.suppressed_reason` | Suppressed ticks | `palette_empty` or `retry_cap`. The `min_interval`, `safety_latched`, `llm_error_backoff`, `retry_cap_hold`, `mission_finished`, `wait_hold`, `backstop_not_due`, `heartbeat_idle`, `no_goal` and `llm_gave_up` gates fire BEFORE the span opens (so dashboards don't show noise). |
+| `reasoner.tick.trigger` | Always | What started the tick: the event of a forced tick (`prompt`, `tool_result:<source>`, `skill_result`, `skill_failure`, `failure:<source>`, `safety_latched`, `object_query`, `mission_advance`, `verdict`, `active_search`, `decompose`) or the gate that let a timer beat through (`context_changed`, `backstop`, `wait_timeout`, `llm_error_retry`). |
+| `reasoner.tick.coalesced_triggers` | When requests merged | Triggers that arrived while the previous tick was in flight and were folded into this one. |
+| `reasoner.tick.skipped_since_last` | Always | Timer beats suppressed since the previous LLM call. |
+| `reasoner.wait.until` / `reasoner.wait.timeout_s` | The model chose `wait` | What the wait is for and its bound. |
 | `reasoner.llm_s` | Ticks that reached the LLM | Wall-clock of the LLM round-trip alone. |
 | `reasoner.prompt_tokens` | When the client surfaces usage | Provider-reported prompt tokens, cache reads included. |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |

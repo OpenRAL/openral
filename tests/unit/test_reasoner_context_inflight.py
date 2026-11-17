@@ -15,7 +15,8 @@ Three behaviours added by the supervision-loop fixes:
 from __future__ import annotations
 
 from openral_core import EmitPromptTool, ObjectDetection2D, ObjectsMetadata, ReasonerToolCall
-from openral_reasoner import ContextRenderer, ReasonerCore
+from openral_reasoner import ContextRenderer, MissionState, ReasonerCore
+from openral_reasoner.core import inflight_backstop_s
 from openral_reasoner.palette import ToolPalette
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
@@ -58,8 +59,8 @@ def test_inflight_reassert_same_state_is_a_no_op() -> None:
 
 def test_heartbeat_stays_live_while_a_skill_is_inflight() -> None:
     """With no new events, a heartbeat is idle-suppressed — unless a skill is
-    running, in which case the tick is the only chance to poll the reward
-    monitor mid-execution (the system prompt instructs exactly that)."""
+    running, in which case one backstop tick per ``inflight_backstop_s`` is the
+    chance to poll the reward monitor mid-execution (issue #620)."""
     # A non-empty palette (a sensor id suffices) so the palette_empty
     # short-circuit does not mask the gate under test.
     palette = ToolPalette(execute_rskill_ids=frozenset(), sensor_ids=frozenset({"top"}))
@@ -67,14 +68,20 @@ def test_heartbeat_stays_live_while_a_skill_is_inflight() -> None:
         EmitPromptTool(target_topic="/openral/prompt", text=f"t{i}") for i in range(3)
     ]
     client = FakeToolUseClient(responses=responses)
-    core = ReasonerCore(client=client, min_interval_s=0.0)
+    now = [0.0]
+    core = ReasonerCore(client=client, min_interval_s=0.0, clock=lambda: now[0])
     r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("pick the cube"))
     r.set_inflight_skill("openral/rskill-vla", stamp_ns=1)
 
     first = core.tick(world_state=None, renderer=r, palette=palette, force=True)
     assert first.tool_call is not None
-    # seq unchanged since the last tick — but a skill is in flight, so the
-    # heartbeat must NOT be suppressed as idle.
+    # seq unchanged and the backstop not due yet: no LLM call.
+    assert core.tick(world_state=None, renderer=r, palette=palette).suppressed_reason == (
+        "backstop_not_due"
+    )
+    # Once the backstop period passes, the heartbeat is NOT idle-suppressed.
+    now[0] += inflight_backstop_s(None)
     second = core.tick(world_state=None, renderer=r, palette=palette)
     assert second.suppressed_reason != "heartbeat_idle"
     assert second.tool_call is not None

@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable
 
 import structlog
-from openral_core import ReasonerToolCall, WorldState
+from openral_core import ReasonerToolCall, WaitTool, WorldState
 from openral_core.exceptions import (
     ROSPlanningError,
     ROSReasonerInvalidPlan,
@@ -37,7 +37,16 @@ from openral_reasoner.palette import ToolPalette
 from openral_reasoner.skill_subset import SkillSubset, select_skill_subset
 from openral_reasoner.tool_use import DEFAULT_SYSTEM_PROMPT, ToolUseClient
 
-__all__ = ["PreparedTick", "ReasonerCore", "ReasonerTickResult"]
+__all__ = [
+    "BACKSTOP_MAX_S",
+    "BACKSTOP_MIN_S",
+    "LLM_ERROR_BACKOFF_S",
+    "QUIET_SUPPRESSIONS",
+    "PreparedTick",
+    "ReasonerCore",
+    "ReasonerTickResult",
+    "inflight_backstop_s",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -69,6 +78,52 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
 _RETRY_CAP_EXEMPT_TOOLS: frozenset[str] = frozenset(
     {"recall_object", "resolve_place", "locate_in_view", "wait"}
 )
+
+
+#: Clamp for the in-flight backstop (issue #620): while a skill runs and nothing
+#: forces a tick, the heartbeat calls the LLM at most once per
+#: ``clamp(max_execution_s / 4, BACKSTOP_MIN_S, BACKSTOP_MAX_S)`` seconds.
+BACKSTOP_MIN_S: float = 15.0
+BACKSTOP_MAX_S: float = 30.0
+
+#: Delays before re-trying an LLM call that failed in transport (timeout, 5xx,
+#: refusal to answer). One entry per retry; after the last the context is marked
+#: seen and ``ReasonerCore.llm_gave_up`` turns true so the node hands off.
+LLM_ERROR_BACKOFF_S: tuple[float, ...] = (5.0, 10.0, 20.0)
+
+#: Suppression reasons that are a timer beat's steady state, not news: a node logs
+#: them at DEBUG and keeps its one-shot retry-cap warning latched across them (no
+#: LLM call ran). Every gate in ``ReasonerCore._timer_gate`` returns one of these.
+QUIET_SUPPRESSIONS: frozenset[str] = frozenset(
+    {
+        "min_interval",
+        "safety_latched",
+        "llm_error_backoff",
+        "retry_cap_hold",
+        "mission_finished",
+        "wait_hold",
+        "backstop_not_due",
+        "heartbeat_idle",
+        "no_goal",
+        "llm_gave_up",
+    }
+)
+
+
+def inflight_backstop_s(max_execution_s: float | None) -> float:
+    """Heartbeat period while a skill is in flight and no event forces a tick.
+
+    A quarter of the skill's execution budget, clamped to
+    ``[BACKSTOP_MIN_S, BACKSTOP_MAX_S]``; ``BACKSTOP_MIN_S`` when the manifest
+    declares no budget.
+
+    Example:
+        >>> inflight_backstop_s(None), inflight_backstop_s(80.0), inflight_backstop_s(600.0)
+        (15.0, 20.0, 30.0)
+    """
+    if max_execution_s is None:
+        return BACKSTOP_MIN_S
+    return min(max(max_execution_s / 4.0, BACKSTOP_MIN_S), BACKSTOP_MAX_S)
 
 
 def _call_identity(call: ReasonerToolCall) -> str:
@@ -107,6 +162,13 @@ class PreparedTick:
     prompts: tuple[PromptRecord, ...]
     force: bool
     tier: str
+    trigger: str = "heartbeat"
+    """What started this tick: the event name a forced tick was raised for
+    (``prompt``, ``skill_result``, ``failure:<source>``, …) or, for a timer
+    beat, the gate that let it through (``context_changed``, ``backstop``,
+    ``wait_timeout``, ``llm_error_retry``)."""
+    coalesced: tuple[str, ...] = ()
+    """Triggers merged into this tick while the previous one was in flight."""
     llm_s: float = 0.0
     """Wall-clock of the LLM round-trip alone, written by
     ``ReasonerCore.run_prepared_llm`` (the only field the LLM phase
@@ -133,13 +195,17 @@ class ReasonerTickResult:
             a short string explaining why the tick was suppressed
             (e.g. ``"min_interval"``, ``"retry_cap"``,
             ``"retry_cap_hold"``, ``"palette_empty"``,
-            ``"heartbeat_idle"``).
+            ``"heartbeat_idle"``, ``"backstop_not_due"``, ``"wait_hold"``,
+            ``"llm_error_backoff"``, ``"safety_latched"``, ``"no_goal"``).
+        trigger: ``PreparedTick.trigger`` of a tick that reached the LLM
+            (``""`` when suppressed before it).
     """
 
     tool_call: ReasonerToolCall | None
     error: ROSPlanningError | None
     elapsed_s: float
     suppressed_reason: str = ""
+    trigger: str = ""
     traceparent: str | None = None
     """W3C ``traceparent`` captured while the ``reasoner.tick`` span was
     active. The reasoner_node stamps this onto the outbound
@@ -255,6 +321,31 @@ class ReasonerCore:
         # the LLM call would see byte-identical context and produce
         # the same (or no) tool call.
         self._last_seen_seq: int = -1
+        # Start of the last tick that reached the LLM (any trigger); the
+        # in-flight backstop is measured from it.
+        self._last_llm_s: float = -float("inf")
+        # Timer beats suppressed since the last LLM call (span attribute).
+        self._skipped_since_llm: int = 0
+        # (until, monotonic deadline) of the last ``wait`` the model chose.
+        self._wait: tuple[str, float] | None = None
+        # Consecutive transport failures of the LLM call, and when the next
+        # timer beat may retry it.
+        self._llm_errors: int = 0
+        self._llm_retry_at: float | None = None
+
+    @property
+    def llm_gave_up(self) -> bool:
+        """True once every ``LLM_ERROR_BACKOFF_S`` retry failed in a row.
+
+        Cleared by the next successful LLM call. The node hands the mission to
+        the operator when it flips.
+        """
+        return self._llm_errors > len(LLM_ERROR_BACKOFF_S)
+
+    @property
+    def wait_hold(self) -> tuple[str, float] | None:
+        """``(until, monotonic deadline)`` of the active ``wait``, or ``None``."""
+        return self._wait
 
     @property
     def max_skill_tools(self) -> int | None:
@@ -370,6 +461,7 @@ class ReasonerCore:
         palette: ToolPalette,
         force: bool = False,
         tier: str = "heartbeat",
+        trigger: str = "heartbeat",
     ) -> ReasonerTickResult:
         """Run one orchestrator pass, synchronously.
 
@@ -401,6 +493,7 @@ class ReasonerCore:
                 trace-filtering on the dashboard — observability only;
                 per-tier preemption thresholds live in
                 ``ReasonerNode``.
+            trigger: Event name of a forced tick (see ``PreparedTick.trigger``).
 
         Returns:
             A ``ReasonerTickResult``.
@@ -411,6 +504,7 @@ class ReasonerCore:
             palette=palette,
             force=force,
             tier=tier,
+            trigger=trigger,
         )
         if isinstance(prep, ReasonerTickResult):
             return prep
@@ -423,6 +517,115 @@ class ReasonerCore:
             return self.finish_tick(prep, error=exc)
         return self.finish_tick(prep, call=call)
 
+    def _suppressed(self, reason: str) -> ReasonerTickResult:
+        """A gate fired before the LLM call: count the skipped beat and report it."""
+        self._skipped_since_llm += 1
+        return ReasonerTickResult(
+            tool_call=None, error=None, elapsed_s=0.0, suppressed_reason=reason
+        )
+
+    def _timer_gate(
+        self, renderer: ContextRenderer, palette: ToolPalette, started: float
+    ) -> ReasonerTickResult | str:
+        """Gates of a timer beat: a suppressed result, or the trigger that lets it through."""
+        if started - self._last_tick_s < self._min_interval_s:
+            return self._suppressed("min_interval")
+        self._last_tick_s = started
+        held = self._held_reason(renderer, started)
+        if held is not None:
+            return self._suppressed(held)
+        if self._llm_retry_at is not None:  # not held: the retry is due
+            self._llm_retry_at = None
+            return "llm_error_retry"
+        waited = self._wait_gate(renderer, started)
+        if waited == "wait_hold":
+            return self._suppressed(waited)
+        if waited is not None:
+            return waited
+        return self._idle_gate(renderer, palette, started)
+
+    def _held_reason(self, renderer: ContextRenderer, started: float) -> str | None:
+        """Why a timer beat must not call the LLM regardless of the context, or ``None``."""
+        if self._llm_retry_at is not None:
+            # A scheduled transport retry runs even while latched: the failed call
+            # may have been the latch notification itself.
+            return "llm_error_backoff" if started < self._llm_retry_at else None
+        if self.llm_gave_up:
+            # Every retry failed: no timer beat re-sends (not even a skill's
+            # backstop); only a new event reaches the model.
+            return "llm_gave_up"
+        if renderer.safety_latched and renderer.seq == self._last_seen_seq:
+            # A latched stop refuses every motion until the operator resets it:
+            # nothing new to show the model means nothing to decide. A context
+            # that moved (the latch itself arriving after the kernel's failure
+            # tick, an operator note) still gets through once.
+            return "safety_latched"
+        if self._retry_cap_hold_seq is not None and renderer.seq == self._retry_cap_hold_seq:
+            # After a ``retry_cap`` the model would see the same context and
+            # re-emit the same capped call. Held until the context moves past the
+            # seq the cap fired at (the node's reflection bumps it) or a reset.
+            return "retry_cap_hold"
+        mission = renderer.mission
+        if mission is not None and mission.active() is None and renderer.inflight_skill is None:
+            # A terminal mission has nothing left to plan; perception keeps moving
+            # ``seq`` after hand-off, so the idle gate alone cannot hold it. A new
+            # operator goal rebuilds the mission before forcing a tick.
+            self._last_seen_seq = renderer.seq
+            self._wait = None
+            return "mission_finished"
+        return None
+
+    def _wait_gate(self, renderer: ContextRenderer, started: float) -> str | None:
+        """The model's own ``wait``: ``"wait_hold"``, ``"wait_timeout"`` (due), or ``None``."""
+        if self._wait is None:
+            return None
+        until, deadline = self._wait
+        inflight = renderer.inflight_skill
+        if started >= deadline:
+            self._wait = None
+            # A lapsed wait re-decides when there is something to decide about,
+            # or when the model asked for exactly that (``until="timeout"``: a
+            # bare prompt with no mission keeps its promised reconsideration).
+            # A default wait, idle with no task, falls through to the idle gate.
+            mission = renderer.mission
+            busy = inflight is not None or (mission is not None and mission.active() is not None)
+            return "wait_timeout" if busy or until == "timeout" else None
+        changed = renderer.seq != self._last_seen_seq
+        if (until == "next_event" and changed) or (until == "skill_result" and inflight is None):
+            self._wait = None
+            return None
+        return "wait_hold"
+
+    def _idle_gate(
+        self, renderer: ContextRenderer, palette: ToolPalette, started: float
+    ) -> ReasonerTickResult | str:
+        """Whether the context gives a timer beat anything new to decide about."""
+        changed = renderer.seq != self._last_seen_seq
+        inflight = renderer.inflight_skill
+        if inflight is not None:
+            # While a skill runs the beat is a backstop, not a poll: one LLM call
+            # per ``inflight_backstop_s``. A result-only skill (wrapped Nav2-shape
+            # action) has no progress to poll, so an unchanged context keeps it
+            # quiet unless a reward monitor can still be asked (2026-11-11: 103 of
+            # 109 LLM calls were `wait` ticks during one drive).
+            entry = palette.skill(inflight)
+            result_only = entry is not None and entry.result_only
+            if not (changed or palette.task_progress_available or not result_only):
+                return self._suppressed("heartbeat_idle")
+            period = inflight_backstop_s(entry.max_execution_s if entry else None)
+            if started - self._last_llm_s < period:
+                return self._suppressed("backstop_not_due")
+            return "context_changed" if changed else "backstop"
+        if not changed:
+            # Nothing new since the last tick: byte-identical context.
+            return self._suppressed("heartbeat_idle")
+        if renderer.mission is None and not renderer.prompts:
+            # No goal, nothing in flight, no prompt: perception churn alone gives
+            # the model nothing to decide (#620). Events still force their ticks.
+            self._last_seen_seq = renderer.seq
+            return self._suppressed("no_goal")
+        return "context_changed"
+
     def prepare_tick(
         self,
         *,
@@ -431,6 +634,8 @@ class ReasonerCore:
         palette: ToolPalette,
         force: bool = False,
         tier: str = "heartbeat",
+        trigger: str = "heartbeat",
+        coalesced: tuple[str, ...] = (),
     ) -> PreparedTick | ReasonerTickResult:
         """Phase 1 of a tick: run the suppression gates and render the context.
 
@@ -442,80 +647,37 @@ class ReasonerCore:
         (``run_prepared_llm``) may run on any thread and whose
         ``finish_tick`` must run back on the owning thread.
 
-        Args/semantics are those of ``tick``.
+        A forced tick (an event) skips every gate below and ends an active
+        ``wait``. A timer beat (``force=False``) reaches the LLM only when one
+        of these is true (issue #620), recorded as its ``trigger``:
+
+        * ``llm_error_retry`` — the backoff after a failed LLM call lapsed;
+        * ``wait_timeout`` — the model's ``wait`` lapsed with a skill in
+          flight or a mission task active;
+        * ``backstop`` — a skill is in flight and ``inflight_backstop_s`` has
+          passed since the last LLM call (perception churn alone never calls
+          more often than that);
+        * ``context_changed`` — nothing is in flight, the context moved, and
+          there is a mission or a pending prompt (with neither it is ``no_goal``).
+
+        Args/semantics are those of ``tick``; ``coalesced`` lists the triggers
+        merged into this tick while the previous one was in flight.
         """
         started = self._clock()
-        # min-interval gate — gate BEFORE opening the
-        # OTel span so suppressed ticks don't show up in the trace.
-        if not force and started - self._last_tick_s < self._min_interval_s:
-            return ReasonerTickResult(
-                tool_call=None,
-                error=None,
-                elapsed_s=0.0,
-                suppressed_reason="min_interval",
-            )
-        # retry-cap hold — gate BEFORE the LLM call (and the OTel span).
-        # After a ``retry_cap`` suppression the model would see the same
-        # context and re-emit the same capped call, so paying for the LLM
-        # round-trip just to discard the result is pure waste. Held until
-        # the context moves past the seq the cap fired at (the node's
-        # reflection feedback bumps it) or a reset/forced tick.
-        if (
-            not force
-            and self._retry_cap_hold_seq is not None
-            and renderer.seq == self._retry_cap_hold_seq
-        ):
-            self._last_tick_s = started
-            return ReasonerTickResult(
-                tool_call=None,
-                error=None,
-                elapsed_s=0.0,
-                suppressed_reason="retry_cap_hold",
-            )
-        # A terminal mission has nothing left to plan. World-state and
-        # perception updates may keep changing ``renderer.seq`` after handoff,
-        # so the ordinary heartbeat-idle gate cannot suppress these calls.
-        # A new operator goal rebuilds the mission before forcing a tick; safety
-        # and other urgent events still bypass this gate via ``force=True``.
-        mission = renderer.mission
-        if (
-            not force
-            and mission is not None
-            and mission.active() is None
-            and renderer.inflight_skill is None
-        ):
-            self._last_tick_s = started
-            self._last_seen_seq = renderer.seq
-            return ReasonerTickResult(
-                tool_call=None,
-                error=None,
-                elapsed_s=0.0,
-                suppressed_reason="mission_finished",
-            )
-        # heartbeat-idle gate — gate BEFORE the OTel span for the same
-        # reason: a non-forced tick whose ContextRenderer hasn't received
-        # any new failure/perception/prompt event since the last tick would
-        # see byte-identical context, so it's suppressed (forced ticks
-        # bypass via the ``force`` flag). Exception: while a skill is IN
-        # FLIGHT the heartbeat stays live even on an unchanged seq — the
-        # tick is the reasoner's only chance to poll ``query_task_progress``
-        # mid-execution (the system prompt instructs exactly that). A result-only
-        # skill (wrapped Nav2-shape action) has no progress to poll; its terminal
-        # result is an event of its own, so it does not keep the heartbeat live
-        # (2026-11-11: 103 of 109 LLM calls were `wait` ticks during one drive) —
-        # unless a reward monitor is wired, which a stalled drive can still be polled on.
-        inflight = renderer.inflight_skill
-        entry = palette.skill(inflight)
-        result_only = entry is not None and entry.result_only
-        pollable = inflight is not None and (palette.task_progress_available or not result_only)
-        if not force and renderer.seq == self._last_seen_seq and not pollable:
-            self._last_tick_s = started
-            return ReasonerTickResult(
-                tool_call=None,
-                error=None,
-                elapsed_s=0.0,
-                suppressed_reason="heartbeat_idle",
-            )
+        # Fold time-dependent context (a safety status going stale) into ``seq``
+        # once per tick, before any gate reads it and before the snapshot below,
+        # so what the gates track and what is rendered come from one evaluation.
+        renderer.refresh_clock_state()
+        if force:
+            # An event the model has not seen yet ends any wait it chose.
+            self._wait = None
+        else:
+            # Gate BEFORE opening the OTel span so suppressed beats don't show
+            # up in the trace.
+            gate = self._timer_gate(renderer, palette, started)
+            if isinstance(gate, ReasonerTickResult):
+                return gate
+            trigger = gate
         # Every tick that reaches the LLM (or
         # the palette-empty short-circuit) opens a ``reasoner.tick``
         # span. Non-attaching (start_reasoner_span) so the span can travel
@@ -529,6 +691,10 @@ class ReasonerCore:
             force=force,
         )
         span.set_attribute(semconv.REASONER_TIER, tier)
+        span.set_attribute(semconv.REASONER_TRIGGER, trigger)
+        if coalesced:
+            span.set_attribute(semconv.REASONER_COALESCED_TRIGGERS, list(coalesced))
+        span.set_attribute(semconv.REASONER_SKIPPED_SINCE_LAST, self._skipped_since_llm)
         # Stamp the active mission queue on every tick span so
         # the dashboard can render the task checklist. Set before the gate
         # short-circuits below so suppressed (retry_cap / error) ticks still
@@ -542,8 +708,12 @@ class ReasonerCore:
         # can pick ``EmitPromptTool`` to escalate to the operator;
         # gating here would silently swallow SEVERITY_FAIL preemptions on a
         # bare reasoner.
+        # A due transport retry or a lapsed ``wait`` is a decision the model or an
+        # event already demanded, and its deadline was cleared when it became
+        # due: dropping it here would lose it for good.
         if (
             not force
+            and trigger not in ("llm_error_retry", "wait_timeout")
             and not palette.execute_rskill_ids
             and not (palette.sensor_ids or palette.node_ids or renderer.prompts)
         ):
@@ -551,6 +721,7 @@ class ReasonerCore:
             self._last_seen_seq = renderer.seq
             span.set_attribute(semconv.REASONER_SUPPRESSED_REASON, "palette_empty")
             span.end()
+            self._skipped_since_llm += 1
             return ReasonerTickResult(
                 tool_call=None,
                 error=None,
@@ -560,8 +731,11 @@ class ReasonerCore:
         offered = self.offered_palette(palette, renderer)
         if self._max_skill_tools is not None:
             span.set_attribute(semconv.REASONER_OFFERED_SKILLS, sorted(offered.execute_rskill_ids))
+        # ``seq`` and the render both reflect the ``refresh_clock_state`` above;
+        # neither reading changes the renderer.
+        seq = renderer.seq
         context_text = renderer.render(world_state=world_state)
-        # Snapshot seq + the rendered prompt records NOW: anything appended
+        # Snapshot the rendered prompt records NOW too: anything appended
         # while the LLM phase is in flight was not in the model's context,
         # so finish_tick must neither mark it seen nor drain it.
         return PreparedTick(
@@ -571,10 +745,12 @@ class ReasonerCore:
             renderer=renderer,
             span=span,
             started=started,
-            seq=renderer.seq,
+            seq=seq,
             prompts=renderer.prompts,
             force=force,
             tier=tier,
+            trigger=trigger,
+            coalesced=coalesced,
         )
 
     def run_prepared_llm(self, prep: PreparedTick) -> ReasonerToolCall:
@@ -609,6 +785,41 @@ class ReasonerCore:
                 # Protocol member every implementation would have to carry.
                 prep.prompt_tokens = getattr(self._client, "last_prompt_tokens", None)
 
+    def _record_llm_error(self, error: ROSPlanningError, seq: int) -> None:
+        """Bookkeeping for an LLM call that returned no usable tool call."""
+        if isinstance(error, ROSReasonerInvalidPlan):
+            # The model answered, just not with a valid call; the node feeds the
+            # reason back as context (which moves seq).
+            self._last_seen_seq = seq
+            self._llm_errors = 0
+            self._llm_retry_at = None
+            return
+        # Transport failure: the model never saw this context, so it stays unseen
+        # and a timer beat retries it after a backoff. Out of retries -> mark it
+        # seen (``llm_gave_up``); the next event still reaches the model.
+        if self._llm_retry_at is not None:
+            # An event tick failed while a retry is already scheduled: the
+            # backoff stands. Only scheduled retries spend the budget, so a burst
+            # of events during a short outage cannot exhaust it in seconds.
+            return
+        self._llm_errors += 1
+        if self._llm_errors <= len(LLM_ERROR_BACKOFF_S):
+            self._llm_retry_at = self._clock() + LLM_ERROR_BACKOFF_S[self._llm_errors - 1]
+        else:
+            self._llm_retry_at = None
+            self._last_seen_seq = seq
+
+    def _arm_after_call(self, call: ReasonerToolCall, span: Span) -> None:
+        """A good call ends an LLM-error run; a ``wait`` arms its hold, any other call ends it."""
+        self._llm_errors = 0
+        self._llm_retry_at = None
+        if isinstance(call, WaitTool):
+            self._wait = (call.until, self._clock() + call.timeout_s)
+            span.set_attribute(semconv.REASONER_WAIT_UNTIL, call.until)
+            span.set_attribute(semconv.REASONER_WAIT_TIMEOUT_S, call.timeout_s)
+        else:
+            self._wait = None
+
     def finish_tick(
         self,
         prep: PreparedTick,
@@ -641,20 +852,25 @@ class ReasonerCore:
             span.set_attribute(semconv.REASONER_LLM_S, round(prep.llm_s, 4))
             if prep.prompt_tokens is not None:
                 span.set_attribute(semconv.REASONER_PROMPT_TOKENS, prep.prompt_tokens)
+            # Every outcome below spent an LLM call at ``prep.started``.
+            self._last_llm_s = self._last_tick_s = prep.started
+            self._skipped_since_llm = 0
             if error is not None:
-                self._last_tick_s = prep.started
-                self._last_seen_seq = prep.seq
                 span.record_exception(error)
                 if not isinstance(error, ROSPlanningError):
+                    self._last_seen_seq = prep.seq
                     raise error
                 span.set_attribute(semconv.REASONER_ERROR_KIND, type(error).__name__)
+                self._record_llm_error(error, prep.seq)
                 return ReasonerTickResult(
                     tool_call=None,
                     error=error,
                     elapsed_s=self._clock() - prep.started,
+                    trigger=prep.trigger,
                 )
             if call is None:
                 raise ValueError("finish_tick: pass exactly one of `call` or `error`")
+            self._arm_after_call(call, span)
             # retry-cap ("bounded retry counter per failure kind") — keyed
             # on the full call identity (tool + args minus rationale), so
             # only a *verbatim* repeat accumulates; a different skill /
@@ -673,7 +889,6 @@ class ReasonerCore:
                 # Arm the pre-call hold at the seq this cap fired against so
                 # subsequent unchanged-context ticks skip the LLM entirely.
                 self._retry_cap_hold_seq = prep.seq
-                self._last_tick_s = prep.started
                 self._last_seen_seq = prep.seq
                 span.set_attribute(semconv.REASONER_TOOL, call.tool)
                 span.set_attribute(semconv.REASONER_SUPPRESSED_REASON, "retry_cap")
@@ -682,9 +897,9 @@ class ReasonerCore:
                     error=None,
                     elapsed_s=self._clock() - prep.started,
                     suppressed_reason="retry_cap",
+                    trigger=prep.trigger,
                 )
             self._retry_cap_hold_seq = None
-            self._last_tick_s = prep.started
             self._last_seen_seq = prep.seq
             span.set_attribute(semconv.REASONER_TOOL, call.tool)
             # ExecuteRskillTool carries a rskill_id worth surfacing on the
@@ -703,6 +918,7 @@ class ReasonerCore:
                 "tick_idx": self._tick_idx,
                 "tool": call.tool,
                 "tier": prep.tier,
+                "trigger": prep.trigger,
                 "elapsed_s": round(self._clock() - prep.started, 4),
                 # elapsed_s minus llm_s is the reasoner-side overhead; without
                 # the split a growing tick can't be blamed on the provider or
@@ -733,6 +949,7 @@ class ReasonerCore:
                 tool_call=call,
                 error=None,
                 elapsed_s=self._clock() - prep.started,
+                trigger=prep.trigger,
                 traceparent=traceparent,
             )
 
