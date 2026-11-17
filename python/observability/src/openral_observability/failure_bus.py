@@ -132,10 +132,13 @@ class FailureSource(str, Enum):
     WORLD_STATE = "world_state"  # issue #418: the object tracker's query escalations
 
 
+_DROP_REASON_PREFIXES = ("KIND_", "DROP_")
+
+
 def drop_reason_label(
     code: int,
     status_cls: Any,  # reason: ROS message class is untyped
-    prefixes: tuple[str, ...] = ("KIND_", "DROP_"),
+    prefixes: tuple[str, ...] = _DROP_REASON_PREFIXES,
 ) -> str:
     """Name a ``SafetyStatus.drop_reason`` from the IDL's own constants.
 
@@ -153,8 +156,10 @@ def drop_reason_label(
             ``FailureTrigger.severity``).
 
     Returns:
-        The constant's name lower-cased (e.g. ``"kind_collision"``), or
-        ``"drop_reason_<code>"`` when this build does not know the value.
+        The constant's name lower-cased (e.g. ``"kind_collision"``), or a
+        placeholder when this build does not know the value: ``"drop_reason_<code>"``
+        for the default prefixes, else the first prefix lower-cased plus the code
+        (``"severity_<code>"``), so a caller's ``removeprefix`` still applies.
 
     Example:
         >>> class _S:
@@ -164,13 +169,17 @@ def drop_reason_label(
         'kind_collision'
         >>> drop_reason_label(200, _S)
         'drop_reason_200'
+        >>> drop_reason_label(200, _S, ("SEVERITY_",))
+        'severity_200'
     """
     for name in dir(status_cls):
         if not name.startswith(prefixes):
             continue
         if getattr(status_cls, name, None) == code:
             return name.lower()
-    return f"drop_reason_{code}"
+    if prefixes == _DROP_REASON_PREFIXES:
+        return f"drop_reason_{code}"
+    return f"{prefixes[0].lower()}{code}"
 
 
 def topic_for(source: FailureSource) -> str:

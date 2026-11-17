@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import statistics
+import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -422,6 +423,10 @@ class TelemetryStore:
         # they cannot evict the error lane (see _HEADLINE_EVENT_RING_SIZE).
         self._headline_events: deque[TelemetryEvent] = deque(maxlen=_HEADLINE_EVENT_RING_SIZE)
         self._counters: dict[str, int] = defaultdict(int)
+        # (kind, severity, rskill_id) of the last safety stop and when it last repeated:
+        # a stale input makes the kernel publish one stop per dropped chunk (tens per
+        # second), which ``record_safety_failure`` folds into the first one's row.
+        self._safety_failure_run: tuple[tuple[str, str, str], float] | None = None
         self._metrics: dict[str, _MetricSeries] = {}
         # Topical state buckets — one per "topic" the dashboard renders
         # as a dedicated card. Latched/static keys (run mode, robot
@@ -727,12 +732,18 @@ class TelemetryStore:
         rskill_id: str,
         trace_id: str,
         stamp_unix: float,
-    ) -> None:
+    ) -> bool:
         """Record one safety-kernel ``FailureTrigger`` for the console's trace.
 
         Called from ``SafetyStatusSubscriber``'s spin thread for every message on
         ``/openral/failure/safety``. The one-line ``text`` is built here, not in the
         console, so its wording changes with the dashboard rather than a console release.
+        Each new stop is also an event-log row (the ``safety_failure`` slot keeps only
+        the latest). A stop repeating the previous one's kind, severity and skill
+        within ``_SAFETY_FAILURE_COALESCE_S`` of its last repeat only bumps that row's
+        ``repeats``: no new row, no event, no fan-out. Whether the kernel is latched
+        is the ``safety_status`` slot's to say; a stop's severity does not tell
+        (a place-advisory refusal is ``SEVERITY_ABORT`` and never latches).
 
         Args:
             kind_label: The ``kind`` constant's name (e.g. ``"kind_collision"``).
@@ -741,28 +752,56 @@ class TelemetryStore:
             rskill_id: The skill the kernel stopped, if known.
             trace_id: W3C traceparent for correlation, if any.
             stamp_unix: ``header.stamp`` as Unix seconds.
+
+        Returns:
+            ``True`` for a new row, ``False`` when it was folded into the previous one.
         """
-        latched = severity_label in ("severity_fail", "severity_abort")
+        now = time.time()
+        key = (kind_label, severity_label, rskill_id)
+        with self._lock:
+            run = self._safety_failure_run
+            self._safety_failure_run = (key, now)
+            if run is not None and run[0] == key and now - run[1] < _SAFETY_FAILURE_COALESCE_S:
+                prev = self._topics["safety_failure"]
+                self._topics["safety_failure"] = {**prev, "repeats": prev["repeats"] + 1}
+                return False
         try:
-            text = _safety_failure_text(kind_label, evidence_json, rskill_id, latched=latched)
+            text = _safety_failure_text(kind_label, evidence_json, rskill_id)
         except Exception as exc:  # reason: a text bug must not drop the stop; the row stays
             _logger.warning("dashboard.safety_failure_text_failed", error=repr(exc))
             text = f"{kind_label.removeprefix('kind_')} safety stop (text failed: {exc!r})"
+        kind = kind_label.removeprefix("kind_")
+        severity = severity_label.removeprefix("severity_")
         entry = {
-            "kind": kind_label.removeprefix("kind_"),
-            "severity": severity_label.removeprefix("severity_"),
-            "latched": latched,
+            "kind": kind,
+            "severity": severity,
             "rskill_id": rskill_id,
             "trace_id": trace_id,
             "stamp_unix": float(stamp_unix),
             "text": text,
+            "repeats": 0,
             # Same clock as the reasoner ticks the console interleaves this with.
-            "ts_unix": time.time(),
+            "ts_unix": now,
         }
         with self._lock:
             self._topics["safety_failure"] = entry
+            self._append_event(
+                TelemetryEvent(
+                    ts_unix=now,
+                    kind=_SAFETY_FAILURE_EVENT,
+                    title=f"safety stop · {text}",
+                    attrs={
+                        "kind": kind,
+                        "severity": severity,
+                        "rskill_id": rskill_id,
+                        "trace_id": trace_id,
+                    },
+                    severity="error" if severity in ("fail", "abort") else "warn",
+                )
+            )
             payload = self._snapshot_locked()
         self._publish(payload)
+        return True
 
     def set_perception_detections(
         self,
@@ -1664,9 +1703,15 @@ _WARN_EVENTS = frozenset(
 # is downgraded to a warning, but it must still leave a durable trace — a warn
 # that gets evicted in seconds is the "counter goes up, no trace" bug. So these
 # are mirrored into the protected lane regardless of severity.
+# Event-log kind of a safety-kernel stop (``record_safety_failure``).
+_SAFETY_FAILURE_EVENT = "safety.failure"
+# A repeat of the last stop within this many seconds of its previous repeat folds into it.
+_SAFETY_FAILURE_COALESCE_S = 5.0
+
 _PROTECTED_EVENT_KINDS = frozenset(
     {
         "openral.event.skill_failure",
+        _SAFETY_FAILURE_EVENT,
     }
 )
 
@@ -1788,6 +1833,8 @@ def _reasoner_detail(attrs: dict[str, Any]) -> str | None:
 
 
 _FAILURE_EVIDENCE: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+# The kernel's NaN-distance sentinel (collision.cpp): geometry it could not evaluate.
+_DISTANCE_NOT_EVALUATED = -sys.float_info.max
 
 
 def _signed(value: float, positive: str, negative: str) -> str:
@@ -1797,7 +1844,12 @@ def _signed(value: float, positive: str, negative: str) -> str:
 def _collision_text(ev: CollisionEvidence) -> list[str]:
     """``<link> hit <other> · <depth> mm deep · cell … · allowances …`` for one stop."""
     parts = [f"{ev.collision_kind} collision: {ev.link_a} hit {ev.link_b_or_object}"]
-    if ev.min_distance_m < 0:
+    if ev.min_distance_m == _DISTANCE_NOT_EVALUATED:
+        parts.append("distance not evaluated")
+    elif ev.min_distance_m < 0 and ev.depth_is_box_bound:
+        # The bounding box over-states penetration (collision.hpp), so this is at most.
+        parts.append(f"≤ {-ev.min_distance_m * 1000:.1f} mm deep (box bound)")
+    elif ev.min_distance_m < 0:
         parts.append(f"{-ev.min_distance_m * 1000:.1f} mm deep")
     else:
         parts.append(f"{ev.min_distance_m * 1000:.1f} mm clearance")
@@ -1822,16 +1874,21 @@ def _collision_text(ev: CollisionEvidence) -> list[str]:
                     f" ({ev.place_target})" if ev.place_target else "",
                 ),
                 flag("grasp", ev.grasp_exemption_active, source),
-                flag("workspace", ev.workspace_contact_active),
+                # The declaration, whoever applies it: the in-tree rule
+                # (``workspace_contact_active``) reads false under an exemption provider.
+                flag(
+                    "workspace",
+                    ev.workspace_contact_active
+                    if ev.workspace_declaration_live is None
+                    else ev.workspace_declaration_live,
+                ),
             )
         )
     )
     return parts
 
 
-def _safety_failure_text(
-    kind_label: str, evidence_json: str, rskill_id: str, *, latched: bool
-) -> str:
+def _safety_failure_text(kind_label: str, evidence_json: str, rskill_id: str) -> str:
     """One line saying what the safety kernel stopped and why, for the trace row.
 
     Decodes ``evidence_json`` with the core ``FailureEvidence`` union; a payload that
@@ -1852,8 +1909,6 @@ def _safety_failure_text(
         parts.append(kind_label.removeprefix("kind_"))
     if rskill_id:
         parts.append(f"stopped {rskill_id.rsplit('/', 1)[-1]}")
-    if latched:
-        parts.append("latched: needs an operator reset")
     return " · ".join(parts)
 
 

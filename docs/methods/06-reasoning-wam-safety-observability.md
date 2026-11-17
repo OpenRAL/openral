@@ -1119,8 +1119,8 @@ _The on-robot compliance log: append-only, hash-chained JSONL per writer and ret
 _Publisher helper + IDL-mirror constants for the namespaced `/openral/failure/{...}` bus._
 
 - `class FailureSource(str, Enum)` (L119) — `HAL | SENSOR | SKILL | SAFETY | WAM | CRITIC | WORLD_STATE`; the string value is the topic suffix (`WORLD_STATE`: issue #418, the object tracker's query escalations on `/openral/failure/world_state`).
-- `topic_for(source: FailureSource) -> str` (L176) — Pure helper: `FailureSource → /openral/failure/<suffix>`.
-- `drop_reason_label(code: int, status_cls: Any, prefixes: tuple[str, ...] = ("KIND_", "DROP_")) -> str` — Name a `SafetyStatus.drop_reason` by reverse-mapping it against the generated message class's own `KIND_*` / `DROP_*` constants (lower-cased; `drop_reason_<code>` when unknown); `prefixes` also names a `FailureTrigger` `kind` / `severity`. The one implementation the dashboard, the skill runner and the reasoner share. (L135)
+- `topic_for(source: FailureSource) -> str` (L185) — Pure helper: `FailureSource → /openral/failure/<suffix>`.
+- `drop_reason_label(code: int, status_cls: Any, prefixes: tuple[str, ...] = ("KIND_", "DROP_")) -> str` — Name a `SafetyStatus.drop_reason` by reverse-mapping it against the generated message class's own `KIND_*` / `DROP_*` constants (lower-cased; when unknown, `drop_reason_<code>` for the default prefixes, else the first prefix plus the code, e.g. `severity_<code>`); `prefixes` also names a `FailureTrigger` `kind` / `severity`. The one implementation the dashboard, the skill runner and the reasoner share. (L138)
 - `KIND_*` / `SEVERITY_*` `int` module constants (L105–L121) — Mirror `openral_msgs/msg/FailureTrigger` (incl. `KIND_COLLISION = 10`, stamped by the safety kernel on every collision stop); bump both when the IDL changes. A test pins the two sides name-for-name and value-for-value against the generated constants.
 - `KIND_TIMEOUT: int = 0` (L96)
 - `KIND_FORCE: int = 1` (L97)
@@ -1141,17 +1141,17 @@ _Publisher helper + IDL-mirror constants for the namespaced `/openral/failure/{.
 - `SEVERITY_FAIL: int = 2` (L113)
 - `SEVERITY_ABORT: int = 3` (L114)
 - `TOPIC_PREFIX: str = "/openral/failure"` (L116)
-- `DEFAULT_RATE_LIMIT_HZ: dict[int, float | None]` (L194) — Per-severity defaults (INFO/WARN → 10/s, FAIL/ABORT → unlimited).
-- `DEFAULT_SUMMARY_PERIOD_S: float = 1.0` (L201)
-- `class _TokenBucket` (L204) — Private, lock-protected. `__init__(rate_hz, *, capacity=1.0, clock=time.monotonic)`; `try_consume() -> bool`.
-- `class FailureBusPublisher` (L253) — `__init__(node, source, *, rate_limit_hz=None, summary_period_s=1.0, clock=None)`. Configure the publisher; does not open the ROS publisher.
-  - `topic(self) -> str` (L316) — The full topic this publisher writes to.
-  - `source(self) -> FailureSource` (L321) — The source layer this publisher represents.
-  - `create_publisher(self) -> None` (L325) — Open the ROS 2 publisher with the bus QoS profile.
-  - `start(self) -> None` (L347) — Start the 1 Hz `KIND_SUPPRESSED_SUMMARY` roll-up timer.
-  - `stop(self) -> None` (L360) — Cancel the suppressed-summary timer (`on_deactivate`).
-  - `destroy(self) -> None` (L366) — Tear down the publisher + timer (`on_cleanup`).
-  - `publish(self, *, kind, severity, evidence, rskill_id='', trace_id=None) -> bool` (L377) — Emit one `FailureTrigger`, subject to rate-limiting (`False` when rate-limited).
+- `DEFAULT_RATE_LIMIT_HZ: dict[int, float | None]` (L203) — Per-severity defaults (INFO/WARN → 10/s, FAIL/ABORT → unlimited).
+- `DEFAULT_SUMMARY_PERIOD_S: float = 1.0` (L210)
+- `class _TokenBucket` (L213) — Private, lock-protected. `__init__(rate_hz, *, capacity=1.0, clock=time.monotonic)`; `try_consume() -> bool`.
+- `class FailureBusPublisher` (L262) — `__init__(node, source, *, rate_limit_hz=None, summary_period_s=1.0, clock=None)`. Configure the publisher; does not open the ROS publisher.
+  - `topic(self) -> str` (L325) — The full topic this publisher writes to.
+  - `source(self) -> FailureSource` (L330) — The source layer this publisher represents.
+  - `create_publisher(self) -> None` (L334) — Open the ROS 2 publisher with the bus QoS profile.
+  - `start(self) -> None` (L356) — Start the 1 Hz `KIND_SUPPRESSED_SUMMARY` roll-up timer.
+  - `stop(self) -> None` (L369) — Cancel the suppressed-summary timer (`on_deactivate`).
+  - `destroy(self) -> None` (L375) — Tear down the publisher + timer (`on_cleanup`).
+  - `publish(self, *, kind, severity, evidence, rskill_id='', trace_id=None) -> bool` (L386) — Emit one `FailureTrigger`, subject to rate-limiting (`False` when rate-limited).
 
 ### `python/observability/src/openral_observability/logging.py`
 - `trace_context_processor(_logger, _method_name, event_dict)` — structlog processor that stamps `trace_id` / `span_id` on every log event. (L60)
@@ -1164,27 +1164,27 @@ _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `
 
 _**Event-log severity band** (distinct from the headline-card routing above). `_is_headline_span(name)` bands a span's Event Log row: ERROR status → `error`; a small allow-list of names/prefixes (`cli.command`, `rskill.execute`/`configure`/`activate`, `reasoner.tick`, `world.scene_objects`, `sim.run`, `detect.probe.*`) → `info`; everything else → `debug`. Deliberately an allow-list rather than a deny-list, so a new high-rate span stays quiet in the event log until promoted here instead of flooding it by default; every span is still indexed in full for `openral replay`._
 
-- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L242)
-  - `to_json(self) -> dict[str, Any]` (L268) — Return a plain-dict view suitable for JSON serialization.
-- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L394)
-  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L499)
-  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L533)
-  - `ingest_logs(self, payload) -> int` (L554) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
-  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L607)
-  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L869)
-  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L885)
-  - `set_estopped(self, value) -> None` (L625) — Force the e-stop latch flag from an authoritative operator action.
-  - `set_manifest(self, manifest: RobotManifest) -> None` (L617) — Serve a manifest from a file (`run_dashboard(manifest_path=...)`, the deploy launch's `--manifest`) until a fresher `openral.robot.manifest` record arrives; bumps `manifest_rev` and pushes to SSE subscribers.
-  - `manifest(self) -> RobotManifest | None` (L612) — The latest robot manifest (ADR-0129), cached from its `openral.robot.manifest` log record by `ingest_logs` (a malformed one keeps the last good one; the record is not an event-log row). `snapshot()` carries `manifest_rev`, bumped on every new manifest so the UI knows to refetch `GET /api/manifest`.
-  - `set_hal_estop(name, estopped) -> None` — Record one HAL's own e-stop latch (its `/diagnostics` heartbeat) under `topics.hal_estop[name]` with its receive time; the UI treats the robot as stopped while the kernel or any fresh HAL latch is set. (L643)
-  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. A latch sets `topics.safety.estopped`; only a latched → released transition clears it, so a publisher that never latches cannot undo an operator E-STOP. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L658)
-  - `record_safety_failure(*, kind_label, severity_label, evidence_json, rskill_id, trace_id, stamp_unix) -> None` — Record one safety-kernel `FailureTrigger` from `/openral/failure/safety` as `topics.safety_failure` (kind, severity, latched, rskill_id, trace_id, stamps, and a one-line `text` built from the decoded `FailureEvidence`: link vs object, penetration in mm, the voxel cell relative to the robot base, the active allowances, the stopped skill). The console trace renders it as an error row. (L721)
-  - `list_traces(self) -> list[dict[str, Any]]` (L1077) — Return one record per indexed trace_id, most-recent first.
-  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L1095) — Return every indexed span for `trace_id` in chronological order, or `None`.
-- `_reasoner_detail(attrs) -> str | None` (L1760) — The console trace row's one-line why for a `reasoner.tick` span (also `topics.reasoner.detail`): `<skill> <running|dispatching> · <tier> · <llm latency> · suppressed: <reason> · error: <kind> — <rationale>`, each part only when present, `None` when empty. A suppressed (`palette_empty`, `retry_cap`) or errored tick says so, so a retry-capped call's rationale never reads as the call that ran. The rationale is present only when the reasoner was allowed to export it (`free_text_may_leave_host`).
+- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). (L243)
+  - `to_json(self) -> dict[str, Any]` (L269) — Return a plain-dict view suitable for JSON serialization.
+- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L395)
+  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. (L504)
+  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. Keeps at most `_METRIC_SERIES_MAX` (512) `(name, labels)` series, evicting the least recently updated (labels are sender-chosen). (L538)
+  - `ingest_logs(self, payload) -> int` (L559) — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows: body → title, logger name → kind, severity number → level. Shares the bounded event ring with spans; the UI defaults the Debug chip off. Returns the number of log records recorded.
+  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L612)
+  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L908)
+  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L924)
+  - `set_estopped(self, value) -> None` (L630) — Force the e-stop latch flag from an authoritative operator action.
+  - `set_manifest(self, manifest: RobotManifest) -> None` (L622) — Serve a manifest from a file (`run_dashboard(manifest_path=...)`, the deploy launch's `--manifest`) until a fresher `openral.robot.manifest` record arrives; bumps `manifest_rev` and pushes to SSE subscribers.
+  - `manifest(self) -> RobotManifest | None` (L617) — The latest robot manifest (ADR-0129), cached from its `openral.robot.manifest` log record by `ingest_logs` (a malformed one keeps the last good one; the record is not an event-log row). `snapshot()` carries `manifest_rev`, bumped on every new manifest so the UI knows to refetch `GET /api/manifest`.
+  - `set_hal_estop(name, estopped) -> None` — Record one HAL's own e-stop latch (its `/diagnostics` heartbeat) under `topics.hal_estop[name]` with its receive time; the UI treats the robot as stopped while the kernel or any fresh HAL latch is set. (L648)
+  - `set_safety_status(*, latched, drop_reason, drop_reason_label, detail, rskill_id, trace_id, stamp_unix) -> None` — Record one `SafetyStatus` from the latched `/openral/safety_status` topic and push it to SSE subscribers. A latch sets `topics.safety.estopped`; only a latched → released transition clears it, so a publisher that never latches cannot undo an operator E-STOP. The only authoritative safety state the dashboard has, distinct from the span-inferred latch which stops updating the moment a kernel actually latches. `stamp_unix` is load-bearing: it lets the card tell a live latch from a dead publisher's leftover durable value. (L663)
+  - `record_safety_failure(*, kind_label, severity_label, evidence_json, rskill_id, trace_id, stamp_unix) -> bool` — Record one safety-kernel `FailureTrigger` from `/openral/failure/safety` as `topics.safety_failure` (kind, severity, rskill_id, trace_id, stamps, `repeats`, and a one-line `text` built from the decoded `FailureEvidence`: link vs object, penetration in mm — "distance not evaluated" for the kernel's NaN sentinel, "≤ … (box bound)" for a box-bound depth — the voxel cell relative to the robot base, the active allowances (workspace from `workspace_declaration_live`), the stopped skill) plus a protected `safety.failure` event-log row. It does not claim a latch (the `safety_status` slot does). A stop repeating the last one's kind, severity and skill within 5 s of its last repeat only bumps `repeats` (no row, no fan-out) and returns `False`. The console trace renders it as an error row. (L726)
+  - `list_traces(self) -> list[dict[str, Any]]` (L1116) — Return one record per indexed trace_id, most-recent first.
+  - `lookup_trace(self, trace_id) -> list[dict[str, Any]] | None` (L1134) — Return every indexed span for `trace_id` in chronological order, or `None`.
+- `_reasoner_detail(attrs) -> str | None` (L1805) — The console trace row's one-line why for a `reasoner.tick` span (also `topics.reasoner.detail`): `<skill> <running|dispatching> · <tier> · <llm latency> · suppressed: <reason> · error: <kind> — <rationale>`, each part only when present, `None` when empty. A suppressed (`palette_empty`, `retry_cap`) or errored tick says so, so a retry-capped call's rationale never reads as the call that ran. The rationale is present only when the reasoner was allowed to export it (`free_text_may_leave_host`).
 
-- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L767) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
-- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L824) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
+- `TelemetryStore.set_perception_detections(self, *, camera, detections, model_id, frame_width, frame_height, stamp_unix, flip_180=False) -> None` (L806) — Record one detector result as a camera overlay and push it to SSE subscribers. `camera` is the wire `sensor_id`, the join key between a frame and its boxes; `frame_width`/`frame_height` let the tile scale boxes onto its aspect-preserving thumbnail. An empty `detections` list is recorded, not dropped, so "found nothing" is expressible rather than leaving a stale overlay painted.
+- `TelemetryStore.set_perception_masks(self, *, camera, masks, rskill_id, stamp_unix, flip_180=False) -> None` (L863) — Record one segmenter result as a camera overlay: plural full-frame masks in the producer's area-ascending order, with advisory scores carried for display only (never used to rank or filter). Fed from the segmenter node's diagnostic re-publication of its one-shot service reply, off by default. Display only — nothing in the safety or attachment path reads this topic.
 
 ### `python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py`
 _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `safety_status_subscriber.py` — one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only and **advisory**: it decides what an operator sees, never what the robot does._
@@ -1211,13 +1211,13 @@ _Persistent ROS 2 e-stop publisher for the dashboard (safety-critical) — the d
 ### `python/observability/src/openral_observability/dashboard/safety_status_subscriber.py`
 _The dashboard's first rclpy subscriber: one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only: no publisher, no service client, no authority over the robot._
 
-- module constant `SAFETY_STATUS_TOPIC: str = "/openral/safety_status"` (L42)
-- module constant `SAFETY_FAILURE_TOPIC: str = "/openral/failure/safety"` (L44) — the kernel's typed stops, fed to `TelemetryStore.record_safety_failure`.
-- `DIAGNOSTICS_TOPIC: str` (L47) — `/diagnostics`: the subscriber also reads each HAL heartbeat's own `estopped` latch (`TelemetryStore.set_hal_estop`), since a kernel release does not release a restart-only HAL or one whose re-arm failed.
+- module constant `SAFETY_STATUS_TOPIC: str = "/openral/safety_status"` (L46)
+- module constant `SAFETY_FAILURE_TOPIC: str = "/openral/failure/safety"` (L50) — equal to `topic_for(FailureSource.SAFETY)` (a test pins it; a literal so the static topic graph resolves it); the kernel's typed stops, fed to `TelemetryStore.record_safety_failure`.
+- `DIAGNOSTICS_TOPIC: str` (L53) — `/diagnostics`: the subscriber also reads each HAL heartbeat's own `estopped` latch (`TelemetryStore.set_hal_estop`), since a kernel release does not release a restart-only HAL or one whose re-arm failed.
 - `drop_reason_label` — re-exported from `openral_observability.failure_bus` (moved there so the skill runner and the reasoner share it).
-- `class SafetyStatusSubscriber` — Opens the node + subscription immediately at the publishers' QoS (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) — a VOLATILE subscriber would never match and the card would sit silently empty. Also subscribes to `/diagnostics` (each HAL heartbeat's `estopped`, into `TelemetryStore.set_hal_estop`). Wired in `run_dashboard` onto `app.state.safety_status`. (L50)
-  - `available(self) -> bool` (L124) — True when the subscription is live (rclpy + `openral_msgs` present).
-  - `close(self) -> None` (L180) — Tear down the node/executor and shuts rclpy down only if it started it.
+- `class SafetyStatusSubscriber` — Opens the node + subscription immediately at the publishers' QoS (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) — a VOLATILE subscriber would never match and the card would sit silently empty. Also subscribes to `/diagnostics` (each HAL heartbeat's `estopped`, into `TelemetryStore.set_hal_estop`) and `/openral/failure/safety` (logging each new stop). Every callback logs, never raises, an exception (`ROSSafetyViolation` excepted), since they share one spin thread; a missing ROS install is left to `run_dashboard` to report. Wired in `run_dashboard` onto `app.state.safety_status`. (L83)
+  - `available(self) -> bool` (L159) — True when the subscription is live (rclpy + `openral_msgs` present).
+  - `close(self) -> None` (L211) — Tear down the node/executor and shuts rclpy down only if it started it.
 
 ### `python/observability/src/openral_observability/dashboard/discovery.py`
 _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` extra; when `zeroconf` is not importable, `Discovery` stays disabled and the dashboard runs exactly as before._
@@ -1333,7 +1333,7 @@ _The `--inprocess` inverse: spawn `openral dashboard` as a child process and att
 ### `python/observability/src/openral_observability/dashboard/store.py` — F7 trace index additions
 _Bounded per-trace_id span index for query-time bag↔OTel join._
 
-- `class _IndexedSpan` (L280) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
+- `class _IndexedSpan` (L281) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
 - `TelemetryStore.list_traces() -> list[dict]` — One row per indexed trace_id (`trace_id`, `span_count`, `last_seen_unix`), most-recent first. Backs `GET /api/traces`.
 - `TelemetryStore.lookup_trace(trace_id: str) -> list[dict] | None` — Every indexed span for `trace_id`, sorted ascending by `start_unix_ns`. `None` when the trace is not (or no longer) in the bounded index. Backs `GET /api/spans/{trace_id}`.
 - `_TRACE_INDEX_MAX_TRACES = 64` / `_TRACE_INDEX_MAX_SPANS = 2048` — Memory caps. Older trace_ids evict FIFO on insertion.
